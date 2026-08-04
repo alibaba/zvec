@@ -493,14 +493,16 @@ class NumericalKmeansContext {
   }
 
   //! Compute Norm2
-  template <typename ValueType, typename = typename std::enable_if<
-                                    IsFloatingPoint<ValueType>::value>::type>
-  static void Norm2(ValueType *data, size_t dim, float *norm) {
+  template <typename U = ValueType>
+  static typename std::enable_if<IsFloatingPoint<U>::value>::type Norm2(
+      ValueType *data, size_t dim, float *norm) {
     Normalizer<ValueType>::L2(data, dim, norm);
   }
 
   //! Compute Norm2, for non-float do nothing
-  static void Norm2(ValueType * /*data*/, size_t /*dim*/, float *norm) {
+  template <typename U = ValueType>
+  static typename std::enable_if<!IsFloatingPoint<U>::value>::type Norm2(
+      ValueType * /*data*/, size_t /*dim*/, float *norm) {
     *norm = 0.0f;
   }
 
@@ -844,14 +846,16 @@ class NumericalInnerProductKmeansContext {
   }
 
   //! Compute Norm2
-  template <typename ValueType, typename = typename std::enable_if<
-                                    IsFloatingPoint<ValueType>::value>::type>
-  static void Norm2(ValueType *data, size_t dim, float *norm) {
+  template <typename U = ValueType>
+  static typename std::enable_if<IsFloatingPoint<U>::value>::type Norm2(
+      ValueType *data, size_t dim, float *norm) {
     Normalizer<ValueType>::L2(data, dim, norm);
   }
 
   //! Compute Norm2, for non-float do nothing
-  static void Norm2(ValueType * /*data*/, size_t /*dim*/, float *norm) {
+  template <typename U = ValueType>
+  static typename std::enable_if<!IsFloatingPoint<U>::value>::type Norm2(
+      ValueType * /*data*/, size_t /*dim*/, float *norm) {
     *norm = 0.0f;
   }
 
