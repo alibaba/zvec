@@ -13,9 +13,10 @@
 // limitations under the License.
 
 #include "standard_tokenizer.h"
-#include <utf8proc.h>
+#include <algorithm>
 #include <array>
 #include <zvec/ailego/logger/logger.h>
+#include "unicode_utils.h"
 
 namespace zvec::fts {
 
@@ -60,10 +61,7 @@ enum class WordBreakClass : uint8_t {
   ExtendedPictographic,
 };
 
-struct Codepoint {
-  utf8proc_int32_t cp{0};
-  uint32_t start{0};
-  uint32_t end{0};
+struct StandardCodepoint : UnicodeCodepoint {
   WordBreakClass cls{WordBreakClass::Other};
   bool extended_pictographic{false};
   bool emoji_modifier_base{false};
@@ -286,11 +284,12 @@ bool is_extend_or_format(WordBreakClass cls) {
   return cls == WordBreakClass::Extend || cls == WordBreakClass::Format;
 }
 
-bool previous_is_zwj(const std::vector<Codepoint> &codepoints, size_t index) {
+bool previous_is_zwj(const std::vector<StandardCodepoint> &codepoints,
+                     size_t index) {
   return index > 0 && codepoints[index - 1].cls == WordBreakClass::ZWJ;
 }
 
-bool is_extended_pictographic_codepoint(const Codepoint &codepoint) {
+bool is_extended_pictographic_codepoint(const StandardCodepoint &codepoint) {
   return codepoint.cls == WordBreakClass::ExtendedPictographic ||
          codepoint.extended_pictographic;
 }
@@ -330,67 +329,7 @@ bool is_hangul_syllable(uint32_t codepoint) {
   return codepoint >= 0xAC00 && codepoint <= 0xD7A3;
 }
 
-bool is_utf8_continuation(unsigned char ch) {
-  return (ch & 0xC0) == 0x80;
-}
-
-bool decode_utf8_codepoint(const utf8proc_uint8_t *str, size_t len,
-                           size_t index, utf8proc_int32_t *cp, size_t *bytes) {
-  unsigned char lead = str[index];
-  if (lead < 0x80) {
-    *cp = lead;
-    *bytes = 1;
-    return true;
-  }
-
-  if ((lead & 0xE0) == 0xC0) {
-    if (index + 1 >= len || !is_utf8_continuation(str[index + 1])) {
-      return false;
-    }
-    uint32_t value = ((lead & 0x1F) << 6) | (str[index + 1] & 0x3F);
-    if (value < 0x80) {
-      return false;
-    }
-    *cp = static_cast<utf8proc_int32_t>(value);
-    *bytes = 2;
-    return true;
-  }
-
-  if ((lead & 0xF0) == 0xE0) {
-    if (index + 2 >= len || !is_utf8_continuation(str[index + 1]) ||
-        !is_utf8_continuation(str[index + 2])) {
-      return false;
-    }
-    uint32_t value = ((lead & 0x0F) << 12) | ((str[index + 1] & 0x3F) << 6) |
-                     (str[index + 2] & 0x3F);
-    if (value < 0x800 || (value >= 0xD800 && value <= 0xDFFF)) {
-      return false;
-    }
-    *cp = static_cast<utf8proc_int32_t>(value);
-    *bytes = 3;
-    return true;
-  }
-
-  if ((lead & 0xF8) == 0xF0) {
-    if (index + 3 >= len || !is_utf8_continuation(str[index + 1]) ||
-        !is_utf8_continuation(str[index + 2]) ||
-        !is_utf8_continuation(str[index + 3])) {
-      return false;
-    }
-    uint32_t value = ((lead & 0x07) << 18) | ((str[index + 1] & 0x3F) << 12) |
-                     ((str[index + 2] & 0x3F) << 6) | (str[index + 3] & 0x3F);
-    if (value < 0x10000 || value > kUnicodeMaxCodepoint) {
-      return false;
-    }
-    *cp = static_cast<utf8proc_int32_t>(value);
-    *bytes = 4;
-    return true;
-  }
-
-  return false;
-}
-
-WordBreakClass classify_codepoint(utf8proc_int32_t cp) {
+WordBreakClass classify_codepoint(int32_t cp) {
   uint32_t codepoint = static_cast<uint32_t>(cp);
   if (codepoint <= 0x7F) {
     return lookup_ascii_word_break_class(codepoint);
@@ -431,7 +370,7 @@ WordBreakClass classify_codepoint(utf8proc_int32_t cp) {
 
 CodepointProperties lookup_codepoint_properties(uint32_t codepoint) {
   CodepointProperties props;
-  props.cls = classify_codepoint(static_cast<utf8proc_int32_t>(codepoint));
+  props.cls = classify_codepoint(static_cast<int32_t>(codepoint));
   props.extended_pictographic =
       props.cls == WordBreakClass::ExtendedPictographic;
   if (!props.extended_pictographic && codepoint >= 0x00A9) {
@@ -467,19 +406,19 @@ std::array<CodepointCacheEntry, kCodepointCacheSize> *codepoint_cache() {
   return &cache;
 }
 
-std::vector<Codepoint> decode_utf8(const std::string &text) {
-  std::vector<Codepoint> codepoints;
+std::vector<StandardCodepoint> decode_standard_utf8(const std::string &text) {
+  std::vector<StandardCodepoint> codepoints;
   codepoints.reserve(estimate_codepoint_capacity(text.size()));
   auto *cache = codepoint_cache();
-  const auto *str = reinterpret_cast<const utf8proc_uint8_t *>(text.data());
+  const auto *data = reinterpret_cast<const uint8_t *>(text.data());
   size_t len = text.size();
   size_t index = 0;
 
   while (index < len) {
-    utf8proc_int32_t cp;
+    int32_t cp = 0;
     size_t bytes = 0;
-    if (!decode_utf8_codepoint(str, len, index, &cp, &bytes)) {
-      Codepoint item;
+    if (!decode_utf8_codepoint(data, len, index, &cp, &bytes)) {
+      StandardCodepoint item;
       item.start = static_cast<uint32_t>(index);
       item.end = static_cast<uint32_t>(index + 1);
       item.cls = WordBreakClass::Other;
@@ -488,10 +427,11 @@ std::vector<Codepoint> decode_utf8(const std::string &text) {
       continue;
     }
 
-    Codepoint item;
+    StandardCodepoint item;
     item.cp = cp;
     item.start = static_cast<uint32_t>(index);
     item.end = static_cast<uint32_t>(index + bytes);
+    item.valid = true;
     uint32_t codepoint = static_cast<uint32_t>(cp);
     CodepointProperties props = get_codepoint_properties(codepoint, cache);
     item.cls = props.cls;
@@ -504,7 +444,7 @@ std::vector<Codepoint> decode_utf8(const std::string &text) {
   return codepoints;
 }
 
-size_t next_significant(const std::vector<Codepoint> &codepoints,
+size_t next_significant(const std::vector<StandardCodepoint> &codepoints,
                         size_t index) {
   while (index < codepoints.size() && is_ignored(codepoints[index].cls)) {
     ++index;
@@ -567,13 +507,13 @@ bool significant_connects(WordBreakClass left, WordBreakClass right) {
   return false;
 }
 
-bool is_keycap_base(const Codepoint &codepoint) {
+bool is_keycap_base(const StandardCodepoint &codepoint) {
   return (codepoint.cp >= '0' && codepoint.cp <= '9') || codepoint.cp == '#' ||
          codepoint.cp == '*';
 }
 
-size_t consume_extend_or_format(const std::vector<Codepoint> &codepoints,
-                                size_t index) {
+size_t consume_extend_or_format(
+    const std::vector<StandardCodepoint> &codepoints, size_t index) {
   while (index < codepoints.size() &&
          is_extend_or_format(codepoints[index].cls)) {
     ++index;
@@ -582,7 +522,7 @@ size_t consume_extend_or_format(const std::vector<Codepoint> &codepoints,
 }
 
 size_t consume_extend_format_and_modifier(
-    const std::vector<Codepoint> &codepoints, size_t index) {
+    const std::vector<StandardCodepoint> &codepoints, size_t index) {
   while (index < codepoints.size() &&
          is_extend_or_format(codepoints[index].cls)) {
     ++index;
@@ -593,7 +533,7 @@ size_t consume_extend_format_and_modifier(
   return index;
 }
 
-size_t scan_keycap_token(const std::vector<Codepoint> &codepoints,
+size_t scan_keycap_token(const std::vector<StandardCodepoint> &codepoints,
                          size_t start) {
   if (!is_keycap_base(codepoints[start])) {
     return start;
@@ -612,8 +552,8 @@ size_t scan_keycap_token(const std::vector<Codepoint> &codepoints,
   return consume_extend_or_format(codepoints, index + 1);
 }
 
-size_t scan_emoji_modifier_token(const std::vector<Codepoint> &codepoints,
-                                 size_t start) {
+size_t scan_emoji_modifier_token(
+    const std::vector<StandardCodepoint> &codepoints, size_t start) {
   if (codepoints[start].emoji_modifier) {
     return consume_extend_or_format(codepoints, start + 1);
   }
@@ -634,7 +574,7 @@ size_t scan_emoji_modifier_token(const std::vector<Codepoint> &codepoints,
   return consume_extend_or_format(codepoints, index + 1);
 }
 
-size_t scan_emoji_token(const std::vector<Codepoint> &codepoints,
+size_t scan_emoji_token(const std::vector<StandardCodepoint> &codepoints,
                         size_t start) {
   size_t index = consume_extend_format_and_modifier(codepoints, start + 1);
 
@@ -657,7 +597,7 @@ size_t scan_emoji_token(const std::vector<Codepoint> &codepoints,
   return index;
 }
 
-size_t scan_zwj_ext_pict_token(const std::vector<Codepoint> &codepoints,
+size_t scan_zwj_ext_pict_token(const std::vector<StandardCodepoint> &codepoints,
                                size_t start) {
   size_t index = start + 1;
   if (index >= codepoints.size() ||
@@ -667,8 +607,8 @@ size_t scan_zwj_ext_pict_token(const std::vector<Codepoint> &codepoints,
   return scan_emoji_token(codepoints, index);
 }
 
-size_t scan_regional_indicator_token(const std::vector<Codepoint> &codepoints,
-                                     size_t start) {
+size_t scan_regional_indicator_token(
+    const std::vector<StandardCodepoint> &codepoints, size_t start) {
   size_t index = start + 1;
   while (index < codepoints.size() && is_ignored(codepoints[index].cls)) {
     ++index;
@@ -683,7 +623,7 @@ size_t scan_regional_indicator_token(const std::vector<Codepoint> &codepoints,
   return index;
 }
 
-size_t scan_single_token(const std::vector<Codepoint> &codepoints,
+size_t scan_single_token(const std::vector<StandardCodepoint> &codepoints,
                          size_t start) {
   size_t index = start + 1;
   while (index < codepoints.size() && is_ignored(codepoints[index].cls)) {
@@ -692,7 +632,8 @@ size_t scan_single_token(const std::vector<Codepoint> &codepoints,
   return index;
 }
 
-size_t scan_word_token(const std::vector<Codepoint> &codepoints, size_t start) {
+size_t scan_word_token(const std::vector<StandardCodepoint> &codepoints,
+                       size_t start) {
   size_t end = start + 1;
   size_t last_sig = start;
 
@@ -745,8 +686,8 @@ size_t scan_word_token(const std::vector<Codepoint> &codepoints, size_t start) {
   return end;
 }
 
-bool span_has_core_token(const std::vector<Codepoint> &codepoints, size_t start,
-                         size_t end) {
+bool span_has_core_token(const std::vector<StandardCodepoint> &codepoints,
+                         size_t start, size_t end) {
   for (size_t index = start; index < end; ++index) {
     WordBreakClass cls = codepoints[index].cls;
     if (is_token_start(cls)) {
@@ -756,7 +697,7 @@ bool span_has_core_token(const std::vector<Codepoint> &codepoints, size_t start,
   return false;
 }
 
-size_t trim_non_core_suffix(const std::vector<Codepoint> &codepoints,
+size_t trim_non_core_suffix(const std::vector<StandardCodepoint> &codepoints,
                             size_t start, size_t end) {
   size_t trimmed = end;
   while (trimmed > start) {
@@ -770,7 +711,7 @@ size_t trim_non_core_suffix(const std::vector<Codepoint> &codepoints,
 }
 
 void emit_non_empty_core_span(const std::string &text,
-                              const std::vector<Codepoint> &codepoints,
+                              const std::vector<StandardCodepoint> &codepoints,
                               size_t start, size_t end, uint32_t *position,
                               std::vector<Token> *tokens) {
   if (start >= end || !span_has_core_token(codepoints, start, end)) {
@@ -785,9 +726,9 @@ void emit_non_empty_core_span(const std::string &text,
 }
 
 void emit_token_span(const std::string &text,
-                     const std::vector<Codepoint> &codepoints, size_t start,
-                     size_t end, uint32_t max_token_length, uint32_t *position,
-                     std::vector<Token> *tokens) {
+                     const std::vector<StandardCodepoint> &codepoints,
+                     size_t start, size_t end, uint32_t max_token_length,
+                     uint32_t *position, std::vector<Token> *tokens) {
   if (end - start <= max_token_length) {
     Token token;
     token.text = text.substr(codepoints[start].start,
@@ -989,24 +930,24 @@ std::vector<Token> tokenize_ascii(const std::string &text,
 
 }  // namespace
 
-bool StandardTokenizer::init(const ailego::JsonObject &config) {
+Status StandardTokenizer::init(const ailego::JsonObject &config) {
   max_token_length_ = kDefaultMaxTokenLength;
   auto length_val = config["max_token_length"];
   if (!length_val.is_null()) {
     if (!length_val.is_integer()) {
-      LOG_ERROR("StandardTokenizer: max_token_length must be integer");
-      return false;
+      return Status::InvalidArgument(
+          "StandardTokenizer: max_token_length must be integer");
     }
     auto configured_length = length_val.as_integer();
     if (configured_length < kMinMaxTokenLength ||
         configured_length > kMaxMaxTokenLength) {
-      LOG_ERROR("StandardTokenizer: max_token_length out of range: %zu",
-                (size_t)configured_length);
-      return false;
+      return Status::InvalidArgument(
+          "StandardTokenizer: max_token_length out of range: ",
+          configured_length);
     }
     max_token_length_ = static_cast<uint32_t>(configured_length);
   }
-  return true;
+  return Status::OK();
 }
 
 std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
@@ -1017,7 +958,7 @@ std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
   std::vector<Token> tokens;
   tokens.reserve(estimate_token_capacity(text.size()));
   uint32_t position = 0;
-  std::vector<Codepoint> codepoints = decode_utf8(text);
+  std::vector<StandardCodepoint> codepoints = decode_standard_utf8(text);
 
   size_t index = 0;
   while (index < codepoints.size()) {

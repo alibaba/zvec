@@ -52,13 +52,14 @@ class TokenizerFactory {
    *                 and extra_params (JSON string for tokenizer-specific
    *                 configuration). The stemmer filter reads stemmer_lang from
    *                 extra_params and uses Snowball English by default.
-   *  \return        Tokenizer pipeline, returns nullptr on failure
+   *  \return        Tokenizer pipeline, or a detailed error status.
    */
-  static TokenizerPipelinePtr create(const FtsIndexParams &params);
+  static Result<TokenizerPipelinePtr> create(const FtsIndexParams &params);
 
  private:
-  static TokenizerPtr create_tokenizer(const std::string &tokenizer_name,
-                                       const ailego::JsonObject &extra_json);
+  static Status create_tokenizer(const std::string &tokenizer_name,
+                                 const ailego::JsonObject &extra_json,
+                                 TokenizerPtr *tokenizer);
   static TokenFilterPtr create_filter(const std::string &filter_name);
 };
 
