@@ -18,7 +18,7 @@
 #include <vector>
 #include <ailego/math/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include "core/quantizer/record_quantizer.h"
 
 namespace zvec {

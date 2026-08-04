@@ -24,7 +24,7 @@
 #include <ailego/utility/bitset_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_error.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
 namespace core {

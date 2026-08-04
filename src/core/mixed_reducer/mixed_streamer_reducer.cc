@@ -20,7 +20,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec {

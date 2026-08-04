@@ -17,7 +17,7 @@
 #include <vector>
 #include <zvec/ailego/hash/crc32c.h>
 #include "zvec/core/framework/index_error.h"
-#include "zvec/core/framework/index_logger.h"
+#include "zvec/ailego/logger/logger.h"
 #include "fht_rotator.h"
 #include "matrix_rotator.h"
 

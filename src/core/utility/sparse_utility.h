@@ -18,7 +18,7 @@
 #include <numeric>
 #include <vector>
 #include <zvec/core/framework/index_document.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
