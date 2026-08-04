@@ -63,9 +63,6 @@ struct ConsoleLogger : public Logger {
   }
 };
 
-//! Logger Level — now a Meyers singleton in logger.h
-//! Logger — now a Meyers singleton in logger.h
-
 //! Initialize default Console Logger (trivial destructor, no __cxa_atexit)
 namespace {
 struct DefaultLoggerInitializer {
