@@ -166,8 +166,8 @@ Status SegmentManager::drop_column(const std::string &column_name) {
   std::vector<Segment::Ptr> segments;
   {
     std::shared_lock<std::shared_mutex> lock(mutex_);
-    for (auto &[segment_id, segment] : segments_map_) {
-      segments.push_back(segment);
+    for (auto &pair : segments_map_) {
+      segments.push_back(pair.second);
     }
   }
 

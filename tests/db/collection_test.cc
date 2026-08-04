@@ -3027,14 +3027,19 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       query.topk_ = 10;
       query.target_.field_name_ = "dense_fp32";
       query.target_.set_vector(
-          std::string((char *)vector.value().data(),
+          std::string(reinterpret_cast<const char *>(vector.value().data()),
                       vector.value().size() * sizeof(float)));
       auto result = collection->Query(query);
       if (!result.has_value()) {
-        // Tolerated: a doc admitted by the writing segment's streaming
-        // vector index may not yet be visible in its forward store,
-        // transiently failing the query. Pre-existing Insert/Query race,
-        // unrelated to Optimize.
+        // Tolerate only the known transient failure: a doc admitted by
+        // the writing segment's streaming vector index may not yet be
+        // visible in its forward store (pre-existing Insert/Query race,
+        // unrelated to Optimize). Any other error is a real regression.
+        const auto &error_msg = result.error().message();
+        if (error_msg.find("fetch table failed") == std::string::npos) {
+          record_error(&query_result, error_msg);
+          break;
+        }
         continue;
       }
       if (result.value().empty()) {
@@ -3072,8 +3077,9 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
     SearchQuery query;
     query.topk_ = 10;
     query.target_.field_name_ = "dense_fp32";
-    query.target_.set_vector(std::string(
-        (char *)vector.value().data(), vector.value().size() * sizeof(float)));
+    query.target_.set_vector(
+        std::string(reinterpret_cast<const char *>(vector.value().data()),
+                    vector.value().size() * sizeof(float)));
     auto result = collection->Query(query);
     ASSERT_TRUE(result.has_value());
     ASSERT_EQ(result.value().size(), (size_t)query.topk_);
