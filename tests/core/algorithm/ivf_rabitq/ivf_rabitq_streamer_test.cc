@@ -15,6 +15,7 @@
 #include "ivf_rabitq_streamer.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -22,6 +23,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <rabitqlib/quantization/data_layout.hpp>
+#include "algorithm/hnsw_rabitq/rabitq_utils.h"
 #include "zvec/ailego/container/params.h"
 #include "zvec/ailego/logger/logger.h"
 #include "zvec/ailego/utility/file_helper.h"
@@ -76,6 +78,26 @@ IndexHolder::Pointer BuildHolder(size_t dim, size_t doc_cnt) {
   for (size_t i = 0; i < doc_cnt; i++) {
     NumericalVector<float> vec(dim);
     FillTestVector(i, &vec);
+    EXPECT_TRUE(holder->emplace(i, vec));
+  }
+  return holder;
+}
+
+IndexHolder::Pointer BuildDirectionalHolder(size_t dim, size_t doc_cnt) {
+  auto holder =
+      make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dim);
+  for (size_t i = 0; i < doc_cnt; ++i) {
+    NumericalVector<float> vec(dim);
+    float norm_sq = 0.0f;
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = std::sin(static_cast<float>((i + 1) * (j + 3)) * 0.017f) +
+               std::cos(static_cast<float>((i + 5) * (j + 1)) * 0.011f);
+      norm_sq += vec[j] * vec[j];
+    }
+    const float inverse_norm = 1.0f / std::sqrt(norm_sq);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] *= inverse_norm;
+    }
     EXPECT_TRUE(holder->emplace(i, vec));
   }
   return holder;
@@ -207,13 +229,15 @@ void BuildLoadedReformer(const IndexMeta &rabitq_meta,
                          const std::string &metric_name,
                          const IndexHolder::Pointer &holder,
                          const std::string &file_id,
-                         std::shared_ptr<IvfRabitqReformer> *out_reformer) {
+                         std::shared_ptr<IvfRabitqReformer> *out_reformer,
+                         std::vector<float> *rotated_centroids = nullptr,
+                         uint32_t num_clusters = 16U) {
   ASSERT_NE(nullptr, out_reformer);
 
   RabitqConverter converter;
   ailego::Params params;
   params.set(PARAM_RABITQ_TOTAL_BITS, 7U);
-  params.set(PARAM_RABITQ_NUM_CLUSTERS, 16U);
+  params.set(PARAM_RABITQ_NUM_CLUSTERS, num_clusters);
   ASSERT_EQ(0, converter.init(rabitq_meta, params));
   ASSERT_EQ(0, converter.train(holder));
 
@@ -230,6 +254,23 @@ void BuildLoadedReformer(const IndexMeta &rabitq_meta,
   ASSERT_NE(nullptr, memory_storage);
   ASSERT_EQ(0, memory_storage->open(file_id, false));
   ASSERT_EQ(0, reformer->load(memory_storage));
+  if (rotated_centroids) {
+    auto segment = memory_storage->get(RABITQ_CONVERTER_SEG_ID);
+    ASSERT_NE(nullptr, segment);
+    const void *header_data = nullptr;
+    ASSERT_EQ(sizeof(RabitqConverterHeader),
+              segment->read(0, &header_data, sizeof(RabitqConverterHeader)));
+    const auto *header =
+        static_cast<const RabitqConverterHeader *>(header_data);
+    const size_t centroid_count =
+        static_cast<size_t>(header->num_clusters) * header->padded_dim;
+    const void *centroid_data = nullptr;
+    ASSERT_EQ(centroid_count * sizeof(float),
+              segment->read(sizeof(RabitqConverterHeader), &centroid_data,
+                            centroid_count * sizeof(float)));
+    const auto *centroids = static_cast<const float *>(centroid_data);
+    rotated_centroids->assign(centroids, centroids + centroid_count);
+  }
   IndexMemory::Instance()->remove(file_id);
 
   *out_reformer = reformer;
@@ -538,9 +579,9 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   context.set_group_by([](uint64_t key) { return std::to_string(key % 3U); });
   context.set_group_params(/*group_num=*/3, /*group_topk=*/2);
   context.query_state.rotated_query.push_back(1.0f);
-  context.query_state.centroid_norms.push_back(2.0f);
+  context.query_state.query_norm_sq = 2.0f;
   context.query_state.batch_query = std::make_shared<int>(1);
-  context.probe_centroids.push_back(3U);
+  context.probe_centroids.push_back({3U, 2.0f, 1.0f});
 
   ASSERT_TRUE(context.fetch_vector());
   ASSERT_TRUE(context.filter().is_valid());
@@ -555,7 +596,7 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   EXPECT_FALSE(context.group_by().is_valid());
   EXPECT_EQ(std::numeric_limits<float>::max(), context.threshold());
   EXPECT_TRUE(context.query_state.rotated_query.empty());
-  EXPECT_TRUE(context.query_state.centroid_norms.empty());
+  EXPECT_FLOAT_EQ(0.0f, context.query_state.query_norm_sq);
   EXPECT_EQ(nullptr, context.query_state.batch_query);
   EXPECT_TRUE(context.probe_centroids.empty());
 }
@@ -563,7 +604,7 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
 TEST_F(IvfRabitqStreamerTest, TestProbeCentroidsUseAssignmentMetric) {
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kDim);
   meta.set_metric("InnerProduct", 0, ailego::Params());
-  auto holder = BuildHolder(kDim, 1000UL);
+  auto holder = BuildDirectionalHolder(kDim, 1000UL);
 
   std::shared_ptr<IvfRabitqReformer> reformer;
   BuildLoadedReformer(meta, "InnerProduct", holder,
@@ -631,6 +672,158 @@ TEST_F(IvfRabitqStreamerTest, TestCosineProbeCentroidsUseInnerProductMetric) {
   ASSERT_EQ(0, reformer->select_probe_centroids(query, 1, &probe_centroids));
   ASSERT_EQ(1UL, probe_centroids.size());
   EXPECT_EQ(assigned, probe_centroids[0]);
+}
+
+TEST_F(IvfRabitqStreamerTest,
+       TestInnerProductProbeReusesCoarseScoreForCentroidPreparation) {
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDim);
+  meta.set_metric("InnerProduct", 0, ailego::Params());
+  auto holder = BuildDirectionalHolder(kDim, 1000UL);
+
+  std::shared_ptr<IvfRabitqReformer> reformer;
+  std::vector<float> rotated_centroids;
+  BuildLoadedReformer(
+      meta, "InnerProduct", holder,
+      dir_ + "/TestInnerProductProbeReusesCoarseScoreForCentroidPreparation",
+      &reformer, &rotated_centroids, 4U);
+  ASSERT_NE(nullptr, reformer);
+
+  NumericalVector<float> query(kDim);
+  FillTestVector(97, &query);
+  for (size_t i = 0; i < query.dimension(); ++i) {
+    query[i] *= 3.0f;
+  }
+  IvfRabitqQueryState state;
+  ASSERT_EQ(0, reformer->create_query_state(query.data(), &state));
+
+  std::vector<IvfRabitqProbeCentroid> probes;
+  ASSERT_EQ(0,
+            reformer->select_probe_centroids(query.data(), 3, &state, &probes));
+  ASSERT_EQ(3UL, probes.size());
+
+  std::vector<std::pair<float, uint32_t>> expected;
+  const size_t centroid_count =
+      rotated_centroids.size() / reformer->padded_dim();
+  expected.reserve(centroid_count);
+  for (size_t id = 0; id < centroid_count; ++id) {
+    const float *centroid =
+        rotated_centroids.data() + id * reformer->padded_dim();
+    float inner_product = 0.0f;
+    for (size_t i = 0; i < reformer->padded_dim(); ++i) {
+      inner_product += state.rotated_query[i] * centroid[i];
+    }
+    expected.emplace_back(-inner_product, static_cast<uint32_t>(id));
+  }
+  std::sort(expected.begin(), expected.end());
+
+  for (const auto &probe : probes) {
+    const float *centroid =
+        rotated_centroids.data() + probe.id * reformer->padded_dim();
+    float direct_dist_sq = 0.0f;
+    float direct_ip = 0.0f;
+    for (size_t i = 0; i < reformer->padded_dim(); ++i) {
+      const float diff = state.rotated_query[i] - centroid[i];
+      direct_dist_sq += diff * diff;
+      direct_ip += state.rotated_query[i] * centroid[i];
+    }
+    EXPECT_NEAR(std::sqrt(direct_dist_sq), probe.residual_norm, 1e-4f);
+    EXPECT_NEAR(direct_ip, probe.inner_product, 1e-4f);
+    EXPECT_EQ(0, reformer->prepare_for_cluster(probe, &state));
+  }
+  for (size_t i = 0; i < probes.size(); ++i) {
+    EXPECT_EQ(expected[i].second, probes[i].id);
+  }
+
+  std::vector<uint32_t> legacy_ids;
+  ASSERT_EQ(0, reformer->select_probe_centroids(query.data(), 3, &legacy_ids));
+  ASSERT_EQ(probes.size(), legacy_ids.size());
+  for (size_t i = 0; i < probes.size(); ++i) {
+    EXPECT_EQ(probes[i].id, legacy_ids[i]);
+  }
+
+  std::vector<IvfRabitqProbeCentroid> single_probe;
+  ASSERT_EQ(0, reformer->select_probe_centroids(query.data(), 1, &state,
+                                                &single_probe));
+  ASSERT_EQ(1UL, single_probe.size());
+  EXPECT_EQ(expected[0].second, single_probe[0].id);
+  const float *single_centroid =
+      rotated_centroids.data() + single_probe[0].id * reformer->padded_dim();
+  float single_dist_sq = 0.0f;
+  float single_ip = 0.0f;
+  for (size_t i = 0; i < reformer->padded_dim(); ++i) {
+    const float diff = state.rotated_query[i] - single_centroid[i];
+    single_dist_sq += diff * diff;
+    single_ip += state.rotated_query[i] * single_centroid[i];
+  }
+  EXPECT_NEAR(std::sqrt(single_dist_sq), single_probe[0].residual_norm, 1e-4f);
+  EXPECT_NEAR(single_ip, single_probe[0].inner_product, 1e-4f);
+
+  NumericalVector<float> zero_query(kDim);
+  std::fill(zero_query.data(), zero_query.data() + zero_query.dimension(),
+            0.0f);
+  IvfRabitqQueryState zero_state;
+  ASSERT_EQ(0, reformer->create_query_state(zero_query.data(), &zero_state));
+  ASSERT_EQ(0, reformer->select_probe_centroids(zero_query.data(), 3,
+                                                &zero_state, &probes));
+  ASSERT_EQ(3UL, probes.size());
+  for (const auto &probe : probes) {
+    EXPECT_TRUE(std::isfinite(probe.residual_norm));
+    EXPECT_FLOAT_EQ(0.0f, probe.inner_product);
+    EXPECT_EQ(0, reformer->prepare_for_cluster(probe, &zero_state));
+  }
+}
+
+TEST_F(IvfRabitqStreamerTest, TestL2ProbeCarriesCoarseResidualNorm) {
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDim);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto holder = BuildDirectionalHolder(kDim, 1000UL);
+
+  std::shared_ptr<IvfRabitqReformer> reformer;
+  std::vector<float> rotated_centroids;
+  BuildLoadedReformer(meta, "SquaredEuclidean", holder,
+                      dir_ + "/TestL2ProbeCarriesCoarseResidualNorm", &reformer,
+                      &rotated_centroids);
+  ASSERT_NE(nullptr, reformer);
+
+  NumericalVector<float> query(kDim);
+  FillTestVector(101, &query);
+  IvfRabitqQueryState state;
+  ASSERT_EQ(0, reformer->create_query_state(query.data(), &state));
+
+  std::vector<IvfRabitqProbeCentroid> probes;
+  ASSERT_EQ(0,
+            reformer->select_probe_centroids(query.data(), 4, &state, &probes));
+  ASSERT_EQ(4UL, probes.size());
+  std::vector<std::pair<float, uint32_t>> expected;
+  const size_t centroid_count =
+      rotated_centroids.size() / reformer->padded_dim();
+  expected.reserve(centroid_count);
+  for (size_t id = 0; id < centroid_count; ++id) {
+    const float *centroid =
+        rotated_centroids.data() + id * reformer->padded_dim();
+    float direct_dist_sq = 0.0f;
+    for (size_t i = 0; i < reformer->padded_dim(); ++i) {
+      const float diff = state.rotated_query[i] - centroid[i];
+      direct_dist_sq += diff * diff;
+    }
+    expected.emplace_back(direct_dist_sq, static_cast<uint32_t>(id));
+  }
+  std::sort(expected.begin(), expected.end());
+  for (const auto &probe : probes) {
+    const float *centroid =
+        rotated_centroids.data() + probe.id * reformer->padded_dim();
+    float direct_dist_sq = 0.0f;
+    for (size_t i = 0; i < reformer->padded_dim(); ++i) {
+      const float diff = state.rotated_query[i] - centroid[i];
+      direct_dist_sq += diff * diff;
+    }
+    EXPECT_NEAR(std::sqrt(direct_dist_sq), probe.residual_norm, 1e-4f);
+    EXPECT_FLOAT_EQ(0.0f, probe.inner_product);
+    EXPECT_EQ(0, reformer->prepare_for_cluster(probe, &state));
+  }
+  for (size_t i = 0; i < probes.size(); ++i) {
+    EXPECT_EQ(expected[i].second, probes[i].id);
+  }
 }
 
 TEST_F(IvfRabitqStreamerTest, TestIncrementalAddUnsupported) {

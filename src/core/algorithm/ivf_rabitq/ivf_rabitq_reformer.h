@@ -57,8 +57,12 @@ class IvfRabitqReformer {
   //! Create a query state for searching
   int create_query_state(const float *query, IvfRabitqQueryState *state) const;
 
-  //! Prepare query state for a specific centroid cluster
-  //! This sets g_add / g_error in the batch_query for the given centroid
+  //! Prepare query state from a selected probe centroid.
+  //! This sets g_add / g_error without recomputing centroid distances.
+  int prepare_for_cluster(const IvfRabitqProbeCentroid &centroid,
+                          IvfRabitqQueryState *state) const;
+
+  //! Prepare an arbitrary centroid not selected by coarse search.
   int prepare_for_cluster(uint32_t centroid_id,
                           IvfRabitqQueryState *state) const;
 
@@ -80,9 +84,9 @@ class IvfRabitqReformer {
   //! Select top-n probe centroids using the same metric as build assignment.
   int select_probe_centroids(const float *query, size_t nprobe,
                              std::vector<uint32_t> *centroids) const;
-  int select_probe_centroids(const float *query, size_t nprobe,
-                             IvfRabitqQueryState *state,
-                             std::vector<uint32_t> *centroids) const;
+  int select_probe_centroids(
+      const float *query, size_t nprobe, IvfRabitqQueryState *state,
+      std::vector<IvfRabitqProbeCentroid> *centroids) const;
 
   //! Accessors
   size_t num_clusters() const;

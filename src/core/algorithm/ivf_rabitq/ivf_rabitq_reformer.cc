@@ -112,6 +112,9 @@ struct IvfRabitqReformer::Impl {
   std::vector<float> centroids;
   // Rotated centroids: num_clusters * padded_dim (for quantization)
   std::vector<float> rotated_centroids;
+  // Squared norms of original centroids, used to derive residual norms from
+  // coarse InnerProduct scores.
+  std::vector<float> centroid_norm_sqs;
 
   rabitqlib::RotatorType rotator_type{rabitqlib::RotatorType::FhtKacRotator};
   std::unique_ptr<rabitqlib::Rotator<float>> rotator;
@@ -232,6 +235,12 @@ int IvfRabitqReformer::load(IndexStorage::Pointer storage) {
   impl_->centroids.resize(header.num_clusters * header.dim);
   memcpy(impl_->centroids.data(), block.data(), layout.centroids_size);
   offset += size;
+  impl_->centroid_norm_sqs.resize(header.num_clusters);
+  for (size_t i = 0; i < header.num_clusters; ++i) {
+    const float *centroid = impl_->centroids.data() + i * header.dim;
+    impl_->centroid_norm_sqs[i] =
+        std::inner_product(centroid, centroid + header.dim, centroid, 0.0f);
+  }
 
   // Read rotator
   size = segment->read(offset, block, layout.rotator_size);
@@ -426,6 +435,8 @@ int IvfRabitqReformer::create_query_state(const float *query,
   // Rotate query
   state->rotated_query.resize(impl_->padded_dim);
   impl_->rotator->rotate(query, state->rotated_query.data());
+  state->query_norm_sq =
+      std::inner_product(query, query + impl_->dimension, query, 0.0f);
 
   // Create SplitBatchQuery on first use, then reuse its LUT buffers.
   auto batch_query =
@@ -441,8 +452,28 @@ int IvfRabitqReformer::create_query_state(const float *query,
                        impl_->ex_bits, impl_->metric_type, true /* use_hacc */);
   }
 
-  state->centroid_norms.assign(impl_->num_clusters,
-                               std::numeric_limits<float>::quiet_NaN());
+  return 0;
+}
+
+int IvfRabitqReformer::prepare_for_cluster(
+    const IvfRabitqProbeCentroid &centroid, IvfRabitqQueryState *state) const {
+  if (!impl_->is_loaded || !state || !state->batch_query) {
+    return IndexError_NoReady;
+  }
+  if (centroid.id >= impl_->num_clusters) {
+    LOG_ERROR("Invalid centroid_id=%zu, num_clusters=%zu", (size_t)centroid.id,
+              impl_->num_clusters);
+    return IndexError_OutOfRange;
+  }
+
+  auto *bq = static_cast<rabitqlib::SplitBatchQuery<float> *>(
+      state->batch_query.get());
+
+  if (impl_->metric_type == rabitqlib::METRIC_L2) {
+    bq->set_g_add(centroid.residual_norm);
+  } else {
+    bq->set_g_add(centroid.residual_norm, centroid.inner_product);
+  }
 
   return 0;
 }
@@ -458,30 +489,19 @@ int IvfRabitqReformer::prepare_for_cluster(uint32_t centroid_id,
     return IndexError_OutOfRange;
   }
 
-  auto *bq = static_cast<rabitqlib::SplitBatchQuery<float> *>(
-      state->batch_query.get());
-
-  float centroid_norm = state->centroid_norms[centroid_id];
-  if (!std::isfinite(centroid_norm)) {
-    centroid_norm = std::sqrt(rabitqlib::euclidean_sqr(
-        state->rotated_query.data(),
-        impl_->rotated_centroids.data() + (centroid_id * impl_->padded_dim),
-        impl_->padded_dim));
-    state->centroid_norms[centroid_id] = centroid_norm;
+  const float *centroid =
+      impl_->rotated_centroids.data() + centroid_id * impl_->padded_dim;
+  IvfRabitqProbeCentroid probe;
+  probe.id = centroid_id;
+  probe.residual_norm =
+      std::sqrt(std::max(rabitqlib::euclidean_sqr(state->rotated_query.data(),
+                                                  centroid, impl_->padded_dim),
+                         0.0f));
+  if (impl_->metric_type == rabitqlib::METRIC_IP) {
+    probe.inner_product = rabitqlib::dot_product(state->rotated_query.data(),
+                                                 centroid, impl_->padded_dim);
   }
-
-  if (impl_->metric_type == rabitqlib::METRIC_L2) {
-    bq->set_g_add(centroid_norm);
-  } else {
-    // Compute dot_product on demand for the selected centroid only
-    float ip = rabitqlib::dot_product(
-        state->rotated_query.data(),
-        impl_->rotated_centroids.data() + (centroid_id * impl_->padded_dim),
-        impl_->padded_dim);
-    bq->set_g_add(centroid_norm, ip);
-  }
-
-  return 0;
+  return prepare_for_cluster(probe, state);
 }
 
 int IvfRabitqReformer::rotate_vector(const float *input, float *output) const {
@@ -532,16 +552,37 @@ uint32_t IvfRabitqReformer::find_nearest_centroid(const float *vector) const {
 
 int IvfRabitqReformer::select_probe_centroids(
     const float *query, size_t nprobe, std::vector<uint32_t> *centroids) const {
-  return select_probe_centroids(query, nprobe, nullptr, centroids);
+  if (!centroids) {
+    return IndexError_InvalidArgument;
+  }
+  IvfRabitqQueryState state;
+  if (query) {
+    state.query_norm_sq =
+        std::inner_product(query, query + impl_->dimension, query, 0.0f);
+  }
+  std::vector<IvfRabitqProbeCentroid> probes;
+  int ret = select_probe_centroids(query, nprobe, &state, &probes);
+  if (ret != 0) {
+    return ret;
+  }
+  centroids->clear();
+  centroids->reserve(probes.size());
+  for (const auto &probe : probes) {
+    centroids->push_back(probe.id);
+  }
+  return 0;
 }
 
 int IvfRabitqReformer::select_probe_centroids(
     const float *query, size_t nprobe, IvfRabitqQueryState *state,
-    std::vector<uint32_t> *centroids) const {
+    std::vector<IvfRabitqProbeCentroid> *centroids) const {
   if (!impl_->is_loaded || impl_->num_clusters == 0) {
     return IndexError_NoReady;
   }
   if (!query || !centroids) {
+    return IndexError_InvalidArgument;
+  }
+  if (!state) {
     return IndexError_InvalidArgument;
   }
   if (!impl_->centroid_distance_func) {
@@ -562,11 +603,18 @@ int IvfRabitqReformer::select_probe_centroids(
       LOG_ERROR("Failed to seek probe centroid, ret=%d", ret);
       return ret;
     }
-    centroids->push_back(doc.index);
-    if (state && impl_->metric_type == rabitqlib::METRIC_L2 &&
-        state->centroid_norms.size() == impl_->num_clusters) {
-      state->centroid_norms[doc.index] = std::sqrt(std::max(doc.score, 0.0f));
+    IvfRabitqProbeCentroid probe;
+    probe.id = doc.index;
+    if (impl_->metric_type == rabitqlib::METRIC_L2) {
+      probe.residual_norm = std::sqrt(std::max(doc.score, 0.0f));
+    } else {
+      probe.inner_product = -doc.score;
+      const float residual_norm_sq = state->query_norm_sq +
+                                     impl_->centroid_norm_sqs[doc.index] -
+                                     2.0f * probe.inner_product;
+      probe.residual_norm = std::sqrt(std::max(residual_norm_sq, 0.0f));
     }
+    centroids->push_back(probe);
     return 0;
   }
 
@@ -600,12 +648,18 @@ int IvfRabitqReformer::select_probe_centroids(
   centroids->reserve(probe_count);
   for (size_t i = 0; i < probe_count; ++i) {
     uint32_t centroid_id = centroid_dists[i].id;
-    centroids->push_back(centroid_id);
-    if (state && impl_->metric_type == rabitqlib::METRIC_L2 &&
-        state->centroid_norms.size() == impl_->num_clusters) {
-      float dist = std::max(centroid_dists[i].dist, 0.0f);
-      state->centroid_norms[centroid_id] = std::sqrt(dist);
+    IvfRabitqProbeCentroid probe;
+    probe.id = centroid_id;
+    if (impl_->metric_type == rabitqlib::METRIC_L2) {
+      probe.residual_norm = std::sqrt(std::max(centroid_dists[i].dist, 0.0f));
+    } else {
+      probe.inner_product = -centroid_dists[i].dist;
+      const float residual_norm_sq = state->query_norm_sq +
+                                     impl_->centroid_norm_sqs[centroid_id] -
+                                     2.0f * probe.inner_product;
+      probe.residual_norm = std::sqrt(std::max(residual_norm_sq, 0.0f));
     }
+    centroids->push_back(probe);
   }
   return 0;
 }

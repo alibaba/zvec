@@ -369,9 +369,10 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
 
     for (uint32_t p = 0; p < probe_centroids.size() && scanned < max_scan;
          ++p) {
-      uint32_t cid = probe_centroids[p];
+      const auto &probe = probe_centroids[p];
+      uint32_t cid = probe.id;
 
-      ret = reformer_->prepare_for_cluster(cid, &query_state);
+      ret = reformer_->prepare_for_cluster(probe, &query_state);
       if (ret != 0) {
         LOG_ERROR("Failed to prepare for cluster %zu, ret=%d", (size_t)cid,
                   ret);
@@ -470,11 +471,12 @@ int IvfRabitqStreamer::search_group_by_impl_internal(
     heaps.clear();
     const auto &filter = ctx->filter();
     uint32_t scanned = 0;
-    for (uint32_t cluster_id : probe_centroids) {
+    for (const auto &probe : probe_centroids) {
+      const uint32_t cluster_id = probe.id;
       if (scanned >= max_scan) {
         break;
       }
-      ret = reformer_->prepare_for_cluster(cluster_id, &query_state);
+      ret = reformer_->prepare_for_cluster(probe, &query_state);
       if (ret != 0) {
         LOG_ERROR("Failed to prepare for cluster %zu, ret=%d",
                   (size_t)cluster_id, ret);

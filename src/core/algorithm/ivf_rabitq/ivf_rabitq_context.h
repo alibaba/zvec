@@ -30,13 +30,20 @@
 namespace zvec {
 namespace core {
 
+// Probe centroid selected by coarse search. The preparation values are carried
+// together with the centroid ID to avoid recomputing distances during scan.
+struct IvfRabitqProbeCentroid {
+  uint32_t id{0};
+  float residual_norm{0.0f};
+  float inner_product{0.0f};
+};
+
 // Opaque query state for IVF RaBitQ search.
-// Holds the rotated query, lazily computed centroid norms, and
-// the rabitqlib SplitBatchQuery object (via type-erased shared_ptr).
+// Holds the rotated query, its squared norm, and the rabitqlib
+// SplitBatchQuery object (via type-erased shared_ptr).
 struct IvfRabitqQueryState {
   std::vector<float> rotated_query;
-  // sqrt(||q_rot - c_rot||^2) for probed centroids, used by g_add.
-  std::vector<float> centroid_norms;
+  float query_norm_sq{0.0f};
   // Opaque pointer to rabitqlib::SplitBatchQuery<float>, managed by reformer
   std::shared_ptr<void> batch_query;
 };
@@ -110,7 +117,7 @@ class IvfRabitqContext : public IndexContext {
     result_heap_.clear();
     result_heap_.set_threshold(this->threshold());
     query_state.rotated_query.clear();
-    query_state.centroid_norms.clear();
+    query_state.query_norm_sq = 0.0f;
     query_state.batch_query.reset();
     probe_centroids.clear();
   }
@@ -337,7 +344,7 @@ class IvfRabitqContext : public IndexContext {
   // Per-query state (managed by search loop)
   // -----------------------------------------------------------------------
   IvfRabitqQueryState query_state;
-  std::vector<uint32_t> probe_centroids;
+  std::vector<IvfRabitqProbeCentroid> probe_centroids;
 
  private:
   struct GroupSearchState {
