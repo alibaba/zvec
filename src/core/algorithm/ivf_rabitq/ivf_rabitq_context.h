@@ -112,6 +112,7 @@ class IvfRabitqContext : public IndexContext {
     query_state.rotated_query.clear();
     query_state.centroid_norms.clear();
     query_state.batch_query.reset();
+    probe_centroids.clear();
   }
 
   //! Retrieve search result (first query)
@@ -336,6 +337,7 @@ class IvfRabitqContext : public IndexContext {
   // Per-query state (managed by search loop)
   // -----------------------------------------------------------------------
   IvfRabitqQueryState query_state;
+  std::vector<uint32_t> probe_centroids;
 
  private:
   struct GroupSearchState {

@@ -532,6 +532,7 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   context.query_state.rotated_query.push_back(1.0f);
   context.query_state.centroid_norms.push_back(2.0f);
   context.query_state.batch_query = std::make_shared<int>(1);
+  context.probe_centroids.push_back(3U);
 
   ASSERT_TRUE(context.fetch_vector());
   ASSERT_TRUE(context.filter().is_valid());
@@ -548,6 +549,7 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   EXPECT_TRUE(context.query_state.rotated_query.empty());
   EXPECT_TRUE(context.query_state.centroid_norms.empty());
   EXPECT_EQ(nullptr, context.query_state.batch_query);
+  EXPECT_TRUE(context.probe_centroids.empty());
 }
 
 TEST_F(IvfRabitqStreamerTest, TestProbeCentroidsUseAssignmentMetric) {

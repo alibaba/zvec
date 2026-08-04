@@ -343,7 +343,7 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
         (static_cast<size_t>(q) * qmeta.element_size()));
 
     // Create query state (rotate query and prepare per-query scan state)
-    IvfRabitqQueryState query_state;
+    auto &query_state = ctx->query_state;
     int ret = reformer_->create_query_state(q_vec, &query_state);
     if (ret != 0) {
       LOG_ERROR("Failed to create query state, ret=%d", ret);
@@ -351,7 +351,7 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
     }
 
     // Select probe centroids with the same metric used for build assignment.
-    std::vector<uint32_t> probe_centroids;
+    auto &probe_centroids = ctx->probe_centroids;
     ret = reformer_->select_probe_centroids(q_vec, nprobe, &query_state,
                                             &probe_centroids);
     if (ret != 0) {
@@ -453,13 +453,13 @@ int IvfRabitqStreamer::search_group_by_impl_internal(
     const float *query_vector = reinterpret_cast<const float *>(
         static_cast<const char *>(query) +
         (static_cast<size_t>(q) * qmeta.element_size()));
-    IvfRabitqQueryState query_state;
+    auto &query_state = ctx->query_state;
     int ret = reformer_->create_query_state(query_vector, &query_state);
     if (ret != 0) {
       return ret;
     }
 
-    std::vector<uint32_t> probe_centroids;
+    auto &probe_centroids = ctx->probe_centroids;
     ret = reformer_->select_probe_centroids(query_vector, nprobe, &query_state,
                                             &probe_centroids);
     if (ret != 0) {
@@ -540,7 +540,7 @@ int IvfRabitqStreamer::search_bf_by_p_keys_impl(
     const float *query_vector = reinterpret_cast<const float *>(
         static_cast<const char *>(query) +
         (static_cast<size_t>(q) * qmeta.element_size()));
-    IvfRabitqQueryState query_state;
+    auto &query_state = ctx->query_state;
     int ret = reformer_->create_query_state(query_vector, &query_state);
     if (ret != 0) {
       return ret;
