@@ -411,7 +411,7 @@ Result<std::string> CollectionImpl::Path() const {
 }
 
 Result<CollectionStats> CollectionImpl::Stats() const {
-  std::shared_lock lock(schema_handle_mtx_);
+  std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
@@ -452,7 +452,7 @@ Result<CollectionStats> CollectionImpl::Stats() const {
 }
 
 Result<CollectionSchema> CollectionImpl::Schema() const {
-  std::shared_lock lock(schema_handle_mtx_);
+  std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
@@ -460,7 +460,7 @@ Result<CollectionSchema> CollectionImpl::Schema() const {
 }
 
 Result<CollectionOptions> CollectionImpl::Options() const {
-  std::shared_lock lock(schema_handle_mtx_);
+  std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
