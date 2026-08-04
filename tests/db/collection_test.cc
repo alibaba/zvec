@@ -3009,6 +3009,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       } else if (!optimize_done.load()) {
         fetch_result.ops_during_optimize++;
       }
+      std::this_thread::yield();
     }
   });
 
@@ -3047,6 +3048,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       } else if (!optimize_done.load()) {
         query_result.ops_during_optimize++;
       }
+      std::this_thread::yield();
     }
   });
 
@@ -3085,10 +3087,15 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
     ASSERT_EQ(result.value().size(), (size_t)query.topk_);
   }
 
-  // spot-check data written before, during and after the optimize
-  for (uint64_t doc_id :
-       std::vector<uint64_t>{0, (uint64_t)initial_doc_count - 1,
-                             (uint64_t)initial_doc_count, next_doc_id - 1}) {
+  // spot-check data written before, during and after the optimize; docs
+  // beyond initial_doc_count only exist when the writer actually made
+  // progress during Optimize, so guard against a no-insert run
+  std::vector<uint64_t> spot_check_ids{0, (uint64_t)initial_doc_count - 1};
+  if (inserted > 0) {
+    spot_check_ids.push_back((uint64_t)initial_doc_count);
+    spot_check_ids.push_back(next_doc_id - 1);
+  }
+  for (uint64_t doc_id : spot_check_ids) {
     auto expect_doc = TestHelper::CreateDoc(doc_id, *schema);
     auto result = collection->Fetch({expect_doc.pk()});
     ASSERT_TRUE(result.has_value());
