@@ -24,9 +24,9 @@
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #endif
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
-#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_plugin.h"
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"

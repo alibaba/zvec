@@ -14,8 +14,8 @@
 
 #pragma once
 
-#include <zvec/ailego/pattern/factory.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/pattern/factory.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_converter.h>
