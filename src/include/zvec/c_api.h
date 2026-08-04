@@ -1173,7 +1173,7 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
  * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
- * Supported values are "standard", "jieba", and "whitespace".
+ * Supported values are "standard", "ngram", "jieba", and "whitespace".
  * @param filters Token filter names (NULL keeps current value). Supported
  * values are "lowercase", "ascii_folding", and "stemmer".
  * @param extra_params Additional tokenizer/filter parameters (NULL keeps
@@ -1182,6 +1182,12 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  * Tokenizers:
  *   standard:
  *     - "max_token_length" (positive integer).
+ *   ngram:
+ *     - "ngram_min" (positive integer, default 2).
+ *     - "ngram_max" (positive integer, default 2).
+ *     - "token_chars" (array of "letter", "digit", "whitespace",
+ *       "punctuation", "symbol"; default [] keeps all valid UTF-8
+ *       characters). custom_token_chars is not supported.
  *   jieba:
  *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
  *       hmm_model.utf8).

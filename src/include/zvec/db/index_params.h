@@ -718,7 +718,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
 
 /*
  * FTS (Full-Text Search) index params
- * Supported tokenizers: "standard", "jieba", "whitespace".
+ * Supported tokenizers: "standard", "ngram", "jieba", "whitespace".
  * Supported filters: "lowercase", "ascii_folding", "stemmer".
  *
  * extra_params must be either empty or a JSON object string. Supported keys are
@@ -726,6 +726,13 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *   Tokenizers:
  *     standard:
  *       - "max_token_length" (positive integer).
+ *     ngram:
+ *       - "ngram_min" (positive integer, default 2).
+ *       - "ngram_max" (positive integer, default 2).
+ *         ngram_max - ngram_min must not exceed 1.
+ *       - "token_chars" (array of "letter", "digit", "whitespace",
+ *         "punctuation", "symbol"; default [] keeps all valid UTF-8
+ *         characters). custom_token_chars is not supported.
  *     jieba:
  *       - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
  *         hmm_model.utf8).
