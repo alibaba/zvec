@@ -21,7 +21,7 @@
 #include <iostream>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 
 #define MAX_EVENTS 1024
 
