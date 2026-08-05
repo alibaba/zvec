@@ -45,12 +45,10 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 endif()
 
-# musl's default pthread stack is 128KB (glibc: 8MB). Raise the default
-# thread stack to 8MB via PT_GNU_STACK as defense in depth for C++
-# executables (tests, tools, examples). Note musl honors PT_GNU_STACK only
-# for binaries loaded at startup; dlopen'ed DSOs (e.g. the Python extension)
-# are ignored, so hot paths must not rely on large stack buffers anyway.
+# Detect musl libc. Some code paths need to avoid large stack buffers on musl
+# because its default thread stack is much smaller than glibc's (128KB vs 8MB).
 # Detection: musl's ldd prints "musl libc" to stderr.
+set(ZVEC_ON_MUSL FALSE CACHE BOOL "Building on musl libc" FORCE)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     execute_process(
         COMMAND ldd --version
@@ -58,10 +56,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ERROR_VARIABLE _zvec_ldd_stderr
     )
     if("${_zvec_ldd_stdout}${_zvec_ldd_stderr}" MATCHES "musl")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
-        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
-        message(STATUS "musl detected: default thread stack raised to 8MB via PT_GNU_STACK")
+        set(ZVEC_ON_MUSL TRUE CACHE BOOL "Building on musl libc" FORCE)
+        message(STATUS "musl libc detected")
     endif()
 endif()
 
