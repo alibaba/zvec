@@ -297,9 +297,7 @@ void MemoryLimitPool::stop_background_evictor() {
   if (!bg_running_.exchange(false)) {
     return;  // not running
   }
-  {
-    std::lock_guard<std::mutex> lk(bg_mutex_);
-  }
+  { std::lock_guard<std::mutex> lk(bg_mutex_); }
   bg_cv_.notify_all();
   if (bg_thread_.joinable()) {
     bg_thread_.join();
