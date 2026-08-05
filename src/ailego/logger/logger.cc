@@ -63,14 +63,10 @@ struct ConsoleLogger : public Logger {
   }
 };
 
-//! Initialize default Console Logger (trivial destructor, no __cxa_atexit)
-namespace {
-struct DefaultLoggerInitializer {
-  DefaultLoggerInitializer() {
-    LoggerBroker::Register(Logger::Pointer(new ConsoleLogger));
-  }
-} default_logger_init_;
-}  // anonymous namespace
+//! Default logger factory for the Meyers singleton in LoggerBroker.
+Logger::Pointer LoggerBroker::MakeDefaultLogger() {
+  return std::make_shared<ConsoleLogger>();
+}
 
 //! Register Console Logger in Factory
 FACTORY_REGISTER_LOGGER(ConsoleLogger);

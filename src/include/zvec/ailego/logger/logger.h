@@ -186,9 +186,13 @@ class ZVEC_AILEGO_API LoggerBroker {
     return logger_level;
   }
   static Logger::Pointer &LoggerInstance() {
-    static Logger::Pointer logger;
-    return logger;
+    static Logger::Pointer instance = MakeDefaultLogger();
+    return instance;
   }
+
+  //! Factory for the default logger used to initialize the Meyers singleton.
+  //! Defined in logger.cc so the concrete ConsoleLogger type stays private.
+  static Logger::Pointer MakeDefaultLogger();
 };
 
 }  // namespace ailego
