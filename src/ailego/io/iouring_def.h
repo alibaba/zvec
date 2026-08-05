@@ -63,10 +63,11 @@
 // io_uring_enter flags.
 #define IORING_ENTER_GETEVENTS (1U << 0)
 
-// io_uring_setup flags (none used by default).
-// IORING_SETUP_IOPOLL      (1U << 0)
-// IORING_SETUP_SQPOLL      (1U << 1)
-// IORING_SETUP_SQ_AFF      (1U << 2)
+// io_uring_params.features flags reported by io_uring_setup().
+// IORING_FEAT_RW_CUR_POS was introduced in Linux 5.6 — the same release
+// that added IORING_OP_READ — so its presence proves the kernel supports
+// the opcode our read path relies on.
+#define IORING_FEAT_RW_CUR_POS (1U << 3)
 
 // SQE opcode values.
 #define IORING_OP_NOP 0

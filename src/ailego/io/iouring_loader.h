@@ -15,8 +15,9 @@
 // Raw-syscall wrapper for Linux io_uring: queue lifecycle via
 // io_uring_setup/io_uring_enter + mmap, with zero dependency on liburing.
 //
-// setup() returns false when the kernel lacks io_uring (pre-5.1 or
-// disabled), letting callers fall back to libaio or pread.
+// setup() returns false when the kernel lacks the io_uring features we
+// need (pre-5.6, missing IORING_OP_READ, or disabled), letting callers
+// fall back to libaio or pread.
 //
 // Not thread-safe: each I/O thread must own its IoUringRing instance.
 

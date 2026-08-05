@@ -44,6 +44,17 @@ bool IoUringRing::setup(uint32_t entries) {
   sq_entries_ = params.sq_entries;
   cq_entries_ = params.cq_entries;
 
+  // The read path uses IORING_OP_READ (Linux 5.6+).  On older kernels
+  // (5.1–5.5) io_uring_setup() succeeds but every read would fail with
+  // -EINVAL, so reject the ring here and let callers fall back.
+  if ((params.features & IORING_FEAT_RW_CUR_POS) == 0) {
+    LOG_WARN(
+        "io_uring lacks IORING_OP_READ support (kernel < 5.6); falling "
+        "back");
+    teardown();
+    return false;
+  }
+
   // --- mmap the three shared regions ---
 
   // 1. SQ ring (includes head, tail, mask, entries, flags, dropped, array).

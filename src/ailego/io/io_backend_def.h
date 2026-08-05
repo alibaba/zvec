@@ -136,10 +136,12 @@ class IOBackend {
 
 #if defined(__linux) || defined(__linux__)
   // Probe io_uring availability with a minimal ring setup using only raw
-  // syscalls — no dependency on liburing.  A successful setup is
-  // sufficient: the read path uses IORING_OP_READV, which is part of the
-  // initial io_uring API (5.1), so any kernel that accepts
-  // io_uring_setup() also supports our reads.
+  // syscalls — no dependency on liburing.  A successful setup alone is NOT
+  // sufficient: io_uring_setup() exists since Linux 5.1, but the read path
+  // uses IORING_OP_READ, which was only added in 5.6.  We therefore also
+  // require IORING_FEAT_RW_CUR_POS in params.features — a feature flag
+  // introduced in the same 5.6 release — so kernels 5.1–5.5 fall back to
+  // libaio/pread instead of failing every read with -EINVAL.
   static bool io_uring_supported() {
     struct io_uring_params params;
     std::memset(&params, 0, sizeof(params));
@@ -148,7 +150,7 @@ class IOBackend {
       return false;
     }
     ::close(fd);
-    return true;
+    return (params.features & IORING_FEAT_RW_CUR_POS) != 0;
   }
 #endif
 
