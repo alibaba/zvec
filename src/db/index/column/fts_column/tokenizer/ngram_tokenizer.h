@@ -19,20 +19,22 @@
 
 namespace zvec::fts {
 
-/*! Standard tokenizer
- *  Unicode-aware tokenizer aligned with Elasticsearch's standard tokenizer.
- *  Uses a UAX #29 word-boundary profile with Lucene/Elasticsearch compatible
- *  token selection. CJK ideographs are emitted as individual single-character
- *  tokens.
+/*! NGram tokenizer
+ *  Unicode-aware tokenizer that emits UTF-8 codepoint ngrams. Consecutive
+ *  matching characters remain in the same base span so CJK ngrams can be
+ *  generated.
  */
-class StandardTokenizer : public Tokenizer {
+class NGramTokenizer : public Tokenizer {
  public:
   /*! Initialise from JSON config.
    *  Supported keys:
-   *    "max_token_length" (uint32, default 255, range [1, 1048576]): long
-   *      tokens are split into smaller segments. Combining marks and other
-   *      ignored word-break characters may stay attached to the previous
-   *      segment to avoid creating mark-only tokens.
+   *    "ngram_min" (positive integer, default 2): minimum ngram length.
+   *    "ngram_max" (positive integer, default 2): maximum ngram length.
+   *      ngram_max - ngram_min must not exceed 1.
+   *    "token_chars" (array of strings, default []): character classes included
+   *      in tokens. Supported classes are "letter", "digit", "whitespace",
+   *      "punctuation" and "symbol". Empty array keeps all valid UTF-8
+   *      characters.
    *  Returns an error status when the configuration is invalid.
    */
   Status init(const ailego::JsonObject &config) override;
@@ -40,12 +42,13 @@ class StandardTokenizer : public Tokenizer {
   std::vector<Token> tokenize(const std::string &text) const override;
 
   const char *name() const override {
-    return "standard";
+    return "ngram";
   }
 
  private:
-  // Word tokens with more codepoints than this value are split.
-  uint32_t max_token_length_{255};
+  uint32_t ngram_min_{2};
+  uint32_t ngram_max_{2};
+  uint32_t token_char_mask_{0};
 };
 
 }  // namespace zvec::fts
