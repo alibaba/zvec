@@ -113,7 +113,7 @@ int HNSWRabitqIndex::_prepare_for_search(
 
   context->set_topk(hnsw_search_param->topk);
   context->set_fetch_vector(hnsw_search_param->fetch_vector);
-  if (hnsw_search_param->filter) {
+  if (hnsw_search_param->filter && hnsw_search_param->filter->is_valid()) {
     context->set_filter(std::move(*hnsw_search_param->filter));
   }
   if (hnsw_search_param->radius > 0.0f) {
