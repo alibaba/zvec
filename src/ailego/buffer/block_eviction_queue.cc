@@ -297,7 +297,9 @@ void MemoryLimitPool::stop_background_evictor() {
   if (!bg_running_.exchange(false)) {
     return;  // not running
   }
-  { std::lock_guard<std::mutex> lk(bg_mutex_); }
+  {
+    std::lock_guard<std::mutex> lk(bg_mutex_);
+  }
   bg_cv_.notify_all();
   if (bg_thread_.joinable()) {
     bg_thread_.join();
@@ -480,7 +482,7 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   if (count == 0 || buffer_size == 0) return 0;
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-  size_t total_size = count * buffer_size;
+  size_t total_size = 0;
   size_t actual_count = count;
   size_t expected, desired;
   do {

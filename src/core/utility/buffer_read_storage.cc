@@ -19,6 +19,11 @@
 // indexes -- which are dumped via FileDumper -- benefit from the buffer-pool's
 // paged cache + LRU eviction + memory-budget control, while keeping the same
 // Segment interface that those indexes already consume.
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <new>
+#include <stdexcept>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/file_helper.h>
@@ -30,6 +35,34 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+bool ResolveContainerOffset(size_t file_size, int64_t configured_offset,
+                            bool zero_from_end, size_t *resolved_offset) {
+  const bool absolute =
+      configured_offset > 0 || (configured_offset == 0 && !zero_from_end);
+  if (absolute) {
+    const uint64_t value = static_cast<uint64_t>(configured_offset);
+    if (value > file_size) {
+      return false;
+    }
+    *resolved_offset = static_cast<size_t>(value);
+    return true;
+  }
+
+  const uint64_t distance =
+      configured_offset == 0
+          ? 0
+          : static_cast<uint64_t>(-(configured_offset + 1)) + 1;
+  if (distance > file_size) {
+    return false;
+  }
+  *resolved_offset = file_size - static_cast<size_t>(distance);
+  return true;
+}
+
+}  // namespace
 
 /*! Buffer Read Storage (backed by VecBufferPool)
  */
@@ -108,12 +141,7 @@ class BufferReadStorage : public IndexStorage {
 
     //! Fetch data from segment (copies into the caller-owned buffer)
     size_t fetch(size_t offset, void *buf, size_t len) const override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
-      }
+      len = clamp_length(&offset, len);
       if (len == 0) {
         return 0;
       }
@@ -130,12 +158,10 @@ class BufferReadStorage : public IndexStorage {
 
     //! Read data from segment (stable pointer via per-segment buffer)
     size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
+      if (ailego_unlikely(data == nullptr)) {
+        return 0;
       }
+      len = clamp_length(&offset, len);
       if (len == 0) {
         *data = buffer_.data();
         return 0;
@@ -156,18 +182,14 @@ class BufferReadStorage : public IndexStorage {
 
     //! Read data from segment into a MemoryBlock
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
       }
       size_t abs_offset = data_offset_ + offset;
-      size_t first_page = abs_offset / ailego::kVectorPageSize;
-      size_t last_page = (len == 0)
-                             ? first_page
-                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
-      if (first_page == last_page) {
+      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+      if (len <= ailego::kVectorPageSize - offset_in_page) {
         // Single-page: zero-copy pin whose release is tied to the
         // MemoryBlock lifecycle (release_one on destruction).
         size_t page_id = 0;
@@ -185,6 +207,14 @@ class BufferReadStorage : public IndexStorage {
       // Cross-page: copy into a freshly-allocated 4K-aligned buffer that the
       // MemoryBlock owns (freed via ailego_free on destruction).
       static constexpr size_t kAlign = 4096UL;
+      if (ailego_unlikely(len >
+                          std::numeric_limits<size_t>::max() - (kAlign - 1))) {
+        LOG_ERROR(
+            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page "
+            "length overflow, abs_offset=%zu, len=%zu",
+            abs_offset, len);
+        return 0;
+      }
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
       char *tmp =
           static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
@@ -209,16 +239,22 @@ class BufferReadStorage : public IndexStorage {
 
     //! Read scattered data from segment (stable pointers via per-segment buf)
     bool read(SegmentData *iovec, size_t count) override {
+      ailego_false_if_false(iovec != nullptr && count != 0);
       size_t total = 0u;
-      for (auto *it = iovec, *end = iovec + count; it != end; ++it) {
-        ailego_false_if_false(it->offset + it->length <= region_size_);
-        total += it->length;
+      for (size_t i = 0; i < count; ++i) {
+        const SegmentData &item = iovec[i];
+        ailego_false_if_false(item.offset <= region_size_);
+        ailego_false_if_false(item.length <= region_size_ - item.offset);
+        ailego_false_if_false(item.length <=
+                              std::numeric_limits<size_t>::max() - total);
+        total += item.length;
       }
       ailego_false_if_false(total != 0);
 
       buffer_.resize(total);
       uint8_t *buf = buffer_.data();
-      for (auto *it = iovec, *end = iovec + count; it != end; ++it) {
+      for (size_t i = 0; i < count; ++i) {
+        SegmentData *it = &iovec[i];
         ailego_false_if_false(
             handle_->read_range(data_offset_ + it->offset, it->length,
                                 reinterpret_cast<char *>(buf)));
@@ -246,9 +282,7 @@ class BufferReadStorage : public IndexStorage {
     }
 
     void prefetch(size_t offset, size_t len) override {
-      if (offset + len > region_size_) {
-        len = (offset > region_size_) ? 0 : region_size_ - offset;
-      }
+      len = clamp_length(&offset, len);
       if (len == 0) return;
       handle_->prefetch_range(data_offset_ + offset, len);
     }
@@ -265,6 +299,14 @@ class BufferReadStorage : public IndexStorage {
     }
 
    private:
+    size_t clamp_length(size_t *offset, size_t len) const {
+      if (ailego_unlikely(*offset > region_size_)) {
+        *offset = region_size_;
+        return 0;
+      }
+      return std::min(len, region_size_ - *offset);
+    }
+
     size_t data_offset_{0u};
     size_t data_size_{0u};
     size_t padding_size_{0u};
@@ -328,65 +370,115 @@ class BufferReadStorage : public IndexStorage {
       return IndexError_InvalidArgument;
     }
 
-    file_path_ = path;
-    // Read-only buffer pool over the freshly-dumped FileDumper container.
-    buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
-        path, /*writable=*/false, /*enable_direct_io=*/enable_direct_io_,
-        /*enable_io_profile=*/enable_io_profile_);
-    if (!buffer_pool_) {
-      LOG_ERROR("Failed to create VecBufferPool, path: %s", path.c_str());
-      return IndexError_NoMemory;
-    }
-    handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
-        buffer_pool_->get_handle());
+    try {
+      std::string candidate_file_path(path);
+      // Keep all new state local until open is fully successful. A failed
+      // reopen therefore cannot mix old segment metadata with a new file.
+      auto candidate_pool = std::make_shared<ailego::VecBufferPool>(
+          path, /*writable=*/false, /*enable_direct_io=*/enable_direct_io_,
+          /*enable_io_profile=*/enable_io_profile_);
+      auto candidate_handle = std::make_shared<ailego::VecBufferPoolHandle>(
+          candidate_pool->get_handle());
 
-    size_t file_size = buffer_pool_->file_size();
-    index_offset_ = (header_offset_ >= 0 ? 0 : file_size) + header_offset_;
-    size_t end_offset = (footer_offset_ > 0 ? 0 : file_size) + footer_offset_;
-    size_t size = end_offset > index_offset_ ? end_offset - index_offset_ : 0;
+      const size_t file_size = candidate_pool->file_size();
+      size_t candidate_index_offset = 0;
+      size_t end_offset = 0;
+      if (!ResolveContainerOffset(file_size, header_offset_,
+                                  /*zero_from_end=*/false,
+                                  &candidate_index_offset) ||
+          !ResolveContainerOffset(file_size, footer_offset_,
+                                  /*zero_from_end=*/true, &end_offset) ||
+          candidate_index_offset >= end_offset) {
+        LOG_ERROR(
+            "Invalid BufferReadStorage container offsets: path=%s "
+            "file_size=%zu header_offset=%lld footer_offset=%lld",
+            path.c_str(), file_size, static_cast<long long>(header_offset_),
+            static_cast<long long>(footer_offset_));
+        return IndexError_InvalidArgument;
+      }
+      const size_t container_size = end_offset - candidate_index_offset;
 
-    // read_data for IndexUnpacker: provide a stable pointer by copying the
-    // requested range into a reused scratch buffer via get_meta (direct
-    // pread, valid before buffer_pool_->init()).
-    auto read_data = [this, end_offset](size_t offset, const void **data,
+      // IndexUnpacker requires a stable pointer until its next callback.
+      // The local scratch buffer also keeps a failed open from mutating the
+      // currently-published storage state.
+      std::vector<uint8_t> scratch;
+      auto read_data = [&candidate_handle, &scratch, candidate_index_offset,
+                        container_size](size_t offset, const void **data,
                                         size_t len) -> size_t {
-      size_t off = offset + index_offset_;
-      if (off + len > end_offset) {
-        if (off > end_offset) {
-          off = end_offset;
+        if (offset > container_size) {
+          offset = container_size;
+          len = 0;
+        } else {
+          len = std::min(len, container_size - offset);
         }
-        len = end_offset - off;
-      }
-      scratch_.resize(len);
-      *data = scratch_.data();
-      if (len == 0) {
-        return 0;
-      }
-      if (handle_->get_meta(off, len,
-                            reinterpret_cast<char *>(scratch_.data())) != 0) {
-        return 0;
-      }
-      return len;
-    };
+        scratch.resize(len);
+        *data = scratch.data();
+        if (len == 0) {
+          return 0;
+        }
+        const size_t file_offset = candidate_index_offset + offset;
+        if (candidate_handle->get_meta(
+                file_offset, len, reinterpret_cast<char *>(scratch.data())) !=
+            0) {
+          return 0;
+        }
+        return len;
+      };
 
-    IndexUnpacker unpacker;
-    if (!unpacker.unpack(read_data, size, checksum_validation_)) {
-      LOG_ERROR("Failed to unpack file: %s", path.c_str());
-      return IndexError_UnpackIndex;
-    }
-    segments_ = std::move(*unpacker.mutable_segments());
-    magic_ = unpacker.magic();
+      IndexUnpacker unpacker;
+      if (!unpacker.unpack(read_data, container_size, checksum_validation_)) {
+        LOG_ERROR("Failed to unpack file: %s", path.c_str());
+        return IndexError_UnpackIndex;
+      }
+      auto candidate_segments = std::move(*unpacker.mutable_segments());
+      for (const auto &item : candidate_segments) {
+        const auto &segment = item.second;
+        const size_t segment_offset = segment.data_offset();
+        if (segment_offset > container_size ||
+            segment.data_size() > container_size - segment_offset ||
+            segment.padding_size() >
+                container_size - segment_offset - segment.data_size()) {
+          LOG_ERROR(
+              "Invalid BufferReadStorage segment bounds: path=%s id=%s "
+              "container_size=%zu offset=%zu data_size=%zu padding_size=%zu",
+              path.c_str(), item.first.c_str(), container_size, segment_offset,
+              segment.data_size(), segment.padding_size());
+          return IndexError_InvalidLength;
+        }
+      }
+      const uint32_t candidate_magic = unpacker.magic();
 
-    // Allocate the page table now that the layout is known.
-    int ret = buffer_pool_->init();
-    if (ret != 0) {
-      LOG_ERROR("Failed to init VecBufferPool, path: %s", path.c_str());
+      // Allocate the page table now that the layout is known.
+      if (candidate_pool->init() != 0) {
+        LOG_ERROR("Failed to init VecBufferPool, path: %s", path.c_str());
+        return IndexError_Runtime;
+      }
+      if (warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
+        candidate_pool->warmup();
+      }
+
+      file_path_ = std::move(candidate_file_path);
+      index_offset_ = candidate_index_offset;
+      magic_ = candidate_magic;
+      segments_ = std::move(candidate_segments);
+      handle_ = std::move(candidate_handle);
+      buffer_pool_ = std::move(candidate_pool);
+      return 0;
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR("Out of memory opening BufferReadStorage: %s", path.c_str());
+      return IndexError_NoMemory;
+    } catch (const std::runtime_error &error) {
+      LOG_ERROR("Failed to open BufferReadStorage file %s: %s", path.c_str(),
+                error.what());
+      return IndexError_OpenFile;
+    } catch (const std::exception &error) {
+      LOG_ERROR("Unexpected BufferReadStorage open failure for %s: %s",
+                path.c_str(), error.what());
+      return IndexError_Runtime;
+    } catch (...) {
+      LOG_ERROR("Unknown BufferReadStorage open failure for %s", path.c_str());
       return IndexError_Runtime;
     }
-    if (warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
-      buffer_pool_->warmup();
-    }
-    return 0;
   }
 
   int close(void) override {
@@ -458,7 +550,6 @@ class BufferReadStorage : public IndexStorage {
   size_t index_offset_{0};
   uint32_t magic_{0};
   std::string file_path_{};
-  std::vector<uint8_t> scratch_{};
   std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
   std::shared_ptr<ailego::VecBufferPool> buffer_pool_{nullptr};
   std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};

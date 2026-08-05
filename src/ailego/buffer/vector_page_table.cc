@@ -88,11 +88,6 @@ VecBufferPool::~VecBufferPool() {
     page_table_.force_evict_block(i);
   }
   read_epoch_domain_.drain();
-#if defined(__linux) || defined(__linux__)
-  if (aio_enabled_ && aio_ctx_) {
-    LibAioLoader::Instance().io_destroy(aio_ctx_);
-  }
-#endif
 #if defined(_MSC_VER)
   _close(fd_);
   _close(meta_fd_);
@@ -222,15 +217,16 @@ void PageReadEpochDomain::reclaim_locked(bool force) {
 }
 
 bool VectorPageTable::init(size_t entry_num) {
-  size_t need_segments = (entry_num + kSegmentSize - 1) / kSegmentSize;
-  if (need_segments > kMaxSegments) {
+  if (entry_num > kMaxEntries) {
     LOG_ERROR(
         "VectorPageTable::init: entry_num=%zu exceeds capacity "
-        "(kMaxEntries=%zu, need_segments=%zu, kMaxSegments=%zu); "
+        "(kMaxEntries=%zu, kMaxSegments=%zu); "
         "refusing to init.",
-        entry_num, kMaxEntries, need_segments, kMaxSegments);
+        entry_num, kMaxEntries, kMaxSegments);
     return false;
   }
+  const size_t need_segments =
+      entry_num == 0 ? 0 : (entry_num - 1) / kSegmentSize + 1;
   // Free old segments if any.  init() is only called from VecBufferPool::init
   // which is single-threaded with respect to other accesses, so a relaxed
   // load of segment_count_ is sufficient here.
@@ -269,15 +265,16 @@ bool VectorPageTable::extend(size_t new_entry_num) {
   if (new_entry_num <= entry_num_.load(std::memory_order_relaxed)) {
     return true;
   }
-  size_t new_segment_count = (new_entry_num + kSegmentSize - 1) / kSegmentSize;
-  if (new_segment_count > kMaxSegments) {
+  if (new_entry_num > kMaxEntries) {
     LOG_ERROR(
         "VectorPageTable::extend: new_entry_num=%zu exceeds capacity "
-        "(kMaxEntries=%zu, new_segment_count=%zu, kMaxSegments=%zu); "
+        "(kMaxEntries=%zu, kMaxSegments=%zu); "
         "refusing to extend.",
-        new_entry_num, kMaxEntries, new_segment_count, kMaxSegments);
+        new_entry_num, kMaxEntries, kMaxSegments);
     return false;
   }
+  const size_t new_segment_count =
+      new_entry_num == 0 ? 0 : (new_entry_num - 1) / kSegmentSize + 1;
   size_t old_count = segment_count_.load(std::memory_order_relaxed);
   for (size_t s = old_count; s < new_segment_count; ++s) {
     segments_[s] = new Entry[kSegmentSize];
@@ -601,17 +598,15 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
 #if defined(__linux) || defined(__linux__)
-  if (direct_io_enabled_ && LibAioLoader::Instance().load()) {
-    aio_ctx_ = nullptr;
-    if (LibAioLoader::Instance().io_setup(256, &aio_ctx_) == 0) {
-      aio_enabled_ = true;
-    }
-  }
+  // Capability probe only. Actual kernel AIO contexts are created lazily in
+  // thread-local state, so opening N pools does not reserve 256*N aio events.
+  aio_enabled_ = direct_io_enabled_ && LibAioLoader::Instance().load();
 #endif
 }
 
 int VecBufferPool::init() {
-  size_t block_num = (file_size_ + kVectorPageSize - 1) / kVectorPageSize;
+  const size_t block_num =
+      file_size_ == 0 ? 0 : (file_size_ - 1) / kVectorPageSize + 1;
   if (!page_table_.init(block_num)) {
     LOG_ERROR(
         "VecBufferPool::init: page_table_ init failed for file[%s], "
@@ -832,6 +827,13 @@ void VecBufferPool::release_pages(const block_id_t *page_ids, size_t count) {
 }
 
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
+  if (length == 0) {
+    return 0;
+  }
+  if (buffer == nullptr || offset > file_size_ ||
+      length > file_size_ - offset) {
+    return -1;
+  }
   ssize_t read_bytes = zvec_pread(meta_fd_, buffer, length, offset);
   if (read_bytes != static_cast<ssize_t>(length)) {
     LOG_ERROR(
@@ -900,6 +902,14 @@ int VecBufferPool::write_range(size_t file_offset, size_t length,
   if (length == 0) {
     return 0;
   }
+  if (src == nullptr || file_offset > file_size_ ||
+      length > file_size_ - file_offset) {
+    LOG_ERROR(
+        "write_range exceeds file bounds: file[%s], offset[%zu], "
+        "length[%zu], file_size[%zu]",
+        file_name_.c_str(), file_offset, length, file_size_);
+    return -1;
+  }
   size_t first_page = file_offset / kVectorPageSize;
   size_t last_page = (file_offset + length - 1) / kVectorPageSize;
   size_t remaining = length;
@@ -931,6 +941,13 @@ int VecBufferPool::write_meta(size_t offset, size_t length,
   if (!writable_) {
     LOG_ERROR("write_meta called on read-only pool: file[%s]",
               file_name_.c_str());
+    return -1;
+  }
+  if (length == 0) {
+    return 0;
+  }
+  if (buffer == nullptr || offset > file_size_ ||
+      length > file_size_ - offset) {
     return -1;
   }
   ssize_t w = zvec_pwrite(meta_fd_, buffer, length, offset);
@@ -1053,7 +1070,7 @@ bool VecBufferPool::extend_file(size_t new_size) {
   // any on-disk state.  Otherwise a successful ftruncate followed by a
   // failed page_table_.extend() would leave the file size and the page
   // table out of sync (file grew, but no Entry slots cover the new range).
-  size_t new_entry_num = (new_size + kVectorPageSize - 1) / kVectorPageSize;
+  const size_t new_entry_num = (new_size - 1) / kVectorPageSize + 1;
   if (new_entry_num > VectorPageTable::kMaxEntries) {
     LOG_ERROR(
         "extend_file: requested new_size=%zu would require %zu page entries, "
@@ -1094,8 +1111,11 @@ bool VecBufferPool::extend_file(size_t new_size) {
 
 char *VecBufferPoolHandle::get_single_page(size_t file_offset, size_t len,
                                            size_t &out_page_id) {
+  if (file_offset >= pool_.file_size_ || len > pool_.file_size_ - file_offset) {
+    return nullptr;
+  }
   size_t first_page = file_offset / kVectorPageSize;
-  assert(len == 0 || (file_offset + len - 1) / kVectorPageSize == first_page);
+  assert(len == 0 || len <= kVectorPageSize - (file_offset % kVectorPageSize));
   out_page_id = first_page;
   char *page = pool_.acquire_buffer(first_page, 50);
   if (!page) {
@@ -1122,6 +1142,10 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
                                      char *out) {
   if (len == 0) {
     return true;
+  }
+  if (out == nullptr || file_offset > pool_.file_size_ ||
+      len > pool_.file_size_ - file_offset) {
+    return false;
   }
   size_t first_page = file_offset / kVectorPageSize;
   size_t last_page = (file_offset + len - 1) / kVectorPageSize;
@@ -1188,6 +1212,7 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
     }
 
     ssize_t got = zvec_pread(pool_.fd_, bulk_buf, run_bytes, run_file_off);
+    // read_range validated file_offset + len against file_size_ above.
     size_t needed_bytes = (file_offset + len) - run_file_off;
     if (needed_bytes > run_bytes) needed_bytes = run_bytes;
     if (got < 0 || static_cast<size_t>(got) < needed_bytes) {
@@ -1341,21 +1366,26 @@ void VecBufferPool::warmup() {
 
 void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
                                    uint8_t priority) {
-  if (priority > kHighPriority) {
+  const size_t total_pages = page_table_.entry_num();
+  if (priority > kHighPriority || page_count == 0 ||
+      first_page >= total_pages) {
     return;
   }
-  size_t end_page = first_page + page_count;
-  if (end_page > page_table_.entry_num()) {
-    end_page = page_table_.entry_num();
-  }
-  if (first_page >= end_page) return;
+  page_count = std::min(page_count, total_pages - first_page);
 
 #if defined(__linux) || defined(__linux__)
   if (aio_enabled_) {
-    prefetch_pages_aio(first_page, end_page - first_page, priority);
+    prefetch_pages_aio(first_page, page_count, priority);
     return;
   }
 #endif
+
+  prefetch_pages_sync(first_page, page_count, priority);
+}
+
+void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
+                                        size_t page_count, uint8_t priority) {
+  const size_t end_page = first_page + page_count;
 
   bool all_loaded = true;
   for (size_t pg = first_page; pg < end_page; ++pg) {
@@ -1422,7 +1452,8 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
 
 void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len,
                                          uint8_t priority) {
-  if (len == 0) return;
+  if (len == 0 || file_offset >= pool_.file_size_) return;
+  len = std::min(len, pool_.file_size_ - file_offset);
   size_t first_page = file_offset / kVectorPageSize;
   size_t last_page = (file_offset + len - 1) / kVectorPageSize;
   pool_.prefetch_pages(static_cast<block_id_t>(first_page),
@@ -1432,12 +1463,11 @@ void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len,
 #if defined(__linux) || defined(__linux__)
 namespace {
 // Dedicated thread-local AIO context for the *blocking* prefetch path
-// (prefetch_pages_aio).  Kept separate from the shared member aio_ctx_ so that
-// each thread reaps only the events it submitted.  Sharing one context across
-// threads let thread B's io_getevents steal thread A's completions, which made
-// prefetch release buffers whose kernel DMA was still in flight -- the DMA then
-// overwrote the buffer's first 8 bytes (the MemoryLimitPool free-list next
-// pointer), corrupting the list and crashing the next try_acquire_buffer.
+// (prefetch_pages_aio). Each thread reaps only the events it submitted.
+// Sharing one context across threads let thread B's io_getevents steal thread
+// A's completions, which made prefetch release buffers whose kernel DMA was
+// still in flight -- the DMA then overwrote the buffer's first 8 bytes (the
+// MemoryLimitPool free-list next pointer), corrupting the free list.
 struct ThreadLocalPrefetchAioCtx {
   io_context_t ctx{nullptr};
   bool inited{false};
@@ -1466,19 +1496,26 @@ static thread_local ThreadLocalPrefetchAioCtx tl_prefetch_aio;
 void VecBufferPool::prefetch_pages_aio([[maybe_unused]] block_id_t first_page,
                                        [[maybe_unused]] size_t page_count,
                                        [[maybe_unused]] uint8_t priority) {
+  const size_t total_pages = page_table_.entry_num();
+  if (priority > kHighPriority || page_count == 0 ||
+      first_page >= total_pages) {
+    return;
+  }
+  page_count = std::min(page_count, total_pages - first_page);
+
 #if defined(__linux) || defined(__linux__)
   static constexpr size_t kMaxBatch = 128;
 
   // Use a thread-local AIO context: each thread waits only for its own
   // completions, so a buffer is never returned to the free-list while the
   // kernel is still DMA-ing into it.
-  if (!tl_prefetch_aio.ensure()) return;
+  if (!tl_prefetch_aio.ensure()) {
+    prefetch_pages_sync(first_page, page_count, priority);
+    return;
+  }
   io_context_t ctx = tl_prefetch_aio.ctx;
 
-  size_t end_page = first_page + page_count;
-  if (end_page > page_table_.entry_num()) {
-    end_page = page_table_.entry_num();
-  }
+  const size_t end_page = first_page + page_count;
 
   size_t pg = first_page;
   while (pg < end_page) {
@@ -1528,6 +1565,7 @@ void VecBufferPool::prefetch_pages_aio([[maybe_unused]] block_id_t first_page,
         MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                        kVectorPageSize);
       }
+      prefetch_pages_sync(first_page, page_count, priority);
       return;
     }
 
@@ -1592,6 +1630,8 @@ void VecBufferPool::prefetch_pages_aio([[maybe_unused]] block_id_t first_page,
     // NOT release them here (that would reintroduce the use-after-free); leave
     // them owned by the pool accounting.  Not expected under a blocking wait.
   }
+#else
+  prefetch_pages_sync(first_page, page_count, priority);
 #endif
 }
 

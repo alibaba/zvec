@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <thread>
@@ -328,6 +329,23 @@ TEST_F(BufferPoolTest, BypassReadDoesNotAdmitPage) {
   EXPECT_EQ(1u, stats.bypass_reads);
   EXPECT_EQ(kVectorPageSize, stats.bypass_bytes);
   EXPECT_EQ(0u, stats.miss);
+}
+
+TEST_F(BufferPoolTest, ReadAndPrefetchRangesRejectOverflow) {
+  InitPool(/*capacity_pages=*/2);
+  std::string file = NewFile(/*num_pages=*/2);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+
+  EXPECT_FALSE(
+      handle.read_range(std::numeric_limits<size_t>::max(), 2, data.data()));
+  EXPECT_FALSE(handle.read_range(pool.file_size() - 1, 2, data.data()));
+  handle.prefetch_range(std::numeric_limits<size_t>::max(),
+                        std::numeric_limits<size_t>::max());
+  EXPECT_EQ(0u, pool.stats().miss);
 }
 
 // Scattered acquisition is storage-level functionality: it preserves caller

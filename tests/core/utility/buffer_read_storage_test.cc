@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
@@ -119,6 +120,66 @@ TEST_F(BufferReadStorageTest, RejectsPoolSmallerThanOnePage) {
   auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   EXPECT_EQ(IndexError_InvalidArgument, storage->open(file_path_, false));
+}
+
+TEST_F(BufferReadStorageTest, MissingFileReturnsErrorWithoutThrowing) {
+  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  ASSERT_NE(storage, nullptr);
+
+  const std::string missing_path = file_path_ + ".missing";
+  std::remove(missing_path.c_str());
+  EXPECT_EQ(IndexError_OpenFile, storage->open(missing_path, false));
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+  EXPECT_TRUE(storage->file_path().empty());
+  EXPECT_FALSE(storage->has("payload"));
+}
+
+TEST_F(BufferReadStorageTest, FailedReopenPreservesPublishedState) {
+  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->open(file_path_, false));
+
+  auto *published_pool = storage->vec_buffer_pool();
+  ASSERT_NE(published_pool, nullptr);
+  const std::string missing_path = file_path_ + ".missing";
+  std::remove(missing_path.c_str());
+  EXPECT_EQ(IndexError_OpenFile, storage->open(missing_path, false));
+
+  EXPECT_EQ(published_pool, storage->vec_buffer_pool());
+  EXPECT_EQ(file_path_, storage->file_path());
+  EXPECT_TRUE(storage->has("payload"));
+}
+
+TEST_F(BufferReadStorageTest, RejectsOutOfRangeContainerOffset) {
+  auto storage = IndexFactory::CreateStorage("BufferReadStorage");
+  ASSERT_NE(storage, nullptr);
+
+  ailego::Params params;
+  params.set(BUFFER_READ_STORAGE_ENABLE_DIRECT_IO, false);
+  params.set(BUFFER_READ_STORAGE_WARMUP_MODE, BUFFER_READ_STORAGE_WARMUP_NONE);
+  params.set(BUFFER_READ_STORAGE_HEADER_OFFSET,
+             std::numeric_limits<int64_t>::min());
+  ASSERT_EQ(0, storage->init(params));
+  EXPECT_EQ(IndexError_InvalidArgument, storage->open(file_path_, false));
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+}
+
+TEST_F(BufferReadStorageTest, RangeChecksDoNotOverflow) {
+  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->open(file_path_, false));
+  auto segment = storage->get("payload");
+  ASSERT_NE(segment, nullptr);
+
+  std::string actual(payload_.size() - 1, '\0');
+  EXPECT_EQ(actual.size(), segment->fetch(1, actual.data(),
+                                          std::numeric_limits<size_t>::max()));
+  EXPECT_EQ(payload_.substr(1), actual);
+
+  IndexStorage::SegmentData invalid(std::numeric_limits<size_t>::max(), 2);
+  EXPECT_FALSE(segment->read(&invalid, 1));
+  segment->prefetch(std::numeric_limits<size_t>::max(),
+                    std::numeric_limits<size_t>::max());
 }
 
 }  // namespace

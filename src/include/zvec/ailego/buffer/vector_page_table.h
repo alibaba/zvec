@@ -46,10 +46,6 @@
 #include <io.h>
 #endif
 
-#if defined(__linux) || defined(__linux__)
-struct io_context;
-#endif
-
 namespace zvec {
 namespace ailego {
 
@@ -774,6 +770,8 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   bool aio_enabled() const {
 #if defined(__linux) || defined(__linux__)
+    // Capability flag only. Kernel AIO contexts are created lazily per
+    // calling thread, not eagerly for every VecBufferPool.
     return aio_enabled_;
 #else
     return false;
@@ -795,6 +793,9 @@ class ZVEC_AILEGO_API VecBufferPool {
 
  private:
   friend class VecBufferPoolHandle;
+  void prefetch_pages_sync(block_id_t first_page, size_t page_count,
+                           uint8_t priority);
+
   int fd_;       // page-data channel: may carry O_DIRECT
   int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
@@ -814,7 +815,6 @@ class ZVEC_AILEGO_API VecBufferPool {
   mutable std::mutex io_profile_mutex_{};
   BufferPoolIoProfile io_profile_totals_{};
 #if defined(__linux) || defined(__linux__)
-  ::io_context *aio_ctx_{nullptr};
   bool aio_enabled_{false};
 #endif
 
