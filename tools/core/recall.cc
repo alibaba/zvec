@@ -1660,17 +1660,16 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["IndexCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> LOG_LEVEL = {{"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+                                {"info", zvec::ailego::Logger::LEVEL_INFO},
+                                {"warn", zvec::ailego::Logger::LEVEL_WARN},
+                                {"error", zvec::ailego::Logger::LEVEL_ERROR},
+                                {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
   if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
     zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
   }
 
