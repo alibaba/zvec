@@ -208,18 +208,6 @@ before-build = [
     "python -c \"import shutil, glob, os; [shutil.rmtree(p, ignore_errors=True) for p in ['build', '.pytest_tmp']];\""
 ]
 
-# On musllinux, exclude libstdc++ and libgcc_s from auditwheel bundling.
-# patchelf <= 0.18.0 can corrupt the ELF when it moves sections while
-# extending the program header table: it updates section offsets but leaves
-# dynamic entries / relocation addends pointing to stale addresses. In our
-# case the protobuf "protodesc_cold" section gets relocated while its
-# R_X86_64_RELATIVE addends are not updated, so protobuf init crashes.
-# See https://github.com/NixOS/patchelf/issues/652 for a similar issue.
-# Excluding these libs prevents auditwheel from invoking patchelf. They are
-# available on all musllinux targets via the base system (apk add libstdc++).
-[[tool.cibuildwheel.overrides]]
-select = "*-musllinux*"
-repair-wheel-command = "auditwheel repair --exclude libstdc++.so.6 --exclude libgcc_s.so.1 -w {dest_dir} {wheel}"
 
 ######################################################################################################
 # CODE QUALITY & FORMATTING (Ruff)
