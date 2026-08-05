@@ -785,6 +785,82 @@ TEST_F(VamanaStreamerTest, TestConcurrentBuild) {
   ASSERT_GT(result.size(), 0UL);
 }
 
+TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {
+  constexpr size_t kTestDimension = 2;
+
+  ailego::Params metric_params;
+  metric_params.set("proxima.mips_euclidean.metric.injection_type", 0);
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kTestDimension);
+  meta.set_metric("MipsSquaredEuclidean", 0, metric_params);
+
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 8U);
+  params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 16U);
+  params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+  params.set(PARAM_VAMANA_STREAMER_EF, 16U);
+  params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+
+  auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
+  ASSERT_TRUE(streamer);
+  ASSERT_EQ(0, streamer->init(meta, params));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestAsymmetricQueryMetric.index", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kTestDimension);
+  NumericalVector<float> unit_record(kTestDimension);
+  unit_record[0] = 1.0f;
+  unit_record[1] = 0.0f;
+  NumericalVector<float> scaled_record(kTestDimension);
+  scaled_record[0] = 2.0f;
+  scaled_record[1] = 0.0f;
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(context);
+  ASSERT_EQ(0, streamer->add_impl(10, unit_record.data(), query_meta, context));
+  ASSERT_EQ(0,
+            streamer->add_impl(20, scaled_record.data(), query_meta, context));
+
+  auto *vamana_context = dynamic_cast<VamanaContext *>(context.get());
+  ASSERT_TRUE(vamana_context);
+  EXPECT_FLOAT_EQ(1.0f, vamana_context->dist_calculator().dist(
+                            unit_record.data(), scaled_record.data()));
+
+  context->set_topk(2);
+  ASSERT_EQ(0,
+            streamer->search_bf_impl(unit_record.data(), query_meta, context));
+  ASSERT_EQ(2UL, context->result().size());
+  EXPECT_EQ(20UL, context->result()[0].key());
+  EXPECT_FLOAT_EQ(-2.0f, context->result()[0].score());
+  EXPECT_EQ(10UL, context->result()[1].key());
+  EXPECT_FLOAT_EQ(-1.0f, context->result()[1].score());
+  EXPECT_FLOAT_EQ(-2.0f, vamana_context->dist_calculator().dist(
+                             unit_record.data(), scaled_record.data()));
+
+  auto graph_context = streamer->create_context();
+  ASSERT_TRUE(graph_context);
+  graph_context->set_topk(1);
+  ASSERT_EQ(
+      0, streamer->search_impl(unit_record.data(), query_meta, graph_context));
+  ASSERT_EQ(1UL, graph_context->result().size());
+  EXPECT_EQ(20UL, graph_context->result()[0].key());
+  EXPECT_FLOAT_EQ(-2.0f, graph_context->result()[0].score());
+
+  auto primary_key_context = streamer->create_context();
+  ASSERT_TRUE(primary_key_context);
+  primary_key_context->set_topk(2);
+  const std::vector<std::vector<uint64_t>> primary_keys{{10, 20}};
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(unit_record.data(), primary_keys,
+                                            query_meta, primary_key_context));
+  ASSERT_EQ(2UL, primary_key_context->result().size());
+  EXPECT_EQ(20UL, primary_key_context->result()[0].key());
+  EXPECT_FLOAT_EQ(-2.0f, primary_key_context->result()[0].score());
+}
+
 // Test Vamana + INT8 quantization + rotation end-to-end
 TEST_F(VamanaStreamerTest, TestInt8WithRotate) {
   constexpr size_t kTestDim = 128;

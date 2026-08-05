@@ -22,6 +22,7 @@
 #include <arrow/table.h>
 #include <gtest/gtest.h>
 #include "db/common/constants.h"
+#include "db/index/storage/chunked_file_writer.h"
 #define private public
 #define protected public
 #include "db/index/storage/mmap_forward_store.h"
@@ -30,6 +31,31 @@
 #include "utils/utils.h"
 
 using namespace zvec;
+
+namespace {
+
+arrow::Status WriteUnevenBatchIPC(const std::string &path) {
+  auto schema = arrow::schema({arrow::field("id", arrow::int32())});
+  auto writer = ChunkedFileWriter::Open(path, schema, FileFormat::IPC);
+  if (!writer) {
+    return arrow::Status::IOError("failed to open IPC writer");
+  }
+
+  int32_t next_id = 0;
+  for (int64_t batch_size : {3, 4}) {
+    arrow::Int32Builder builder;
+    for (int64_t i = 0; i < batch_size; ++i) {
+      ARROW_RETURN_NOT_OK(builder.Append(next_id++));
+    }
+    std::shared_ptr<arrow::Array> ids;
+    ARROW_RETURN_NOT_OK(builder.Finish(&ids));
+    auto batch = arrow::RecordBatch::Make(schema, batch_size, {ids});
+    ARROW_RETURN_NOT_OK(writer->Write(*batch));
+  }
+  return writer->Close();
+}
+
+}  // namespace
 
 class MmapStoreTest : public testing::Test {
  protected:
@@ -53,10 +79,14 @@ class MmapStoreTest : public testing::Test {
     if (std::filesystem::exists(parquet_path)) {
       std::filesystem::remove(parquet_path);
     }
+    if (std::filesystem::exists(uneven_ipc_path)) {
+      std::filesystem::remove(uneven_ipc_path);
+    }
   }
 
   std::string ipc_path = "test.ipc";
   std::string parquet_path = "test.parquet";
+  std::string uneven_ipc_path = "uneven.ipc";
 };
 
 
@@ -514,6 +544,20 @@ TEST_F(MmapStoreTest, IPCFetchSingleRow) {
   for (size_t i = 0; i < 10; i++) {
     func(i);
   }
+}
+
+TEST_F(MmapStoreTest, IPCFetchFromLargerLastChunk) {
+  ASSERT_TRUE(WriteUnevenBatchIPC(uneven_ipc_path).ok());
+  auto ipc_store = std::make_shared<MmapForwardStore>(uneven_ipc_path);
+  ASSERT_TRUE(ipc_store->Open().ok());
+
+  auto result = ipc_store->fetch({"id"}, std::vector<int>{6});
+  ASSERT_NE(result, nullptr);
+  ASSERT_EQ(result->num_rows(), 1);
+  auto ids =
+      std::dynamic_pointer_cast<arrow::Int32Array>(result->column(0)->chunk(0));
+  ASSERT_NE(ids, nullptr);
+  EXPECT_EQ(ids->Value(0), 6);
 }
 
 TEST_F(MmapStoreTest, ParquetFetchSingleRow) {

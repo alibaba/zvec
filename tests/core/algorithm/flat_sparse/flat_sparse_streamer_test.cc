@@ -21,6 +21,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <algorithm/flat_sparse/flat_sparse_utility.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
@@ -83,7 +84,7 @@ void FlatSparseStreamerTest::generate_sparse_data(
 
 
 void FlatSparseStreamerTest::SetUp(void) {
-  IndexLoggerBroker::SetLevel(2);
+  LoggerBroker::SetLevel(Logger::LEVEL_WARN);
 
   index_meta_ptr_.reset(new IndexMeta(IndexMeta::MetaType::MT_SPARSE,
                                       IndexMeta::DataType::DT_FP32));

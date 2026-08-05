@@ -21,7 +21,7 @@
 #include <arrow/status.h>
 #include <arrow/table.h>
 #include <parquet/arrow/reader.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
 
