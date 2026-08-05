@@ -2194,8 +2194,11 @@ Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
 Result<std::vector<RecordBatchReaderPtr>> CollectionImpl::Scan(
     const IteratorOptions &options, std::vector<Segment::Ptr> &segments,
     DeleteStore::Ptr &delete_store, CollectionSchema::Ptr &schema) {
-  // shared_lock blocks Optimize (exclusive) and schema changes (exclusive)
-  // but allows concurrent Query/Fetch (shared)
+  // shared_lock blocks schema changes and close/destroy (exclusive) while
+  // allowing concurrent Query/Fetch (shared). Snapshot consistency does not
+  // depend on blocking Optimize: the segment list and the delete-store clone
+  // are taken atomically under write_mtx_ below, and the iterator keeps the
+  // snapshotted segments alive via shared_ptr afterwards.
   std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 

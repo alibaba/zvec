@@ -79,10 +79,13 @@ Result<Doc::Ptr> DocIterator::Next() {
       // build_scan_columns). Unlike g_doc_id arithmetic, they stay valid for
       // compacted segments whose g_doc_ids are non-contiguous.
       int row_id_col = batch.schema()->GetFieldIndex(LOCAL_ROW_ID);
-      auto row_ids = row_id_col >= 0
-                         ? std::dynamic_pointer_cast<arrow::UInt64Array>(
-                               batch.column(row_id_col))
-                         : nullptr;
+      const arrow::UInt64Array *row_ids = nullptr;
+      if (row_id_col >= 0) {
+        const auto &col = batch.columns()[row_id_col];
+        if (col->type_id() == arrow::Type::UINT64) {
+          row_ids = static_cast<const arrow::UInt64Array *>(col.get());
+        }
+      }
       if (!row_ids) {
         return tl::make_unexpected(Status::InternalError(
             "Iterator batch is missing the segment row-id column"));
@@ -122,9 +125,9 @@ Result<Doc::Ptr> DocIterator::Next() {
   // 1. Extract PK from _zvec_uid_ column
   int uid_col = batch.schema()->GetFieldIndex(USER_ID);
   if (uid_col >= 0) {
-    auto uid_array =
-        std::dynamic_pointer_cast<arrow::StringArray>(batch.column(uid_col));
-    if (uid_array) {
+    const auto &col = batch.columns()[uid_col];
+    if (col->type_id() == arrow::Type::STRING) {
+      auto *uid_array = static_cast<const arrow::StringArray *>(col.get());
       doc->set_pk(std::string(uid_array->GetView(row)));
     }
   }
@@ -132,9 +135,9 @@ Result<Doc::Ptr> DocIterator::Next() {
   // 2. Extract doc_id from _zvec_g_doc_id_ column
   int gdoc_col = batch.schema()->GetFieldIndex(GLOBAL_DOC_ID);
   if (gdoc_col >= 0) {
-    auto gdoc_array =
-        std::dynamic_pointer_cast<arrow::UInt64Array>(batch.column(gdoc_col));
-    if (gdoc_array) {
+    const auto &col = batch.columns()[gdoc_col];
+    if (col->type_id() == arrow::Type::UINT64) {
+      auto *gdoc_array = static_cast<const arrow::UInt64Array *>(col.get());
       doc->set_doc_id(gdoc_array->Value(row));
     }
   }
@@ -147,8 +150,8 @@ Result<Doc::Ptr> DocIterator::Next() {
       int col = batch.schema()->GetFieldIndex(field->name());
       if (col < 0) continue;
 
-      auto s =
-          ConvertArrowRowToDocField(batch.column(col), row, *field, doc.get());
+      auto s = ConvertArrowRowToDocField(batch.columns()[col].get(), row,
+                                         *field, doc.get());
       if (!s.ok()) {
         return tl::make_unexpected(s);
       }

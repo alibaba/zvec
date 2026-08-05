@@ -452,8 +452,8 @@ Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
       // Scalar/array fields: shared row-level conversion (same type coverage
       // and null semantics as DocIterator; see doc_field_converter.h).
       for (int64_t i = 0; i < chunk->length(); ++i, ++doc_it) {
-        auto status =
-            ConvertArrowRowToDocField(chunk, i, field_schema, doc_it->get());
+        auto status = ConvertArrowRowToDocField(chunk.get(), i, field_schema,
+                                                doc_it->get());
         if (!status.ok()) {
           return status;
         }

@@ -1118,8 +1118,8 @@ Doc::Ptr SegmentImpl::Fetch(
                 array_result.status().ToString().c_str());
       continue;
     }
-    auto s = ConvertArrowRowToDocField(array_result.ValueOrDie(), 0, *field,
-                                       doc.get());
+    auto s = ConvertArrowRowToDocField(array_result.ValueOrDie().get(), 0,
+                                       *field, doc.get());
     if (!s.ok()) {
       // Keep Fetch's lenient contract: log and continue with other fields.
       LOG_ERROR("Convert field %s failed: %s", column_name.c_str(),

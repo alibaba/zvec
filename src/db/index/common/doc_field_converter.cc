@@ -142,9 +142,8 @@ Status ConvertVectorDataBufferToDocField(
   return Status::InvalidArgument("Unsupported vector buffer type");
 }
 
-Status ConvertArrowRowToDocField(const std::shared_ptr<arrow::Array> &array,
-                                 int64_t row, const FieldSchema &field,
-                                 Doc *doc) {
+Status ConvertArrowRowToDocField(const arrow::Array *array, int64_t row,
+                                 const FieldSchema &field, Doc *doc) {
   if (!array || row < 0 || row >= array->length()) {
     return Status::InvalidArgument("Arrow row out of range for field: ",
                                    field.name());
@@ -154,44 +153,45 @@ Status ConvertArrowRowToDocField(const std::shared_ptr<arrow::Array> &array,
   }
 
   const auto &name = field.name();
-  const auto *raw = array.get();
   switch (field.data_type()) {
     case DataType::BINARY:
-      return SetScalarField<arrow::BinaryArray>(raw, row, name, doc);
+      return SetScalarField<arrow::BinaryArray>(array, row, name, doc);
     case DataType::STRING:
-      return SetScalarField<arrow::StringArray>(raw, row, name, doc);
+      return SetScalarField<arrow::StringArray>(array, row, name, doc);
     case DataType::BOOL:
-      return SetScalarField<arrow::BooleanArray>(raw, row, name, doc);
+      return SetScalarField<arrow::BooleanArray>(array, row, name, doc);
     case DataType::INT32:
-      return SetScalarField<arrow::Int32Array>(raw, row, name, doc);
+      return SetScalarField<arrow::Int32Array>(array, row, name, doc);
     case DataType::INT64:
-      return SetScalarField<arrow::Int64Array>(raw, row, name, doc);
+      return SetScalarField<arrow::Int64Array>(array, row, name, doc);
     case DataType::UINT32:
-      return SetScalarField<arrow::UInt32Array>(raw, row, name, doc);
+      return SetScalarField<arrow::UInt32Array>(array, row, name, doc);
     case DataType::UINT64:
-      return SetScalarField<arrow::UInt64Array>(raw, row, name, doc);
+      return SetScalarField<arrow::UInt64Array>(array, row, name, doc);
     case DataType::FLOAT:
-      return SetScalarField<arrow::FloatArray>(raw, row, name, doc);
+      return SetScalarField<arrow::FloatArray>(array, row, name, doc);
     case DataType::DOUBLE:
-      return SetScalarField<arrow::DoubleArray>(raw, row, name, doc);
+      return SetScalarField<arrow::DoubleArray>(array, row, name, doc);
     case DataType::ARRAY_BINARY:
-      return SetListField<arrow::BinaryArray, std::string>(raw, row, name, doc);
+      return SetListField<arrow::BinaryArray, std::string>(array, row, name,
+                                                           doc);
     case DataType::ARRAY_STRING:
-      return SetListField<arrow::StringArray, std::string>(raw, row, name, doc);
+      return SetListField<arrow::StringArray, std::string>(array, row, name,
+                                                           doc);
     case DataType::ARRAY_BOOL:
-      return SetListField<arrow::BooleanArray, bool>(raw, row, name, doc);
+      return SetListField<arrow::BooleanArray, bool>(array, row, name, doc);
     case DataType::ARRAY_INT32:
-      return SetListField<arrow::Int32Array, int32_t>(raw, row, name, doc);
+      return SetListField<arrow::Int32Array, int32_t>(array, row, name, doc);
     case DataType::ARRAY_INT64:
-      return SetListField<arrow::Int64Array, int64_t>(raw, row, name, doc);
+      return SetListField<arrow::Int64Array, int64_t>(array, row, name, doc);
     case DataType::ARRAY_UINT32:
-      return SetListField<arrow::UInt32Array, uint32_t>(raw, row, name, doc);
+      return SetListField<arrow::UInt32Array, uint32_t>(array, row, name, doc);
     case DataType::ARRAY_UINT64:
-      return SetListField<arrow::UInt64Array, uint64_t>(raw, row, name, doc);
+      return SetListField<arrow::UInt64Array, uint64_t>(array, row, name, doc);
     case DataType::ARRAY_FLOAT:
-      return SetListField<arrow::FloatArray, float>(raw, row, name, doc);
+      return SetListField<arrow::FloatArray, float>(array, row, name, doc);
     case DataType::ARRAY_DOUBLE:
-      return SetListField<arrow::DoubleArray, double>(raw, row, name, doc);
+      return SetListField<arrow::DoubleArray, double>(array, row, name, doc);
     default:
       return Status::InvalidArgument("Unsupported data type for field: ", name,
                                      ": ", field.data_type());

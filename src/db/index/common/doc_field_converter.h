@@ -36,8 +36,7 @@ Status ConvertVectorDataBufferToDocField(
 //! array field. Null rows are skipped (the field is left unset). Covers every
 //! scalar DataType (BINARY/STRING/BOOL/INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE)
 //! and every ARRAY_* DataType.
-Status ConvertArrowRowToDocField(const std::shared_ptr<arrow::Array> &array,
-                                 int64_t row, const FieldSchema &field,
-                                 Doc *doc);
+Status ConvertArrowRowToDocField(const arrow::Array *array, int64_t row,
+                                 const FieldSchema &field, Doc *doc);
 
 }  // namespace zvec
