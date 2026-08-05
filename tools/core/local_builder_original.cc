@@ -171,17 +171,41 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
 
 //! Handle the general [BuildFromOriginal] option: bind a provider of the
 //! original vectors so the graph is built from them
+IndexHolder::Pointer convert_holder(const std::string &name,
+                                    const ailego::Params &params,
+                                    VecsIndexHolder::Pointer &in_holder,
+                                    IndexMeta &index_meta);
+
 int setup_build_from_original(const string &builder_class,
                               const IndexStreamer::Pointer &streamer,
                               const IndexHolder::Pointer &build_holder,
                               const IndexMeta &input_meta) {
-  IndexProvider::Pointer provider =
-      std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  IndexProvider::Pointer provider;
+  IndexMeta provider_meta = input_meta;
+
+  if (input_meta.metric_name() == "Cosine") {
+    VecsIndexHolder::Pointer vecs_holder =
+        std::dynamic_pointer_cast<VecsIndexHolder>(build_holder);
+    if (!vecs_holder) {
+      cerr << "Failed to cast build holder to VecsIndexHolder" << endl;
+      return -1;
+    }
+    IndexHolder::Pointer cv_holder = convert_holder(
+        "CosineFp32Converter", ailego::Params(), vecs_holder, provider_meta);
+    if (!cv_holder) {
+      cerr << "Failed to convert holder for BuildFromOriginal" << endl;
+      return -1;
+    }
+    provider = convert_holder_to_provider(cv_holder);
+  } else {
+    provider = std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  }
+
   if (!provider) {
-    cerr << "Failed to cast build holder to provider" << endl;
+    cerr << "Failed to create provider for BuildFromOriginal" << endl;
     return -1;
   }
-  if (!streamer || streamer->set_provider(provider, input_meta) != 0) {
+  if (!streamer || streamer->set_provider(provider, provider_meta) != 0) {
     cerr << "[BuildFromOriginal] is not supported by builder class "
          << builder_class << endl;
     return -1;
