@@ -3452,11 +3452,6 @@ Status SegmentImpl::alter_column(const std::string &column_name,
     persist_stores_.erase(persist_stores_.begin() + local_idx);
   }
 
-  if (!options_.enable_mmap_) {
-    zvec::ailego::MemoryLimitPool::get_instance().init(
-        GlobalConfig::Instance().memory_limit_bytes());
-  }
-
   // delete single column store file
   for (auto block_id : will_del_block_ids) {
     // delete forward store file
@@ -3545,11 +3540,6 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
        idx >= 0; idx--) {
     int local_idx = will_del_local_block_idx[idx];
     persist_stores_.erase(persist_stores_.begin() + local_idx);
-  }
-
-  if (!options_.enable_mmap_) {
-    zvec::ailego::MemoryLimitPool::get_instance().init(
-        GlobalConfig::Instance().memory_limit_bytes());
   }
 
   // delete single column store file

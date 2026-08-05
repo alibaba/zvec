@@ -41,6 +41,31 @@
 
 using namespace zvec;
 
+namespace {
+
+class ExternalChargeGuard {
+ public:
+  ExternalChargeGuard(zvec::ailego::MemoryLimitPool &pool, size_t bytes)
+      : pool_(pool), bytes_(bytes), charged_(pool_.try_charge_external(bytes_)) {}
+
+  ~ExternalChargeGuard() {
+    if (charged_) {
+      pool_.release_external(bytes_);
+    }
+  }
+
+  bool charged() const {
+    return charged_;
+  }
+
+ private:
+  zvec::ailego::MemoryLimitPool &pool_;
+  size_t bytes_;
+  bool charged_;
+};
+
+}  // namespace
+
 TEST_P(SegmentTest, EmptySchema) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
       col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
@@ -1804,6 +1829,12 @@ TEST_P(SegmentTest, AddColumnWithExpressionMultiBlock) {
 }
 
 TEST_P(SegmentTest, AlterColumnMultiBlock) {
+  constexpr size_t kSharedCacheCapacity = MIN_MEMORY_LIMIT_BYTES / 2;
+  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  if (!GetParam()) {
+    memory_pool.init(kSharedCacheCapacity);
+  }
+
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
@@ -1868,10 +1899,20 @@ TEST_P(SegmentTest, AlterColumnMultiBlock) {
   segment = std::move(result).value();
   ASSERT_TRUE(segment != nullptr);
 
+  constexpr size_t kExternalCharge = 4096;
+  ExternalChargeGuard external_charge(memory_pool, kExternalCharge);
+  if (!GetParam()) {
+    ASSERT_TRUE(external_charge.charged());
+  }
+
   // Alter column type: int32 -> int64 on multi-block segment
   auto new_field = std::make_shared<FieldSchema>("id", DataType::INT64, false);
   s = segment->alter_column("id", new_field, AlterColumnOptions());
   ASSERT_TRUE(s.ok()) << "alter_column failed: " << s.message();
+  if (!GetParam()) {
+    EXPECT_EQ(kSharedCacheCapacity, memory_pool.capacity());
+    EXPECT_GE(memory_pool.external_used(), kExternalCharge);
+  }
 
   auto combined_reader = segment->scan({"id", "name", "age"});
   ASSERT_TRUE(combined_reader != nullptr);
@@ -1888,6 +1929,12 @@ TEST_P(SegmentTest, AlterColumnMultiBlock) {
 }
 
 TEST_P(SegmentTest, DropColumnMultiBlock) {
+  constexpr size_t kSharedCacheCapacity = MIN_MEMORY_LIMIT_BYTES / 2;
+  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  if (!GetParam()) {
+    memory_pool.init(kSharedCacheCapacity);
+  }
+
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
@@ -1952,9 +1999,19 @@ TEST_P(SegmentTest, DropColumnMultiBlock) {
   segment = std::move(result).value();
   ASSERT_TRUE(segment != nullptr);
 
+  constexpr size_t kExternalCharge = 4096;
+  ExternalChargeGuard external_charge(memory_pool, kExternalCharge);
+  if (!GetParam()) {
+    ASSERT_TRUE(external_charge.charged());
+  }
+
   // Drop column on multi-block segment
   s = segment->drop_column("id");
   ASSERT_TRUE(s.ok()) << "drop_column failed: " << s.message();
+  if (!GetParam()) {
+    EXPECT_EQ(kSharedCacheCapacity, memory_pool.capacity());
+    EXPECT_GE(memory_pool.external_used(), kExternalCharge);
+  }
 
   auto combined_reader = segment->scan({"id"});
   ASSERT_TRUE(combined_reader == nullptr);
