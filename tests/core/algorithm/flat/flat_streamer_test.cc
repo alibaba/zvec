@@ -227,8 +227,7 @@ TEST_F(FlatStreamerTest, TestInnerProductBatchSearch) {
 
   auto search_context = searcher->create_context();
   search_context->set_topk(kTopk);
-  ASSERT_EQ(0,
-            searcher->search_impl(query.data(), qmeta, search_context));
+  ASSERT_EQ(0, searcher->search_impl(query.data(), qmeta, search_context));
   ASSERT_EQ(kTopk, search_context->result().size());
   EXPECT_EQ(64, search_context->result()[0].key());
   EXPECT_EQ(63, search_context->result()[1].key());

@@ -102,8 +102,7 @@ struct MinusInnerProductDistanceBatch {
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
-    InnerProductDistanceBatch<ValueType, BatchSize,
-                              PrefetchStep>::ComputeBatch(
+    InnerProductDistanceBatch<ValueType, BatchSize, PrefetchStep>::ComputeBatch(
         vecs, query, num_vecs, dim, results);
     for (size_t i = 0; i < num_vecs; ++i) {
       results[i] = -results[i];

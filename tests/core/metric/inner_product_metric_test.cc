@@ -93,8 +93,8 @@ TEST(InnerProductMetric, BatchFp32MatchesSingleDistance) {
   ASSERT_TRUE(batch_distance);
 
   std::vector<float> query(kDimension);
-  std::vector<std::vector<float>> vectors(
-      kVectorCount, std::vector<float>(kDimension));
+  std::vector<std::vector<float>> vectors(kVectorCount,
+                                          std::vector<float>(kDimension));
   std::array<const void *, kVectorCount> vector_ptrs{};
   for (size_t d = 0; d < kDimension; ++d) {
     query[d] = static_cast<float>(static_cast<int>(d % 17) - 8) / 17.0f;
