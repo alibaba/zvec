@@ -59,6 +59,8 @@ int FlatIndex::_prepare_for_search(
   context->set_fetch_vector(flat_search_param->fetch_vector);
   if (flat_search_param->filter && flat_search_param->filter->is_valid()) {
     context->set_filter(std::move(*flat_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (flat_search_param->radius > 0.0f) {
     context->set_threshold(flat_search_param->radius);
