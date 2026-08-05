@@ -122,6 +122,14 @@ TEST_F(BufferReadStorageTest, RejectsPoolSmallerThanOnePage) {
   EXPECT_EQ(IndexError_InvalidArgument, storage->open(file_path_, false));
 }
 
+TEST_F(BufferReadStorageTest, RejectsPoolWithoutRoomForMetadata) {
+  ailego::MemoryLimitPool::get_instance().init(ailego::kVectorPageSize);
+
+  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  ASSERT_NE(storage, nullptr);
+  EXPECT_EQ(IndexError_NoMemory, storage->open(file_path_, false));
+}
+
 TEST_F(BufferReadStorageTest, MissingFileReturnsErrorWithoutThrowing) {
   auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);

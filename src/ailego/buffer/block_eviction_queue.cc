@@ -54,19 +54,19 @@ bool BlockEvictionQueue::evict_block(BlockType &item) {
     if (!ok) {
       return false;
     }
-    uint8_t current_priority = 0;
-    {
-      std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
-      if (item.owner == nullptr ||
-          valid_owners_.find(item.owner) == valid_owners_.end() ||
-          item.owner->is_dead_block(item.owner_key, item.version)) {
-        continue;
-      }
-      current_priority = item.owner->eviction_priority(item.owner_key);
+    std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+    if (item.owner == nullptr ||
+        valid_owners_.find(item.owner) == valid_owners_.end() ||
+        item.owner->is_dead_block(item.owner_key, item.version)) {
+      continue;
     }
+    const uint8_t current_priority =
+        item.owner->eviction_priority(item.owner_key);
     if (item.priority != current_priority) {
       item.priority = current_priority;
-      add_single_block(item, static_cast<int>(current_priority));
+      if (!add_single_block(item, static_cast<int>(current_priority))) {
+        item.owner->eviction_requeue_failed(item.owner_key, item.version);
+      }
       continue;
     }
     return true;
@@ -115,7 +115,9 @@ size_t BlockEvictionQueue::batch_recycle(size_t count) {
         item.owner->eviction_priority(item.owner_key);
     if (item.priority != current_priority) {
       item.priority = current_priority;
-      add_single_block(item, static_cast<int>(current_priority));
+      if (!add_single_block(item, static_cast<int>(current_priority))) {
+        item.owner->eviction_requeue_failed(item.owner_key, item.version);
+      }
       continue;
     }
     if (item.owner->evict_block(item.owner_key)) ++evicted;
@@ -261,12 +263,14 @@ int MemoryLimitPool::init(size_t pool_size) {
   std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   const size_t used = used_size_.load(std::memory_order_relaxed);
   const size_t external = external_used_size_.load(std::memory_order_relaxed);
-  if (used != 0 || external != 0) {
+  const size_t metadata = metadata_used_size_.load(std::memory_order_relaxed);
+  if (used != 0 || external != 0 || metadata != 0) {
     LOG_ERROR(
         "MemoryLimitPool reinitialization rejected while cache memory is "
         "active: requested_capacity=%zu current_capacity=%zu used=%zu "
-        "external_used=%zu",
-        pool_size, pool_size_.load(std::memory_order_relaxed), used, external);
+        "external_used=%zu metadata_used=%zu",
+        pool_size, pool_size_.load(std::memory_order_relaxed), used, external,
+        metadata);
     return -1;
   }
 
@@ -310,7 +314,7 @@ void MemoryLimitPool::background_evict_loop() {
     {
       std::unique_lock<std::mutex> lk(bg_mutex_);
       bg_cv_.wait_for(lk, milliseconds(5), [this] {
-        return !bg_running_.load() || used_size_.load() >= high_watermark();
+        return !bg_running_.load() || should_background_reclaim();
       });
     }
     if (!bg_running_.load()) break;
@@ -323,7 +327,17 @@ void MemoryLimitPool::background_evict_loop() {
     // finds ready buffers on the free-list instead of evicting inline.
     while (bg_running_.load() && used_size_.load() > low) {
       size_t n = BlockEvictionQueue::get_instance().batch_recycle(64);
-      if (n == 0) break;  // queues empty or nothing evictable right now
+      if (n == 0) {
+        // A full queue of pinned/second-chance/flush-failing pages can leave
+        // used above the high watermark. The outer wait predicate would then
+        // be permanently true and spin one CPU. Sleep on a stop-only
+        // predicate so this is a real backoff even while pressure remains.
+        bg_no_progress_sleeps_.fetch_add(1, std::memory_order_relaxed);
+        std::unique_lock<std::mutex> lk(bg_mutex_);
+        bg_cv_.wait_for(lk, milliseconds(5),
+                        [this] { return !bg_running_.load(); });
+        break;
+      }
       bg_evicted_buffers_.fetch_add(n, std::memory_order_relaxed);
     }
   }
@@ -374,6 +388,16 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
 
 bool MemoryLimitPool::try_charge_external(const size_t buffer_size) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  return try_charge_fixed(buffer_size, &external_used_size_);
+}
+
+bool MemoryLimitPool::try_charge_metadata(const size_t buffer_size) {
+  std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  return try_charge_fixed(buffer_size, &metadata_used_size_);
+}
+
+bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
+                                       std::atomic<size_t> *counter) {
   if (buffer_size == 0) {
     return true;
   }
@@ -385,8 +409,9 @@ bool MemoryLimitPool::try_charge_external(const size_t buffer_size) {
 
   while (true) {
     if (try_reserve_committed(buffer_size)) {
+      counter->fetch_add(buffer_size, std::memory_order_relaxed);
       used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
-      external_used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
+      bg_cv_.notify_one();
       return true;
     }
 
@@ -416,9 +441,9 @@ void MemoryLimitPool::charge_external(const size_t buffer_size) {
   // Unconditional add: a single fetch_add is equivalent to (and cheaper than)
   // a compare_exchange loop, which would otherwise re-read the contended
   // used_size_ cache line on every retry.
-  used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
   committed_size_.fetch_add(buffer_size, std::memory_order_relaxed);
   external_used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
+  used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
 }
 
 void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
@@ -456,14 +481,26 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
 }
 
 void MemoryLimitPool::release_external(const size_t buffer_size) {
+  release_fixed(buffer_size, &external_used_size_);
+}
+
+void MemoryLimitPool::release_metadata(const size_t buffer_size) {
+  release_fixed(buffer_size, &metadata_used_size_);
+}
+
+void MemoryLimitPool::release_fixed(const size_t buffer_size,
+                                    std::atomic<size_t> *counter) {
+  if (buffer_size == 0) {
+    return;
+  }
   // Unconditional subtract: single RMW instead of a CAS loop.
-  size_t external_prev =
-      external_used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
-  (void)external_prev;
-  assert(external_prev >= buffer_size);
   size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)prev;
   assert(prev >= buffer_size);
+  size_t counter_prev =
+      counter->fetch_sub(buffer_size, std::memory_order_relaxed);
+  (void)counter_prev;
+  assert(counter_prev >= buffer_size);
   size_t committed_prev =
       committed_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)committed_prev;
@@ -536,7 +573,9 @@ MemoryLimitPool::PoolStats MemoryLimitPool::stats() const {
   s.used = used_size_.load(std::memory_order_relaxed);
   s.committed = committed_size_.load(std::memory_order_relaxed);
   s.external_used = external_used_size_.load(std::memory_order_relaxed);
-  s.page_used = s.used >= s.external_used ? s.used - s.external_used : 0;
+  s.metadata_used = metadata_used_size_.load(std::memory_order_relaxed);
+  const size_t fixed = s.external_used + s.metadata_used;
+  s.page_used = s.used >= fixed ? s.used - fixed : 0;
   size_t free_buffers = 0;
   for (size_t i = 0; i < kNumFreeShards; ++i) {
     free_buffers += free_shards_[i].count.load(std::memory_order_relaxed);
@@ -546,6 +585,8 @@ MemoryLimitPool::PoolStats MemoryLimitPool::stats() const {
   s.alloc_from_slab = alloc_from_slab_.load(std::memory_order_relaxed);
   s.bg_evict_rounds = bg_evict_rounds_.load(std::memory_order_relaxed);
   s.bg_evicted_buffers = bg_evicted_buffers_.load(std::memory_order_relaxed);
+  s.bg_no_progress_sleeps =
+      bg_no_progress_sleeps_.load(std::memory_order_relaxed);
   s.high_watermark_hits = high_watermark_hits_.load(std::memory_order_relaxed);
   return s;
 }
@@ -554,20 +595,24 @@ void MemoryLimitPool::log_stats() const {
   PoolStats s = stats();
   LOG_INFO(
       "Shared cache stats: capacity=%llu used=%llu committed=%llu "
-      "page_used=%llu external_used=%llu free_buffers=%llu "
+      "page_used=%llu external_used=%llu metadata_used=%llu "
+      "free_buffers=%llu "
       "alloc_from_freelist=%llu alloc_from_slab=%llu "
       "bg_evict_rounds=%llu bg_evicted_buffers=%llu "
+      "bg_no_progress_sleeps=%llu "
       "high_watermark_hits=%llu",
       static_cast<unsigned long long>(s.pool_size),
       static_cast<unsigned long long>(s.used),
       static_cast<unsigned long long>(s.committed),
       static_cast<unsigned long long>(s.page_used),
       static_cast<unsigned long long>(s.external_used),
+      static_cast<unsigned long long>(s.metadata_used),
       static_cast<unsigned long long>(s.free_buffers),
       static_cast<unsigned long long>(s.alloc_from_freelist),
       static_cast<unsigned long long>(s.alloc_from_slab),
       static_cast<unsigned long long>(s.bg_evict_rounds),
       static_cast<unsigned long long>(s.bg_evicted_buffers),
+      static_cast<unsigned long long>(s.bg_no_progress_sleeps),
       static_cast<unsigned long long>(s.high_watermark_hits));
 }
 

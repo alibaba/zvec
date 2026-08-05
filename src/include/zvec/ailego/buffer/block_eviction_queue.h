@@ -68,6 +68,12 @@ class ZVEC_AILEGO_API EvictableBlockOwner {
   virtual uint8_t eviction_priority(eviction_key_t /*owner_key*/) const {
     return 0;
   }
+
+  //! Called when an item that was already removed from the queue cannot be
+  //! re-enqueued. Owners with persistent queue-membership state must clear it
+  //! so a later release/load can retry registration.
+  virtual void eviction_requeue_failed(eviction_key_t /*owner_key*/,
+                                       version_t /*version*/) {}
 };
 
 class BlockEvictionQueue {
@@ -177,11 +183,18 @@ class MemoryLimitPool {
   //! recycle evictable pages before failing.
   bool try_charge_external(const size_t buffer_size);
 
+  //! Reserve capacity for non-evictable buffer-pool metadata (page tables,
+  //! lock stripes, etc.). Kept separate from application-level external cache
+  //! accounting so operators can explain budget overhead precisely.
+  bool try_charge_metadata(const size_t buffer_size);
+
   void charge_external(const size_t buffer_size);
 
   void release_buffer(char *buffer, const size_t buffer_size);
 
   void release_external(const size_t buffer_size);
+
+  void release_metadata(const size_t buffer_size);
 
   bool is_full();
 
@@ -214,6 +227,10 @@ class MemoryLimitPool {
     return external_used_size_.load(std::memory_order_relaxed);
   }
 
+  size_t metadata_used() const {
+    return metadata_used_size_.load(std::memory_order_relaxed);
+  }
+
   //! Current configured capacity in bytes.
   size_t capacity() const {
     return pool_size_.load(std::memory_order_relaxed);
@@ -233,11 +250,13 @@ class MemoryLimitPool {
     size_t committed{0};
     size_t page_used{0};
     size_t external_used{0};
+    size_t metadata_used{0};
     size_t free_buffers{0};           // buffers cached across all shards
     uint64_t alloc_from_freelist{0};  // acquisitions served from a shard
     uint64_t alloc_from_slab{0};      // cold page-buffer allocations
     uint64_t bg_evict_rounds{0};      // background reclaim passes
     uint64_t bg_evicted_buffers{0};   // buffers reclaimed by background thread
+    uint64_t bg_no_progress_sleeps{0};  // backoffs after zero-page reclaim
     uint64_t high_watermark_hits{0};  // foreground acquire hit the capacity cap
   };
   PoolStats stats() const;
@@ -250,6 +269,8 @@ class MemoryLimitPool {
   void drain_free_list();
   bool try_reserve_used(size_t bytes);
   bool try_reserve_committed(size_t bytes);
+  bool try_charge_fixed(size_t bytes, std::atomic<size_t> *counter);
+  void release_fixed(size_t bytes, std::atomic<size_t> *counter);
   bool is_cacheable_buffer_size(size_t buffer_size);
   char *pop_free_buffer(size_t start_shard);
   size_t trim_free_buffers(size_t bytes_needed);
@@ -281,11 +302,24 @@ class MemoryLimitPool {
   }
   size_t high_watermark() const {
     size_t capacity = pool_size_.load(std::memory_order_relaxed);
-    return capacity - reserve_margin(capacity);
+    const size_t fixed = fixed_used();
+    const size_t page_capacity = capacity > fixed ? capacity - fixed : 0;
+    return fixed + page_capacity - reserve_margin(page_capacity);
   }
   size_t low_watermark() const {
     size_t capacity = pool_size_.load(std::memory_order_relaxed);
-    return capacity - reserve_margin(capacity) * 2;
+    const size_t fixed = fixed_used();
+    const size_t page_capacity = capacity > fixed ? capacity - fixed : 0;
+    return fixed + page_capacity - reserve_margin(page_capacity) * 2;
+  }
+  size_t fixed_used() const {
+    return external_used_size_.load(std::memory_order_relaxed) +
+           metadata_used_size_.load(std::memory_order_relaxed);
+  }
+  bool should_background_reclaim() const {
+    const size_t used = used_size_.load(std::memory_order_relaxed);
+    const size_t fixed = fixed_used();
+    return used > fixed && used >= high_watermark();
   }
 
  private:
@@ -313,6 +347,7 @@ class MemoryLimitPool {
   // page memory and external memory cannot together exceed pool_size_.
   std::atomic<size_t> committed_size_{0};
   std::atomic<size_t> external_used_size_{0};
+  std::atomic<size_t> metadata_used_size_{0};
 
   FreeShard free_shards_[kNumFreeShards];
   std::atomic<size_t> shard_seq_{0};
@@ -325,6 +360,7 @@ class MemoryLimitPool {
   std::atomic<uint64_t> alloc_from_slab_{0};
   std::atomic<uint64_t> bg_evict_rounds_{0};
   std::atomic<uint64_t> bg_evicted_buffers_{0};
+  std::atomic<uint64_t> bg_no_progress_sleeps_{0};
   std::atomic<uint64_t> high_watermark_hits_{0};
 
   std::thread bg_thread_;

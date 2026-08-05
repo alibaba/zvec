@@ -381,6 +381,21 @@ class BufferReadStorage : public IndexStorage {
           candidate_pool->get_handle());
 
       const size_t file_size = candidate_pool->file_size();
+      const size_t page_count =
+          file_size == 0 ? 0 : (file_size - 1) / ailego::kVectorPageSize + 1;
+      const size_t metadata_bytes =
+          ailego::VecBufferPool::metadata_bytes_for_page_count(page_count);
+      if (metadata_bytes == std::numeric_limits<size_t>::max() ||
+          metadata_bytes > shared_cache_capacity ||
+          ailego::kVectorPageSize > shared_cache_capacity - metadata_bytes) {
+        LOG_ERROR(
+            "BufferReadStorage shared cache is too small for page-table "
+            "metadata plus one data page: capacity=%zu metadata=%zu "
+            "page_size=%zu path=%s",
+            shared_cache_capacity, metadata_bytes, ailego::kVectorPageSize,
+            path.c_str());
+        return IndexError_NoMemory;
+      }
       size_t candidate_index_offset = 0;
       size_t end_offset = 0;
       if (!ResolveContainerOffset(file_size, header_offset_,
@@ -451,7 +466,7 @@ class BufferReadStorage : public IndexStorage {
       // Allocate the page table now that the layout is known.
       if (candidate_pool->init() != 0) {
         LOG_ERROR("Failed to init VecBufferPool, path: %s", path.c_str());
-        return IndexError_Runtime;
+        return IndexError_NoMemory;
       }
       if (warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
         candidate_pool->warmup();

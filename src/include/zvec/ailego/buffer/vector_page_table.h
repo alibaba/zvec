@@ -100,6 +100,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
       delete[] segments_[i];
       delete[] resident_segments_[i];
     }
+    MemoryLimitPool::get_instance().release_metadata(metadata_charge_);
   }
 
   VectorPageTable(const VectorPageTable &) = delete;
@@ -119,11 +120,31 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   //! the statically allocated segment table capacity (kMaxEntries).
   bool extend(size_t new_entry_num);
 
+  //! Roll back a just-published extension whose new entries have not been
+  //! exposed to page users. Used by VecBufferPool when the matching file
+  //! resize fails.
+  bool rollback_extend(size_t old_entry_num);
+
   char *acquire_block(block_id_t block_id);
 
   void release_block(block_id_t block_id);
 
   bool evict_block(block_id_t block_id) override;
+
+  void eviction_requeue_failed(eviction_key_t owner_key,
+                               version_t version) override {
+    if (version == owner_version_ &&
+        owner_key < entry_num_.load(std::memory_order_acquire)) {
+      Entry &e = entry_at(owner_key);
+      e.in_evict_queue.store(false, std::memory_order_relaxed);
+      // The queue slot has already been consumed. If the page is released,
+      // reclaim it directly so a transient queue-capacity failure cannot
+      // strand it forever waiting for a release that will never happen.
+      if (e.ref_count.load(std::memory_order_acquire) == 0) {
+        (void)do_evict_block(owner_key, /*force=*/false);
+      }
+    }
+  }
 
   uint8_t eviction_priority(eviction_key_t owner_key) const override {
     if (owner_key >= entry_num_.load(std::memory_order_acquire)) {
@@ -298,6 +319,9 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // file size before mutating any on-disk state.
   static constexpr size_t kMaxEntries = kMaxSegments * kSegmentSize;
 
+  //! Heap bytes allocated by the segmented page table for `entry_num`.
+  static size_t metadata_bytes_for_entries(size_t entry_num);
+
  private:
   // entry_num_ and segment_count_ are mutated by writers in init()/extend()
   // and observed by readers in entry_num() and the hot-path methods.  They
@@ -309,6 +333,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   std::atomic<size_t> segment_count_{0};
   Entry *segments_[kMaxSegments]{};
   ResidentEntry *resident_segments_[kMaxSegments]{};
+  size_t metadata_charge_{0};
 
   // Pair with the release-store on segment_count_ in init()/extend() so
   // that any reader observing the published segment table also sees the
@@ -335,6 +360,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Shared implementation for evict_block()/force_evict_block(): when `force`
   // is true the CLOCK second-chance branch is skipped so the block is always
   // reclaimed.
+  static void initialize_segment(Entry *entries,
+                                 ResidentEntry *resident_entries);
   bool do_evict_block(block_id_t block_id, bool force);
   static version_t next_owner_version();
 
@@ -583,6 +610,10 @@ class ZVEC_AILEGO_API VecBufferPool {
   static constexpr uint8_t kNormalPriority = 1;
   static constexpr uint8_t kHighPriority = 2;
 
+  //! Non-evictable page-table and striped-lock memory required for a pool
+  //! covering `page_count` pages.
+  static size_t metadata_bytes_for_page_count(size_t page_count);
+
   VecBufferPool(const std::string &filename, bool writable = false,
                 bool enable_direct_io = false, bool enable_io_profile = false);
   ~VecBufferPool();
@@ -806,6 +837,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   bool writable_{false};
   bool direct_io_enabled_{false};
   bool io_profile_enabled_{false};
+  bool initialized_{false};
   // Cache miss counter: incremented once per page fetched from disk on the
   // cold acquire path (pread / zero-fill).  Combined with page_table_ hits it
   // yields the pool hit rate.
@@ -824,6 +856,8 @@ class ZVEC_AILEGO_API VecBufferPool {
  private:
   PageReadEpochDomain read_epoch_domain_{};
   std::unique_ptr<std::mutex[]> block_mutexes_{};
+  size_t block_mutex_count_{0};
+  size_t mutex_metadata_charge_{0};
 };
 
 class ZVEC_AILEGO_API VecBufferPoolHandle {
