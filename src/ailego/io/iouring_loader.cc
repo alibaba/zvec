@@ -16,9 +16,10 @@
 
 #include <sys/syscall.h>  // syscall(), __NR_io_uring_setup
 #include <unistd.h>       // close()
+#include <cerrno>
 #include <cstring>
 #include <ailego/io/iouring_loader.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
 namespace core {

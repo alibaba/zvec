@@ -68,12 +68,12 @@ inline const char *IOBackendDescription(IOBackendType type) {
   return "Unknown I/O backend.";
 }
 
-// Singleton that loads and queries an I/O backend on demand.
+// Singleton that probes and caches the I/O backend on first use.
 //
-// available() (no arg) tries the best backend with priority
-// (io_uring > libaio > pread) and returns the loaded backend type.
-// available(IOBackendType) tries a specific backend.
-// Use type() / name() to query the loaded backend without triggering a load.
+// available() probes backends by priority (io_uring > libaio > pread)
+// exactly once and caches the result — including the pread-only outcome,
+// so systems without async I/O don't re-probe on every call.
+// Use type() / name() to query the cached backend without probing.
 class IOBackend {
  public:
   static IOBackend &Instance() {
@@ -81,49 +81,26 @@ class IOBackend {
     return instance;
   }
 
-  // Try to load the best available backend (io_uring > libaio > pread).
-  // Returns the loaded backend type.
-  // Idempotent — if already loaded, returns immediately.
+  // Returns the active backend, probing on the first call
+  // (io_uring > libaio > pread).  Idempotent — later calls return the
+  // cached result immediately, even when the outcome is kPread.
   IOBackendType available() {
-    if (type_ != IOBackendType::kPread) {
-      return type_;
-    }
-    IOBackendType t = available(IOBackendType::kIoUring);
-    if (t == IOBackendType::kPread) {
-      t = available(IOBackendType::kLibAio);
-    }
-    return t;
-  }
-
-  // Try to load the requested backend.  Returns the loaded backend type
-  // (may differ from requested if the load failed — falls back to kPread).
-  // Idempotent — if the same backend is already loaded, returns immediately.
-  IOBackendType available(IOBackendType requested) {
-    if (type_ == requested && type_ != IOBackendType::kPread) {
+    if (probed_) {
       return type_;
     }
 #if defined(__linux) || defined(__linux__)
-    if (requested == IOBackendType::kIoUring) {
-      // Probe io_uring availability with a minimal ring setup using only
-      // raw syscalls — no dependency on liburing.
-      struct io_uring_params params;
-      std::memset(&params, 0, sizeof(params));
-      int fd = static_cast<int>(::syscall(__NR_io_uring_setup, 1, &params));
-      if (fd >= 0) {
-        ::close(fd);
-        type_ = IOBackendType::kIoUring;
-        return type_;
-      }
+    if (io_uring_supported()) {
+      type_ = IOBackendType::kIoUring;
+    } else if (LibAioLoader::Instance().load() &&
+               LibAioLoader::Instance().is_available()) {
+      type_ = IOBackendType::kLibAio;
+    } else {
+      type_ = IOBackendType::kPread;
     }
-    if (requested == IOBackendType::kLibAio) {
-      if (LibAioLoader::Instance().load() &&
-          LibAioLoader::Instance().is_available()) {
-        type_ = IOBackendType::kLibAio;
-        return type_;
-      }
-    }
-#endif
+#else
     type_ = IOBackendType::kPread;
+#endif
+    probed_ = true;
     return type_;
   }
 
@@ -139,7 +116,7 @@ class IOBackend {
     return available() == IOBackendType::kIoUring;
   }
 
-  // Returns the loaded backend type.
+  // Returns the cached backend type without triggering the probe.
   IOBackendType type() const {
     return type_;
   }
@@ -157,7 +134,29 @@ class IOBackend {
  private:
   IOBackend() = default;
 
+#if defined(__linux) || defined(__linux__)
+  // Probe io_uring availability with a minimal ring setup using only raw
+  // syscalls — no dependency on liburing.  A successful setup is
+  // sufficient: the read path uses IORING_OP_READV, which is part of the
+  // initial io_uring API (5.1), so any kernel that accepts
+  // io_uring_setup() also supports our reads.
+  static bool io_uring_supported() {
+    struct io_uring_params params;
+    std::memset(&params, 0, sizeof(params));
+    int fd = static_cast<int>(::syscall(__NR_io_uring_setup, 1, &params));
+    if (fd < 0) {
+      return false;
+    }
+    ::close(fd);
+    return true;
+  }
+#endif
+
+  // kPread doubles as the pre-probe default; probed_ marks whether the
+  // one-shot probe has run so that a pread-only outcome is cached too.
+  // (IOBackendType values are C ABI — no kNone sentinel is added there.)
   IOBackendType type_{IOBackendType::kPread};
+  bool probed_{false};
 };
 
 }  // namespace ailego
