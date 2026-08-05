@@ -3605,9 +3605,6 @@ typedef struct zvec_doc_iterator_t zvec_doc_iterator_t;
 
 /**
  * @brief Opaque handle for iterator options.
- *
- * Follows the same pattern as zvec_collection_options_t (opaque type + setters)
- * for ABI stability: adding new options later does not break the ABI.
  */
 typedef struct zvec_iterator_options_t zvec_iterator_options_t;
 

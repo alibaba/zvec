@@ -176,7 +176,7 @@ class CollectionImpl : public Collection {
 
   // Columns for Segment::scan: system columns (+ LOCAL_ROW_ID when vectors
   // are needed) plus the requested forward fields (all when nullopt).
-  std::vector<std::string> build_scan_columns(
+  Result<std::vector<std::string>> build_scan_columns(
       const IteratorOptions &options) const;
 
   // Isolated scan: Flush (writable) + snapshot + clone, then build one
@@ -2108,7 +2108,7 @@ std::vector<Segment::Ptr> CollectionImpl::get_all_persist_segments() const {
   return segment_manager_->get_segments();
 }
 
-std::vector<std::string> CollectionImpl::build_scan_columns(
+Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
     const IteratorOptions &options) const {
   std::vector<std::string> columns;
   columns.push_back(GLOBAL_DOC_ID);
@@ -2127,12 +2127,21 @@ std::vector<std::string> CollectionImpl::build_scan_columns(
       columns.push_back(field->name());
     }
   } else {
-    // Only requested fields
+    // Only requested fields — validate against schema and reject duplicates
     const auto &requested = *output_fields;
-    std::unordered_set<std::string> requested_set(requested.begin(),
-                                                  requested.end());
+    std::unordered_set<std::string> seen;
+    for (const auto &name : requested) {
+      if (schema_->get_field(name) == nullptr) {
+        return tl::make_unexpected(Status::InvalidArgument(
+            "output_fields contains unknown field: ", name));
+      }
+      if (!seen.insert(name).second) {
+        return tl::make_unexpected(Status::InvalidArgument(
+            "output_fields contains duplicate field: ", name));
+      }
+    }
     for (const auto &field : schema_->forward_fields()) {
-      if (requested_set.count(field->name())) {
+      if (seen.count(field->name())) {
         columns.push_back(field->name());
       }
     }
@@ -2176,7 +2185,11 @@ Result<std::vector<RecordBatchReaderPtr>> CollectionImpl::Scan(
     delete_store = delete_store_->clone();
   }
 
-  auto scan_columns = build_scan_columns(options);
+  auto scan_columns_result = build_scan_columns(options);
+  if (!scan_columns_result) {
+    return tl::make_unexpected(scan_columns_result.error());
+  }
+  auto scan_columns = std::move(scan_columns_result.value());
   auto filter = delete_store->make_filter();
 
   // Build one filtered reader per segment (NOT concatenated). DocIterator
@@ -2190,7 +2203,7 @@ Result<std::vector<RecordBatchReaderPtr>> CollectionImpl::Scan(
       return tl::make_unexpected(
           Status::InternalError("Segment::scan failed during collection scan"));
     }
-    readers.push_back(FilteringReader::Make(scalar_reader, filter));
+    readers.push_back(FilteringReader::Make(std::move(scalar_reader), filter));
   }
 
   return readers;

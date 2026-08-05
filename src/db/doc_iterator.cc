@@ -31,15 +31,13 @@ DocIterator::~DocIterator() {
 void DocIterator::Close() {
   if (impl_) {
     impl_->closed = true;
-    // Release the Arrow readers/batch first (they reference segment files),
-    // then release the kept-alive snapshot resources so a closed iterator
-    // retains nothing.
     impl_->readers.clear();
     impl_->current_batch.reset();
     impl_->vector_cache_.clear();
     impl_->segments.clear();
     impl_->delete_store.reset();
     impl_->schema.reset();
+    impl_.reset();
   }
 }
 
@@ -127,7 +125,6 @@ Result<Doc::Ptr> DocIterator::Next() {
     auto uid_array =
         std::dynamic_pointer_cast<arrow::StringArray>(batch.column(uid_col));
     if (uid_array) {
-      // GetView avoids the per-row Scalar allocation of GetScalar()->ToString()
       doc->set_pk(std::string(uid_array->GetView(row)));
     }
   }
@@ -162,8 +159,14 @@ Result<Doc::Ptr> DocIterator::Next() {
   if (impl_->include_vector && impl_->schema) {
     for (const auto &field : impl_->schema->vector_fields()) {
       auto it = impl_->vector_cache_.find(field->name());
-      if (it == impl_->vector_cache_.end()) continue;
-      if (row >= static_cast<int64_t>(it->second.size())) continue;
+      if (it == impl_->vector_cache_.end()) {
+        return tl::make_unexpected(Status::InternalError(
+            "vector cache missing for field: ", field->name()));
+      }
+      if (row >= static_cast<int64_t>(it->second.size())) {
+        return tl::make_unexpected(Status::InternalError(
+            "vector cache row out of range for field: ", field->name()));
+      }
 
       auto s =
           ConvertVectorDataBufferToDocField(field, it->second[row], doc.get());

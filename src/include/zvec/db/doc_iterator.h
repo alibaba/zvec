@@ -16,10 +16,11 @@
 #include <memory>
 #include <zvec/db/doc.h>
 #include <zvec/db/status.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
-class DocIterator {
+class ZVEC_API DocIterator {
  public:
   // Pimpl: the implementation holds Arrow types (RecordBatchReader,
   // RecordBatch). Only a forward declaration is exposed here; the definition

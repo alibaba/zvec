@@ -405,15 +405,17 @@ class Collection:
             ...     print(doc.id, doc.field("title"))
         """
         iterator = self._obj.CreateIterator(output_fields, include_vector)
-        try:
-            for core_doc in iterator:
-                py_doc = convert_to_py_doc(core_doc, self.schema)
-                if py_doc is not None:
-                    yield py_doc
-        finally:
-            # Release native resources (segments, file handles) even if the
-            # caller stops early (e.g. breaks out of the loop).
-            iterator.close()
+
+        def generate():
+            try:
+                for core_doc in iterator:
+                    py_doc = convert_to_py_doc(core_doc, self.schema)
+                    if py_doc is not None:
+                        yield py_doc
+            finally:
+                iterator.close()
+
+        return generate()
 
     # ========== Collection DQL-Query Methods ==========
 

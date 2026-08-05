@@ -27,7 +27,7 @@ Status DenseVectorDataConverter(
   const T *data_ptr = reinterpret_cast<const T *>(buffer.data.data());
   size_t data_size = buffer.data.size() / sizeof(T);
   std::vector<T> vector_data(data_ptr, data_ptr + data_size);
-  doc->set(field->name(), vector_data);
+  doc->set(field->name(), std::move(vector_data));
   return Status::OK();
 }
 
@@ -48,21 +48,22 @@ Status SparseVectorDataConverter(
 
   std::pair<std::vector<IndexType>, std::vector<ValueType>> sparse_vector_pair(
       std::move(indices_vector), std::move(values_vector));
-  doc->set(field->name(), sparse_vector_pair);
+  doc->set(field->name(), std::move(sparse_vector_pair));
   return Status::OK();
 }
 
 //! Set a scalar Doc field from row `row` of a typed Arrow array.
+//! Uses static_cast (type is guaranteed by the caller's switch dispatch).
 template <typename ArrowArrayT>
-Status SetScalarField(const std::shared_ptr<arrow::Array> &array, int64_t row,
+Status SetScalarField(const arrow::Array *array, int64_t row,
                       const std::string &name, Doc *doc) {
-  auto typed_array = std::dynamic_pointer_cast<ArrowArrayT>(array);
-  if (!typed_array) {
-    return Status::InternalError("Arrow array type mismatch for field: ", name);
+  auto *typed_array = static_cast<const ArrowArrayT *>(array);
+  if (typed_array->IsNull(row)) {
+    return Status::OK();
   }
   if constexpr (std::is_same_v<ArrowArrayT, arrow::StringArray> ||
                 std::is_same_v<ArrowArrayT, arrow::BinaryArray>) {
-    doc->set(name, typed_array->GetString(row));
+    doc->set(name, std::string(typed_array->GetView(row)));
   } else {
     doc->set(name, typed_array->Value(row));
   }
@@ -72,18 +73,11 @@ Status SetScalarField(const std::shared_ptr<arrow::Array> &array, int64_t row,
 //! Set an array Doc field from row `row` of an Arrow ListArray whose values
 //! are of type ArrowArrayT. Null elements inside the list are skipped.
 template <typename ArrowArrayT, typename T>
-Status SetListField(const std::shared_ptr<arrow::Array> &array, int64_t row,
+Status SetListField(const arrow::Array *array, int64_t row,
                     const std::string &name, Doc *doc) {
-  auto list_array = std::dynamic_pointer_cast<arrow::ListArray>(array);
-  if (!list_array) {
-    return Status::InternalError("Arrow list type mismatch for field: ", name);
-  }
-  auto values =
-      std::dynamic_pointer_cast<ArrowArrayT>(list_array->value_slice(row));
-  if (!values) {
-    return Status::InternalError("Arrow list value type mismatch for field: ",
-                                 name);
-  }
+  auto *list_array = static_cast<const arrow::ListArray *>(array);
+  auto values_slice = list_array->value_slice(row);
+  auto *values = static_cast<const ArrowArrayT *>(values_slice.get());
   std::vector<T> vec;
   vec.reserve(values->length());
   for (int64_t i = 0; i < values->length(); ++i) {
@@ -92,12 +86,12 @@ Status SetListField(const std::shared_ptr<arrow::Array> &array, int64_t row,
     }
     if constexpr (std::is_same_v<ArrowArrayT, arrow::StringArray> ||
                   std::is_same_v<ArrowArrayT, arrow::BinaryArray>) {
-      vec.push_back(values->GetString(i));
+      vec.emplace_back(values->GetView(i));
     } else {
       vec.push_back(values->Value(i));
     }
   }
-  doc->set(name, vec);
+  doc->set(name, std::move(vec));
   return Status::OK();
 }
 
@@ -106,40 +100,25 @@ Status SetListField(const std::shared_ptr<arrow::Array> &array, int64_t row,
 Status ConvertVectorDataBufferToDocField(
     const FieldSchema::Ptr &field,
     const vector_column_params::VectorDataBuffer &buf, Doc *doc) {
-  Status status;
   if (std::holds_alternative<vector_column_params::DenseVectorBuffer>(
           buf.vector_buffer)) {
     const auto &dense_buffer =
         std::get<vector_column_params::DenseVectorBuffer>(buf.vector_buffer);
     switch (field->data_type()) {
-      case DataType::VECTOR_BINARY32: {
-        status = DenseVectorDataConverter<uint32_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_BINARY64: {
-        status = DenseVectorDataConverter<uint64_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_FP16: {
-        status = DenseVectorDataConverter<float16_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_FP32: {
-        status = DenseVectorDataConverter<float>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_FP64: {
-        status = DenseVectorDataConverter<double>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_INT8: {
-        status = DenseVectorDataConverter<int8_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_INT16: {
-        status = DenseVectorDataConverter<int16_t>(field, dense_buffer, doc);
-        break;
-      }
+      case DataType::VECTOR_BINARY32:
+        return DenseVectorDataConverter<uint32_t>(field, dense_buffer, doc);
+      case DataType::VECTOR_BINARY64:
+        return DenseVectorDataConverter<uint64_t>(field, dense_buffer, doc);
+      case DataType::VECTOR_FP16:
+        return DenseVectorDataConverter<float16_t>(field, dense_buffer, doc);
+      case DataType::VECTOR_FP32:
+        return DenseVectorDataConverter<float>(field, dense_buffer, doc);
+      case DataType::VECTOR_FP64:
+        return DenseVectorDataConverter<double>(field, dense_buffer, doc);
+      case DataType::VECTOR_INT8:
+        return DenseVectorDataConverter<int8_t>(field, dense_buffer, doc);
+      case DataType::VECTOR_INT16:
+        return DenseVectorDataConverter<int16_t>(field, dense_buffer, doc);
       default:
         return Status::InvalidArgument(
             "Unsupported dense vector element type: ", field->data_type());
@@ -149,25 +128,18 @@ Status ConvertVectorDataBufferToDocField(
     const auto &sparse_buffer =
         std::get<vector_column_params::SparseVectorBuffer>(buf.vector_buffer);
     switch (field->data_type()) {
-      case DataType::SPARSE_VECTOR_FP16: {
-        status = SparseVectorDataConverter<uint32_t, float16_t>(
+      case DataType::SPARSE_VECTOR_FP16:
+        return SparseVectorDataConverter<uint32_t, float16_t>(
             field, sparse_buffer, doc);
-        break;
-      }
-      case DataType::SPARSE_VECTOR_FP32: {
-        status = SparseVectorDataConverter<uint32_t, float>(field,
-                                                            sparse_buffer, doc);
-        break;
-      }
+      case DataType::SPARSE_VECTOR_FP32:
+        return SparseVectorDataConverter<uint32_t, float>(field, sparse_buffer,
+                                                          doc);
       default:
         return Status::InvalidArgument(
             "Unsupported sparse vector element type: ", field->data_type());
     }
-  } else {
-    return Status::InvalidArgument("Unsupported vector buffer type");
   }
-
-  return status;
+  return Status::InvalidArgument("Unsupported vector buffer type");
 }
 
 Status ConvertArrowRowToDocField(const std::shared_ptr<arrow::Array> &array,
@@ -182,45 +154,44 @@ Status ConvertArrowRowToDocField(const std::shared_ptr<arrow::Array> &array,
   }
 
   const auto &name = field.name();
+  const auto *raw = array.get();
   switch (field.data_type()) {
     case DataType::BINARY:
-      return SetScalarField<arrow::BinaryArray>(array, row, name, doc);
+      return SetScalarField<arrow::BinaryArray>(raw, row, name, doc);
     case DataType::STRING:
-      return SetScalarField<arrow::StringArray>(array, row, name, doc);
+      return SetScalarField<arrow::StringArray>(raw, row, name, doc);
     case DataType::BOOL:
-      return SetScalarField<arrow::BooleanArray>(array, row, name, doc);
+      return SetScalarField<arrow::BooleanArray>(raw, row, name, doc);
     case DataType::INT32:
-      return SetScalarField<arrow::Int32Array>(array, row, name, doc);
+      return SetScalarField<arrow::Int32Array>(raw, row, name, doc);
     case DataType::INT64:
-      return SetScalarField<arrow::Int64Array>(array, row, name, doc);
+      return SetScalarField<arrow::Int64Array>(raw, row, name, doc);
     case DataType::UINT32:
-      return SetScalarField<arrow::UInt32Array>(array, row, name, doc);
+      return SetScalarField<arrow::UInt32Array>(raw, row, name, doc);
     case DataType::UINT64:
-      return SetScalarField<arrow::UInt64Array>(array, row, name, doc);
+      return SetScalarField<arrow::UInt64Array>(raw, row, name, doc);
     case DataType::FLOAT:
-      return SetScalarField<arrow::FloatArray>(array, row, name, doc);
+      return SetScalarField<arrow::FloatArray>(raw, row, name, doc);
     case DataType::DOUBLE:
-      return SetScalarField<arrow::DoubleArray>(array, row, name, doc);
+      return SetScalarField<arrow::DoubleArray>(raw, row, name, doc);
     case DataType::ARRAY_BINARY:
-      return SetListField<arrow::BinaryArray, std::string>(array, row, name,
-                                                           doc);
+      return SetListField<arrow::BinaryArray, std::string>(raw, row, name, doc);
     case DataType::ARRAY_STRING:
-      return SetListField<arrow::StringArray, std::string>(array, row, name,
-                                                           doc);
+      return SetListField<arrow::StringArray, std::string>(raw, row, name, doc);
     case DataType::ARRAY_BOOL:
-      return SetListField<arrow::BooleanArray, bool>(array, row, name, doc);
+      return SetListField<arrow::BooleanArray, bool>(raw, row, name, doc);
     case DataType::ARRAY_INT32:
-      return SetListField<arrow::Int32Array, int32_t>(array, row, name, doc);
+      return SetListField<arrow::Int32Array, int32_t>(raw, row, name, doc);
     case DataType::ARRAY_INT64:
-      return SetListField<arrow::Int64Array, int64_t>(array, row, name, doc);
+      return SetListField<arrow::Int64Array, int64_t>(raw, row, name, doc);
     case DataType::ARRAY_UINT32:
-      return SetListField<arrow::UInt32Array, uint32_t>(array, row, name, doc);
+      return SetListField<arrow::UInt32Array, uint32_t>(raw, row, name, doc);
     case DataType::ARRAY_UINT64:
-      return SetListField<arrow::UInt64Array, uint64_t>(array, row, name, doc);
+      return SetListField<arrow::UInt64Array, uint64_t>(raw, row, name, doc);
     case DataType::ARRAY_FLOAT:
-      return SetListField<arrow::FloatArray, float>(array, row, name, doc);
+      return SetListField<arrow::FloatArray, float>(raw, row, name, doc);
     case DataType::ARRAY_DOUBLE:
-      return SetListField<arrow::DoubleArray, double>(array, row, name, doc);
+      return SetListField<arrow::DoubleArray, double>(raw, row, name, doc);
     default:
       return Status::InvalidArgument("Unsupported data type for field: ", name,
                                      ": ", field.data_type());

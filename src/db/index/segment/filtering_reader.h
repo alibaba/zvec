@@ -62,11 +62,11 @@ class FilteringReader : public arrow::RecordBatchReader {
         return arrow::Status::OK();
       }
 
-      auto gdoc_array = std::dynamic_pointer_cast<arrow::UInt64Array>(
-          (*batch)->column(gdoc_col));
-      if (!gdoc_array) {
+      const auto &col = (*batch)->column(gdoc_col);
+      if (col->type_id() != arrow::Type::UINT64) {
         return arrow::Status::OK();
       }
+      auto *gdoc_array = static_cast<const arrow::UInt64Array *>(col.get());
 
       // Build filter mask: true = keep, false = skip (deleted)
       arrow::BooleanBuilder mask_builder;
