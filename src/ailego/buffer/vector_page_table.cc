@@ -21,6 +21,10 @@
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/logger/logger.h>
 
+#if defined(__linux) || defined(__linux__)
+#include <ailego/io/libaio_loader.h>
+#endif
+
 #if defined(_MSC_VER)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -67,6 +71,36 @@ namespace zvec {
 namespace ailego {
 
 const size_t kVectorPageSize = MemoryHelper::PageSize();
+
+VecBufferPool::~VecBufferPool() {
+  // A caller may have used the non-blocking submit API directly. Drain the
+  // current thread's batch before page buffers or file descriptors can be
+  // reclaimed by teardown.
+  wait_aio();
+  // Emit a one-line cache summary (hit rate / evictions) before teardown so
+  // operators can reason about buffer-pool efficiency per file.
+  log_stats();
+  // Flush any remaining dirty blocks before tearing down memory/fd so that
+  // writes are not silently lost. Safe to call even in read-only mode.
+  (void)this->flush_all();
+  for (size_t i = 0; i < page_table_.entry_num(); ++i) {
+    assert(page_table_.is_released(i));
+    page_table_.force_evict_block(i);
+  }
+  read_epoch_domain_.drain();
+#if defined(__linux) || defined(__linux__)
+  if (aio_enabled_ && aio_ctx_) {
+    LibAioLoader::Instance().io_destroy(aio_ctx_);
+  }
+#endif
+#if defined(_MSC_VER)
+  _close(fd_);
+  _close(meta_fd_);
+#else
+  close(fd_);
+  close(meta_fd_);
+#endif
+}
 
 namespace {
 thread_local BufferPoolIoProfileBinding tl_io_profile_binding;
@@ -567,7 +601,7 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
 #if defined(__linux) || defined(__linux__)
-  if (direct_io_enabled_ && LibAioLoader::Instance().Load()) {
+  if (direct_io_enabled_ && LibAioLoader::Instance().load()) {
     aio_ctx_ = nullptr;
     if (LibAioLoader::Instance().io_setup(256, &aio_ctx_) == 0) {
       aio_enabled_ = true;
@@ -1412,7 +1446,7 @@ struct ThreadLocalPrefetchAioCtx {
   bool ensure() {
     if (inited) return ok;
     inited = true;
-    if (!LibAioLoader::Instance().IsAvailable()) return false;
+    if (!LibAioLoader::Instance().is_available()) return false;
     ctx = nullptr;
     if (LibAioLoader::Instance().io_setup(256, &ctx) == 0) {
       ok = true;
@@ -1617,7 +1651,7 @@ struct ThreadLocalAioCtx {
   bool ensure() {
     if (inited) return ok;
     inited = true;
-    if (!LibAioLoader::Instance().IsAvailable()) return false;
+    if (!LibAioLoader::Instance().is_available()) return false;
     ctx = nullptr;
     if (LibAioLoader::Instance().io_setup(128, &ctx) == 0) {
       ok = true;

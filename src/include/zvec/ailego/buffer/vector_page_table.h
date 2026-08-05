@@ -39,14 +39,15 @@
 #include <vector>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/export.h>
-#if defined(__linux) || defined(__linux__)
-#include <zvec/ailego/io/libaio_loader.h>
-#endif
 #include "block_eviction_queue.h"
 #include "concurrentqueue.h"
 
 #if defined(_MSC_VER)
 #include <io.h>
+#endif
+
+#if defined(__linux) || defined(__linux__)
+struct io_context;
 #endif
 
 namespace zvec {
@@ -588,35 +589,7 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   VecBufferPool(const std::string &filename, bool writable = false,
                 bool enable_direct_io = false, bool enable_io_profile = false);
-  ~VecBufferPool() {
-    // A caller may have used the non-blocking submit API directly.  Drain the
-    // current thread's batch before page buffers or file descriptors can be
-    // reclaimed by teardown.
-    wait_aio();
-    // Emit a one-line cache summary (hit rate / evictions) before teardown
-    // so operators can reason about buffer-pool efficiency per file.
-    log_stats();
-    // Flush any remaining dirty blocks before tearing down memory/fd so that
-    // writes are not silently lost. Safe to call even in read-only mode.
-    (void)this->flush_all();
-    for (size_t i = 0; i < page_table_.entry_num(); ++i) {
-      assert(page_table_.is_released(i));
-      page_table_.force_evict_block(i);
-    }
-    read_epoch_domain_.drain();
-#if defined(__linux) || defined(__linux__)
-    if (aio_enabled_ && aio_ctx_) {
-      LibAioLoader::Instance().io_destroy(aio_ctx_);
-    }
-#endif
-#if defined(_MSC_VER)
-    _close(fd_);
-    _close(meta_fd_);
-#else
-    close(fd_);
-    close(meta_fd_);
-#endif
-  }
+  ~VecBufferPool();
 
   int init();
 
@@ -841,7 +814,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   mutable std::mutex io_profile_mutex_{};
   BufferPoolIoProfile io_profile_totals_{};
 #if defined(__linux) || defined(__linux__)
-  io_context_t aio_ctx_{nullptr};
+  ::io_context *aio_ctx_{nullptr};
   bool aio_enabled_{false};
 #endif
 

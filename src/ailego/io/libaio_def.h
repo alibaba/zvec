@@ -34,17 +34,6 @@
 
 #if defined(__linux) || defined(__linux__)
 
-// If the mirror copy at <zvec/ailego/io/libaio_def.h> (or the system
-// <libaio.h>) has already provided these ABI-stable definitions, skip ours.
-// Conversely, define __LIBAIO_H so a later inclusion of that copy becomes a
-// no-op.  The struct layouts are byte-identical across both copies, so either
-// winner is safe; this guard just prevents redefinition when both include
-// roots land in one translation unit.
-#ifdef __LIBAIO_H
-// AIO types already provided; nothing to do.
-#else
-#define __LIBAIO_H
-
 struct sockaddr;
 struct iovec;
 
@@ -198,5 +187,4 @@ static inline void io_prep_pread(struct iocb *iocb, int fd, void *buf,
 // End: type and struct definitions from <libaio.h>
 // ---------------------------------------------------------------------------
 
-#endif  // !__LIBAIO_H (our definitions block)
 #endif  // __linux__

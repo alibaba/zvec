@@ -51,14 +51,6 @@ typedef int (*aio_getevents_fn)(io_context_t ctx, long min_nr, long nr,
 //   if (LibAioLoader::Instance().load()) {
 //     LibAioLoader::Instance().io_setup(...);
 //   }
-//
-// NOTE: the mirror header <zvec/ailego/io/libaio_loader.h> declares a
-// layout-identical class of the same (global) name.  Both share the
-// ZVEC_LIBAIO_LOADER_CLASS_DEFINED guard so a translation unit that
-// transitively pulls in both include roots gets exactly one definition (the
-// first one seen) instead of a redefinition error.
-#ifndef ZVEC_LIBAIO_LOADER_CLASS_DEFINED
-#define ZVEC_LIBAIO_LOADER_CLASS_DEFINED
 class LibAioLoader {
  public:
   static LibAioLoader &Instance() {
@@ -148,6 +140,5 @@ class LibAioLoader {
   std::atomic<bool> available_{false};
   void *handle_{nullptr};
 };
-#endif  // ZVEC_LIBAIO_LOADER_CLASS_DEFINED
 
 #endif  // __linux__
