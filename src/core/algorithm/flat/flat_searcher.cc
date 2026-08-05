@@ -102,6 +102,7 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
 
   column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
   distance_matrix_.initialize(*measure_);
+  row_batch_distance_ = measure_->batch_distance();
 
   if (column_major_order_) {
     if (!distance_matrix_.is_valid()) {

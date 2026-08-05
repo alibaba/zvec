@@ -49,6 +49,7 @@ class FlatSearcher : public IndexSearcher {
   int unload(void) override {
     container_ = nullptr;
     measure_ = nullptr;
+    row_batch_distance_ = nullptr;
     features_segment_ = nullptr;
     keys_ = nullptr;
     key_id_mapping_.clear();
@@ -150,6 +151,11 @@ class FlatSearcher : public IndexSearcher {
     return distance_matrix_;
   }
 
+  //! Retrieve the row-major batch distance function
+  const IndexMetric::MatrixBatchDistance &row_batch_distance(void) const {
+    return row_batch_distance_;
+  }
+
   //! Clone a features segment
   IndexStorage::Segment::Pointer clone_features_segment(void) const {
     return features_segment_->clone();
@@ -175,6 +181,7 @@ class FlatSearcher : public IndexSearcher {
   mutable std::vector<uint32_t> mapping_{};
   mutable std::mutex mapping_mutex_{};
   FlatDistanceMatrix<BATCH_SIZE> distance_matrix_{};
+  IndexMetric::MatrixBatchDistance row_batch_distance_{};
   IndexSearcher::Stats stats_{};
 };
 

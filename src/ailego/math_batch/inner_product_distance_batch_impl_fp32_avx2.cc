@@ -129,6 +129,13 @@ void compute_one_to_many_inner_product_avx2_fp32_12(
       query, ptrs, prefetch_ptrs, dim, sums);
 }
 
+void compute_one_to_many_inner_product_avx2_fp32_8(
+    const float *query, const float **ptrs,
+    std::array<const float *, 8> &prefetch_ptrs, size_t dim, float *sums) {
+  return compute_one_to_many_inner_product_avx2_fp32<float, 8>(
+      query, ptrs, prefetch_ptrs, dim, sums);
+}
+
 #endif
 
 }  // namespace zvec::ailego::DistanceBatch

@@ -75,6 +75,13 @@ struct InnerProductDistanceBatch {
       InnerProductDistanceBatchImpl<ValueType, BatchSize>::compute_one_to_many(
           query, &vecs[i], prefetch_ptrs, dim, &results[i]);
     }
+    if constexpr (std::is_same_v<ValueType, float> && BatchSize > 8) {
+      if (i + 8 <= num_vecs) {
+        InnerProductDistanceBatch<ValueType, 8, PrefetchStep>::ComputeBatch(
+            &vecs[i], query, 8, dim, &results[i]);
+        i += 8;
+      }
+    }
     for (; i < num_vecs; ++i) {  // TODO: unroll by 1, 2, 4, 8, etc.
       std::array<const ValueType *, 1> prefetch_ptrs{nullptr};
       InnerProductDistanceBatchImpl<ValueType, 1>::compute_one_to_many(
@@ -85,6 +92,22 @@ struct InnerProductDistanceBatch {
   static DistanceBatchQueryPreprocessFunc GetQueryPreprocessFunc() {
     return InnerProductDistanceBatchImpl<ValueType,
                                          1>::GetQueryPreprocessFunc();
+  }
+};
+
+template <typename T, size_t BatchSize, size_t PrefetchStep>
+struct MinusInnerProductDistanceBatch {
+  using ValueType = typename std::remove_cv<T>::type;
+
+  static inline void ComputeBatch(const ValueType **vecs,
+                                  const ValueType *query, size_t num_vecs,
+                                  size_t dim, float *results) {
+    InnerProductDistanceBatch<ValueType, BatchSize,
+                              PrefetchStep>::ComputeBatch(
+        vecs, query, num_vecs, dim, results);
+    for (size_t i = 0; i < num_vecs; ++i) {
+      results[i] = -results[i];
+    }
   }
 };
 
@@ -129,6 +152,14 @@ struct InnerProductDistanceBatchImpl<float, 12> {
   using ValueType = float;
   static void compute_one_to_many(const float *query, const float **ptrs,
                                   std::array<const float *, 12> &prefetch_ptrs,
+                                  size_t dim, float *sums);
+};
+
+template <>
+struct InnerProductDistanceBatchImpl<float, 8> {
+  using ValueType = float;
+  static void compute_one_to_many(const float *query, const float **ptrs,
+                                  std::array<const float *, 8> &prefetch_ptrs,
                                   size_t dim, float *sums);
 };
 

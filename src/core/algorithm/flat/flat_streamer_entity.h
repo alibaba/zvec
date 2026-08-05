@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <unordered_map>
 #include <ailego/parallel/lock.h>
 #include <ailego/utility/memory_helper.h>
@@ -155,6 +156,17 @@ class FlatStreamerEntity {
   inline void row_major_distance(const void *query, const void *feature,
                                  size_t fnum, float *out) const {
     const uint8_t *cur_feature = reinterpret_cast<const uint8_t *>(feature);
+    if (fnum > 1 && row_batch_distance_) {
+      std::array<const void *, 32> feature_ptrs{};
+      ailego_assert(fnum <= feature_ptrs.size());
+      for (size_t f = 0; f < fnum; ++f) {
+        feature_ptrs[f] = cur_feature;
+        cur_feature += index_meta_.element_size();
+      }
+      row_batch_distance_(feature_ptrs.data(), query, fnum,
+                          index_meta_.dimension(), out);
+      return;
+    }
     for (size_t f = 0; f < fnum; ++f) {
       row_distance_(query, cur_feature, index_meta_.dimension(), out + f);
       cur_feature += index_meta_.element_size();
@@ -388,6 +400,7 @@ class FlatStreamerEntity {
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
+  IndexMetric::MatrixBatchDistance row_batch_distance_{};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};

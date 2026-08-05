@@ -76,6 +76,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
     return ret;
   }
   row_distance_ = metric->distance();
+  row_batch_distance_ = metric->batch_distance();
   column_distance_ =
       metric->distance_matrix(meta_.header.block_vector_count, 1);
 

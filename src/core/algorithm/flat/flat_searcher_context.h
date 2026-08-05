@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
 #include "flat_index_format.h"
@@ -583,9 +584,34 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
   heap->set_threshold(this->threshold());
 
   size_t left_size = features_segment_->data_size();
+  size_t block_size = feature_size_ * BATCH_SIZE;
   size_t read_offset = 0;
   size_t feature_index = 0;
   auto matrix = owner_->distance_matrix();
+  const auto &batch_distance = owner_->row_batch_distance();
+
+  auto enqueue_block = [&](const void *block, size_t count) {
+    if (batch_distance) {
+      std::array<const void *, BATCH_SIZE> feature_ptrs{};
+      const char *feature = static_cast<const char *>(block);
+      for (size_t i = 0; i < count; ++i) {
+        feature_ptrs[i] = feature;
+        feature += feature_size_;
+      }
+      batch_distance(feature_ptrs.data(), query, count, qmeta.dimension(),
+                     scores_);
+    } else {
+      const char *feature = static_cast<const char *>(block);
+      for (size_t i = 0; i < count; ++i) {
+        matrix.template distance<1>(feature, query, qmeta.dimension(),
+                                    &scores_[i]);
+        feature += feature_size_;
+      }
+    }
+    for (size_t i = 0; i < count; ++i) {
+      heap->emplace(0, scores_[i], feature_index++);
+    }
+  };
 
   while (left_size >= actual_read_size_) {
     const void *data = nullptr;
@@ -596,12 +622,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
       return IndexError_ReadData;
     }
 
-    for (size_t offset = 0; offset < actual_read_size_;
-         offset += feature_size_) {
-      float score;
-      matrix.template distance<1>((const char *)data + offset, query,
-                                  qmeta.dimension(), &score);
-      heap->emplace(0, score, feature_index++);
+    for (size_t offset = 0; offset < actual_read_size_; offset += block_size) {
+      enqueue_block(static_cast<const char *>(data) + offset, BATCH_SIZE);
     }
     read_offset += actual_read_size_;
     left_size -= actual_read_size_;
@@ -614,11 +636,14 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
     return IndexError_ReadData;
   }
 
-  for (size_t offset = 0; offset < left_size; offset += feature_size_) {
-    float score;
-    matrix.template distance<1>((const char *)data + offset, query,
-                                qmeta.dimension(), &score);
-    heap->emplace(0, score, feature_index++);
+  size_t left_size_aligned = left_size / block_size * block_size;
+  for (size_t offset = 0; offset < left_size_aligned; offset += block_size) {
+    enqueue_block(static_cast<const char *>(data) + offset, BATCH_SIZE);
+  }
+  size_t left_count = (left_size - left_size_aligned) / feature_size_;
+  if (left_count != 0) {
+    enqueue_block(static_cast<const char *>(data) + left_size_aligned,
+                  left_count);
   }
   for (auto &it : *heap) {
     it.set_key(owner_->key(it.index()));

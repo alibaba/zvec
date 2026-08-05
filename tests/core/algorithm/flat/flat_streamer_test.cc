@@ -173,6 +173,68 @@ TEST_F(FlatStreamerTest, TestLinearSearch) {
   streamer.reset();
 }
 
+TEST_F(FlatStreamerTest, TestInnerProductBatchSearch) {
+  constexpr size_t kVectorCount = 65;
+  constexpr size_t kTopk = 3;
+
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
+  meta.set_metric("InnerProduct", 0, Params());
+
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_TRUE(streamer);
+  ASSERT_EQ(0, streamer->init(meta, Params()));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestInnerProductBatchSearch", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(context);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+  NumericalVector<float> vector(dim, 0.0f);
+  for (size_t i = 0; i < kVectorCount; ++i) {
+    vector[0] = static_cast<float>(i);
+    ASSERT_EQ(0, streamer->add_impl(i, vector.data(), qmeta, context));
+  }
+
+  NumericalVector<float> query(dim, 0.0f);
+  query[0] = 1.0f;
+  context->set_topk(kTopk);
+  ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, context));
+  ASSERT_EQ(kTopk, context->result().size());
+  EXPECT_EQ(64, context->result()[0].key());
+  EXPECT_EQ(63, context->result()[1].key());
+  EXPECT_EQ(62, context->result()[2].key());
+
+  std::string dump_path = dir_ + "TestInnerProductBatchSearchDump";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_TRUE(dumper);
+  ASSERT_EQ(0, dumper->init(Params()));
+  ASSERT_EQ(0, dumper->create(dump_path));
+  ASSERT_EQ(0, streamer->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto container = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_TRUE(container);
+  ASSERT_EQ(0, container->init(Params()));
+  ASSERT_EQ(0, container->open(dump_path, false));
+  auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
+  ASSERT_TRUE(searcher);
+  ASSERT_EQ(0, searcher->init(Params()));
+  ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
+
+  auto search_context = searcher->create_context();
+  search_context->set_topk(kTopk);
+  ASSERT_EQ(0,
+            searcher->search_impl(query.data(), qmeta, search_context));
+  ASSERT_EQ(kTopk, search_context->result().size());
+  EXPECT_EQ(64, search_context->result()[0].key());
+  EXPECT_EQ(63, search_context->result()[1].key());
+  EXPECT_EQ(62, search_context->result()[2].key());
+}
+
 TEST_F(FlatStreamerTest, TestAddAndSearch) {
   IndexStreamer::Pointer streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
