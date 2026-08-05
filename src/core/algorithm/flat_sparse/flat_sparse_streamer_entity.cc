@@ -19,9 +19,9 @@
 #include <utility>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
-#include <zvec/core/framework/index_logger.h>
 #include "flat_sparse_index_format.h"
 #include "flat_sparse_utility.h"
 
