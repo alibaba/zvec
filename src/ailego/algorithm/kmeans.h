@@ -492,18 +492,15 @@ class NumericalKmeansContext {
     MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2, dst);
   }
 
-  //! Compute Norm2
-  template <typename U = ValueType>
-  static typename std::enable_if<IsFloatingPoint<U>::value>::type Norm2(
-      ValueType *data, size_t dim, float *norm) {
-    Normalizer<ValueType>::L2(data, dim, norm);
-  }
-
-  //! Compute Norm2, for non-float do nothing
-  template <typename U = ValueType>
-  static typename std::enable_if<!IsFloatingPoint<U>::value>::type Norm2(
-      ValueType * /*data*/, size_t /*dim*/, float *norm) {
-    *norm = 0.0f;
+  //! Normalize with L2 norm for floating-point values, otherwise do nothing
+  static void Norm2(ValueType *data, size_t dim, float *norm) {
+    if constexpr (IsFloatingPoint<ValueType>::value) {
+      Normalizer<ValueType>::L2(data, dim, norm);
+    } else {
+      (void)data;
+      (void)dim;
+      *norm = 0.0f;
+    }
   }
 
  private:
@@ -845,18 +842,15 @@ class NumericalInnerProductKmeansContext {
     MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2, dst);
   }
 
-  //! Compute Norm2
-  template <typename U = ValueType>
-  static typename std::enable_if<IsFloatingPoint<U>::value>::type Norm2(
-      ValueType *data, size_t dim, float *norm) {
-    Normalizer<ValueType>::L2(data, dim, norm);
-  }
-
-  //! Compute Norm2, for non-float do nothing
-  template <typename U = ValueType>
-  static typename std::enable_if<!IsFloatingPoint<U>::value>::type Norm2(
-      ValueType * /*data*/, size_t /*dim*/, float *norm) {
-    *norm = 0.0f;
+  //! Normalize with L2 norm for floating-point values, otherwise do nothing
+  static void Norm2(ValueType *data, size_t dim, float *norm) {
+    if constexpr (IsFloatingPoint<ValueType>::value) {
+      Normalizer<ValueType>::L2(data, dim, norm);
+    } else {
+      (void)data;
+      (void)dim;
+      *norm = 0.0f;
+    }
   }
 
  private:
