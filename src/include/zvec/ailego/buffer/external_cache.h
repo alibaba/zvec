@@ -42,6 +42,15 @@ class ExternalCache : public EvictableBlockOwner {
 
   ~ExternalCache() {
     BlockEvictionQueue::get_instance().set_invalid(this);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    for (auto &item : table_) {
+      Entry &entry = item.second;
+      if (entry.size != 0) {
+        MemoryLimitPool::get_instance().release_external(entry.size);
+        entry.size = 0;
+      }
+      loader_.clear(entry.payload);
+    }
   }
 
   ExternalCache(const ExternalCache &) = delete;
@@ -79,14 +88,39 @@ class ExternalCache : public EvictableBlockOwner {
       owner_keys_.emplace(iter->second.owner_key, key);
     }
 
-    Entry &entry = iter->second;
+    // Loading can be expensive and its size is not known up front. Do it
+    // outside the cache lock, then atomically reserve the shared memory budget
+    // before publishing the payload. This also avoids deadlocking when budget
+    // reclamation evicts another entry from this same cache.
+    lock.unlock();
+    Payload loaded_payload{};
     size_t size = 0;
-    if (!loader_.load(key, entry.payload, size)) {
+    if (!loader_.load(key, loaded_payload, size)) {
       return Value{};
     }
 
+    if (!MemoryLimitPool::get_instance().try_charge_external(size)) {
+      loader_.clear(loaded_payload);
+      return Value{};
+    }
+
+    lock.lock();
+    iter = table_.find(key);
+    if (iter == table_.end()) {
+      MemoryLimitPool::get_instance().release_external(size);
+      loader_.clear(loaded_payload);
+      return Value{};
+    }
+    Entry &entry = iter->second;
+    Value existing = acquire_loaded(entry);
+    if (existing) {
+      MemoryLimitPool::get_instance().release_external(size);
+      loader_.clear(loaded_payload);
+      return existing;
+    }
+
+    entry.payload = std::move(loaded_payload);
     entry.size = size;
-    MemoryLimitPool::get_instance().charge_external(entry.size);
     entry.generation.fetch_add(1, std::memory_order_relaxed);
     entry.ref_count.store(1, std::memory_order_release);
     return loader_.value(entry.payload);
@@ -133,16 +167,16 @@ class ExternalCache : public EvictableBlockOwner {
     return iter->second.generation.load(std::memory_order_relaxed) != version;
   }
 
-  void evict_block(eviction_key_t owner_key) override {
+  bool evict_block(eviction_key_t owner_key) override {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     auto key_iter = owner_keys_.find(owner_key);
     if (key_iter == owner_keys_.end()) {
-      return;
+      return false;
     }
 
     auto iter = table_.find(key_iter->second);
     if (iter == table_.end()) {
-      return;
+      return false;
     }
 
     Entry &entry = iter->second;
@@ -152,7 +186,9 @@ class ExternalCache : public EvictableBlockOwner {
       MemoryLimitPool::get_instance().release_external(entry.size);
       entry.size = 0;
       loader_.clear(entry.payload);
+      return true;
     }
+    return false;
   }
 
  private:

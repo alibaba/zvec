@@ -1,56 +1,20 @@
-// Copyright 2025-present the zvec project
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// Private replacement for <libaio.h>.
-//
-// This header declares *only* the types, constants, and inline helpers that
-// zvec needs from libaio.  By doing so the project is completely decoupled
-// from the system libaio-dev header: there is no `#include <libaio.h>` anywhere
-// in the source tree, which means libaio-dev does not need to be installed at
-// build time and the code is portable to cross-compilation environments that
-// lack the header.
-//
-// The struct layouts (struct iocb, struct io_event, ...) are part of the Linux
-// kernel ABI.  They are copied verbatim from the upstream <libaio.h>, including
-// the PADDED macros that handle architecture-specific padding.  The inline
-// helper io_prep_pread() is likewise copied — it only manipulates struct fields
-// and does not call into the library.
-
 #pragma once
 
-#include <time.h>   // struct timespec (used by io_getevents signature)
-#include <cstring>  // memset() — used by io_prep_pread() inline helper
+#include <time.h>
+#include <cstring>
 
 #if defined(__linux) || defined(__linux__)
 
-// If the mirror copy at <zvec/ailego/io/libaio_def.h> (or the system
-// <libaio.h>) has already provided these ABI-stable definitions, skip ours.
-// Conversely, define __LIBAIO_H so a later inclusion of that copy becomes a
-// no-op.  The struct layouts are byte-identical across both copies, so either
-// winner is safe; this guard just prevents redefinition when both include
-// roots land in one translation unit.
+// If system <libaio.h> is already included, skip our definitions.
+// Conversely, define __LIBAIO_H so that a later #include <libaio.h> becomes a
+// no-op (guarded by #ifndef __LIBAIO_H in the system header).
 #ifdef __LIBAIO_H
-// AIO types already provided; nothing to do.
+// System header already provided all AIO types; nothing to do.
 #else
 #define __LIBAIO_H
 
 struct sockaddr;
 struct iovec;
-
-// ---------------------------------------------------------------------------
-// Type and struct definitions copied from <libaio.h>
-// ---------------------------------------------------------------------------
 
 typedef struct io_context *io_context_t;
 
@@ -65,10 +29,6 @@ typedef enum io_iocb_cmd {
   IO_CMD_PWRITEV = 8,
 } io_iocb_cmd_t;
 
-// PADDED macros — copied verbatim from <libaio.h> to guarantee ABI-compatible
-// struct layout on every supported architecture.
-
-/* little endian, 32 bits */
 #if defined(__i386__) || (defined(__x86_64__) && defined(__ILP32__)) ||     \
     (defined(__arm__) && !defined(__ARMEB__)) ||                            \
     (defined(__sh__) && defined(__LITTLE_ENDIAN__)) || defined(__bfin__) || \
@@ -86,7 +46,6 @@ typedef enum io_iocb_cmd {
   unsigned long x;         \
   unsigned y
 
-/* little endian, 64 bits */
 #elif defined(__ia64__) || defined(__x86_64__) || defined(__alpha__) ||   \
     (defined(__mips64) && defined(__MIPSEL__)) ||                         \
     (defined(__aarch64__) && defined(__AARCH64EL__)) ||                   \
@@ -97,7 +56,6 @@ typedef enum io_iocb_cmd {
 #define AIO_PADDEDptr(x, y) x
 #define AIO_PADDEDul(x, y) unsigned long x
 
-/* big endian, 64 bits */
 #elif defined(__powerpc64__) || defined(__s390x__) ||   \
     (defined(__hppa__) && defined(__arch64__)) ||       \
     (defined(__sparc__) && defined(__arch64__)) ||      \
@@ -111,7 +69,6 @@ typedef enum io_iocb_cmd {
 #define AIO_PADDEDptr(x, y) x
 #define AIO_PADDEDul(x, y) unsigned long x
 
-/* big endian, 32 bits */
 #elif defined(__PPC__) || defined(__s390__) ||                            \
     (defined(__arm__) && defined(__ARMEB__)) ||                           \
     (defined(__sh__) && defined(__BIG_ENDIAN__)) || defined(__sparc__) || \
@@ -182,7 +139,6 @@ struct io_event {
 #undef AIO_PADDEDptr
 #undef AIO_PADDEDul
 
-// Inline helper — copied from <libaio.h>.  Only manipulates struct fields.
 static inline void io_prep_pread(struct iocb *iocb, int fd, void *buf,
                                  size_t count, long long offset) {
   memset(iocb, 0, sizeof(*iocb));
@@ -194,9 +150,6 @@ static inline void io_prep_pread(struct iocb *iocb, int fd, void *buf,
   iocb->u.c.offset = offset;
 }
 
-// ---------------------------------------------------------------------------
-// End: type and struct definitions from <libaio.h>
-// ---------------------------------------------------------------------------
-
 #endif  // !__LIBAIO_H (our definitions block)
-#endif  // __linux__
+
+#endif  // __linux

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstring>
+#include <new>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/io/file.h>
@@ -123,6 +124,7 @@ class IndexStorage : public IndexModule {
             deep_copy_from(rhs);
             break;
           default:
+            release_current();
             break;
         }
       }
@@ -151,6 +153,7 @@ class IndexStorage : public IndexModule {
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
           default:
+            release_current();
             break;
         }
       }
@@ -178,6 +181,10 @@ class IndexStorage : public IndexModule {
 
     const void *data() const {
       return data_;
+    }
+
+    void reset() {
+      release_current();
     }
 
     void reset(ailego::VecBufferPoolHandle *buffer_pool_handle, size_t block_id,
@@ -241,6 +248,7 @@ class IndexStorage : public IndexModule {
           break;
       }
       data_ = nullptr;
+      scratch_size_ = 0;
       type_ = MemoryBlockType::MBT_UNKNOWN;
     }
 
@@ -253,6 +261,11 @@ class IndexStorage : public IndexModule {
       scratch_size_ = rhs.scratch_size_;
       if (scratch_size_ > 0 && rhs.data_) {
         data_ = ailego_malloc(scratch_size_);
+        if (data_ == nullptr) {
+          scratch_size_ = 0;
+          type_ = MemoryBlockType::MBT_UNKNOWN;
+          throw std::bad_alloc();
+        }
         std::memcpy(data_, rhs.data_, scratch_size_);
       } else {
         data_ = nullptr;
@@ -332,6 +345,25 @@ class IndexStorage : public IndexModule {
     virtual const uint8_t *base_data(void) const {
       return nullptr;
     }
+
+    virtual size_t abs_data_offset(void) const {
+      return 0;
+    }
+
+    virtual void prefetch(size_t offset, size_t len) {
+      (void)offset;
+      (void)len;
+    }
+
+    //! Bytes the storage backend can currently accept for prefetch without
+    //! evicting still-useful data.  Pooled/evictable backends (e.g.
+    //! BufferReadStorage) return the free space of their buffer pool; backends
+    //! without a bounded pool (e.g. mmap) return SIZE_MAX to signal "always
+    //! fits".  Callers use it to gate whole-cluster prefetch under memory
+    //! pressure.
+    virtual size_t prefetch_budget(void) const {
+      return static_cast<size_t>(-1);
+    }
   };
 
   //! Destructor
@@ -398,6 +430,10 @@ class IndexStorage : public IndexModule {
 
   virtual std::string file_path(void) const {
     return "";
+  }
+
+  virtual ailego::VecBufferPool *vec_buffer_pool(void) const {
+    return nullptr;
   }
 };
 
