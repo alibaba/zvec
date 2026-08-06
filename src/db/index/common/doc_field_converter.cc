@@ -72,6 +72,8 @@ Status SetScalarField(const arrow::Array *array, int64_t row,
 
 //! Set an array Doc field from row `row` of an Arrow ListArray whose values
 //! are of type ArrowArrayT. Null elements inside the list are skipped.
+//! Uses Value() uniformly (returns string_view for string/binary types,
+//! which emplace_back converts to std::string in place).
 template <typename ArrowArrayT, typename T>
 Status SetListField(const arrow::Array *array, int64_t row,
                     const std::string &name, Doc *doc) {
@@ -80,15 +82,18 @@ Status SetListField(const arrow::Array *array, int64_t row,
   auto *values = static_cast<const ArrowArrayT *>(values_slice.get());
   std::vector<T> vec;
   vec.reserve(values->length());
-  for (int64_t i = 0; i < values->length(); ++i) {
-    if (!values->IsValid(i)) {
-      continue;
+  // null_count() is O(1); skip per-element validity checks when the list
+  // has no nulls (the common case).
+  if (values->null_count() == 0) {
+    for (int64_t i = 0; i < values->length(); ++i) {
+      vec.emplace_back(values->Value(i));
     }
-    if constexpr (std::is_same_v<ArrowArrayT, arrow::StringArray> ||
-                  std::is_same_v<ArrowArrayT, arrow::BinaryArray>) {
-      vec.emplace_back(values->GetView(i));
-    } else {
-      vec.push_back(values->Value(i));
+  } else {
+    for (int64_t i = 0; i < values->length(); ++i) {
+      if (values->IsNull(i)) {
+        continue;
+      }
+      vec.emplace_back(values->Value(i));
     }
   }
   doc->set(name, std::move(vec));
