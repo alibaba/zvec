@@ -14,6 +14,7 @@
 
 #include "zvec/db/config.h"
 #include <gtest/gtest.h>
+#include "db/common/global_resource.h"
 #include "zvec/db/status.h"
 
 using namespace zvec;
@@ -129,6 +130,41 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidMemoryLimit) {
             std::string::npos);
 }
 
+TEST_F(ConfigTest, InvalidInitializeCanBeCorrected) {
+  GlobalConfig config_instance;
+  GlobalConfig::ConfigData invalid;
+  invalid.memory_limit_bytes = 0;
+  auto invalid_status = config_instance.Initialize(invalid);
+  ASSERT_FALSE(invalid_status.ok());
+  ASSERT_EQ(StatusCode::INVALID_ARGUMENT, invalid_status.code());
+
+  GlobalConfig::ConfigData valid;
+  auto valid_status = config_instance.Initialize(valid);
+  ASSERT_TRUE(valid_status.ok()) << valid_status.message();
+  EXPECT_EQ(valid.memory_limit_bytes, config_instance.memory_limit_bytes());
+}
+
+TEST_F(ConfigTest, FailedResourceInitializationDoesNotPublishConfig) {
+  ASSERT_EQ(0, GlobalResource::Instance().initialize());
+
+  GlobalConfig config_instance;
+  const uint32_t original_query_threads = config_instance.query_thread_count();
+  GlobalConfig::ConfigData requested;
+  const auto &published = GlobalConfig::Instance();
+  requested.memory_limit_bytes = published.memory_limit_bytes();
+  requested.query_thread_count = published.query_thread_count() + 1;
+  if (requested.query_thread_count == original_query_threads) {
+    ++requested.query_thread_count;
+  }
+  requested.query_thread_binding = published.query_thread_binding();
+  requested.optimize_thread_count = published.optimize_thread_count();
+  requested.optimize_thread_binding = published.optimize_thread_binding();
+
+  const auto status = config_instance.Initialize(requested);
+  ASSERT_FALSE(status.ok());
+  EXPECT_EQ(original_query_threads, config_instance.query_thread_count());
+}
+
 TEST_F(ConfigTest, ValidateConfigWithInvalidQueryThreadCount) {
   GlobalConfig::ConfigData config;
   config.query_thread_count = 0;  // Invalid value
@@ -232,6 +268,31 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
 
   ASSERT_EQ(console_config->GetLoggerType(), CONSOLE_LOG_TYPE_NAME);
   ASSERT_EQ(file_config->GetLoggerType(), FILE_LOG_TYPE_NAME);
+}
+
+TEST_F(ConfigTest, InitializePublishesAnImmutableLogConfigSnapshot) {
+  GlobalConfig config_instance;
+  const GlobalConfig::LogConfig &original_log = config_instance.log_config();
+  const auto original_level = original_log.level;
+
+  GlobalConfig::ConfigData requested;
+  const auto &process_config = GlobalConfig::Instance();
+  requested.memory_limit_bytes = process_config.memory_limit_bytes();
+  requested.query_thread_count = process_config.query_thread_count();
+  requested.query_thread_binding = process_config.query_thread_binding();
+  requested.optimize_thread_count = process_config.optimize_thread_count();
+  requested.optimize_thread_binding = process_config.optimize_thread_binding();
+  auto caller_owned_log = std::make_shared<GlobalConfig::ConsoleLogConfig>(
+      GlobalConfig::LogLevel::kInfo);
+  requested.log_config = caller_owned_log;
+
+  const auto status = config_instance.Initialize(requested);
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(GlobalConfig::LogLevel::kInfo, config_instance.log_level());
+
+  caller_owned_log->level = GlobalConfig::LogLevel::kFatal;
+  EXPECT_EQ(GlobalConfig::LogLevel::kInfo, config_instance.log_level());
+  EXPECT_EQ(original_level, original_log.level);
 }
 
 // jieba_dict_dir is the only ConfigData field that can be written outside

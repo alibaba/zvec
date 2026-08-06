@@ -19,11 +19,13 @@
 //   4. Observability counters (hit / miss / evict / second_chance / stats)
 //   5. Opt-in query-local I/O profile aggregation
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <random>
 #include <string>
 #include <thread>
@@ -116,6 +118,141 @@ using SizedExternalCache =
     ExternalCache<size_t, SizedCachePayload, SizedCacheLoader,
                   std::hash<size_t>, std::equal_to<size_t>>;
 
+struct EmptyValueLoader {
+  using Value = std::shared_ptr<std::vector<char>>;
+
+  bool load(size_t bytes, SizedCachePayload &payload, size_t &size) {
+    payload.data = std::make_shared<std::vector<char>>(bytes);
+    size = bytes;
+    return true;
+  }
+
+  Value value(const SizedCachePayload &) const {
+    return nullptr;
+  }
+
+  void clear(SizedCachePayload &payload) const {
+    payload.data.reset();
+  }
+};
+
+using EmptyValueExternalCache =
+    ExternalCache<size_t, SizedCachePayload, EmptyValueLoader,
+                  std::hash<size_t>, std::equal_to<size_t>>;
+
+struct BlockingLoadState {
+  std::atomic<size_t> load_calls{0};
+  std::atomic<size_t> active_loads{0};
+  std::atomic<size_t> max_active_loads{0};
+  std::atomic<bool> finish{false};
+};
+
+struct BlockingLoader {
+  using Value = std::shared_ptr<std::vector<char>>;
+
+  bool load(size_t bytes, SizedCachePayload &payload, size_t &size) {
+    state->load_calls.fetch_add(1, std::memory_order_release);
+    const size_t active =
+        state->active_loads.fetch_add(1, std::memory_order_acq_rel) + 1;
+    size_t observed = state->max_active_loads.load(std::memory_order_relaxed);
+    while (observed < active &&
+           !state->max_active_loads.compare_exchange_weak(
+               observed, active, std::memory_order_relaxed)) {
+    }
+    while (!state->finish.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    payload.data = std::make_shared<std::vector<char>>(bytes);
+    size = bytes;
+    state->active_loads.fetch_sub(1, std::memory_order_release);
+    return true;
+  }
+
+  Value value(const SizedCachePayload &payload) const {
+    return payload.data;
+  }
+
+  void clear(SizedCachePayload &payload) const {
+    payload.data.reset();
+  }
+
+  std::shared_ptr<BlockingLoadState> state;
+};
+
+using BlockingExternalCache =
+    ExternalCache<size_t, SizedCachePayload, BlockingLoader, std::hash<size_t>,
+                  std::equal_to<size_t>>;
+
+struct ThrowingCachePayload {
+  ThrowingCachePayload() {
+    const size_t current = ++construction_count;
+    if (throw_on_construction != 0 && current == throw_on_construction) {
+      throw std::runtime_error("injected payload construction failure");
+    }
+  }
+
+  std::shared_ptr<std::vector<char>> data;
+  static size_t construction_count;
+  static size_t throw_on_construction;
+};
+
+size_t ThrowingCachePayload::construction_count = 0;
+size_t ThrowingCachePayload::throw_on_construction = 0;
+
+struct ThrowingCacheLoader {
+  using Value = std::shared_ptr<std::vector<char>>;
+
+  bool load(size_t bytes, ThrowingCachePayload &payload, size_t &size) {
+    payload.data = std::make_shared<std::vector<char>>(bytes);
+    size = bytes;
+    return true;
+  }
+
+  Value value(const ThrowingCachePayload &payload) const {
+    return payload.data;
+  }
+
+  void clear(ThrowingCachePayload &payload) const {
+    payload.data.reset();
+  }
+};
+
+using ThrowingExternalCache =
+    ExternalCache<size_t, ThrowingCachePayload, ThrowingCacheLoader,
+                  std::hash<size_t>, std::equal_to<size_t>>;
+
+class AlwaysDeadOwner : public EvictableBlockOwner {
+ public:
+  AlwaysDeadOwner() {
+    BlockEvictionQueue::get_instance().set_valid(this);
+  }
+
+  ~AlwaysDeadOwner() override {
+    BlockEvictionQueue::get_instance().set_invalid(this);
+  }
+
+  bool is_dead_block(eviction_key_t, version_t) override {
+    ++dead_checks;
+    return true;
+  }
+
+  bool evict_block(eviction_key_t) override {
+    return false;
+  }
+
+  size_t dead_checks{0};
+};
+
+version_t FindLiveVersion(SizedExternalCache &cache, eviction_key_t owner_key) {
+  constexpr version_t kMaxProbe = 1UL << 20;
+  for (version_t version = 1; version < kMaxProbe; ++version) {
+    if (!cache.is_dead_block(owner_key, version)) {
+      return version;
+    }
+  }
+  return 0;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -191,6 +328,65 @@ TEST_F(BufferPoolTest, StaleOwnerGenerationIsDead) {
   EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
 }
 
+TEST_F(BufferPoolTest, ForceEvictUnloadedPageDoesNotEnqueueDeadItem) {
+  InitTablePool(/*capacity_pages=*/0, /*entry_num=*/1);
+  auto &queue = BlockEvictionQueue::get_instance();
+  BlockEvictionQueue::BlockType item;
+  while (queue.evict_single_block(item)) {
+  }
+
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+  EXPECT_FALSE(table.force_evict_block(/*block_id=*/0));
+  EXPECT_FALSE(queue.evict_single_block(item));
+}
+
+TEST_F(BufferPoolTest, ConcurrentInstallPublishesOneResidentBuffer) {
+  constexpr size_t kThreadCount = 16;
+  InitTablePool(/*capacity_pages=*/kThreadCount, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  std::array<char *, kThreadCount> input{};
+  std::array<char *, kThreadCount> result{};
+  for (char *&buffer : input) {
+    ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+        kVectorPageSize, buffer));
+    ASSERT_NE(nullptr, buffer);
+  }
+
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::vector<std::thread> workers;
+  workers.reserve(kThreadCount);
+  for (size_t i = 0; i < kThreadCount; ++i) {
+    workers.emplace_back([&, i] {
+      ready.fetch_add(1, std::memory_order_release);
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      result[i] = table.set_block_acquired(/*block_id=*/0, input[i],
+                                           /*file_offset=*/0);
+    });
+  }
+  while (ready.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  start.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  ASSERT_NE(nullptr, result[0]);
+  for (char *buffer : result) {
+    EXPECT_EQ(result[0], buffer);
+    table.release_block(/*block_id=*/0);
+  }
+  EXPECT_EQ(kVectorPageSize, MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
+}
+
 TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
   InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
   VectorPageTable table;
@@ -223,6 +419,44 @@ TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
   EXPECT_EQ(2u, flush_attempts);
   EXPECT_FALSE(table.is_loaded(/*block_id=*/0));
   EXPECT_FALSE(table.is_block_dirty(/*block_id=*/0));
+}
+
+TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  size_t flush_attempts = 0;
+  table.set_flush_callback([&](block_id_t, char *, size_t, size_t) {
+    ++flush_attempts;
+    return -1;
+  });
+
+  char *buffer = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, buffer));
+  ASSERT_EQ(table.set_block_acquired(/*block_id=*/0, buffer, /*offset=*/0),
+            buffer);
+  table.mark_dirty(/*block_id=*/0);
+  // Force the queue's priority-rewrite path to reject registration. The
+  // failed flush then leaves a released resident page for recovery to find.
+  table.set_evict_priority(/*block_id=*/0, std::numeric_limits<uint8_t>::max());
+  table.release_block(/*block_id=*/0);
+  EXPECT_EQ(0u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(1u, flush_attempts);
+  EXPECT_TRUE(table.is_loaded(/*block_id=*/0));
+  EXPECT_TRUE(table.is_block_dirty(/*block_id=*/0));
+
+  table.set_evict_priority(/*block_id=*/0, 0);
+  EXPECT_EQ(1u, table.recover_eviction_queue());
+  table.set_flush_callback([&](block_id_t, char *, size_t, size_t) {
+    ++flush_attempts;
+    return 0;
+  });
+  EXPECT_EQ(1u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(2u, flush_attempts);
+  EXPECT_FALSE(table.is_loaded(/*block_id=*/0));
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
 }
 
 TEST_F(BufferPoolTest, MetadataIsCountedAndReleasedWithPool) {
@@ -302,12 +536,31 @@ TEST_F(BufferPoolTest, ExternalReservationSharesThePageBudget) {
   EXPECT_EQ(0u, memory_pool.external_used());
 }
 
+TEST_F(BufferPoolTest, TinyBufferDoesNotPoisonThePageFreeList) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  ASSERT_EQ(0, memory_pool.init(3 * kVectorPageSize + 123));
+
+  char *tiny = nullptr;
+  ASSERT_TRUE(memory_pool.try_acquire_buffer(1, tiny));
+  ASSERT_NE(nullptr, tiny);
+  memory_pool.release_buffer(tiny, 1);
+  EXPECT_EQ(0u, memory_pool.committed());
+
+  char *page = nullptr;
+  ASSERT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+  ASSERT_NE(nullptr, page);
+  memory_pool.release_buffer(page, kVectorPageSize);
+  EXPECT_EQ(1u, memory_pool.stats().free_buffers);
+}
+
 TEST_F(BufferPoolTest, RejectsReinitializationWhileMemoryIsActive) {
   auto &memory_pool = MemoryLimitPool::get_instance();
   InitPool(/*capacity_pages=*/4);
   const size_t original_capacity = memory_pool.capacity();
 
   ASSERT_TRUE(memory_pool.try_charge_external(kVectorPageSize));
+  EXPECT_EQ(0, memory_pool.init(original_capacity));
+  EXPECT_EQ(kVectorPageSize, memory_pool.external_used());
   EXPECT_NE(0, memory_pool.init(8 * kVectorPageSize));
   EXPECT_EQ(original_capacity, memory_pool.capacity());
   EXPECT_EQ(kVectorPageSize, memory_pool.used());
@@ -325,6 +578,7 @@ TEST_F(BufferPoolTest, ExternalCacheRejectsOversizedEntryAndReleasesOnDestroy) {
   {
     SizedExternalCache cache;
     EXPECT_EQ(nullptr, cache.acquire(3 * kVectorPageSize));
+    EXPECT_EQ(0u, cache.entry_count());
     EXPECT_EQ(0u, memory_pool.used());
 
     auto value = cache.acquire(kVectorPageSize);
@@ -335,6 +589,328 @@ TEST_F(BufferPoolTest, ExternalCacheRejectsOversizedEntryAndReleasesOnDestroy) {
 
   EXPECT_EQ(0u, memory_pool.used());
   EXPECT_EQ(0u, memory_pool.committed());
+}
+
+TEST_F(BufferPoolTest,
+       ExternalCacheReclaimsEntryAfterQueueRegistrationFailure) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  // Keep usage below the background high watermark so only the simulated
+  // enqueue-failure callback can reclaim this entry during the assertion.
+  InitPool(/*capacity_pages=*/2);
+
+  SizedExternalCache cache;
+  auto value = cache.acquire(kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  cache.release(kVectorPageSize);
+  EXPECT_EQ(kVectorPageSize, memory_pool.external_used());
+
+  constexpr eviction_key_t kOwnerKey = 1;
+  version_t version = FindLiveVersion(cache, kOwnerKey);
+  ASSERT_NE(0u, version);
+  cache.eviction_requeue_failed(kOwnerKey, version);
+  EXPECT_EQ(0u, memory_pool.external_used());
+  EXPECT_EQ(0u, cache.entry_count());
+  EXPECT_EQ(nullptr, cache.retain(kVectorPageSize));
+}
+
+TEST_F(BufferPoolTest, ExternalCacheReusesOneQueueMembershipAcrossHits) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  InitPool(/*capacity_pages=*/4);
+
+  SizedExternalCache cache;
+  auto value = cache.acquire(kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  cache.release(kVectorPageSize);
+
+  constexpr eviction_key_t kOwnerKey = 1;
+  const version_t version = FindLiveVersion(cache, kOwnerKey);
+  ASSERT_NE(0u, version);
+
+  // Repeated 0 -> 1 -> 0 transitions must keep using the existing logical
+  // queue item. Generating a new version/item for every hit lets stale queue
+  // nodes grow without bound while usage remains below the low watermark.
+  for (size_t i = 0; i < 10000; ++i) {
+    value = cache.retain(kVectorPageSize);
+    ASSERT_NE(nullptr, value);
+    cache.release(kVectorPageSize);
+  }
+  EXPECT_FALSE(cache.is_dead_block(kOwnerKey, version));
+
+  EXPECT_EQ(1u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(0u, memory_pool.external_used());
+  EXPECT_EQ(0u, cache.entry_count());
+  EXPECT_EQ(nullptr, cache.retain(kVectorPageSize));
+}
+
+TEST_F(BufferPoolTest, PinnedExternalCacheEntryStaysQueuedForLaterEviction) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  InitPool(/*capacity_pages=*/4);
+
+  SizedExternalCache cache;
+  auto value = cache.acquire(kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  cache.release(kVectorPageSize);
+
+  value = cache.retain(kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(0u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(kVectorPageSize, memory_pool.external_used());
+
+  cache.release(kVectorPageSize);
+  EXPECT_EQ(1u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(0u, memory_pool.external_used());
+  EXPECT_EQ(0u, cache.entry_count());
+}
+
+TEST_F(BufferPoolTest, ConcurrentLoadsUseSingleFlight) {
+  constexpr size_t kThreadCount = 16;
+  InitPool(/*capacity_pages=*/4);
+  auto state = std::make_shared<BlockingLoadState>();
+  BlockingExternalCache cache(BlockingLoader{state});
+  std::atomic<size_t> acquired{0};
+  std::atomic<bool> release{false};
+
+  std::array<std::thread, kThreadCount> workers;
+  for (auto &worker : workers) {
+    worker = std::thread([&] {
+      auto value = cache.acquire(kVectorPageSize);
+      EXPECT_NE(nullptr, value);
+      acquired.fetch_add(1, std::memory_order_release);
+      while (!release.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      cache.release(kVectorPageSize);
+    });
+  }
+  while (state->load_calls.load(std::memory_order_acquire) == 0) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(1u, cache.entry_count());
+  state->finish.store(true, std::memory_order_release);
+  while (acquired.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(1u, state->load_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(kVectorPageSize, MemoryLimitPool::get_instance().external_used());
+  release.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+  EXPECT_EQ(1u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(0u, cache.entry_count());
+}
+
+TEST_F(BufferPoolTest, DistinctExternalCacheLoadsAreConcurrentByDefault) {
+  constexpr size_t kThreadCount = 2;
+  InitPool(/*capacity_pages=*/4);
+  auto state = std::make_shared<BlockingLoadState>();
+  BlockingExternalCache cache(BlockingLoader{state});
+  std::array<std::shared_ptr<std::vector<char>>, kThreadCount> values;
+  const std::array<size_t, kThreadCount> keys = {kVectorPageSize,
+                                                 kVectorPageSize + 1};
+
+  std::array<std::thread, kThreadCount> workers;
+  for (size_t i = 0; i < kThreadCount; ++i) {
+    workers[i] = std::thread([&, i] { values[i] = cache.acquire(keys[i]); });
+  }
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (state->load_calls.load(std::memory_order_acquire) != kThreadCount &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  const size_t concurrent_loads =
+      state->load_calls.load(std::memory_order_acquire);
+  state->finish.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  EXPECT_EQ(kThreadCount, concurrent_loads);
+  EXPECT_EQ(kThreadCount,
+            state->max_active_loads.load(std::memory_order_acquire));
+  for (size_t i = 0; i < kThreadCount; ++i) {
+    ASSERT_NE(nullptr, values[i]);
+    cache.release(keys[i]);
+  }
+}
+
+TEST_F(BufferPoolTest, DistinctExternalCacheLoadsRespectInflightLimit) {
+  constexpr size_t kThreadCount = 2;
+  InitPool(/*capacity_pages=*/4);
+  auto state = std::make_shared<BlockingLoadState>();
+  BlockingExternalCache cache(BlockingLoader{state},
+                              /*max_concurrent_loads=*/1);
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::array<std::shared_ptr<std::vector<char>>, kThreadCount> values;
+  const std::array<size_t, kThreadCount> keys = {kVectorPageSize,
+                                                 kVectorPageSize + 1};
+
+  std::array<std::thread, kThreadCount> workers;
+  for (size_t i = 0; i < kThreadCount; ++i) {
+    workers[i] = std::thread([&, i] {
+      ready.fetch_add(1, std::memory_order_release);
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      values[i] = cache.acquire(keys[i]);
+    });
+  }
+  while (ready.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  start.store(true, std::memory_order_release);
+  while (state->load_calls.load(std::memory_order_acquire) == 0) {
+    std::this_thread::yield();
+  }
+  state->finish.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  EXPECT_EQ(kThreadCount, state->load_calls.load(std::memory_order_acquire));
+  EXPECT_EQ(1u, state->max_active_loads.load(std::memory_order_acquire));
+  for (size_t i = 0; i < kThreadCount; ++i) {
+    ASSERT_NE(nullptr, values[i]);
+    cache.release(keys[i]);
+  }
+}
+
+TEST_F(BufferPoolTest, WaitingExternalLoadRechecksCapacityBeforeLoading) {
+  InitPool(/*capacity_pages=*/1);
+  auto state = std::make_shared<BlockingLoadState>();
+  BlockingExternalCache cache(BlockingLoader{state},
+                              /*max_concurrent_loads=*/1);
+  std::shared_ptr<std::vector<char>> first_value;
+  std::shared_ptr<std::vector<char>> second_value;
+
+  std::thread first([&] { first_value = cache.acquire(kVectorPageSize); });
+  while (state->load_calls.load(std::memory_order_acquire) == 0) {
+    std::this_thread::yield();
+  }
+  std::thread second(
+      [&] { second_value = cache.acquire(kVectorPageSize + 1); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  state->finish.store(true, std::memory_order_release);
+  first.join();
+  second.join();
+
+  ASSERT_NE(nullptr, first_value);
+  EXPECT_EQ(nullptr, second_value);
+  EXPECT_EQ(1u, state->load_calls.load(std::memory_order_acquire));
+  cache.release(kVectorPageSize);
+}
+
+TEST_F(BufferPoolTest, ThrowingPayloadConstructorDoesNotClaimLoaderSlot) {
+  InitPool(/*capacity_pages=*/2);
+  ThrowingCachePayload::construction_count = 0;
+  ThrowingCachePayload::throw_on_construction = 2;
+  ThrowingExternalCache cache(/*max_concurrent_loads=*/1);
+
+  EXPECT_THROW(cache.acquire(kVectorPageSize), std::runtime_error);
+  ASSERT_EQ(0u, cache.entry_count());
+
+  ThrowingCachePayload::throw_on_construction = 0;
+  auto value = cache.acquire(kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  cache.release(kVectorPageSize);
+}
+
+TEST_F(BufferPoolTest, EmptyLoaderValueRollsBackChargeAndPlaceholder) {
+  InitPool(/*capacity_pages=*/2);
+  EmptyValueExternalCache cache;
+
+  EXPECT_THROW(cache.acquire(kVectorPageSize), std::runtime_error);
+  EXPECT_EQ(0u, cache.entry_count());
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().external_used());
+
+  // The failed placeholder and single-flight state must not poison retries.
+  EXPECT_THROW(cache.acquire(kVectorPageSize), std::runtime_error);
+  EXPECT_EQ(0u, cache.entry_count());
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().external_used());
+}
+
+TEST_F(BufferPoolTest, BatchRecycleBoundsStaleQueueScanning) {
+  auto &queue = BlockEvictionQueue::get_instance();
+  BlockEvictionQueue::BlockType discarded;
+  while (queue.evict_single_block(discarded)) {
+  }
+
+  AlwaysDeadOwner owner;
+  BlockEvictionQueue::BlockType stale;
+  stale.owner = &owner;
+  stale.version = 1;
+  for (size_t i = 0; i < 64; ++i) {
+    stale.owner_key = i;
+    ASSERT_TRUE(queue.add_single_block(stale, 0));
+  }
+
+  EXPECT_EQ(0u, queue.batch_recycle(1));
+  EXPECT_EQ(20u, owner.dead_checks);
+
+  queue.set_invalid(&owner);
+  while (queue.evict_single_block(discarded)) {
+  }
+}
+
+TEST_F(BufferPoolTest, HighCardinalityEvictionRemovesKeyMetadata) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  InitPool(/*capacity_pages=*/8);
+  SizedExternalCache cache;
+
+  for (size_t key = 1; key <= 256; ++key) {
+    auto value = cache.acquire(kVectorPageSize);
+    ASSERT_NE(nullptr, value) << "key=" << key;
+    cache.release(kVectorPageSize);
+  }
+  for (size_t attempt = 0; memory_pool.external_used() != 0 && attempt < 256;
+       ++attempt) {
+    BlockEvictionQueue::get_instance().batch_recycle(64);
+  }
+  EXPECT_EQ(0u, memory_pool.external_used());
+  EXPECT_EQ(0u, cache.entry_count());
+}
+
+TEST_F(BufferPoolTest, OwningHandleRejectsNullPool) {
+  EXPECT_THROW(
+      {
+        VecBufferPoolHandle handle(std::shared_ptr<VecBufferPool>{});
+        (void)handle;
+      },
+      std::invalid_argument);
+}
+
+TEST_F(BufferPoolTest, ExternalCacheRejectsStaleItemAfterAddressReuse) {
+  InitPool(/*capacity_pages=*/4);
+  alignas(SizedExternalCache) unsigned char storage[sizeof(SizedExternalCache)];
+  constexpr eviction_key_t kOwnerKey = 1;
+
+  auto *first = new (storage) SizedExternalCache();
+  auto first_value = first->acquire(kVectorPageSize);
+  if (first_value == nullptr) {
+    first->~SizedExternalCache();
+    FAIL() << "failed to populate first cache";
+  }
+  first->release(kVectorPageSize);
+  version_t stale_version = FindLiveVersion(*first, kOwnerKey);
+  first->~SizedExternalCache();
+  ASSERT_NE(0u, stale_version);
+
+  auto *second = new (storage) SizedExternalCache();
+  auto second_value = second->acquire(kVectorPageSize);
+  if (second_value == nullptr) {
+    second->~SizedExternalCache();
+    FAIL() << "failed to populate replacement cache";
+  }
+  second->release(kVectorPageSize);
+  version_t current_version = FindLiveVersion(*second, kOwnerKey);
+
+  EXPECT_NE(0u, current_version);
+  EXPECT_NE(stale_version, current_version);
+  EXPECT_TRUE(second->is_dead_block(kOwnerKey, stale_version));
+  second->~SizedExternalCache();
 }
 
 TEST_F(BufferPoolTest, ExternalReservationTrimsRetainedPageBuffers) {

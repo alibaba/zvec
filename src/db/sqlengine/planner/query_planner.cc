@@ -432,6 +432,10 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
 
   // multi segment logic
   ailego::ThreadPool *pool = GlobalResource::Instance().query_thread_pool();
+  if (pool == nullptr) {
+    return tl::make_unexpected(
+        Status::InternalError("Query thread pool initialization failed"));
+  }
   auto recall_node =
       std::make_shared<SegmentNode>(std::move(segment_plans), pool);
   auto source_node_options =

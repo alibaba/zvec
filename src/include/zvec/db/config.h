@@ -14,6 +14,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -127,91 +128,124 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   uint64_t memory_limit_bytes() const noexcept;
 
   const LogConfig &log_config() const noexcept {
-    return *config_.log_config;
+    auto config = config_snapshot();
+    return *config->log_config;
   }
 
   std::string log_type() const noexcept {
-    return config_.log_config->GetLoggerType();
+    auto config = config_snapshot();
+    return config->log_config->GetLoggerType();
   }
 
   LogLevel log_level() const noexcept {
-    return config_.log_config->level;
+    auto config = config_snapshot();
+    return config->log_config->level;
   }
 
   // File log specific accessors (only valid when using FileLogConfig)
   const std::string &log_dir() const noexcept {
+    auto config = config_snapshot();
     const FileLogConfig *file_config =
-        dynamic_cast<const FileLogConfig *>(config_.log_config.get());
+        dynamic_cast<const FileLogConfig *>(config->log_config.get());
     static const std::string empty_string = "";
     return file_config ? file_config->dir : empty_string;
   }
 
   const std::string &log_file_basename() const noexcept {
+    auto config = config_snapshot();
     const FileLogConfig *file_config =
-        dynamic_cast<const FileLogConfig *>(config_.log_config.get());
+        dynamic_cast<const FileLogConfig *>(config->log_config.get());
     static const std::string empty_string = "";
     return file_config ? file_config->basename : empty_string;
   }
 
   uint32_t log_file_size() const noexcept {
+    auto config = config_snapshot();
     const FileLogConfig *file_config =
-        dynamic_cast<const FileLogConfig *>(config_.log_config.get());
+        dynamic_cast<const FileLogConfig *>(config->log_config.get());
     return file_config ? file_config->file_size : 0;
   }
 
   uint32_t log_overdue_days() const noexcept {
+    auto config = config_snapshot();
     const FileLogConfig *file_config =
-        dynamic_cast<const FileLogConfig *>(config_.log_config.get());
+        dynamic_cast<const FileLogConfig *>(config->log_config.get());
     return file_config ? file_config->overdue_days : 0;
   }
 
   //! Query thread count
   uint32_t query_thread_count() const noexcept {
-    return config_.query_thread_count;
+    return config_snapshot()->query_thread_count;
   }
 
   //! Query thread binding
   bool query_thread_binding() const noexcept {
-    return config_.query_thread_binding;
+    return config_snapshot()->query_thread_binding;
   }
 
   //! Invert to forward scan ratio
   float invert_to_forward_scan_ratio() const noexcept {
-    return config_.invert_to_forward_scan_ratio;
+    return config_snapshot()->invert_to_forward_scan_ratio;
   }
 
   //! Brute force by keys ratio
   float brute_force_by_keys_ratio() const noexcept {
-    return config_.brute_force_by_keys_ratio;
+    return config_snapshot()->brute_force_by_keys_ratio;
   }
 
   //! FTS brute force by keys ratio (independent from brute_force_by_keys_ratio
   //! because FTS per-candidate cost is higher).
   float fts_brute_force_by_keys_ratio() const noexcept {
-    return config_.fts_brute_force_by_keys_ratio;
+    return config_snapshot()->fts_brute_force_by_keys_ratio;
   }
 
   //! Optimize thread count
   uint32_t optimize_thread_count() const noexcept {
-    return config_.optimize_thread_count;
+    return config_snapshot()->optimize_thread_count;
   }
 
   //! Optimize thread binding
   bool optimize_thread_binding() const noexcept {
-    return config_.optimize_thread_binding;
+    return config_snapshot()->optimize_thread_binding;
   }
 
   //! Effective jieba dict dir. Thread-safe.
   std::string jieba_dict_dir() const;
 
  private:
-  // Configuration data
-  ConfigData config_;
+  enum class InitializationState : uint8_t {
+    kUninitialized,
+    kInitializing,
+    kInitialized,
+    kFailed,
+  };
 
-  // Atomic flag to ensure initialization happens only once
-  std::atomic<bool> initialized_{false};
+  std::shared_ptr<const ConfigData> config_snapshot() const noexcept {
+    return std::atomic_load_explicit(&config_, std::memory_order_acquire);
+  }
 
-  // Guards config_ fields that may be written outside Initialize().
+  // Readers atomically acquire an immutable snapshot, so Initialize() and the
+  // language-SDK jieba setter can publish whole configurations without data
+  // races or mixed-field observations.
+  std::shared_ptr<const ConfigData> config_{
+      std::make_shared<const ConfigData>()};
+
+  // The legacy logging accessors return references. Keep replaced LogConfig
+  // objects alive for this GlobalConfig's lifetime so a reference acquired
+  // concurrently with the one-time snapshot publication cannot dangle.
+  std::shared_ptr<LogConfig> retained_log_config_;
+
+  // Initialize() can be called concurrently by language bindings. Publish a
+  // terminal state only after every initialization stage has completed, and
+  // make followers observe the same result instead of returning early while
+  // the winning thread is still working.
+  InitializationState initialization_state_{
+      InitializationState::kUninitialized};
+  Status initialization_status_{};
+  std::condition_variable initialization_cv_;
+  std::mutex initialization_mutex_;
+
+  // Serializes immutable snapshot writers and retained_log_config_.
   mutable std::mutex mutex_;
 };
 

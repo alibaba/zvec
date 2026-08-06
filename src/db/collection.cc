@@ -1744,7 +1744,12 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
   // Single-segment queries have no segment-level fanout; multi-segment queries
   // already use the query pool per sub-query.
   if (segments.size() == 1) {
-    auto group = GlobalResource::Instance().query_thread_pool()->make_group();
+    auto *pool = GlobalResource::Instance().query_thread_pool();
+    if (pool == nullptr) {
+      return tl::make_unexpected(
+          Status::InternalError("Query thread pool initialization failed"));
+    }
+    auto group = pool->make_group();
     for (size_t i = 0; i < pending_queries.size(); ++i) {
       group->execute(
           [&, i]() { results[i] = execute_query(pending_queries[i]); });

@@ -48,12 +48,17 @@ bool BlockEvictionQueue::is_valid_and_alive(const BlockType &item) {
 }
 
 bool BlockEvictionQueue::evict_block(BlockType &item) {
-  bool ok = false;
-  do {
-    ok = evict_single_block(item);
-    if (!ok) {
+  size_t attempts = 0;
+  return evict_block(item, attempts, std::numeric_limits<size_t>::max());
+}
+
+bool BlockEvictionQueue::evict_block(BlockType &item, size_t &attempts,
+                                     size_t max_attempts) {
+  while (attempts < max_attempts) {
+    if (!evict_single_block(item)) {
       return false;
     }
+    ++attempts;
     std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
     if (item.owner == nullptr ||
         valid_owners_.find(item.owner) == valid_owners_.end() ||
@@ -70,18 +75,27 @@ bool BlockEvictionQueue::evict_block(BlockType &item) {
       continue;
     }
     return true;
-  } while (true);
+  }
+  return false;
 }
 
 void BlockEvictionQueue::recycle() {
   BlockType item;
-  // Upper bound on iterations: the CLOCK second-chance path re-enqueues
-  // spared pages, so is_full() alone could spin for a while when most queued
-  // pages are hot.  Cap the work a single foreground caller absorbs; the
-  // background evictor picks up the slack.
+  // Bound foreground work when CLOCK requeues hot pages.
   const size_t max_attempts = evict_batch_size_ * 200 * CACHE_QUEUE_NUM + 16;
   size_t attempts = 0;
-  while (MemoryLimitPool::get_instance().is_full() && evict_block(item)) {
+  bool recovered = false;
+  while (MemoryLimitPool::get_instance().is_full() && attempts < max_attempts) {
+    if (!evict_block(item, attempts, max_attempts)) {
+      if (attempts >= max_attempts) {
+        break;
+      }
+      if (recovered || recover_owner_queues() == 0) {
+        break;
+      }
+      recovered = true;
+      continue;
+    }
     {
       std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
       if (item.owner != nullptr &&
@@ -90,39 +104,48 @@ void BlockEvictionQueue::recycle() {
         item.owner->evict_block(item.owner_key);
       }
     }
-    if (++attempts >= max_attempts) {
-      break;
-    }
   }
 }
 
 size_t BlockEvictionQueue::batch_recycle(size_t count) {
-  std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
   size_t evicted = 0;
-  // Bound attempts so spared (second-chance) pages that get re-enqueued do
-  // not turn this into an unbounded loop when nothing is truly evictable.
-  const size_t max_attempts = count * 4 + 16;
+  // Bound work when no page is currently evictable.
+  const size_t max_attempts =
+      count > (std::numeric_limits<size_t>::max() - 16) / 4
+          ? std::numeric_limits<size_t>::max()
+          : count * 4 + 16;
   size_t attempts = 0;
+  bool recovered = false;
   while (evicted < count && attempts < max_attempts) {
-    ++attempts;
     BlockType item;
-    if (!evict_single_block(item)) break;
-    if (item.owner == nullptr ||
-        valid_owners_.find(item.owner) == valid_owners_.end())
-      continue;
-    if (item.owner->is_dead_block(item.owner_key, item.version)) continue;
-    const uint8_t current_priority =
-        item.owner->eviction_priority(item.owner_key);
-    if (item.priority != current_priority) {
-      item.priority = current_priority;
-      if (!add_single_block(item, static_cast<int>(current_priority))) {
-        item.owner->eviction_requeue_failed(item.owner_key, item.version);
+    if (!evict_block(item, attempts, max_attempts)) {
+      if (attempts >= max_attempts) {
+        break;
       }
+      if (recovered || recover_owner_queues() == 0) {
+        break;
+      }
+      recovered = true;
       continue;
     }
-    if (item.owner->evict_block(item.owner_key)) ++evicted;
+    std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+    if (item.owner != nullptr &&
+        valid_owners_.find(item.owner) != valid_owners_.end() &&
+        !item.owner->is_dead_block(item.owner_key, item.version) &&
+        item.owner->evict_block(item.owner_key)) {
+      ++evicted;
+    }
   }
   return evicted;
+}
+
+size_t BlockEvictionQueue::recover_owner_queues() {
+  std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+  size_t recovered = 0;
+  for (EvictableBlockOwner *owner : valid_owners_) {
+    recovered += owner->recover_eviction_queue();
+  }
+  return recovered;
 }
 
 bool BlockEvictionQueue::add_single_block(const BlockType &block,
@@ -174,8 +197,7 @@ void MemoryLimitPool::drain_free_list() {
 }
 
 size_t MemoryLimitPool::pick_shard() {
-  // Sticky per-thread shard assignment: threads keep reusing the same shard,
-  // maximizing free-list locality and minimizing cross-thread lock traffic.
+  // Keep each thread on one shard for locality.
   thread_local size_t idx = shard_seq_.fetch_add(1, std::memory_order_relaxed);
   return idx % kNumFreeShards;
 }
@@ -207,6 +229,10 @@ bool MemoryLimitPool::try_reserve_committed(size_t bytes) {
 }
 
 bool MemoryLimitPool::is_cacheable_buffer_size(size_t buffer_size) {
+  // Free-list nodes store their next pointer in the released buffer.
+  if (buffer_size < sizeof(char *)) {
+    return false;
+  }
   size_t cached = cached_buffer_size_.load(std::memory_order_relaxed);
   if (cached == 0) {
     cached_buffer_size_.compare_exchange_strong(cached, buffer_size,
@@ -261,6 +287,11 @@ size_t MemoryLimitPool::trim_free_buffers(size_t bytes_needed) {
 
 int MemoryLimitPool::init(size_t pool_size) {
   std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  // Re-publishing the active process-wide budget is a safe no-op.
+  if (initialized_.load(std::memory_order_acquire) &&
+      pool_size_.load(std::memory_order_relaxed) == pool_size) {
+    return 0;
+  }
   const size_t used = used_size_.load(std::memory_order_relaxed);
   const size_t external = external_used_size_.load(std::memory_order_relaxed);
   const size_t metadata = metadata_used_size_.load(std::memory_order_relaxed);
@@ -284,7 +315,20 @@ int MemoryLimitPool::init(size_t pool_size) {
   initialized_.store(true, std::memory_order_release);
   LOG_INFO("Shared cache initialized with capacity: %zu", pool_size);
   if (pool_size > 0) {
-    start_background_evictor();
+    try {
+      start_background_evictor();
+    } catch (const std::exception &e) {
+      pool_size_.store(0, std::memory_order_relaxed);
+      initialized_.store(false, std::memory_order_release);
+      LOG_ERROR("Failed to start the shared-cache evictor: %s", e.what());
+      return -1;
+    } catch (...) {
+      pool_size_.store(0, std::memory_order_relaxed);
+      initialized_.store(false, std::memory_order_release);
+      LOG_ERROR(
+          "Failed to start the shared-cache evictor with an unknown error");
+      return -1;
+    }
   }
   return 0;
 }
@@ -294,14 +338,21 @@ void MemoryLimitPool::start_background_evictor() {
   if (!bg_running_.compare_exchange_strong(expected, true)) {
     return;  // already running
   }
-  bg_thread_ = std::thread([this] { background_evict_loop(); });
+  try {
+    bg_thread_ = std::thread([this] { background_evict_loop(); });
+  } catch (...) {
+    bg_running_.store(false, std::memory_order_release);
+    throw;
+  }
 }
 
 void MemoryLimitPool::stop_background_evictor() {
   if (!bg_running_.exchange(false)) {
     return;  // not running
   }
-  { std::lock_guard<std::mutex> lk(bg_mutex_); }
+  {
+    std::lock_guard<std::mutex> lk(bg_mutex_);
+  }
   bg_cv_.notify_all();
   if (bg_thread_.joinable()) {
     bg_thread_.join();
@@ -328,10 +379,7 @@ void MemoryLimitPool::background_evict_loop() {
     while (bg_running_.load() && used_size_.load() > low) {
       size_t n = BlockEvictionQueue::get_instance().batch_recycle(64);
       if (n == 0) {
-        // A full queue of pinned/second-chance/flush-failing pages can leave
-        // used above the high watermark. The outer wait predicate would then
-        // be permanently true and spin one CPU. Sleep on a stop-only
-        // predicate so this is a real backoff even while pressure remains.
+        // Back off when pressure remains but eviction makes no progress.
         bg_no_progress_sleeps_.fetch_add(1, std::memory_order_relaxed);
         std::unique_lock<std::mutex> lk(bg_mutex_);
         bg_cv_.wait_for(lk, milliseconds(5),
@@ -424,10 +472,7 @@ bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
       continue;
     }
 
-    // A large static cache may need to reclaim far more than one eviction
-    // batch. Keep making progress until enough capacity is available; zero
-    // reclaimed pages means the remaining memory is pinned or externally
-    // charged and cannot satisfy this reservation.
+    // Reclaim until the reservation fits or eviction stops making progress.
     if (BlockEvictionQueue::get_instance().batch_recycle(256) == 0) {
       high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
       return false;
@@ -438,9 +483,7 @@ bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
 
 void MemoryLimitPool::charge_external(const size_t buffer_size) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-  // Unconditional add: a single fetch_add is equivalent to (and cheaper than)
-  // a compare_exchange loop, which would otherwise re-read the contended
-  // used_size_ cache line on every retry.
+  // One RMW avoids a contended compare-exchange loop.
   committed_size_.fetch_add(buffer_size, std::memory_order_relaxed);
   external_used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
   used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
@@ -471,10 +514,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     free_shards_[s].head = buffer;
     free_shards_[s].count.fetch_add(1, std::memory_order_relaxed);
   }
-  // Publish the reusable buffer before releasing its logical budget slot.
-  // Otherwise an acquiring thread can reserve that slot while the buffer is
-  // still between used_size_ and the free-list, then fail because committed
-  // memory is already at the hard cap.
+  // Publish the free buffer before releasing its logical budget slot.
   size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)prev;
   assert(prev >= buffer_size);

@@ -12,18 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// BufferReadStorage is a read-only IndexStorage that mirrors the structure of
-// MMapFileReadStorage (it parses the FileDumper container layout through
-// IndexUnpacker and exposes segment-based access), but instead of mmap-ing the
-// file it reads through a VecBufferPool.  This lets IVF / DiskANN(Vamana)
-// indexes -- which are dumped via FileDumper -- benefit from the buffer-pool's
-// paged cache + LRU eviction + memory-budget control, while keeping the same
-// Segment interface that those indexes already consume.
+// Read-only FileDumper storage backed by VecBufferPool instead of mmap.
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <new>
 #include <stdexcept>
+#include <unordered_map>
+#include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/file_helper.h>
@@ -68,17 +65,8 @@ bool ResolveContainerOffset(size_t file_size, int64_t configured_offset,
  */
 class BufferReadStorage : public IndexStorage {
  public:
-  /*! Buffer Read Storage Segment
-   *
-   * Each segment keeps the owning VecBufferPool / VecBufferPoolHandle alive
-   * (shared_ptr) so that pages it reads remain valid for the segment's
-   * lifetime.  Reads go through the pool's paged cache:
-   *   - fetch()              -> read_range into the caller's buffer
-   *   - read(const void**)   -> read_range into a per-segment buffer (stable
-   *                             pointer, never pins a page)
-   *   - read(MemoryBlock&)   -> single page: zero-copy pin tied to the
-   *                             MemoryBlock lifecycle; cross page: owned copy
-   *   - read(SegmentData*)   -> read_range into the per-segment buffer
+  /*! Read-only segment. Resident single-page reads pin cache pages; other
+   * reads use thread-local or owned scratch buffers.
    */
   class Segment : public IndexStorage::Segment,
                   public std::enable_shared_from_this<Segment> {
@@ -89,14 +77,16 @@ class BufferReadStorage : public IndexStorage {
     //! Constructor
     Segment(const std::shared_ptr<ailego::VecBufferPool> &pool,
             const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
-            size_t index_offset, const IndexUnpacker::SegmentMeta &segment)
+            bool cache_enabled, size_t index_offset,
+            const IndexUnpacker::SegmentMeta &segment)
         : data_offset_(index_offset + segment.data_offset()),
           data_size_(segment.data_size()),
           padding_size_(segment.padding_size()),
           region_size_(segment.data_size() + segment.padding_size()),
           data_crc_(segment.data_crc()),
           pool_(pool),
-          handle_(handle) {}
+          handle_(handle),
+          cache_enabled_(cache_enabled) {}
 
     //! Constructor (clone)
     Segment(const Segment &rhs)
@@ -107,19 +97,20 @@ class BufferReadStorage : public IndexStorage {
           region_size_(rhs.region_size_),
           data_crc_(rhs.data_crc_),
           pool_(rhs.pool_),
-          handle_(rhs.handle_) {}
+          handle_(rhs.handle_),
+          cache_enabled_(rhs.cache_enabled_) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment(void) override {
+      release_thread_scratch();
+    }
 
     //! Retrieve size of data
     size_t data_size(void) const override {
       return data_size_;
     }
 
-    //! Retrieve absolute offset of data within the index file. DiskAnn relies
-    //! on this to compute sector addresses; without the override the base
-    //! class default (0) would make every sector address wrong.
+    //! Retrieve the absolute data offset used by sector readers.
     size_t data_offset(void) const override {
       return data_offset_;
     }
@@ -145,8 +136,7 @@ class BufferReadStorage : public IndexStorage {
       if (len == 0) {
         return 0;
       }
-      if (!handle_->read_range(data_offset_ + offset, len,
-                               static_cast<char *>(buf))) {
+      if (!read_bytes(data_offset_ + offset, len, static_cast<char *>(buf))) {
         LOG_ERROR(
             "BufferReadStorage::Segment::fetch: read_range failed, "
             "abs_offset=%zu, len=%zu",
@@ -156,27 +146,48 @@ class BufferReadStorage : public IndexStorage {
       return len;
     }
 
-    //! Read data from segment (stable pointer via per-segment buffer)
+    //! Read data from segment (stable until this thread's next pointer read)
     size_t read(size_t offset, const void **data, size_t len) override {
       if (ailego_unlikely(data == nullptr)) {
         return 0;
       }
+      auto scratch = thread_scratch();
+      scratch->release_pin();
       len = clamp_length(&offset, len);
       if (len == 0) {
-        *data = buffer_.data();
+        *data = scratch->buffer.data();
         return 0;
       }
-      buffer_.resize(len);
-      if (!handle_->read_range(data_offset_ + offset, len,
-                               reinterpret_cast<char *>(buffer_.data()))) {
+      const size_t abs_offset = data_offset_ + offset;
+      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+      bool force_bypass = !cache_enabled_;
+      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
+        size_t page_id = 0;
+        char *raw = scratch->handle->get_single_page(abs_offset, len, page_id);
+        if (raw != nullptr) {
+          scratch->pin(page_id);
+          *data = raw;
+          return len;
+        }
+        force_bypass = true;
+      }
+      scratch->buffer.resize(len);
+      const bool read_ok =
+          force_bypass
+              ? scratch->handle->read_range_bypass(
+                    abs_offset, len,
+                    reinterpret_cast<char *>(scratch->buffer.data()))
+              : read_bytes(abs_offset, len,
+                           reinterpret_cast<char *>(scratch->buffer.data()));
+      if (!read_ok) {
         LOG_ERROR(
             "BufferReadStorage::Segment::read: read_range failed, "
             "abs_offset=%zu, len=%zu",
-            data_offset_ + offset, len);
+            abs_offset, len);
         *data = nullptr;
         return 0;
       }
-      *data = buffer_.data();
+      *data = scratch->buffer.data();
       return len;
     }
 
@@ -189,55 +200,45 @@ class BufferReadStorage : public IndexStorage {
       }
       size_t abs_offset = data_offset_ + offset;
       const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
-      if (len <= ailego::kVectorPageSize - offset_in_page) {
-        // Single-page: zero-copy pin whose release is tied to the
-        // MemoryBlock lifecycle (release_one on destruction).
+      bool force_bypass = !cache_enabled_;
+      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
+        // Tie the zero-copy page pin to the MemoryBlock lifetime.
         size_t page_id = 0;
         char *raw = handle_->get_single_page(abs_offset, len, page_id);
-        if (!raw) {
-          LOG_ERROR(
-              "BufferReadStorage::Segment::read(MemoryBlock&): single-page "
-              "acquire failed, abs_offset=%zu, len=%zu",
-              abs_offset, len);
-          return 0;
+        if (raw != nullptr) {
+          data.reset(handle_, page_id, raw);
+          return len;
         }
-        data.reset(handle_.get(), page_id, raw);
-        return len;
+        force_bypass = true;
       }
-      // Cross-page: copy into a freshly-allocated 4K-aligned buffer that the
-      // MemoryBlock owns (freed via ailego_free on destruction).
-      static constexpr size_t kAlign = 4096UL;
-      if (ailego_unlikely(len >
-                          std::numeric_limits<size_t>::max() - (kAlign - 1))) {
-        LOG_ERROR(
-            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page "
-            "length overflow, abs_offset=%zu, len=%zu",
-            abs_offset, len);
-        return 0;
-      }
-      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      char *tmp =
-          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
-      if (!tmp) {
-        LOG_ERROR(
-            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page alloc "
-            "failed, abs_offset=%zu, len=%zu",
-            abs_offset, len);
-        return 0;
-      }
-      if (!handle_->read_range(abs_offset, len, tmp)) {
-        ailego_free(tmp);
-        LOG_ERROR(
-            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page "
-            "read_range failed, abs_offset=%zu, len=%zu",
-            abs_offset, len);
-        return 0;
-      }
-      data = MemoryBlock::MakeOwned(tmp, len);
-      return len;
+      // Copy cross-page and bypass reads into owned memory.
+      return read_owned(abs_offset, data, len, force_bypass);
     }
 
-    //! Read scattered data from segment (stable pointers via per-segment buf)
+    //! Borrowed read; the caller keeps this Segment alive until block release.
+    size_t read_borrowed(size_t offset, MemoryBlock &data,
+                         size_t len) override {
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
+      }
+      const size_t abs_offset = data_offset_ + offset;
+      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+      bool force_bypass = !cache_enabled_;
+      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
+        size_t page_id = 0;
+        char *raw = handle_->get_single_page(abs_offset, len, page_id);
+        if (raw != nullptr) {
+          data.reset(handle_.get(), page_id, raw);
+          return len;
+        }
+        force_bypass = true;
+      }
+      return read_owned(abs_offset, data, len, force_bypass);
+    }
+
+    //! Read scattered data (stable until this thread's next pointer read)
     bool read(SegmentData *iovec, size_t count) override {
       ailego_false_if_false(iovec != nullptr && count != 0);
       size_t total = 0u;
@@ -251,13 +252,14 @@ class BufferReadStorage : public IndexStorage {
       }
       ailego_false_if_false(total != 0);
 
-      buffer_.resize(total);
-      uint8_t *buf = buffer_.data();
+      auto scratch = thread_scratch();
+      scratch->release_pin();
+      scratch->buffer.resize(total);
+      uint8_t *buf = scratch->buffer.data();
       for (size_t i = 0; i < count; ++i) {
         SegmentData *it = &iovec[i];
-        ailego_false_if_false(
-            handle_->read_range(data_offset_ + it->offset, it->length,
-                                reinterpret_cast<char *>(buf)));
+        ailego_false_if_false(read_bytes(data_offset_ + it->offset, it->length,
+                                         reinterpret_cast<char *>(buf)));
         it->data = buf;
         buf += it->length;
       }
@@ -282,23 +284,168 @@ class BufferReadStorage : public IndexStorage {
     }
 
     void prefetch(size_t offset, size_t len) override {
+      if (!cache_enabled_) return;
       len = clamp_length(&offset, len);
       if (len == 0) return;
       handle_->prefetch_range(data_offset_ + offset, len);
     }
 
-    //! Free bytes in the shared buffer pool.  Used by the caller to decide
-    //! whether a whole cluster fits before issuing prefetch.
+    //! Return the shared pool's current prefetch budget.
     size_t prefetch_budget(void) const override {
-      return ailego::MemoryLimitPool::get_instance().available();
+      return cache_enabled_
+                 ? ailego::MemoryLimitPool::get_instance().available()
+                 : 0;
     }
 
-    //! No stable base pointer: data lives in an evictable paged cache.
+    //! Cached pages do not expose a stable base address.
     const uint8_t *base_data(void) const override {
       return nullptr;
     }
 
    private:
+    struct ThreadScratch {
+      ThreadScratch(
+          const std::shared_ptr<const uint8_t> &owner_arg,
+          const std::shared_ptr<ailego::VecBufferPoolHandle> &handle_arg)
+          : owner(owner_arg), handle(handle_arg) {}
+
+      ThreadScratch(const ThreadScratch &) = delete;
+      ThreadScratch &operator=(const ThreadScratch &) = delete;
+
+      ThreadScratch(ThreadScratch &&rhs) noexcept
+          : owner(std::move(rhs.owner)),
+            buffer(std::move(rhs.buffer)),
+            handle(std::move(rhs.handle)),
+            pinned_page_id(rhs.pinned_page_id),
+            page_pinned(rhs.page_pinned) {
+        rhs.page_pinned = false;
+      }
+
+      ThreadScratch &operator=(ThreadScratch &&rhs) noexcept {
+        if (this != &rhs) {
+          release_pin();
+          owner = std::move(rhs.owner);
+          buffer = std::move(rhs.buffer);
+          handle = std::move(rhs.handle);
+          pinned_page_id = rhs.pinned_page_id;
+          page_pinned = rhs.page_pinned;
+          rhs.page_pinned = false;
+        }
+        return *this;
+      }
+
+      ~ThreadScratch() {
+        release_pin();
+      }
+
+      void pin(size_t page_id) {
+        pinned_page_id = page_id;
+        page_pinned = true;
+      }
+
+      void release_pin() {
+        if (page_pinned) {
+          handle->release_one(pinned_page_id);
+          page_pinned = false;
+        }
+      }
+
+      std::weak_ptr<const uint8_t> owner;
+      std::vector<uint8_t> buffer;
+      std::shared_ptr<ailego::VecBufferPoolHandle> handle;
+      size_t pinned_page_id{0};
+      bool page_pinned{false};
+    };
+
+    struct ThreadScratchRegistry {
+      std::unordered_map<const uint8_t *, ThreadScratch> scratches;
+      const uint8_t *last_key{nullptr};
+      ThreadScratch *last_scratch{nullptr};
+    };
+
+    static ThreadScratchRegistry &thread_scratch_registry() {
+      static thread_local ThreadScratchRegistry registry;
+      return registry;
+    }
+
+    void release_thread_scratch() const {
+      ThreadScratchRegistry &registry = thread_scratch_registry();
+      const uint8_t *key = scratch_token_.get();
+      if (registry.last_key == key) {
+        registry.last_key = nullptr;
+        registry.last_scratch = nullptr;
+      }
+      registry.scratches.erase(key);
+    }
+
+    ThreadScratch *thread_scratch() const {
+      // Keep one scratch/pin per (thread, Segment); weak tokens clean up dead
+      // segments on long-lived worker threads.
+      ThreadScratchRegistry &registry = thread_scratch_registry();
+      const uint8_t *key = scratch_token_.get();
+      if (registry.last_key == key && registry.last_scratch != nullptr &&
+          !registry.last_scratch->owner.expired()) {
+        return registry.last_scratch;
+      }
+
+      // Only Segment switches scan expired TLS entries.
+      registry.last_key = nullptr;
+      registry.last_scratch = nullptr;
+      for (auto iter = registry.scratches.begin();
+           iter != registry.scratches.end();) {
+        if (iter->second.owner.expired()) {
+          iter = registry.scratches.erase(iter);
+        } else {
+          ++iter;
+        }
+      }
+      auto result =
+          registry.scratches.try_emplace(key, scratch_token_, handle_);
+      registry.last_key = key;
+      registry.last_scratch = &result.first->second;
+      return registry.last_scratch;
+    }
+
+    bool read_bytes(size_t abs_offset, size_t len, char *out) const {
+      return cache_enabled_ ? handle_->read_range(abs_offset, len, out)
+                            : handle_->read_range_bypass(abs_offset, len, out);
+    }
+
+    size_t read_owned(size_t abs_offset, MemoryBlock &data, size_t len,
+                      bool force_bypass) const {
+      static constexpr size_t kAlign = 4096UL;
+      if (ailego_unlikely(len >
+                          std::numeric_limits<size_t>::max() - (kAlign - 1))) {
+        LOG_ERROR(
+            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page "
+            "length overflow, abs_offset=%zu, len=%zu",
+            abs_offset, len);
+        return 0;
+      }
+      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
+      char *tmp =
+          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
+      if (!tmp) {
+        LOG_ERROR(
+            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page alloc "
+            "failed, abs_offset=%zu, len=%zu",
+            abs_offset, len);
+        return 0;
+      }
+      const bool read_ok =
+          force_bypass ? handle_->read_range_bypass(abs_offset, len, tmp)
+                       : read_bytes(abs_offset, len, tmp);
+      if (!read_ok) {
+        ailego_free(tmp);
+        LOG_ERROR(
+            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page "
+            "read_range failed, abs_offset=%zu, len=%zu",
+            abs_offset, len);
+        return 0;
+      }
+      data = MemoryBlock::MakeOwned(tmp, len);
+      return len;
+    }
     size_t clamp_length(size_t *offset, size_t len) const {
       if (ailego_unlikely(*offset > region_size_)) {
         *offset = region_size_;
@@ -312,9 +459,11 @@ class BufferReadStorage : public IndexStorage {
     size_t padding_size_{0u};
     size_t region_size_{0u};
     uint32_t data_crc_{0u};
-    std::vector<uint8_t> buffer_{};
+    std::shared_ptr<const uint8_t> scratch_token_{
+        std::make_shared<const uint8_t>(0)};
     std::shared_ptr<ailego::VecBufferPool> pool_{nullptr};
     std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
+    bool cache_enabled_{false};
   };
 
   //! Destructor
@@ -360,42 +509,20 @@ class BufferReadStorage : public IndexStorage {
 
   //! Load an index file into the container
   int open(const std::string &path, bool) override {
-    const size_t shared_cache_capacity =
-        ailego::MemoryLimitPool::get_instance().capacity();
-    if (shared_cache_capacity < ailego::kVectorPageSize) {
-      LOG_ERROR(
-          "BufferReadStorage requires at least one cache page: "
-          "capacity=%zu page_size=%zu path=%s",
-          shared_cache_capacity, ailego::kVectorPageSize, path.c_str());
-      return IndexError_InvalidArgument;
-    }
-
     try {
       std::string candidate_file_path(path);
-      // Keep all new state local until open is fully successful. A failed
-      // reopen therefore cannot mix old segment metadata with a new file.
+      // Publish new state only after open succeeds.
       auto candidate_pool = std::make_shared<ailego::VecBufferPool>(
           path, /*writable=*/false, /*enable_direct_io=*/enable_direct_io_,
           /*enable_io_profile=*/enable_io_profile_);
-      auto candidate_handle = std::make_shared<ailego::VecBufferPoolHandle>(
-          candidate_pool->get_handle());
+      auto candidate_handle =
+          std::make_shared<ailego::VecBufferPoolHandle>(candidate_pool);
 
       const size_t file_size = candidate_pool->file_size();
       const size_t page_count =
           file_size == 0 ? 0 : (file_size - 1) / ailego::kVectorPageSize + 1;
       const size_t metadata_bytes =
           ailego::VecBufferPool::metadata_bytes_for_page_count(page_count);
-      if (metadata_bytes == std::numeric_limits<size_t>::max() ||
-          metadata_bytes > shared_cache_capacity ||
-          ailego::kVectorPageSize > shared_cache_capacity - metadata_bytes) {
-        LOG_ERROR(
-            "BufferReadStorage shared cache is too small for page-table "
-            "metadata plus one data page: capacity=%zu metadata=%zu "
-            "page_size=%zu path=%s",
-            shared_cache_capacity, metadata_bytes, ailego::kVectorPageSize,
-            path.c_str());
-        return IndexError_NoMemory;
-      }
       size_t candidate_index_offset = 0;
       size_t end_offset = 0;
       if (!ResolveContainerOffset(file_size, header_offset_,
@@ -414,8 +541,6 @@ class BufferReadStorage : public IndexStorage {
       const size_t container_size = end_offset - candidate_index_offset;
 
       // IndexUnpacker requires a stable pointer until its next callback.
-      // The local scratch buffer also keeps a failed open from mutating the
-      // currently-published storage state.
       std::vector<uint8_t> scratch;
       auto read_data = [&candidate_handle, &scratch, candidate_index_offset,
                         container_size](size_t offset, const void **data,
@@ -463,12 +588,23 @@ class BufferReadStorage : public IndexStorage {
       }
       const uint32_t candidate_magic = unpacker.magic();
 
-      // Allocate the page table now that the layout is known.
-      if (candidate_pool->init() != 0) {
-        LOG_ERROR("Failed to init VecBufferPool, path: %s", path.c_str());
-        return IndexError_NoMemory;
+      // Fall back to bypass-only mode when metadata plus one page cannot fit.
+      bool candidate_cache_enabled = false;
+      const size_t available =
+          ailego::MemoryLimitPool::get_instance().available();
+      if (metadata_bytes != std::numeric_limits<size_t>::max() &&
+          metadata_bytes <= available &&
+          ailego::kVectorPageSize <= available - metadata_bytes) {
+        candidate_cache_enabled = candidate_pool->init() == 0;
       }
-      if (warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
+      if (!candidate_cache_enabled) {
+        LOG_INFO(
+            "BufferReadStorage opened in bypass-only mode: path=%s "
+            "available=%zu metadata=%zu page_size=%zu",
+            path.c_str(), available, metadata_bytes, ailego::kVectorPageSize);
+      }
+      if (candidate_cache_enabled &&
+          warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
         candidate_pool->warmup();
       }
 
@@ -478,6 +614,7 @@ class BufferReadStorage : public IndexStorage {
       segments_ = std::move(candidate_segments);
       handle_ = std::move(candidate_handle);
       buffer_pool_ = std::move(candidate_pool);
+      cache_enabled_ = candidate_cache_enabled;
       return 0;
     } catch (const std::bad_alloc &) {
       LOG_ERROR("Out of memory opening BufferReadStorage: %s", path.c_str());
@@ -500,6 +637,7 @@ class BufferReadStorage : public IndexStorage {
     segments_.clear();
     handle_ = nullptr;
     buffer_pool_ = nullptr;
+    cache_enabled_ = false;
     return 0;
   }
 
@@ -513,7 +651,7 @@ class BufferReadStorage : public IndexStorage {
       return IndexStorage::Segment::Pointer();
     }
     return std::make_shared<BufferReadStorage::Segment>(
-        buffer_pool_, handle_, index_offset_, it->second);
+        buffer_pool_, handle_, cache_enabled_, index_offset_, it->second);
   }
 
   std::map<std::string, IndexStorage::Segment::Pointer> get_all(
@@ -521,9 +659,9 @@ class BufferReadStorage : public IndexStorage {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     if (buffer_pool_ && handle_) {
       for (const auto &it : segments_) {
-        result.emplace(it.first,
-                       std::make_shared<BufferReadStorage::Segment>(
-                           buffer_pool_, handle_, index_offset_, it.second));
+        result.emplace(it.first, std::make_shared<BufferReadStorage::Segment>(
+                                     buffer_pool_, handle_, cache_enabled_,
+                                     index_offset_, it.second));
       }
     }
     return result;
@@ -552,7 +690,7 @@ class BufferReadStorage : public IndexStorage {
   //! Expose the backing VecBufferPool so callers (e.g. DiskAnn) can detect a
   //! pooled backend and route reads through the paged cache.
   ailego::VecBufferPool *vec_buffer_pool(void) const override {
-    return buffer_pool_.get();
+    return cache_enabled_ ? buffer_pool_.get() : nullptr;
   }
 
  private:
@@ -568,6 +706,7 @@ class BufferReadStorage : public IndexStorage {
   std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
   std::shared_ptr<ailego::VecBufferPool> buffer_pool_{nullptr};
   std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
+  bool cache_enabled_{false};
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(BufferReadStorage);

@@ -13,27 +13,54 @@
 // limitations under the License.
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/pattern/singleton.h>
 
 namespace zvec {
 
+class GlobalConfig;
+
 class GlobalResource : public ailego::Singleton<GlobalResource> {
  public:
-  void initialize();
+  int initialize();
 
   ailego::ThreadPool *query_thread_pool() {
-    initialize();
+    if (initialize() != 0) {
+      return nullptr;
+    }
     return query_thread_pool_.get();
   }
 
   ailego::ThreadPool *optimize_thread_pool() {
-    initialize();
+    if (initialize() != 0) {
+      return nullptr;
+    }
     return optimize_thread_pool_.get();
   }
 
  private:
+  friend class GlobalConfig;
+
+  int initialize(uint64_t memory_limit_bytes, uint32_t query_thread_count,
+                 bool query_thread_binding, uint32_t optimize_thread_count,
+                 bool optimize_thread_binding);
+  int initialize_with_setup(uint64_t memory_limit_bytes,
+                            uint32_t query_thread_count,
+                            bool query_thread_binding,
+                            uint32_t optimize_thread_count,
+                            bool optimize_thread_binding,
+                            const std::function<int()> &setup);
+
+  std::mutex initialization_mutex_;
+  uint64_t memory_limit_bytes_{0};
+  uint32_t query_thread_count_{0};
+  uint32_t optimize_thread_count_{0};
+  bool query_thread_binding_{false};
+  bool optimize_thread_binding_{false};
   std::unique_ptr<ailego::ThreadPool> query_thread_pool_;
   std::unique_ptr<ailego::ThreadPool> optimize_thread_pool_;
 };

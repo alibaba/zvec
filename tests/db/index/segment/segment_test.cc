@@ -1829,10 +1829,10 @@ TEST_P(SegmentTest, AddColumnWithExpressionMultiBlock) {
 }
 
 TEST_P(SegmentTest, AlterColumnMultiBlock) {
-  constexpr size_t kSharedCacheCapacity = MIN_MEMORY_LIMIT_BYTES / 2;
+  constexpr size_t kSharedCacheCapacity = MIN_MEMORY_LIMIT_BYTES;
   auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
-  if (!GetParam()) {
-    memory_pool.init(kSharedCacheCapacity);
+  if (!GetParam() && memory_pool.capacity() != kSharedCacheCapacity) {
+    ASSERT_EQ(0, memory_pool.init(kSharedCacheCapacity));
   }
 
   options_.max_buffer_size_ = 1 * 1024;
@@ -1929,10 +1929,10 @@ TEST_P(SegmentTest, AlterColumnMultiBlock) {
 }
 
 TEST_P(SegmentTest, DropColumnMultiBlock) {
-  constexpr size_t kSharedCacheCapacity = MIN_MEMORY_LIMIT_BYTES / 2;
+  constexpr size_t kSharedCacheCapacity = MIN_MEMORY_LIMIT_BYTES;
   auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
-  if (!GetParam()) {
-    memory_pool.init(kSharedCacheCapacity);
+  if (!GetParam() && memory_pool.capacity() != kSharedCacheCapacity) {
+    ASSERT_EQ(0, memory_pool.init(kSharedCacheCapacity));
   }
 
   options_.max_buffer_size_ = 1 * 1024;

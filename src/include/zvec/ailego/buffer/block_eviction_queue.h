@@ -57,10 +57,7 @@ class ZVEC_AILEGO_API EvictableBlockOwner {
 
   virtual bool is_dead_block(eviction_key_t owner_key, version_t version) = 0;
 
-  //! Attempt to evict the block identified by owner_key.
-  //! Returns true if the block was actually evicted (its memory was released),
-  //! false if it was spared (CLOCK second chance / still pinned) so callers
-  //! can tell real reclamation from a no-op and make progress accordingly.
+  //! Evict a block; return true only when memory was reclaimed.
   virtual bool evict_block(eviction_key_t owner_key) = 0;
 
   //! Current eviction-queue priority for an item. Owners that do not support
@@ -69,11 +66,14 @@ class ZVEC_AILEGO_API EvictableBlockOwner {
     return 0;
   }
 
-  //! Called when an item that was already removed from the queue cannot be
-  //! re-enqueued. Owners with persistent queue-membership state must clear it
-  //! so a later release/load can retry registration.
+  //! Clear persistent membership after a failed requeue.
   virtual void eviction_requeue_failed(eviction_key_t /*owner_key*/,
                                        version_t /*version*/) {}
+
+  //! Recover missing queue entries after reclamation finds an empty queue.
+  virtual size_t recover_eviction_queue() {
+    return 0;
+  }
 };
 
 class BlockEvictionQueue {
@@ -87,10 +87,7 @@ class BlockEvictionQueue {
   typedef moodycamel::ConcurrentQueue<BlockType> ConcurrentQueue;
 
   static BlockEvictionQueue &get_instance() {
-    // The atomic pointer is weak COMDAT storage and is coalesced when
-    // zvec_ailego is embedded in multiple ELF/Mach-O images; a magic-static
-    // object and its guard are not reliably kept together across that
-    // boundary.
+    // Weak COMDAT storage keeps the singleton shared across loaded images.
     static std::atomic<BlockEvictionQueue *> instance{nullptr};
     BlockEvictionQueue *current = instance.load(std::memory_order_acquire);
     if (current != nullptr) {
@@ -119,6 +116,17 @@ class BlockEvictionQueue {
 
   bool add_single_block(const BlockType &block, int queue_index);
 
+  //! Return a non-zero generation that prevents owner-address ABA.
+  version_t next_version() {
+    version_t version =
+        version_sequence_.fetch_add(1, std::memory_order_relaxed);
+    // Zero is reserved for non-versioned owners.
+    if (ailego_unlikely(version == 0)) {
+      version = version_sequence_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return version;
+  }
+
   void set_valid(EvictableBlockOwner *owner) {
     std::unique_lock<std::shared_mutex> lock(valid_owners_mutex_);
     valid_owners_.insert(owner);
@@ -136,6 +144,10 @@ class BlockEvictionQueue {
   size_t batch_recycle(size_t count);
 
  private:
+  bool evict_block(BlockType &item, size_t &attempts, size_t max_attempts);
+
+  size_t recover_owner_queues();
+
   BlockEvictionQueue() {
     init();
   }
@@ -146,14 +158,13 @@ class BlockEvictionQueue {
   std::vector<ConcurrentQueue> evict_queues_;
   std::unordered_set<EvictableBlockOwner *> valid_owners_;
   std::shared_mutex valid_owners_mutex_;
+  std::atomic<version_t> version_sequence_{1};
 };
 
 class MemoryLimitPool {
  public:
   static MemoryLimitPool &get_instance() {
-    // Deliberately retain the pool for process lifetime: its background thread
-    // and cached buffers must not be torn down while another DSO can still use
-    // the shared instance.
+    // Retain process-wide state while any loaded image may reference it.
     static std::atomic<MemoryLimitPool *> instance{nullptr};
     MemoryLimitPool *current = instance.load(std::memory_order_acquire);
     if (current != nullptr) {
@@ -178,14 +189,10 @@ class MemoryLimitPool {
 
   bool try_acquire_buffer(const size_t buffer_size, char *&buffer);
 
-  //! Reserve capacity for memory allocated outside the page-buffer cache.
-  //! Unlike charge_external(), this enforces the configured limit and may
-  //! recycle evictable pages before failing.
+  //! Reserve bounded capacity outside the page cache, evicting if needed.
   bool try_charge_external(const size_t buffer_size);
 
-  //! Reserve capacity for non-evictable buffer-pool metadata (page tables,
-  //! lock stripes, etc.). Kept separate from application-level external cache
-  //! accounting so operators can explain budget overhead precisely.
+  //! Reserve non-evictable buffer-pool metadata capacity.
   bool try_charge_metadata(const size_t buffer_size);
 
   void charge_external(const size_t buffer_size);
@@ -198,11 +205,7 @@ class MemoryLimitPool {
 
   bool is_full();
 
-  //! Currently available (free) bytes in the pool. Lock-free read-only
-  //! estimate: both counters are atomic. Reinitialization is allowed only
-  //! while no page or external reservation is active.
-  //! Returns 0 when the pool is at or over capacity.  Callers use this to gate
-  //! whole-cluster prefetch under memory pressure.
+  //! Lock-free estimate of currently available bytes.
   size_t available() const {
     size_t used = used_size_.load(std::memory_order_relaxed);
     size_t capacity = pool_size_.load(std::memory_order_relaxed);
@@ -236,9 +239,7 @@ class MemoryLimitPool {
     return pool_size_.load(std::memory_order_relaxed);
   }
 
-  //! Whether init() has explicitly published a capacity, including zero.
-  //! Standalone core users use this to distinguish legacy unconfigured mode
-  //! from an explicit zero-byte shared-cache budget.
+  //! Whether init() published a capacity, including zero.
   bool initialized() const {
     return initialized_.load(std::memory_order_acquire);
   }
@@ -276,21 +277,11 @@ class MemoryLimitPool {
   size_t trim_free_buffers(size_t bytes_needed);
   size_t pick_shard();
 
-  // Background evictor: proactively reclaims buffers down to the low
-  // watermark so foreground acquire_buffer() rarely pays eviction/flush cost
-  // inline, smoothing tail latency under memory pressure.
+  // Reclaim in the background to keep eviction off foreground allocations.
   void start_background_evictor();
   void stop_background_evictor();
   void background_evict_loop();
-  // Proactive reclaim keeps a small free margin so the foreground path finds
-  // ready buffers without paying inline eviction cost.  These used to be 90% /
-  // 75% of pool_size, but a percentage margin makes the background evictor
-  // discard live pages whenever used exceeds 75% -- even when the entire
-  // working set would fit in the pool.  For read-mostly page caches that is
-  // self-inflicted thrashing: a pool larger than the index still perpetually
-  // evicts and re-reads its hottest pages (e.g. a 1.4 GB pool caps at ~1.05 GB
-  // and thrashes a 1.17 GB index).  Reserve a small absolute margin instead so
-  // the pool fills to near capacity before anything is evicted.
+  // Keep a small absolute reserve without shrinking a fitting working set.
   size_t reserve_margin(size_t capacity) const {
     size_t m = capacity / 64;      // ~1.5% of the pool
     const size_t lo = 8UL << 20;   // but at least 8 MB
@@ -323,9 +314,7 @@ class MemoryLimitPool {
   }
 
  private:
-  // Sharded free-list: spreads the hot alloc/free path across many locks so
-  // foreground threads and the background evictor rarely contend.  Each shard
-  // is cache-line aligned to avoid false sharing.
+  // Shard the aligned free list to reduce allocation-path contention.
   static constexpr size_t kNumFreeShards = 64;
   struct alignas(64) FreeShard {
     std::mutex mutex;
@@ -333,26 +322,20 @@ class MemoryLimitPool {
     std::atomic<size_t> count{0};
   };
 
-  // Capacity is atomic because monitoring and the background evictor read it
-  // while init() may publish a new idle-pool capacity.
+  // init() may publish capacity while monitoring reads it.
   std::atomic<size_t> pool_size_{0};
   std::atomic<bool> initialized_{false};
-  // Serializes reinitialization against cache-miss reservations. Release
-  // paths deliberately do not take this lock, so an active consumer can
-  // drain while a rejected reinitialization returns.
+  // Serialize reinitialization with reservations, but not releases.
   mutable std::shared_mutex lifecycle_mutex_;
   std::atomic<size_t> used_size_{0};
-  // Unlike used_size_, committed_size_ includes buffers retained on the
-  // free-list. External caches must reserve against this counter so cached
-  // page memory and external memory cannot together exceed pool_size_.
+  // Includes free-list buffers so all consumers share the same hard cap.
   std::atomic<size_t> committed_size_{0};
   std::atomic<size_t> external_used_size_{0};
   std::atomic<size_t> metadata_used_size_{0};
 
   FreeShard free_shards_[kNumFreeShards];
   std::atomic<size_t> shard_seq_{0};
-  // Free-list nodes do not carry a size, so only the first page-buffer size
-  // seen after init is cached. Other sizes are allocated and freed directly.
+  // Cache only one buffer size because free-list nodes are untyped.
   std::atomic<size_t> cached_buffer_size_{0};
 
   // Observability counters (relaxed atomics; statistics only).

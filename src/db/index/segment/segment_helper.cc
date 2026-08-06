@@ -796,6 +796,10 @@ Status SegmentHelper::MergeWithOptionalReuse(
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
+    if (merge_options.pool == nullptr) {
+      return Status::InternalError(
+          "Optimize thread pool initialization failed");
+    }
     merge_options.write_concurrency =
         static_cast<uint32_t>(merge_options.pool->count());
   } else {

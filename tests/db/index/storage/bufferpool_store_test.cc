@@ -21,7 +21,9 @@
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "db/index/storage/bufferpool_forward_store.h"
+#include "db/index/storage/parquet_buffer_pool.h"
 #include "utils/utils.h"
 
 using namespace zvec;
@@ -44,6 +46,35 @@ class BufferPoolStoreTest : public testing::Test {
   }
   std::string parquet_path = "test.parquet";
 };
+
+TEST_F(BufferPoolStoreTest, EscapedNestedScalarKeepsParquetCachePinned) {
+  auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
+  ASSERT_TRUE(store->Open().ok());
+  const int column = store->physic_schema()->GetFieldIndex("list_utf8");
+  ASSERT_GE(column, 0);
+
+  std::shared_ptr<arrow::Scalar> scalar;
+  {
+    auto handle = ParquetBufferPool::get_instance().acquire_buffer(
+        ParquetBufferID(parquet_path, column, /*row_group=*/0));
+    auto data = handle.data();
+    ASSERT_NE(nullptr, data);
+    auto scalar_result = data->GetScalar(0);
+    ASSERT_TRUE(scalar_result.ok()) << scalar_result.status().ToString();
+    scalar = scalar_result.ValueOrDie();
+  }
+
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  const size_t pinned_bytes = memory_pool.external_used();
+  ASSERT_GT(pinned_bytes, 0u);
+  EXPECT_EQ(0u, ailego::BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(pinned_bytes, memory_pool.external_used());
+  EXPECT_FALSE(scalar->ToString().empty());
+
+  scalar.reset();
+  EXPECT_EQ(1u, ailego::BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(0u, memory_pool.external_used());
+}
 
 
 TEST_F(BufferPoolStoreTest, ParquetFetch) {

@@ -52,29 +52,22 @@ namespace ailego {
 extern const size_t kVectorPageSize;
 
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
-  // Cold page metadata stays one entry per cache line.  Pinning, writes and
-  // eviction mutate these fields, so isolating adjacent entries avoids false
-  // sharing on those paths.  Read-only epoch hits do not touch this 64-byte
-  // table; their resident pointers live in the compact ResidentEntry table
-  // below.
+  // Isolate mutable page metadata; epoch reads use ResidentEntry below.
   struct alignas(64) Entry {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
     std::atomic<bool> is_dirty;
-    // CLOCK second-chance bit: set on every cache hit, cleared when the
-    // evictor spares the page.  Turns the FIFO eviction queue into an
-    // access-aware (approximate LRU) policy without a global LRU list.
+    // CLOCK second-chance bit.
     std::atomic<bool> referenced;
     std::atomic<uint8_t> evict_priority{0};
-    bool ever_loaded{
+    std::atomic<bool> ever_loaded{
         false};  // true once the page has been loaded at least once
+    size_t next_loaded;
     size_t file_offset;
   };
   static_assert(sizeof(Entry) == 64, "VectorPageTable::Entry must be one line");
 
-  // Hot read-only lookup table.  Eight resident pointers fit in one 64-byte
-  // cache line, reducing a 300K-page working set from ~19 MB of cold entries
-  // to ~2.4 MB.  The epoch domain protects a non-null pointer after load.
+  // Compact resident-pointer table for epoch-protected reads.
   struct ResidentEntry {
     std::atomic<char *> buffer{nullptr};
   };
@@ -92,9 +85,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   }
   ~VectorPageTable() {
     BlockEvictionQueue::get_instance().set_invalid(this);
-    // Destructor runs without concurrent readers/writers (callers guarantee
-    // no live handles by the time the page table is destroyed), so a relaxed
-    // load is sufficient here.
+    // No readers remain during destruction.
     size_t cnt = segment_count_.load(std::memory_order_relaxed);
     for (size_t i = 0; i < cnt; ++i) {
       delete[] segments_[i];
@@ -108,21 +99,13 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   VectorPageTable(VectorPageTable &&) = delete;
   VectorPageTable &operator=(VectorPageTable &&) = delete;
 
-  //! Initialize the page table to cover `entry_num` entries.
-  //! Returns false (without modifying state) if `entry_num` exceeds the
-  //! statically allocated segment table capacity (kMaxEntries).
+  //! Initialize up to kMaxEntries entries without partial publication.
   bool init(size_t entry_num);
 
-  //! Extend the page table to cover at least `new_entry_num` entries.
-  //! Existing entries stay at their original addresses (no invalidation).
-  //! Safe to call while readers operate on existing pages.
-  //! Returns false (without modifying state) if `new_entry_num` exceeds
-  //! the statically allocated segment table capacity (kMaxEntries).
+  //! Extend without moving existing entries or partial publication.
   bool extend(size_t new_entry_num);
 
-  //! Roll back a just-published extension whose new entries have not been
-  //! exposed to page users. Used by VecBufferPool when the matching file
-  //! resize fails.
+  //! Roll back an extension not yet exposed to page users.
   bool rollback_extend(size_t old_entry_num);
 
   char *acquire_block(block_id_t block_id);
@@ -135,16 +118,17 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
                                version_t version) override {
     if (version == owner_version_ &&
         owner_key < entry_num_.load(std::memory_order_acquire)) {
+      eviction_recovery_needed_.store(true, std::memory_order_release);
       Entry &e = entry_at(owner_key);
       e.in_evict_queue.store(false, std::memory_order_relaxed);
-      // The queue slot has already been consumed. If the page is released,
-      // reclaim it directly so a transient queue-capacity failure cannot
-      // strand it forever waiting for a release that will never happen.
+      // Reclaim released pages whose queue slot was consumed.
       if (e.ref_count.load(std::memory_order_acquire) == 0) {
         (void)do_evict_block(owner_key, /*force=*/false);
       }
     }
   }
+
+  size_t recover_eviction_queue() override;
 
   uint8_t eviction_priority(eviction_key_t owner_key) const override {
     if (owner_key >= entry_num_.load(std::memory_order_acquire)) {
@@ -153,25 +137,21 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return entry_at(owner_key).evict_priority.load(std::memory_order_relaxed);
   }
 
-  //! Unconditionally reclaim a block, bypassing the CLOCK second-chance bit.
-  //! Used at teardown / full reset: the normal evict_block() spares a page
-  //! whose `referenced` bit is set, but at teardown that would leave the
-  //! buffer charged in MemoryLimitPool forever (a used_size_ leak).
+  //! Reclaim a block without CLOCK second chance.
   bool force_evict_block(block_id_t block_id);
+
+  //! Reclaim loaded entries without scanning untouched file pages.
+  void force_evict_all_loaded();
 
   void set_evict_priority(block_id_t block_id, uint8_t priority) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     Entry &e = entry_at(block_id);
     e.evict_priority.store(priority, std::memory_order_relaxed);
-    // A loaded page has one persistent logical queue membership.  Changing
-    // the priority must not invalidate that membership: doing so can strand a
-    // released page with no future release operation available to re-enqueue
-    // it.  The new priority is used the next time the page is moved to the
-    // queue tail.
+    // Existing queue membership adopts the priority on its next requeue.
   }
 
-  char *set_block_acquired(block_id_t block_id, char *buffer,
-                           size_t file_offset);
+  [[nodiscard]] char *set_block_acquired(block_id_t block_id, char *buffer,
+                                         size_t file_offset);
 
   void set_flush_callback(FlushCallback cb) {
     flush_callback_ = std::move(cb);
@@ -199,14 +179,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
   }
 
-  //! Get a resident page for a caller protected by PageReadEpochDomain.
-  //! Epoch readers avoid ref_count RMWs, but still participate in sampled hit
-  //! accounting and CLOCK hot-page retention.
+  //! Return a resident page protected by PageReadEpochDomain.
   char *get_epoch_block(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    // Keep the common path entirely in the compact resident-pointer table.
-    // CLOCK/observability metadata is cold and touched only by the sampled
-    // branch, after a successful resident lookup.
+    // Touch cold CLOCK/statistics metadata only on sampled hits.
     char *buffer =
         resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
     if (buffer && sample_hit()) {
@@ -245,9 +221,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return rc;
   }
 
-  //! Returns the current number of entries.  Uses acquire ordering so that
-  //! callers iterating over [0, entry_num()) are guaranteed to see all
-  //! segments_[s] writes performed by a concurrent extend()/init().
+  //! Return the published entry count with initialized segments visible.
   size_t entry_num() const {
     return entry_num_.load(std::memory_order_acquire);
   }
@@ -277,9 +251,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   }
 
   inline bool is_dead_block(block_id_t block_id, version_t version) override {
-    // Queue entries can outlive their owner.  A later VectorPageTable may be
-    // allocated at the same address, so pointer membership alone is not
-    // enough to distinguish a stale entry (owner-address ABA).
+    // Reject stale entries after owner-address reuse.
     if (version != owner_version_ ||
         block_id >= entry_num_.load(std::memory_order_acquire)) {
       return true;
@@ -296,12 +268,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
            nullptr;
   }
 
-  //! Check if a page has ever been loaded (so pread is needed on reload
-  //! after eviction).  A page that was never loaded can be zero-filled
-  //! if it lies beyond the initial file size (created by extend_file).
+  //! Check whether reload requires I/O rather than initial zero-fill.
   bool is_ever_loaded(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    return entry_at(block_id).ever_loaded;
+    return entry_at(block_id).ever_loaded.load(std::memory_order_relaxed);
   }
 
  private:
@@ -314,32 +284,24 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
  public:
   static constexpr size_t kMaxSegments =
       2048;  // up to 128M entries (512GB @ 4K)
-  // Maximum number of entries the segment table can ever hold.  Callers
-  // (e.g. VecBufferPool::extend_file) can use this to pre-validate a target
-  // file size before mutating any on-disk state.
+  // Capacity used to validate growth before changing the file.
   static constexpr size_t kMaxEntries = kMaxSegments * kSegmentSize;
 
   //! Heap bytes allocated by the segmented page table for `entry_num`.
   static size_t metadata_bytes_for_entries(size_t entry_num);
 
  private:
-  // entry_num_ and segment_count_ are mutated by writers in init()/extend()
-  // and observed by readers in entry_num() and the hot-path methods.  They
-  // are atomic to establish a release/acquire synchronization edge with the
-  // (non-atomic) writes to segments_[s] performed prior to the store: any
-  // reader that observes the new entry_num_ is guaranteed to see the
-  // fully-initialized Entry slots in the corresponding segment.
+  // Release/acquire publication makes initialized segment slots visible.
   std::atomic<size_t> entry_num_{0};
   std::atomic<size_t> segment_count_{0};
   Entry *segments_[kMaxSegments]{};
   ResidentEntry *resident_segments_[kMaxSegments]{};
   size_t metadata_charge_{0};
+  static constexpr size_t kInvalidLoadedBlock =
+      std::numeric_limits<size_t>::max();
+  std::atomic<size_t> loaded_head_{kInvalidLoadedBlock};
 
-  // Pair with the release-store on segment_count_ in init()/extend() so
-  // that any reader observing the published segment table also sees the
-  // fully-initialized segments_[s] pointer and Entry slots. Without this
-  // acquire load, segments_[s] can be re-read as nullptr or a torn
-  // pointer on weak memory models (and even reordered on x86 under -O2).
+  // Pair with segment_count_ publication before dereferencing a segment.
   Entry &entry_at(size_t idx) {
     (void)segment_count_.load(std::memory_order_acquire);
     return segments_[idx >> kSegmentShift][idx & kSegmentMask];
@@ -357,28 +319,21 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return resident_segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
 
-  // Shared implementation for evict_block()/force_evict_block(): when `force`
-  // is true the CLOCK second-chance branch is skipped so the block is always
-  // reclaimed.
+  // `force` bypasses CLOCK second chance.
   static void initialize_segment(Entry *entries,
                                  ResidentEntry *resident_entries);
   bool do_evict_block(block_id_t block_id, bool force);
   static version_t next_owner_version();
 
-  // Generation attached to every eviction-queue entry created by this page
-  // table.  It prevents stale entries from targeting a new table that happens
-  // to reuse the same object address.
+  // Prevent stale queue entries from targeting a reused owner address.
   const version_t owner_version_;
 
   FlushCallback flush_callback_{};
   RetireCallback retire_callback_{};
+  // Scan loaded entries only after a queue insertion failure.
+  std::atomic<bool> eviction_recovery_needed_{false};
 
-  // Observability counters, sharded across cache lines.  A single global
-  // atomic incurred severe contention on the hot acquire path: every cache
-  // hit did fetch_add on one counter, bouncing that line across all search
-  // threads.  Each thread now increments its own sticky shard, so counter
-  // updates never share a cache line.  Relaxed ordering: statistics only,
-  // never used for correctness decisions.
+  // Shard relaxed statistics to avoid hot-path cache-line contention.
   static constexpr size_t kCounterShards = 64;  // power of two for masking
   struct alignas(64) CounterShard {
     std::atomic<uint64_t> hit{0};
@@ -388,18 +343,13 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   };
   CounterShard counters_[kCounterShards];
 
-  // Sticky per-thread shard assignment (mirrors MemoryLimitPool::pick_shard):
-  // each thread keeps writing the same shard, maximizing locality and
-  // eliminating cross-thread contention on the counter cache lines.
+  // Keep each thread on one counter shard.
   static size_t counter_shard() {
     static std::atomic<size_t> seq{0};
     thread_local size_t idx = seq.fetch_add(1, std::memory_order_relaxed);
     return idx & (kCounterShards - 1);
   }
-  // Cache hits are a high-frequency observability signal, not correctness
-  // state.  Sample one in 64 and scale the counter to avoid adding another
-  // atomic RMW to every page acquisition.  Starting at zero records the first
-  // hit on each thread, which keeps short tests and low-traffic pools visible.
+  // Sample and scale hits to avoid an atomic RMW on every acquisition.
   static constexpr uint32_t kHitSampleRate = 64;
   static bool sample_hit() {
     thread_local uint32_t sample_cursor = 0;
@@ -422,10 +372,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   }
 };
 
-//! Epoch reclamation for refcount-free reads from read-only buffer pools.
-//! Readers occupy one slot for the duration of a query.  Evicted buffers are
-//! retired with the current generation and returned to MemoryLimitPool only
-//! after every reader that could have observed them has advanced or exited.
+//! Epoch reclamation for refcount-free reads from read-only pools.
 class PageReadEpochDomain {
  public:
   struct Token {
@@ -437,7 +384,7 @@ class PageReadEpochDomain {
 
   bool enter(Token *token);
   void exit(Token *token);
-  void retire(char *buffer);
+  void retire(char *buffer) noexcept;
   void drain();
 
  private:
@@ -464,12 +411,7 @@ class PageReadEpochDomain {
 class VecBufferPool;
 class VecBufferPoolHandle;
 
-//! One query/thread-local profiling sample for BufferStorage reads.
-//!
-//! The sample contains plain integers: callers update it without atomics and
-//! merge it into VecBufferPool once when the query ends.  All durations are
-//! elapsed nanoseconds.  Profiling is opt-in so the production hot path does
-//! not execute clock reads or profile-counter writes.
+//! Query-local I/O profile, merged once at query completion.
 struct BufferPoolIoProfile {
   uint64_t query_count{0};
   uint64_t query_wall_ns{0};
@@ -490,9 +432,7 @@ struct BufferPoolIoProfile {
   uint64_t aio_max_batch{0};
   uint64_t fallback_batches{0};
   uint64_t fallback_items{0};
-  // Physical synchronous reads split by the HNSW path that triggered them.
-  // These are subsets of sync_reads/sync_read_ns; any remainder is reported
-  // as unclassified so new read paths cannot silently skew the attribution.
+  // Subsets of synchronous reads attributed to HNSW paths.
   uint64_t neighbor_sync_reads{0};
   uint64_t neighbor_sync_read_ns{0};
   uint64_t cross_page_sync_reads{0};
@@ -520,10 +460,7 @@ struct BufferPoolIoProfile {
         aio_install_ns > aio_page_lock_wait_ns
             ? aio_install_ns - aio_page_lock_wait_ns
             : 0;
-    // fallback_total_ns is an inclusive phase timer and is not added here;
-    // its synchronous I/O and software sub-phases are recorded separately.
-    // Lock waits are reported separately and likewise excluded from the
-    // software-side estimate.
+    // Exclude inclusive fallback time and lock waits from software time.
     return aio_submit_ns + aio_install_cpu_ns + sync_prepare_ns +
            sync_install_ns + epoch_transition_ns + copy_ns;
   }
@@ -568,9 +505,7 @@ struct BufferPoolIoProfile {
   }
 };
 
-//! Previous thread-local binding returned when a nested query profile is
-//! installed.  Restoring it on scope exit keeps profiling correct if a caller
-//! performs a nested search on the same worker thread.
+//! Previous binding used to restore nested query profiling.
 struct BufferPoolIoProfileBinding {
   VecBufferPool *pool{nullptr};
   BufferPoolIoProfile *profile{nullptr};
@@ -657,8 +592,7 @@ class ZVEC_AILEGO_API VecBufferPool {
     return io_profile_enabled_;
   }
 
-  //! Merge one query-local sample.  One mutex acquisition per completed query
-  //! keeps timing instrumentation free of per-page global atomics.
+  //! Merge one query-local sample at query completion.
   void merge_io_profile(const BufferPoolIoProfile &sample) {
     if (!io_profile_enabled_) return;
     std::lock_guard<std::mutex> lock(io_profile_mutex_);
@@ -678,11 +612,7 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   char *acquire_buffer(block_id_t page_id, int retry = 0);
 
-  //! Pin a scattered set of pages as one logical operation.  Resident pages
-  //! are acquired immediately; cold pages are submitted in bounded AIO
-  //! batches when direct I/O is available, with a portable synchronous
-  //! fallback.  Duplicate page ids are allowed and receive one pin per output
-  //! slot.  On failure every pin acquired by this call is rolled back.
+  //! Pin scattered pages; roll back all pins on failure.
   bool acquire_pages(const block_id_t *page_ids, size_t count, char **pages);
 
   //! Release one pin per page id acquired by acquire_pages().
@@ -696,18 +626,13 @@ class ZVEC_AILEGO_API VecBufferPool {
     read_epoch_domain_.exit(token);
   }
 
-  //! Return a resident page without taking a refcount.  The caller must hold
-  //! an active read epoch for this pool.  Unlike acquire_epoch_page(), this
-  //! never performs I/O, so callers can abandon the epoch path and fall back
-  //! to pinned reads if an entire batch is not already resident.
+  //! Return an epoch-protected resident page without I/O or refcounting.
   char *try_get_epoch_page(block_id_t page_id) {
     if (page_id >= page_table_.entry_num()) return nullptr;
     return page_table_.get_epoch_block(page_id);
   }
 
-  //! Profile-only residency observation.  Unlike try_get_epoch_page(), this
-  //! does not update sampled hit/CLOCK state, so diagnostic scans after a
-  //! failed publish attempt cannot perturb cache policy.
+  //! Observe residency without changing hit or CLOCK state.
   bool is_page_resident(block_id_t page_id) const {
     return page_id < page_table_.entry_num() && page_table_.is_loaded(page_id);
   }
@@ -719,10 +644,7 @@ class ZVEC_AILEGO_API VecBufferPool {
            page_table_.force_evict_block(page_id);
   }
 
-  //! Acquire a pointer protected by the caller's active read epoch.  Resident
-  //! hits avoid ref_count entirely; a miss uses the regular load path once,
-  //! then immediately drops that temporary ref because the epoch now protects
-  //! the installed buffer from reclamation.
+  //! Load if needed, then return a pointer protected by the active epoch.
   char *acquire_epoch_page(block_id_t page_id) {
     char *page = page_table_.get_block_buffer(page_id);
     if (page) return page;
@@ -733,28 +655,21 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   int get_meta(size_t offset, size_t length, char *buffer);
 
-  //! Read directly from the buffered metadata fd without admitting pages to
-  //! the cache. Used for sequential scans that would otherwise evict a useful
-  //! random-access working set.
+  //! Read without cache admission.
   bool read_range_bypass(size_t file_offset, size_t length, char *buffer);
 
   //! Write a contiguous range via the page cache; marks touched pages dirty.
   //! Returns 0 on success, -1 on failure (e.g. read-only pool or I/O error).
   int write_range(size_t file_offset, size_t length, const char *src);
 
-  //! Write raw bytes directly via pwrite, bypassing the page cache. Used for
-  //! metadata regions (header/footer/segments_meta) which are only read via
-  //! get_meta() and never cached.
+  //! Write metadata without cache admission.
   int write_meta(size_t offset, size_t length, const char *buffer);
 
   //! Iterate all entries and persist any dirty blocks to disk. Safe to call
   //! repeatedly; no-op in read-only mode.
   int flush_all();
 
-  //! Extend the backing file to `new_size` bytes via ftruncate (no-op if
-  //! already >= new_size), refresh the cached file_size_, and extend the
-  //! page_table to cover the new range.  Returns true on success, false on
-  //! a read-only pool or I/O failure.
+  //! Extend the backing file and page table to `new_size`.
   bool extend_file(size_t new_size);
 
   bool writable() const {
@@ -782,42 +697,19 @@ class ZVEC_AILEGO_API VecBufferPool {
     return true;
   }
 
-  //! Submit AIO for scattered pages without waiting for completion.
-  //! Results are stored in thread-local state; call harvest_aio() later.
-  void submit_aio_async(const block_id_t *page_ids, size_t count,
-                        BufferPoolIoProfile *profile = nullptr);
-
-  //! Harvest previously submitted async AIO results (non-blocking).
-  //! Installs completed pages into page_table. Safe to call when no pending.
-  void harvest_aio();
-
-  //! Blocking counterpart of harvest_aio(): waits (io_getevents with a NULL
-  //! timeout) until every in-flight request submitted via submit_aio_async()
-  //! has completed and been installed into page_table.  Lets a search hop
-  //! issue one concurrent read burst and block once for the whole batch,
-  //! instead of rationing per-neighbour synchronous preads.  Safe to call
-  //! when nothing is pending.
-  void wait_aio(BufferPoolIoProfile *profile = nullptr);
-
   bool aio_enabled() const {
 #if defined(__linux) || defined(__linux__)
-    // Capability flag only. Kernel AIO contexts are created lazily per
-    // calling thread, not eagerly for every VecBufferPool.
+    // Kernel AIO contexts are created lazily per calling thread.
     return aio_enabled_;
 #else
     return false;
 #endif
   }
 
-  //! Try to acquire a page buffer WITHOUT triggering disk I/O.
-  //! Returns the buffer pointer if the page is already in memory,
-  //! or nullptr if the page would need a pread (cache miss).
-  //! Avoids touching ref_count for unloaded pages to prevent leaks.
+  //! Acquire a resident page without triggering I/O.
   char *try_acquire_buffer(block_id_t page_id) {
     assert(page_id < page_table_.entry_num());
-    // Quick check: if buffer is null, page not loaded - skip without
-    // incrementing ref_count (acquire_block would leak ref_count on
-    // pages with ref_count>=0 but buffer==nullptr).
+    // Do not touch ref_count for unloaded pages.
     if (!page_table_.is_loaded(page_id)) return nullptr;
     return page_table_.acquire_block(page_id);
   }
@@ -826,6 +718,12 @@ class ZVEC_AILEGO_API VecBufferPool {
   friend class VecBufferPoolHandle;
   void prefetch_pages_sync(block_id_t first_page, size_t page_count,
                            uint8_t priority);
+
+  // Keep thread-local AIO batches within the owning operation's lifetime.
+  void submit_aio_async(const block_id_t *page_ids, size_t count,
+                        BufferPoolIoProfile *profile = nullptr);
+  void harvest_aio();
+  void wait_aio(BufferPoolIoProfile *profile = nullptr);
 
   int fd_;       // page-data channel: may carry O_DIRECT
   int meta_fd_;  // metadata channel: always buffered IO
@@ -838,9 +736,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   bool direct_io_enabled_{false};
   bool io_profile_enabled_{false};
   bool initialized_{false};
-  // Cache miss counter: incremented once per page fetched from disk on the
-  // cold acquire path (pread / zero-fill).  Combined with page_table_ hits it
-  // yields the pool hit rate.
+  // One miss per page populated on the cold path.
   std::atomic<uint64_t> miss_count_{0};
   std::atomic<uint64_t> bypass_reads_{0};
   std::atomic<uint64_t> bypass_bytes_{0};
@@ -855,7 +751,8 @@ class ZVEC_AILEGO_API VecBufferPool {
 
  private:
   PageReadEpochDomain read_epoch_domain_{};
-  std::unique_ptr<std::mutex[]> block_mutexes_{};
+  // Serialize installation and writable in-place payload access.
+  std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};
   size_t mutex_metadata_charge_{0};
 };
@@ -863,7 +760,10 @@ class ZVEC_AILEGO_API VecBufferPool {
 class ZVEC_AILEGO_API VecBufferPoolHandle {
  public:
   VecBufferPoolHandle(VecBufferPool &pool) : pool_(pool) {}
-  VecBufferPoolHandle(VecBufferPoolHandle &&other) : pool_(other.pool_) {}
+  explicit VecBufferPoolHandle(std::shared_ptr<VecBufferPool> pool)
+      : pool_owner_(std::move(pool)), pool_(checked_pool(pool_owner_)) {}
+  VecBufferPoolHandle(VecBufferPoolHandle &&other)
+      : pool_owner_(std::move(other.pool_owner_)), pool_(other.pool_) {}
 
   ~VecBufferPoolHandle() = default;
 
@@ -897,6 +797,17 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
   void acquire_one(block_id_t block_id);
 
  private:
+  static VecBufferPool &checked_pool(
+      const std::shared_ptr<VecBufferPool> &pool) {
+    if (!pool) {
+      throw std::invalid_argument(
+          "VecBufferPoolHandle requires a non-null owning pool");
+    }
+    return *pool;
+  }
+
+  // Storage-backed handles own the pool; stack handles remain non-owning.
+  std::shared_ptr<VecBufferPool> pool_owner_{};
   VecBufferPool &pool_;
 };
 

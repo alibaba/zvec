@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstring>
+#include <memory>
 #include <new>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
@@ -48,14 +49,17 @@ class IndexStorage : public IndexModule {
       buffer_block_id_ = block_id;
       data_ = data;
     }
+    MemoryBlock(
+        const std::shared_ptr<ailego::VecBufferPoolHandle> &buffer_pool_handle,
+        size_t block_id, void *data)
+        : type_(MemoryBlockType::MBT_BUFFERPOOL),
+          data_(data),
+          buffer_pool_handle_owner_(buffer_pool_handle),
+          buffer_pool_handle_(buffer_pool_handle.get()),
+          buffer_block_id_(block_id) {}
     MemoryBlock(void *data) : type_(MemoryBlockType::MBT_MMAP), data_(data) {}
 
-    //! Build an HEAP_SCRATCH MemoryBlock that owns `owned` (allocated via
-    //! ailego_malloc / ailego_aligned_malloc).  `size` is the byte length of
-    //! the buffer and is required so that copy construction / copy
-    //! assignment can deep-copy the buffer instead of aliasing it (a shallow
-    //! copy would result in use-after-free once the original block is
-    //! destructed and frees the buffer).
+    //! Build an owned heap block; size enables safe deep copies.
     static MemoryBlock MakeOwned(void *owned, size_t size) {
       MemoryBlock mb;
       mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
@@ -70,13 +74,17 @@ class IndexStorage : public IndexModule {
           this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_, rhs.data_);
+          if (rhs.buffer_pool_handle_owner_) {
+            this->reset(rhs.buffer_pool_handle_owner_, rhs.buffer_block_id_,
+                        rhs.data_);
+          } else {
+            this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
+                        rhs.data_);
+          }
           buffer_pool_handle_->acquire_one(buffer_block_id_);
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
-          // Deep copy: each owner must hold its own buffer, otherwise the
-          // first destructor frees the buffer and leaves the surviving
-          // copies dangling.
+          // Heap blocks do not share ownership.
           deep_copy_from(rhs);
           break;
         default:
@@ -90,9 +98,13 @@ class IndexStorage : public IndexModule {
           this->reset(std::move(rhs.data_));
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          this->reset(std::move(rhs.buffer_pool_handle_),
-                      std::move(rhs.buffer_block_id_), std::move(rhs.data_));
+          type_ = MemoryBlockType::MBT_BUFFERPOOL;
+          data_ = rhs.data_;
+          buffer_pool_handle_owner_ = std::move(rhs.buffer_pool_handle_owner_);
+          buffer_pool_handle_ = rhs.buffer_pool_handle_;
+          buffer_block_id_ = rhs.buffer_block_id_;
           rhs.buffer_pool_handle_ = nullptr;
+          rhs.data_ = nullptr;
           rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
@@ -115,8 +127,13 @@ class IndexStorage : public IndexModule {
             this->reset(rhs.data_);
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
-            this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
-                        rhs.data_);
+            if (rhs.buffer_pool_handle_owner_) {
+              this->reset(rhs.buffer_pool_handle_owner_, rhs.buffer_block_id_,
+                          rhs.data_);
+            } else {
+              this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
+                          rhs.data_);
+            }
             buffer_pool_handle_->acquire_one(buffer_block_id_);
             break;
           case MemoryBlockType::MBT_HEAP_SCRATCH:
@@ -138,9 +155,15 @@ class IndexStorage : public IndexModule {
             this->reset(std::move(rhs.data_));
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
-            this->reset(std::move(rhs.buffer_pool_handle_),
-                        std::move(rhs.buffer_block_id_), std::move(rhs.data_));
+            release_current();
+            type_ = MemoryBlockType::MBT_BUFFERPOOL;
+            data_ = rhs.data_;
+            buffer_pool_handle_owner_ =
+                std::move(rhs.buffer_pool_handle_owner_);
+            buffer_pool_handle_ = rhs.buffer_pool_handle_;
+            buffer_block_id_ = rhs.buffer_block_id_;
             rhs.buffer_pool_handle_ = nullptr;
+            rhs.data_ = nullptr;
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
           case MemoryBlockType::MBT_HEAP_SCRATCH:
@@ -189,21 +212,31 @@ class IndexStorage : public IndexModule {
 
     void reset(ailego::VecBufferPoolHandle *buffer_pool_handle, size_t block_id,
                void *data) {
-      if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_pool_handle_->release_one(buffer_block_id_);
-      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
-        release_owned();
-      }
+      release_current();
       type_ = MemoryBlockType::MBT_BUFFERPOOL;
       buffer_pool_handle_ = buffer_pool_handle;
       buffer_block_id_ = block_id;
       data_ = data;
     }
 
+    void reset(
+        const std::shared_ptr<ailego::VecBufferPoolHandle> &buffer_pool_handle,
+        size_t block_id, void *data) {
+      release_current();
+      type_ = MemoryBlockType::MBT_BUFFERPOOL;
+      buffer_pool_handle_owner_ = buffer_pool_handle;
+      buffer_pool_handle_ = buffer_pool_handle.get();
+      buffer_block_id_ = block_id;
+      data_ = data;
+    }
+
     void reset(void *data) {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_pool_handle_->release_one(buffer_block_id_);
+        if (buffer_pool_handle_) {
+          buffer_pool_handle_->release_one(buffer_block_id_);
+        }
         buffer_pool_handle_ = nullptr;
+        buffer_pool_handle_owner_.reset();
       } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
         release_owned();
       }
@@ -213,11 +246,10 @@ class IndexStorage : public IndexModule {
 
     MemoryBlockType type_{MBT_UNKNOWN};
     void *data_{nullptr};
+    std::shared_ptr<ailego::VecBufferPoolHandle> buffer_pool_handle_owner_{};
     mutable ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
     size_t buffer_block_id_{0};
-    //! Byte size of the heap-scratch buffer pointed to by `data_`; only used
-    //! when type_ == MBT_HEAP_SCRATCH.  Required for safe deep-copy on
-    //! copy-construction / copy-assignment of HEAP_SCRATCH blocks.
+    //! Byte size used to copy heap scratch blocks.
     size_t scratch_size_{0};
 
    private:
@@ -229,10 +261,7 @@ class IndexStorage : public IndexModule {
       scratch_size_ = 0;
     }
 
-    //! Drop whatever the current MemoryBlock holds, regardless of type, so
-    //! that the slot is ready to receive new ownership.  Mirrors what the
-    //! destructor would do (minus zeroing data_) but leaves the type alone
-    //! for the caller to overwrite immediately afterwards.
+    //! Release the current representation and reset the block.
     void release_current() {
       switch (type_) {
         case MemoryBlockType::MBT_BUFFERPOOL:
@@ -240,6 +269,7 @@ class IndexStorage : public IndexModule {
             buffer_pool_handle_->release_one(buffer_block_id_);
             buffer_pool_handle_ = nullptr;
           }
+          buffer_pool_handle_owner_.reset();
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
           release_owned();
@@ -252,10 +282,7 @@ class IndexStorage : public IndexModule {
       type_ = MemoryBlockType::MBT_UNKNOWN;
     }
 
-    //! Allocate a fresh buffer of the same size as `rhs.scratch_size_`,
-    //! memcpy `rhs.data_` into it, and become the new owner.  Used by the
-    //! HEAP_SCRATCH copy ctor / copy assignment so the original and the
-    //! copy each free their own buffer independently.
+    //! Deep-copy heap scratch ownership.
     void deep_copy_from(const MemoryBlock &rhs) {
       type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
       scratch_size_ = rhs.scratch_size_;
@@ -321,6 +348,12 @@ class IndexStorage : public IndexModule {
 
     virtual size_t read(size_t offset, MemoryBlock &data, size_t len) = 0;
 
+    //! Borrowed read; release the block before this Segment. The default keeps
+    //! the owning read behavior.
+    virtual size_t read_borrowed(size_t offset, MemoryBlock &data, size_t len) {
+      return read(offset, data, len);
+    }
+
     virtual bool read(SegmentData *, size_t) {
       return false;
     }
@@ -337,11 +370,7 @@ class IndexStorage : public IndexModule {
     //! Clone the segment
     virtual Pointer clone(void) = 0;
 
-    //! Retrieve the stable base data pointer if the storage backend supports
-    //! it (e.g. mmap-backed storage). Returns nullptr for backends with
-    //! mutable/evictable buffers (e.g. BufferStorage). When non-null the
-    //! caller may compute element addresses as base_data() + offset directly,
-    //! avoiding the full pointer chain through chunk->read().
+    //! Return a stable base address, or nullptr for evictable storage.
     virtual const uint8_t *base_data(void) const {
       return nullptr;
     }
@@ -355,12 +384,7 @@ class IndexStorage : public IndexModule {
       (void)len;
     }
 
-    //! Bytes the storage backend can currently accept for prefetch without
-    //! evicting still-useful data.  Pooled/evictable backends (e.g.
-    //! BufferReadStorage) return the free space of their buffer pool; backends
-    //! without a bounded pool (e.g. mmap) return SIZE_MAX to signal "always
-    //! fits".  Callers use it to gate whole-cluster prefetch under memory
-    //! pressure.
+    //! Return the current prefetch budget; SIZE_MAX means unbounded.
     virtual size_t prefetch_budget(void) const {
       return static_cast<size_t>(-1);
     }
