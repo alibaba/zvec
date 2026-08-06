@@ -48,8 +48,7 @@ int main() {
     return Fail("Failed to create the DiskANN index.");
   }
 
-  int ret = index->Open(
-      kIndexPath, {StorageOptions::StorageType::kMMAP, true});
+  int ret = index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true});
   if (ret != 0) {
     return Fail("Failed to open the DiskANN index.", index);
   }
@@ -66,8 +65,7 @@ int main() {
     return Fail("Failed to build the DiskANN index.", index);
   }
 
-  std::vector<float> query_values(kDimension,
-                                  static_cast<float>(kExpectedKey));
+  std::vector<float> query_values(kDimension, static_cast<float>(kExpectedKey));
   VectorData query{DenseVector{query_values.data()}};
   auto query_param = std::make_shared<DiskAnnQueryParam>();
   query_param->topk = 5;
