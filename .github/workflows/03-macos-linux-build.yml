@@ -195,6 +195,7 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/build"
           ctest -R diskann --output-on-failure --parallel $NPROC
+          "$GITHUB_WORKSPACE/examples/c++/build/diskann-core-example"
         shell: bash
 
       - name: Run DiskAnn Python Tests (w/ libaio)
