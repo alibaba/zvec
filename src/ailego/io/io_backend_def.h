@@ -61,7 +61,7 @@ inline const char *IOBackendDescription(IOBackendType type) {
     case IOBackendType::kPread:
       return "No async I/O backend available. Install libaio (e.g. "
              "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
-             "and retry. DiskAnn will fall back to synchronous pread() \u2014 "
+             "and retry. DiskAnn will fall back to synchronous pread(); "
              "performance will be degraded.";
   }
   return "Unknown I/O backend.";
