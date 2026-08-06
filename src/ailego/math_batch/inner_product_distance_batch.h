@@ -85,9 +85,8 @@ static inline void ComputeBatchChunked(const ValueType **vecs,
         prefetch_ptrs[j] = nullptr;
       }
     }
-    Impl<ValueType, BatchSize>::compute_one_to_many(query, &vecs[i],
-                                                    prefetch_ptrs, dim,
-                                                    &results[i]);
+    Impl<ValueType, BatchSize>::compute_one_to_many(
+        query, &vecs[i], prefetch_ptrs, dim, &results[i]);
   }
   if constexpr (std::is_same_v<ValueType, float> && BatchSize > 8) {
     if (i + 8 <= num_vecs) {
@@ -98,8 +97,8 @@ static inline void ComputeBatchChunked(const ValueType **vecs,
   }
   for (; i < num_vecs; ++i) {  // TODO: unroll by 1, 2, 4, 8, etc.
     std::array<const ValueType *, 1> prefetch_ptrs{nullptr};
-    Impl<ValueType, 1>::compute_one_to_many(query, &vecs[i], prefetch_ptrs,
-                                            dim, &results[i]);
+    Impl<ValueType, 1>::compute_one_to_many(query, &vecs[i], prefetch_ptrs, dim,
+                                            &results[i]);
   }
 }
 
