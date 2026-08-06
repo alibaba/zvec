@@ -41,6 +41,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   switch (type) {
     case IOBackendType::kLibAio:
       return "libaio";
+    case IOBackendType::kKqueue:
+      return "kqueue";
     case IOBackendType::kPread:
       return "pread";
   }
@@ -53,6 +55,9 @@ inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
+    case IOBackendType::kKqueue:
+      return "kqueue readiness notification with pread() data transfer on "
+             "macOS.";
     case IOBackendType::kPread:
       return "No async I/O backend available. Install libaio (e.g. "
              "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
@@ -64,8 +69,8 @@ inline const char *IOBackendDescription(IOBackendType type) {
 
 // Singleton that loads and queries an I/O backend on demand.
 //
-// available() (no arg) tries the best backend with priority (libaio > pread)
-// and returns the loaded backend type.
+// available() (no arg) selects libaio on Linux, kqueue on macOS, and pread on
+// other platforms, and returns the loaded backend type.
 // available(IOBackendType) tries a specific backend.
 // Use type() / name() to query the loaded backend without triggering a load.
 class IOBackend {
@@ -80,7 +85,11 @@ class IOBackend {
   // Idempotent — if already loaded, returns immediately.
   IOBackendType available() {
     std::lock_guard<std::mutex> lock(mutex_);
+#if defined(__APPLE__) || defined(__MACH__)
+    return available_locked(IOBackendType::kKqueue);
+#else
     return available_locked(IOBackendType::kLibAio);
+#endif
   }
 
   // Try to load the requested backend.  Returns the loaded backend type
@@ -97,6 +106,10 @@ class IOBackend {
 
   bool is_libaio() {
     return available() == IOBackendType::kLibAio;
+  }
+
+  bool is_kqueue() {
+    return available() == IOBackendType::kKqueue;
   }
 
   // Returns the loaded backend type.
@@ -129,6 +142,12 @@ class IOBackend {
         type_ = IOBackendType::kLibAio;
         return type_;
       }
+    }
+#endif
+#if defined(__APPLE__) || defined(__MACH__)
+    if (requested == IOBackendType::kKqueue) {
+      type_ = IOBackendType::kKqueue;
+      return type_;
     }
 #endif
     type_ = IOBackendType::kPread;

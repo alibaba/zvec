@@ -71,9 +71,12 @@ int setup_io_ctx(IOContext &ctx) {
   // monitor file descriptor readiness for async-style I/O.
   int kq = ::kqueue();
   if (kq == -1) {
-    LOG_ERROR("kqueue() failed in setup_io_ctx; errno=%d, %s", errno,
-              ::strerror(errno));
-    return IndexError_Runtime;
+    LOG_WARN(
+        "kqueue() failed in setup_io_ctx; errno=%d, %s. Falling back to "
+        "synchronous pread",
+        errno, ::strerror(errno));
+    ctx = -1;
+    return 0;
   }
   ctx = kq;
   return 0;

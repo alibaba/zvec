@@ -838,6 +838,36 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
             searcher->get_vector(42, linearCtx, missing_vector));
   EXPECT_TRUE(missing_vector.empty());
 
+  // Cached nodes keep their coordinates and adjacency lists in separate
+  // buffers. Fetching a cached vector must read the coordinate cache rather
+  // than returning bytes from the neighbor cache.
+  IndexSearcher::Pointer cached_searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(cached_searcher, nullptr);
+  Params cached_search_params;
+  cached_search_params.set("zvec.diskann.searcher.list_size", 500);
+  cached_search_params.set("zvec.diskann.searcher.cache_node_num", doc_cnt);
+  ASSERT_EQ(0, cached_searcher->init(cached_search_params));
+
+  auto cached_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(cached_storage, nullptr);
+  ASSERT_EQ(0, cached_storage->open(path, false));
+  ASSERT_EQ(0,
+            cached_searcher->load(cached_storage, IndexMetric::Pointer()));
+  auto cached_ctx = cached_searcher->create_context();
+  ASSERT_NE(cached_ctx, nullptr);
+
+  for (size_t i = 0; i < doc_cnt; ++i) {
+    std::string vec_value;
+    ASSERT_EQ(0,
+              cached_searcher->get_vector(key_for_id(i), cached_ctx, vec_value));
+    ASSERT_GE(vec_value.size(), sizeof(float));
+    float vector_value = 0.0f;
+    std::memcpy(&vector_value, vec_value.data(), sizeof(vector_value));
+    ASSERT_EQ(vector_value, i);
+  }
+  ASSERT_EQ(0, cached_searcher->unload());
+
   ASSERT_EQ(0, ::truncate(path.c_str(), 0));
   std::string vector_after_truncate;
   EXPECT_EQ(IndexError_Runtime,

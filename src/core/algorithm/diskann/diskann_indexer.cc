@@ -736,9 +736,9 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       cached_neighbors;
   cached_neighbors.reserve(2 * beam_width_);
 
-  auto iter = neighbor_cache_.find(id);
-  if (iter != neighbor_cache_.end()) {
-    void *node_fp_coords_copy = iter->second.second;
+  auto iter = coord_cache_.find(id);
+  if (iter != coord_cache_.end()) {
+    void *node_fp_coords_copy = iter->second;
 
     vector.resize(meta_.element_size());
     ::memcpy(&(vector[0]), node_fp_coords_copy, meta_.element_size());

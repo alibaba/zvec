@@ -167,3 +167,25 @@ TEST(DiskAnnFileReaderTest, ReadBeforeOpenReturnsError) {
   IOContext ctx{};
   EXPECT_NE(reader.read(requests, ctx, false), 0);
 }
+
+#if defined(__APPLE__) || defined(__MACH__)
+TEST(DiskAnnFileReaderTest, InvalidKqueueContextFallsBackToPread) {
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+
+  std::vector<uint8_t> source(kPageSize, 0x3c);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{{0, kPageSize, output.get()}};
+
+  LinuxAlignedFileReader reader;
+  reader.open(file.path());
+  IOContext ctx = -1;
+  ASSERT_EQ(reader.read(requests, ctx, false), 0);
+  EXPECT_EQ(std::memcmp(output.get(), source.data(), source.size()), 0);
+  reader.close();
+}
+#endif
