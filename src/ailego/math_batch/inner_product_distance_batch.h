@@ -55,6 +55,54 @@ struct InnerProductDistanceBatchImpl {
   }
 };
 
+template <typename T, size_t BatchSize>
+struct MinusInnerProductDistanceBatchImpl {
+  using ValueType = typename std::remove_cv<T>::type;
+  static void compute_one_to_many(
+      const ValueType *query, const ValueType **ptrs,
+      std::array<const ValueType *, BatchSize> &prefetch_ptrs, size_t dim,
+      float *sums) {
+    InnerProductDistanceBatchImpl<ValueType, BatchSize>::compute_one_to_many(
+        query, ptrs, prefetch_ptrs, dim, sums);
+    for (size_t j = 0; j < BatchSize; ++j) {
+      sums[j] = -sums[j];
+    }
+  }
+};
+
+template <template <typename, size_t> class Impl, typename ValueType,
+          size_t BatchSize, size_t PrefetchStep>
+static inline void ComputeBatchChunked(const ValueType **vecs,
+                                       const ValueType *query, size_t num_vecs,
+                                       size_t dim, float *results) {
+  size_t i = 0;
+  for (; i + BatchSize <= num_vecs; i += BatchSize) {
+    std::array<const ValueType *, BatchSize> prefetch_ptrs;
+    for (size_t j = 0; j < BatchSize; ++j) {
+      if (i + j + BatchSize * PrefetchStep < num_vecs) {
+        prefetch_ptrs[j] = vecs[i + j + BatchSize * PrefetchStep];
+      } else {
+        prefetch_ptrs[j] = nullptr;
+      }
+    }
+    Impl<ValueType, BatchSize>::compute_one_to_many(query, &vecs[i],
+                                                    prefetch_ptrs, dim,
+                                                    &results[i]);
+  }
+  if constexpr (std::is_same_v<ValueType, float> && BatchSize > 8) {
+    if (i + 8 <= num_vecs) {
+      ComputeBatchChunked<Impl, ValueType, 8, PrefetchStep>(&vecs[i], query, 8,
+                                                            dim, &results[i]);
+      i += 8;
+    }
+  }
+  for (; i < num_vecs; ++i) {  // TODO: unroll by 1, 2, 4, 8, etc.
+    std::array<const ValueType *, 1> prefetch_ptrs{nullptr};
+    Impl<ValueType, 1>::compute_one_to_many(query, &vecs[i], prefetch_ptrs,
+                                            dim, &results[i]);
+  }
+}
+
 template <typename T, size_t BatchSize, size_t PrefetchStep, typename>
 struct InnerProductDistanceBatch {
   using ValueType = typename std::remove_cv<T>::type;
@@ -62,31 +110,8 @@ struct InnerProductDistanceBatch {
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
-    size_t i = 0;
-    for (; i + BatchSize <= num_vecs; i += BatchSize) {
-      std::array<const ValueType *, BatchSize> prefetch_ptrs;
-      for (size_t j = 0; j < BatchSize; ++j) {
-        if (i + j + BatchSize * PrefetchStep < num_vecs) {
-          prefetch_ptrs[j] = vecs[i + j + BatchSize * PrefetchStep];
-        } else {
-          prefetch_ptrs[j] = nullptr;
-        }
-      }
-      InnerProductDistanceBatchImpl<ValueType, BatchSize>::compute_one_to_many(
-          query, &vecs[i], prefetch_ptrs, dim, &results[i]);
-    }
-    if constexpr (std::is_same_v<ValueType, float> && BatchSize > 8) {
-      if (i + 8 <= num_vecs) {
-        InnerProductDistanceBatch<ValueType, 8, PrefetchStep>::ComputeBatch(
-            &vecs[i], query, 8, dim, &results[i]);
-        i += 8;
-      }
-    }
-    for (; i < num_vecs; ++i) {  // TODO: unroll by 1, 2, 4, 8, etc.
-      std::array<const ValueType *, 1> prefetch_ptrs{nullptr};
-      InnerProductDistanceBatchImpl<ValueType, 1>::compute_one_to_many(
-          query, &vecs[i], prefetch_ptrs, dim, &results[i]);
-    }
+    ComputeBatchChunked<InnerProductDistanceBatchImpl, ValueType, BatchSize,
+                        PrefetchStep>(vecs, query, num_vecs, dim, results);
   }
 
   static DistanceBatchQueryPreprocessFunc GetQueryPreprocessFunc() {
@@ -102,11 +127,9 @@ struct MinusInnerProductDistanceBatch {
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
-    InnerProductDistanceBatch<ValueType, BatchSize, PrefetchStep>::ComputeBatch(
-        vecs, query, num_vecs, dim, results);
-    for (size_t i = 0; i < num_vecs; ++i) {
-      results[i] = -results[i];
-    }
+    ComputeBatchChunked<MinusInnerProductDistanceBatchImpl, ValueType,
+                        BatchSize, PrefetchStep>(vecs, query, num_vecs, dim,
+                                                 results);
   }
 };
 
@@ -159,6 +182,30 @@ struct InnerProductDistanceBatchImpl<float, 8> {
   using ValueType = float;
   static void compute_one_to_many(const float *query, const float **ptrs,
                                   std::array<const float *, 8> &prefetch_ptrs,
+                                  size_t dim, float *sums);
+};
+
+template <>
+struct MinusInnerProductDistanceBatchImpl<float, 1> {
+  using ValueType = float;
+  static void compute_one_to_many(const float *query, const float **ptrs,
+                                  std::array<const float *, 1> &prefetch_ptrs,
+                                  size_t dim, float *sums);
+};
+
+template <>
+struct MinusInnerProductDistanceBatchImpl<float, 8> {
+  using ValueType = float;
+  static void compute_one_to_many(const float *query, const float **ptrs,
+                                  std::array<const float *, 8> &prefetch_ptrs,
+                                  size_t dim, float *sums);
+};
+
+template <>
+struct MinusInnerProductDistanceBatchImpl<float, 12> {
+  using ValueType = float;
+  static void compute_one_to_many(const float *query, const float **ptrs,
+                                  std::array<const float *, 12> &prefetch_ptrs,
                                   size_t dim, float *sums);
 };
 

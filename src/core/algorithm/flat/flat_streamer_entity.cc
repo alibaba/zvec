@@ -241,6 +241,13 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
       return IndexError_ReadData;
     }
 
+    if (this->is_valid_block(hd->next)) {
+      IndexStorage::MemoryBlock next_header_block;
+      if (this->get_block_header(hd->next, next_header_block) == 0) {
+        ailego_prefetch(next_header_block.data());
+      }
+    }
+
     if (hd->vector_count > 0) {
       *scan_count += hd->vector_count;
       IndexStorage::MemoryBlock deletion_map_block;
@@ -265,14 +272,20 @@ void FlatStreamerEntity::search_block(const void *query,
                                       const BlockLocation &bl,
                                       const BlockHeader *hd, float norm_val,
                                       IndexDocumentHeap *heap) const {
-  std::vector<float> distances(block_vector_count());
+  std::array<float, 32> distances_storage;
+  std::vector<float> distances_overflow;
+  float *distances = distances_storage.data();
+  if (block_vector_count() > distances_storage.size()) {
+    distances_overflow.resize(block_vector_count());
+    distances = distances_overflow.data();
+  }
   IndexStorage::MemoryBlock vecs_block;
   this->get_block_vectors(bl, vecs_block);
   const char *vecs = reinterpret_cast<const char *>(vecs_block.data());
   IndexStorage::MemoryBlock keys_block;
   this->get_block_keys(bl, keys_block);
   const uint64_t *keys = reinterpret_cast<const uint64_t *>(keys_block.data());
-  row_major_distance(query, vecs, hd->vector_count, distances.data());
+  row_major_distance(query, vecs, hd->vector_count, distances);
   for (size_t k = 0; k < hd->vector_count; ++k) {
     if (keys[k] != kInvalidKey) {
       heap->emplace(keys[k], distances[k] * norm_val);
@@ -285,7 +298,13 @@ void FlatStreamerEntity::search_block(
     const void *query, const BlockLocation &bl, const BlockHeader *hd,
     float norm_val, const IndexFilter &filter, const DeletionMap *deletion_map,
     IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const {
-  std::vector<float> distances(block_vector_count());
+  std::array<float, 32> distances_storage;
+  std::vector<float> distances_overflow;
+  float *distances = distances_storage.data();
+  if (block_vector_count() > distances_storage.size()) {
+    distances_overflow.resize(block_vector_count());
+    distances = distances_overflow.data();
+  }
 
   IndexStorage::MemoryBlock vecs_block;
   this->get_block_vectors(bl, vecs_block);
@@ -329,7 +348,7 @@ void FlatStreamerEntity::search_block(
     for (size_t k = 0; k < hd->vector_count; ++k) {
       if (keeps.test(k)) {
         auto cur_vec = vecs + index_meta_.element_size() * k;
-        row_major_distance(query, cur_vec, 1, distances.data() + k);
+        row_major_distance(query, cur_vec, 1, distances + k);
         ++(*context_stats->mutable_dist_calced_count());
       }
     }
