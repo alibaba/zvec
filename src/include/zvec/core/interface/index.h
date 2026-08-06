@@ -19,7 +19,6 @@
 #include <string>
 #include <variant>
 #include <vector>
-#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_converter.h>
 #include <zvec/core/framework/index_factory.h>
@@ -354,10 +353,6 @@ class ZVEC_CORE_API HNSWRabitqIndex : public Index {
 class ZVEC_CORE_API DiskAnnIndex : public Index {
  public:
   DiskAnnIndex() = default;
-
-  // Returns the I/O backend type currently loaded for DiskAnn async disk reads.
-  // If only pread is available, logs a hint to install libaio.
-  ailego::IOBackendType io_backend_type() const;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;

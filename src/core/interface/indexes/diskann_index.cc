@@ -349,12 +349,4 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
 
 #endif  // DISKANN_SUPPORTED
 
-ailego::IOBackendType DiskAnnIndex::io_backend_type() const {
-  ailego::IOBackendType type = ailego::current_io_backend_type();
-  if (type == ailego::IOBackendType::kPread) {
-    LOG_WARN("%s", ailego::current_io_backend_description().c_str());
-  }
-  return type;
-}
-
 }  // namespace zvec::core_interface

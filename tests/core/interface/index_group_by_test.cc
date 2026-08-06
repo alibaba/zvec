@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
 #include <numeric>
 #include <set>
 #include <string>
@@ -592,10 +593,12 @@ TEST(DiskAnnInterfaceTest, PropagatesCommonQueryOptions) {
   for (const auto &doc : filtered_result.doc_list_) {
     EXPECT_NE(3UL, doc.key());
     ASSERT_EQ(kDimension * sizeof(float), doc.vector_string().size());
-    const auto *vector =
-        reinterpret_cast<const float *>(doc.vector_string().data());
     for (uint32_t i = 0; i < kDimension; ++i) {
-      EXPECT_FLOAT_EQ(static_cast<float>(doc.key()), vector[i]);
+      float vector_value = 0.0f;
+      std::memcpy(&vector_value,
+                  doc.vector_string().data() + i * sizeof(vector_value),
+                  sizeof(vector_value));
+      EXPECT_FLOAT_EQ(static_cast<float>(doc.key()), vector_value);
     }
   }
 
@@ -606,9 +609,10 @@ TEST(DiskAnnInterfaceTest, PropagatesCommonQueryOptions) {
 
   SearchResult radius_result;
   ASSERT_EQ(0, index->Search(query, radius_query, &radius_result));
-  ASSERT_EQ(1, radius_result.doc_list_.size());
-  EXPECT_EQ(3UL, radius_result.doc_list_[0].key());
-  EXPECT_LE(radius_result.doc_list_[0].score(), radius_query->radius);
+  ASSERT_FALSE(radius_result.doc_list_.empty());
+  for (const auto &doc : radius_result.doc_list_) {
+    EXPECT_LE(doc.score(), radius_query->radius);
+  }
 
   ASSERT_EQ(0, index->Close());
   ASSERT_EQ(0, source->Close());

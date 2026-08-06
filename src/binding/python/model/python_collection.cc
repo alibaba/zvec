@@ -313,16 +313,7 @@ void ZVecPyCollection::bind_dql_methods(
           "given vector column. One of 'mmap', 'buffer_pool', 'contiguous'. "
           "Raises KeyError if no HNSW index exists on the column, or "
           "ValueError if the column's index is not an HNSW index. Intended "
-          "for introspection and testing only; not part of the stable API.")
-      .def(
-          "_debug_io_backend_type",
-          [](const Collection &self) {
-            const auto result = self.DebugGetIoBackendType();
-            return unwrap_expected(result);
-          },
-          "Debug-only: returns the I/O backend type used by DiskAnn. "
-          "One of 'libaio', 'pread'. Intended for introspection and "
-          "testing only; not part of the stable API.");
+          "for introspection and testing only; not part of the stable API.");
 }
 
 }  // namespace zvec
