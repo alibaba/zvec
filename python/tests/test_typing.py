@@ -127,7 +127,7 @@ def test_current_io_backend_type():
     assert isinstance(backend, IOBackendType)
     assert zvec.io_backend_description()
     if platform.system() == "Darwin":
-        assert backend is IOBackendType.KQUEUE
+        assert backend == IOBackendType.KQUEUE
         assert "kqueue" in zvec.io_backend_description().lower()
 
 
