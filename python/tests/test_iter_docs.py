@@ -194,6 +194,29 @@ def test_iter_docs_isolation(iter_collection):
     assert sum(1 for _ in iter_collection.iter_docs()) == 15
 
 
+def test_iter_docs_snapshot_at_call_time(iter_collection):
+    """The snapshot is taken when iter_docs() is called, not at first next()."""
+    iter_collection.insert(_make_docs(10))
+    iter_collection.flush()
+
+    # Create the iterator but do not consume it yet.
+    it = iter_collection.iter_docs()
+
+    # Writes between the call and the first next() must not be visible.
+    iter_collection.insert(
+        [
+            Doc(
+                id="late",
+                fields={"id": 999, "name": "late", "weight": 1.0},
+                vectors={"dense": [1.0] * 8},
+            )
+        ]
+    )
+    iter_collection.flush()
+
+    assert sum(1 for _ in it) == 10
+
+
 def test_iter_docs_is_generator(iter_collection):
     """iter_docs returns a lazy generator (constant memory)."""
     iter_collection.insert(_make_docs(5))
