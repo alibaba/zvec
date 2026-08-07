@@ -45,7 +45,6 @@
 #include "db/index/common/index_filter.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
-#include "db/index/segment/filtering_reader.h"
 #include "db/index/segment/segment.h"
 #include "db/index/segment/segment_helper.h"
 #include "db/index/segment/segment_manager.h"
@@ -179,12 +178,13 @@ class CollectionImpl : public Collection {
   Result<std::vector<std::string>> build_scan_columns(
       const IteratorOptions &options) const;
 
-  // Isolated scan: Flush (writable) + snapshot + clone, then build one
-  // filtered reader per segment. segments/delete_store are filled for the
-  // caller to keep alive; the returned readers are parallel to `segments`.
-  Result<std::vector<RecordBatchReaderPtr>> Scan(
-      const IteratorOptions &options, std::vector<Segment::Ptr> &segments,
-      DeleteStore::Ptr &delete_store, CollectionSchema::Ptr &schema);
+  // Isolated scan: Flush (writable) + snapshot + clone. Fills segments/
+  // delete_store/schema for the caller to keep alive, plus scan_columns and
+  // the delete filter used by the iterator to open readers lazily.
+  Status Scan(const IteratorOptions &options,
+              std::vector<Segment::Ptr> &segments,
+              DeleteStore::Ptr &delete_store, CollectionSchema::Ptr &schema,
+              std::vector<std::string> &scan_columns, IndexFilter::Ptr &filter);
 
   std::vector<Segment::Ptr> get_all_segments() const;
 
@@ -2168,13 +2168,15 @@ Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
       columns.push_back(field->name());
     }
   } else {
-    // Only requested fields — validate against schema and reject duplicates
+    // Only requested forward fields — reject unknown, non-scalar, and
+    // duplicate names so callers get an error instead of a silently dropped
+    // field.
     const auto &requested = *output_fields;
     std::unordered_set<std::string> seen;
     for (const auto &name : requested) {
-      if (schema_->get_field(name) == nullptr) {
+      if (schema_->get_forward_field(name) == nullptr) {
         return tl::make_unexpected(Status::InvalidArgument(
-            "output_fields contains unknown field: ", name));
+            "output_fields contains unknown or non-scalar field: ", name));
       }
       if (!seen.insert(name).second) {
         return tl::make_unexpected(Status::InvalidArgument(
@@ -2191,21 +2193,31 @@ Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
   return columns;
 }
 
-Result<std::vector<RecordBatchReaderPtr>> CollectionImpl::Scan(
-    const IteratorOptions &options, std::vector<Segment::Ptr> &segments,
-    DeleteStore::Ptr &delete_store, CollectionSchema::Ptr &schema) {
+Status CollectionImpl::Scan(const IteratorOptions &options,
+                            std::vector<Segment::Ptr> &segments,
+                            DeleteStore::Ptr &delete_store,
+                            CollectionSchema::Ptr &schema,
+                            std::vector<std::string> &scan_columns,
+                            IndexFilter::Ptr &filter) {
   // shared_lock blocks schema changes and close/destroy (exclusive) while
   // allowing concurrent Query/Fetch (shared). Snapshot consistency does not
   // depend on blocking Optimize: the segment list and the delete-store clone
   // are taken atomically under write_mtx_ below, and the iterator keeps the
   // snapshotted segments alive via shared_ptr afterwards.
   std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
-  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   // Capture the schema under schema_handle_mtx_ so the iterator interprets
   // batches with the same schema used to build the reader (avoids a race with
   // a concurrent schema change between Scan() and CreateIterator()).
   schema = schema_;
+
+  // Validate options BEFORE sealing the writing segment, so invalid options
+  // fail fast without leaving a sealed-segment side effect behind.
+  auto scan_columns_result = build_scan_columns(options);
+  if (!scan_columns_result) {
+    return scan_columns_result.error();
+  }
 
   {
     // write_mtx_ blocks concurrent writes while taking the snapshot
@@ -2221,7 +2233,7 @@ Result<std::vector<RecordBatchReaderPtr>> CollectionImpl::Scan(
       // mutate the snapshot. has_record() also covers delete-only segments.
       if (writing_segment_->has_record()) {
         auto s = switch_to_new_segment_for_writing();
-        CHECK_RETURN_STATUS_EXPECTED(s);
+        CHECK_RETURN_STATUS(s);
       }
       segments = get_all_persist_segments();
     }
@@ -2229,49 +2241,35 @@ Result<std::vector<RecordBatchReaderPtr>> CollectionImpl::Scan(
     delete_store = delete_store_->clone();
   }
 
-  auto scan_columns_result = build_scan_columns(options);
-  if (!scan_columns_result) {
-    return tl::make_unexpected(scan_columns_result.error());
-  }
-  auto scan_columns = std::move(scan_columns_result.value());
-  auto filter = delete_store->make_filter();
+  scan_columns = std::move(scan_columns_result.value());
+  filter = delete_store->make_filter();
 
-  // Build one filtered reader per segment (NOT concatenated). DocIterator
-  // iterates segment-by-segment, so each batch's owning segment is known
-  // directly and vectors are fetched from it. readers[i] pairs segments[i].
-  std::vector<RecordBatchReaderPtr> readers;
-  readers.reserve(segments.size());
-  for (const auto &seg : segments) {
-    auto scalar_reader = seg->scan(scan_columns);
-    if (!scalar_reader) {
-      return tl::make_unexpected(
-          Status::InternalError("Segment::scan failed during collection scan"));
-    }
-    readers.push_back(FilteringReader::Make(std::move(scalar_reader), filter));
-  }
-
-  return readers;
+  // Readers are opened lazily by DocIterator, one segment at a time.
+  return Status::OK();
 }
 
 Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     const IteratorOptions &options) {
   // Scan() takes shared_lock(schema_handle_mtx_) internally and captures the
-  // schema + one filtered reader per segment under that lock.
+  // schema + segment snapshot + delete-store clone under that lock.
   std::vector<Segment::Ptr> segments;
   DeleteStore::Ptr delete_store;
   CollectionSchema::Ptr schema;
-  auto readers_result = Scan(options, segments, delete_store, schema);
-  if (!readers_result) {
-    return tl::make_unexpected(readers_result.error());
+  std::vector<std::string> scan_columns;
+  IndexFilter::Ptr filter;
+  auto s = Scan(options, segments, delete_store, schema, scan_columns, filter);
+  if (!s.ok()) {
+    return tl::make_unexpected(s);
   }
 
-  // Create DocIterator, keeping segments + delete_store alive.
-  // readers are parallel to segments (readers[i] scans segments[i]).
+  // Create DocIterator, keeping segments + delete_store alive. Segment
+  // readers are opened lazily from scan_columns + filter during iteration.
   auto impl = std::make_unique<DocIterator::Impl>();
-  impl->readers = std::move(readers_result.value());
   impl->schema = std::move(schema);
   impl->segments = std::move(segments);
   impl->delete_store = std::move(delete_store);
+  impl->scan_columns = std::move(scan_columns);
+  impl->filter = std::move(filter);
   impl->include_vector = options.include_vector_;
 
   return std::make_shared<DocIterator>(std::move(impl));

@@ -111,6 +111,9 @@ class ZVEC_API Collection {
                                       &output_fields = std::nullopt,
                                   bool include_vector = true) const = 0;
 
+  // Create a document iterator over an isolated snapshot taken at call time.
+  // On writable collections this seals the current writing segment; read-only
+  // collections are scanned without any write.
   virtual Result<DocIterator::Ptr> CreateIterator(
       const IteratorOptions &options = {}) = 0;
 

@@ -7315,7 +7315,9 @@ zvec_error_code_t zvec_collection_create_iterator(
 
   ZVEC_TRY_RETURN_ERROR(
       "Exception in zvec_collection_create_iterator",
-      // CreateIterator is non-const (it flushes), so use a non-const handle.
+      // CreateIterator is non-const: on writable collections it seals the
+      // writing segment into the snapshot; read-only collections are scanned
+      // without any write. Hence use a non-const handle.
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
@@ -7327,10 +7329,10 @@ zvec_error_code_t zvec_collection_create_iterator(
 
       auto result = (*coll_ptr)->CreateIterator(iter_options);
       if (!result.has_value()) {
-        SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,
-                       "Failed to create iterator: " +
-                           result.error().message());
-        return ZVEC_ERROR_INTERNAL_ERROR;
+        zvec_error_code_t code = status_to_error_code(result.error());
+        SET_LAST_ERROR(code, "Failed to create iterator: " +
+                                 result.error().message());
+        return code;
       }
 
       // Wrap the shared_ptr<DocIterator> like other handles.
@@ -7355,9 +7357,10 @@ zvec_error_code_t zvec_doc_iterator_next(zvec_doc_iterator_t *iter,
 
       auto result = (*iter_ptr)->Next();
       if (!result.has_value()) {
-        SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,
+        zvec_error_code_t code = status_to_error_code(result.error());
+        SET_LAST_ERROR(code,
                        "Iterator next failed: " + result.error().message());
-        return ZVEC_ERROR_INTERNAL_ERROR;
+        return code;
       }
 
       // EOF: value() is nullptr → leave *out_doc = NULL, return OK.

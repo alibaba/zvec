@@ -391,6 +391,10 @@ class Collection:
         time: memory usage stays constant regardless of collection size, and
         data written after the iterator is created is not visible.
 
+        Note: on a writable collection the snapshot seals the current writing
+        segment (each call may produce a new small segment); read-only
+        collections are scanned without any write.
+
         Args:
             output_fields (Optional[list[str]], optional): Scalar fields to
                 include. If None, all fields are returned. Defaults to None.
