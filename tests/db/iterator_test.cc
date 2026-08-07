@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <iostream>
 #include <set>
 #include <string>
 #include <thread>
@@ -47,7 +48,7 @@ class IteratorTest : public ::testing::Test {
   }
 };
 
-// Test 1: Basic iteration — insert 100 docs, iterate, verify count + PK
+// Basic iteration — insert 100 docs, iterate, verify count + PK
 TEST_F(IteratorTest, BasicIteration) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -103,7 +104,7 @@ TEST_F(IteratorTest, BasicIteration) {
   collection->Destroy();
 }
 
-// Test 2: Empty collection — iterator should immediately return EOF
+// Empty collection — iterator should immediately return EOF
 TEST_F(IteratorTest, EmptyCollection) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -123,10 +124,11 @@ TEST_F(IteratorTest, EmptyCollection) {
   ASSERT_TRUE(r.has_value());
   EXPECT_EQ(r.value(), nullptr) << "Expected EOF on empty collection";
 
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 3: Deleted docs are filtered out
+// Deleted docs are filtered out
 TEST_F(IteratorTest, DeletedDocsFiltered) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -180,10 +182,11 @@ TEST_F(IteratorTest, DeletedDocsFiltered) {
   // Should have N - deleted_count docs
   EXPECT_EQ(count, N - static_cast<int>(pks_to_delete.size()));
 
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 4: Iterator after Close() returns error
+// Iterator after Close() returns error
 TEST_F(IteratorTest, CloseThenNext) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -217,7 +220,7 @@ TEST_F(IteratorTest, CloseThenNext) {
   collection->Destroy();
 }
 
-// Test 5: Iterator with include_vector=true — verify vector fields are present
+// Iterator with include_vector=true — verify vector fields are present
 TEST_F(IteratorTest, IncludeVector) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -268,10 +271,11 @@ TEST_F(IteratorTest, IncludeVector) {
   }
 
   EXPECT_EQ(count, N);
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 6: Iterator with include_vector=false — verify no vector fields
+// Iterator with include_vector=false — verify no vector fields
 TEST_F(IteratorTest, ExcludeVector) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -314,11 +318,93 @@ TEST_F(IteratorTest, ExcludeVector) {
   }
 
   EXPECT_EQ(count, 5);
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 7: Scalar type mapping — every scalar/array Arrow type extracted
+// Scalar type mapping — every scalar/array Arrow type extracted
 // correctly. CreateNormalSchema covers 8 base types + 8 array types.
+TEST_F(IteratorTest, OutputFieldsSelection) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  const int N = 20;
+  std::vector<Doc> docs;
+  for (int i = 0; i < N; i++) {
+    docs.push_back(TestHelper::CreateDoc(i, *schema));
+  }
+  collection->Insert(docs);
+  collection->Flush();
+
+  // Request only the "int32" scalar field.
+  IteratorOptions iter_opts;
+  iter_opts.output_fields_ = std::vector<std::string>{"int32"};
+  iter_opts.include_vector_ = false;
+  auto iter_result = collection->CreateIterator(iter_opts);
+  ASSERT_TRUE(iter_result.has_value());
+  auto iter = iter_result.value();
+
+  int count = 0;
+  while (true) {
+    auto r = iter->Next();
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+    if (r.value() == nullptr) break;
+    auto doc = r.value();
+    // Requested field present; non-requested scalar fields absent.
+    EXPECT_TRUE(doc->has("int32"));
+    EXPECT_FALSE(doc->has("string"));
+    EXPECT_FALSE(doc->has("array_int32"));
+    count++;
+  }
+  EXPECT_EQ(count, N);
+
+  iter->Close();
+  collection->Destroy();
+}
+
+TEST_F(IteratorTest, InvalidOutputFieldsRejected) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  // Unknown field is rejected.
+  {
+    IteratorOptions iter_opts;
+    iter_opts.output_fields_ = std::vector<std::string>{"no_such_field"};
+    auto r = collection->CreateIterator(iter_opts);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+  // Duplicate field is rejected.
+  {
+    IteratorOptions iter_opts;
+    iter_opts.output_fields_ = std::vector<std::string>{"int32", "int32"};
+    auto r = collection->CreateIterator(iter_opts);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+  // Vector field names are rejected (output_fields accepts scalar fields
+  // only; vectors are controlled by include_vector_).
+  {
+    IteratorOptions iter_opts;
+    iter_opts.output_fields_ = std::vector<std::string>{"dense_fp32"};
+    auto r = collection->CreateIterator(iter_opts);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  collection->Destroy();
+}
+
 TEST_F(IteratorTest, ScalarTypeMapping) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -388,10 +474,11 @@ TEST_F(IteratorTest, ScalarTypeMapping) {
   ASSERT_TRUE(a_s.has_value());
   EXPECT_EQ((*a_s)[0], "value_" + std::to_string(kId));
 
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 8: Integration — 1000 docs, verify count + PK + scalar + vector values.
+// Integration — 1000 docs, verify count + PK + scalar + vector values.
 TEST_F(IteratorTest, Integration1000Docs) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -444,10 +531,11 @@ TEST_F(IteratorTest, Integration1000Docs) {
 
   EXPECT_EQ(count, N);
   EXPECT_EQ(seen_pks.size(), (size_t)N);
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 9: Concurrency — docs inserted after iterator creation are not visible.
+// Concurrency — docs inserted after iterator creation are not visible.
 TEST_F(IteratorTest, ConcurrentInsertNotVisible) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -506,10 +594,12 @@ TEST_F(IteratorTest, ConcurrentInsertNotVisible) {
   }
   EXPECT_EQ(count2, N + 200);
 
+  iter->Close();
+  iter2->Close();
   collection->Destroy();
 }
 
-// Test 10: Concurrency — Optimize during iteration must not crash.
+// Concurrency — Optimize during iteration must not crash.
 TEST_F(IteratorTest, ConcurrentOptimizeNoCrash) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -552,10 +642,11 @@ TEST_F(IteratorTest, ConcurrentOptimizeNoCrash) {
 
   // Snapshot isolation: all N docs remain visible despite concurrent Optimize.
   EXPECT_EQ(count, N);
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 11: Performance — iterate 100k docs; memory should stay bounded (one
+// Performance — iterate 100k docs; memory should stay bounded (one
 // batch at a time). Reports elapsed time; asserts correctness of the count.
 TEST_F(IteratorTest, Performance100k) {
   auto schema = TestHelper::CreateNormalSchema();
@@ -603,12 +694,66 @@ TEST_F(IteratorTest, Performance100k) {
             << " ms (" << (ms > 0 ? count / ms : count) << " docs/ms)"
             << std::endl;
 
+  iter->Close();
   collection->Destroy();
 }
 
-// Test 12: Read-only collection iteration — reopen an existing collection in
+// Read-only collection iteration — reopen an existing collection in
 // read-only mode and verify the full traversal works WITHOUT flushing (the
 // read-only path reads the writing segment directly instead of flushing).
+TEST_F(IteratorTest, ParquetVectorPrefetchWindows) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+  // Parquet forward store: one ReadNext can return a whole row group, far
+  // larger than kIteratorVectorPrefetchWindow, so the vector prefetch must
+  // refill its window while consuming a single batch.
+  options.enable_mmap_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  const int N = 10000;  // > 2 * kIteratorVectorPrefetchWindow (4096)
+  const int kBatch = 1000;
+  for (int base = 0; base < N; base += kBatch) {
+    std::vector<Doc> docs;
+    docs.reserve(kBatch);
+    for (int i = base; i < base + kBatch; i++) {
+      docs.push_back(TestHelper::CreateDoc(i, *schema));
+    }
+    ASSERT_TRUE(collection->Insert(docs).has_value());
+  }
+  collection->Flush();
+
+  auto iter_result = collection->CreateIterator();  // include_vector = true
+  ASSERT_TRUE(iter_result.has_value());
+  auto iter = iter_result.value();
+
+  int count = 0;
+  while (true) {
+    auto r = iter->Next();
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+    if (r.value() == nullptr) break;
+    auto doc = r.value();
+
+    // Vector values must stay aligned with the scalar id across every
+    // prefetch-window refill (window alignment is the failure mode here).
+    auto id32 = doc->get<int32_t>("int32");
+    ASSERT_TRUE(id32.has_value());
+    uint64_t id = static_cast<uint64_t>(*id32);
+    auto vec = doc->get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vec.has_value()) << "vector missing for id " << id;
+    EXPECT_FLOAT_EQ((*vec)[0], float(id + 0.1))
+        << "window misalignment at id " << id;
+    count++;
+  }
+  EXPECT_EQ(count, N);
+
+  iter->Close();
+  collection->Destroy();
+}
+
 TEST_F(IteratorTest, ReadOnlyCollectionIteration) {
   auto schema = TestHelper::CreateNormalSchema();
   const int N = 50;
