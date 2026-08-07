@@ -363,28 +363,7 @@ VamanaStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<BufferPoolMemoryBlock>();
   }
-  BufferPoolMemoryBlock block;
-  if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-    block = BufferPoolMemoryBlock::MakeOwned(mem_block.data_,
-                                             mem_block.scratch_size_);
-    mem_block.data_ = nullptr;
-    mem_block.scratch_size_ = 0;
-    mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-  } else {
-    block =
-        mem_block.buffer_pool_handle_owner_
-            ? BufferPoolMemoryBlock(mem_block.buffer_pool_handle_owner_,
-                                    mem_block.buffer_block_id_, mem_block.data_)
-            : BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                    mem_block.buffer_block_id_,
-                                    mem_block.data_);
-    mem_block.buffer_pool_handle_owner_.reset();
-    mem_block.buffer_pool_handle_ = nullptr;
-    mem_block.buffer_block_id_ = 0;
-    mem_block.data_ = nullptr;
-    mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-  }
-  return NeighborsT<BufferPoolMemoryBlock>(std::move(block));
+  return NeighborsT<BufferPoolMemoryBlock>(std::move(mem_block));
 }
 
 template <>
@@ -421,30 +400,7 @@ inline int VamanaStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i] = [&]() {
-      if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-        BufferPoolMemoryBlock b = BufferPoolMemoryBlock::MakeOwned(
-            mem_block.data_, mem_block.scratch_size_);
-        mem_block.data_ = nullptr;
-        mem_block.scratch_size_ = 0;
-        mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-        return b;
-      }
-      BufferPoolMemoryBlock b =
-          mem_block.buffer_pool_handle_owner_
-              ? BufferPoolMemoryBlock(mem_block.buffer_pool_handle_owner_,
-                                      mem_block.buffer_block_id_,
-                                      mem_block.data_)
-              : BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                      mem_block.buffer_block_id_,
-                                      mem_block.data_);
-      mem_block.buffer_pool_handle_owner_.reset();
-      mem_block.buffer_pool_handle_ = nullptr;
-      mem_block.buffer_block_id_ = 0;
-      mem_block.data_ = nullptr;
-      mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-      return b;
-    }();
+    vec_blocks[i] = std::move(mem_block);
   }
   return 0;
 }

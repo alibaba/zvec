@@ -23,11 +23,15 @@
 
 #include <unistd.h>
 #include <atomic>
+#include <memory>
 #include <vector>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
 namespace zvec {
+namespace ailego {
+class VecBufferPool;
+}
 namespace core {
 
 #if (defined(__linux) || defined(__linux__))
@@ -75,8 +79,12 @@ class AlignedFileReader {
   virtual void open(const std::string &fname) = 0;
   virtual void close() = 0;
 
-  virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-                   bool async = false) = 0;
+  //! Submit the batch and return only after every destination is ready.
+  virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx) = 0;
+
+  virtual bool requires_io_context() const {
+    return true;
+  }
 };
 
 class LinuxAlignedFileReader : public AlignedFileReader {
@@ -99,8 +107,30 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   void open(const std::string &fname);
   void close();
 
-  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-           bool async = false);
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx);
+};
+
+class BufferPoolAlignedFileReader : public AlignedFileReader {
+ public:
+  explicit BufferPoolAlignedFileReader(
+      std::shared_ptr<ailego::VecBufferPool> pool);
+  ~BufferPoolAlignedFileReader() override;
+
+  IOContext &get_ctx() override;
+  void register_thread() override;
+  void deregister_thread() override;
+  void deregister_all_threads() override;
+  void open(const std::string &fname) override;
+  void close() override;
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx) override;
+
+  bool requires_io_context() const override {
+    return false;
+  }
+
+ private:
+  std::shared_ptr<ailego::VecBufferPool> pool_;
+  IOContext unused_ctx_{};
 };
 
 }  // namespace core

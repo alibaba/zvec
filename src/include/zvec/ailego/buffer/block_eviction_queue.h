@@ -15,34 +15,18 @@
 
 #pragma once
 
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <atomic>
-#include <cassert>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <limits>
-#include <map>
-#include <memory>
 #include <mutex>
-#include <queue>
 #include <shared_mutex>
-#include <stdexcept>
-#include <string>
 #include <thread>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/export.h>
 #include "concurrentqueue.h"
-
-#if defined(_MSC_VER)
-#include <io.h>
-#endif
 
 namespace zvec {
 namespace ailego {
@@ -137,8 +121,6 @@ class BlockEvictionQueue {
     valid_owners_.erase(owner);
   }
 
-  bool is_valid_and_alive(const BlockType &item);
-
   void recycle();
 
   size_t batch_recycle(size_t count);
@@ -194,8 +176,6 @@ class MemoryLimitPool {
 
   //! Reserve non-evictable buffer-pool metadata capacity.
   bool try_charge_metadata(const size_t buffer_size);
-
-  void charge_external(const size_t buffer_size);
 
   void release_buffer(char *buffer, const size_t buffer_size);
 

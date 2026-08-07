@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <string.h>
+#include <cstring>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/logger/logger.h>
@@ -78,11 +78,11 @@ struct HNSWHeader {
   }
 
   HNSWHeader(const HNSWHeader &header) {
-    memcpy(static_cast<void *>(this), &header, sizeof(header));
+    std::memcpy(static_cast<void *>(this), &header, sizeof(header));
   }
 
   HNSWHeader &operator=(const HNSWHeader &header) {
-    memcpy(static_cast<void *>(this), &header, sizeof(header));
+    std::memcpy(static_cast<void *>(this), &header, sizeof(header));
     return *this;
   }
 
@@ -95,7 +95,7 @@ struct HNSWHeader {
 
   //! Clear all fields to init value
   void inline clear() {
-    memset(static_cast<void *>(this), 0, sizeof(HNSWHeader));
+    std::memset(static_cast<void *>(this), 0, sizeof(HNSWHeader));
     hnsw.entry_point = kInvalidNodeId;
     graph.size = sizeof(GraphHeader);
     hnsw.size = sizeof(HnswHeader);
@@ -194,153 +194,7 @@ struct MmapMemoryBlock {
   void *data_{nullptr};
 };
 
-//! Lightweight MemoryBlock for buffer pool mode: release on destruction
-struct BufferPoolMemoryBlock {
-  BufferPoolMemoryBlock() = default;
-
-  BufferPoolMemoryBlock(ailego::VecBufferPoolHandle *handle, size_t block_id,
-                        void *data)
-      : buffer_pool_handle_(handle), buffer_block_id_(block_id), data_(data) {}
-
-  BufferPoolMemoryBlock(
-      const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
-      size_t block_id, void *data)
-      : buffer_pool_handle_owner_(handle),
-        buffer_pool_handle_(handle.get()),
-        buffer_block_id_(block_id),
-        data_(data) {}
-
-  static BufferPoolMemoryBlock MakeOwned(void *owned_data, size_t size) {
-    BufferPoolMemoryBlock b;
-    b.owns_buffer_ = true;
-    b.owned_size_ = size;
-    b.data_ = owned_data;
-    return b;
-  }
-
-  BufferPoolMemoryBlock(const BufferPoolMemoryBlock &rhs)
-      : buffer_pool_handle_owner_(rhs.buffer_pool_handle_owner_),
-        buffer_pool_handle_(rhs.buffer_pool_handle_),
-        buffer_block_id_(rhs.buffer_block_id_),
-        data_(rhs.data_) {
-    if (rhs.owns_buffer_) {
-      deep_copy_from(rhs);
-    } else if (buffer_pool_handle_) {
-      buffer_pool_handle_->acquire_one(buffer_block_id_);
-    }
-  }
-
-  BufferPoolMemoryBlock &operator=(const BufferPoolMemoryBlock &rhs) {
-    if (this != &rhs) {
-      release();
-      buffer_pool_handle_owner_ = rhs.buffer_pool_handle_owner_;
-      buffer_pool_handle_ = rhs.buffer_pool_handle_;
-      buffer_block_id_ = rhs.buffer_block_id_;
-      data_ = rhs.data_;
-      if (rhs.owns_buffer_) {
-        deep_copy_from(rhs);
-      } else if (buffer_pool_handle_) {
-        buffer_pool_handle_->acquire_one(buffer_block_id_);
-      }
-    }
-    return *this;
-  }
-
-  BufferPoolMemoryBlock(BufferPoolMemoryBlock &&rhs) noexcept
-      : buffer_pool_handle_owner_(std::move(rhs.buffer_pool_handle_owner_)),
-        buffer_pool_handle_(rhs.buffer_pool_handle_),
-        buffer_block_id_(rhs.buffer_block_id_),
-        owns_buffer_(rhs.owns_buffer_),
-        owned_size_(rhs.owned_size_),
-        data_(rhs.data_) {
-    rhs.buffer_pool_handle_ = nullptr;
-    rhs.owns_buffer_ = false;
-    rhs.owned_size_ = 0;
-    rhs.data_ = nullptr;
-  }
-
-  BufferPoolMemoryBlock &operator=(BufferPoolMemoryBlock &&rhs) noexcept {
-    if (this != &rhs) {
-      release();
-      buffer_pool_handle_owner_ = std::move(rhs.buffer_pool_handle_owner_);
-      buffer_pool_handle_ = rhs.buffer_pool_handle_;
-      buffer_block_id_ = rhs.buffer_block_id_;
-      owns_buffer_ = rhs.owns_buffer_;
-      owned_size_ = rhs.owned_size_;
-      data_ = rhs.data_;
-      rhs.buffer_pool_handle_ = nullptr;
-      rhs.owns_buffer_ = false;
-      rhs.owned_size_ = 0;
-      rhs.data_ = nullptr;
-    }
-    return *this;
-  }
-
-  ~BufferPoolMemoryBlock() {
-    release();
-  }
-
-  const void *data() const {
-    return data_;
-  }
-
-  void reset(ailego::VecBufferPoolHandle *handle, size_t block_id, void *data) {
-    release();
-    buffer_pool_handle_ = handle;
-    buffer_block_id_ = block_id;
-    data_ = data;
-  }
-
-  void reset(const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
-             size_t block_id, void *data) {
-    release();
-    buffer_pool_handle_owner_ = handle;
-    buffer_pool_handle_ = handle.get();
-    buffer_block_id_ = block_id;
-    data_ = data;
-  }
-
- private:
-  void deep_copy_from(const BufferPoolMemoryBlock &rhs) {
-    buffer_pool_handle_owner_.reset();
-    buffer_pool_handle_ = nullptr;
-    owns_buffer_ = true;
-    owned_size_ = rhs.owned_size_;
-    if (owned_size_ == 0 || rhs.data_ == nullptr) {
-      data_ = nullptr;
-      return;
-    }
-    data_ = ailego_malloc(owned_size_);
-    if (data_ == nullptr) {
-      owns_buffer_ = false;
-      owned_size_ = 0;
-      throw std::bad_alloc();
-    }
-    std::memcpy(data_, rhs.data_, owned_size_);
-  }
-
-  void release() {
-    if (owns_buffer_) {
-      if (data_) {
-        ailego_free(data_);
-      }
-      owns_buffer_ = false;
-      owned_size_ = 0;
-    } else if (buffer_pool_handle_) {
-      buffer_pool_handle_->release_one(buffer_block_id_);
-      buffer_pool_handle_ = nullptr;
-    }
-    buffer_pool_handle_owner_.reset();
-    data_ = nullptr;
-  }
-
-  std::shared_ptr<ailego::VecBufferPoolHandle> buffer_pool_handle_owner_{};
-  ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
-  size_t buffer_block_id_{0};
-  bool owns_buffer_{false};
-  size_t owned_size_{0};
-  void *data_{nullptr};
-};
+using BufferPoolMemoryBlock = IndexStorage::MemoryBlock;
 
 //! Typed Neighbors: holds a typed MemoryBlock to avoid runtime branching
 template <typename MemBlockType>

@@ -41,7 +41,7 @@ class IndexStorage : public IndexModule {
       MBT_HEAP_SCRATCH = 3,
     };
 
-    MemoryBlock() {}
+    MemoryBlock() = default;
     MemoryBlock(ailego::VecBufferPoolHandle *buffer_pool_handle,
                 size_t block_id, void *data)
         : type_(MemoryBlockType::MBT_BUFFERPOOL) {
@@ -92,10 +92,10 @@ class IndexStorage : public IndexModule {
       }
     }
 
-    MemoryBlock(MemoryBlock &&rhs) {
+    MemoryBlock(MemoryBlock &&rhs) noexcept {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
-          this->reset(std::move(rhs.data_));
+          this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
           type_ = MemoryBlockType::MBT_BUFFERPOOL;
@@ -148,11 +148,11 @@ class IndexStorage : public IndexModule {
       return *this;
     }
 
-    MemoryBlock &operator=(MemoryBlock &&rhs) {
+    MemoryBlock &operator=(MemoryBlock &&rhs) noexcept {
       if (this != &rhs) {
         switch (rhs.type_) {
           case MemoryBlockType::MBT_MMAP:
-            this->reset(std::move(rhs.data_));
+            this->reset(rhs.data_);
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
             release_current();
@@ -383,11 +383,6 @@ class IndexStorage : public IndexModule {
       (void)offset;
       (void)len;
     }
-
-    //! Return the current prefetch budget; SIZE_MAX means unbounded.
-    virtual size_t prefetch_budget(void) const {
-      return static_cast<size_t>(-1);
-    }
   };
 
   //! Destructor
@@ -442,6 +437,11 @@ class IndexStorage : public IndexModule {
     return MemoryBlock::MBT_MMAP;
   }
 
+  //! Return the shared page cache when this storage is backed by VecBufferPool.
+  virtual std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const {
+    return nullptr;
+  }
+
   //! Test if the storage has unflushed data
   virtual bool is_dirty(void) const {
     return false;
@@ -454,10 +454,6 @@ class IndexStorage : public IndexModule {
 
   virtual std::string file_path(void) const {
     return "";
-  }
-
-  virtual ailego::VecBufferPool *vec_buffer_pool(void) const {
-    return nullptr;
   }
 };
 

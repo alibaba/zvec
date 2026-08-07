@@ -17,7 +17,6 @@
 //   2. Background evictor (proactive reclaim down to the low watermark)
 //   3. Sharded free-list correctness under concurrent access
 //   4. Observability counters (hit / miss / evict / second_chance / stats)
-//   5. Opt-in query-local I/O profile aggregation
 
 #include <array>
 #include <atomic>
@@ -1024,6 +1023,31 @@ TEST_F(BufferPoolTest, ReadAndPrefetchRangesRejectOverflow) {
   EXPECT_EQ(0u, pool.stats().miss);
 }
 
+#if defined(__linux) || defined(__linux__)
+TEST_F(BufferPoolTest, AioAdmissionUsesFreeCapacityBeforeEviction) {
+  InitVecPool(/*capacity_pages=*/8, /*file_pages=*/4);
+  std::string file = NewFile(/*num_pages=*/4);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  if (!pool.aio_enabled()) {
+    GTEST_SKIP() << "libaio is unavailable";
+  }
+
+  char *resident = pool.acquire_buffer(/*page_id=*/0);
+  ASSERT_NE(nullptr, resident);
+  pool.page_table_.release_block(/*block_id=*/0);
+  const uint64_t evictions_before = pool.stats().evict;
+
+  pool.prefetch_pages_aio(/*first_page=*/1, /*page_count=*/2);
+
+  EXPECT_TRUE(pool.is_page_resident(0));
+  EXPECT_TRUE(pool.is_page_resident(1));
+  EXPECT_TRUE(pool.is_page_resident(2));
+  EXPECT_EQ(evictions_before, pool.stats().evict);
+}
+#endif
+
 // Scattered acquisition is storage-level functionality: it preserves caller
 // order, deduplicates cold I/O internally, and still returns one independent
 // pin for every occurrence of a duplicate page id.
@@ -1248,100 +1272,4 @@ TEST_F(BufferPoolTest, ShardedPoolAllocFreeAccounting) {
   MemoryLimitPool::PoolStats after = mp.stats();
   EXPECT_GT(after.alloc_from_freelist, before.alloc_from_freelist);
   mp.release_buffer(b, kVectorPageSize);
-}
-
-// Profiling samples stay query-local and are merged once at query completion.
-// Verify sum/max semantics independently of Linux AIO availability so this
-// instrumentation remains testable on every supported platform.
-TEST_F(BufferPoolTest, IoProfileMergesQueryLocalSamples) {
-  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/1);
-  std::string file = NewFile(/*num_pages=*/1);
-
-  VecBufferPool pool(file, /*writable=*/false, /*enable_direct_io=*/false,
-                     /*enable_io_profile=*/true);
-  ASSERT_EQ(pool.init(), 0);
-  ASSERT_TRUE(pool.io_profile_enabled());
-
-  BufferPoolIoProfile first;
-  first.query_count = 1;
-  first.query_wall_ns = 1000;
-  first.aio_submit_ns = 10;
-  first.aio_wait_ns = 20;
-  first.aio_install_ns = 30;
-  first.aio_page_lock_wait_ns = 7;
-  first.sync_prepare_ns = 11;
-  first.sync_read_ns = 120;
-  first.sync_install_ns = 13;
-  first.sync_page_lock_wait_ns = 14;
-  first.sync_reads = 12;
-  first.epoch_transition_ns = 40;
-  first.fallback_total_ns = 50;
-  first.copy_ns = 60;
-  first.aio_batches = 2;
-  first.aio_pages = 12;
-  first.aio_max_batch = 8;
-  first.fallback_batches = 3;
-  first.fallback_items = 9;
-  first.neighbor_sync_reads = 2;
-  first.neighbor_sync_read_ns = 21;
-  first.cross_page_sync_reads = 3;
-  first.cross_page_sync_read_ns = 31;
-  first.post_aio_sync_reads = 4;
-  first.post_aio_sync_read_ns = 41;
-  first.vector_prefetch_aio_pages = 5;
-  first.vector_prefetch_aio_wait_ns = 51;
-  first.vector_fallback_aio_pages = 6;
-  first.vector_fallback_aio_wait_ns = 61;
-  first.post_aio_publish_attempts = 7;
-  first.post_aio_publish_failures = 6;
-  first.post_aio_requested_unique_pages = 70;
-  first.post_aio_missing_unique_pages = 60;
-  first.epoch_enter_attempts = 4;
-  first.epoch_enter_failures = 1;
-  first.epoch_suspends = 3;
-  pool.merge_io_profile(first);
-
-  BufferPoolIoProfile second = first;
-  second.aio_max_batch = 6;
-  pool.merge_io_profile(second);
-
-  const VecBufferPool::Stats stats = pool.stats();
-  const BufferPoolIoProfile &total = stats.io_profile;
-  EXPECT_EQ(total.query_count, 2u);
-  EXPECT_EQ(total.query_wall_ns, 2000u);
-  EXPECT_EQ(total.aio_submit_ns, 20u);
-  EXPECT_EQ(total.aio_wait_ns, 40u);
-  EXPECT_EQ(total.aio_install_ns, 60u);
-  EXPECT_EQ(total.aio_page_lock_wait_ns, 14u);
-  EXPECT_EQ(total.sync_prepare_ns, 22u);
-  EXPECT_EQ(total.sync_read_ns, 240u);
-  EXPECT_EQ(total.sync_install_ns, 26u);
-  EXPECT_EQ(total.sync_page_lock_wait_ns, 28u);
-  EXPECT_EQ(total.sync_reads, 24u);
-  EXPECT_EQ(total.epoch_transition_ns, 80u);
-  EXPECT_EQ(total.fallback_total_ns, 100u);
-  EXPECT_EQ(total.copy_ns, 120u);
-  EXPECT_EQ(total.aio_batches, 4u);
-  EXPECT_EQ(total.aio_pages, 24u);
-  EXPECT_EQ(total.aio_max_batch, 8u);
-  EXPECT_EQ(total.fallback_batches, 6u);
-  EXPECT_EQ(total.fallback_items, 18u);
-  EXPECT_EQ(total.neighbor_sync_reads, 4u);
-  EXPECT_EQ(total.neighbor_sync_read_ns, 42u);
-  EXPECT_EQ(total.cross_page_sync_reads, 6u);
-  EXPECT_EQ(total.cross_page_sync_read_ns, 62u);
-  EXPECT_EQ(total.post_aio_sync_reads, 8u);
-  EXPECT_EQ(total.post_aio_sync_read_ns, 82u);
-  EXPECT_EQ(total.vector_prefetch_aio_pages, 10u);
-  EXPECT_EQ(total.vector_prefetch_aio_wait_ns, 102u);
-  EXPECT_EQ(total.vector_fallback_aio_pages, 12u);
-  EXPECT_EQ(total.vector_fallback_aio_wait_ns, 122u);
-  EXPECT_EQ(total.post_aio_publish_attempts, 14u);
-  EXPECT_EQ(total.post_aio_publish_failures, 12u);
-  EXPECT_EQ(total.post_aio_requested_unique_pages, 140u);
-  EXPECT_EQ(total.post_aio_missing_unique_pages, 120u);
-  EXPECT_EQ(total.epoch_enter_attempts, 8u);
-  EXPECT_EQ(total.epoch_enter_failures, 2u);
-  EXPECT_EQ(total.epoch_suspends, 6u);
-  EXPECT_EQ(total.software_ns(), 314u);
 }

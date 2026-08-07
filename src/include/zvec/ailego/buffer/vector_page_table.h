@@ -15,36 +15,19 @@
 
 #pragma once
 
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <algorithm>
-#include <array>
 #include <atomic>
 #include <cassert>
-#include <chrono>
+#include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <functional>
-#include <iostream>
 #include <limits>
-#include <map>
 #include <memory>
-#include <mutex>
-#include <queue>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
-#include <vector>
-#include <zvec/ailego/internal/platform.h>
+#include <utility>
 #include <zvec/export.h>
 #include "block_eviction_queue.h"
-#include "concurrentqueue.h"
-
-#if defined(_MSC_VER)
-#include <io.h>
-#endif
 
 namespace zvec {
 namespace ailego {
@@ -52,7 +35,7 @@ namespace ailego {
 extern const size_t kVectorPageSize;
 
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
-  // Isolate mutable page metadata; epoch reads use ResidentEntry below.
+  // Keep resident pointers separate from frequently mutated page metadata.
   struct alignas(64) Entry {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
@@ -67,7 +50,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   };
   static_assert(sizeof(Entry) == 64, "VectorPageTable::Entry must be one line");
 
-  // Compact resident-pointer table for epoch-protected reads.
+  // Compact resident-pointer table.
   struct ResidentEntry {
     std::atomic<char *> buffer{nullptr};
   };
@@ -78,7 +61,6 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Callback invoked by evict_block() to persist a dirty block before its
   // memory is released. Signature: (block_id, buffer, size, file_offset).
   using FlushCallback = std::function<int(block_id_t, char *, size_t, size_t)>;
-  using RetireCallback = std::function<void(char *)>;
 
   VectorPageTable() : owner_version_(next_owner_version()) {
     BlockEvictionQueue::get_instance().set_valid(this);
@@ -157,10 +139,6 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     flush_callback_ = std::move(cb);
   }
 
-  void set_retire_callback(RetireCallback cb) {
-    retire_callback_ = std::move(cb);
-  }
-
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
@@ -170,29 +148,6 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   bool is_block_dirty(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
-  }
-
-  //! Get the raw buffer pointer for a loaded page (nullptr if not loaded).
-  //! Used by batched flush to memcpy page contents into a coalescing buffer.
-  char *get_block_buffer(block_id_t block_id) const {
-    assert(block_id < entry_num_.load(std::memory_order_acquire));
-    return resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
-  }
-
-  //! Return a resident page protected by PageReadEpochDomain.
-  char *get_epoch_block(block_id_t block_id) {
-    assert(block_id < entry_num_.load(std::memory_order_acquire));
-    // Touch cold CLOCK/statistics metadata only on sampled hits.
-    char *buffer =
-        resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
-    if (buffer && sample_hit()) {
-      Entry &e = entry_at(block_id);
-      if (!e.referenced.load(std::memory_order_relaxed)) {
-        e.referenced.store(true, std::memory_order_relaxed);
-      }
-      inc_sampled_hit();
-    }
-    return buffer;
   }
 
   //! Clear the dirty flag after a successful batched flush.
@@ -329,7 +284,6 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   const version_t owner_version_;
 
   FlushCallback flush_callback_{};
-  RetireCallback retire_callback_{};
   // Scan loaded entries only after a queue insertion failure.
   std::atomic<bool> eviction_recovery_needed_{false};
 
@@ -372,169 +326,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   }
 };
 
-//! Epoch reclamation for refcount-free reads from read-only pools.
-class PageReadEpochDomain {
- public:
-  struct Token {
-    size_t slot{kSlotCount};
-    bool valid() const {
-      return slot < kSlotCount;
-    }
-  };
-
-  bool enter(Token *token);
-  void exit(Token *token);
-  void retire(char *buffer) noexcept;
-  void drain();
-
- private:
-  static constexpr size_t kSlotCount = 256;
-  static constexpr uint64_t kReserved = 1;
-  struct RetiredBuffer {
-    char *buffer;
-    uint64_t epoch;
-  };
-  struct alignas(64) ReaderSlot {
-    std::atomic<uint64_t> epoch{0};
-  };
-
-  void reclaim_locked(bool force);
-
-  std::atomic<uint64_t> epoch_{0};
-  std::atomic<size_t> active_readers_{0};
-  std::atomic<size_t> next_slot_{0};
-  std::array<ReaderSlot, kSlotCount> slots_{};
-  std::mutex retired_mutex_{};
-  std::vector<RetiredBuffer> retired_{};
-};
-
 class VecBufferPool;
 class VecBufferPoolHandle;
-
-//! Query-local I/O profile, merged once at query completion.
-struct BufferPoolIoProfile {
-  uint64_t query_count{0};
-  uint64_t query_wall_ns{0};
-  uint64_t aio_submit_ns{0};
-  uint64_t aio_wait_ns{0};
-  uint64_t aio_install_ns{0};
-  uint64_t aio_page_lock_wait_ns{0};  // subset of aio_install_ns
-  uint64_t sync_prepare_ns{0};
-  uint64_t sync_read_ns{0};
-  uint64_t sync_install_ns{0};
-  uint64_t sync_page_lock_wait_ns{0};
-  uint64_t sync_reads{0};
-  uint64_t epoch_transition_ns{0};
-  uint64_t fallback_total_ns{0};  // inclusive of any nested sync_read_ns
-  uint64_t copy_ns{0};
-  uint64_t aio_batches{0};
-  uint64_t aio_pages{0};
-  uint64_t aio_max_batch{0};
-  uint64_t fallback_batches{0};
-  uint64_t fallback_items{0};
-  // Subsets of synchronous reads attributed to HNSW paths.
-  uint64_t neighbor_sync_reads{0};
-  uint64_t neighbor_sync_read_ns{0};
-  uint64_t cross_page_sync_reads{0};
-  uint64_t cross_page_sync_read_ns{0};
-  uint64_t post_aio_sync_reads{0};
-  uint64_t post_aio_sync_read_ns{0};
-  // First-pass vector prefetch versus the second AIO pass performed by
-  // acquire_pages() after the all-resident publish retry failed.
-  uint64_t vector_prefetch_aio_pages{0};
-  uint64_t vector_prefetch_aio_wait_ns{0};
-  uint64_t vector_fallback_aio_pages{0};
-  uint64_t vector_fallback_aio_wait_ns{0};
-  // Unique page demand observed at the publish retry immediately after the
-  // first AIO pass.  requested is the denominator for missing.
-  uint64_t post_aio_publish_attempts{0};
-  uint64_t post_aio_publish_failures{0};
-  uint64_t post_aio_requested_unique_pages{0};
-  uint64_t post_aio_missing_unique_pages{0};
-  uint64_t epoch_enter_attempts{0};
-  uint64_t epoch_enter_failures{0};
-  uint64_t epoch_suspends{0};
-
-  uint64_t software_ns() const {
-    const uint64_t aio_install_cpu_ns =
-        aio_install_ns > aio_page_lock_wait_ns
-            ? aio_install_ns - aio_page_lock_wait_ns
-            : 0;
-    // Exclude inclusive fallback time and lock waits from software time.
-    return aio_submit_ns + aio_install_cpu_ns + sync_prepare_ns +
-           sync_install_ns + epoch_transition_ns + copy_ns;
-  }
-
-  void merge(const BufferPoolIoProfile &other) {
-    query_count += other.query_count;
-    query_wall_ns += other.query_wall_ns;
-    aio_submit_ns += other.aio_submit_ns;
-    aio_wait_ns += other.aio_wait_ns;
-    aio_install_ns += other.aio_install_ns;
-    aio_page_lock_wait_ns += other.aio_page_lock_wait_ns;
-    sync_prepare_ns += other.sync_prepare_ns;
-    sync_read_ns += other.sync_read_ns;
-    sync_install_ns += other.sync_install_ns;
-    sync_page_lock_wait_ns += other.sync_page_lock_wait_ns;
-    sync_reads += other.sync_reads;
-    epoch_transition_ns += other.epoch_transition_ns;
-    fallback_total_ns += other.fallback_total_ns;
-    copy_ns += other.copy_ns;
-    aio_batches += other.aio_batches;
-    aio_pages += other.aio_pages;
-    aio_max_batch = std::max(aio_max_batch, other.aio_max_batch);
-    fallback_batches += other.fallback_batches;
-    fallback_items += other.fallback_items;
-    neighbor_sync_reads += other.neighbor_sync_reads;
-    neighbor_sync_read_ns += other.neighbor_sync_read_ns;
-    cross_page_sync_reads += other.cross_page_sync_reads;
-    cross_page_sync_read_ns += other.cross_page_sync_read_ns;
-    post_aio_sync_reads += other.post_aio_sync_reads;
-    post_aio_sync_read_ns += other.post_aio_sync_read_ns;
-    vector_prefetch_aio_pages += other.vector_prefetch_aio_pages;
-    vector_prefetch_aio_wait_ns += other.vector_prefetch_aio_wait_ns;
-    vector_fallback_aio_pages += other.vector_fallback_aio_pages;
-    vector_fallback_aio_wait_ns += other.vector_fallback_aio_wait_ns;
-    post_aio_publish_attempts += other.post_aio_publish_attempts;
-    post_aio_publish_failures += other.post_aio_publish_failures;
-    post_aio_requested_unique_pages += other.post_aio_requested_unique_pages;
-    post_aio_missing_unique_pages += other.post_aio_missing_unique_pages;
-    epoch_enter_attempts += other.epoch_enter_attempts;
-    epoch_enter_failures += other.epoch_enter_failures;
-    epoch_suspends += other.epoch_suspends;
-  }
-};
-
-//! Previous binding used to restore nested query profiling.
-struct BufferPoolIoProfileBinding {
-  VecBufferPool *pool{nullptr};
-  BufferPoolIoProfile *profile{nullptr};
-};
-
-inline uint64_t BufferPoolProfileNowNs() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
-
-//! Adds elapsed time to a query-local field on scope exit.  A null target is
-//! the disabled fast path and performs no clock read.
-class BufferPoolProfileTimer {
- public:
-  explicit BufferPoolProfileTimer(uint64_t *target)
-      : target_(target), start_ns_(target ? BufferPoolProfileNowNs() : 0) {}
-  ~BufferPoolProfileTimer() {
-    if (target_) *target_ += BufferPoolProfileNowNs() - start_ns_;
-  }
-
-  BufferPoolProfileTimer(const BufferPoolProfileTimer &) = delete;
-  BufferPoolProfileTimer &operator=(const BufferPoolProfileTimer &) = delete;
-
- private:
-  uint64_t *target_{nullptr};
-  uint64_t start_ns_{0};
-};
 
 class ZVEC_AILEGO_API VecBufferPool {
  public:
@@ -549,8 +342,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! covering `page_count` pages.
   static size_t metadata_bytes_for_page_count(size_t page_count);
 
-  VecBufferPool(const std::string &filename, bool writable = false,
-                bool enable_direct_io = false, bool enable_io_profile = false);
+  VecBufferPool(const std::string &filename, bool writable = false);
   ~VecBufferPool();
 
   int init();
@@ -564,7 +356,6 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t dirty_flush{0};
     uint64_t bypass_reads{0};
     uint64_t bypass_bytes{0};
-    BufferPoolIoProfile io_profile{};
     double hit_rate() const {
       uint64_t total = hit + miss;
       return total ? static_cast<double>(hit) / static_cast<double>(total)
@@ -581,29 +372,8 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.miss = miss_count_.load(std::memory_order_relaxed);
     s.bypass_reads = bypass_reads_.load(std::memory_order_relaxed);
     s.bypass_bytes = bypass_bytes_.load(std::memory_order_relaxed);
-    if (io_profile_enabled_) {
-      std::lock_guard<std::mutex> lock(io_profile_mutex_);
-      s.io_profile = io_profile_totals_;
-    }
     return s;
   }
-
-  bool io_profile_enabled() const {
-    return io_profile_enabled_;
-  }
-
-  //! Merge one query-local sample at query completion.
-  void merge_io_profile(const BufferPoolIoProfile &sample) {
-    if (!io_profile_enabled_) return;
-    std::lock_guard<std::mutex> lock(io_profile_mutex_);
-    io_profile_totals_.merge(sample);
-  }
-
-  BufferPoolIoProfileBinding bind_thread_io_profile(
-      BufferPoolIoProfile *profile);
-  static void restore_thread_io_profile(
-      const BufferPoolIoProfileBinding &binding);
-  BufferPoolIoProfile *current_thread_io_profile() const;
 
   //! Log the current cache statistics at INFO level.
   void log_stats() const;
@@ -618,39 +388,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! Release one pin per page id acquired by acquire_pages().
   void release_pages(const block_id_t *page_ids, size_t count);
 
-  bool enter_read_epoch(PageReadEpochDomain::Token *token) {
-    return !writable_ && read_epoch_domain_.enter(token);
-  }
-
-  void exit_read_epoch(PageReadEpochDomain::Token *token) {
-    read_epoch_domain_.exit(token);
-  }
-
-  //! Return an epoch-protected resident page without I/O or refcounting.
-  char *try_get_epoch_page(block_id_t page_id) {
-    if (page_id >= page_table_.entry_num()) return nullptr;
-    return page_table_.get_epoch_block(page_id);
-  }
-
   //! Observe residency without changing hit or CLOCK state.
   bool is_page_resident(block_id_t page_id) const {
     return page_id < page_table_.entry_num() && page_table_.is_loaded(page_id);
-  }
-
-  //! Force one released page out of the cache. Intended for explicit
-  //! cross-layer de-duplication after a higher cache copied the same data.
-  bool evict_page(block_id_t page_id) {
-    return page_id < page_table_.entry_num() &&
-           page_table_.force_evict_block(page_id);
-  }
-
-  //! Load if needed, then return a pointer protected by the active epoch.
-  char *acquire_epoch_page(block_id_t page_id) {
-    char *page = page_table_.get_block_buffer(page_id);
-    if (page) return page;
-    page = acquire_buffer(page_id, 50);
-    if (page) page_table_.release_block(page_id);
-    return page;
   }
 
   int get_meta(size_t offset, size_t length, char *buffer);
@@ -718,12 +458,8 @@ class ZVEC_AILEGO_API VecBufferPool {
   friend class VecBufferPoolHandle;
   void prefetch_pages_sync(block_id_t first_page, size_t page_count,
                            uint8_t priority);
-
-  // Keep thread-local AIO batches within the owning operation's lifetime.
-  void submit_aio_async(const block_id_t *page_ids, size_t count,
-                        BufferPoolIoProfile *profile = nullptr);
-  void harvest_aio();
-  void wait_aio(BufferPoolIoProfile *profile = nullptr);
+  bool load_pages_aio(const block_id_t *page_ids, size_t count,
+                      uint8_t priority);
 
   int fd_;       // page-data channel: may carry O_DIRECT
   int meta_fd_;  // metadata channel: always buffered IO
@@ -734,14 +470,11 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::string file_name_;
   bool writable_{false};
   bool direct_io_enabled_{false};
-  bool io_profile_enabled_{false};
   bool initialized_{false};
   // One miss per page populated on the cold path.
   std::atomic<uint64_t> miss_count_{0};
   std::atomic<uint64_t> bypass_reads_{0};
   std::atomic<uint64_t> bypass_bytes_{0};
-  mutable std::mutex io_profile_mutex_{};
-  BufferPoolIoProfile io_profile_totals_{};
 #if defined(__linux) || defined(__linux__)
   bool aio_enabled_{false};
 #endif
@@ -750,7 +483,6 @@ class ZVEC_AILEGO_API VecBufferPool {
   VectorPageTable page_table_;
 
  private:
-  PageReadEpochDomain read_epoch_domain_{};
   // Serialize installation and writable in-place payload access.
   std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};

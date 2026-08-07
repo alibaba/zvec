@@ -330,7 +330,8 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
   }
   if (ailego_unlikely(ctx->init(
           DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), meta_.element_size())) != 0) {
+          search_ctx_entity->pq_chunk_num(), meta_.element_size(),
+          diskann_indexer_->requires_io_context())) != 0) {
     LOG_ERROR("Init DiskAnn Context failed");
     delete ctx;
 
@@ -338,6 +339,7 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
   }
 
   ctx->set_list_size(list_size_);
+  ctx->set_magic(magic_);
 
   return Context::Pointer(ctx);
 }

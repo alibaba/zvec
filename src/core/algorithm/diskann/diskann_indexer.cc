@@ -38,24 +38,39 @@ DiskAnnIndexer::~DiskAnnIndexer() {
 int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   entity_ = &entity;
 
-  auto storage = entity.get_storage();
+  storage_ = entity.get_storage();
+  auto storage = storage_;
   auto vector_segment = entity.get_vector_segment();
 
   pq_table_ = entity.get_pq_table();
 
   index_segment_offset_ = vector_segment->data_offset();
 
-  reader_.reset(new LinuxAlignedFileReader());
+  auto pool = storage->vec_buffer_pool();
+  if (pool) {
+    if (ailego::kVectorPageSize != DiskAnnUtil::kSectorSize) {
+      LOG_ERROR(
+          "DiskAnn BufferPool page size mismatch: page_size=%zu "
+          "sector_size=%zu",
+          ailego::kVectorPageSize,
+          static_cast<size_t>(DiskAnnUtil::kSectorSize));
+      return IndexError_Unsupported;
+    }
+    reader_ = std::make_shared<BufferPoolAlignedFileReader>(std::move(pool));
+  } else {
+    reader_ = std::make_shared<LinuxAlignedFileReader>();
+    reader_->open(storage->file_path());
+    storage->cleanup();
+    storage_.reset();
+  }
 
-  auto file_path = storage->file_path();
-  reader_->open(file_path);
-
-  storage->cleanup();
-
-  int ret = setup_io_ctx(init_ctx_);
-  if (ret != 0) {
-    LOG_ERROR("setup io ctx error");
-    return ret;
+  int ret = 0;
+  if (reader_->requires_io_context()) {
+    ret = setup_io_ctx(init_ctx_);
+    if (ret != 0) {
+      LOG_ERROR("setup io ctx error");
+      return ret;
+    }
   }
 
   max_node_size_ = entity.max_node_size();

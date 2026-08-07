@@ -144,7 +144,8 @@ class VisitBloomFilter {
     c->filter = new (std::nothrow)
         ailego::BloomFilter<VisitBloomFilter::N>(maxScanNum, p);
     if (c->filter == nullptr) {
-      LOG_ERROR("New BloomFilter failed, reuse old one");
+      LOG_ERROR("New BloomFilter failed");
+      delete c;
       return IndexError_NoMemory;
     }
     genRandomHashBits(c);
@@ -368,6 +369,9 @@ class VisitFilter {
   };
 
   VisitFilter() : mode_(0), ctx_(nullptr) {};
+  ~VisitFilter() {
+    destroy();
+  }
 
   inline bool visited(id_t idx) {
     PROXIMA_HNSW_VISITFILTER_CALL_IMPL(visited, idx);
@@ -397,18 +401,60 @@ class VisitFilter {
     return true;
   }
 
-  inline void destroy() {
-    if (ctx_ != nullptr) {
-      PROXIMA_HNSW_VISITFILTER_CALL_IMPL(destroy);
+  inline void destroy() noexcept {
+    void *ctx = ctx_;
+    const int mode = mode_;
+    ctx_ = nullptr;
+    mode_ = Default;
+    if (ctx == nullptr) {
+      return;
+    }
+
+    switch (mode) {
+      case BloomFilter:
+        VisitBloomFilter::destroy(
+            static_cast<VisitBloomFilter::Context *>(ctx));
+        return;
+      case BitMap:
+        VisitBitMap::destroy(static_cast<VisitBitMap::Context *>(ctx));
+        return;
+      case ByteMap:
+        VisitByteMap::destroy(static_cast<VisitByteMap::Context *>(ctx));
+        return;
+      default:
+        return;
     }
   }
 
   int init(int mode, uint64_t maxDocCnt, uint64_t maxScanNum,
            float negativeProbability) {
+    destroy();
     mode_ = mode;
-    PROXIMA_HNSW_VISITFILTER_CALL_IMPL(init, &ctx_, maxDocCnt, maxScanNum,
-                                       std::make_tuple(negativeProbability));
-    return 0;  // place holder
+    int ret = IndexError_InvalidArgument;
+    switch (mode_) {
+      case BloomFilter:
+        ret = VisitBloomFilter::init(
+            static_cast<VisitBloomFilter::Context *>(nullptr), &ctx_, maxDocCnt,
+            maxScanNum, std::make_tuple(negativeProbability));
+        break;
+      case BitMap:
+        ret = VisitBitMap::init(static_cast<VisitBitMap::Context *>(nullptr),
+                                &ctx_, maxDocCnt, maxScanNum,
+                                std::make_tuple(negativeProbability));
+        break;
+      case ByteMap:
+        ret = VisitByteMap::init(static_cast<VisitByteMap::Context *>(nullptr),
+                                 &ctx_, maxDocCnt, maxScanNum,
+                                 std::make_tuple(negativeProbability));
+        break;
+      default:
+        break;
+    }
+    if (ret != 0) {
+      ctx_ = nullptr;
+      mode_ = Default;
+    }
+    return ret;
   }
 
   int get_mode(void) const {

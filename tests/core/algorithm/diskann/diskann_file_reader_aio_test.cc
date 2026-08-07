@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include "diskann_file_reader.h"
 
 #if defined(__linux) || defined(__linux__)
@@ -37,6 +38,7 @@ int execute_io_libaio(IOContext &ctx, int fd,
 }  // namespace zvec
 
 using namespace zvec::core;
+namespace ailego = zvec::ailego;
 
 namespace {
 
@@ -147,6 +149,10 @@ class TemporaryFile {
     return fd_;
   }
 
+  const char *path() const {
+    return path_;
+  }
+
  private:
   char path_[64] = "DiskAnnLinuxAioTest.XXXXXX";
   int fd_;
@@ -255,6 +261,91 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
   EXPECT_EQ(state.completed, kBlockCount);
   EXPECT_EQ(std::memcmp(output, source.data(), source.size()), 0);
 
+  std::free(output);
+}
+
+TEST(DiskAnnBufferPoolFileReaderTest,
+     ReadsScatteredRequestsThroughOnePinnedPageBatch) {
+  if (ailego::kVectorPageSize != DiskAnnUtil::kSectorSize) {
+    GTEST_SKIP() << "DiskAnn sectors require one native buffer-pool page";
+  }
+
+  constexpr size_t kPageCount = 4;
+  const size_t page_size = ailego::kVectorPageSize;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(kPageCount * page_size);
+  for (size_t page = 0; page < kPageCount; ++page) {
+    std::memset(source.data() + page * page_size, static_cast<int>(page + 1),
+                page_size);
+  }
+  ASSERT_EQ(::pwrite(file.fd(), source.data(), source.size(), 0),
+            static_cast<ssize_t>(source.size()));
+  ASSERT_EQ(::fsync(file.fd()), 0);
+
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  ASSERT_EQ(
+      0, memory_pool.init(
+             8 * page_size +
+             ailego::VecBufferPool::metadata_bytes_for_page_count(kPageCount)));
+  auto pool =
+      std::make_shared<ailego::VecBufferPool>(file.path(), /*writable=*/false);
+  ASSERT_EQ(pool->init(), 0);
+  BufferPoolAlignedFileReader reader(pool);
+  EXPECT_FALSE(reader.requires_io_context());
+
+  void *output = nullptr;
+  ASSERT_EQ(::posix_memalign(&output, page_size, 4 * page_size), 0);
+  ASSERT_NE(output, nullptr);
+  std::memset(output, 0, 4 * page_size);
+  std::vector<AlignedRead> requests;
+  requests.emplace_back(3 * page_size, page_size, output);
+  requests.emplace_back(page_size, 2 * page_size,
+                        static_cast<char *>(output) + page_size);
+  requests.emplace_back(3 * page_size, page_size,
+                        static_cast<char *>(output) + 3 * page_size);
+
+  IOContext unused{};
+  ASSERT_EQ(reader.read(requests, unused), 0);
+  EXPECT_EQ(std::memcmp(output, source.data() + 3 * page_size, page_size), 0);
+  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + page_size,
+                        source.data() + page_size, 2 * page_size),
+            0);
+  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + 3 * page_size,
+                        source.data() + 3 * page_size, page_size),
+            0);
+  EXPECT_EQ(pool->stats().miss, 3u);
+
+  pool->page_table_.force_evict_all_loaded();
+  std::free(output);
+}
+
+TEST(DiskAnnBufferPoolFileReaderTest, RejectsNonPageAlignedRequests) {
+  if (ailego::kVectorPageSize <= 512) {
+    GTEST_SKIP() << "test requires a native page larger than 512 bytes";
+  }
+
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(2 * ailego::kVectorPageSize, 0x5a);
+  ASSERT_EQ(::pwrite(file.fd(), source.data(), source.size(), 0),
+            static_cast<ssize_t>(source.size()));
+
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  ASSERT_EQ(0, memory_pool.init(
+                   4 * ailego::kVectorPageSize +
+                   ailego::VecBufferPool::metadata_bytes_for_page_count(2)));
+  auto pool =
+      std::make_shared<ailego::VecBufferPool>(file.path(), /*writable=*/false);
+  ASSERT_EQ(pool->init(), 0);
+  BufferPoolAlignedFileReader reader(pool);
+
+  void *output = allocate_aligned(512);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests;
+  requests.emplace_back(512, 512, output);
+  IOContext unused{};
+  EXPECT_EQ(reader.read(requests, unused), IndexError_InvalidArgument);
   std::free(output);
 }
 

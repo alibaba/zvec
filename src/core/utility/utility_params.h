@@ -67,10 +67,6 @@ static const std::string BUFFER_READ_STORAGE_HEADER_OFFSET =
     "proxima.buffer.read_storage.header_offset";
 static const std::string BUFFER_READ_STORAGE_FOOTER_OFFSET =
     "proxima.buffer.read_storage.footer_offset";
-static const std::string BUFFER_READ_STORAGE_ENABLE_DIRECT_IO =
-    "proxima.buffer.read_storage.enable_direct_io";
-static const std::string BUFFER_READ_STORAGE_ENABLE_IO_PROFILE =
-    "proxima.buffer.read_storage.enable_io_profile";
 static const std::string BUFFER_READ_STORAGE_WARMUP_MODE =
     "proxima.buffer.read_storage.warmup_mode";
 static const std::string BUFFER_READ_STORAGE_WARMUP_NONE = "none";
@@ -87,16 +83,6 @@ static const std::string MMAPFILE_STORAGE_FORCE_FLUSH =
     "proxima.mmap_file.storage.force_flush";
 static const std::string MMAPFILE_STORAGE_SEGMENT_META_CAPACITY =
     "proxima.mmap_file.storage.segment_meta_capacity";
-
-//! BufferStorage
-static const std::string BUFFER_STORAGE_ENABLE_DIRECT_IO =
-    "proxima.buffer.storage.enable_direct_io";
-static const std::string BUFFER_STORAGE_ENABLE_IO_PROFILE =
-    "proxima.buffer.storage.enable_io_profile";
-static const std::string BUFFER_STORAGE_READ_ADMISSION_POLICY =
-    "proxima.buffer.storage.read_admission_policy";
-static const std::string BUFFER_STORAGE_ADMISSION_CACHE = "cache";
-static const std::string BUFFER_STORAGE_ADMISSION_BYPASS = "bypass";
 
 //! MipsConverter
 static const std::string MIPS_CONVERTER_M_VALUE =

@@ -19,7 +19,10 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <limits>
+#include <new>
 #include <ailego/io/io_backend_def.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/ailego/logger/logger.h>
 
@@ -32,31 +35,32 @@ namespace core {
 typedef struct io_event io_event_t;
 typedef struct iocb iocb_t;
 
-// Ensures the I/O backend selection is logged exactly once per process,
-// regardless of which entry point (setup_io_ctx or register_thread)
-// triggers it first.
+// Ensures the I/O backend selection is logged once regardless of which
+// DiskANN entry point triggers initialization first.
 static std::once_flag g_io_backend_log_once;
 #endif
 
 void log_diskann_io_backend() {
 #if (defined(__linux) || defined(__linux__))
-  auto &backend = ailego::IOBackend::Instance();
-  if (backend.is_pread()) {
-    LOG_WARN(
-        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
-        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
-        "retry. DiskAnn will fall back to synchronous pread() — performance "
-        "will be degraded.");
-  } else {
-    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
-             backend.name());
-  }
+  std::call_once(g_io_backend_log_once, [] {
+    auto &backend = ailego::IOBackend::Instance();
+    if (backend.is_pread()) {
+      LOG_WARN(
+          "DiskAnn: no async I/O backend available. Install libaio (e.g. "
+          "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
+          "retry. DiskAnn will fall back to synchronous pread() — performance "
+          "will be degraded.");
+    } else {
+      LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
+               backend.name());
+    }
+  });
 #endif
 }
 
 int setup_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
-  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
+  log_diskann_io_backend();
   if (ailego::IOBackend::Instance().is_pread()) {
     return 0;
   }
@@ -305,7 +309,7 @@ void LinuxAlignedFileReader::register_thread() {
 
   IOContext ctx = nullptr;
 
-  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
+  log_diskann_io_backend();
   if (ailego::IOBackend::Instance().is_pread()) {
     lk.unlock();
     return;
@@ -320,7 +324,8 @@ void LinuxAlignedFileReader::register_thread() {
       LOG_ERROR("io_setup failed; returned: %d, %s", ret, ::strerror(-ret));
     }
   } else {
-    LOG_INFO("allocating ctx: %lu", (uint64_t)ctx);
+    LOG_INFO("allocating ctx: %llu",
+             static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ctx)));
 
     ctx_map[thread_id] = ctx;
   }
@@ -406,11 +411,7 @@ void LinuxAlignedFileReader::close() {
 }
 
 int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
-                                 IOContext &ctx, bool async) {
-  if (async == true) {
-    LOG_WARN("Async currently not supported");
-  }
-
+                                 IOContext &ctx) {
   if (this->file_desc == -1) {
     LOG_ERROR("Attempt to read from invalid file descriptor");
     return IndexError_Runtime;
@@ -419,6 +420,95 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   int ret = execute_io(ctx, this->file_desc, read_reqs);
 
   return ret;
+}
+
+BufferPoolAlignedFileReader::BufferPoolAlignedFileReader(
+    std::shared_ptr<ailego::VecBufferPool> pool)
+    : pool_(std::move(pool)) {}
+
+BufferPoolAlignedFileReader::~BufferPoolAlignedFileReader() = default;
+
+IOContext &BufferPoolAlignedFileReader::get_ctx() {
+  return unused_ctx_;
+}
+
+void BufferPoolAlignedFileReader::register_thread() {}
+
+void BufferPoolAlignedFileReader::deregister_thread() {}
+
+void BufferPoolAlignedFileReader::deregister_all_threads() {}
+
+void BufferPoolAlignedFileReader::open(const std::string &fname) {
+  (void)fname;
+}
+
+void BufferPoolAlignedFileReader::close() {
+  pool_.reset();
+}
+
+int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
+                                      IOContext &ctx) {
+  (void)ctx;
+  if (!pool_) {
+    LOG_ERROR("BufferPoolAlignedFileReader: buffer pool is not available");
+    return IndexError_Runtime;
+  }
+  if (read_reqs.empty()) return 0;
+
+  try {
+    std::vector<ailego::block_id_t> page_ids;
+    size_t total_pages = 0;
+    for (const AlignedRead &req : read_reqs) {
+      if (req.buf == nullptr || req.len == 0 ||
+          req.offset > std::numeric_limits<size_t>::max() ||
+          req.len > std::numeric_limits<size_t>::max()) {
+        return IndexError_InvalidArgument;
+      }
+      const size_t offset = static_cast<size_t>(req.offset);
+      const size_t length = static_cast<size_t>(req.len);
+      if (offset % ailego::kVectorPageSize != 0 ||
+          length % ailego::kVectorPageSize != 0 ||
+          offset > pool_->file_size() || length > pool_->file_size() - offset) {
+        return IndexError_InvalidArgument;
+      }
+      const size_t pages = length / ailego::kVectorPageSize;
+      if (pages > std::numeric_limits<size_t>::max() - total_pages) {
+        return IndexError_InvalidLength;
+      }
+      total_pages += pages;
+    }
+
+    page_ids.reserve(total_pages);
+    for (const AlignedRead &req : read_reqs) {
+      const size_t first_page =
+          static_cast<size_t>(req.offset) / ailego::kVectorPageSize;
+      const size_t pages =
+          static_cast<size_t>(req.len) / ailego::kVectorPageSize;
+      for (size_t i = 0; i < pages; ++i) {
+        page_ids.push_back(static_cast<ailego::block_id_t>(first_page + i));
+      }
+    }
+
+    std::vector<char *> pages(page_ids.size(), nullptr);
+    if (!pool_->acquire_pages(page_ids.data(), page_ids.size(), pages.data())) {
+      return IndexError_ReadData;
+    }
+
+    size_t cursor = 0;
+    for (const AlignedRead &req : read_reqs) {
+      char *dst = static_cast<char *>(req.buf);
+      const size_t request_pages =
+          static_cast<size_t>(req.len) / ailego::kVectorPageSize;
+      for (size_t i = 0; i < request_pages; ++i, ++cursor) {
+        std::memcpy(dst + i * ailego::kVectorPageSize, pages[cursor],
+                    ailego::kVectorPageSize);
+      }
+    }
+    pool_->release_pages(page_ids.data(), page_ids.size());
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  }
 }
 
 

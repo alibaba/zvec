@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
+#include "diskann_context.h"
 #include "diskann_holder.h"
 
 using namespace zvec::core;
@@ -98,6 +99,38 @@ TEST_F(DiskAnnBuilderTest, TestGeneral) {
   ASSERT_EQ(0UL, stats.discarded_count());
   ASSERT_GT(stats.trained_costtime(), 0UL);
   ASSERT_GT(stats.built_costtime(), 0UL);
+
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("DiskAnnStreamer");
+  ASSERT_NE(nullptr, streamer);
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.list_size", 100);
+  ASSERT_EQ(0, streamer->init(*_index_meta_ptr, search_params));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_NE(nullptr, context);
+  context->set_topk(10);
+  Params query_params;
+  query_params.set("zvec.diskann.searcher.list_size", 37);
+  ASSERT_EQ(0, context->update(query_params));
+  auto *diskann_context = dynamic_cast<DiskAnnContext *>(context.get());
+  ASSERT_NE(nullptr, diskann_context);
+  ASSERT_EQ(37u, diskann_context->list_size());
+  auto *const original_context = context.get();
+  NumericalVector<float> query(dim, 3.1f);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+
+  ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, context));
+  EXPECT_EQ(original_context, context.get());
+  EXPECT_EQ(37u, diskann_context->list_size());
+  ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, context));
+  EXPECT_EQ(original_context, context.get());
+  EXPECT_EQ(37u, diskann_context->list_size());
 }
 
 // Regression test: building a small DiskAnn index must complete quickly.

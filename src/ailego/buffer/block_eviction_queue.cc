@@ -38,15 +38,6 @@ bool BlockEvictionQueue::evict_single_block(BlockType &item) {
   return found;
 }
 
-bool BlockEvictionQueue::is_valid_and_alive(const BlockType &item) {
-  std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
-  if (item.owner == nullptr ||
-      valid_owners_.find(item.owner) == valid_owners_.end()) {
-    return false;
-  }
-  return !item.owner->is_dead_block(item.owner_key, item.version);
-}
-
 bool BlockEvictionQueue::evict_block(BlockType &item) {
   size_t attempts = 0;
   return evict_block(item, attempts, std::numeric_limits<size_t>::max());
@@ -479,14 +470,6 @@ bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
     }
   }
   return false;
-}
-
-void MemoryLimitPool::charge_external(const size_t buffer_size) {
-  std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-  // One RMW avoids a contended compare-exchange loop.
-  committed_size_.fetch_add(buffer_size, std::memory_order_relaxed);
-  external_used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
-  used_size_.fetch_add(buffer_size, std::memory_order_relaxed);
 }
 
 void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {

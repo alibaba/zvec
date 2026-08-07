@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -22,10 +25,11 @@
 #include <zvec/ailego/logger/logger.h>
 
 #if defined(__linux) || defined(__linux__)
-#include <ailego/io/libaio_loader.h>
+#include <ailego/io/io_backend_def.h>
 #endif
 
 #if defined(_MSC_VER)
+#include <io.h>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -73,14 +77,11 @@ namespace ailego {
 const size_t kVectorPageSize = MemoryHelper::PageSize();
 
 VecBufferPool::~VecBufferPool() {
-  // Drain this thread's AIO batch before teardown.
-  wait_aio();
   // Preserve per-file cache statistics before teardown.
   log_stats();
   // Flush dirty pages before releasing memory and descriptors.
   (void)this->flush_all();
   page_table_.force_evict_all_loaded();
-  read_epoch_domain_.drain();
   block_mutexes_.reset();
   MemoryLimitPool::get_instance().release_metadata(mutex_metadata_charge_);
   mutex_metadata_charge_ = 0;
@@ -95,139 +96,8 @@ VecBufferPool::~VecBufferPool() {
 #endif
 }
 
-namespace {
-thread_local BufferPoolIoProfileBinding tl_io_profile_binding;
-}  // namespace
-
-BufferPoolIoProfileBinding VecBufferPool::bind_thread_io_profile(
-    BufferPoolIoProfile *profile) {
-  BufferPoolIoProfileBinding previous = tl_io_profile_binding;
-  tl_io_profile_binding = BufferPoolIoProfileBinding{this, profile};
-  return previous;
-}
-
-void VecBufferPool::restore_thread_io_profile(
-    const BufferPoolIoProfileBinding &binding) {
-  tl_io_profile_binding = binding;
-}
-
-BufferPoolIoProfile *VecBufferPool::current_thread_io_profile() const {
-  return tl_io_profile_binding.pool == this ? tl_io_profile_binding.profile
-                                            : nullptr;
-}
-
 version_t VectorPageTable::next_owner_version() {
   return BlockEvictionQueue::get_instance().next_version();
-}
-
-bool PageReadEpochDomain::enter(Token *token) {
-  if (!token) return false;
-  token->slot = kSlotCount;
-  for (size_t attempt = 0; attempt < kSlotCount; ++attempt) {
-    const size_t idx =
-        next_slot_.fetch_add(1, std::memory_order_relaxed) % kSlotCount;
-    uint64_t expected = 0;
-    if (!slots_[idx].epoch.compare_exchange_strong(expected, kReserved,
-                                                   std::memory_order_seq_cst,
-                                                   std::memory_order_relaxed)) {
-      continue;
-    }
-    active_readers_.fetch_add(1, std::memory_order_acq_rel);
-
-    // Sequence slot publication with retire() before loading a page pointer.
-    while (true) {
-      const uint64_t epoch = epoch_.load(std::memory_order_seq_cst);
-      slots_[idx].epoch.store(epoch + 2, std::memory_order_seq_cst);
-      if (epoch_.load(std::memory_order_seq_cst) == epoch) {
-        token->slot = idx;
-        return true;
-      }
-      slots_[idx].epoch.store(kReserved, std::memory_order_seq_cst);
-    }
-  }
-  return false;
-}
-
-void PageReadEpochDomain::exit(Token *token) {
-  if (!token || !token->valid()) return;
-  slots_[token->slot].epoch.store(0, std::memory_order_seq_cst);
-  token->slot = kSlotCount;
-  active_readers_.fetch_sub(1, std::memory_order_acq_rel);
-  std::lock_guard<std::mutex> lock(retired_mutex_);
-  reclaim_locked(false);
-}
-
-void PageReadEpochDomain::retire(char *buffer) noexcept {
-  if (!buffer) return;
-  if (active_readers_.load(std::memory_order_acquire) == 0) {
-    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
-    return;
-  }
-  const uint64_t retired_epoch = epoch_.fetch_add(1, std::memory_order_seq_cst);
-  bool queued = false;
-  try {
-    std::lock_guard<std::mutex> lock(retired_mutex_);
-    retired_.push_back(RetiredBuffer{buffer, retired_epoch});
-    queued = true;
-    reclaim_locked(false);
-    return;
-  } catch (...) {
-    if (queued) {
-      // A later reader exit or drain retries reclamation.
-      return;
-    }
-    // On allocation failure, wait out older readers and reclaim synchronously.
-    while (true) {
-      bool safe = true;
-      for (const auto &slot : slots_) {
-        const uint64_t state = slot.epoch.load(std::memory_order_seq_cst);
-        if (state == kReserved || (state >= 2 && state - 2 <= retired_epoch)) {
-          safe = false;
-          break;
-        }
-      }
-      if (safe) {
-        MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
-        return;
-      }
-      std::this_thread::yield();
-    }
-  }
-}
-
-void PageReadEpochDomain::drain() {
-#ifndef NDEBUG
-  for (const auto &slot : slots_) {
-    assert(slot.epoch.load(std::memory_order_relaxed) == 0);
-  }
-#endif
-  std::lock_guard<std::mutex> lock(retired_mutex_);
-  reclaim_locked(true);
-}
-
-void PageReadEpochDomain::reclaim_locked(bool force) {
-  size_t dst = 0;
-  for (size_t i = 0; i < retired_.size(); ++i) {
-    const RetiredBuffer retired = retired_[i];
-    bool safe = force;
-    if (!safe) {
-      safe = true;
-      for (const auto &slot : slots_) {
-        const uint64_t state = slot.epoch.load(std::memory_order_seq_cst);
-        if (state == kReserved || (state >= 2 && state - 2 <= retired.epoch)) {
-          safe = false;
-          break;
-        }
-      }
-    }
-    if (safe) {
-      MemoryLimitPool::get_instance().release_buffer(retired.buffer,
-                                                     kVectorPageSize);
-    } else {
-      retired_[dst++] = retired;
-    }
-  }
-  retired_.resize(dst);
 }
 
 size_t VectorPageTable::metadata_bytes_for_entries(size_t entry_num) {
@@ -614,11 +484,7 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
     buffer = resident_entry_at(block_id).buffer.exchange(
         nullptr, std::memory_order_acq_rel);
     if (buffer) {
-      if (retire_callback_) {
-        retire_callback_(buffer);
-      } else {
-        MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
-      }
+      MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
     inc_evict();
     // Clear old membership before publishing the unloaded sentinel.
@@ -677,7 +543,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
                                              std::memory_order_acquire)) {
         continue;
       }
-      // Release-publish contents for refcount-free epoch readers.
+      // Publish page contents before making the page acquirable.
       e.file_offset = file_offset;
       e.is_dirty.store(false, std::memory_order_relaxed);
       e.referenced.store(false, std::memory_order_relaxed);
@@ -750,16 +616,13 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
   }
 }
 
-VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
-                             bool enable_direct_io, bool enable_io_profile) {
+VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   file_name_ = filename;
   writable_ = writable;
-  io_profile_enabled_ = enable_io_profile;
 #if defined(_MSC_VER)
   int flags = writable_ ? (O_RDWR | _O_BINARY) : (O_RDONLY | _O_BINARY);
   fd_ = _open(filename.c_str(), flags, 0644);
   meta_fd_ = _open(filename.c_str(), flags, 0644);
-  (void)enable_direct_io;  // O_DIRECT not supported on this path
 #else
   int base_flags = writable_ ? O_RDWR : O_RDONLY;
   // Buffered channel for unaligned metadata I/O.
@@ -767,13 +630,11 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
   // Fall back to buffered page I/O when O_DIRECT is unsupported.
   int data_flags = base_flags;
 #ifdef O_DIRECT
-  if (enable_direct_io) {
-    data_flags |= O_DIRECT;
-  }
+  data_flags |= O_DIRECT;
 #endif
   fd_ = ::open(filename.c_str(), data_flags, 0644);
 #ifdef O_DIRECT
-  if (fd_ < 0 && (data_flags & O_DIRECT)) {
+  if (fd_ < 0) {
     LOG_WARN(
         "VecBufferPool: open with O_DIRECT failed for file[%s] (errno=%d), "
         "falling back to buffered IO",
@@ -781,10 +642,10 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
     fd_ = ::open(filename.c_str(), base_flags, 0644);
     direct_io_enabled_ = false;
   } else {
-    direct_io_enabled_ = (data_flags & O_DIRECT) != 0;
+    direct_io_enabled_ = true;
   }
 #else
-  (void)enable_direct_io;
+  direct_io_enabled_ = false;
 #endif
 #endif
   if (fd_ < 0 || meta_fd_ < 0) {
@@ -820,8 +681,9 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
 #if defined(__linux) || defined(__linux__)
-  // Probe capability; thread-local AIO contexts are created lazily.
-  aio_enabled_ = direct_io_enabled_ && LibAioLoader::Instance().load();
+  // Select the process-wide backend; thread-local contexts are created lazily.
+  aio_enabled_ = direct_io_enabled_ &&
+                 IOBackend::Instance().available() == IOBackendType::kLibAio;
 #endif
 }
 
@@ -844,12 +706,9 @@ int VecBufferPool::init() {
   if (initialized_) {
     return 0;
   }
-  // Configure potentially allocating callbacks before reserving metadata.
-  try {
-    if (!writable_) {
-      page_table_.set_retire_callback(
-          [this](char *buffer) { read_epoch_domain_.retire(buffer); });
-    } else {
+  if (writable_) {
+    // Configure the potentially allocating callback before reserving metadata.
+    try {
       int fd = fd_;
       page_table_.set_flush_callback(
           [fd, &fn = file_name_](block_id_t /*block_id*/, char *buf, size_t sz,
@@ -864,11 +723,12 @@ int VecBufferPool::init() {
             }
             return 0;
           });
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR(
+          "VecBufferPool::init: failed to allocate flush callback for file[%s]",
+          file_name_.c_str());
+      return -1;
     }
-  } catch (const std::bad_alloc &) {
-    LOG_ERROR("VecBufferPool::init: failed to allocate callbacks for file[%s]",
-              file_name_.c_str());
-    return -1;
   }
 
   const size_t block_num =
@@ -930,48 +790,36 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
   if (buffer) {
     return buffer;
   }
-  BufferPoolIoProfile *profile = current_thread_io_profile();
   std::unique_lock<std::shared_mutex> lock(
-      block_mutexes_[page_id % block_mutex_count_], std::defer_lock);
-  if (profile) {
-    const uint64_t lock_start = BufferPoolProfileNowNs();
-    lock.lock();
-    profile->sync_page_lock_wait_ns += BufferPoolProfileNowNs() - lock_start;
-  } else {
-    lock.lock();
-  }
+      block_mutexes_[page_id % block_mutex_count_]);
   buffer = page_table_.acquire_block(page_id);
   if (buffer) {
     return buffer;
   }
-  {
-    BufferPoolProfileTimer prepare_timer(profile ? &profile->sync_prepare_ns
-                                                 : nullptr);
-    bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
-        kVectorPageSize, buffer);
-    if (!found) {
-      for (int i = 0; i < retry; i++) {
-        BlockEvictionQueue::get_instance().recycle();
-        found = MemoryLimitPool::get_instance().try_acquire_buffer(
-            kVectorPageSize, buffer);
-        if (found) {
-          break;
-        }
+  bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, buffer);
+  if (!found) {
+    for (int i = 0; i < retry; i++) {
+      BlockEvictionQueue::get_instance().recycle();
+      found = MemoryLimitPool::get_instance().try_acquire_buffer(
+          kVectorPageSize, buffer);
+      if (found) {
+        break;
       }
     }
-    if (!found) {
-      const auto memory_stats = MemoryLimitPool::get_instance().stats();
-      const auto page_stats = page_table_.stats();
-      LOG_DEBUG(
-          "Buffer pool failed to get free buffer: file[%s], page_id[%zu], "
-          "used[%zu], committed[%zu], free_buffers[%zu], evict[%llu], "
-          "second_chance[%llu]",
-          file_name_.c_str(), page_id, memory_stats.used,
-          memory_stats.committed, memory_stats.free_buffers,
-          static_cast<unsigned long long>(page_stats.evict),
-          static_cast<unsigned long long>(page_stats.second_chance));
-      return nullptr;
-    }
+  }
+  if (!found) {
+    const auto memory_stats = MemoryLimitPool::get_instance().stats();
+    const auto page_stats = page_table_.stats();
+    LOG_DEBUG(
+        "Buffer pool failed to get free buffer: file[%s], page_id[%zu], "
+        "used[%zu], committed[%zu], free_buffers[%zu], evict[%llu], "
+        "second_chance[%llu]",
+        file_name_.c_str(), page_id, memory_stats.used, memory_stats.committed,
+        memory_stats.free_buffers,
+        static_cast<unsigned long long>(page_stats.evict),
+        static_cast<unsigned long long>(page_stats.second_chance));
+    return nullptr;
   }
 
   size_t page_offset = page_id * kVectorPageSize;
@@ -980,8 +828,6 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
   // Newly extended pages start zeroed; reload evicted pages from disk.
   if (writable_ && page_offset >= initial_file_size_ &&
       !page_table_.is_ever_loaded(page_id)) {
-    BufferPoolProfileTimer prepare_timer(profile ? &profile->sync_prepare_ns
-                                                 : nullptr);
     std::memset(buffer, 0, kVectorPageSize);
   } else {
     // Accept and zero-pad an unaligned final page.
@@ -991,13 +837,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
     if (read_len < kVectorPageSize) {
       std::memset(buffer + read_len, 0, kVectorPageSize - read_len);
     }
-    ssize_t read_bytes = 0;
-    {
-      BufferPoolProfileTimer read_timer(profile ? &profile->sync_read_ns
-                                                : nullptr);
-      read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
-    }
-    if (profile) ++profile->sync_reads;
+    ssize_t read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
     if (read_bytes != static_cast<ssize_t>(read_len)) {
       // Accept short read at EOF: last page may not be full kVectorPageSize
       if (read_bytes > 0 &&
@@ -1014,13 +854,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
       }
     }
   }
-  char *installed = nullptr;
-  {
-    BufferPoolProfileTimer install_timer(profile ? &profile->sync_install_ns
-                                                 : nullptr);
-    installed = page_table_.set_block_acquired(page_id, buffer, page_offset);
-  }
-  return installed;
+  return page_table_.set_block_acquired(page_id, buffer, page_offset);
 }
 
 bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
@@ -1029,8 +863,8 @@ bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
   if (!page_ids || !pages) return false;
 
   std::fill_n(pages, count, nullptr);
-  static constexpr size_t kAioBatch = 128;
-  std::array<block_id_t, kAioBatch> miss_batch{};
+  static constexpr size_t kBatchPages = 128;
+  std::array<block_id_t, kBatchPages> miss_batch{};
   size_t miss_count = 0;
 
   // Pin hits before I/O so eviction cannot reclaim them before delivery.
@@ -1048,15 +882,13 @@ bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
     if (!pages[i]) {
       miss_batch[miss_count++] = page_ids[i];
       if (miss_count == miss_batch.size()) {
-        submit_aio_async(miss_batch.data(), miss_count);
-        wait_aio();
+        (void)load_pages_aio(miss_batch.data(), miss_count, kLowPriority);
         miss_count = 0;
       }
     }
   }
   if (miss_count != 0) {
-    submit_aio_async(miss_batch.data(), miss_count);
-    wait_aio();
+    (void)load_pages_aio(miss_batch.data(), miss_count, kLowPriority);
   }
 
   // Resolve and pin every output, including duplicates, after population.
@@ -1715,10 +1547,14 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
     size_t run_pages = run_end - run_start;
     size_t read_bytes = run_pages * kVectorPageSize;
     size_t file_off = run_start * kVectorPageSize;
+    size_t expected_bytes = std::min(read_bytes, file_size_ - file_off);
     ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_off);
-    if (got != static_cast<ssize_t>(read_bytes)) {
+    if (got != static_cast<ssize_t>(expected_bytes)) {
       pg = run_end;
       continue;
+    }
+    if (expected_bytes < read_bytes) {
+      std::memset(chunk_buf + expected_bytes, 0, read_bytes - expected_bytes);
     }
 
     for (size_t j = 0; j < run_pages; ++j) {
@@ -1761,39 +1597,45 @@ void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len,
 
 #if defined(__linux) || defined(__linux__)
 namespace {
-// Thread-local blocking-prefetch context: only the submitting thread reaps it.
-struct ThreadLocalPrefetchAioCtx {
+template <unsigned QueueDepth>
+struct ThreadLocalAioContext {
   io_context_t ctx{nullptr};
   bool inited{false};
   bool ok{false};
-  char *quarantined[128]{};
-  size_t quarantined_count{0};
 
   bool ensure() {
     if (inited) return ok;
     inited = true;
-    if (!LibAioLoader::Instance().is_available()) return false;
+    if (IOBackend::Instance().available() != IOBackendType::kLibAio) {
+      return false;
+    }
     ctx = nullptr;
-    if (LibAioLoader::Instance().io_setup(256, &ctx) == 0) {
+    if (LibAioLoader::Instance().io_setup(QueueDepth, &ctx) == 0) {
       ok = true;
     }
     return ok;
   }
 
-  bool destroy_context() {
+  bool destroy_context(const char *context_name) {
     ok = false;
     if (!ctx) return true;
     const int ret = LibAioLoader::Instance().io_destroy(ctx);
     if (ret != 0) {
       LOG_ERROR(
-          "ThreadLocalPrefetchAioCtx: io_destroy failed, ret=%d; "
-          "in-flight buffers remain quarantined",
-          ret);
+          "%s: io_destroy failed, ret=%d; in-flight buffers remain "
+          "quarantined",
+          context_name, ret);
       return false;
     }
     ctx = nullptr;
     return true;
   }
+};
+
+// One blocking AIO context per calling thread, shared by reads and prefetches.
+struct ThreadLocalBlockingAioCtx : ThreadLocalAioContext<128> {
+  char *quarantined[128]{};
+  size_t quarantined_count{0};
 
   void quarantine(char **buffers, size_t count) {
     for (size_t i = 0; i < count; ++i) {
@@ -1813,13 +1655,13 @@ struct ThreadLocalPrefetchAioCtx {
     quarantined_count = 0;
   }
 
-  ~ThreadLocalPrefetchAioCtx() {
-    if (destroy_context()) {
+  ~ThreadLocalBlockingAioCtx() {
+    if (destroy_context("ThreadLocalBlockingAioCtx")) {
       release_quarantined();
     }
   }
 };
-static thread_local ThreadLocalPrefetchAioCtx tl_prefetch_aio;
+static thread_local ThreadLocalBlockingAioCtx tl_blocking_aio;
 }  // namespace
 #endif
 
@@ -1832,106 +1674,119 @@ void VecBufferPool::prefetch_pages_aio([[maybe_unused]] block_id_t first_page,
     return;
   }
   page_count = std::min(page_count, total_pages - first_page);
+  static constexpr size_t kMaxBatch = 128;
+  std::array<block_id_t, kMaxBatch> pages{};
+  size_t offset = 0;
+  while (offset < page_count) {
+    const size_t batch = std::min(kMaxBatch, page_count - offset);
+    for (size_t i = 0; i < batch; ++i) {
+      pages[i] = first_page + offset + i;
+    }
+    if (!load_pages_aio(pages.data(), batch, priority)) {
+      prefetch_pages_sync(first_page, page_count, priority);
+      return;
+    }
+    offset += batch;
+  }
+}
+
+bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
+                                   uint8_t priority) {
+  if (count == 0) return true;
+  if (page_ids == nullptr || priority > kHighPriority) return false;
 
 #if defined(__linux) || defined(__linux__)
   static constexpr size_t kMaxBatch = 128;
+  if (!aio_enabled_ || !tl_blocking_aio.ensure()) return false;
 
-  // Keep buffers owned until this thread's DMA completes.
-  if (!tl_prefetch_aio.ensure()) {
-    prefetch_pages_sync(first_page, page_count, priority);
-    return;
-  }
-  io_context_t ctx = tl_prefetch_aio.ctx;
-
-  const size_t end_page = first_page + page_count;
-
-  size_t pg = first_page;
-  while (pg < end_page) {
+  size_t cursor = 0;
+  while (cursor < count) {
     std::array<block_id_t, kMaxBatch> miss_pages{};
     size_t miss_count = 0;
-    while (pg < end_page && miss_count < kMaxBatch) {
-      if (!page_table_.is_loaded(pg)) {
-        miss_pages[miss_count++] = static_cast<block_id_t>(pg);
+    while (cursor < count && miss_count < kMaxBatch) {
+      const block_id_t pid = page_ids[cursor++];
+      if (pid >= page_table_.entry_num()) return false;
+      if (page_table_.is_loaded(pid)) continue;
+      bool duplicate = false;
+      for (size_t i = 0; i < miss_count; ++i) {
+        if (miss_pages[i] == pid) {
+          duplicate = true;
+          break;
+        }
       }
-      ++pg;
+      if (!duplicate) miss_pages[miss_count++] = pid;
     }
     if (miss_count == 0) continue;
 
-    const size_t count = miss_count;
+    std::array<char *, kMaxBatch> buffers{};
+    size_t allocated = MemoryLimitPool::get_instance().batch_acquire_buffers(
+        kVectorPageSize, buffers.data(), miss_count);
+
+    // Admit into unused capacity first. Reclaim only the actual shortage so a
+    // miss batch cannot evict an equal number of resident pages while the
+    // shared pool still has room to grow.
+    while (allocated < miss_count) {
+      const size_t shortage = miss_count - allocated;
+      if (BlockEvictionQueue::get_instance().batch_recycle(shortage) == 0) {
+        break;
+      }
+      const size_t acquired =
+          MemoryLimitPool::get_instance().batch_acquire_buffers(
+              kVectorPageSize, buffers.data() + allocated, shortage);
+      allocated += acquired;
+      if (acquired == 0) {
+        break;
+      }
+    }
+    if (allocated == 0) return false;
+
     std::array<struct iocb, kMaxBatch> cbs{};
     std::array<struct iocb *, kMaxBatch> cb_ptrs{};
-    std::array<char *, kMaxBatch> buffers{};
-
-    size_t submitted = 0;
-    for (size_t i = 0; i < count; ++i) {
-      char *buf = nullptr;
-      bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
-          kVectorPageSize, buf);
-      if (!found) {
-        BlockEvictionQueue::get_instance().recycle();
-        found = MemoryLimitPool::get_instance().try_acquire_buffer(
-            kVectorPageSize, buf);
-      }
-      if (!found) break;
-      buffers[submitted] = buf;
-      size_t offset = miss_pages[submitted] * kVectorPageSize;
-      io_prep_pread(&cbs[submitted], fd_, buf, kVectorPageSize,
+    for (size_t i = 0; i < allocated; ++i) {
+      const size_t offset = miss_pages[i] * kVectorPageSize;
+      io_prep_pread(&cbs[i], fd_, buffers[i], kVectorPageSize,
                     static_cast<long long>(offset));
-      // Map out-of-order completions back to their buffer and page.
-      cbs[submitted].data = reinterpret_cast<void *>(submitted);
-      cb_ptrs[submitted] = &cbs[submitted];
-      ++submitted;
+      cbs[i].data = reinterpret_cast<void *>(i);
+      cb_ptrs[i] = &cbs[i];
     }
 
-    if (submitted == 0) {
-      prefetch_pages_sync(first_page, page_count, priority);
-      return;
-    }
-
-    int ret = LibAioLoader::Instance().io_submit(
-        ctx, static_cast<long>(submitted), cb_ptrs.data());
-    if (ret <= 0) {
-      for (size_t i = 0; i < submitted; ++i) {
+    const int submit_ret = LibAioLoader::Instance().io_submit(
+        tl_blocking_aio.ctx, static_cast<long>(allocated), cb_ptrs.data());
+    if (submit_ret <= 0 || static_cast<size_t>(submit_ret) > allocated) {
+      for (size_t i = 0; i < allocated; ++i) {
         MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                        kVectorPageSize);
       }
-      prefetch_pages_sync(first_page, page_count, priority);
-      return;
+      return false;
     }
 
-    // Release the unsubmitted tail after a partial io_submit.
-    size_t accepted = static_cast<size_t>(ret);
-    const bool needs_sync_fallback = accepted < count;
-    for (size_t i = accepted; i < submitted; ++i) {
+    const size_t accepted = static_cast<size_t>(submit_ret);
+    for (size_t i = accepted; i < allocated; ++i) {
       MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                      kVectorPageSize);
       buffers[i] = nullptr;
     }
 
-    // Do not reuse a buffer until every accepted DMA completes.
     std::array<struct io_event, kMaxBatch> events{};
-    size_t done = 0;
+    size_t completed = 0;
     bool wait_failed = false;
-    while (done < accepted) {
-      int n = LibAioLoader::Instance().io_getevents(
-          ctx, static_cast<long>(accepted - done),
-          static_cast<long>(accepted - done), events.data() + done, nullptr);
-      if (n == -EINTR) {
-        continue;
-      }
-      if (n <= 0) {
-        LOG_ERROR(
-            "VecBufferPool::prefetch_pages_aio: io_getevents failed, ret=%d",
-            n);
+    while (completed < accepted) {
+      const int get_ret = LibAioLoader::Instance().io_getevents(
+          tl_blocking_aio.ctx, static_cast<long>(accepted - completed),
+          static_cast<long>(accepted - completed), events.data() + completed,
+          nullptr);
+      if (get_ret == -EINTR) continue;
+      if (get_ret <= 0) {
+        LOG_ERROR("VecBufferPool::load_pages_aio: io_getevents failed, ret=%d",
+                  get_ret);
         wait_failed = true;
         break;
       }
-      done += static_cast<size_t>(n);
+      completed += static_cast<size_t>(get_ret);
     }
 
     if (wait_failed) {
-      // Successful context destruction makes all request buffers reusable.
-      if (tl_prefetch_aio.destroy_context()) {
+      if (tl_blocking_aio.destroy_context("ThreadLocalBlockingAioCtx")) {
         for (size_t i = 0; i < accepted; ++i) {
           if (buffers[i]) {
             MemoryLimitPool::get_instance().release_buffer(buffers[i],
@@ -1939,396 +1794,68 @@ void VecBufferPool::prefetch_pages_aio([[maybe_unused]] block_id_t first_page,
             buffers[i] = nullptr;
           }
         }
-        prefetch_pages_sync(first_page, page_count, priority);
       } else {
-        // Quarantine buffers whose DMA completion cannot be proven.
+        tl_blocking_aio.quarantine(buffers.data(), accepted);
       }
-      if (tl_prefetch_aio.ctx == nullptr) {
-        return;
-      }
+      return false;
     }
 
-    for (size_t i = 0; i < done; ++i) {
-      size_t idx = reinterpret_cast<size_t>(events[i].data);
-      if (idx >= submitted || buffers[idx] == nullptr) continue;
-      block_id_t pid = miss_pages[idx];
-      if (static_cast<ssize_t>(events[i].res) ==
-          static_cast<ssize_t>(kVectorPageSize)) {
-        std::lock_guard<std::shared_mutex> lock(
-            block_mutexes_[pid % block_mutex_count_]);
-        if (page_table_.is_loaded(pid)) {
-          MemoryLimitPool::get_instance().release_buffer(buffers[idx],
-                                                         kVectorPageSize);
-        } else {
-          page_table_.set_evict_priority(pid, priority);
-          char *installed = page_table_.set_block_acquired(
-              pid, buffers[idx], pid * kVectorPageSize);
-          if (installed != nullptr) {
-            page_table_.release_block(pid);
-          }
-        }
-      } else {
+    bool batch_ok = accepted == allocated && allocated == miss_count;
+    std::array<bool, kMaxBatch> seen{};
+    for (size_t i = 0; i < completed; ++i) {
+      const size_t idx = reinterpret_cast<size_t>(events[i].data);
+      if (idx >= accepted || seen[idx] || buffers[idx] == nullptr) {
+        batch_ok = false;
+        continue;
+      }
+      seen[idx] = true;
+      const block_id_t pid = miss_pages[idx];
+      const size_t offset = pid * kVectorPageSize;
+      const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
+      const bool read_ok = static_cast<ssize_t>(events[i].res) ==
+                               static_cast<ssize_t>(expected) &&
+                           events[i].res2 == 0;
+      if (!read_ok) {
         MemoryLimitPool::get_instance().release_buffer(buffers[idx],
                                                        kVectorPageSize);
+        buffers[idx] = nullptr;
+        batch_ok = false;
+        continue;
+      }
+      if (expected < kVectorPageSize) {
+        std::memset(buffers[idx] + expected, 0, kVectorPageSize - expected);
+      }
+
+      miss_count_.fetch_add(1, std::memory_order_relaxed);
+      std::unique_lock<std::shared_mutex> lock(
+          block_mutexes_[pid % block_mutex_count_]);
+      if (page_table_.is_loaded(pid)) {
+        MemoryLimitPool::get_instance().release_buffer(buffers[idx],
+                                                       kVectorPageSize);
+      } else {
+        page_table_.set_evict_priority(pid, priority);
+        char *installed = page_table_.set_block_acquired(pid, buffers[idx],
+                                                         pid * kVectorPageSize);
+        if (installed != nullptr) page_table_.release_block(pid);
       }
       buffers[idx] = nullptr;
     }
 
-    if (wait_failed) {
-      tl_prefetch_aio.quarantine(buffers.data(), accepted);
-      return;
-    }
-    if (needs_sync_fallback) {
-      // Continue after partial preparation or submission.
-      prefetch_pages_sync(first_page, page_count, priority);
-      return;
-    }
-  }
-#else
-  prefetch_pages_sync(first_page, page_count, priority);
-#endif
-}
-
-#if defined(__linux) || defined(__linux__)
-namespace {
-struct ThreadLocalAioCtx {
-  io_context_t ctx{nullptr};
-  bool inited{false};
-  bool ok{false};
-
-  // Pending async AIO state
-  char *pending_bufs[128];
-  block_id_t pending_pids[128];
-  size_t pending_count{0};    // total submitted (slot high-water mark)
-  size_t harvested_count{0};  // how many completed & processed
-  VecBufferPool *pending_pool{nullptr};
-
-  void release_pending_buffers() {
-    for (size_t i = 0; i < pending_count; ++i) {
-      if (pending_bufs[i]) {
-        MemoryLimitPool::get_instance().release_buffer(pending_bufs[i],
+    for (size_t i = 0; i < accepted; ++i) {
+      if (buffers[i]) {
+        MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                        kVectorPageSize);
-        pending_bufs[i] = nullptr;
+        batch_ok = false;
       }
     }
-    pending_count = 0;
-    harvested_count = 0;
-    pending_pool = nullptr;
+    if (!batch_ok) return false;
   }
-
-  bool destroy_context() {
-    ok = false;
-    if (!ctx) return true;
-    const int ret = LibAioLoader::Instance().io_destroy(ctx);
-    if (ret != 0) {
-      LOG_ERROR(
-          "ThreadLocalAioCtx: io_destroy failed, ret=%d; in-flight buffers "
-          "remain quarantined",
-          ret);
-      return false;
-    }
-    ctx = nullptr;
-    return true;
-  }
-
-  bool abort_pending() {
-    // io_destroy is the ownership barrier for request buffers.
-    if (!destroy_context()) return false;
-    release_pending_buffers();
-    return true;
-  }
-
-  ~ThreadLocalAioCtx() {
-    // Drain all pending AIO before destroying context (thread exit)
-    size_t in_flight = pending_count - harvested_count;
-    bool all_reaped = in_flight == 0;
-    if (in_flight > 0 && ok) {
-      struct io_event events[128];
-      // Must block-wait: kernel is still DMA-ing into our buffers
-      size_t done = 0;
-      while (done < in_flight) {
-        int ret = LibAioLoader::Instance().io_getevents(
-            ctx, static_cast<long>(in_flight - done),
-            static_cast<long>(in_flight - done), events + done, nullptr);
-        if (ret == -EINTR) {
-          continue;
-        }
-        if (ret <= 0) {
-          LOG_ERROR(
-              "ThreadLocalAioCtx: io_getevents failed during teardown, "
-              "ret=%d",
-              ret);
-          break;
-        }
-        done += static_cast<size_t>(ret);
-      }
-      all_reaped = done == in_flight;
-    }
-    const bool destroyed = destroy_context();
-    // Unreaped buffers require successful context destruction before reuse.
-    if (all_reaped || destroyed) {
-      release_pending_buffers();
-    }
-  }
-
-  bool ensure() {
-    if (inited) return ok;
-    inited = true;
-    if (!LibAioLoader::Instance().is_available()) return false;
-    ctx = nullptr;
-    if (LibAioLoader::Instance().io_setup(128, &ctx) == 0) {
-      ok = true;
-    }
-    return ok;
-  }
-};
-
-static thread_local ThreadLocalAioCtx tl_aio;
-}  // namespace
-#endif
-
-void VecBufferPool::submit_aio_async(const block_id_t *page_ids, size_t count,
-                                     BufferPoolIoProfile *profile) {
-  if (count == 0) return;
-  if (!profile) profile = current_thread_io_profile();
-
-#if defined(__linux) || defined(__linux__)
-  if (!direct_io_enabled_) return;
-  if (!tl_aio.ensure()) return;
-
-  // Drain a thread-local batch before switching its owning pool.
-  if (tl_aio.pending_count > 0 && tl_aio.pending_pool != this) {
-    wait_aio(profile);
-    if (tl_aio.pending_count > 0) {
-      // Do not reuse slots from an unverified DMA batch.
-      return;
-    }
-  }
-
-  // Harvest any previously completed AIO (non-blocking)
-  if (tl_aio.pending_count > 0) {
-    harvest_aio();
-    // Keep a failed context and its pending buffers quarantined.
-    if (!tl_aio.ok) {
-      return;
-    }
-  }
-
-  // Exclude a preceding cross-pool drain from submit time.
-  BufferPoolProfileTimer submit_timer(profile ? &profile->aio_submit_ns
-                                              : nullptr);
-
-  // Determine how many slots are available for new submissions
-  size_t base = tl_aio.pending_count;  // existing in-flight count
-  size_t max_new = 128 - base;
-  if (max_new == 0) return;  // All slots occupied by in-flight I/O
-
-  // Filter: skip already-loaded, in-flight, and deduplicate
-  block_id_t miss_pages[128];
-  size_t miss_count = 0;
-  for (size_t i = 0; i < count && miss_count < max_new; ++i) {
-    if (page_ids[i] >= page_table_.entry_num()) continue;
-    if (page_table_.is_loaded(page_ids[i])) continue;
-    // Skip if already in pending (still in-flight, buf != nullptr)
-    bool in_flight = false;
-    for (size_t j = 0; j < base; ++j) {
-      if (tl_aio.pending_bufs[j] && tl_aio.pending_pids[j] == page_ids[i]) {
-        in_flight = true;
-        break;
-      }
-    }
-    if (in_flight) continue;
-    bool dup = false;
-    for (size_t j = 0; j < miss_count; ++j) {
-      if (miss_pages[j] == page_ids[i]) {
-        dup = true;
-        break;
-      }
-    }
-    if (!dup) miss_pages[miss_count++] = page_ids[i];
-  }
-  if (miss_count == 0) return;
-
-  BlockEvictionQueue::get_instance().batch_recycle(miss_count);
-  char *buffers[128];
-  size_t submitted = MemoryLimitPool::get_instance().batch_acquire_buffers(
-      kVectorPageSize, buffers, miss_count);
-  if (submitted == 0) return;
-
-  struct iocb cbs[128];
-  struct iocb *cb_ptrs[128];
-  for (size_t i = 0; i < submitted; ++i) {
-    size_t offset = miss_pages[i] * kVectorPageSize;
-    io_prep_pread(&cbs[i], fd_, buffers[i], kVectorPageSize,
-                  static_cast<long long>(offset));
-    // Index = base + i so harvest can map back to pending_bufs/pids
-    cbs[i].data = reinterpret_cast<void *>(base + i);
-    cb_ptrs[i] = &cbs[i];
-  }
-
-  int ret = LibAioLoader::Instance().io_submit(
-      tl_aio.ctx, static_cast<long>(submitted), cb_ptrs);
-  if (ret <= 0) {
-    for (size_t i = 0; i < submitted; ++i) {
-      MemoryLimitPool::get_instance().release_buffer(buffers[i],
-                                                     kVectorPageSize);
-    }
-    return;
-  }
-
-  // Append to pending state
-  size_t actual = static_cast<size_t>(ret);
-  if (profile) {
-    ++profile->aio_batches;
-    profile->aio_pages += actual;
-    profile->aio_max_batch = std::max<uint64_t>(profile->aio_max_batch, actual);
-  }
-  for (size_t i = 0; i < actual; ++i) {
-    tl_aio.pending_bufs[base + i] = buffers[i];
-    tl_aio.pending_pids[base + i] = miss_pages[i];
-  }
-  // Count the physical AIO population as a miss.
-  miss_count_.fetch_add(actual, std::memory_order_relaxed);
-  tl_aio.pending_count = base + actual;
-  tl_aio.pending_pool = this;
-
-  // Release buffers for requests that weren't submitted
-  for (size_t i = actual; i < submitted; ++i) {
-    MemoryLimitPool::get_instance().release_buffer(buffers[i], kVectorPageSize);
-  }
+  return true;
 #else
   (void)page_ids;
   (void)count;
-  (void)profile;
-#endif
-}
-
-void VecBufferPool::harvest_aio() {
-#if defined(__linux) || defined(__linux__)
-  if (!tl_aio.ok || tl_aio.pending_count == 0) return;
-  size_t in_flight = tl_aio.pending_count - tl_aio.harvested_count;
-  if (in_flight == 0) return;
-
-  struct io_event events[128];
-  struct timespec timeout = {0, 0};  // Non-blocking
-  int ret = LibAioLoader::Instance().io_getevents(
-      tl_aio.ctx, 0, static_cast<long>(in_flight), events, &timeout);
-
-  if (ret < 0 && ret != -EINTR) {
-    LOG_WARN("VecBufferPool::harvest_aio: io_getevents failed, ret=%d", ret);
-    (void)tl_aio.abort_pending();
-    return;
-  }
-
-  size_t completed = (ret > 0) ? static_cast<size_t>(ret) : 0;
-  if (completed == 0) return;  // Nothing ready yet
-
-  VecBufferPool *pool = tl_aio.pending_pool;
-  for (size_t i = 0; i < completed; ++i) {
-    size_t idx = reinterpret_cast<size_t>(events[i].data);
-    if (static_cast<ssize_t>(events[i].res) !=
-        static_cast<ssize_t>(kVectorPageSize)) {
-      MemoryLimitPool::get_instance().release_buffer(tl_aio.pending_bufs[idx],
-                                                     kVectorPageSize);
-    } else {
-      block_id_t pid = tl_aio.pending_pids[idx];
-      std::lock_guard<std::shared_mutex> lock(
-          pool->block_mutexes_[pid % pool->block_mutex_count_]);
-      if (pool->page_table_.is_loaded(pid)) {
-        MemoryLimitPool::get_instance().release_buffer(tl_aio.pending_bufs[idx],
-                                                       kVectorPageSize);
-      } else {
-        char *installed = pool->page_table_.set_block_acquired(
-            pid, tl_aio.pending_bufs[idx], pid * kVectorPageSize);
-        if (installed != nullptr) {
-          pool->page_table_.release_block(pid);
-        }
-      }
-    }
-    tl_aio.pending_bufs[idx] = nullptr;  // Mark as processed
-  }
-
-  tl_aio.harvested_count += completed;
-
-  // If all submitted are harvested, reset for reuse
-  if (tl_aio.harvested_count == tl_aio.pending_count) {
-    tl_aio.pending_count = 0;
-    tl_aio.harvested_count = 0;
-    tl_aio.pending_pool = nullptr;
-  }
-#endif
-}
-
-void VecBufferPool::wait_aio(BufferPoolIoProfile *profile) {
-  if (!profile) profile = current_thread_io_profile();
-#if defined(__linux) || defined(__linux__)
-  if (!tl_aio.ok || tl_aio.pending_count == 0) return;
-
-  VecBufferPool *pool = tl_aio.pending_pool;
-  struct io_event events[128];
-  // Wait for the complete batch before resolving resident pages.
-  while (tl_aio.harvested_count < tl_aio.pending_count) {
-    size_t in_flight = tl_aio.pending_count - tl_aio.harvested_count;
-    int ret = 0;
-    {
-      BufferPoolProfileTimer wait_timer(profile ? &profile->aio_wait_ns
-                                                : nullptr);
-      ret = LibAioLoader::Instance().io_getevents(
-          tl_aio.ctx, static_cast<long>(in_flight),
-          static_cast<long>(in_flight), events, nullptr);
-    }
-    if (ret == -EINTR) continue;
-    if (ret <= 0) {
-      LOG_ERROR("VecBufferPool::wait_aio: io_getevents failed, ret=%d", ret);
-      // Quarantine buffers if context teardown cannot prove DMA has stopped.
-      (void)tl_aio.abort_pending();
-      return;
-    }
-    size_t completed = static_cast<size_t>(ret);
-    BufferPoolProfileTimer install_timer(profile ? &profile->aio_install_ns
-                                                 : nullptr);
-    for (size_t i = 0; i < completed; ++i) {
-      size_t idx = reinterpret_cast<size_t>(events[i].data);
-      if (static_cast<ssize_t>(events[i].res) !=
-          static_cast<ssize_t>(kVectorPageSize)) {
-        MemoryLimitPool::get_instance().release_buffer(tl_aio.pending_bufs[idx],
-                                                       kVectorPageSize);
-      } else {
-        block_id_t pid = tl_aio.pending_pids[idx];
-        std::unique_lock<std::shared_mutex> lock(
-            pool->block_mutexes_[pid % pool->block_mutex_count_],
-            std::defer_lock);
-        if (profile) {
-          const uint64_t lock_start = BufferPoolProfileNowNs();
-          lock.lock();
-          profile->aio_page_lock_wait_ns +=
-              BufferPoolProfileNowNs() - lock_start;
-        } else {
-          lock.lock();
-        }
-        if (pool->page_table_.is_loaded(pid)) {
-          MemoryLimitPool::get_instance().release_buffer(
-              tl_aio.pending_bufs[idx], kVectorPageSize);
-        } else {
-          char *installed = pool->page_table_.set_block_acquired(
-              pid, tl_aio.pending_bufs[idx], pid * kVectorPageSize);
-          if (installed != nullptr) {
-            pool->page_table_.release_block(pid);
-          }
-        }
-      }
-      tl_aio.pending_bufs[idx] = nullptr;
-    }
-    tl_aio.harvested_count += completed;
-  }
-
-  if (tl_aio.harvested_count == tl_aio.pending_count) {
-    tl_aio.pending_count = 0;
-    tl_aio.harvested_count = 0;
-    tl_aio.pending_pool = nullptr;
-  }
-#else
-  (void)profile;
+  (void)priority;
+  return false;
 #endif
 }
 
@@ -2345,109 +1872,6 @@ void VecBufferPool::log_stats() const {
       static_cast<unsigned long long>(s.dirty_flush),
       static_cast<unsigned long long>(s.bypass_reads),
       static_cast<unsigned long long>(s.bypass_bytes));
-  if (io_profile_enabled_) {
-    const BufferPoolIoProfile &p = s.io_profile;
-    const double avg_batch =
-        p.aio_batches ? static_cast<double>(p.aio_pages) / p.aio_batches : 0.0;
-    const uint64_t io_reads = p.aio_pages + p.sync_reads;
-    const uint64_t io_wait_ns = p.aio_wait_ns + p.sync_read_ns;
-    const double software_ns_per_read =
-        io_reads ? static_cast<double>(p.software_ns()) / io_reads : 0.0;
-    const uint64_t classified_sync_reads =
-        p.neighbor_sync_reads + p.cross_page_sync_reads + p.post_aio_sync_reads;
-    const uint64_t unclassified_sync_reads =
-        p.sync_reads > classified_sync_reads
-            ? p.sync_reads - classified_sync_reads
-            : 0;
-    const uint64_t classified_sync_read_ns = p.neighbor_sync_read_ns +
-                                             p.cross_page_sync_read_ns +
-                                             p.post_aio_sync_read_ns;
-    const uint64_t unclassified_sync_read_ns =
-        p.sync_read_ns > classified_sync_read_ns
-            ? p.sync_read_ns - classified_sync_read_ns
-            : 0;
-    const double post_aio_sync_share =
-        p.sync_reads ? static_cast<double>(p.post_aio_sync_reads) /
-                           static_cast<double>(p.sync_reads)
-                     : 0.0;
-    const double post_aio_sync_time_share =
-        p.sync_read_ns ? static_cast<double>(p.post_aio_sync_read_ns) /
-                             static_cast<double>(p.sync_read_ns)
-                       : 0.0;
-    const double post_aio_missing_rate =
-        p.post_aio_requested_unique_pages
-            ? static_cast<double>(p.post_aio_missing_unique_pages) /
-                  static_cast<double>(p.post_aio_requested_unique_pages)
-            : 0.0;
-    LOG_INFO(
-        "VecBufferPool io_profile: file[%s] queries=%llu query_wall_ns=%llu "
-        "aio_submit_ns=%llu aio_wait_ns=%llu aio_install_ns=%llu "
-        "aio_page_lock_wait_ns=%llu sync_prepare_ns=%llu sync_read_ns=%llu "
-        "sync_install_ns=%llu sync_page_lock_wait_ns=%llu sync_reads=%llu "
-        "epoch_transition_ns=%llu fallback_total_ns=%llu copy_ns=%llu "
-        "aio_batches=%llu aio_pages=%llu "
-        "aio_avg_batch=%.2f aio_max_batch=%llu fallback_batches=%llu "
-        "fallback_items=%llu epoch_enter_attempts=%llu "
-        "epoch_enter_failures=%llu epoch_suspends=%llu "
-        "io_reads=%llu io_wait_ns=%llu software_ns=%llu "
-        "software_ns_per_read=%.2f",
-        file_name_.c_str(), static_cast<unsigned long long>(p.query_count),
-        static_cast<unsigned long long>(p.query_wall_ns),
-        static_cast<unsigned long long>(p.aio_submit_ns),
-        static_cast<unsigned long long>(p.aio_wait_ns),
-        static_cast<unsigned long long>(p.aio_install_ns),
-        static_cast<unsigned long long>(p.aio_page_lock_wait_ns),
-        static_cast<unsigned long long>(p.sync_prepare_ns),
-        static_cast<unsigned long long>(p.sync_read_ns),
-        static_cast<unsigned long long>(p.sync_install_ns),
-        static_cast<unsigned long long>(p.sync_page_lock_wait_ns),
-        static_cast<unsigned long long>(p.sync_reads),
-        static_cast<unsigned long long>(p.epoch_transition_ns),
-        static_cast<unsigned long long>(p.fallback_total_ns),
-        static_cast<unsigned long long>(p.copy_ns),
-        static_cast<unsigned long long>(p.aio_batches),
-        static_cast<unsigned long long>(p.aio_pages), avg_batch,
-        static_cast<unsigned long long>(p.aio_max_batch),
-        static_cast<unsigned long long>(p.fallback_batches),
-        static_cast<unsigned long long>(p.fallback_items),
-        static_cast<unsigned long long>(p.epoch_enter_attempts),
-        static_cast<unsigned long long>(p.epoch_enter_failures),
-        static_cast<unsigned long long>(p.epoch_suspends),
-        static_cast<unsigned long long>(io_reads),
-        static_cast<unsigned long long>(io_wait_ns),
-        static_cast<unsigned long long>(p.software_ns()), software_ns_per_read);
-    LOG_INFO(
-        "VecBufferPool io_profile_paths: file[%s] "
-        "neighbor_sync_reads=%llu neighbor_sync_read_ns=%llu "
-        "cross_page_sync_reads=%llu cross_page_sync_read_ns=%llu "
-        "post_aio_sync_reads=%llu post_aio_sync_read_ns=%llu "
-        "post_aio_sync_share=%.4f post_aio_sync_time_share=%.4f "
-        "unclassified_sync_reads=%llu unclassified_sync_read_ns=%llu "
-        "vector_prefetch_aio_pages=%llu vector_prefetch_aio_wait_ns=%llu "
-        "vector_fallback_aio_pages=%llu vector_fallback_aio_wait_ns=%llu "
-        "post_aio_publish_attempts=%llu post_aio_publish_failures=%llu "
-        "post_aio_requested_unique_pages=%llu "
-        "post_aio_missing_unique_pages=%llu post_aio_missing_rate=%.4f",
-        file_name_.c_str(),
-        static_cast<unsigned long long>(p.neighbor_sync_reads),
-        static_cast<unsigned long long>(p.neighbor_sync_read_ns),
-        static_cast<unsigned long long>(p.cross_page_sync_reads),
-        static_cast<unsigned long long>(p.cross_page_sync_read_ns),
-        static_cast<unsigned long long>(p.post_aio_sync_reads),
-        static_cast<unsigned long long>(p.post_aio_sync_read_ns),
-        post_aio_sync_share, post_aio_sync_time_share,
-        static_cast<unsigned long long>(unclassified_sync_reads),
-        static_cast<unsigned long long>(unclassified_sync_read_ns),
-        static_cast<unsigned long long>(p.vector_prefetch_aio_pages),
-        static_cast<unsigned long long>(p.vector_prefetch_aio_wait_ns),
-        static_cast<unsigned long long>(p.vector_fallback_aio_pages),
-        static_cast<unsigned long long>(p.vector_fallback_aio_wait_ns),
-        static_cast<unsigned long long>(p.post_aio_publish_attempts),
-        static_cast<unsigned long long>(p.post_aio_publish_failures),
-        static_cast<unsigned long long>(p.post_aio_requested_unique_pages),
-        static_cast<unsigned long long>(p.post_aio_missing_unique_pages),
-        post_aio_missing_rate);
-  }
 }
 
 }  // namespace ailego

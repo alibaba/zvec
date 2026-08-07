@@ -68,15 +68,13 @@ class BufferReadStorage : public IndexStorage {
   /*! Read-only segment. Resident single-page reads pin cache pages; other
    * reads use thread-local or owned scratch buffers.
    */
-  class Segment : public IndexStorage::Segment,
-                  public std::enable_shared_from_this<Segment> {
+  class Segment : public IndexStorage::Segment {
    public:
     //! Index Storage Pointer
     typedef std::shared_ptr<Segment> Pointer;
 
     //! Constructor
-    Segment(const std::shared_ptr<ailego::VecBufferPool> &pool,
-            const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
+    Segment(const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
             bool cache_enabled, size_t index_offset,
             const IndexUnpacker::SegmentMeta &segment)
         : data_offset_(index_offset + segment.data_offset()),
@@ -84,19 +82,16 @@ class BufferReadStorage : public IndexStorage {
           padding_size_(segment.padding_size()),
           region_size_(segment.data_size() + segment.padding_size()),
           data_crc_(segment.data_crc()),
-          pool_(pool),
           handle_(handle),
           cache_enabled_(cache_enabled) {}
 
     //! Constructor (clone)
     Segment(const Segment &rhs)
-        : std::enable_shared_from_this<Segment>(),
-          data_offset_(rhs.data_offset_),
+        : data_offset_(rhs.data_offset_),
           data_size_(rhs.data_size_),
           padding_size_(rhs.padding_size_),
           region_size_(rhs.region_size_),
           data_crc_(rhs.data_crc_),
-          pool_(rhs.pool_),
           handle_(rhs.handle_),
           cache_enabled_(rhs.cache_enabled_) {}
 
@@ -290,13 +285,6 @@ class BufferReadStorage : public IndexStorage {
       handle_->prefetch_range(data_offset_ + offset, len);
     }
 
-    //! Return the shared pool's current prefetch budget.
-    size_t prefetch_budget(void) const override {
-      return cache_enabled_
-                 ? ailego::MemoryLimitPool::get_instance().available()
-                 : 0;
-    }
-
     //! Cached pages do not expose a stable base address.
     const uint8_t *base_data(void) const override {
       return nullptr;
@@ -461,7 +449,6 @@ class BufferReadStorage : public IndexStorage {
     uint32_t data_crc_{0u};
     std::shared_ptr<const uint8_t> scratch_token_{
         std::make_shared<const uint8_t>(0)};
-    std::shared_ptr<ailego::VecBufferPool> pool_{nullptr};
     std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
     bool cache_enabled_{false};
   };
@@ -474,8 +461,6 @@ class BufferReadStorage : public IndexStorage {
     params.get(BUFFER_READ_STORAGE_CHECKSUM_VALIDATION, &checksum_validation_);
     params.get(BUFFER_READ_STORAGE_HEADER_OFFSET, &header_offset_);
     params.get(BUFFER_READ_STORAGE_FOOTER_OFFSET, &footer_offset_);
-    params.get(BUFFER_READ_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
-    params.get(BUFFER_READ_STORAGE_ENABLE_IO_PROFILE, &enable_io_profile_);
     params.get(BUFFER_READ_STORAGE_WARMUP_MODE, &warmup_mode_);
     if (warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_NONE &&
         warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
@@ -512,9 +497,8 @@ class BufferReadStorage : public IndexStorage {
     try {
       std::string candidate_file_path(path);
       // Publish new state only after open succeeds.
-      auto candidate_pool = std::make_shared<ailego::VecBufferPool>(
-          path, /*writable=*/false, /*enable_direct_io=*/enable_direct_io_,
-          /*enable_io_profile=*/enable_io_profile_);
+      auto candidate_pool =
+          std::make_shared<ailego::VecBufferPool>(path, /*writable=*/false);
       auto candidate_handle =
           std::make_shared<ailego::VecBufferPoolHandle>(candidate_pool);
 
@@ -651,7 +635,7 @@ class BufferReadStorage : public IndexStorage {
       return IndexStorage::Segment::Pointer();
     }
     return std::make_shared<BufferReadStorage::Segment>(
-        buffer_pool_, handle_, cache_enabled_, index_offset_, it->second);
+        handle_, cache_enabled_, index_offset_, it->second);
   }
 
   std::map<std::string, IndexStorage::Segment::Pointer> get_all(
@@ -659,9 +643,9 @@ class BufferReadStorage : public IndexStorage {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     if (buffer_pool_ && handle_) {
       for (const auto &it : segments_) {
-        result.emplace(it.first, std::make_shared<BufferReadStorage::Segment>(
-                                     buffer_pool_, handle_, cache_enabled_,
-                                     index_offset_, it.second));
+        result.emplace(it.first,
+                       std::make_shared<BufferReadStorage::Segment>(
+                           handle_, cache_enabled_, index_offset_, it.second));
       }
     }
     return result;
@@ -682,21 +666,17 @@ class BufferReadStorage : public IndexStorage {
     return MemoryBlock::MBT_BUFFERPOOL;
   }
 
+  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const override {
+    return cache_enabled_ ? buffer_pool_ : nullptr;
+  }
+
   //! Path of the opened index file (diagnostics / backend consistency).
   std::string file_path(void) const override {
     return file_path_;
   }
 
-  //! Expose the backing VecBufferPool so callers (e.g. DiskAnn) can detect a
-  //! pooled backend and route reads through the paged cache.
-  ailego::VecBufferPool *vec_buffer_pool(void) const override {
-    return cache_enabled_ ? buffer_pool_.get() : nullptr;
-  }
-
  private:
   bool checksum_validation_{false};
-  bool enable_direct_io_{true};
-  bool enable_io_profile_{false};
   std::string warmup_mode_{BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL};
   int64_t header_offset_{0};
   int64_t footer_offset_{0};
