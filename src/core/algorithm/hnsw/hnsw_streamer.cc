@@ -574,9 +574,8 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+  ctx->bind_dist_space(add_distance_, add_batch_distance_, provider_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
-  ctx->set_provider(provider_);
 
   //! use the original vector from provider as the build query, fetched
   //! before mutating the entity so a missing vector cannot leave an
@@ -670,9 +669,8 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+  ctx->bind_dist_space(add_distance_, add_batch_distance_, provider_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
-  ctx->set_provider(provider_);
 
   //! use the original vector from provider as the build query
   IndexStorage::MemoryBlock original_query_block;
@@ -757,9 +755,8 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   //! search always uses the vectors stored in the entity
-  ctx->set_provider(nullptr);
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   for (size_t q = 0; q < count; ++q) {
@@ -829,9 +826,8 @@ int HnswStreamer::search_bf_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   //! search always uses the vectors stored in the entity
-  ctx->set_provider(nullptr);
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -925,9 +921,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   //! search always uses the vectors stored in the entity
-  ctx->set_provider(nullptr);
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {

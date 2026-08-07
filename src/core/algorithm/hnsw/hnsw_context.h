@@ -143,10 +143,6 @@ class HnswContext : public IndexContext {
     return vector_source_;
   }
 
-  inline void set_provider(IndexProvider::Pointer provider) {
-    dc_.set_provider(std::move(provider));
-  }
-
   inline void reset_query_raw(const void *query, const IndexMeta &meta) {
     dc_.set_dim(meta.dimension());
     dc_.reset_query(query);
@@ -411,7 +407,7 @@ class HnswContext : public IndexContext {
     set_group_params(0, 0);
     reset_group_by();
     set_vector_source(nullptr);
-    set_provider(nullptr);
+    dc_.set_provider(nullptr);
   }
 
   inline std::map<std::string, TopkHeap> &group_topk_heaps() {
@@ -515,10 +511,16 @@ class HnswContext : public IndexContext {
     return debug_mode_;
   }
 
-  inline void update_dist_caculator_distance(
+  //! Bind the space distances are computed in: the metric functions and
+  //! the provider that supplies vectors by node id. A null provider makes
+  //! distances use the vectors stored in the entity. Callers must pass
+  //! both, so a build space cannot leak into a search by omission
+  inline void bind_dist_space(
       const IndexMetric::MatrixDistance &distance,
-      const IndexMetric::MatrixBatchDistance &batch_distance) {
+      const IndexMetric::MatrixBatchDistance &batch_distance,
+      IndexProvider::Pointer provider) {
     dc_.update_distance(distance, batch_distance);
+    dc_.set_provider(std::move(provider));
   }
 
   //! Get topk
