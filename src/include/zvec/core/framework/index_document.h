@@ -273,14 +273,14 @@ class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
 
   //! Insert a document into the heap
   void emplace(uint64_t key, float score) {
-    if (score <= threshold_) {
+    if (this->should_emplace(score)) {
       ailego::Heap<IndexDocument>::emplace(key, score);
     }
   }
 
   //! Insert a document into the heap
   void emplace(uint64_t key, float score, uint32_t index) {
-    if (score <= threshold_) {
+    if (this->should_emplace(score)) {
       ailego::Heap<IndexDocument>::emplace(key, score, index);
     }
   }
@@ -296,6 +296,13 @@ class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
   }
 
  private:
+  bool should_emplace(float score) const {
+    if (!(score <= threshold_)) {
+      return false;
+    }
+    return !this->full() || score < this->front().score();
+  }
+
   //! members
   float threshold_{std::numeric_limits<float>::max()};
 };
