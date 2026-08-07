@@ -1006,6 +1006,42 @@ TEST_F(BufferStorageWriteTest, CR_CrossPageWriteAndRead) {
   EXPECT_EQ(0, storage->close());
 }
 
+// Repeated legacy pointer reads from a writable cached page must reuse the
+// pinned page. Retaining a separate 4K-aligned snapshot for every read grows
+// memory until close() and makes long Optimize workloads consume gigabytes.
+TEST_F(BufferStorageWriteTest, CR_WritableLegacyPointerReadReusesCachedPage) {
+  auto storage = OpenWritable();
+  ASSERT_TRUE(storage);
+
+  ASSERT_EQ(0, storage->append("legacy_pointer_seg", 8192));
+  auto seg = storage->get("legacy_pointer_seg");
+  ASSERT_TRUE(seg);
+
+  constexpr size_t kReadLen = 64;
+  const size_t data_offset_in_page =
+      seg->data_offset() % ailego::kVectorPageSize;
+  const size_t read_offset =
+      (ailego::kVectorPageSize - data_offset_in_page) % ailego::kVectorPageSize;
+  ASSERT_LE(read_offset + kReadLen, seg->capacity());
+
+  std::vector<char> expected(kReadLen, 'P');
+  ASSERT_EQ(kReadLen,
+            seg->write(read_offset, expected.data(), expected.size()));
+
+  const void *first = nullptr;
+  ASSERT_EQ(kReadLen, seg->read(read_offset, &first, kReadLen));
+  ASSERT_NE(nullptr, first);
+  EXPECT_EQ(0, std::memcmp(expected.data(), first, expected.size()));
+
+  for (size_t i = 0; i < 128; ++i) {
+    const void *again = nullptr;
+    ASSERT_EQ(kReadLen, seg->read(read_offset, &again, kReadLen));
+    EXPECT_EQ(first, again);
+  }
+
+  EXPECT_EQ(0, storage->close());
+}
+
 // Dirty flag race: write() after flush_index() must re-set the dirty flag.
 // If the write lands between CAS(dirty, false) and the end of flush,
 // the next flush must still persist it. Verified by close→reopen→read.

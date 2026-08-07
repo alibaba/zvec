@@ -47,8 +47,3 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   )
   cc_test_suite(zvec ${CC_TARGET})
 endforeach()
-
-# collection_test is both long-running and memory-intensive.  Running it next
-# to the rest of the suite under `ctest --parallel` can make the OS kill it
-# under memory pressure, which CTest reports as "Subprocess killed".
-set_tests_properties(collection_test PROPERTIES RUN_SERIAL TRUE)

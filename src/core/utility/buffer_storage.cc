@@ -182,8 +182,10 @@ class BufferStorage : public IndexStorage {
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
                           segment_info_->segment.meta()->data_index + offset;
-      // Writable pages require a latched copy; raw pointers are read-only.
-      if (!owner_->cache_enabled_ || owner_->buffer_pool_->writable()) {
+      // Without a page cache, retain a copied result for the legacy pointer
+      // lifetime. Cached single-page reads below pin the page until close(),
+      // including for writable pools, instead of retaining one copy per read.
+      if (!owner_->cache_enabled_) {
         static constexpr size_t kAlign = 4096UL;
         if (ailego_unlikely(len > std::numeric_limits<size_t>::max() -
                                       (kAlign - 1))) {
