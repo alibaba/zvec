@@ -17,6 +17,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -339,8 +341,8 @@ class SegmentImpl : public Segment,
                       const std::vector<int> &segment_doc_ids,
                       const std::vector<uint64_t> &chunk_offsets) const;
 
-  bool get_fetch_perf_chunk_offsets(const std::vector<std::string> &columns,
-                                    std::vector<uint64_t> *chunk_offsets) const;
+  const std::vector<uint64_t> *get_fetch_perf_chunk_offsets(
+      const std::vector<std::string> &columns) const;
 
   void fresh_persist_chunked_array();
 
@@ -415,9 +417,12 @@ class SegmentImpl : public Segment,
   bool need_destroyed_{false};
 
   // For performance tuning
+  static constexpr size_t INVALID_CHUNK_LAYOUT_ID =
+      std::numeric_limits<size_t>::max();
   std::vector<std::shared_ptr<arrow::ChunkedArray>> persist_chunk_arrays_;
   std::unordered_map<std::string, int> col_idx_map_;
-  std::vector<uint64_t> common_chunk_offsets_;
+  std::vector<std::vector<uint64_t>> chunk_layout_offsets_;
+  std::vector<size_t> persist_chunk_layout_ids_;
   bool all_columns_same_chunk_layout_{false};
 
   // Inner classes
@@ -2396,10 +2401,6 @@ TablePtr SegmentImpl::fetch_perf(
       return nullptr;
     }
 
-    if (chunk_offsets.empty()) {
-      continue;
-    }
-
     auto it = std::upper_bound(chunk_offsets.begin(), chunk_offsets.end(),
                                segment_doc_id);
     if (it == chunk_offsets.begin() || it == chunk_offsets.end()) {
@@ -2453,14 +2454,9 @@ TablePtr SegmentImpl::fetch_perf(
                             static_cast<int64_t>(segment_doc_ids.size()));
 }
 
-bool SegmentImpl::get_fetch_perf_chunk_offsets(
-    const std::vector<std::string> &columns,
-    std::vector<uint64_t> *chunk_offsets) const {
-  chunk_offsets->clear();
-  if (persist_chunk_arrays_.empty()) {
-    return false;
-  }
-  std::shared_ptr<arrow::ChunkedArray> reference;
+const std::vector<uint64_t> *SegmentImpl::get_fetch_perf_chunk_offsets(
+    const std::vector<std::string> &columns) const {
+  size_t common_layout_id = INVALID_CHUNK_LAYOUT_ID;
 
   for (const auto &column : columns) {
     if (column == LOCAL_ROW_ID) {
@@ -2469,47 +2465,33 @@ bool SegmentImpl::get_fetch_perf_chunk_offsets(
 
     auto col_idx_it = col_idx_map_.find(column);
     if (col_idx_it == col_idx_map_.end()) {
-      return false;
+      return nullptr;
     }
     const auto col_idx = static_cast<size_t>(col_idx_it->second);
-    if (col_idx >= persist_chunk_arrays_.size()) {
-      return false;
+    if (col_idx >= persist_chunk_layout_ids_.size()) {
+      return nullptr;
     }
 
-    const auto &chunk_array = persist_chunk_arrays_[col_idx];
-    if (chunk_array == nullptr || chunk_array->num_chunks() == 0 ||
-        static_cast<uint64_t>(chunk_array->length()) !=
-            segment_meta_->doc_count()) {
-      return false;
+    const auto layout_id = persist_chunk_layout_ids_[col_idx];
+    if (layout_id == INVALID_CHUNK_LAYOUT_ID ||
+        layout_id >= chunk_layout_offsets_.size()) {
+      return nullptr;
     }
 
-    if (reference == nullptr) {
-      reference = chunk_array;
-      chunk_offsets->reserve(reference->num_chunks() + 1);
-      chunk_offsets->push_back(0);
-      for (int chunk_idx = 0; chunk_idx < reference->num_chunks();
-           ++chunk_idx) {
-        chunk_offsets->push_back(
-            chunk_offsets->back() +
-            static_cast<uint64_t>(reference->chunk(chunk_idx)->length()));
-      }
+    if (common_layout_id == INVALID_CHUNK_LAYOUT_ID) {
+      common_layout_id = layout_id;
       continue;
     }
 
-    if (chunk_array->num_chunks() != reference->num_chunks()) {
-      chunk_offsets->clear();
-      return false;
-    }
-    for (int chunk_idx = 0; chunk_idx < reference->num_chunks(); ++chunk_idx) {
-      if (chunk_array->chunk(chunk_idx)->length() !=
-          reference->chunk(chunk_idx)->length()) {
-        chunk_offsets->clear();
-        return false;
-      }
+    if (layout_id != common_layout_id) {
+      return nullptr;
     }
   }
 
-  return true;
+  if (common_layout_id == INVALID_CHUNK_LAYOUT_ID) {
+    return nullptr;
+  }
+  return &chunk_layout_offsets_[common_layout_id];
 }
 
 TablePtr SegmentImpl::fetch_normal(
@@ -2767,12 +2749,12 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
   if (all_columns_same_chunk_layout_) {
     return fetch_perf(columns, result_schema, segment_doc_ids,
-                      common_chunk_offsets_);
+                      chunk_layout_offsets_.front());
   }
 
-  std::vector<uint64_t> chunk_offsets;
-  if (get_fetch_perf_chunk_offsets(columns, &chunk_offsets)) {
-    return fetch_perf(columns, result_schema, segment_doc_ids, chunk_offsets);
+  const auto *chunk_offsets = get_fetch_perf_chunk_offsets(columns);
+  if (chunk_offsets != nullptr) {
+    return fetch_perf(columns, result_schema, segment_doc_ids, *chunk_offsets);
   }
   return fetch_normal(columns, result_schema, segment_doc_ids);
 }
@@ -3766,7 +3748,8 @@ void SegmentImpl::fresh_persist_chunked_array() {
   if (options_.enable_mmap_ && options_.read_only_) {
     persist_chunk_arrays_.clear();
     col_idx_map_.clear();
-    common_chunk_offsets_.clear();
+    chunk_layout_offsets_.clear();
+    persist_chunk_layout_ids_.clear();
     all_columns_same_chunk_layout_ = false;
 
     std::vector<std::vector<std::shared_ptr<arrow::ChunkedArray>>> chunk_arrays;
@@ -3775,6 +3758,7 @@ void SegmentImpl::fresh_persist_chunked_array() {
     fields.insert(fields.begin(), GLOBAL_DOC_ID);
     chunk_arrays.resize(fields.size());
     persist_chunk_arrays_.resize(fields.size());
+    persist_chunk_layout_ids_.resize(fields.size(), INVALID_CHUNK_LAYOUT_ID);
 
     for (size_t i = 0; i < fields.size(); ++i) {
       col_idx_map_[fields[i]] = i;
@@ -3798,6 +3782,7 @@ void SegmentImpl::fresh_persist_chunked_array() {
       }
     }
 
+    std::map<std::vector<uint64_t>, size_t> chunk_layout_ids;
     for (size_t i = 0; i < fields.size(); ++i) {
       std::vector<std::shared_ptr<arrow::Array>> all_chunks;
       for (const auto &arr : chunk_arrays[i]) {
@@ -3807,13 +3792,45 @@ void SegmentImpl::fresh_persist_chunked_array() {
       }
       persist_chunk_arrays_[i] =
           std::make_shared<arrow::ChunkedArray>(all_chunks);
+
+      const auto &chunk_array = persist_chunk_arrays_[i];
+      if (chunk_array->num_chunks() == 0 ||
+          static_cast<uint64_t>(chunk_array->length()) !=
+              segment_meta_->doc_count()) {
+        continue;
+      }
+
+      std::vector<uint64_t> chunk_offsets;
+      chunk_offsets.reserve(chunk_array->num_chunks() + 1);
+      chunk_offsets.push_back(0);
+      for (int chunk_idx = 0; chunk_idx < chunk_array->num_chunks();
+           ++chunk_idx) {
+        chunk_offsets.push_back(
+            chunk_offsets.back() +
+            static_cast<uint64_t>(chunk_array->chunk(chunk_idx)->length()));
+      }
+
+      const auto layout_id = chunk_layout_offsets_.size();
+      auto [layout_it, inserted] =
+          chunk_layout_ids.emplace(chunk_offsets, layout_id);
+      if (inserted) {
+        chunk_layout_offsets_.push_back(std::move(chunk_offsets));
+      }
+      persist_chunk_layout_ids_[i] = layout_it->second;
     }
 
     all_columns_same_chunk_layout_ =
-        get_fetch_perf_chunk_offsets(fields, &common_chunk_offsets_);
+        !persist_chunk_layout_ids_.empty() &&
+        persist_chunk_layout_ids_.front() != INVALID_CHUNK_LAYOUT_ID &&
+        std::all_of(
+            persist_chunk_layout_ids_.begin(), persist_chunk_layout_ids_.end(),
+            [first_layout_id = persist_chunk_layout_ids_.front()](
+                size_t layout_id) { return layout_id == first_layout_id; });
 
-    LOG_INFO("fresh_persist_chunked_array persist_chunk_arrays[%zu]",
-             persist_chunk_arrays_.size());
+    LOG_INFO(
+        "fresh_persist_chunked_array persist_chunk_arrays[%zu] "
+        "chunk_layouts[%zu]",
+        persist_chunk_arrays_.size(), chunk_layout_offsets_.size());
   }
 }
 
