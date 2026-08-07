@@ -133,10 +133,14 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
 
     std::vector<float> dists(size);
     std::vector<const void *> neighbor_vecs(size);
-    for (uint32_t i = 0; i < size; ++i) {
-      neighbor_vecs[i] = ailego_unlikely(use_provider)
-                             ? provider_vec_blocks[i].data()
-                             : neighbor_vec_blocks[i].data();
+    if (ailego_unlikely(use_provider)) {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = provider_vec_blocks[i].data();
+      }
+    } else {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      }
     }
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data());
@@ -362,10 +366,14 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
       break;
     }
 
-    for (uint32_t i = 0; i < size; ++i) {
-      neighbor_vecs[i] = ailego_unlikely(use_provider)
-                             ? provider_vec_blocks[i].data()
-                             : neighbor_vec_blocks[i].data();
+    if (ailego_unlikely(use_provider)) {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = provider_vec_blocks[i].data();
+      }
+    } else {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      }
     }
 
     // do prefetch

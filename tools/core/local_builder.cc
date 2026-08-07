@@ -192,6 +192,8 @@ int setup_build_from_original(const string &builder_class,
   IndexMeta provider_meta = input_meta;
 
   if (input_meta.metric_name() == "Cosine") {
+    // normalize the original vectors so they match the cosine metric space;
+    // note this materializes a full fp32 copy of the dataset in memory
     VecsIndexHolder::Pointer vecs_holder =
         std::dynamic_pointer_cast<VecsIndexHolder>(build_holder);
     if (!vecs_holder) {

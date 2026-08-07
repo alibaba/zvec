@@ -575,9 +575,25 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 
   ctx->clear();
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   ctx->set_provider(provider_);
+
+  //! use the original vector from provider as the build query, fetched
+  //! before mutating the entity so a missing vector cannot leave an
+  //! orphan node in the index; a node added with id is keyed by id
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    ret = provider_->get_vector(id, original_query_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Failed to get original vector from provider, id=%u", id);
+      (*stats_.mutable_discarded_count())++;
+      return ret;
+    }
+    ctx->update_dist_caculator_dim(provider_meta_.dimension());
+    ctx->reset_query_raw(original_query_block.data());
+  } else {
+    ctx->reset_query(query);
+  }
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -595,21 +611,6 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
     LOG_ERROR("Hnsw streamer add vector failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
-  }
-
-  //! use the original vector from provider as the build query
-  IndexStorage::MemoryBlock original_query_block;
-  if (ailego_unlikely(provider_ != nullptr)) {
-    key_t key = entity_->get_key(id);
-    if (ailego_unlikely(key == kInvalidKey ||
-                        provider_->get_vector(key, original_query_block) !=
-                            0)) {
-      LOG_ERROR("Failed to get original vector from provider, id=%u", id);
-      (*stats_.mutable_discarded_count())++;
-      return IndexError_NoExist;
-    }
-    ctx->update_dist_caculator_dim(provider_meta_.dimension());
-    ctx->reset_query_raw(original_query_block.data());
   }
 
   ret = alg_->add_node(id, level, ctx);
@@ -671,7 +672,6 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
 
   ctx->clear();
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   ctx->set_provider(provider_);
 
@@ -687,6 +687,8 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
     }
     ctx->update_dist_caculator_dim(provider_meta_.dimension());
     ctx->reset_query_raw(original_query_block.data());
+  } else {
+    ctx->reset_query(query);
   }
 
   if (metric_->support_train()) {

@@ -33,9 +33,15 @@ class HnswStreamer : public IndexStreamer {
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
 
   //! Bind a provider which supplies the original vectors, so the graph is
-  //! built from them instead of the vectors stored in index
+  //! built from them instead of the vectors stored in index. It must be
+  //! called before open, where the build distance is derived from the
+  //! provider meta; binding it afterwards would compute wrong distances
   int set_provider(IndexProvider::Pointer provider,
                    const IndexMeta &provider_meta) override {
+    if (ailego_unlikely(state_ == STATE_OPENED)) {
+      LOG_ERROR("Provider must be set before opening the streamer");
+      return IndexError_Unsupported;
+    }
     provider_ = std::move(provider);
     provider_meta_ = provider_meta;
     return 0;

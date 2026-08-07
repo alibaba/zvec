@@ -81,6 +81,11 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_.m = std::max(5, std::min(1024, param_.m));
 
   if (is_sparse_) {
+    // the original vector provider is only supported by the dense streamer
+    if (ailego_unlikely(param_.provider != nullptr)) {
+      LOG_ERROR("Provider is not supported by sparse HNSW index");
+      return core::IndexError_Unsupported;
+    }
     proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION,
                               param_.ef_construction);
     proxima_index_params_.set(

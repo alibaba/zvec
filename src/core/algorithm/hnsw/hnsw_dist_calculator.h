@@ -256,6 +256,7 @@ class HnswDistCalculator {
   //! Batch get vectors by node ids
   int get_vector(const node_id_t *ids, uint32_t count,
                  std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
+    vec_blocks.reserve(vec_blocks.size() + count);
     for (uint32_t i = 0; i < count; ++i) {
       IndexStorage::MemoryBlock block;
       int ret = get_vector(ids[i], block);
