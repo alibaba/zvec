@@ -1038,7 +1038,7 @@ Doc::Ptr SegmentImpl::Fetch(
     }
   }
 
-  // Validate that every forward column has a convertible Arrow field
+  // Build result schema
   std::vector<std::shared_ptr<arrow::Field>> fields;
   for (size_t i = 0; i < forward_columns.size(); ++i) {
     const auto &col = forward_columns[i];
@@ -1058,6 +1058,7 @@ Doc::Ptr SegmentImpl::Fetch(
       fields.push_back(std::move(arrow_field));
     }
   }
+  auto result_schema = std::make_shared<arrow::Schema>(fields);
 
   // fetch forward columns
   auto exec_batch = fetch(forward_columns, segment_doc_id);
@@ -1097,33 +1098,142 @@ Doc::Ptr SegmentImpl::Fetch(
     return nullptr;
   }
 
-  // other forward columns
+  // other forward columns (scalar-shaped input: read each Scalar directly,
+  // no boxing into an Array — DocIterator/sqlengine use the row-level
+  // ConvertArrowRowToDocField helper instead because their input is columnar)
   for (int col_idx = 2; col_idx < exec_batch->num_values(); ++col_idx) {
     auto column_name = forward_columns[col_idx];
+    auto column = result_schema->GetFieldByName(column_name);
     auto &column_scalar = (*exec_batch)[col_idx].scalar();
     if (column_scalar == nullptr || column_scalar->is_valid == false) {
       continue;
     }
-    auto *field = collection_schema_->get_field(column_name);
-    if (field == nullptr) {
-      LOG_ERROR("Field not found in schema: %s", column_name.c_str());
-      continue;
-    }
-    // Box the single-value scalar as a one-row array and reuse the shared
-    // row-level converter, so the type coverage lives in one place
-    // (doc_field_converter) together with DocIterator and the SQL engine.
-    auto array_result = arrow::MakeArrayFromScalar(*column_scalar, 1);
-    if (!array_result.ok()) {
-      LOG_ERROR("Box scalar failed for column %s: %s", column_name.c_str(),
-                array_result.status().ToString().c_str());
-      continue;
-    }
-    auto s = ConvertArrowRowToDocField(array_result.ValueOrDie().get(), 0,
-                                       *field, doc.get());
-    if (!s.ok()) {
-      // Keep Fetch's lenient contract: log and continue with other fields.
-      LOG_ERROR("Convert field %s failed: %s", column_name.c_str(),
-                s.message().c_str());
+    switch (column->type()->id()) {
+      case arrow::Type::STRING: {
+        auto str_scalar =
+            std::dynamic_pointer_cast<arrow::StringScalar>(column_scalar);
+        doc->set(column_name, std::string(str_scalar->view()));
+        break;
+      }
+      case arrow::Type::INT32: {
+        auto int32_scalar =
+            std::dynamic_pointer_cast<arrow::Int32Scalar>(column_scalar);
+        doc->set(column_name, int32_scalar->value);
+        break;
+      }
+      case arrow::Type::INT64: {
+        auto int64_scalar =
+            std::dynamic_pointer_cast<arrow::Int64Scalar>(column_scalar);
+        doc->set(column_name, int64_scalar->value);
+        break;
+      }
+      case arrow::Type::UINT32: {
+        auto uint32_scalar =
+            std::dynamic_pointer_cast<arrow::UInt32Scalar>(column_scalar);
+        doc->set(column_name, uint32_scalar->value);
+        break;
+      }
+      case arrow::Type::UINT64: {
+        auto uint64_scalar =
+            std::dynamic_pointer_cast<arrow::UInt64Scalar>(column_scalar);
+        doc->set(column_name, uint64_scalar->value);
+        break;
+      }
+      case arrow::Type::DOUBLE: {
+        auto double_scalar =
+            std::dynamic_pointer_cast<arrow::DoubleScalar>(column_scalar);
+        doc->set(column_name, double_scalar->value);
+        break;
+      }
+      case arrow::Type::FLOAT: {
+        auto float_scalar =
+            std::dynamic_pointer_cast<arrow::FloatScalar>(column_scalar);
+        doc->set(column_name, float_scalar->value);
+        break;
+      }
+      case arrow::Type::BOOL: {
+        auto bool_scalar =
+            std::dynamic_pointer_cast<arrow::BooleanScalar>(column_scalar);
+        doc->set(column_name, bool_scalar->value);
+        break;
+      }
+      case arrow::Type::BINARY: {
+        auto binary_scalar =
+            std::dynamic_pointer_cast<arrow::BinaryScalar>(column_scalar);
+        doc->set(column_name, std::string(binary_scalar->view()));
+        break;
+      }
+      case arrow::Type::LIST: {
+        auto list_scalar =
+            std::dynamic_pointer_cast<arrow::ListScalar>(column_scalar);
+        if (list_scalar && list_scalar->value) {
+          auto list_type =
+              std::dynamic_pointer_cast<arrow::ListType>(column->type());
+          if (list_type) {
+            // Element array type is guaranteed by value_type; extract the
+            // values with the shared helper (same null semantics as the
+            // iterator and SQL engine list converters).
+            const arrow::Array *values = list_scalar->value.get();
+            switch (list_type->value_type()->id()) {
+              case arrow::Type::BOOL:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::BooleanArray, bool>(
+                             static_cast<const arrow::BooleanArray *>(values)));
+                break;
+              case arrow::Type::INT32:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::Int32Array, int32_t>(
+                             static_cast<const arrow::Int32Array *>(values)));
+                break;
+              case arrow::Type::INT64:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::Int64Array, int64_t>(
+                             static_cast<const arrow::Int64Array *>(values)));
+                break;
+              case arrow::Type::UINT32:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::UInt32Array, uint32_t>(
+                             static_cast<const arrow::UInt32Array *>(values)));
+                break;
+              case arrow::Type::UINT64:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::UInt64Array, uint64_t>(
+                             static_cast<const arrow::UInt64Array *>(values)));
+                break;
+              case arrow::Type::FLOAT:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::FloatArray, float>(
+                             static_cast<const arrow::FloatArray *>(values)));
+                break;
+              case arrow::Type::DOUBLE:
+                doc->set(column_name,
+                         ExtractTypedArrayValues<arrow::DoubleArray, double>(
+                             static_cast<const arrow::DoubleArray *>(values)));
+                break;
+              case arrow::Type::STRING:
+                doc->set(
+                    column_name,
+                    ExtractTypedArrayValues<arrow::StringArray, std::string>(
+                        static_cast<const arrow::StringArray *>(values)));
+                break;
+              case arrow::Type::BINARY:
+                doc->set(
+                    column_name,
+                    ExtractTypedArrayValues<arrow::BinaryArray, std::string>(
+                        static_cast<const arrow::BinaryArray *>(values)));
+                break;
+              default:
+                LOG_WARN("Unsupported list element type: %s",
+                         list_type->value_type()->ToString().c_str());
+                break;
+            }
+          }
+        }
+        break;
+      }
+      default:
+        LOG_ERROR("Unsupported type: %s", column_name.c_str());
+        break;
     }
   }
 

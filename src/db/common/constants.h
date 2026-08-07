@@ -36,6 +36,9 @@ const int kSparseMaxDimSize = 16384;
 
 const int64_t kMaxRecordBatchNumRows = 4096;
 
+// Maximum number of rows prefetched per vector-cache window in DocIterator.
+const int64_t kIteratorVectorPrefetchWindow = 4096;
+
 constexpr uint32_t MAX_ARRAY_FIELD_LEN = 32;
 
 const float COMPACT_DELETE_RATIO_THRESHOLD = 0.3f;

@@ -80,23 +80,7 @@ Status SetListField(const arrow::Array *array, int64_t row,
   auto *list_array = static_cast<const arrow::ListArray *>(array);
   auto values_slice = list_array->value_slice(row);
   auto *values = static_cast<const ArrowArrayT *>(values_slice.get());
-  std::vector<T> vec;
-  vec.reserve(values->length());
-  // null_count() is O(1); skip per-element validity checks when the list
-  // has no nulls (the common case).
-  if (values->null_count() == 0) {
-    for (int64_t i = 0; i < values->length(); ++i) {
-      vec.emplace_back(values->Value(i));
-    }
-  } else {
-    for (int64_t i = 0; i < values->length(); ++i) {
-      if (values->IsNull(i)) {
-        continue;
-      }
-      vec.emplace_back(values->Value(i));
-    }
-  }
-  doc->set(name, std::move(vec));
+  doc->set(name, ExtractTypedArrayValues<ArrowArrayT, T>(values));
   return Status::OK();
 }
 

@@ -55,16 +55,19 @@ class FilteringReader : public arrow::RecordBatchReader {
         return arrow::Status::OK();
       }
 
-      // Find the _zvec_g_doc_id_ column
+      // The _zvec_g_doc_id_ column is required for delete filtering.
       int gdoc_col = (*batch)->schema()->GetFieldIndex(GLOBAL_DOC_ID);
       if (gdoc_col < 0) {
-        // No global doc id column — can't filter, return as-is
-        return arrow::Status::OK();
+        return arrow::Status::FromArgs(
+            arrow::StatusCode::ExecutionError,
+            "FilteringReader batch is missing the global doc id column");
       }
 
       const auto &col = (*batch)->column(gdoc_col);
       if (col->type_id() != arrow::Type::UINT64) {
-        return arrow::Status::OK();
+        return arrow::Status::FromArgs(
+            arrow::StatusCode::ExecutionError,
+            "FilteringReader global doc id column is not a UInt64 array");
       }
       auto *gdoc_array = static_cast<const arrow::UInt64Array *>(col.get());
 
