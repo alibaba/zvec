@@ -1322,6 +1322,79 @@ TEST_F(BufferStorageWriteTest, CR_BorrowedReadAvoidsOwningHandle) {
   ASSERT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, BatchBorrowedReadAcrossSegments) {
+  const size_t page_size = ailego::kVectorPageSize;
+  std::vector<char> payload_a(3 * page_size);
+  std::vector<char> payload_b(2 * page_size);
+  for (size_t i = 0; i < payload_a.size(); ++i) {
+    payload_a[i] = static_cast<char>((i * 17 + 3) % 251);
+  }
+  for (size_t i = 0; i < payload_b.size(); ++i) {
+    payload_b[i] = static_cast<char>((i * 29 + 11) % 251);
+  }
+
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("seg_a", payload_a.size()));
+    ASSERT_EQ(0, storage->append("seg_b", payload_b.size()));
+    auto seg_a = storage->get("seg_a");
+    auto seg_b = storage->get("seg_b");
+    ASSERT_TRUE(seg_a);
+    ASSERT_TRUE(seg_b);
+    ASSERT_EQ(payload_a.size(),
+              seg_a->write(0, payload_a.data(), payload_a.size()));
+    ASSERT_EQ(payload_b.size(),
+              seg_b->write(0, payload_b.data(), payload_b.size()));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto seg_a = storage->get("seg_a");
+  auto seg_b = storage->get("seg_b");
+  ASSERT_TRUE(seg_a);
+  ASSERT_TRUE(seg_b);
+
+  const size_t a_page_aligned_offset =
+      (page_size - seg_a->data_offset() % page_size) % page_size;
+  const size_t a_cross_page_offset =
+      (2 * page_size - 32 - seg_a->data_offset() % page_size) % page_size;
+  const size_t b_page_aligned_offset =
+      (page_size - seg_b->data_offset() % page_size) % page_size;
+  ASSERT_LE(a_page_aligned_offset + 64, payload_a.size());
+  ASSERT_LE(a_cross_page_offset + 128, payload_a.size());
+  ASSERT_LE(b_page_aligned_offset + 96, payload_b.size());
+
+  IndexStorage::MemoryBlock blocks[4];
+  IndexStorage::Segment::BorrowedRead reads[] = {
+      {seg_a.get(), a_page_aligned_offset, 64, &blocks[0]},
+      {seg_a.get(), a_page_aligned_offset + 8, 32, &blocks[1]},
+      {seg_a.get(), a_cross_page_offset, 128, &blocks[2]},
+      {seg_b.get(), b_page_aligned_offset, 96, &blocks[3]},
+  };
+  ASSERT_TRUE(seg_a->read_borrowed_batch(reads, 4));
+
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[0].type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[1].type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, blocks[2].type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[3].type_);
+  EXPECT_EQ(0, std::memcmp(payload_a.data() + a_page_aligned_offset,
+                           blocks[0].data(), 64));
+  EXPECT_EQ(0, std::memcmp(payload_a.data() + a_page_aligned_offset + 8,
+                           blocks[1].data(), 32));
+  EXPECT_EQ(0, std::memcmp(payload_a.data() + a_cross_page_offset,
+                           blocks[2].data(), 128));
+  EXPECT_EQ(0, std::memcmp(payload_b.data() + b_page_aligned_offset,
+                           blocks[3].data(), 96));
+
+  for (auto &block : blocks) {
+    block.reset();
+  }
+  ASSERT_EQ(0, storage->close());
+}
+
 TEST_F(BufferStorageWriteTest, CR_ReadOnlyMetadataPressureFallsBackToBypass) {
   const std::string expected = "bypass";
   {

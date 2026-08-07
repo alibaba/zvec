@@ -229,6 +229,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return entry_at(block_id).ever_loaded.load(std::memory_order_relaxed);
   }
 
+  bool has_evicted() const {
+    return has_evicted_.load(std::memory_order_relaxed);
+  }
+
  private:
   // Segmented page table: entries are split across fixed-size segments so
   // that extend() can grow the table without moving existing entries.
@@ -255,6 +259,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   static constexpr size_t kInvalidLoadedBlock =
       std::numeric_limits<size_t>::max();
   std::atomic<size_t> loaded_head_{kInvalidLoadedBlock};
+  std::atomic<bool> has_evicted_{false};
 
   // Pair with segment_count_ publication before dereferencing a segment.
   Entry &entry_at(size_t idx) {
@@ -314,6 +319,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
                                              std::memory_order_relaxed);
   }
   void inc_evict() {
+    has_evicted_.store(true, std::memory_order_relaxed);
     counters_[counter_shard()].evict.fetch_add(1, std::memory_order_relaxed);
   }
   void inc_second_chance() {
@@ -414,6 +420,10 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   bool writable() const {
     return writable_;
+  }
+
+  bool has_evicted() const {
+    return page_table_.has_evicted();
   }
 
   size_t file_size() const {

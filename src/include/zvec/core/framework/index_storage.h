@@ -320,6 +320,23 @@ class IndexStorage : public IndexModule {
     //! Index Storage Pointer
     typedef std::shared_ptr<Segment> Pointer;
 
+    //! One bounded-lifetime read in a batch. Requests may reference different
+    //! segments owned by the same storage so backends can merge their page
+    //! misses into one I/O submission.
+    struct BorrowedRead {
+      BorrowedRead(Segment *segment_arg, size_t offset_arg, size_t length_arg,
+                   MemoryBlock *block_arg)
+          : segment(segment_arg),
+            offset(offset_arg),
+            length(length_arg),
+            block(block_arg) {}
+
+      Segment *segment;
+      size_t offset;
+      size_t length;
+      MemoryBlock *block;
+    };
+
     //! Destructor
     virtual ~Segment(void) {}
 
@@ -352,6 +369,42 @@ class IndexStorage : public IndexModule {
     //! the owning read behavior.
     virtual size_t read_borrowed(size_t offset, MemoryBlock &data, size_t len) {
       return read(offset, data, len);
+    }
+
+    //! Whether batching is currently preferable to scalar borrowed reads.
+    virtual bool prefer_borrowed_batch() const {
+      return false;
+    }
+
+    //! Batch borrowed reads. The default preserves compatibility by issuing
+    //! scalar reads; page-backed implementations may override this to batch
+    //! misses while keeping each returned MemoryBlock pinned independently.
+    virtual bool read_borrowed_batch(BorrowedRead *reads, size_t count) {
+      if (count == 0) {
+        return true;
+      }
+      if (reads == nullptr) {
+        return false;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        if (reads[i].segment == nullptr || reads[i].block == nullptr) {
+          return false;
+        }
+      }
+      for (size_t i = 0; i < count; ++i) {
+        reads[i].block->reset();
+      }
+      for (size_t i = 0; i < count; ++i) {
+        BorrowedRead &request = reads[i];
+        if (request.segment->read_borrowed(request.offset, *request.block,
+                                           request.length) != request.length) {
+          for (size_t j = 0; j < count; ++j) {
+            reads[j].block->reset();
+          }
+          return false;
+        }
+      }
+      return true;
     }
 
     virtual bool read(SegmentData *, size_t) {

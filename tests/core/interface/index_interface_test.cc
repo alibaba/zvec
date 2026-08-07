@@ -561,6 +561,73 @@ TEST(IndexInterface, BufferGeneral) {
            .build());
 }
 
+TEST(IndexInterface, HnswBufferPoolSearchWithEviction) {
+  constexpr uint32_t kDimension = 768;
+  constexpr uint32_t kDocCount = 512;
+  constexpr size_t kBufferBudget = 1024 * 1024;
+  const std::string index_name{"test_hnsw_buffer_eviction.index"};
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kL2sq)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithEFConstruction(100)
+                   .Build();
+
+  {
+    auto write_index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, write_index);
+    ASSERT_EQ(0, write_index->Open(index_name,
+                                   {StorageOptions::StorageType::kMMAP, true}));
+
+    std::vector<float> vector(kDimension);
+    VectorData vector_data;
+    for (uint32_t id = 0; id < kDocCount; ++id) {
+      std::fill(vector.begin(), vector.end(), static_cast<float>(id));
+      vector_data.vector = DenseVector{vector.data()};
+      ASSERT_EQ(0, write_index->Add(vector_data, id));
+    }
+    ASSERT_EQ(0, write_index->Flush());
+    ASSERT_EQ(0, write_index->Close());
+  }
+
+  // A 768-D FP32 HNSW node is larger than 3 KiB, so this index is larger
+  // than the 1 MiB pool and many vector reads cross a 4 KiB page boundary.
+  ASSERT_EQ(0,
+            zvec::ailego::MemoryLimitPool::get_instance().init(kBufferBudget));
+  {
+    auto read_index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, read_index);
+    ASSERT_EQ(0, read_index->Open(
+                     index_name,
+                     {StorageOptions::StorageType::kBufferPool, false, true}));
+    auto *hnsw_index = dynamic_cast<HNSWIndex *>(read_index.get());
+    ASSERT_NE(nullptr, hnsw_index);
+    ASSERT_EQ("buffer_pool", hnsw_index->storage_mode());
+
+    auto query_param =
+        HNSWQueryParamBuilder().with_topk(1).with_ef_search(100).build();
+    std::vector<float> query_vector(kDimension);
+    VectorData query;
+    for (uint32_t id : {0U, 63U, 127U, 255U, 383U, 511U}) {
+      std::fill(query_vector.begin(), query_vector.end(),
+                static_cast<float>(id));
+      query.vector = DenseVector{query_vector.data()};
+      SearchResult result;
+      ASSERT_EQ(0, read_index->Search(query, query_param, &result));
+      ASSERT_EQ(1U, result.doc_list_.size());
+      ASSERT_EQ(id, result.doc_list_[0].key());
+    }
+    ASSERT_EQ(0, read_index->Close());
+  }
+
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  ASSERT_EQ(
+      0, zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 * 1024));
+}
+
 
 TEST(IndexInterface, SparseGeneral) {
   constexpr uint32_t kSparseCount = 3;
@@ -750,10 +817,9 @@ TEST(IndexInterface, Merge) {
       auto index3 = create_index_func(param_target, index_name + "3");
       ASSERT_NE(nullptr, index3);
       MergeOptions merge_options;
-      merge_options.write_concurrency =
-          (std::numeric_limits<uint32_t>::max)();
-      ASSERT_TRUE(0 == index3->Merge({index1, index2}, IndexFilter(),
-                                     merge_options));
+      merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
+      ASSERT_TRUE(
+          0 == index3->Merge({index1, index2}, IndexFilter(), merge_options));
       ASSERT_TRUE(3 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;
@@ -784,11 +850,9 @@ TEST(IndexInterface, Merge) {
       filter.set([](uint64_t key) { return key == 0; });  // TODO: uint32?
       zvec::ailego::ThreadPool pool(1, false);
       MergeOptions merge_options;
-      merge_options.write_concurrency =
-          (std::numeric_limits<uint32_t>::max)();
+      merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
       merge_options.pool = &pool;
-      ASSERT_TRUE(0 ==
-                  index3->Merge({index1, index2}, filter, merge_options));
+      ASSERT_TRUE(0 == index3->Merge({index1, index2}, filter, merge_options));
       ASSERT_TRUE(2 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;
@@ -2314,8 +2378,8 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
   exact_results.reserve(kNumVectors);
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     const float *vector = all_vectors.data() + i * kDimension;
-    const float score = std::inner_product(
-        query_vector.begin(), query_vector.end(), vector, 0.0f);
+    const float score = std::inner_product(query_vector.begin(),
+                                           query_vector.end(), vector, 0.0f);
     exact_results.emplace_back(score, i);
   }
   std::sort(exact_results.begin(), exact_results.end(),
@@ -2340,13 +2404,11 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
                    .Build();
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0,
-            index->Open(index_name,
-                        {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
-    VectorData vector_data{
-        DenseVector{all_vectors.data() + i * kDimension}};
+    VectorData vector_data{DenseVector{all_vectors.data() + i * kDimension}};
     ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
   }
 

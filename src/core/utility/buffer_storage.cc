@@ -22,6 +22,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -384,6 +385,184 @@ class BufferStorage : public IndexStorage {
       }
 
       return read(offset, data, len);
+    }
+
+    bool prefer_borrowed_batch() const override {
+      return owner_->cache_enabled_ && owner_->buffer_pool_ != nullptr &&
+             !owner_->buffer_pool_->writable() &&
+             owner_->buffer_pool_->has_evicted();
+    }
+
+    bool read_borrowed_batch(BorrowedRead *reads, size_t count) override {
+      if (count == 0) {
+        return true;
+      }
+      if (reads == nullptr || owner_->buffer_pool_handle_ == nullptr ||
+          owner_->buffer_pool_ == nullptr) {
+        return false;
+      }
+
+      // Writable and bypass-only pools retain the scalar ownership rules.
+      if (!owner_->cache_enabled_ || owner_->buffer_pool_->writable()) {
+        return IndexStorage::Segment::read_borrowed_batch(reads, count);
+      }
+
+      struct BatchState {
+        BorrowedRead *request{nullptr};
+        size_t abs_offset{0};
+        size_t first_page_index{0};
+        size_t page_count{0};
+        char *owned{nullptr};
+      };
+      struct BatchScratch {
+        std::vector<BatchState> states;
+        std::vector<ailego::block_id_t> page_ids;
+        std::vector<char *> pages;
+      };
+      static thread_local BatchScratch scratch;
+
+      scratch.states.clear();
+      scratch.page_ids.clear();
+      scratch.states.reserve(count);
+      for (size_t i = 0; i < count; ++i) {
+        if (reads[i].block != nullptr) {
+          reads[i].block->reset();
+        }
+      }
+
+      auto cleanup_owned = []() {
+        for (BatchState &state : scratch.states) {
+          if (state.owned != nullptr) {
+            ailego_free(state.owned);
+            state.owned = nullptr;
+          }
+        }
+      };
+      auto fail = [&]() {
+        cleanup_owned();
+        for (size_t i = 0; i < count; ++i) {
+          if (reads[i].block != nullptr) {
+            reads[i].block->reset();
+          }
+        }
+        return false;
+      };
+
+      size_t total_pages = 0;
+      for (size_t i = 0; i < count; ++i) {
+        BorrowedRead &request = reads[i];
+        auto *segment = dynamic_cast<WrappedSegment *>(request.segment);
+        if (segment == nullptr || segment->owner_ != owner_ ||
+            request.block == nullptr) {
+          cleanup_owned();
+          return IndexStorage::Segment::read_borrowed_batch(reads, count);
+        }
+
+        const size_t data_size =
+            bs_load_acquire(&segment->segment_info_->segment.meta()->data_size);
+        if (request.offset > data_size ||
+            request.length > data_size - request.offset) {
+          return fail();
+        }
+
+        BatchState state;
+        state.request = &request;
+        if (request.length == 0) {
+          scratch.states.emplace_back(state);
+          continue;
+        }
+
+        const size_t data_offset =
+            segment->segment_info_->segment_header_start_offset +
+            segment->segment_info_->segment_header->content_offset +
+            segment->segment_info_->segment.meta()->data_index;
+        if (data_offset > std::numeric_limits<size_t>::max() - request.offset) {
+          return fail();
+        }
+        state.abs_offset = data_offset + request.offset;
+        if (state.abs_offset >
+            std::numeric_limits<size_t>::max() - (request.length - 1)) {
+          return fail();
+        }
+        const size_t first_page = state.abs_offset / ailego::kVectorPageSize;
+        const size_t last_page =
+            (state.abs_offset + request.length - 1) / ailego::kVectorPageSize;
+        state.first_page_index = total_pages;
+        state.page_count = last_page - first_page + 1;
+        if (state.page_count >
+            std::numeric_limits<size_t>::max() - total_pages) {
+          return fail();
+        }
+        total_pages += state.page_count;
+        scratch.states.emplace_back(state);
+        for (size_t page = first_page; page <= last_page; ++page) {
+          scratch.page_ids.emplace_back(page);
+        }
+      }
+
+      // Cross-page values need an owned contiguous result, but their source
+      // pages still participate in the same batched AIO submission.
+      static constexpr size_t kAlignment = 4096UL;
+      for (BatchState &state : scratch.states) {
+        if (state.page_count <= 1) {
+          continue;
+        }
+        const size_t length = state.request->length;
+        if (length > std::numeric_limits<size_t>::max() - (kAlignment - 1)) {
+          return fail();
+        }
+        const size_t alloc_size =
+            (length + (kAlignment - 1)) & ~(kAlignment - 1);
+        state.owned =
+            static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlignment));
+        if (state.owned == nullptr) {
+          return fail();
+        }
+      }
+
+      scratch.pages.assign(total_pages, nullptr);
+      if (total_pages != 0 &&
+          !owner_->buffer_pool_handle_->acquire_pages(
+              scratch.page_ids.data(), total_pages, scratch.pages.data())) {
+        return fail();
+      }
+
+      for (BatchState &state : scratch.states) {
+        if (state.page_count == 0) {
+          state.request->block->reset();
+          continue;
+        }
+        const size_t first = state.first_page_index;
+        if (state.page_count == 1) {
+          const size_t offset_in_page =
+              state.abs_offset % ailego::kVectorPageSize;
+          state.request->block->reset(owner_->buffer_pool_handle_.get(),
+                                      scratch.page_ids[first],
+                                      scratch.pages[first] + offset_in_page);
+          // The MemoryBlock now owns this pin.
+          scratch.pages[first] = nullptr;
+          continue;
+        }
+
+        size_t remaining = state.request->length;
+        size_t copied = 0;
+        size_t offset_in_page = state.abs_offset % ailego::kVectorPageSize;
+        for (size_t j = 0; j < state.page_count; ++j) {
+          const size_t chunk =
+              std::min(remaining, ailego::kVectorPageSize - offset_in_page);
+          std::memcpy(state.owned + copied,
+                      scratch.pages[first + j] + offset_in_page, chunk);
+          owner_->buffer_pool_handle_->release_one(scratch.page_ids[first + j]);
+          scratch.pages[first + j] = nullptr;
+          copied += chunk;
+          remaining -= chunk;
+          offset_in_page = 0;
+        }
+        *state.request->block =
+            MemoryBlock::MakeOwned(state.owned, state.request->length);
+        state.owned = nullptr;
+      }
+      return true;
     }
 
     //! Write data into the storage with offset. The shard latch excludes

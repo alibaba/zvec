@@ -716,21 +716,57 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
     const node_id_t *ids, uint32_t count,
     std::vector<BufferPoolMemoryBlock> &vec_blocks) const {
   vec_blocks.resize(count);
+  if (count == 0) {
+    return 0;
+  }
+
+  const auto first_loc = get_vector_chunk_loc(ids[0]);
+  ailego_assert_with(first_loc.first < node_chunks_.size(),
+                     "invalid chunk idx");
+  ailego_assert_with(
+      first_loc.second < node_chunks_[first_loc.first]->data_size(),
+      "invalid chunk offset");
+  if (!node_chunks_[first_loc.first]->prefer_borrowed_batch()) {
+    const size_t read_size = vector_size();
+    for (auto i = 0U; i < count; ++i) {
+      auto loc = get_vector_chunk_loc(ids[i]);
+      ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+      ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                         "invalid chunk offset");
+      IndexStorage::MemoryBlock mem_block;
+      const size_t ret = node_chunks_[loc.first]->read_borrowed(
+          loc.second, mem_block, read_size);
+      if (ailego_unlikely(ret != read_size)) {
+        LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
+                  loc.second, read_size, ret);
+        return IndexError_ReadData;
+      }
+      vec_blocks[i] = std::move(mem_block);
+    }
+    return 0;
+  }
+
+  // Reuse request storage on each query thread. HNSW node ids span many
+  // storage chunks, so the batch deliberately crosses Segment boundaries;
+  // BufferStorage can then deduplicate all page misses in one AIO submission.
+  static thread_local std::vector<IndexStorage::Segment::BorrowedRead>
+      batch_reads;
+  batch_reads.clear();
+  batch_reads.reserve(count);
+  const size_t read_size = vector_size();
   for (auto i = 0U; i < count; ++i) {
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
-    size_t read_size = vector_size();
-    IndexStorage::MemoryBlock mem_block;
-    size_t ret = node_chunks_[loc.first]->read_borrowed(loc.second, mem_block,
-                                                        read_size);
-    if (ailego_unlikely(ret != read_size)) {
-      LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
-                loc.second, read_size, ret);
-      return IndexError_ReadData;
-    }
-    vec_blocks[i] = std::move(mem_block);
+    batch_reads.emplace_back(node_chunks_[loc.first].get(), loc.second,
+                             read_size, &vec_blocks[i]);
+  }
+  if (ailego_unlikely(!batch_reads.front().segment->read_borrowed_batch(
+          batch_reads.data(), batch_reads.size()))) {
+    LOG_ERROR("Batch read vectors failed, count=%u, read size=%zu", count,
+              read_size);
+    return IndexError_ReadData;
   }
   return 0;
 }
@@ -906,6 +942,11 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   HnswStorageMode storage_mode() const override {
     return HnswStorageMode::kBufferPool;
   }
+
+  //! Keep the concrete entity type in per-query clones. HnswAlgorithm is
+  //! specialized on this type and statically dispatches the BufferStorage
+  //! accessors below.
+  const HnswEntity::Pointer clone() const override;
 
   inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     return HnswStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(level,
