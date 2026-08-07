@@ -143,18 +143,12 @@ class HnswContext : public IndexContext {
     return vector_source_;
   }
 
-  //! Bind a provider of the original vectors used to build the graph
   inline void set_provider(IndexProvider::Pointer provider) {
     dc_.set_provider(std::move(provider));
   }
 
-  inline void update_dist_caculator_dim(uint32_t dim) {
-    dc_.set_dim(dim);
-  }
-
-  //! Reset the query without applying the index metric query preprocess,
-  //! used for original vectors from a provider
-  inline void reset_query_raw(const void *query) {
+  inline void reset_query_raw(const void *query, const IndexMeta &meta) {
+    dc_.set_dim(meta.dimension());
     dc_.reset_query(query);
     dc_.clear_compare_cnt();
   }
@@ -289,10 +283,14 @@ class HnswContext : public IndexContext {
     }
   }
 
-  inline void reset_query(const void *query) {
+  //! Reset the query and apply the index metric query preprocess. The meta
+  //! describes the space the query lives in, so its dimension drives the
+  //! distance computation
+  inline void reset_query(const void *query, const IndexMeta &meta) {
+    dc_.set_dim(meta.dimension());
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
         query_preprocess_func != nullptr) {
-      size_t dim = dc_.dimension();
+      size_t dim = meta.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);
       query_preprocess_func(preprocess_buffer_.data(), dim);

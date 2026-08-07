@@ -589,10 +589,9 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
       (*stats_.mutable_discarded_count())++;
       return ret;
     }
-    ctx->update_dist_caculator_dim(provider_meta_.dimension());
-    ctx->reset_query_raw(original_query_block.data());
+    ctx->reset_query_raw(original_query_block.data(), provider_meta_);
   } else {
-    ctx->reset_query(query);
+    ctx->reset_query(query, meta_);
   }
 
   if (metric_->support_train()) {
@@ -685,10 +684,9 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
       (*stats_.mutable_discarded_count())++;
       return ret;
     }
-    ctx->update_dist_caculator_dim(provider_meta_.dimension());
-    ctx->reset_query_raw(original_query_block.data());
+    ctx->reset_query_raw(original_query_block.data(), provider_meta_);
   } else {
-    ctx->reset_query(query);
+    ctx->reset_query(query, meta_);
   }
 
   if (metric_->support_train()) {
@@ -762,11 +760,10 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   //! search always uses the vectors stored in the entity
   ctx->set_provider(nullptr);
-  ctx->update_dist_caculator_dim(meta_.dimension());
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   for (size_t q = 0; q < count; ++q) {
-    ctx->reset_query(query);
+    ctx->reset_query(query, meta_);
     ret = alg_->search(ctx);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
@@ -835,7 +832,6 @@ int HnswStreamer::search_bf_impl(
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   //! search always uses the vectors stored in the entity
   ctx->set_provider(nullptr);
-  ctx->update_dist_caculator_dim(meta_.dimension());
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -849,7 +845,7 @@ int HnswStreamer::search_bf_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       ctx->group_topk_heaps().clear();
 
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
@@ -877,7 +873,7 @@ int HnswStreamer::search_bf_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       topk.clear();
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
         if (entity_->get_key(id) == kInvalidKey) {
@@ -932,7 +928,6 @@ int HnswStreamer::search_bf_by_p_keys_impl(
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   //! search always uses the vectors stored in the entity
   ctx->set_provider(nullptr);
-  ctx->update_dist_caculator_dim(meta_.dimension());
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -946,7 +941,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       ctx->group_topk_heaps().clear();
 
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
@@ -973,7 +968,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       topk.clear();
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         key_t pk = p_keys[q][idx];
