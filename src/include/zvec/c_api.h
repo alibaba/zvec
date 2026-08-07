@@ -789,6 +789,8 @@ typedef uint32_t zvec_io_backend_type_t;
   0 /**< Synchronous pread() \u2014 no async I/O */
 #define ZVEC_IO_BACKEND_TYPE_LIBAIO \
   1 /**< libaio loaded at runtime via dlopen() */
+#define ZVEC_IO_BACKEND_TYPE_IO_URING \
+  2 /**< io_uring via raw kernel syscalls (zero dependency) */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn async disk reads.
@@ -796,7 +798,8 @@ typedef uint32_t zvec_io_backend_type_t;
  * Pure introspection \u2014 no side effects, no install hints.
  *
  * @return zvec_io_backend_type_t The loaded backend type
- *         (ZVEC_IO_BACKEND_TYPE_LIBAIO or ZVEC_IO_BACKEND_TYPE_PREAD).
+ *         (ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO,
+ *         or ZVEC_IO_BACKEND_TYPE_PREAD).
  */
 ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
 
@@ -805,7 +808,7 @@ ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
  *
  * @param type The backend type code.
  * @return Thread-local string valid until the next call on this thread;
- *         "libaio", "pread", or "unknown".
+ *         "io_uring", "libaio", "pread", or "unknown".
  */
 ZVEC_EXPORT const char *ZVEC_CALL
 zvec_get_io_backend_type_name(zvec_io_backend_type_t type);
@@ -1173,7 +1176,7 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
  * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
- * Supported values are "standard", "jieba", and "whitespace".
+ * Supported values are "standard", "ngram", "jieba", and "whitespace".
  * @param filters Token filter names (NULL keeps current value). Supported
  * values are "lowercase", "ascii_folding", and "stemmer".
  * @param extra_params Additional tokenizer/filter parameters (NULL keeps
@@ -1182,6 +1185,12 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  * Tokenizers:
  *   standard:
  *     - "max_token_length" (positive integer).
+ *   ngram:
+ *     - "ngram_min" (positive integer, default 2).
+ *     - "ngram_max" (positive integer, default 2).
+ *     - "token_chars" (array of "letter", "digit", "whitespace",
+ *       "punctuation", "symbol"; default [] keeps all valid UTF-8
+ *       characters). custom_token_chars is not supported.
  *   jieba:
  *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
  *       hmm_model.utf8).

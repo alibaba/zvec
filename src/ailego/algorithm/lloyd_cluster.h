@@ -202,7 +202,7 @@ class LloydCluster {
 
     if (spherical_) {
       for (size_t i = 0, n = centroids_.count(); i != n; ++i) {
-        float norm;
+        float norm = 0.0f;
         ContextType::Norm2(centroids_[i], centroids_.dimension(), &norm);
       }
     }

@@ -221,8 +221,10 @@ int IVFIndex::_prepare_for_search(
 
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
-  if (ivf_search_param->filter) {
+  if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
     context->set_filter(std::move(*ivf_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (ivf_search_param->radius > 0.0f) {
     context->set_threshold(ivf_search_param->radius);

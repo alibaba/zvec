@@ -238,6 +238,13 @@ class CollectionImpl : public Collection {
 
   mutable std::shared_mutex schema_handle_mtx_;
   mutable std::shared_mutex write_mtx_;
+  // Serializes maintenance operations (Optimize, schema DDL, Close and
+  // Destroy) without holding schema_handle_mtx_, so a maintenance
+  // operation waiting for a running Optimize never becomes a pending
+  // exclusive acquirer of the schema lock (which would block new readers).
+  // Lock order: maintenance -> schema -> write -> SegmentManager; never
+  // acquire maintenance_mtx_ after any of the others.
+  mutable std::mutex maintenance_mtx_;
 
   std::atomic<SegmentID> segment_id_allocator_;
   std::atomic<SegmentID> tmp_segment_id_allocator_;
@@ -330,6 +337,7 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
 
 Status CollectionImpl::Close() {
   // only called in deconstructor
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -363,6 +371,7 @@ Status CollectionImpl::close_unsafe() {
 Status CollectionImpl::Destroy() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -380,6 +389,9 @@ Status CollectionImpl::Destroy() {
 Status CollectionImpl::Flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  // Only flushes the writing segment's WAL (no schema/segment-structure
+  // change), so it needs neither maintenance_mtx_ nor exclusion from a
+  // running Optimize.
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
@@ -462,6 +474,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
                                    const CreateIndexOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -650,6 +663,7 @@ Status CollectionImpl::execute_tasks(
 Status CollectionImpl::DropIndex(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -779,20 +793,20 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_drop_scalar_index_task(
 Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  std::lock_guard lock(schema_handle_mtx_);
-  // when optimizing, schema operations(include another optimize) are not
-  // allowed
-
-  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  // Serialize against other maintenance operations for the whole optimize.
+  std::lock_guard maintenance_lock(maintenance_mtx_);
 
   std::vector<Segment::Ptr> persist_segments;
 
+  // Phase 1: exclusively seal the current writing segment and snapshot
+  // the persisted segment set.
   {
-    // forbidden writing for a while
+    std::unique_lock schema_lock(schema_handle_mtx_);
     std::lock_guard write_lock(write_mtx_);
 
+    CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+
     if (writing_segment_->has_record()) {
-      // Flush pending records and switch only when the segment contains docs.
       auto s = switch_to_new_segment_for_writing();
       if (!s.ok()) {
         return s;
@@ -801,15 +815,13 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
 
     persist_segments =
         get_all_persist_segments();  // will not return writing segment
-    // after leave this scope, writing action is allowed
   }
 
   if (persist_segments.size() == 0) {
-    // no need to optimize
     return Status::OK();
   }
 
-  // build segment compact task
+  // Phase 2: lock-free compact. Readers and writers proceed freely.
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,
@@ -819,9 +831,56 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
+  // End of phase 2 (still lock-free): move built tmp segments to their
+  // final paths and open them before the manifest is persisted, so a
+  // failure aborts cleanly without a version/disk mismatch.
+  std::vector<Segment::Ptr> opened_segments;
+  std::vector<std::string> moved_dirs;
+  auto cleanup_moved_dirs = [&]() {
+    for (auto &dir : moved_dirs) {
+      FileHelper::RemoveDirectory(dir);
+    }
+  };
+  for (auto &task : tasks) {
+    auto task_info = task->task_info();
+    if (!std::holds_alternative<CompactTask>(task_info)) {
+      continue;
+    }
+    auto compact_task = std::get<CompactTask>(task_info);
+    if (!compact_task.output_segment_meta_) {
+      continue;
+    }
+
+    auto tmp_segment_path =
+        FileHelper::MakeTempSegmentPath(path_, compact_task.output_segment_id_);
+    auto new_segment_id = allocate_segment_id();
+    auto new_segment_path = FileHelper::MakeSegmentPath(path_, new_segment_id);
+
+    if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
+      cleanup_moved_dirs();
+      return Status::InternalError("move segment directory failed");
+    }
+    moved_dirs.push_back(new_segment_path);
+    compact_task.output_segment_meta_->set_id(new_segment_id);
+
+    auto new_segment =
+        Segment::Open(path_, *schema_, *compact_task.output_segment_meta_,
+                      id_map_, delete_store_, version_manager_,
+                      SegmentOptions{true, options_.enable_mmap_});
+    if (!new_segment.has_value()) {
+      // best-effort cleanup: these directories are not referenced by any
+      // manifest yet, so remove them rather than leaking them on disk
+      cleanup_moved_dirs();
+      return new_segment.error();
+    }
+    opened_segments.push_back(new_segment.value());
+  }
+
+  // Phase 3: short exclusive commit. No readers can be using the old
+  // indexers — they all hold the shared schema lock — so in-place
+  // reload_vector_index() is safe.
   {
-    // forbidden writing for updating version
-    // writing action may trigger updating version where confict occurs
+    std::unique_lock schema_lock(schema_handle_mtx_);
     std::lock_guard write_lock(write_mtx_);
 
     Version new_version = version_manager_->get_current_version();
@@ -832,24 +891,7 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
       if (std::holds_alternative<CompactTask>(task_info)) {
         auto compact_task = std::get<CompactTask>(task_info);
 
-        // 0. check if has output segment meta
         if (compact_task.output_segment_meta_) {
-          // 1. rename built tmp segments
-          auto tmp_segment_id = compact_task.output_segment_id_;
-          auto tmp_segment_path =
-              FileHelper::MakeTempSegmentPath(path_, tmp_segment_id);
-
-          auto new_segment_id = allocate_segment_id();
-          auto new_segment_path =
-              FileHelper::MakeSegmentPath(path_, new_segment_id);
-
-          if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
-            return Status::InternalError("move segment directory failed");
-          }
-
-          // update output_segment_meta_'s segment id
-          compact_task.output_segment_meta_->set_id(new_segment_id);
-
           s = new_version.add_persisted_segment_meta(
               compact_task.output_segment_meta_);
           CHECK_RETURN_STATUS(s);
@@ -868,15 +910,15 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
       }
     }
 
-    // 2. update version
     s = version_manager_->apply(new_version);
     CHECK_RETURN_STATUS(s);
 
-    // 3. persist version
     s = version_manager_->flush();
     CHECK_RETURN_STATUS(s);
 
-    // 4. remove old segments or block
+    // publish new segments, retire compacted inputs and reload rebuilt
+    // vector indexes
+    size_t opened_index = 0;
     for (auto &task : tasks) {
       auto task_info = task->task_info();
 
@@ -884,14 +926,10 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         auto compact_task = std::get<CompactTask>(task_info);
 
         if (compact_task.output_segment_meta_) {
-          auto new_segment =
-              Segment::Open(path_, *schema_, *compact_task.output_segment_meta_,
-                            id_map_, delete_store_, version_manager_,
-                            SegmentOptions{true, options_.enable_mmap_});
-          if (!new_segment.has_value()) {
-            return new_segment.error();
+          if (opened_index >= opened_segments.size()) {
+            return Status::InternalError("opened_segments index out of bounds");
           }
-          s = segment_manager_->add_segment(new_segment.value());
+          s = segment_manager_->add_segment(opened_segments[opened_index++]);
           CHECK_RETURN_STATUS(s);
         }
 
@@ -1136,6 +1174,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
                                  const AddColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1208,6 +1247,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
 Status CollectionImpl::DropColumn(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1282,6 +1322,7 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
                                    const AlterColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);

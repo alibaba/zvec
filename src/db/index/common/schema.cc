@@ -76,10 +76,10 @@ static Status validate_fts_index_params(const FieldSchema &field) {
   internal_params.extra_params = params->extra_params();
 
   auto pipeline = fts::TokenizerFactory::create(internal_params);
-  if (!pipeline) {
+  if (!pipeline.has_value()) {
     return Status::InvalidArgument(
         "schema validate failed: invalid FTS index params for field[",
-        field.name(), "]");
+        field.name(), "]: ", pipeline.error().message());
   }
   return Status::OK();
 }
