@@ -4432,11 +4432,9 @@ Status SegmentImpl::open_wal_file() {
   }
 
   if (WalFile::CreateAndOpen(wal_file_path, wal_option, &wal_file_) != 0) {
-    LOG_ERROR("WAL open failed: path[%s], segment[%d], create_new[%d]",
-              wal_file_path.c_str(), id(), wal_option.create_new);
-    return Status::InternalError("Failed to open WAL file: path[",
-                                 wal_file_path, "], segment[", id(),
-                                 "], create_new[", wal_option.create_new, "]");
+    LOG_ERROR("WAL open failed: unable to create/open WAL file [%s]",
+              wal_file_path.c_str());
+    return Status::InternalError("Failed to open wal file: ", wal_file_path);
   }
 
   LOG_INFO("WAL opened: path[%s], segment[%d], create_new[%d]",
