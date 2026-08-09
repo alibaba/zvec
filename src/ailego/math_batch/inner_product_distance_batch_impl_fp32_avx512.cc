@@ -22,7 +22,7 @@ namespace zvec::ailego::DistanceBatch {
 
 #if defined(__AVX512F__)
 
-template <size_t BatchSize, bool Minus>
+template <size_t BatchSize>
 static void compute_one_to_many_inner_product_avx512f_fp32(
     const float *query, const float **ptrs,
     std::array<const float *, BatchSize> &prefetch_ptrs, size_t dimensionality,
@@ -59,55 +59,29 @@ static void compute_one_to_many_inner_product_avx512f_fp32(
   }
 
   for (size_t i = 0; i < BatchSize; ++i) {
-    const float value = HorizontalAdd_FP32_V512(accumulators[i]);
-    if constexpr (Minus) {
-      results[i] = -value;
-    } else {
-      results[i] = value;
-    }
+    results[i] = HorizontalAdd_FP32_V512(accumulators[i]);
   }
 }
 
 void compute_one_to_many_inner_product_avx512f_fp32_1(
     const float *query, const float **ptrs,
     std::array<const float *, 1> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<1, false>(
-      query, ptrs, prefetch_ptrs, dim, results);
+  compute_one_to_many_inner_product_avx512f_fp32<1>(query, ptrs, prefetch_ptrs,
+                                                    dim, results);
 }
 
 void compute_one_to_many_inner_product_avx512f_fp32_12(
     const float *query, const float **ptrs,
     std::array<const float *, 12> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<12, false>(
+  compute_one_to_many_inner_product_avx512f_fp32<12>(
       query, ptrs, prefetch_ptrs, dim, results);
 }
 
 void compute_one_to_many_inner_product_avx512f_fp32_8(
     const float *query, const float **ptrs,
     std::array<const float *, 8> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<8, false>(
-      query, ptrs, prefetch_ptrs, dim, results);
-}
-
-void compute_one_to_many_minus_inner_product_avx512f_fp32_1(
-    const float *query, const float **ptrs,
-    std::array<const float *, 1> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<1, true>(
-      query, ptrs, prefetch_ptrs, dim, results);
-}
-
-void compute_one_to_many_minus_inner_product_avx512f_fp32_12(
-    const float *query, const float **ptrs,
-    std::array<const float *, 12> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<12, true>(
-      query, ptrs, prefetch_ptrs, dim, results);
-}
-
-void compute_one_to_many_minus_inner_product_avx512f_fp32_8(
-    const float *query, const float **ptrs,
-    std::array<const float *, 8> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<8, true>(
-      query, ptrs, prefetch_ptrs, dim, results);
+  compute_one_to_many_inner_product_avx512f_fp32<8>(query, ptrs, prefetch_ptrs,
+                                                    dim, results);
 }
 
 #endif

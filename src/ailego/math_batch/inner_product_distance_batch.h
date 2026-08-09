@@ -58,6 +58,11 @@ struct InnerProductDistanceBatchImpl {
 template <typename T, size_t BatchSize>
 struct MinusInnerProductDistanceBatchImpl {
   using ValueType = typename std::remove_cv<T>::type;
+
+  // Keep the sign flip in the baseline-ISA caller. The dispatch translation
+  // unit is compiled for the highest available ISA so it can reference all
+  // optimized kernels; doing this work in an out-of-line specialization there
+  // can make Clang emit AVX-512 instructions before any runtime feature check.
   static void compute_one_to_many(
       const ValueType *query, const ValueType **ptrs,
       std::array<const ValueType *, BatchSize> &prefetch_ptrs, size_t dim,
@@ -181,30 +186,6 @@ struct InnerProductDistanceBatchImpl<float, 8> {
   using ValueType = float;
   static void compute_one_to_many(const float *query, const float **ptrs,
                                   std::array<const float *, 8> &prefetch_ptrs,
-                                  size_t dim, float *sums);
-};
-
-template <>
-struct MinusInnerProductDistanceBatchImpl<float, 1> {
-  using ValueType = float;
-  static void compute_one_to_many(const float *query, const float **ptrs,
-                                  std::array<const float *, 1> &prefetch_ptrs,
-                                  size_t dim, float *sums);
-};
-
-template <>
-struct MinusInnerProductDistanceBatchImpl<float, 8> {
-  using ValueType = float;
-  static void compute_one_to_many(const float *query, const float **ptrs,
-                                  std::array<const float *, 8> &prefetch_ptrs,
-                                  size_t dim, float *sums);
-};
-
-template <>
-struct MinusInnerProductDistanceBatchImpl<float, 12> {
-  using ValueType = float;
-  static void compute_one_to_many(const float *query, const float **ptrs,
-                                  std::array<const float *, 12> &prefetch_ptrs,
                                   size_t dim, float *sums);
 };
 
