@@ -73,8 +73,8 @@ void compute_one_to_many_inner_product_avx512f_fp32_1(
 void compute_one_to_many_inner_product_avx512f_fp32_12(
     const float *query, const float **ptrs,
     std::array<const float *, 12> &prefetch_ptrs, size_t dim, float *results) {
-  compute_one_to_many_inner_product_avx512f_fp32<12>(
-      query, ptrs, prefetch_ptrs, dim, results);
+  compute_one_to_many_inner_product_avx512f_fp32<12>(query, ptrs, prefetch_ptrs,
+                                                     dim, results);
 }
 
 void compute_one_to_many_inner_product_avx512f_fp32_8(
