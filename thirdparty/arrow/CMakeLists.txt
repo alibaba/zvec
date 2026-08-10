@@ -1,27 +1,12 @@
 set(ARROW_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0)
 
-# Detect Alpine Linux / musl libc build host so musl-specific Arrow patches
-# can be applied only where they are needed.
-set(ZVEC_ON_ALPINE_LINUX FALSE)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        execute_process(
-                COMMAND ldd --version
-                OUTPUT_VARIABLE _ldd_stdout
-                ERROR_VARIABLE _ldd_stderr
-        )
-        set(_ldd_output "${_ldd_stdout}${_ldd_stderr}")
-        if(_ldd_output MATCHES "musl")
-                set(ZVEC_ON_ALPINE_LINUX TRUE)
-        endif()
-endif()
-
 if(ANDROID)
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.android.patch)
         apply_patch_once("arrow_android_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
 elseif(IOS)
         set(ARROW_IOS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.ios.patch)
         apply_patch_once("arrow_ios_fix" "${ARROW_SRC_DIR}" "${ARROW_IOS_PATCH}")
-elseif(ZVEC_ON_ALPINE_LINUX)
+elseif(ZVEC_ON_MUSL)
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.patch)
         apply_patch_once("arrow_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
         set(ARROW_ALPINE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.alpinelinux.patch)
