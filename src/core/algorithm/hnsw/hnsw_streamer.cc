@@ -187,6 +187,9 @@ int HnswStreamer::cleanup(void) {
   meta_.clear();
   metric_.reset();
   stats_.clear();
+  provider_.reset();
+  provider_meta_.clear();
+  provider_metric_.reset();
   if (entity_) {
     entity_->cleanup();
   }
