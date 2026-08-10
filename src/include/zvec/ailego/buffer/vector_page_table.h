@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -59,6 +60,14 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
                 "ResidentEntry must contain only one pointer");
 
  public:
+  static constexpr uint8_t kLowPriority =
+      BlockEvictionQueue::kProbationPriority;
+  static constexpr uint8_t kNormalPriority =
+      BlockEvictionQueue::kProtectedPriority;
+  static constexpr uint8_t kHighPriority =
+      BlockEvictionQueue::kExplicitHotPriority;
+  static constexpr size_t kPriorityCount = BlockEvictionQueue::kQueueCount;
+
   // Callback invoked by evict_block() to persist a dirty block before its
   // memory is released. Signature: (block_id, buffer, size, file_offset).
   using FlushCallback = std::function<int(block_id_t, char *, size_t, size_t)>;
@@ -91,7 +100,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   //! Roll back an extension not yet exposed to page users.
   bool rollback_extend(size_t old_entry_num);
 
-  char *acquire_block(block_id_t block_id);
+  char *acquire_block(block_id_t block_id, bool record_reuse = true);
 
   void release_block(block_id_t block_id);
 
@@ -135,7 +144,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
 
   //! Raise an admission hint without allowing a colder caller to demote an
   //! already protected page.
-  void promote_evict_priority(block_id_t block_id, uint8_t priority) {
+  bool promote_evict_priority(block_id_t block_id, uint8_t priority) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     Entry &e = entry_at(block_id);
     uint8_t current = e.evict_priority.load(std::memory_order_relaxed);
@@ -144,7 +153,17 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
                                                    std::memory_order_relaxed,
                                                    std::memory_order_relaxed)) {
     }
+    if (current >= priority) {
+      return false;
+    }
+    e.referenced.store(true, std::memory_order_relaxed);
+    inc_priority_promotion(priority);
     // Existing queue membership adopts the priority on its next requeue.
+    return true;
+  }
+
+  void set_adaptive_priority(bool enabled) {
+    adaptive_priority_enabled_ = enabled;
   }
 
   [[nodiscard]] char *set_block_acquired(block_id_t block_id, char *buffer,
@@ -202,6 +221,9 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     uint64_t evict{0};          // pages actually reclaimed
     uint64_t second_chance{0};  // pages spared by the CLOCK bit
     uint64_t dirty_flush{0};    // dirty pages written back on eviction
+    std::array<uint64_t, kPriorityCount> priority_promotions{};
+    std::array<uint64_t, kPriorityCount> priority_demotions{};
+    std::array<uint64_t, kPriorityCount> evictions_by_priority{};
   };
   Stats stats() const {
     Stats s;
@@ -212,8 +234,20 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
       s.second_chance += c.second_chance.load(std::memory_order_relaxed);
       s.dirty_flush += c.dirty_flush.load(std::memory_order_relaxed);
     }
+    for (size_t priority = 0; priority < kPriorityCount; ++priority) {
+      s.priority_promotions[priority] =
+          priority_promotions_[priority].load(std::memory_order_relaxed);
+      s.priority_demotions[priority] =
+          priority_demotions_[priority].load(std::memory_order_relaxed);
+      s.evictions_by_priority[priority] =
+          evictions_by_priority_[priority].load(std::memory_order_relaxed);
+    }
     return s;
   }
+
+  //! Logical resident pages in each priority tier. Intended for infrequent
+  //! diagnostics; this scans pages that have been loaded at least once.
+  std::array<size_t, kPriorityCount> resident_pages_by_priority() const;
 
   bool is_released(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
@@ -275,6 +309,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
       std::numeric_limits<size_t>::max();
   std::atomic<size_t> loaded_head_{kInvalidLoadedBlock};
   std::atomic<bool> has_evicted_{false};
+  bool adaptive_priority_enabled_{true};
 
   // Pair with segment_count_ publication before dereferencing a segment.
   Entry &entry_at(size_t idx) {
@@ -316,6 +351,11 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     std::atomic<uint64_t> dirty_flush{0};
   };
   CounterShard counters_[kCounterShards];
+  // Priority transitions happen at most once per residency phase, so they do
+  // not need the per-hit counter sharding above.
+  std::array<std::atomic<uint64_t>, kPriorityCount> priority_promotions_{};
+  std::array<std::atomic<uint64_t>, kPriorityCount> priority_demotions_{};
+  std::array<std::atomic<uint64_t>, kPriorityCount> evictions_by_priority_{};
 
   // Keep each thread on one counter shard.
   static size_t counter_shard() {
@@ -333,9 +373,13 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     counters_[counter_shard()].hit.fetch_add(kHitSampleRate,
                                              std::memory_order_relaxed);
   }
-  void inc_evict() {
+  void inc_evict(uint8_t priority) {
     has_evicted_.store(true, std::memory_order_relaxed);
-    counters_[counter_shard()].evict.fetch_add(1, std::memory_order_relaxed);
+    CounterShard &counter = counters_[counter_shard()];
+    counter.evict.fetch_add(1, std::memory_order_relaxed);
+    if (priority < kPriorityCount) {
+      evictions_by_priority_[priority].fetch_add(1, std::memory_order_relaxed);
+    }
   }
   void inc_second_chance() {
     counters_[counter_shard()].second_chance.fetch_add(
@@ -344,6 +388,16 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   void inc_dirty_flush() {
     counters_[counter_shard()].dirty_flush.fetch_add(1,
                                                      std::memory_order_relaxed);
+  }
+  void inc_priority_promotion(uint8_t priority) {
+    if (priority < kPriorityCount) {
+      priority_promotions_[priority].fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  void inc_priority_demotion(uint8_t priority) {
+    if (priority < kPriorityCount) {
+      priority_demotions_[priority].fetch_add(1, std::memory_order_relaxed);
+    }
   }
 };
 
@@ -355,9 +409,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   typedef std::shared_ptr<VecBufferPool> Pointer;
 
   static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
-  static constexpr uint8_t kLowPriority = 0;
-  static constexpr uint8_t kNormalPriority = 1;
-  static constexpr uint8_t kHighPriority = 2;
+  static constexpr uint8_t kLowPriority = VectorPageTable::kLowPriority;
+  static constexpr uint8_t kNormalPriority = VectorPageTable::kNormalPriority;
+  static constexpr uint8_t kHighPriority = VectorPageTable::kHighPriority;
 
   //! Non-evictable page-table and striped-lock memory required for a pool
   //! covering `page_count` pages.
@@ -377,6 +431,10 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t dirty_flush{0};
     uint64_t bypass_reads{0};
     uint64_t bypass_bytes{0};
+    std::array<uint64_t, VectorPageTable::kPriorityCount> priority_promotions{};
+    std::array<uint64_t, VectorPageTable::kPriorityCount> priority_demotions{};
+    std::array<uint64_t, VectorPageTable::kPriorityCount>
+        evictions_by_priority{};
     double hit_rate() const {
       uint64_t total = hit + miss;
       return total ? static_cast<double>(hit) / static_cast<double>(total)
@@ -390,6 +448,9 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.evict = p.evict;
     s.second_chance = p.second_chance;
     s.dirty_flush = p.dirty_flush;
+    s.priority_promotions = p.priority_promotions;
+    s.priority_demotions = p.priority_demotions;
+    s.evictions_by_priority = p.evictions_by_priority;
     s.miss = miss_count_.load(std::memory_order_relaxed);
     s.bypass_reads = bypass_reads_.load(std::memory_order_relaxed);
     s.bypass_bytes = bypass_bytes_.load(std::memory_order_relaxed);
@@ -401,7 +462,8 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   VecBufferPoolHandle get_handle();
 
-  char *acquire_buffer(block_id_t page_id, int retry = 0);
+  char *acquire_buffer(block_id_t page_id, int retry = 0,
+                       bool record_reuse = true);
 
   //! Pin scattered pages; roll back all pins on failure.
   bool acquire_pages(const block_id_t *page_ids, size_t count, char **pages);

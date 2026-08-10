@@ -311,7 +311,7 @@ bool VectorPageTable::rollback_extend(size_t old_entry_num) {
   return true;
 }
 
-char *VectorPageTable::acquire_block(block_id_t block_id) {
+char *VectorPageTable::acquire_block(block_id_t block_id, bool record_reuse) {
   assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
   // Pin only resident pages; negative values are transition sentinels.
@@ -320,8 +320,18 @@ char *VectorPageTable::acquire_block(block_id_t block_id) {
     if (e.ref_count.compare_exchange_weak(count, count + 1,
                                           std::memory_order_acquire,
                                           std::memory_order_relaxed)) {
+      if (record_reuse && adaptive_priority_enabled_ &&
+          has_evicted_.load(std::memory_order_relaxed)) {
+        (void)promote_evict_priority(block_id, kNormalPriority);
+        // Under pressure every real reuse must refresh CLOCK. Sampling is
+        // sufficient for statistics but would let a frequently reused
+        // protected page age out between sampled hits.
+        if (!e.referenced.load(std::memory_order_relaxed)) {
+          e.referenced.store(true, std::memory_order_relaxed);
+        }
+      }
       // Sample the observability counter and CLOCK reference bit together.
-      if (sample_hit()) {
+      if (record_reuse && sample_hit()) {
         if (!e.referenced.load(std::memory_order_relaxed)) {
           e.referenced.store(true, std::memory_order_relaxed);
         }
@@ -414,6 +424,26 @@ size_t VectorPageTable::recover_eviction_queue() {
   return recovered;
 }
 
+std::array<size_t, VectorPageTable::kPriorityCount>
+VectorPageTable::resident_pages_by_priority() const {
+  std::array<size_t, kPriorityCount> resident{};
+  size_t block_id = loaded_head_.load(std::memory_order_acquire);
+  while (block_id != kInvalidLoadedBlock) {
+    const Entry &entry = entry_at(block_id);
+    const size_t next = entry.next_loaded;
+    if (resident_entry_at(block_id).buffer.load(std::memory_order_acquire) !=
+        nullptr) {
+      const uint8_t priority =
+          entry.evict_priority.load(std::memory_order_relaxed);
+      if (priority < kPriorityCount) {
+        ++resident[priority];
+      }
+    }
+    block_id = next;
+  }
+  return resident;
+}
+
 bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
   assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
@@ -436,6 +466,28 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
         eviction_requeue_failed(block_id, owner_version_);
       }
       return false;  // spared, not reclaimed
+    }
+    if (!force && adaptive_priority_enabled_) {
+      uint8_t expected_priority = kNormalPriority;
+      if (e.evict_priority.compare_exchange_strong(
+              expected_priority, kLowPriority, std::memory_order_relaxed,
+              std::memory_order_relaxed)) {
+        inc_priority_demotion(kLowPriority);
+        // Demotion is an aging step, not an eviction decision. Give the page
+        // one probation CLOCK turn so a reclaim loop cannot immediately
+        // consume the freshly demoted tail entry in the same pressure burst.
+        e.referenced.store(true, std::memory_order_relaxed);
+        e.ref_count.store(0, std::memory_order_release);
+        BlockEvictionQueue::BlockType block;
+        block.owner = this;
+        block.owner_key = block_id;
+        block.version = owner_version_;
+        if (!BlockEvictionQueue::get_instance().add_single_block(
+                block, static_cast<int>(kLowPriority))) {
+          eviction_requeue_failed(block_id, owner_version_);
+        }
+        return false;
+      }
     }
     char *buffer =
         resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
@@ -487,7 +539,7 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
     if (buffer) {
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
-    inc_evict();
+    inc_evict(e.evict_priority.load(std::memory_order_relaxed));
     // Clear old membership before publishing the unloaded sentinel.
     e.in_evict_queue.store(false, std::memory_order_relaxed);
     e.ref_count.store(std::numeric_limits<int>::min(),
@@ -620,6 +672,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
 VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   file_name_ = filename;
   writable_ = writable;
+  page_table_.set_adaptive_priority(!writable_);
 #if defined(_MSC_VER)
   int flags = writable_ ? (O_RDWR | _O_BINARY) : (O_RDONLY | _O_BINARY);
   fd_ = _open(filename.c_str(), flags, 0644);
@@ -786,15 +839,16 @@ VecBufferPoolHandle VecBufferPool::get_handle() {
   return VecBufferPoolHandle(*this);
 }
 
-char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
+char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
+                                    bool record_reuse) {
   assert(page_id < page_table_.entry_num());
-  char *buffer = page_table_.acquire_block(page_id);
+  char *buffer = page_table_.acquire_block(page_id, record_reuse);
   if (buffer) {
     return buffer;
   }
   std::unique_lock<std::shared_mutex> lock(
       block_mutexes_[page_id % block_mutex_count_]);
-  buffer = page_table_.acquire_block(page_id);
+  buffer = page_table_.acquire_block(page_id, record_reuse);
   if (buffer) {
     return buffer;
   }
@@ -896,7 +950,10 @@ bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
   // Resolve and pin every output, including duplicates, after population.
   for (size_t i = 0; i < count; ++i) {
     if (pages[i]) continue;
-    pages[i] = acquire_buffer(page_ids[i], 50);
+    // Population releases its installation pin before this resolution pass.
+    // Acquiring it here completes the original miss; it is not evidence of a
+    // later reuse and must leave the page in probation.
+    pages[i] = acquire_buffer(page_ids[i], 50, /*record_reuse=*/false);
     if (!pages[i]) {
       for (size_t j = 0; j < count; ++j) {
         if (pages[j]) {
@@ -1919,17 +1976,35 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
 
 void VecBufferPool::log_stats() const {
   Stats s = stats();
+  const auto resident = page_table_.resident_pages_by_priority();
+  const auto queue_stats = BlockEvictionQueue::get_instance().stats();
   LOG_INFO(
       "VecBufferPool stats: file[%s] hit=%llu miss=%llu hit_rate=%.4f "
       "evict=%llu second_chance=%llu dirty_flush=%llu bypass_reads=%llu "
-      "bypass_bytes=%llu",
+      "bypass_bytes=%llu resident_by_priority=[%zu,%zu,%zu] "
+      "promotions=[%llu,%llu,%llu] demotions=[%llu,%llu,%llu] "
+      "evictions_by_priority=[%llu,%llu,%llu] "
+      "global_queue_approx=[%zu,%zu,%zu] protected_aging_dequeues=%llu",
       file_name_.c_str(), static_cast<unsigned long long>(s.hit),
       static_cast<unsigned long long>(s.miss), s.hit_rate(),
       static_cast<unsigned long long>(s.evict),
       static_cast<unsigned long long>(s.second_chance),
       static_cast<unsigned long long>(s.dirty_flush),
       static_cast<unsigned long long>(s.bypass_reads),
-      static_cast<unsigned long long>(s.bypass_bytes));
+      static_cast<unsigned long long>(s.bypass_bytes), resident[0], resident[1],
+      resident[2], static_cast<unsigned long long>(s.priority_promotions[0]),
+      static_cast<unsigned long long>(s.priority_promotions[1]),
+      static_cast<unsigned long long>(s.priority_promotions[2]),
+      static_cast<unsigned long long>(s.priority_demotions[0]),
+      static_cast<unsigned long long>(s.priority_demotions[1]),
+      static_cast<unsigned long long>(s.priority_demotions[2]),
+      static_cast<unsigned long long>(s.evictions_by_priority[0]),
+      static_cast<unsigned long long>(s.evictions_by_priority[1]),
+      static_cast<unsigned long long>(s.evictions_by_priority[2]),
+      queue_stats.approximate_queue_sizes[0],
+      queue_stats.approximate_queue_sizes[1],
+      queue_stats.approximate_queue_sizes[2],
+      static_cast<unsigned long long>(queue_stats.protected_aging_dequeues));
 }
 
 }  // namespace ailego

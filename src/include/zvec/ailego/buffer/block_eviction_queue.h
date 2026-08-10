@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -62,6 +63,11 @@ class ZVEC_AILEGO_API EvictableBlockOwner {
 
 class BlockEvictionQueue {
  public:
+  static constexpr size_t kQueueCount = 3;
+  static constexpr uint8_t kProbationPriority = 0;
+  static constexpr uint8_t kProtectedPriority = 1;
+  static constexpr uint8_t kExplicitHotPriority = 2;
+
   struct BlockType {
     eviction_key_t owner_key{0};
     version_t version{0};
@@ -125,6 +131,22 @@ class BlockEvictionQueue {
 
   size_t batch_recycle(size_t count);
 
+  struct Stats {
+    std::array<size_t, kQueueCount> approximate_queue_sizes{};
+    uint64_t protected_aging_dequeues{0};
+  };
+
+  Stats stats() const {
+    Stats result;
+    for (size_t i = 0; i < kQueueCount; ++i) {
+      result.approximate_queue_sizes[i] =
+          approximate_queue_sizes_[i].load(std::memory_order_relaxed);
+    }
+    result.protected_aging_dequeues =
+        protected_aging_dequeues_.load(std::memory_order_relaxed);
+    return result;
+  }
+
  private:
   bool evict_block(BlockType &item, size_t &attempts, size_t max_attempts);
 
@@ -135,12 +157,19 @@ class BlockEvictionQueue {
   }
 
  private:
-  constexpr static size_t CACHE_QUEUE_NUM = 3;
+  // Periodically inspect the protected queue when it dominates probation.
+  // This prevents one historical hit from protecting a page forever while a
+  // continuous cold stream keeps the probation queue non-empty.
+  static constexpr uint64_t kProtectedAgingInterval = 8;
+  static constexpr size_t kProtectedDominanceRatio = 3;
   size_t evict_batch_size_{0};
   std::vector<ConcurrentQueue> evict_queues_;
   std::unordered_set<EvictableBlockOwner *> valid_owners_;
   std::shared_mutex valid_owners_mutex_;
   std::atomic<version_t> version_sequence_{1};
+  std::array<std::atomic<size_t>, kQueueCount> approximate_queue_sizes_{};
+  std::atomic<uint64_t> eviction_selection_sequence_{0};
+  std::atomic<uint64_t> protected_aging_dequeues_{0};
 };
 
 class MemoryLimitPool {

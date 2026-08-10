@@ -177,21 +177,42 @@ size_t MemoryLimitPool::page_buffer_size() {
 
 int BlockEvictionQueue::init() {
   evict_batch_size_ = 512;
-  for (size_t i = 0; i < CACHE_QUEUE_NUM; i++) {
+  for (size_t i = 0; i < kQueueCount; i++) {
     evict_queues_.push_back(ConcurrentQueue(evict_batch_size_ * 200));
   }
   return 0;
 }
 
 bool BlockEvictionQueue::evict_single_block(BlockType &item) {
-  bool found = false;
-  for (size_t i = 0; i < CACHE_QUEUE_NUM; i++) {
-    found = evict_queues_[i].try_dequeue(item);
-    if (found) {
-      break;
+  const uint64_t sequence =
+      eviction_selection_sequence_.fetch_add(1, std::memory_order_relaxed);
+  if (sequence % kProtectedAgingInterval == 0) {
+    const size_t probation = approximate_queue_sizes_[kProbationPriority].load(
+        std::memory_order_relaxed);
+    const size_t protected_pages =
+        approximate_queue_sizes_[kProtectedPriority].load(
+            std::memory_order_relaxed);
+    const size_t dominance_threshold =
+        probation > (std::numeric_limits<size_t>::max() - 1) /
+                        kProtectedDominanceRatio
+            ? std::numeric_limits<size_t>::max()
+            : (probation + 1) * kProtectedDominanceRatio;
+    if (protected_pages > dominance_threshold &&
+        evict_queues_[kProtectedPriority].try_dequeue(item)) {
+      approximate_queue_sizes_[kProtectedPriority].fetch_sub(
+          1, std::memory_order_relaxed);
+      protected_aging_dequeues_.fetch_add(1, std::memory_order_relaxed);
+      return true;
     }
   }
-  return found;
+
+  for (size_t i = 0; i < kQueueCount; i++) {
+    if (evict_queues_[i].try_dequeue(item)) {
+      approximate_queue_sizes_[i].fetch_sub(1, std::memory_order_relaxed);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool BlockEvictionQueue::evict_block(BlockType &item) {
@@ -229,7 +250,7 @@ bool BlockEvictionQueue::evict_block(BlockType &item, size_t &attempts,
 void BlockEvictionQueue::recycle() {
   BlockType item;
   // Bound foreground work when CLOCK requeues hot pages.
-  const size_t max_attempts = evict_batch_size_ * 200 * CACHE_QUEUE_NUM + 16;
+  const size_t max_attempts = evict_batch_size_ * 200 * kQueueCount + 16;
   size_t attempts = 0;
   bool recovered = false;
   while (MemoryLimitPool::get_instance().is_full() && attempts < max_attempts) {
@@ -297,14 +318,19 @@ size_t BlockEvictionQueue::recover_owner_queues() {
 
 bool BlockEvictionQueue::add_single_block(const BlockType &block,
                                           int queue_index) {
-  if (queue_index < 0 || queue_index >= static_cast<int>(CACHE_QUEUE_NUM)) {
+  if (queue_index < 0 || queue_index >= static_cast<int>(kQueueCount)) {
     LOG_ERROR("invalid eviction priority: %d", queue_index);
     return false;
   }
   BlockType queued = block;
   queued.priority = static_cast<uint8_t>(queue_index);
+  // Publish the depth first so a concurrent consumer cannot dequeue the item
+  // before its accounting is visible. Roll it back if enqueue fails.
+  approximate_queue_sizes_[queue_index].fetch_add(1, std::memory_order_relaxed);
   bool ok = evict_queues_[queue_index].enqueue(queued);
   if (!ok) {
+    approximate_queue_sizes_[queue_index].fetch_sub(1,
+                                                    std::memory_order_relaxed);
     LOG_ERROR("enqueue failed.");
     return false;
   }

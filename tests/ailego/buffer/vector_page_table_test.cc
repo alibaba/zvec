@@ -1007,6 +1007,156 @@ TEST_F(BufferPoolTest, PriorityChangeMigratesQueuedPageBeforeEviction) {
   EXPECT_FALSE(pool.is_page_resident(1));
 }
 
+TEST_F(BufferPoolTest, DominantProtectedQueueReceivesAgingSamples) {
+  auto &queue = BlockEvictionQueue::get_instance();
+  BlockEvictionQueue::BlockType item;
+  while (queue.evict_single_block(item)) {
+  }
+
+  BlockEvictionQueue::BlockType block;
+  for (size_t i = 0; i < 64; ++i) {
+    ASSERT_TRUE(
+        queue.add_single_block(block, BlockEvictionQueue::kProbationPriority));
+  }
+  for (size_t i = 0; i < 256; ++i) {
+    ASSERT_TRUE(
+        queue.add_single_block(block, BlockEvictionQueue::kProtectedPriority));
+  }
+
+  const uint64_t aging_before = queue.stats().protected_aging_dequeues;
+  for (size_t i = 0; i < 16; ++i) {
+    ASSERT_TRUE(queue.evict_single_block(item));
+  }
+  EXPECT_GT(queue.stats().protected_aging_dequeues, aging_before);
+
+  while (queue.evict_single_block(item)) {
+  }
+}
+
+TEST_F(BufferPoolTest, ReadOnlyPoolDefersAdaptivePriorityUntilPressure) {
+  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/1);
+  std::string file = NewFile(/*num_pages=*/1);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+
+  EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(0));
+  EXPECT_EQ(0u,
+            pool.stats().priority_promotions[VecBufferPool::kNormalPriority]);
+}
+
+TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
+  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/4);
+  std::string file = NewFile(/*num_pages=*/4);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+
+  for (size_t page = 0; page < 3; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+  }
+  ASSERT_GT(pool.stats().evict, 0u);
+
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(0));
+
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  EXPECT_EQ(VecBufferPool::kNormalPriority,
+            pool.page_table_.eviction_priority(0));
+  const auto stats = pool.stats();
+  EXPECT_EQ(1u, stats.priority_promotions[VecBufferPool::kNormalPriority]);
+  const auto resident = pool.page_table_.resident_pages_by_priority();
+  EXPECT_EQ(1u, resident[VecBufferPool::kNormalPriority]);
+}
+
+TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  char *buffer = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, buffer));
+  ASSERT_EQ(buffer,
+            table.set_block_acquired(/*block_id=*/0, buffer, /*offset=*/0));
+  table.release_block(/*block_id=*/0);
+
+  ASSERT_TRUE(table.promote_evict_priority(
+      /*block_id=*/0, VectorPageTable::kNormalPriority));
+  ASSERT_EQ(VectorPageTable::kNormalPriority,
+            table.eviction_priority(/*owner_key=*/0));
+
+  // One CLOCK turn consumes recent activity, the next demotes the page, and
+  // only a later probation turn may reclaim it.
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_EQ(VectorPageTable::kNormalPriority,
+            table.eviction_priority(/*owner_key=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_EQ(VectorPageTable::kLowPriority,
+            table.eviction_priority(/*owner_key=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_TRUE(table.evict_block(/*block_id=*/0));
+
+  const auto stats = table.stats();
+  EXPECT_EQ(1u, stats.priority_promotions[VectorPageTable::kNormalPriority]);
+  EXPECT_EQ(1u, stats.priority_demotions[VectorPageTable::kLowPriority]);
+  EXPECT_EQ(1u, stats.evictions_by_priority[VectorPageTable::kLowPriority]);
+}
+
+TEST_F(BufferPoolTest, ReusedPageSurvivesContinuousColdStream) {
+  constexpr size_t kFilePages = 32;
+  InitVecPool(/*capacity_pages=*/3, /*file_pages=*/kFilePages);
+  std::string file = NewFile(kFilePages);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+
+  for (size_t page = 1; page <= 4; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+  }
+  ASSERT_GT(pool.stats().evict, 0u);
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  for (size_t page = 5; page < kFilePages; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+    ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  }
+
+  EXPECT_TRUE(pool.is_page_resident(0));
+  const auto stats = pool.stats();
+  EXPECT_LT(stats.miss, kFilePages + kFilePages / 2);
+  EXPECT_GT(stats.priority_promotions[VecBufferPool::kNormalPriority], 0u);
+  EXPECT_GT(stats.evictions_by_priority[VecBufferPool::kLowPriority], 0u);
+  EXPECT_EQ(0u, stats.evictions_by_priority[VecBufferPool::kNormalPriority]);
+}
+
+TEST_F(BufferPoolTest, WritablePoolDoesNotAdaptReadPriority) {
+  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/1);
+  std::string file = NewFile(/*num_pages=*/1);
+
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+
+  EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(0));
+  EXPECT_EQ(0u,
+            pool.stats().priority_promotions[VecBufferPool::kNormalPriority]);
+}
+
 TEST_F(BufferPoolTest, BypassReadDoesNotAdmitPage) {
   InitVecPool(/*capacity_pages=*/2, /*file_pages=*/4);
   std::string file = NewFile(/*num_pages=*/4);
@@ -1096,6 +1246,34 @@ TEST_F(BufferPoolTest, BatchAcquireScatteredPagesWithDuplicates) {
   for (block_id_t page_id : page_ids) {
     EXPECT_TRUE(pool.page_table_.is_released(page_id));
   }
+}
+
+TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {
+  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/4);
+  std::string file = NewFile(/*num_pages=*/4);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+  for (size_t page = 2; page < 4; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+  }
+  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  ASSERT_GT(pool.stats().evict, 0u);
+
+  const block_id_t page_ids[] = {1};
+  char *pages[1] = {};
+
+  ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
+  handle.release_pages(page_ids, 1);
+  EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(1));
+
+  ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
+  handle.release_pages(page_ids, 1);
+  EXPECT_EQ(VecBufferPool::kNormalPriority,
+            pool.page_table_.eviction_priority(1));
 }
 
 TEST_F(BufferPoolTest, BatchAcquireRollsBackPinsOnInvalidPage) {
