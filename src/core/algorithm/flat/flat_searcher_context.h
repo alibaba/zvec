@@ -486,7 +486,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_column_nofilter(
     heap->emplace(0, score, feature_index++);
   }
 
-  for (auto &it : heap->container()) {
+  for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }
   heap->sort();
@@ -620,7 +620,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
                                 qmeta.dimension(), &score);
     heap->emplace(0, score, feature_index++);
   }
-  for (auto &it : heap->container()) {
+  for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }
   heap->sort();
