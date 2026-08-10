@@ -107,15 +107,15 @@ size_t VectorPageTable::metadata_bytes_for_entries(size_t entry_num) {
   }
   const size_t segment_count =
       entry_num == 0 ? 0 : (entry_num - 1) / kSegmentSize + 1;
-  const size_t bytes_per_entry = sizeof(Entry) + sizeof(ResidentEntry);
-  if (kSegmentSize > std::numeric_limits<size_t>::max() / bytes_per_entry) {
+  if (segment_count == 0) {
+    return 0;
+  }
+  if (segment_count >
+      (std::numeric_limits<size_t>::max() - kSegmentDirectoryBytes) /
+          kSegmentMetadataBytes) {
     return std::numeric_limits<size_t>::max();
   }
-  const size_t bytes_per_segment = kSegmentSize * bytes_per_entry;
-  if (segment_count > std::numeric_limits<size_t>::max() / bytes_per_segment) {
-    return std::numeric_limits<size_t>::max();
-  }
-  return segment_count * bytes_per_segment;
+  return kSegmentDirectoryBytes + segment_count * kSegmentMetadataBytes;
 }
 
 void VectorPageTable::initialize_segment(Entry *entries,
@@ -173,7 +173,14 @@ bool VectorPageTable::init(size_t entry_num) {
 
   std::vector<std::unique_ptr<Entry[]>> new_segments;
   std::vector<std::unique_ptr<ResidentEntry[]>> new_resident_segments;
+  std::unique_ptr<Entry *[]> new_segment_directory;
+  std::unique_ptr<ResidentEntry *[]> new_resident_segment_directory;
   try {
+    if (need_segments != 0) {
+      new_segment_directory = std::make_unique<Entry *[]>(kMaxSegments);
+      new_resident_segment_directory =
+          std::make_unique<ResidentEntry *[]>(kMaxSegments);
+    }
     new_segments.reserve(need_segments);
     new_resident_segments.reserve(need_segments);
     for (size_t s = 0; s < need_segments; ++s) {
@@ -192,9 +199,11 @@ bool VectorPageTable::init(size_t entry_num) {
     return false;
   }
   for (size_t s = 0; s < need_segments; ++s) {
-    segments_[s] = new_segments[s].release();
-    resident_segments_[s] = new_resident_segments[s].release();
+    new_segment_directory[s] = new_segments[s].release();
+    new_resident_segment_directory[s] = new_resident_segments[s].release();
   }
+  segments_ = std::move(new_segment_directory);
+  resident_segments_ = std::move(new_resident_segment_directory);
   metadata_charge_ = charge;
   // Publish segments before the externally visible entry count.
   segment_count_.store(need_segments, std::memory_order_release);
@@ -219,15 +228,18 @@ bool VectorPageTable::extend(size_t new_entry_num) {
       new_entry_num == 0 ? 0 : (new_entry_num - 1) / kSegmentSize + 1;
   const size_t old_count = segment_count_.load(std::memory_order_relaxed);
   const size_t added_segments = new_segment_count - old_count;
-  const size_t added_charge =
-      metadata_bytes_for_entries(added_segments * kSegmentSize);
-  if (added_charge == std::numeric_limits<size_t>::max()) {
+  const bool needs_directory = old_count == 0 && new_segment_count != 0;
+  if (added_segments > (std::numeric_limits<size_t>::max() -
+                        (needs_directory ? kSegmentDirectoryBytes : 0)) /
+                           kSegmentMetadataBytes) {
     LOG_ERROR(
         "VectorPageTable::extend: metadata size overflow for %zu new "
         "segments",
         added_segments);
     return false;
   }
+  const size_t added_charge = added_segments * kSegmentMetadataBytes +
+                              (needs_directory ? kSegmentDirectoryBytes : 0);
   if (!MemoryLimitPool::get_instance().try_charge_metadata(added_charge)) {
     LOG_ERROR(
         "VectorPageTable::extend: shared memory budget cannot reserve %zu "
@@ -239,7 +251,14 @@ bool VectorPageTable::extend(size_t new_entry_num) {
 
   std::vector<std::unique_ptr<Entry[]>> new_segments;
   std::vector<std::unique_ptr<ResidentEntry[]>> new_resident_segments;
+  std::unique_ptr<Entry *[]> new_segment_directory;
+  std::unique_ptr<ResidentEntry *[]> new_resident_segment_directory;
   try {
+    if (needs_directory) {
+      new_segment_directory = std::make_unique<Entry *[]>(kMaxSegments);
+      new_resident_segment_directory =
+          std::make_unique<ResidentEntry *[]>(kMaxSegments);
+    }
     new_segments.reserve(new_segment_count - old_count);
     new_resident_segments.reserve(new_segment_count - old_count);
     for (size_t s = old_count; s < new_segment_count; ++s) {
@@ -257,10 +276,19 @@ bool VectorPageTable::extend(size_t new_entry_num) {
         new_entry_num, added_charge);
     return false;
   }
+  Entry **segment_directory =
+      needs_directory ? new_segment_directory.get() : segments_.get();
+  ResidentEntry **resident_segment_directory =
+      needs_directory ? new_resident_segment_directory.get()
+                      : resident_segments_.get();
   for (size_t s = old_count; s < new_segment_count; ++s) {
     const size_t idx = s - old_count;
-    segments_[s] = new_segments[idx].release();
-    resident_segments_[s] = new_resident_segments[idx].release();
+    segment_directory[s] = new_segments[idx].release();
+    resident_segment_directory[s] = new_resident_segments[idx].release();
+  }
+  if (needs_directory) {
+    segments_ = std::move(new_segment_directory);
+    resident_segments_ = std::move(new_resident_segment_directory);
   }
   metadata_charge_ += added_charge;
   // Match init() publication order: segments first, entry count last.
@@ -303,9 +331,13 @@ bool VectorPageTable::rollback_extend(size_t old_entry_num) {
     delete[] resident_segments_[s];
     resident_segments_[s] = nullptr;
   }
-  const size_t released_charge = (current_segment_count - old_segment_count) *
-                                 kSegmentSize *
-                                 (sizeof(Entry) + sizeof(ResidentEntry));
+  size_t released_charge =
+      (current_segment_count - old_segment_count) * kSegmentMetadataBytes;
+  if (old_segment_count == 0) {
+    segments_.reset();
+    resident_segments_.reset();
+    released_charge += kSegmentDirectoryBytes;
+  }
   metadata_charge_ -= released_charge;
   MemoryLimitPool::get_instance().release_metadata(released_charge);
   return true;
@@ -824,14 +856,16 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
 #endif
 }
 
-size_t VecBufferPool::metadata_bytes_for_page_count(size_t page_count) {
+size_t VecBufferPool::metadata_bytes_for_page_count(size_t page_count,
+                                                    bool writable) {
   const size_t page_table_bytes =
       VectorPageTable::metadata_bytes_for_entries(page_count);
   if (page_table_bytes == std::numeric_limits<size_t>::max()) {
     return page_table_bytes;
   }
   const size_t mutex_count =
-      std::max<size_t>(1, std::min(page_count, kMutexBucketCount));
+      writable ? std::max<size_t>(1, std::min(page_count, kMutexBucketCount))
+               : 0;
   const size_t mutex_bytes = mutex_count * sizeof(std::shared_mutex);
   if (page_table_bytes > std::numeric_limits<size_t>::max() - mutex_bytes) {
     return std::numeric_limits<size_t>::max();
@@ -878,9 +912,11 @@ int VecBufferPool::init() {
     return -1;
   }
   const size_t mutex_count =
-      std::max<size_t>(1, std::min(block_num, kMutexBucketCount));
+      writable_ ? std::max<size_t>(1, std::min(block_num, kMutexBucketCount))
+                : 0;
   const size_t mutex_charge = mutex_count * sizeof(std::shared_mutex);
-  if (!MemoryLimitPool::get_instance().try_charge_metadata(mutex_charge)) {
+  if (mutex_charge != 0 &&
+      !MemoryLimitPool::get_instance().try_charge_metadata(mutex_charge)) {
     LOG_ERROR(
         "VecBufferPool::init: shared memory budget cannot reserve %zu bytes "
         "for %zu page-lock stripes (file=%s)",
@@ -888,15 +924,17 @@ int VecBufferPool::init() {
     return -1;
   }
   std::unique_ptr<std::shared_mutex[]> mutexes;
-  try {
-    mutexes = std::make_unique<std::shared_mutex[]>(mutex_count);
-  } catch (const std::bad_alloc &) {
-    MemoryLimitPool::get_instance().release_metadata(mutex_charge);
-    LOG_ERROR(
-        "VecBufferPool::init: failed to allocate %zu page-lock stripes "
-        "(file=%s)",
-        mutex_count, file_name_.c_str());
-    return -1;
+  if (mutex_count != 0) {
+    try {
+      mutexes = std::make_unique<std::shared_mutex[]>(mutex_count);
+    } catch (const std::bad_alloc &) {
+      MemoryLimitPool::get_instance().release_metadata(mutex_charge);
+      LOG_ERROR(
+          "VecBufferPool::init: failed to allocate %zu page-lock stripes "
+          "(file=%s)",
+          mutex_count, file_name_.c_str());
+      return -1;
+    }
   }
   if (!page_table_.init(block_num)) {
     MemoryLimitPool::get_instance().release_metadata(mutex_charge);
@@ -904,7 +942,7 @@ int VecBufferPool::init() {
         "VecBufferPool::init: page_table_ init failed for file[%s], "
         "file_size=%zu, block_num=%zu, required_metadata=%zu",
         file_name_.c_str(), file_size_, block_num,
-        metadata_bytes_for_page_count(block_num));
+        metadata_bytes_for_page_count(block_num, writable_));
     return -1;
   }
   block_mutexes_ = std::move(mutexes);
@@ -930,13 +968,6 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
       return buffer;
     }
 
-    std::unique_lock<std::shared_mutex> lock(
-        block_mutexes_[page_id % block_mutex_count_]);
-    buffer = page_table_.acquire_block(page_id, record_reuse);
-    if (buffer) {
-      return buffer;
-    }
-
     const auto claim = page_table_.try_claim_block_load(page_id);
     if (claim != VectorPageTable::LoadClaimResult::kClaimed) {
       if (claim == VectorPageTable::LoadClaimResult::kResident) {
@@ -945,9 +976,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
       if (claim == VectorPageTable::LoadClaimResult::kLoading) {
         singleflight_waits_.fetch_add(1, std::memory_order_relaxed);
       }
-      // Do not tie up the shared stripe while another thread performs I/O.
       // Recheck the stable state from the beginning after it completes.
-      lock.unlock();
       if (!page_table_.wait_for_block_transition(page_id)) {
         return nullptr;
       }
@@ -2134,6 +2163,7 @@ void VecBufferPool::log_stats() const {
       "evict=%llu second_chance=%llu dirty_flush=%llu bypass_reads=%llu "
       "bypass_bytes=%llu singleflight_waits=%llu aio_pages_submitted=%llu "
       "ghost_hot_marks=%llu ghost_hot_hits=%llu "
+      "page_table_metadata_bytes=%zu page_lock_metadata_bytes=%zu "
       "resident_by_priority=[%zu,%zu,%zu] "
       "promotions=[%llu,%llu,%llu] demotions=[%llu,%llu,%llu] "
       "evictions_by_priority=[%llu,%llu,%llu] "
@@ -2148,7 +2178,8 @@ void VecBufferPool::log_stats() const {
       static_cast<unsigned long long>(s.singleflight_waits),
       static_cast<unsigned long long>(s.aio_pages_submitted),
       static_cast<unsigned long long>(s.ghost_hot_marks),
-      static_cast<unsigned long long>(s.ghost_hot_hits), resident[0],
+      static_cast<unsigned long long>(s.ghost_hot_hits),
+      s.page_table_metadata_bytes, s.page_lock_metadata_bytes, resident[0],
       resident[1], resident[2],
       static_cast<unsigned long long>(s.priority_promotions[0]),
       static_cast<unsigned long long>(s.priority_promotions[1]),

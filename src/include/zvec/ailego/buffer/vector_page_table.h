@@ -38,7 +38,7 @@ extern const size_t kVectorPageSize;
 
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Keep resident pointers separate from frequently mutated page metadata.
-  struct alignas(64) Entry {
+  struct alignas(32) Entry {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
     std::atomic<bool> is_dirty;
@@ -52,7 +52,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     size_t next_loaded;
     size_t file_offset;
   };
-  static_assert(sizeof(Entry) == 64, "VectorPageTable::Entry must be one line");
+  static_assert(sizeof(Entry) == 32,
+                "VectorPageTable::Entry must stay compact");
 
   // Compact resident-pointer table.
   struct ResidentEntry {
@@ -238,6 +239,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return entry_num_.load(std::memory_order_acquire);
   }
 
+  size_t metadata_bytes() const {
+    return metadata_bytes_for_entries(entry_num());
+  }
+
   //! Cache observability counters (monotonic, relaxed atomics).
   struct Stats {
     uint64_t hit{0};              // estimated cache hits (1/64 sampling)
@@ -312,13 +317,13 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
  private:
   // Segmented page table: entries are split across fixed-size segments so
   // that extend() can grow the table without moving existing entries.
-  static constexpr size_t kSegmentShift = 16;  // 65536 entries per segment
+  static constexpr size_t kSegmentShift = 14;  // 16384 entries per segment
   static constexpr size_t kSegmentSize = size_t{1} << kSegmentShift;
   static constexpr size_t kSegmentMask = kSegmentSize - 1;
 
  public:
   static constexpr size_t kMaxSegments =
-      2048;  // up to 128M entries (512GB @ 4K)
+      8192;  // up to 128M entries (512GB @ 4K)
   // Capacity used to validate growth before changing the file.
   static constexpr size_t kMaxEntries = kMaxSegments * kSegmentSize;
 
@@ -329,8 +334,12 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Release/acquire publication makes initialized segment slots visible.
   std::atomic<size_t> entry_num_{0};
   std::atomic<size_t> segment_count_{0};
-  Entry *segments_[kMaxSegments]{};
-  ResidentEntry *resident_segments_[kMaxSegments]{};
+  static constexpr size_t kSegmentMetadataBytes =
+      kSegmentSize * (sizeof(Entry) + sizeof(ResidentEntry));
+  static constexpr size_t kSegmentDirectoryBytes =
+      kMaxSegments * (sizeof(Entry *) + sizeof(ResidentEntry *));
+  std::unique_ptr<Entry *[]> segments_{};
+  std::unique_ptr<ResidentEntry *[]> resident_segments_{};
   size_t metadata_charge_{0};
   static constexpr size_t kInvalidLoadedBlock =
       std::numeric_limits<size_t>::max();
@@ -443,14 +452,15 @@ class ZVEC_AILEGO_API VecBufferPool {
  public:
   typedef std::shared_ptr<VecBufferPool> Pointer;
 
-  static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
+  static constexpr size_t kMutexBucketCount = 4UL * 1024UL;
   static constexpr uint8_t kLowPriority = VectorPageTable::kLowPriority;
   static constexpr uint8_t kNormalPriority = VectorPageTable::kNormalPriority;
   static constexpr uint8_t kHighPriority = VectorPageTable::kHighPriority;
 
   //! Non-evictable page-table and striped-lock memory required for a pool
   //! covering `page_count` pages.
-  static size_t metadata_bytes_for_page_count(size_t page_count);
+  static size_t metadata_bytes_for_page_count(size_t page_count,
+                                              bool writable = false);
 
   VecBufferPool(const std::string &filename, bool writable = false);
   ~VecBufferPool();
@@ -470,6 +480,8 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t aio_pages_submitted{0};
     uint64_t ghost_hot_marks{0};
     uint64_t ghost_hot_hits{0};
+    size_t page_table_metadata_bytes{0};
+    size_t page_lock_metadata_bytes{0};
     std::array<uint64_t, VectorPageTable::kPriorityCount> priority_promotions{};
     std::array<uint64_t, VectorPageTable::kPriorityCount> priority_demotions{};
     std::array<uint64_t, VectorPageTable::kPriorityCount>
@@ -498,6 +510,8 @@ class ZVEC_AILEGO_API VecBufferPool {
         aio_pages_submitted_.load(std::memory_order_relaxed);
     s.ghost_hot_marks = p.ghost_hot_marks;
     s.ghost_hot_hits = p.ghost_hot_hits;
+    s.page_table_metadata_bytes = page_table_.metadata_bytes();
+    s.page_lock_metadata_bytes = mutex_metadata_charge_;
     return s;
   }
 
@@ -625,7 +639,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   VectorPageTable page_table_;
 
  private:
-  // Serialize installation and writable in-place payload access.
+  // Serialize writable in-place payload access. Single-flight owns loading.
   std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};
   size_t mutex_metadata_charge_{0};

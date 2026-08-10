@@ -71,10 +71,12 @@ class BufferPoolTest : public ::testing::Test {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(capacity_pages *
                                                       kVectorPageSize));
   }
-  void InitVecPool(size_t capacity_pages, size_t file_pages) {
+  void InitVecPool(size_t capacity_pages, size_t file_pages,
+                   bool writable = false) {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(
                      capacity_pages * kVectorPageSize +
-                     VecBufferPool::metadata_bytes_for_page_count(file_pages)));
+                     VecBufferPool::metadata_bytes_for_page_count(file_pages,
+                                                                  writable)));
   }
   void InitTablePool(size_t capacity_pages, size_t entry_num) {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(
@@ -557,8 +559,60 @@ TEST_F(BufferPoolTest, MetadataIsCountedAndReleasedWithPool) {
   EXPECT_EQ(0u, stats.used);
 }
 
+TEST_F(BufferPoolTest, FixedMetadataStaysCompactAndReadOnlyAvoidsPageLocks) {
+  constexpr size_t kOneSegmentPages = 16UL * 1024UL;
+  const size_t page_table_bytes =
+      VectorPageTable::metadata_bytes_for_entries(kOneSegmentPages);
+  const size_t read_only_bytes =
+      VecBufferPool::metadata_bytes_for_page_count(kOneSegmentPages);
+  const size_t writable_bytes = VecBufferPool::metadata_bytes_for_page_count(
+      kOneSegmentPages, /*writable=*/true);
+
+  EXPECT_EQ(page_table_bytes, read_only_bytes);
+  EXPECT_LT(read_only_bytes, 1UL * 1024UL * 1024UL);
+  EXPECT_EQ(VecBufferPool::kMutexBucketCount * sizeof(std::shared_mutex),
+            writable_bytes - read_only_bytes);
+
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/1);
+  std::string file = NewFile(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  const auto stats = pool.stats();
+  EXPECT_EQ(VectorPageTable::metadata_bytes_for_entries(1),
+            stats.page_table_metadata_bytes);
+  EXPECT_EQ(0u, stats.page_lock_metadata_bytes);
+}
+
+TEST_F(BufferPoolTest, EmptyPageTableChargesDirectoryOnFirstExtend) {
+  const size_t first_segment_bytes =
+      VectorPageTable::metadata_bytes_for_entries(1);
+  ASSERT_EQ(0, MemoryLimitPool::get_instance().init(first_segment_bytes));
+
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/0));
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().metadata_used());
+  ASSERT_TRUE(table.extend(/*new_entry_num=*/1));
+  EXPECT_EQ(first_segment_bytes,
+            MemoryLimitPool::get_instance().metadata_used());
+  ASSERT_TRUE(table.rollback_extend(/*old_entry_num=*/0));
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().metadata_used());
+}
+
+TEST_F(BufferPoolTest, WritablePoolReportsPageLockMetadata) {
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/1, /*writable=*/true);
+  std::string file = NewFile(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(pool.init(), 0);
+
+  const auto stats = pool.stats();
+  EXPECT_EQ(sizeof(std::shared_mutex), stats.page_lock_metadata_bytes);
+  EXPECT_EQ(VecBufferPool::metadata_bytes_for_page_count(
+                /*page_count=*/1, /*writable=*/true),
+            stats.page_table_metadata_bytes + stats.page_lock_metadata_bytes);
+}
+
 TEST_F(BufferPoolTest, FailedPageTableExtendLeavesStateUnchanged) {
-  constexpr size_t kSecondSegmentEntry = 64UL * 1024UL + 1;
+  constexpr size_t kSecondSegmentEntry = 16UL * 1024UL + 1;
   InitTablePool(/*capacity_pages=*/0, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
@@ -571,8 +625,8 @@ TEST_F(BufferPoolTest, FailedPageTableExtendLeavesStateUnchanged) {
 }
 
 TEST_F(BufferPoolTest, FailedFileExtendDoesNotGrowBackingFile) {
-  constexpr size_t kSecondSegmentEntry = 64UL * 1024UL + 1;
-  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/1);
+  constexpr size_t kSecondSegmentEntry = 16UL * 1024UL + 1;
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/1, /*writable=*/true);
   std::string file = NewFile(/*num_pages=*/1);
 
   VecBufferPool pool(file, /*writable=*/true);
@@ -1338,7 +1392,7 @@ TEST_F(BufferPoolTest, ReusedPageSurvivesContinuousColdStream) {
 }
 
 TEST_F(BufferPoolTest, WritablePoolDoesNotAdaptReadPriority) {
-  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/1);
+  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/1, /*writable=*/true);
   std::string file = NewFile(/*num_pages=*/1);
 
   VecBufferPool pool(file, /*writable=*/true);

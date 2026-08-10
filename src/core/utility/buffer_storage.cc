@@ -767,7 +767,8 @@ class BufferStorage : public IndexStorage {
     const size_t page_count =
         file_size == 0 ? 0 : (file_size - 1) / ailego::kVectorPageSize + 1;
     const size_t metadata_bytes =
-        ailego::VecBufferPool::metadata_bytes_for_page_count(page_count);
+        ailego::VecBufferPool::metadata_bytes_for_page_count(
+            page_count, /*writable=*/create_if_missing);
     const size_t available =
         ailego::MemoryLimitPool::get_instance().available();
     const bool cache_can_fit =
