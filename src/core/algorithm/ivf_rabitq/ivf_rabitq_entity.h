@@ -15,7 +15,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 #include <rabitqlib/utils/space.hpp>
 #include "zvec/core/framework/index_document.h"
@@ -93,24 +92,11 @@ class IvfRabitqEntity {
     return cluster_metas_[cluster_id];
   }
 
-  size_t quantized_vector_element_size() const {
-    return quantized_vector_element_size_;
-  }
-
   uint64_t get_key(size_t id) const;
-
-  const void *get_vector(size_t id) const;
-
-  int get_vector(size_t id, IndexStorage::MemoryBlock &block) const;
 
   const void *get_vector_by_key(uint64_t key) const;
 
   int get_vector_by_key(uint64_t key, IndexStorage::MemoryBlock &block) const;
-
-  int materialize_quantized_vector(size_t id, std::string *buffer) const;
-
-  int materialize_quantized_vector(size_t id,
-                                   IndexStorage::MemoryBlock &block) const;
 
   uint32_t key_to_id(uint64_t key) const;
 
@@ -140,10 +126,6 @@ class IvfRabitqEntity {
   const char *batch_data_{nullptr};
   const char *ex_data_{nullptr};
   const uint64_t *keys_{nullptr};
-  mutable std::string quantized_vector_buffer_;
-  size_t quantized_vector_element_size_{0};
-  size_t compact_code_size_{0};
-  size_t bin_data_size_{0};
   size_t batch_data_size_{0};
   size_t ex_data_size_{0};
 
@@ -166,9 +148,7 @@ class IvfRabitqEntity {
 
   const IvfRabitqClusterMeta *find_cluster_meta(size_t id) const;
 
-  int materialize_quantized_vector(size_t id, char *dst) const;
-
-  int init_quantized_vector_layout();
+  int init_data_layout();
 
   int validate_header() const;
 

@@ -294,17 +294,10 @@ int IVFRabitqIndex::Merge(const std::vector<Index::Pointer> &indexes,
 
 int IVFRabitqIndex::_dense_fetch(const uint32_t doc_id,
                                  VectorDataBuffer *vector_data_buffer) {
-#if !RABITQ_SUPPORTED
-  (void)doc_id;
-  (void)vector_data_buffer;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
-  return core::IndexError_Unsupported;
-#else
   (void)doc_id;
   (void)vector_data_buffer;
   LOG_ERROR("Fetch is not supported for IVF RaBitQ index");
   return core::IndexError_Unsupported;
-#endif  // RABITQ_SUPPORTED
 }
 
 int IVFRabitqIndex::_prepare_for_search(

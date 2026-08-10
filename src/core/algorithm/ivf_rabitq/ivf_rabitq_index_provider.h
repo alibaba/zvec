@@ -13,7 +13,6 @@
 // limitations under the License.
 #pragma once
 
-#include <limits>
 #include <memory>
 #include <new>
 #include <string>
@@ -57,30 +56,18 @@ class IvfRabitqIndexProvider : public IndexProvider {
 
   //! Retrieve vector size in bytes
   size_t element_size(void) const override {
-    return entity_->quantized_vector_element_size();
+    return 0;
   }
 
   //! Retrieve a vector using a primary key
   const void *get_vector(uint64_t key) const override {
-    uint32_t id = entity_->key_to_id(key);
-    if (id == std::numeric_limits<uint32_t>::max()) {
-      return nullptr;
-    }
-    int ret = entity_->materialize_quantized_vector(id, &vector_buffer_);
-    if (ret != 0) {
-      return nullptr;
-    }
-    return vector_buffer_.data();
+    return entity_->get_vector_by_key(key);
   }
 
   //! Retrieve a vector using a primary key
   int get_vector(const uint64_t key,
                  IndexStorage::MemoryBlock &block) const override {
-    uint32_t id = entity_->key_to_id(key);
-    if (id == std::numeric_limits<uint32_t>::max()) {
-      return IndexError_NoExist;
-    }
-    return entity_->materialize_quantized_vector(id, block);
+    return entity_->get_vector_by_key(key, block);
   }
 
   //! Retrieve the owner class
@@ -96,11 +83,7 @@ class IvfRabitqIndexProvider : public IndexProvider {
 
     //! Retrieve pointer of data
     const void *data(void) const override {
-      int ret = entity_->materialize_quantized_vector(id_, &vector_buffer_);
-      if (ret != 0) {
-        return nullptr;
-      }
-      return vector_buffer_.data();
+      return nullptr;
     }
 
     //! Test if the iterator is valid
@@ -120,13 +103,11 @@ class IvfRabitqIndexProvider : public IndexProvider {
 
    private:
     IvfRabitqEntity::Pointer entity_;
-    mutable std::string vector_buffer_;
     size_t id_{0};
   };
 
  private:
   IvfRabitqEntity::Pointer entity_;
-  mutable std::string vector_buffer_;
   std::string owner_class_;
 };
 

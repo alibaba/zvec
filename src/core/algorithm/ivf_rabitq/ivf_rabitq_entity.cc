@@ -30,33 +30,6 @@
 namespace zvec {
 namespace core {
 
-namespace {
-
-void ExtractCompactCode(const uint8_t *batch_code, size_t padded_dim,
-                        uint32_t lane, uint8_t *compact_code) {
-  uint32_t perm_pos = 0;
-  uint32_t perm_lane = lane % 16U;
-  for (uint32_t i = 0; i < rabitqlib::fastscan::kPerm0.size(); ++i) {
-    if (static_cast<uint32_t>(rabitqlib::fastscan::kPerm0[i]) == perm_lane) {
-      perm_pos = i;
-      break;
-    }
-  }
-
-  bool high_half = lane >= 16U;
-  size_t code_bytes = padded_dim / 8;
-  for (size_t col = 0; col < code_bytes; ++col) {
-    const uint8_t *block = batch_code + (col * rabitqlib::fastscan::kBatchSize);
-    uint8_t high_bits =
-        high_half ? ((block[perm_pos] >> 4) & 0x0F) : (block[perm_pos] & 0x0F);
-    uint8_t low_bits = high_half ? ((block[perm_pos + 16] >> 4) & 0x0F)
-                                 : (block[perm_pos + 16] & 0x0F);
-    compact_code[col] = static_cast<uint8_t>((high_bits << 4) | low_bits);
-  }
-}
-
-}  // namespace
-
 int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
   if (!storage) {
     LOG_ERROR("Invalid storage for IvfRabitqEntity::load");
@@ -177,7 +150,7 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
   if (ret != 0) {
     return ret;
   }
-  ret = init_quantized_vector_layout();
+  ret = init_data_layout();
   if (ret != 0) {
     return ret;
   }
@@ -247,34 +220,13 @@ uint64_t IvfRabitqEntity::get_key(size_t id) const {
   return keys_[id];
 }
 
-const void *IvfRabitqEntity::get_vector(size_t id) const {
-  int ret = materialize_quantized_vector(id, &quantized_vector_buffer_);
-  if (ret != 0) {
-    return nullptr;
-  }
-  return quantized_vector_buffer_.data();
+const void *IvfRabitqEntity::get_vector_by_key(uint64_t /*key*/) const {
+  return nullptr;
 }
 
-int IvfRabitqEntity::get_vector(size_t id,
-                                IndexStorage::MemoryBlock &block) const {
-  return materialize_quantized_vector(id, block);
-}
-
-const void *IvfRabitqEntity::get_vector_by_key(uint64_t key) const {
-  uint32_t id = key_to_id(key);
-  if (id == std::numeric_limits<uint32_t>::max()) {
-    return nullptr;
-  }
-  return get_vector(id);
-}
-
-int IvfRabitqEntity::get_vector_by_key(uint64_t key,
-                                       IndexStorage::MemoryBlock &block) const {
-  uint32_t id = key_to_id(key);
-  if (id == std::numeric_limits<uint32_t>::max()) {
-    return IndexError_NoExist;
-  }
-  return get_vector(id, block);
+int IvfRabitqEntity::get_vector_by_key(
+    uint64_t /*key*/, IndexStorage::MemoryBlock & /*block*/) const {
+  return IndexError_Unsupported;
 }
 
 uint32_t IvfRabitqEntity::key_to_id(uint64_t key) const {
@@ -413,16 +365,11 @@ int IvfRabitqEntity::load_key_order_mapping(IndexStorage::Pointer storage) {
   return 0;
 }
 
-int IvfRabitqEntity::init_quantized_vector_layout() {
-  quantized_vector_buffer_.clear();
-  quantized_vector_element_size_ = 0;
-  compact_code_size_ = header_.padded_dim / 8;
-  bin_data_size_ = rabitqlib::BinDataMap<float>::data_bytes(header_.padded_dim);
+int IvfRabitqEntity::init_data_layout() {
   batch_data_size_ =
       rabitqlib::BatchDataMap<float>::data_bytes(header_.padded_dim);
   ex_data_size_ = rabitqlib::ExDataMap<float>::data_bytes(header_.padded_dim,
                                                           header_.ex_bits);
-  quantized_vector_element_size_ = bin_data_size_ + ex_data_size_;
 
   if (header_.total_vector_count == 0) {
     return 0;
@@ -454,91 +401,6 @@ const IvfRabitqClusterMeta *IvfRabitqEntity::find_cluster_meta(
     return nullptr;
   }
   return &(*it);
-}
-
-int IvfRabitqEntity::materialize_quantized_vector(size_t id,
-                                                  std::string *buffer) const {
-  if (!buffer) {
-    return IndexError_InvalidArgument;
-  }
-  if (id >= header_.total_vector_count || quantized_vector_element_size_ == 0) {
-    return IndexError_NoExist;
-  }
-
-  buffer->resize(quantized_vector_element_size_);
-  char *dst = &(*buffer)[0];
-  return materialize_quantized_vector(id, dst);
-}
-
-int IvfRabitqEntity::materialize_quantized_vector(
-    size_t id, IndexStorage::MemoryBlock &block) const {
-  if (id >= header_.total_vector_count || quantized_vector_element_size_ == 0) {
-    return IndexError_NoExist;
-  }
-
-  void *data = ailego_malloc(quantized_vector_element_size_);
-  if (!data) {
-    return IndexError_NoMemory;
-  }
-
-  int ret = materialize_quantized_vector(id, static_cast<char *>(data));
-  if (ret != 0) {
-    ailego_free(data);
-    return ret;
-  }
-  block = IndexStorage::MemoryBlock::MakeOwned(data,
-                                               quantized_vector_element_size_);
-  return 0;
-}
-
-int IvfRabitqEntity::materialize_quantized_vector(size_t id, char *dst) const {
-  if (!dst) {
-    return IndexError_InvalidArgument;
-  }
-  if (id >= header_.total_vector_count || quantized_vector_element_size_ == 0) {
-    return IndexError_NoExist;
-  }
-  if (!batch_data_) {
-    LOG_ERROR("Missing batch data for quantized vectors");
-    return IndexError_InvalidFormat;
-  }
-  if (header_.ex_bits > 0 && !ex_data_) {
-    LOG_ERROR("Missing extra-bit data for quantized vectors");
-    return IndexError_InvalidFormat;
-  }
-
-  const auto *meta = find_cluster_meta(id);
-  if (!meta) {
-    LOG_ERROR("Failed to locate cluster for vector id=%zu", id);
-    return IndexError_InvalidFormat;
-  }
-
-  size_t local_id = id - meta->key_offset;
-  uint32_t batch_id = static_cast<uint32_t>(local_id) /
-                      static_cast<uint32_t>(rabitqlib::fastscan::kBatchSize);
-  uint32_t lane = static_cast<uint32_t>(local_id) %
-                  static_cast<uint32_t>(rabitqlib::fastscan::kBatchSize);
-
-  const char *batch_ptr = batch_data_ + meta->batch_data_offset +
-                          (static_cast<size_t>(batch_id) * batch_data_size_);
-  rabitqlib::ConstBatchDataMap<float> batch_map(batch_ptr, header_.padded_dim);
-
-  ExtractCompactCode(batch_map.bin_code(), header_.padded_dim, lane,
-                     reinterpret_cast<uint8_t *>(dst));
-  std::memcpy(dst + compact_code_size_, batch_map.f_add() + lane,
-              sizeof(float));
-  std::memcpy(dst + compact_code_size_ + sizeof(float),
-              batch_map.f_rescale() + lane, sizeof(float));
-  std::memcpy(dst + compact_code_size_ + (sizeof(float) * 2),
-              batch_map.f_error() + lane, sizeof(float));
-
-  if (ex_data_size_ > 0) {
-    const char *cluster_ex = ex_data_ + meta->ex_data_offset;
-    std::memcpy(dst + bin_data_size_, cluster_ex + (local_id * ex_data_size_),
-                ex_data_size_);
-  }
-
-  return 0;
 }
 
 int IvfRabitqEntity::compute_distances(uint32_t cluster_id,

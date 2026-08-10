@@ -198,8 +198,8 @@ IndexProvider::Pointer IvfRabitqStreamer::create_provider(void) const {
     LOG_ERROR("Load the index first before create provider");
     return Provider::Pointer();
   }
-  if (!entity_ || entity_->quantized_vector_element_size() == 0) {
-    LOG_ERROR("Quantized vectors are not available for IVF RaBitQ provider");
+  if (!entity_) {
+    LOG_ERROR("IVF RaBitQ entity is not available");
     return Provider::Pointer();
   }
 
@@ -212,19 +212,13 @@ IndexProvider::Pointer IvfRabitqStreamer::create_provider(void) const {
   return Provider::Pointer(provider);
 }
 
-const void *IvfRabitqStreamer::get_vector(uint64_t key) const {
-  if (!entity_) {
-    return nullptr;
-  }
-  return entity_->get_vector_by_key(key);
+const void *IvfRabitqStreamer::get_vector(uint64_t /*key*/) const {
+  return nullptr;
 }
 
-int IvfRabitqStreamer::get_vector(const uint64_t key,
-                                  IndexStorage::MemoryBlock &block) const {
-  if (!entity_) {
-    return IndexError_NoReady;
-  }
-  return entity_->get_vector_by_key(key, block);
+int IvfRabitqStreamer::get_vector(const uint64_t /*key*/,
+                                  IndexStorage::MemoryBlock & /*block*/) const {
+  return IndexError_Unsupported;
 }
 
 // --------------------------------------------------------------------------

@@ -447,7 +447,7 @@ TEST_F(IvfRabitqStreamerTest, TestBuildAndSearch) {
            result.size(), (size_t)result[0].key(), result[0].score());
 }
 
-TEST_F(IvfRabitqStreamerTest, TestCreateProvider) {
+TEST_F(IvfRabitqStreamerTest, TestProviderVectorAccessUnsupported) {
   auto holder = BuildHolder(kDim, 300UL);
 
   ailego::Params params;
@@ -463,37 +463,23 @@ TEST_F(IvfRabitqStreamerTest, TestCreateProvider) {
   EXPECT_EQ(holder->count(), provider->count());
   EXPECT_EQ(kDim, provider->dimension());
   EXPECT_EQ(IndexMeta::DataType::DT_UNDEFINED, provider->data_type());
-  size_t expected_element_size =
-      rabitqlib::BinDataMap<float>::data_bytes(kDim) +
-      rabitqlib::ExDataMap<float>::data_bytes(kDim, 3UL);
-  EXPECT_EQ(expected_element_size, provider->element_size());
+  EXPECT_EQ(0UL, provider->element_size());
 
   size_t seen = 0;
   auto iter = provider->create_iterator();
   ASSERT_NE(nullptr, iter);
   while (iter->is_valid()) {
-    ASSERT_NE(nullptr, iter->data());
-
-    IndexStorage::MemoryBlock block;
-    EXPECT_EQ(0, provider->get_vector(iter->key(), block));
-    ASSERT_NE(nullptr, block.data());
-    EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
-    EXPECT_EQ(
-        0, std::memcmp(iter->data(), block.data(), provider->element_size()));
-
+    EXPECT_EQ(nullptr, iter->data());
     ++seen;
     iter->next();
   }
   EXPECT_EQ(provider->count(), seen);
 
+  EXPECT_EQ(nullptr, provider->get_vector(17));
+  EXPECT_EQ(nullptr, streamer->get_vector_by_id(17));
   IndexStorage::MemoryBlock block;
-  ASSERT_EQ(0, streamer->get_vector_by_id(17, block));
-  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
-  IndexStorage::MemoryBlock provider_block;
-  ASSERT_EQ(0, provider->get_vector(17, provider_block));
-  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, provider_block.type_);
-  EXPECT_EQ(0, std::memcmp(provider_block.data(), block.data(),
-                           provider->element_size()));
+  EXPECT_EQ(IndexError_Unsupported, streamer->get_vector_by_id(17, block));
+  EXPECT_EQ(IndexError_Unsupported, provider->get_vector(17, block));
 }
 
 TEST_F(IvfRabitqStreamerTest, TestTotalBitsOneBuildSearchAndReopen) {
