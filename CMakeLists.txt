@@ -13,6 +13,7 @@ if(MSVC)
             set(CMAKE_${_lang}_FLAGS_${_cfg} "${_flags}" CACHE STRING "" FORCE)
         endforeach()
     endforeach()
+    add_compile_options(/utf-8)
     add_compile_options(/EHsc) # def c++ exception behavior
     add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
     add_compile_options(/we4716) # -Werror=return-type
