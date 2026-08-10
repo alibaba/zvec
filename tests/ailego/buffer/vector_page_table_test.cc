@@ -387,6 +387,83 @@ TEST_F(BufferPoolTest, ConcurrentInstallPublishesOneResidentBuffer) {
   EXPECT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
 }
 
+TEST_F(BufferPoolTest, PageLoadClaimCoalescesConcurrentWaiters) {
+  constexpr size_t kThreadCount = 16;
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            table.try_claim_block_load(/*block_id=*/0));
+
+  std::atomic<size_t> observed_loading{0};
+  std::atomic<size_t> completed{0};
+  std::atomic<size_t> succeeded{0};
+  std::atomic<bool> release{false};
+  std::array<std::thread, kThreadCount> workers;
+  for (auto &worker : workers) {
+    worker = std::thread([&] {
+      EXPECT_EQ(VectorPageTable::LoadClaimResult::kLoading,
+                table.try_claim_block_load(/*block_id=*/0));
+      observed_loading.fetch_add(1, std::memory_order_release);
+      const bool stable = table.wait_for_block_transition(/*block_id=*/0);
+      EXPECT_TRUE(stable);
+      char *page = stable ? table.acquire_block(/*block_id=*/0) : nullptr;
+      EXPECT_NE(nullptr, page);
+      if (page != nullptr && page[0] == static_cast<char>(0x5a)) {
+        succeeded.fetch_add(1, std::memory_order_release);
+      }
+      completed.fetch_add(1, std::memory_order_release);
+      while (!release.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      if (page != nullptr) {
+        table.release_block(/*block_id=*/0);
+      }
+    });
+  }
+
+  while (observed_loading.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  char *buffer = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, buffer));
+  std::memset(buffer, 0x5a, kVectorPageSize);
+  ASSERT_EQ(buffer, table.publish_claimed_block(/*block_id=*/0, buffer,
+                                                /*file_offset=*/0));
+
+  while (completed.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(kThreadCount, succeeded.load(std::memory_order_acquire));
+  table.release_block(/*block_id=*/0);
+  release.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+}
+
+TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            table.try_claim_block_load(/*block_id=*/0));
+  EXPECT_TRUE(table.cancel_block_load(/*block_id=*/0));
+  EXPECT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            table.try_claim_block_load(/*block_id=*/0));
+
+  char *buffer = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, buffer));
+  ASSERT_EQ(buffer, table.publish_claimed_block(/*block_id=*/0, buffer,
+                                                /*file_offset=*/0));
+  table.release_block(/*block_id=*/0);
+  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+}
+
 TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
   InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
   VectorPageTable table;
@@ -1110,6 +1187,125 @@ TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
   EXPECT_EQ(1u, stats.evictions_by_priority[VectorPageTable::kLowPriority]);
 }
 
+TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  char *buffer = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, buffer));
+  ASSERT_EQ(buffer,
+            table.set_block_acquired(/*block_id=*/0, buffer, /*offset=*/0));
+  table.release_block(/*block_id=*/0);
+
+  ASSERT_TRUE(table.promote_evict_priority(
+      /*block_id=*/0, VectorPageTable::kNormalPriority));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));  // consume reference
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));  // remember and demote
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));  // probation turn
+  ASSERT_TRUE(table.evict_block(/*block_id=*/0));
+  ASSERT_EQ(1u, table.stats().ghost_hot_marks);
+
+  char *reloaded = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, reloaded));
+  ASSERT_EQ(reloaded, table.set_block_acquired(/*block_id=*/0, reloaded,
+                                               /*offset=*/0));
+  EXPECT_EQ(VectorPageTable::kNormalPriority,
+            table.eviction_priority(/*owner_key=*/0));
+  EXPECT_EQ(1u, table.stats().ghost_hot_hits);
+  table.release_block(/*block_id=*/0);
+  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+}
+
+TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  auto load_page = [&table] {
+    char *buffer = nullptr;
+    EXPECT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+        kVectorPageSize, buffer));
+    if (buffer == nullptr) return false;
+    char *installed =
+        table.set_block_acquired(/*block_id=*/0, buffer, /*offset=*/0);
+    EXPECT_EQ(buffer, installed);
+    if (installed == nullptr) return false;
+    table.release_block(/*block_id=*/0);
+    return true;
+  };
+
+  ASSERT_TRUE(load_page());
+  ASSERT_TRUE(table.promote_evict_priority(
+      /*block_id=*/0, VectorPageTable::kNormalPriority));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  ASSERT_TRUE(table.evict_block(/*block_id=*/0));
+
+  ASSERT_TRUE(load_page());
+  ASSERT_EQ(VectorPageTable::kNormalPriority,
+            table.eviction_priority(/*owner_key=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+  ASSERT_TRUE(table.evict_block(/*block_id=*/0));
+
+  ASSERT_TRUE(load_page());
+  EXPECT_EQ(VectorPageTable::kLowPriority,
+            table.eviction_priority(/*owner_key=*/0));
+  const auto stats = table.stats();
+  EXPECT_EQ(1u, stats.ghost_hot_marks);
+  EXPECT_EQ(1u, stats.ghost_hot_hits);
+  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+}
+
+TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
+  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(/*entry_num=*/1));
+
+  auto load_page = [&table] {
+    char *buffer = nullptr;
+    EXPECT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+        kVectorPageSize, buffer));
+    if (buffer == nullptr) return false;
+    char *installed =
+        table.set_block_acquired(/*block_id=*/0, buffer, /*offset=*/0);
+    EXPECT_EQ(buffer, installed);
+    if (installed == nullptr) return false;
+    table.release_block(/*block_id=*/0);
+    return true;
+  };
+  auto age_and_evict = [&table] {
+    EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+    EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+    EXPECT_FALSE(table.evict_block(/*block_id=*/0));
+    return table.evict_block(/*block_id=*/0);
+  };
+
+  ASSERT_TRUE(load_page());
+  ASSERT_TRUE(table.promote_evict_priority(
+      /*block_id=*/0, VectorPageTable::kNormalPriority));
+  ASSERT_TRUE(age_and_evict());
+
+  ASSERT_TRUE(load_page());
+  char *reused = table.acquire_block(/*block_id=*/0);
+  ASSERT_NE(nullptr, reused);
+  table.release_block(/*block_id=*/0);
+  ASSERT_TRUE(age_and_evict());
+
+  ASSERT_TRUE(load_page());
+  EXPECT_EQ(VectorPageTable::kNormalPriority,
+            table.eviction_priority(/*owner_key=*/0));
+  const auto stats = table.stats();
+  EXPECT_EQ(2u, stats.ghost_hot_marks);
+  EXPECT_EQ(2u, stats.ghost_hot_hits);
+  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+}
+
 TEST_F(BufferPoolTest, ReusedPageSurvivesContinuousColdStream) {
   constexpr size_t kFilePages = 32;
   InitVecPool(/*capacity_pages=*/3, /*file_pages=*/kFilePages);
@@ -1246,6 +1442,58 @@ TEST_F(BufferPoolTest, BatchAcquireScatteredPagesWithDuplicates) {
   for (block_id_t page_id : page_ids) {
     EXPECT_TRUE(pool.page_table_.is_released(page_id));
   }
+}
+
+TEST_F(BufferPoolTest, ConcurrentBatchLoadsPopulateEachPageOnce) {
+  constexpr size_t kPageCount = 128;
+  constexpr size_t kThreadCount = 8;
+  InitVecPool(/*capacity_pages=*/512, /*file_pages=*/kPageCount);
+  std::string file = NewFile(kPageCount);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::array<block_id_t, kPageCount> page_ids{};
+  for (size_t i = 0; i < kPageCount; ++i) {
+    page_ids[i] = static_cast<block_id_t>(i);
+  }
+
+  std::atomic<size_t> ready{0};
+  std::atomic<bool> start{false};
+  std::atomic<size_t> succeeded{0};
+  std::array<std::thread, kThreadCount> workers;
+  for (auto &worker : workers) {
+    worker = std::thread([&] {
+      std::array<char *, kPageCount> pages{};
+      ready.fetch_add(1, std::memory_order_release);
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      if (!handle.acquire_pages(page_ids.data(), page_ids.size(),
+                                pages.data())) {
+        return;
+      }
+      bool valid = true;
+      for (size_t i = 0; i < kPageCount; ++i) {
+        valid = valid && pages[i] != nullptr &&
+                pages[i][0] == static_cast<char>(i & 0xff);
+      }
+      if (valid) {
+        succeeded.fetch_add(1, std::memory_order_release);
+      }
+      handle.release_pages(page_ids.data(), page_ids.size());
+    });
+  }
+  while (ready.load(std::memory_order_acquire) != kThreadCount) {
+    std::this_thread::yield();
+  }
+  start.store(true, std::memory_order_release);
+  for (auto &worker : workers) {
+    worker.join();
+  }
+
+  EXPECT_EQ(kThreadCount, succeeded.load(std::memory_order_acquire));
+  EXPECT_EQ(kPageCount, pool.stats().miss);
 }
 
 TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {

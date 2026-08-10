@@ -47,6 +47,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     std::atomic<uint8_t> evict_priority{0};
     std::atomic<bool> ever_loaded{
         false};  // true once the page has been loaded at least once
+    // Remember one protected residency after its buffer is reclaimed.
+    std::atomic<uint8_t> ghost_state{0};
     size_t next_loaded;
     size_t file_offset;
   };
@@ -67,6 +69,13 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   static constexpr uint8_t kHighPriority =
       BlockEvictionQueue::kExplicitHotPriority;
   static constexpr size_t kPriorityCount = BlockEvictionQueue::kQueueCount;
+
+  enum class LoadClaimResult : uint8_t {
+    kClaimed,
+    kResident,
+    kLoading,
+    kEvicting,
+  };
 
   // Callback invoked by evict_block() to persist a dirty block before its
   // memory is released. Signature: (block_id, buffer, size, file_offset).
@@ -101,6 +110,20 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   bool rollback_extend(size_t old_entry_num);
 
   char *acquire_block(block_id_t block_id, bool record_reuse = true);
+
+  //! Claim an unloaded page before issuing I/O. Exactly one concurrent loader
+  //! may receive kClaimed for a residency cycle.
+  LoadClaimResult try_claim_block_load(block_id_t block_id);
+
+  //! Wait until an in-flight load or eviction publishes a stable state.
+  bool wait_for_block_transition(block_id_t block_id) const;
+
+  //! Publish a page whose loading state is owned by the caller.
+  [[nodiscard]] char *publish_claimed_block(block_id_t block_id, char *buffer,
+                                            size_t file_offset);
+
+  //! Roll an owned loading claim back to the unloaded state after I/O failure.
+  bool cancel_block_load(block_id_t block_id);
 
   void release_block(block_id_t block_id);
 
@@ -217,10 +240,12 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
 
   //! Cache observability counters (monotonic, relaxed atomics).
   struct Stats {
-    uint64_t hit{0};            // estimated cache hits (1/64 sampling)
-    uint64_t evict{0};          // pages actually reclaimed
-    uint64_t second_chance{0};  // pages spared by the CLOCK bit
-    uint64_t dirty_flush{0};    // dirty pages written back on eviction
+    uint64_t hit{0};              // estimated cache hits (1/64 sampling)
+    uint64_t evict{0};            // pages actually reclaimed
+    uint64_t second_chance{0};    // pages spared by the CLOCK bit
+    uint64_t dirty_flush{0};      // dirty pages written back on eviction
+    uint64_t ghost_hot_marks{0};  // protected residencies remembered on aging
+    uint64_t ghost_hot_hits{0};   // remembered pages recognized on reload
     std::array<uint64_t, kPriorityCount> priority_promotions{};
     std::array<uint64_t, kPriorityCount> priority_demotions{};
     std::array<uint64_t, kPriorityCount> evictions_by_priority{};
@@ -234,6 +259,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
       s.second_chance += c.second_chance.load(std::memory_order_relaxed);
       s.dirty_flush += c.dirty_flush.load(std::memory_order_relaxed);
     }
+    s.ghost_hot_marks = ghost_hot_marks_.load(std::memory_order_relaxed);
+    s.ghost_hot_hits = ghost_hot_hits_.load(std::memory_order_relaxed);
     for (size_t priority = 0; priority < kPriorityCount; ++priority) {
       s.priority_promotions[priority] =
           priority_promotions_[priority].load(std::memory_order_relaxed);
@@ -307,6 +334,12 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   size_t metadata_charge_{0};
   static constexpr size_t kInvalidLoadedBlock =
       std::numeric_limits<size_t>::max();
+  static constexpr int kUnloadedRefCount = std::numeric_limits<int>::min();
+  static constexpr int kLoadingRefCount = kUnloadedRefCount + 1;
+  static constexpr int kEvictingRefCount = std::numeric_limits<int>::min() / 2;
+  static constexpr uint8_t kNoGhostHistory = 0;
+  static constexpr uint8_t kEvictedHot = 1;
+  static constexpr uint8_t kGhostAdmitted = 2;
   std::atomic<size_t> loaded_head_{kInvalidLoadedBlock};
   std::atomic<bool> has_evicted_{false};
   bool adaptive_priority_enabled_{true};
@@ -356,6 +389,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   std::array<std::atomic<uint64_t>, kPriorityCount> priority_promotions_{};
   std::array<std::atomic<uint64_t>, kPriorityCount> priority_demotions_{};
   std::array<std::atomic<uint64_t>, kPriorityCount> evictions_by_priority_{};
+  std::atomic<uint64_t> ghost_hot_marks_{0};
+  std::atomic<uint64_t> ghost_hot_hits_{0};
 
   // Keep each thread on one counter shard.
   static size_t counter_shard() {
@@ -431,6 +466,10 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t dirty_flush{0};
     uint64_t bypass_reads{0};
     uint64_t bypass_bytes{0};
+    uint64_t singleflight_waits{0};
+    uint64_t aio_pages_submitted{0};
+    uint64_t ghost_hot_marks{0};
+    uint64_t ghost_hot_hits{0};
     std::array<uint64_t, VectorPageTable::kPriorityCount> priority_promotions{};
     std::array<uint64_t, VectorPageTable::kPriorityCount> priority_demotions{};
     std::array<uint64_t, VectorPageTable::kPriorityCount>
@@ -454,6 +493,11 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.miss = miss_count_.load(std::memory_order_relaxed);
     s.bypass_reads = bypass_reads_.load(std::memory_order_relaxed);
     s.bypass_bytes = bypass_bytes_.load(std::memory_order_relaxed);
+    s.singleflight_waits = singleflight_waits_.load(std::memory_order_relaxed);
+    s.aio_pages_submitted =
+        aio_pages_submitted_.load(std::memory_order_relaxed);
+    s.ghost_hot_marks = p.ghost_hot_marks;
+    s.ghost_hot_hits = p.ghost_hot_hits;
     return s;
   }
 
@@ -570,6 +614,8 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> miss_count_{0};
   std::atomic<uint64_t> bypass_reads_{0};
   std::atomic<uint64_t> bypass_bytes_{0};
+  std::atomic<uint64_t> singleflight_waits_{0};
+  std::atomic<uint64_t> aio_pages_submitted_{0};
 #if defined(__linux) || defined(__linux__)
   IOBackendType io_backend_type_{IOBackendType::kPread};
   bool aio_enabled_{false};
