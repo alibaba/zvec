@@ -21,6 +21,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "zvec/core/framework/index_error.h"
+#include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_helper.h"
 #include "zvec/core/framework/index_meta.h"
 #include "ivf_rabitq_context.h"
@@ -629,6 +630,8 @@ int IvfRabitqStreamer::cleanup() {
   state_ = STATE_INIT;
   return 0;
 }
+
+INDEX_FACTORY_REGISTER_STREAMER(IvfRabitqStreamer);
 
 }  // namespace core
 }  // namespace zvec

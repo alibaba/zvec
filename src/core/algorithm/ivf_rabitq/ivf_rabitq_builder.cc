@@ -640,5 +640,7 @@ int IvfRabitqBuilder::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
+INDEX_FACTORY_REGISTER_BUILDER(IvfRabitqBuilder);
+
 }  // namespace core
 }  // namespace zvec
