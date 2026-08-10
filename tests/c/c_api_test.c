@@ -155,14 +155,14 @@ void test_error_handling_functions(void) {
 void test_io_backend_functions(void) {
   TEST_START();
 
-  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
-                         ZVEC_IO_BACKEND_TYPE_PREAD),
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_PREAD),
                      "pread") == 0);
-  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
-                         ZVEC_IO_BACKEND_TYPE_LIBAIO),
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_LIBAIO),
                      "libaio") == 0);
-  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
-                         ZVEC_IO_BACKEND_TYPE_KQUEUE),
+  TEST_ASSERT(
+      strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
+             "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_KQUEUE),
                      "kqueue") == 0);
   TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
 
@@ -171,7 +171,8 @@ void test_io_backend_functions(void) {
   TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_KQUEUE);
 #else
   TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD ||
-              current == ZVEC_IO_BACKEND_TYPE_LIBAIO);
+              current == ZVEC_IO_BACKEND_TYPE_LIBAIO ||
+              current == ZVEC_IO_BACKEND_TYPE_IO_URING);
 #endif
   TEST_ASSERT(zvec_get_io_backend_description() != NULL);
 

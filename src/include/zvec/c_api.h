@@ -789,8 +789,10 @@ typedef uint32_t zvec_io_backend_type_t;
   0 /**< Synchronous pread() \u2014 no async I/O */
 #define ZVEC_IO_BACKEND_TYPE_LIBAIO \
   1 /**< libaio loaded at runtime via dlopen() */
+#define ZVEC_IO_BACKEND_TYPE_IO_URING \
+  2 /**< io_uring via raw kernel syscalls (zero dependency) */
 #define ZVEC_IO_BACKEND_TYPE_KQUEUE \
-  2 /**< kqueue readiness notification with pread() on macOS */
+  3 /**< kqueue readiness notification with pread() on macOS */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn async disk reads.
@@ -798,8 +800,8 @@ typedef uint32_t zvec_io_backend_type_t;
  * Pure introspection \u2014 no side effects, no install hints.
  *
  * @return zvec_io_backend_type_t The loaded backend type
- *         (ZVEC_IO_BACKEND_TYPE_LIBAIO, ZVEC_IO_BACKEND_TYPE_KQUEUE, or
- *         ZVEC_IO_BACKEND_TYPE_PREAD).
+ *         (ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO,
+ *         ZVEC_IO_BACKEND_TYPE_KQUEUE, or ZVEC_IO_BACKEND_TYPE_PREAD).
  */
 ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
 
@@ -808,7 +810,7 @@ ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
  *
  * @param type The backend type code.
  * @return Thread-local string valid until the next call on this thread;
- *         "libaio", "kqueue", "pread", or "unknown".
+ *         "io_uring", "libaio", "kqueue", "pread", or "unknown".
  */
 ZVEC_EXPORT const char *ZVEC_CALL
 zvec_get_io_backend_type_name(zvec_io_backend_type_t type);

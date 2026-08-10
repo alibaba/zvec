@@ -29,15 +29,19 @@ namespace zvec {
 namespace ailego {
 
 // Supported I/O backend types.
+//
+// Numeric values are part of the C ABI (see zvec_io_backend_type_t in c_api.h):
+//   kPread = 0, kLibAio = 1, kIoUring = 2, kKqueue = 3.
 enum class IOBackendType {
-  kPread = 0,   // Synchronous pread() — no async I/O
-  kLibAio = 1,  // libaio loaded at runtime via dlopen()
-  kKqueue = 2,  // kqueue readiness notification with pread() on macOS
+  kPread = 0,    // Synchronous pread() — no async I/O
+  kLibAio = 1,   // libaio loaded at runtime via dlopen()
+  kIoUring = 2,  // io_uring via raw kernel syscalls (zero dependency)
+  kKqueue = 3,   // kqueue readiness notification with pread() on macOS
 };
 
 // Returns the currently active I/O backend type.
-// Triggers backend initialization on first call (libaio on Linux, kqueue on
-// macOS, pread elsewhere).
+// Triggers backend initialization on first call (io_uring > libaio > pread on
+// Linux, kqueue on macOS, and pread elsewhere).
 IOBackendType current_io_backend_type();
 
 // Returns a human-readable description of the currently active I/O backend.
