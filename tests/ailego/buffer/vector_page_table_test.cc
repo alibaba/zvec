@@ -281,6 +281,26 @@ TEST_F(BufferPoolTest, AdmissionControlRejectsFirstColdMissAfterPressure) {
   EXPECT_EQ(stats.admission_admitted, 1u);
 }
 
+TEST_F(BufferPoolTest, BypassRecheckRecognizesResidencyActivity) {
+  InitVecPool(/*capacity_pages=*/2, /*file_pages=*/2);
+  std::string file = NewFile(/*num_pages=*/2);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  EXPECT_FALSE(pool.should_join_cache_path(1));
+
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(1));
+  EXPECT_TRUE(pool.should_join_cache_path(1));
+  ASSERT_TRUE(pool.page_table_.cancel_block_load(1));
+  EXPECT_FALSE(pool.should_join_cache_path(1));
+
+  char *page = pool.acquire_buffer(1, 10);
+  ASSERT_NE(page, nullptr);
+  EXPECT_TRUE(pool.should_join_cache_path(1));
+  pool.page_table_.release_block(1);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Data stays correct when the working set far exceeds pool capacity, which
 //    forces the CLOCK evictor to run repeatedly. Also asserts the observability
@@ -1447,6 +1467,7 @@ TEST_F(BufferPoolTest, BypassReadDoesNotAdmitPage) {
   auto stats = pool.stats();
   EXPECT_EQ(1u, stats.bypass_reads);
   EXPECT_EQ(kVectorPageSize, stats.bypass_bytes);
+  EXPECT_EQ(1u, stats.bypass_io_requests);
   EXPECT_EQ(0u, stats.miss);
 }
 

@@ -386,33 +386,36 @@ TEST(DiskAnnBufferPoolFileReaderTest,
   ASSERT_NE(seed, nullptr);
 
   void *output = nullptr;
-  ASSERT_EQ(::posix_memalign(&output, page_size, 2 * page_size), 0);
+  ASSERT_EQ(::posix_memalign(&output, page_size, 4 * page_size), 0);
   ASSERT_NE(output, nullptr);
   std::vector<AlignedRead> requests;
-  requests.emplace_back(page_size, page_size, output);
-  requests.emplace_back(page_size, page_size,
-                        static_cast<char *>(output) + page_size);
+  requests.emplace_back(page_size, 3 * page_size, output);
+  requests.emplace_back(2 * page_size, page_size,
+                        static_cast<char *>(output) + 3 * page_size);
   IOContext unused{};
 
   ASSERT_EQ(reader.read(requests, unused), 0);
   EXPECT_EQ(std::memcmp(output, source.data() + page_size, page_size), 0);
   EXPECT_EQ(std::memcmp(static_cast<char *>(output) + page_size,
-                        source.data() + page_size, page_size),
+                        source.data() + 2 * page_size, page_size),
+            0);
+  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + 2 * page_size,
+                        source.data() + 3 * page_size, page_size),
+            0);
+  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + 3 * page_size,
+                        source.data() + 2 * page_size, page_size),
             0);
   EXPECT_FALSE(pool->is_page_resident(1));
-  EXPECT_EQ(pool->stats().admission_rejected, 1u);
+  EXPECT_FALSE(pool->is_page_resident(2));
+  EXPECT_FALSE(pool->is_page_resident(3));
+  EXPECT_EQ(pool->stats().admission_rejected, 3u);
   EXPECT_EQ(pool->stats().bypass_reads, 1u);
-  EXPECT_EQ(pool->stats().bypass_bytes, page_size);
+  EXPECT_EQ(pool->stats().bypass_bytes, 3 * page_size);
+  EXPECT_EQ(pool->stats().bypass_io_requests, 1u);
+  EXPECT_EQ(pool->stats().bypass_rechecks, 3u);
+  EXPECT_EQ(pool->stats().bypass_cache_joins, 0u);
 
   pool->page_table_.release_block(0);
-  std::memset(output, 0, 2 * page_size);
-  ASSERT_EQ(reader.read(requests, unused), 0);
-  EXPECT_EQ(std::memcmp(output, source.data() + page_size, page_size), 0);
-  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + page_size,
-                        source.data() + page_size, page_size),
-            0);
-  EXPECT_TRUE(pool->is_page_resident(1));
-
   pool->page_table_.force_evict_all_loaded();
   EXPECT_EQ(destroy_io_ctx(unused), 0);
   std::free(output);

@@ -494,6 +494,7 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       ailego::block_id_t page_id;
       char *first_destination;
       char *cached_page{nullptr};
+      bool bypass_candidate{false};
     };
     struct PageOccurrence {
       size_t unique_index;
@@ -541,7 +542,7 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         char *page_destination = destination + i * ailego::kVectorPageSize;
         if (unique_index == unique_pages.size()) {
           unique_pages.push_back(
-              UniquePage{page_id, page_destination, nullptr});
+              UniquePage{page_id, page_destination, nullptr, false});
         }
         occurrences.push_back(PageOccurrence{unique_index, page_destination});
       }
@@ -580,9 +581,7 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         admitted_ids.push_back(page.page_id);
         admitted_indices.push_back(i);
       } else {
-        bypass_requests.emplace_back(
-            static_cast<uint64_t>(page.page_id) * ailego::kVectorPageSize,
-            ailego::kVectorPageSize, page.first_destination);
+        page.bypass_candidate = true;
       }
     }
 
@@ -595,6 +594,75 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     for (size_t i = 0; i < admitted_ids.size(); ++i) {
       unique_pages[admitted_indices[i]].cached_page = admitted_pages[i];
     }
+
+    // A rejected page may have become resident or started loading while the
+    // admitted portion of this batch was populated. Rejoin that cache flight
+    // instead of issuing duplicate direct I/O. This does not record another
+    // admission observation.
+    size_t bypass_rechecks = 0;
+    size_t bypass_cache_joins = 0;
+    admitted_ids.clear();
+    admitted_indices.clear();
+    for (size_t i = 0; i < unique_pages.size(); ++i) {
+      UniquePage &page = unique_pages[i];
+      if (!page.bypass_candidate) {
+        continue;
+      }
+      ++bypass_rechecks;
+      page.cached_page = pool_->try_acquire_buffer(page.page_id);
+      if (page.cached_page != nullptr) {
+        page.bypass_candidate = false;
+        ++bypass_cache_joins;
+      } else if (pool_->should_join_cache_path(page.page_id)) {
+        admitted_ids.push_back(page.page_id);
+        admitted_indices.push_back(i);
+      }
+    }
+    if (!admitted_ids.empty() &&
+        pool_->acquire_pages(admitted_ids.data(), admitted_ids.size(),
+                             admitted_pages.data())) {
+      for (size_t i = 0; i < admitted_ids.size(); ++i) {
+        UniquePage &page = unique_pages[admitted_indices[i]];
+        page.cached_page = admitted_pages[i];
+        page.bypass_candidate = false;
+      }
+      bypass_cache_joins += admitted_ids.size();
+    }
+    pool_->record_bypass_recheck(bypass_rechecks, bypass_cache_joins);
+
+    // Preserve large contiguous DiskANN reads on the direct path. Duplicate
+    // pages use their first destination as the canonical read target and are
+    // fanned out after I/O completes.
+    uint64_t run_offset = 0;
+    uint64_t run_length = 0;
+    char *run_destination = nullptr;
+    size_t bypass_page_count = 0;
+    auto flush_bypass_run = [&]() {
+      if (run_length != 0) {
+        bypass_requests.emplace_back(run_offset, run_length, run_destination);
+        run_length = 0;
+      }
+    };
+    for (const PageOccurrence &occurrence : occurrences) {
+      const UniquePage &page = unique_pages[occurrence.unique_index];
+      if (!page.bypass_candidate ||
+          occurrence.destination != page.first_destination) {
+        continue;
+      }
+      const uint64_t page_offset =
+          static_cast<uint64_t>(page.page_id) * ailego::kVectorPageSize;
+      if (run_length != 0 && run_offset + run_length == page_offset &&
+          run_destination + run_length == occurrence.destination) {
+        run_length += ailego::kVectorPageSize;
+      } else {
+        flush_bypass_run();
+        run_offset = page_offset;
+        run_length = ailego::kVectorPageSize;
+        run_destination = occurrence.destination;
+      }
+      ++bypass_page_count;
+    }
+    flush_bypass_run();
 
     if (!bypass_requests.empty()) {
 #if defined(__linux__) || defined(__linux)
@@ -611,8 +679,8 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         release_cached_pages();
         return read_ret;
       }
-      pool_->record_bypass_read(bypass_requests.size() *
-                                ailego::kVectorPageSize);
+      pool_->record_bypass_read(bypass_page_count * ailego::kVectorPageSize,
+                                bypass_requests.size());
     }
 
     for (const PageOccurrence &occurrence : occurrences) {

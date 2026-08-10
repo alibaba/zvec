@@ -317,6 +317,14 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return has_evicted_.load(std::memory_order_relaxed);
   }
 
+  //! Whether a page is resident or currently changing residency. Used to
+  //! rejoin cache single-flight without recording another admission miss.
+  bool has_residency_activity(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return entry_at(block_id).ref_count.load(std::memory_order_acquire) !=
+           kUnloadedRefCount;
+  }
+
   //! Return true when an unloaded demand page is worth admitting under
   //! pressure. Resident/in-flight, protected, and ghost-hot pages always use
   //! the cache path; cold pages require a second recent miss.
@@ -484,6 +492,9 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t dirty_flush{0};
     uint64_t bypass_reads{0};
     uint64_t bypass_bytes{0};
+    uint64_t bypass_io_requests{0};
+    uint64_t bypass_rechecks{0};
+    uint64_t bypass_cache_joins{0};
     uint64_t singleflight_waits{0};
     uint64_t aio_pages_submitted{0};
     uint64_t admission_admitted{0};
@@ -515,6 +526,9 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.miss = miss_count_.load(std::memory_order_relaxed);
     s.bypass_reads = bypass_reads_.load(std::memory_order_relaxed);
     s.bypass_bytes = bypass_bytes_.load(std::memory_order_relaxed);
+    s.bypass_io_requests = bypass_io_requests_.load(std::memory_order_relaxed);
+    s.bypass_rechecks = bypass_rechecks_.load(std::memory_order_relaxed);
+    s.bypass_cache_joins = bypass_cache_joins_.load(std::memory_order_relaxed);
     s.singleflight_waits = singleflight_waits_.load(std::memory_order_relaxed);
     s.aio_pages_submitted =
         aio_pages_submitted_.load(std::memory_order_relaxed);
@@ -547,13 +561,29 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
 
   //! Decide whether a demand miss should enter the cache. Admission control
-  //! activates only after this pool has observed eviction pressure.
+  //! activates when the process-wide shared pool is under pressure.
   bool should_admit_page(block_id_t page_id);
 
+  //! Recheck a rejected page without adding another frequency observation.
+  bool should_join_cache_path(block_id_t page_id) const {
+    return page_id < page_table_.entry_num() &&
+           page_table_.has_residency_activity(page_id);
+  }
+
+  void record_bypass_recheck(size_t checked, size_t joined) {
+    if (checked != 0) {
+      bypass_rechecks_.fetch_add(checked, std::memory_order_relaxed);
+    }
+    if (joined != 0) {
+      bypass_cache_joins_.fetch_add(joined, std::memory_order_relaxed);
+    }
+  }
+
   //! Account for one successful direct read that bypassed cache admission.
-  void record_bypass_read(size_t length) {
+  void record_bypass_read(size_t length, size_t io_requests = 1) {
     bypass_reads_.fetch_add(1, std::memory_order_relaxed);
     bypass_bytes_.fetch_add(length, std::memory_order_relaxed);
+    bypass_io_requests_.fetch_add(io_requests, std::memory_order_relaxed);
   }
 
   int get_meta(size_t offset, size_t length, char *buffer);
@@ -650,6 +680,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> miss_count_{0};
   std::atomic<uint64_t> bypass_reads_{0};
   std::atomic<uint64_t> bypass_bytes_{0};
+  std::atomic<uint64_t> bypass_io_requests_{0};
+  std::atomic<uint64_t> bypass_rechecks_{0};
+  std::atomic<uint64_t> bypass_cache_joins_{0};
   std::atomic<uint64_t> singleflight_waits_{0};
   std::atomic<uint64_t> aio_pages_submitted_{0};
   std::atomic<uint64_t> admission_observations_{0};

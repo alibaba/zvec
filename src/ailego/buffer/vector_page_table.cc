@@ -1216,6 +1216,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
   }
 
   size_t copied = 0;
+  size_t io_requests = 0;
   bool ok = true;
   while (copied < length) {
     const size_t absolute = file_offset + copied;
@@ -1228,6 +1229,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
                                  ? kVectorPageSize
                                  : std::min(kVectorPageSize, available);
 
+    ++io_requests;
     const ssize_t read_bytes = zvec_pread(fd_, page, read_size, page_offset);
     if (read_bytes <= 0 ||
         within_page + copy_size > static_cast<size_t>(read_bytes)) {
@@ -1240,7 +1242,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
   ailego_free(page);
 
   if (ok) {
-    record_bypass_read(length);
+    record_bypass_read(length, io_requests);
   }
   return ok;
 }
@@ -2229,7 +2231,9 @@ void VecBufferPool::log_stats() const {
   LOG_INFO(
       "VecBufferPool stats: file[%s] hit=%llu miss=%llu hit_rate=%.4f "
       "evict=%llu second_chance=%llu dirty_flush=%llu bypass_reads=%llu "
-      "bypass_bytes=%llu singleflight_waits=%llu aio_pages_submitted=%llu "
+      "bypass_bytes=%llu bypass_io_requests=%llu bypass_rechecks=%llu "
+      "bypass_cache_joins=%llu singleflight_waits=%llu "
+      "aio_pages_submitted=%llu "
       "admission_admitted=%llu admission_rejected=%llu "
       "ghost_hot_marks=%llu ghost_hot_hits=%llu "
       "page_table_metadata_bytes=%zu page_lock_metadata_bytes=%zu "
@@ -2244,6 +2248,9 @@ void VecBufferPool::log_stats() const {
       static_cast<unsigned long long>(s.dirty_flush),
       static_cast<unsigned long long>(s.bypass_reads),
       static_cast<unsigned long long>(s.bypass_bytes),
+      static_cast<unsigned long long>(s.bypass_io_requests),
+      static_cast<unsigned long long>(s.bypass_rechecks),
+      static_cast<unsigned long long>(s.bypass_cache_joins),
       static_cast<unsigned long long>(s.singleflight_waits),
       static_cast<unsigned long long>(s.aio_pages_submitted),
       static_cast<unsigned long long>(s.admission_admitted),
