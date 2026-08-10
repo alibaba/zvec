@@ -23,7 +23,6 @@ if(RABITQ_SUPPORTED)
       "${RABITQ_SOURCE_DIR}/src/simd/fastscan_avx2.cpp"
       "${RABITQ_SOURCE_DIR}/src/simd/warmup_avx2.cpp"
       "${RABITQ_SOURCE_DIR}/src/simd/rotator_avx2.cpp"
-      "${RABITQ_SOURCE_DIR}/src/index/hnsw_search_avx2.cpp"
   )
   set(RABITQ_AVX512_SOURCES
       "${RABITQ_SOURCE_DIR}/src/simd/pack_excode_avx512.cpp"
@@ -35,12 +34,6 @@ if(RABITQ_SUPPORTED)
   set(RABITQ_AVX512_POPCNT_SOURCES
       "${RABITQ_SOURCE_DIR}/src/simd/warmup_avx512.cpp"
   )
-  set(RABITQ_HNSW_AVX512_SOURCES
-      "${RABITQ_SOURCE_DIR}/src/index/hnsw_search_avx512_core.cpp"
-  )
-  set(RABITQ_HNSW_AVX512_POPCNT_SOURCES
-      "${RABITQ_SOURCE_DIR}/src/index/hnsw_search_avx512_popcnt.cpp"
-  )
 
   add_library(
       rabitqlib_runtime STATIC
@@ -48,8 +41,6 @@ if(RABITQ_SUPPORTED)
       ${RABITQ_AVX2_SOURCES}
       ${RABITQ_AVX512_SOURCES}
       ${RABITQ_AVX512_POPCNT_SOURCES}
-      ${RABITQ_HNSW_AVX512_SOURCES}
-      ${RABITQ_HNSW_AVX512_POPCNT_SOURCES}
   )
   target_include_directories(
       rabitqlib_runtime SYSTEM PUBLIC "${RABITQ_SOURCE_DIR}/include"
@@ -68,16 +59,6 @@ if(RABITQ_SUPPORTED)
   )
   set_source_files_properties(
       ${RABITQ_AVX512_POPCNT_SOURCES}
-      PROPERTIES
-      COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vpopcntdq;-mfma"
-  )
-  set_source_files_properties(
-      ${RABITQ_HNSW_AVX512_SOURCES}
-      PROPERTIES
-      COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512dq;-mavx2;-mfma"
-  )
-  set_source_files_properties(
-      ${RABITQ_HNSW_AVX512_POPCNT_SOURCES}
       PROPERTIES
       COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vpopcntdq;-mfma"
   )
