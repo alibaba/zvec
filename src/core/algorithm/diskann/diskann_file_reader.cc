@@ -585,9 +585,8 @@ void LinuxAlignedFileReader::register_thread() {
     return;
   }
   if (ctx != nullptr) {
-    LOG_INFO(
-        "allocating ctx: %llu",
-        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ctx)));
+    LOG_INFO("allocating ctx: %llu",
+             static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ctx)));
   }
   ctx_map[thread_id] = ctx;
   lk.unlock();
