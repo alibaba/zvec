@@ -153,7 +153,7 @@ int DiskAnnPqTrainer::convert_pivot_data(
                           cluster * dim + chunk_offsets[chunk];
       const T *feature_ptr =
           reinterpret_cast<const T *>(centroids[idx].feature());
-      for (size_t d = 0; d <= chunk_dims[chunk]; ++d) {
+      for (size_t d = 0; d < chunk_dims[chunk]; ++d) {
         pivot_data_ptr[d] = feature_ptr[d];
       }
     }

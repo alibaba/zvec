@@ -45,6 +45,22 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 endif()
 
+# Detect musl libc. Some code paths need to avoid large stack buffers on musl
+# because its default thread stack is much smaller than glibc's (128KB vs 8MB).
+# Detection: musl's ldd prints "musl libc" to stderr.
+set(ZVEC_ON_MUSL FALSE CACHE BOOL "Building on musl libc" FORCE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    execute_process(
+        COMMAND ldd --version
+        OUTPUT_VARIABLE _zvec_ldd_stdout
+        ERROR_VARIABLE _zvec_ldd_stderr
+    )
+    if("${_zvec_ldd_stdout}${_zvec_ldd_stderr}" MATCHES "musl")
+        set(ZVEC_ON_MUSL TRUE CACHE BOOL "Building on musl libc" FORCE)
+        message(STATUS "musl libc detected")
+    endif()
+endif()
+
 if(NOT DEFINED PROJECT_ROOT_DIR OR NOT PROJECT_ROOT_DIR)
     set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Root directory of the project" FORCE)
 endif()
