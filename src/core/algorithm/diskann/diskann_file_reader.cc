@@ -473,16 +473,16 @@ void BufferPoolAlignedFileReader::deregister_thread() {}
 void BufferPoolAlignedFileReader::deregister_all_threads() {}
 
 void BufferPoolAlignedFileReader::open(const std::string &fname) {
-  (void)fname;
+  bypass_reader_.open(fname);
 }
 
 void BufferPoolAlignedFileReader::close() {
+  bypass_reader_.close();
   pool_.reset();
 }
 
 int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
                                       IOContext &ctx) {
-  (void)ctx;
   if (!pool_) {
     LOG_ERROR("BufferPoolAlignedFileReader: buffer pool is not available");
     return IndexError_Runtime;
@@ -490,7 +490,16 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   if (read_reqs.empty()) return 0;
 
   try {
-    std::vector<ailego::block_id_t> page_ids;
+    struct UniquePage {
+      ailego::block_id_t page_id;
+      char *first_destination;
+      char *cached_page{nullptr};
+    };
+    struct PageOccurrence {
+      size_t unique_index;
+      char *destination;
+    };
+
     size_t total_pages = 0;
     for (const AlignedRead &req : read_reqs) {
       if (req.buf == nullptr || req.len == 0 ||
@@ -512,33 +521,111 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       total_pages += pages;
     }
 
-    page_ids.reserve(total_pages);
+    std::vector<UniquePage> unique_pages;
+    std::vector<PageOccurrence> occurrences;
+    unique_pages.reserve(total_pages);
+    occurrences.reserve(total_pages);
     for (const AlignedRead &req : read_reqs) {
       const size_t first_page =
           static_cast<size_t>(req.offset) / ailego::kVectorPageSize;
       const size_t pages =
           static_cast<size_t>(req.len) / ailego::kVectorPageSize;
+      char *destination = static_cast<char *>(req.buf);
       for (size_t i = 0; i < pages; ++i) {
-        page_ids.push_back(static_cast<ailego::block_id_t>(first_page + i));
+        const auto page_id = static_cast<ailego::block_id_t>(first_page + i);
+        size_t unique_index = 0;
+        while (unique_index < unique_pages.size() &&
+               unique_pages[unique_index].page_id != page_id) {
+          ++unique_index;
+        }
+        char *page_destination = destination + i * ailego::kVectorPageSize;
+        if (unique_index == unique_pages.size()) {
+          unique_pages.push_back(
+              UniquePage{page_id, page_destination, nullptr});
+        }
+        occurrences.push_back(PageOccurrence{unique_index, page_destination});
       }
     }
 
-    std::vector<char *> pages(page_ids.size(), nullptr);
-    if (!pool_->acquire_pages(page_ids.data(), page_ids.size(), pages.data())) {
-      return IndexError_ReadData;
+    std::vector<ailego::block_id_t> admitted_ids;
+    std::vector<size_t> admitted_indices;
+    std::vector<char *> admitted_pages(unique_pages.size(), nullptr);
+    std::vector<AlignedRead> bypass_requests;
+    admitted_ids.reserve(unique_pages.size());
+    admitted_indices.reserve(unique_pages.size());
+    bypass_requests.reserve(unique_pages.size());
+
+    auto release_cached_pages = [&]() {
+      for (UniquePage &page : unique_pages) {
+        if (page.cached_page != nullptr) {
+          pool_->release_pages(&page.page_id, 1);
+          page.cached_page = nullptr;
+        }
+      }
+    };
+    struct CachedPageGuard {
+      decltype(release_cached_pages) &release;
+      ~CachedPageGuard() {
+        release();
+      }
+    } cached_page_guard{release_cached_pages};
+
+    for (size_t i = 0; i < unique_pages.size(); ++i) {
+      UniquePage &page = unique_pages[i];
+      page.cached_page = pool_->try_acquire_buffer(page.page_id);
+      if (page.cached_page != nullptr) {
+        continue;
+      }
+      if (pool_->should_admit_page(page.page_id)) {
+        admitted_ids.push_back(page.page_id);
+        admitted_indices.push_back(i);
+      } else {
+        bypass_requests.emplace_back(
+            static_cast<uint64_t>(page.page_id) * ailego::kVectorPageSize,
+            ailego::kVectorPageSize, page.first_destination);
+      }
     }
 
-    size_t cursor = 0;
-    for (const AlignedRead &req : read_reqs) {
-      char *dst = static_cast<char *>(req.buf);
-      const size_t request_pages =
-          static_cast<size_t>(req.len) / ailego::kVectorPageSize;
-      for (size_t i = 0; i < request_pages; ++i, ++cursor) {
-        std::memcpy(dst + i * ailego::kVectorPageSize, pages[cursor],
+    if (!admitted_ids.empty() &&
+        !pool_->acquire_pages(admitted_ids.data(), admitted_ids.size(),
+                              admitted_pages.data())) {
+      release_cached_pages();
+      return IndexError_ReadData;
+    }
+    for (size_t i = 0; i < admitted_ids.size(); ++i) {
+      unique_pages[admitted_indices[i]].cached_page = admitted_pages[i];
+    }
+
+    if (!bypass_requests.empty()) {
+#if defined(__linux__) || defined(__linux)
+      // Buffer-pool hits need no DiskANN I/O context. Create it only when
+      // admission first chooses direct AIO; the caller already owns and
+      // destroys this context with its normal DiskANN context lifecycle.
+      if (ctx == nullptr && setup_io_ctx(ctx) != 0) {
+        release_cached_pages();
+        return IndexError_Runtime;
+      }
+#endif
+      const int read_ret = bypass_reader_.read(bypass_requests, ctx);
+      if (read_ret != 0) {
+        release_cached_pages();
+        return read_ret;
+      }
+      pool_->record_bypass_read(bypass_requests.size() *
+                                ailego::kVectorPageSize);
+    }
+
+    for (const PageOccurrence &occurrence : occurrences) {
+      const UniquePage &page = unique_pages[occurrence.unique_index];
+      if (page.cached_page != nullptr) {
+        std::memcpy(occurrence.destination, page.cached_page,
+                    ailego::kVectorPageSize);
+      } else if (occurrence.destination != page.first_destination) {
+        std::memcpy(occurrence.destination, page.first_destination,
                     ailego::kVectorPageSize);
       }
     }
-    pool_->release_pages(page_ids.data(), page_ids.size());
+    release_cached_pages();
     return 0;
   } catch (const std::bad_alloc &) {
     return IndexError_NoMemory;

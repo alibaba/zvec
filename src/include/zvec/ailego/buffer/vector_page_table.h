@@ -49,6 +49,9 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
         false};  // true once the page has been loaded at least once
     // Remember one protected residency after its buffer is reclaimed.
     std::atomic<uint8_t> ghost_state{0};
+    // High 24 bits: aging epoch; low 8 bits: recent rejected-miss count.
+    // This occupies existing alignment padding, keeping Entry at 32 bytes.
+    std::atomic<uint32_t> admission_state{0};
     size_t next_loaded;
     size_t file_offset;
   };
@@ -314,6 +317,11 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     return has_evicted_.load(std::memory_order_relaxed);
   }
 
+  //! Return true when an unloaded demand page is worth admitting under
+  //! pressure. Resident/in-flight, protected, and ghost-hot pages always use
+  //! the cache path; cold pages require a second recent miss.
+  bool should_admit_miss(block_id_t block_id, uint32_t epoch);
+
  private:
   // Segmented page table: entries are split across fixed-size segments so
   // that extend() can grow the table without moving existing entries.
@@ -478,6 +486,8 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t bypass_bytes{0};
     uint64_t singleflight_waits{0};
     uint64_t aio_pages_submitted{0};
+    uint64_t admission_admitted{0};
+    uint64_t admission_rejected{0};
     uint64_t ghost_hot_marks{0};
     uint64_t ghost_hot_hits{0};
     size_t page_table_metadata_bytes{0};
@@ -508,6 +518,8 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.singleflight_waits = singleflight_waits_.load(std::memory_order_relaxed);
     s.aio_pages_submitted =
         aio_pages_submitted_.load(std::memory_order_relaxed);
+    s.admission_admitted = admission_admitted_.load(std::memory_order_relaxed);
+    s.admission_rejected = admission_rejected_.load(std::memory_order_relaxed);
     s.ghost_hot_marks = p.ghost_hot_marks;
     s.ghost_hot_hits = p.ghost_hot_hits;
     s.page_table_metadata_bytes = page_table_.metadata_bytes();
@@ -532,6 +544,16 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! Observe residency without changing hit or CLOCK state.
   bool is_page_resident(block_id_t page_id) const {
     return page_id < page_table_.entry_num() && page_table_.is_loaded(page_id);
+  }
+
+  //! Decide whether a demand miss should enter the cache. Admission control
+  //! activates only after this pool has observed eviction pressure.
+  bool should_admit_page(block_id_t page_id);
+
+  //! Account for one successful direct read that bypassed cache admission.
+  void record_bypass_read(size_t length) {
+    bypass_reads_.fetch_add(1, std::memory_order_relaxed);
+    bypass_bytes_.fetch_add(length, std::memory_order_relaxed);
   }
 
   int get_meta(size_t offset, size_t length, char *buffer);
@@ -630,6 +652,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> bypass_bytes_{0};
   std::atomic<uint64_t> singleflight_waits_{0};
   std::atomic<uint64_t> aio_pages_submitted_{0};
+  std::atomic<uint64_t> admission_observations_{0};
+  std::atomic<uint64_t> admission_admitted_{0};
+  std::atomic<uint64_t> admission_rejected_{0};
 #if defined(__linux) || defined(__linux__)
   IOBackendType io_backend_type_{IOBackendType::kPread};
   bool aio_enabled_{false};

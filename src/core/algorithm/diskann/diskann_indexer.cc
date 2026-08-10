@@ -57,6 +57,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
       return IndexError_Unsupported;
     }
     reader_ = std::make_shared<BufferPoolAlignedFileReader>(std::move(pool));
+    reader_->open(storage->file_path());
   } else {
     reader_ = std::make_shared<LinuxAlignedFileReader>();
     reader_->open(storage->file_path());

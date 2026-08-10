@@ -159,6 +159,7 @@ class BufferPoolAlignedFileReader : public AlignedFileReader {
 
  private:
   std::shared_ptr<ailego::VecBufferPool> pool_;
+  LinuxAlignedFileReader bypass_reader_;
   IOContext unused_ctx_{};
 };
 

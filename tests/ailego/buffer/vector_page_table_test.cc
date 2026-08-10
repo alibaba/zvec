@@ -257,6 +257,30 @@ version_t FindLiveVersion(SizedExternalCache &cache, eviction_key_t owner_key) {
 
 }  // namespace
 
+TEST_F(BufferPoolTest, AdmissionControlRejectsFirstColdMissAfterPressure) {
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/4);
+  std::string file = NewFile(/*num_pages=*/4);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+
+  // Fill-before-pressure remains unchanged.
+  EXPECT_TRUE(pool.should_admit_page(1));
+  EXPECT_EQ(pool.stats().admission_rejected, 0u);
+
+  char *page = pool.acquire_buffer(0, 10);
+  ASSERT_NE(page, nullptr);
+
+  EXPECT_FALSE(pool.should_admit_page(1));
+  EXPECT_TRUE(pool.should_admit_page(1));
+  EXPECT_FALSE(pool.is_page_resident(1));
+  pool.page_table_.release_block(0);
+
+  const auto stats = pool.stats();
+  EXPECT_EQ(stats.admission_rejected, 1u);
+  EXPECT_EQ(stats.admission_admitted, 1u);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Data stays correct when the working set far exceeds pool capacity, which
 //    forces the CLOCK evictor to run repeatedly. Also asserts the observability

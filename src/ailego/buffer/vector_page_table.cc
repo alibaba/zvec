@@ -128,9 +128,53 @@ void VectorPageTable::initialize_segment(Entry *entries,
     entries[i].evict_priority.store(0, std::memory_order_relaxed);
     entries[i].ever_loaded.store(false, std::memory_order_relaxed);
     entries[i].ghost_state.store(kNoGhostHistory, std::memory_order_relaxed);
+    entries[i].admission_state.store(0, std::memory_order_relaxed);
     entries[i].next_loaded = kInvalidLoadedBlock;
     entries[i].file_offset = 0;
     resident_entries[i].buffer.store(nullptr, std::memory_order_relaxed);
+  }
+}
+
+bool VectorPageTable::should_admit_miss(block_id_t block_id, uint32_t epoch) {
+  assert(block_id < entry_num_.load(std::memory_order_acquire));
+  Entry &entry = entry_at(block_id);
+
+  // Joining an existing residency transition preserves single-flight. A
+  // protected hint or hot ghost is also stronger evidence than miss count.
+  if (entry.ref_count.load(std::memory_order_acquire) != kUnloadedRefCount ||
+      entry.evict_priority.load(std::memory_order_relaxed) >= kNormalPriority ||
+      entry.ghost_state.load(std::memory_order_relaxed) == kEvictedHot) {
+    return true;
+  }
+
+  static constexpr uint32_t kEpochMask = (uint32_t{1} << 24) - 1;
+  static constexpr uint8_t kAdmissionThreshold = 2;
+  epoch &= kEpochMask;
+
+  uint32_t state = entry.admission_state.load(std::memory_order_relaxed);
+  while (true) {
+    const uint32_t previous_epoch = state >> 8;
+    const uint8_t previous_count = static_cast<uint8_t>(state);
+    const uint32_t age = (epoch - previous_epoch) & kEpochMask;
+
+    uint8_t count = 1;
+    if (age == 0) {
+      count = previous_count == std::numeric_limits<uint8_t>::max()
+                  ? previous_count
+                  : static_cast<uint8_t>(previous_count + 1);
+    } else if (age == 1) {
+      count = static_cast<uint8_t>(previous_count / 2 + 1);
+    }
+    const uint32_t updated = (epoch << 8) | count;
+    if (entry.admission_state.compare_exchange_weak(
+            state, updated, std::memory_order_relaxed,
+            std::memory_order_relaxed)) {
+      // Close the race with a loader that claimed the page while its miss was
+      // being recorded; waiting for that load is preferable to duplicate I/O.
+      return count >= kAdmissionThreshold ||
+             entry.ref_count.load(std::memory_order_acquire) !=
+                 kUnloadedRefCount;
+    }
   }
 }
 
@@ -481,6 +525,7 @@ char *VectorPageTable::publish_claimed_block(block_id_t block_id, char *buffer,
   entry.file_offset = file_offset;
   entry.is_dirty.store(false, std::memory_order_relaxed);
   entry.referenced.store(false, std::memory_order_relaxed);
+  entry.admission_state.store(0, std::memory_order_relaxed);
   if (adaptive_priority_enabled_) {
     uint8_t evicted_hot = kEvictedHot;
     if (entry.ghost_state.compare_exchange_strong(evicted_hot, kGhostAdmitted,
@@ -1111,6 +1156,30 @@ void VecBufferPool::release_pages(const block_id_t *page_ids, size_t count) {
   }
 }
 
+bool VecBufferPool::should_admit_page(block_id_t page_id) {
+  if (page_id >= page_table_.entry_num()) {
+    return false;
+  }
+  if (writable_ || !MemoryLimitPool::get_instance().under_cache_pressure()) {
+    return true;
+  }
+
+  // Move the aging epoch every 64K evaluated cold misses. Exact per-page
+  // counters live in existing page-table padding, so this adds no side hash.
+  static constexpr uint64_t kObservationsPerEpoch = uint64_t{1} << 16;
+  const uint64_t observation =
+      admission_observations_.fetch_add(1, std::memory_order_relaxed);
+  const uint32_t epoch =
+      static_cast<uint32_t>(observation / kObservationsPerEpoch);
+  const bool admitted = page_table_.should_admit_miss(page_id, epoch);
+  if (admitted) {
+    admission_admitted_.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    admission_rejected_.fetch_add(1, std::memory_order_relaxed);
+  }
+  return admitted;
+}
+
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
   if (length == 0) {
     return 0;
@@ -1171,8 +1240,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
   ailego_free(page);
 
   if (ok) {
-    bypass_reads_.fetch_add(1, std::memory_order_relaxed);
-    bypass_bytes_.fetch_add(length, std::memory_order_relaxed);
+    record_bypass_read(length);
   }
   return ok;
 }
@@ -2162,6 +2230,7 @@ void VecBufferPool::log_stats() const {
       "VecBufferPool stats: file[%s] hit=%llu miss=%llu hit_rate=%.4f "
       "evict=%llu second_chance=%llu dirty_flush=%llu bypass_reads=%llu "
       "bypass_bytes=%llu singleflight_waits=%llu aio_pages_submitted=%llu "
+      "admission_admitted=%llu admission_rejected=%llu "
       "ghost_hot_marks=%llu ghost_hot_hits=%llu "
       "page_table_metadata_bytes=%zu page_lock_metadata_bytes=%zu "
       "resident_by_priority=[%zu,%zu,%zu] "
@@ -2177,6 +2246,8 @@ void VecBufferPool::log_stats() const {
       static_cast<unsigned long long>(s.bypass_bytes),
       static_cast<unsigned long long>(s.singleflight_waits),
       static_cast<unsigned long long>(s.aio_pages_submitted),
+      static_cast<unsigned long long>(s.admission_admitted),
+      static_cast<unsigned long long>(s.admission_rejected),
       static_cast<unsigned long long>(s.ghost_hot_marks),
       static_cast<unsigned long long>(s.ghost_hot_hits),
       s.page_table_metadata_bytes, s.page_lock_metadata_bytes, resident[0],

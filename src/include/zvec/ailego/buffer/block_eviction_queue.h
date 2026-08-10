@@ -214,6 +214,25 @@ class MemoryLimitPool {
 
   bool is_full();
 
+  //! Whether page admission should protect the current resident set. Uses the
+  //! background-reclaim low watermark so admission remains active after a
+  //! reclaim pass, and clears once meaningful headroom returns.
+  bool under_cache_pressure() const {
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    if (capacity == 0) {
+      return false;
+    }
+    const size_t used = used_size_.load(std::memory_order_relaxed);
+    if (used >= capacity || capacity - used < page_buffer_size()) {
+      return true;
+    }
+    if (used <= fixed_used()) {
+      return false;
+    }
+    const size_t low = low_watermark();
+    return used >= low || low - used <= page_buffer_size();
+  }
+
   //! Lock-free estimate of currently available bytes.
   size_t available() const {
     size_t used = used_size_.load(std::memory_order_relaxed);
