@@ -171,7 +171,7 @@ class HnswContext : public IndexContext {
     for (size_t i = 0; i < heap.size(); ++i) {
       node_id_t id = heap[i].first;
       dist_t dist = dc_.dist(id);
-      topk_heap_.emplace_back(id, dist);
+      topk_heap_.emplace(id, dist);
     }
   }
 
