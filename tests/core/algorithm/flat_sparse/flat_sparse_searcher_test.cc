@@ -20,6 +20,7 @@
 #include <ailego/utility/math_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/logger/logger.h>
 #include "tests/test_util.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_meta.h"
@@ -82,7 +83,7 @@ void FlatSparseSearcherTest::generate_sparse_data(
 
 
 void FlatSparseSearcherTest::SetUp(void) {
-  IndexLoggerBroker::SetLevel(2);
+  LoggerBroker::SetLevel(Logger::LEVEL_WARN);
 
   index_meta_ptr_.reset(new IndexMeta(IndexMeta::MetaType::MT_SPARSE,
                                       IndexMeta::DataType::DT_FP32));

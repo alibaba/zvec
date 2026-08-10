@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include "flat_sparse_searcher_entity.h"
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_helper.h>
-#include <zvec/core/framework/index_logger.h>
 #include "flat_sparse_utility.h"
 
 namespace zvec {

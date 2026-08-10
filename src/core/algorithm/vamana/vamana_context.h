@@ -115,6 +115,11 @@ class VamanaContext : public IndexContext {
   inline VamanaDistCalculator &dist_calculator() {
     return dc_;
   }
+  inline void update_dist_calculator_distance(
+      const IndexMetric::MatrixDistance &distance,
+      const IndexMetric::MatrixBatchDistance &batch_distance) {
+    dc_.update_distance(distance, batch_distance);
+  }
   inline TopkHeap &topk_heap() {
     return topk_heap_;
   }

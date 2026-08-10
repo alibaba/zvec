@@ -22,13 +22,14 @@
 #include <utility>
 #include <vector>
 #include <zvec/ailego/pattern/closure.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Thread Pool
  */
-class ThreadPool {
+class ZVEC_AILEGO_API ThreadPool {
  public:
   /*! Thread Pool Task Group
    */
@@ -133,16 +134,23 @@ class ThreadPool {
     std::condition_variable cond_{};
   };
 
-  //! Constructor
+  /**
+   * Create a thread pool.
+   *
+   * The requested worker count is clamped to
+   * [1, std::thread::hardware_concurrency()] (with a hardware fallback of 1).
+   * This guarantees that the pool can always execute queued work while
+   * preventing excessive worker creation when callers provide an invalid or
+   * unreasonably large size. Requests to oversubscribe the available hardware
+   * are therefore reduced.
+   *
+   * @param size Requested worker count.
+   * @param binding Whether to bind workers to allowed CPU cores.
+   */
   explicit ThreadPool(uint32_t size, bool binding);
 
   //! Constructor
-  explicit ThreadPool(bool binding)
-      : ThreadPool{std::max(std::thread::hardware_concurrency(), 1u), binding} {
-  }
-
-  //! Constructor
-  ThreadPool(void) : ThreadPool{false} {}
+  ThreadPool(void);
 
   //! Destructor
   ~ThreadPool(void) {
@@ -163,9 +171,9 @@ class ThreadPool {
 
   //! Stop all threads
   void stop(void) {
-    // Set stop flag as ture, then wake all threads
-    stopping_ = true;
+    // Set the stop flag while holding the same lock used by workers.
     std::lock_guard<std::mutex> lock(queue_mutex_);
+    stopping_ = true;
     work_cond_.notify_all();
   }
 

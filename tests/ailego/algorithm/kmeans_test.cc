@@ -239,6 +239,39 @@ TEST(NumericalKmeans, FP32_General_InnerProduct) {
   }
 }
 
+TEST(NumericalInnerProductKmeansContext, NormalizeFloatingPointCentroid) {
+  float centroid[] = {3.0f, 4.0f};
+  float norm = 0.0f;
+
+  ailego::NumericalInnerProductKmeansContext<float>::Norm2(centroid, 2, &norm);
+
+  EXPECT_FLOAT_EQ(norm, 5.0f);
+  EXPECT_FLOAT_EQ(centroid[0], 0.6f);
+  EXPECT_FLOAT_EQ(centroid[1], 0.8f);
+}
+
+TEST(NumericalKmeansContext, NormalizeFloatingPointCentroid) {
+  float centroid[] = {3.0f, 4.0f};
+  float norm = 0.0f;
+
+  ailego::NumericalKmeansContext<float>::Norm2(centroid, 2, &norm);
+
+  EXPECT_FLOAT_EQ(norm, 5.0f);
+  EXPECT_FLOAT_EQ(centroid[0], 0.6f);
+  EXPECT_FLOAT_EQ(centroid[1], 0.8f);
+}
+
+TEST(NumericalKmeansContext, KeepIntegerCentroidUnchanged) {
+  int8_t centroid[] = {3, 4};
+  float norm = 1.0f;
+
+  ailego::NumericalKmeansContext<int8_t>::Norm2(centroid, 2, &norm);
+
+  EXPECT_FLOAT_EQ(norm, 0.0f);
+  EXPECT_EQ(centroid[0], 3);
+  EXPECT_EQ(centroid[1], 4);
+}
+
 TEST(NumericalKmeans, FP16_General_InnerProduct) {
   const size_t DIMENSION = 20;
   const size_t K_VALUE = 20;
