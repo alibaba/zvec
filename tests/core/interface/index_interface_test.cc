@@ -95,6 +95,42 @@ TEST(IndexInterface, IvfRabitqFetchUnsupported) {
   ASSERT_EQ(0, index->Close());
   zvec::test_util::RemoveTestFiles(index_name);
 }
+
+TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
+  constexpr uint32_t kDimension = 64;
+  const std::string index_name{"ivf_rabitq_search_fetch_vector.index"};
+  zvec::test_util::RemoveTestFiles(index_name);
+
+  auto param = IVFRabitqIndexParamBuilder()
+                   .WithMetricType(MetricType::kL2sq)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithNlist(1)
+                   .Build();
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(
+      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<float> vector(kDimension, 1.0f);
+  VectorData vector_data{DenseVector{vector.data()}};
+  ASSERT_EQ(0, index->Add(vector_data, 0));
+  ASSERT_EQ(0, index->Train());
+
+  auto query_param = std::make_shared<IVFRabitqQueryParam>();
+  query_param->topk = 1;
+  query_param->fetch_vector = true;
+  query_param->nprobe = 1;
+  SearchResult result;
+  ASSERT_EQ(0, index->Search(vector_data, query_param, &result));
+  EXPECT_TRUE(result.reverted_vector_list_.empty());
+  for (const auto &doc : result.doc_list_) {
+    EXPECT_EQ(nullptr, doc.vector());
+  }
+
+  ASSERT_EQ(0, index->Close());
+  zvec::test_util::RemoveTestFiles(index_name);
+}
 #endif
 
 TEST(IndexInterface, General) {
@@ -808,10 +844,9 @@ TEST(IndexInterface, Merge) {
       auto index3 = create_index_func(param_target, index_name + "3");
       ASSERT_NE(nullptr, index3);
       MergeOptions merge_options;
-      merge_options.write_concurrency =
-          (std::numeric_limits<uint32_t>::max)();
-      ASSERT_TRUE(0 == index3->Merge({index1, index2}, IndexFilter(),
-                                     merge_options));
+      merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
+      ASSERT_TRUE(
+          0 == index3->Merge({index1, index2}, IndexFilter(), merge_options));
       ASSERT_TRUE(3 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;
@@ -842,11 +877,9 @@ TEST(IndexInterface, Merge) {
       filter.set([](uint64_t key) { return key == 0; });  // TODO: uint32?
       zvec::ailego::ThreadPool pool(1, false);
       MergeOptions merge_options;
-      merge_options.write_concurrency =
-          (std::numeric_limits<uint32_t>::max)();
+      merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
       merge_options.pool = &pool;
-      ASSERT_TRUE(0 ==
-                  index3->Merge({index1, index2}, filter, merge_options));
+      ASSERT_TRUE(0 == index3->Merge({index1, index2}, filter, merge_options));
       ASSERT_TRUE(2 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;

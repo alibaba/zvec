@@ -5915,6 +5915,37 @@ TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
       }
     };
 
+    auto check_query_with_vector = [&]() {
+      auto query_doc = TestHelper::CreateDoc(1, *schema);
+      auto query_vector = query_doc.get<std::vector<float>>("dense_fp32");
+      ASSERT_TRUE(query_vector.has_value());
+
+      SearchQuery query;
+      query.topk_ = 10;
+      query.include_vector_ = true;
+      query.target_.field_name_ = "dense_fp32";
+      query.target_.set_vector(
+          std::string(reinterpret_cast<const char *>(query_vector->data()),
+                      query_vector->size() * sizeof(float)));
+
+      auto result = collection->Query(query);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(10, result->size());
+      for (const auto &doc : result.value()) {
+        ASSERT_TRUE(doc->has("dense_fp32"));
+        auto actual_vector = doc->get<std::vector<float>>("dense_fp32");
+        ASSERT_TRUE(actual_vector.has_value());
+        if (metric_type != MetricType::COSINE) {
+          auto expected_doc = TestHelper::CreateDoc(
+              TestHelper::ExtractDocId(doc->pk()), *schema);
+          auto expected_vector =
+              expected_doc.get<std::vector<float>>("dense_fp32");
+          ASSERT_TRUE(expected_vector.has_value());
+          EXPECT_EQ(expected_vector.value(), actual_vector.value());
+        }
+      }
+    };
+
     check_doc();
 
     ASSERT_TRUE(collection->Flush().ok());
@@ -5930,6 +5961,7 @@ TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
     check_doc();
+    check_query_with_vector();
 
     collection.reset();
     auto result = Collection::Open(col_path, options);
@@ -5937,6 +5969,7 @@ TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
     collection = std::move(result.value());
 
     check_doc();
+    check_query_with_vector();
   };
 
   func(MetricType::L2, 0);

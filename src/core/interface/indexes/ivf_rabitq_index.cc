@@ -321,11 +321,6 @@ int IVFRabitqIndex::_prepare_for_search(
     LOG_ERROR("nprobe must be greater than 0");
     return core::IndexError_InvalidArgument;
   }
-  if (search_param->fetch_vector) {
-    LOG_ERROR("fetch_vector is not supported for IVF RaBitQ index");
-    return core::IndexError_Unsupported;
-  }
-
   _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
