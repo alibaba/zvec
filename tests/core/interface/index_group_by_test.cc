@@ -369,6 +369,16 @@ class GroupByInterfaceTest : public ::testing::Test {
     if (!query_param->fetch_vector) {
       return;
     }
+    if (test_case.index_param->index_type == IndexType::kIVFRabitq) {
+      ASSERT_TRUE(result.group_reverted_vector_list_.empty());
+      for (const auto &group : result.group_doc_list_) {
+        for (const auto &doc : group.docs()) {
+          ASSERT_EQ(nullptr, doc.vector());
+          ASSERT_TRUE(doc.vector_string().empty());
+        }
+      }
+      return;
+    }
     if (test_case.is_sparse) {
       AssertSparseVectorsFetched(result, test_case.dimension);
     } else {
@@ -496,6 +506,10 @@ TEST_F(GroupByInterfaceTest, Dense) {
       {"dense_ivf_rabitq_bf_pks", DenseIvfRabitqParam(64),
        IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/true),
        /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_fetch_vector_ignored", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/false,
+                      /*fetch_vector=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
       {"dense_ivf_rabitq_large_nprobe", DenseIvfRabitqParam(64),
        [] {
          auto query = IvfRabitqQuery();
@@ -503,9 +517,8 @@ TEST_F(GroupByInterfaceTest, Dense) {
          return query;
        }(),
        /*is_sparse=*/false, /*dimension=*/64},
-  // Note: fetch_vector is not supported for RabitQ because the entity
-  // stores quantized binary data (not original float vectors), and
-  // RabitqReformer does not implement revert().
+  // IVF RaBitQ ignores fetch_vector; DB queries fetch original vectors from
+  // the accompanying Flat index after recall.
 
 #endif
   };
@@ -567,11 +580,6 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
        /*dimension=*/kDimension,
        /*with_refiner=*/true},
 #if RABITQ_SUPPORTED
-      {"unsupported_ivf_rabitq_fetch_vector", DenseIvfRabitqParam(64),
-       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/false,
-                      /*fetch_vector=*/true),
-       /*is_sparse=*/false, /*dimension=*/64, /*with_refiner=*/false,
-       /*expected_error=*/zvec::core::IndexError_Unsupported},
       {"unsupported_ivf_rabitq_zero_nprobe", DenseIvfRabitqParam(64),
        [] {
          auto query = IvfRabitqQuery();
