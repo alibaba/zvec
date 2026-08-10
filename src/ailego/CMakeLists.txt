@@ -126,9 +126,15 @@ if(WIN32 AND
     )
 endif()
 
+set(ZVEC_AILEGO_DEFS)
+if(ZVEC_ON_MUSL)
+    list(APPEND ZVEC_AILEGO_DEFS ZVEC_ON_MUSL)
+endif()
+
 cc_library(
     NAME zvec_ailego STATIC STRICT PACKED ${ZVEC_AILEGO_LIBRARY_OPTIONS}
     SRCS    ${ALL_SRCS}
+    DEFS    ${ZVEC_AILEGO_DEFS}
     LIBS    ${EXTRA_LIBS}
     VERSION "${GIT_SRCS_VER}"
 )
