@@ -94,8 +94,8 @@ TEST(DiskAnnFileReaderTest, BatchAlignedReadsPreserveRequestOrder) {
 
   std::vector<uint8_t> source(kPageSize * kPageCount);
   for (size_t page = 0; page < kPageCount; ++page) {
-    std::memset(source.data() + page * kPageSize,
-                static_cast<int>(page + 1), kPageSize);
+    std::memset(source.data() + page * kPageSize, static_cast<int>(page + 1),
+                kPageSize);
   }
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
@@ -107,9 +107,8 @@ TEST(DiskAnnFileReaderTest, BatchAlignedReadsPreserveRequestOrder) {
   requests.reserve(kPageCount);
   for (size_t i = 0; i < kPageCount; ++i) {
     const size_t source_page = (i * 7) % kPageCount;
-    requests.emplace_back(
-        source_page * kPageSize, kPageSize,
-        static_cast<uint8_t *>(output.get()) + i * kPageSize);
+    requests.emplace_back(source_page * kPageSize, kPageSize,
+                          static_cast<uint8_t *>(output.get()) + i * kPageSize);
   }
 
   LinuxAlignedFileReader reader;

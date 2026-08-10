@@ -127,7 +127,7 @@ class IndexContext {
   }
 
   virtual void set_group_params(uint32_t /*group_mum*/,
-                                uint32_t /*group_topk*/){};
+                                uint32_t /*group_topk*/) {};
 
   //! Set brute force threshold
   virtual void set_bruteforce_threshold(uint32_t /*bruteforce_threshold*/) {}

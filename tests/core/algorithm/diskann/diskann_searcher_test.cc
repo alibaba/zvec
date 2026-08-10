@@ -852,15 +852,14 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   auto cached_storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_NE(cached_storage, nullptr);
   ASSERT_EQ(0, cached_storage->open(path, false));
-  ASSERT_EQ(0,
-            cached_searcher->load(cached_storage, IndexMetric::Pointer()));
+  ASSERT_EQ(0, cached_searcher->load(cached_storage, IndexMetric::Pointer()));
   auto cached_ctx = cached_searcher->create_context();
   ASSERT_NE(cached_ctx, nullptr);
 
   for (size_t i = 0; i < doc_cnt; ++i) {
     std::string vec_value;
-    ASSERT_EQ(0,
-              cached_searcher->get_vector(key_for_id(i), cached_ctx, vec_value));
+    ASSERT_EQ(
+        0, cached_searcher->get_vector(key_for_id(i), cached_ctx, vec_value));
     ASSERT_GE(vec_value.size(), sizeof(float));
     float vector_value = 0.0f;
     std::memcpy(&vector_value, vec_value.data(), sizeof(vector_value));
