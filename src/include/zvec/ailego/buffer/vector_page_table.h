@@ -425,9 +425,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   }
   // Sample and scale hits to avoid an atomic RMW on every acquisition.
   static constexpr uint32_t kHitSampleRate = 64;
-  static bool sample_hit() {
+  static constexpr uint32_t kReusePolicySampleRate = 8;
+  static uint32_t next_hit_sample() {
     thread_local uint32_t sample_cursor = 0;
-    return (sample_cursor++ & (kHitSampleRate - 1)) == 0;
+    return sample_cursor++;
   }
   void inc_sampled_hit() {
     counters_[counter_shard()].hit.fetch_add(kHitSampleRate,

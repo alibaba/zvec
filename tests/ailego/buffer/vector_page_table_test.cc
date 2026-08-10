@@ -1199,9 +1199,9 @@ TEST_F(BufferPoolTest, DominantProtectedQueueReceivesAgingSamples) {
   }
 
   const uint64_t aging_before = queue.stats().protected_aging_dequeues;
-  for (size_t i = 0; i < 16; ++i) {
-    ASSERT_TRUE(queue.evict_single_block(item));
-  }
+  // A reclaim batch samples the protected queue at most once; scalar queue
+  // inspection deliberately stays strict-priority and pays no aging cost.
+  (void)queue.batch_recycle(/*count=*/8);
   EXPECT_GT(queue.stats().protected_aging_dequeues, aging_before);
 
   while (queue.evict_single_block(item)) {
@@ -1239,10 +1239,11 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
   }
   ASSERT_GT(pool.stats().evict, 0u);
 
-  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
-  EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(0));
-
-  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  // Reuse promotion is sampled under pressure. Any run of 16 hits contains a
+  // policy sample regardless of the thread-local cursor's starting phase.
+  for (size_t i = 0; i < 16; ++i) {
+    ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+  }
   EXPECT_EQ(VecBufferPool::kNormalPriority,
             pool.page_table_.eviction_priority(0));
   const auto stats = pool.stats();
@@ -1268,15 +1269,15 @@ TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
   ASSERT_EQ(VectorPageTable::kNormalPriority,
             table.eviction_priority(/*owner_key=*/0));
 
-  // One CLOCK turn consumes recent activity, the next demotes the page, and
-  // only a later probation turn may reclaim it.
+  // One CLOCK turn consumes recent activity and the next demotes the page.
+  // Demotion itself is the probation turn; no unconditional extra second
+  // chance is added under pressure.
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   EXPECT_EQ(VectorPageTable::kNormalPriority,
             table.eviction_priority(/*owner_key=*/0));
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   EXPECT_EQ(VectorPageTable::kLowPriority,
             table.eviction_priority(/*owner_key=*/0));
-  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   EXPECT_TRUE(table.evict_block(/*block_id=*/0));
 
   const auto stats = table.stats();
@@ -1301,7 +1302,6 @@ TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
       /*block_id=*/0, VectorPageTable::kNormalPriority));
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));  // consume reference
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));  // remember and demote
-  EXPECT_FALSE(table.evict_block(/*block_id=*/0));  // probation turn
   ASSERT_TRUE(table.evict_block(/*block_id=*/0));
   ASSERT_EQ(1u, table.stats().ghost_hot_marks);
 
@@ -1340,13 +1340,11 @@ TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
       /*block_id=*/0, VectorPageTable::kNormalPriority));
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));
-  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   ASSERT_TRUE(table.evict_block(/*block_id=*/0));
 
   ASSERT_TRUE(load_page());
   ASSERT_EQ(VectorPageTable::kNormalPriority,
             table.eviction_priority(/*owner_key=*/0));
-  EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   EXPECT_FALSE(table.evict_block(/*block_id=*/0));
   ASSERT_TRUE(table.evict_block(/*block_id=*/0));
@@ -1380,7 +1378,6 @@ TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
   auto age_and_evict = [&table] {
     EXPECT_FALSE(table.evict_block(/*block_id=*/0));
     EXPECT_FALSE(table.evict_block(/*block_id=*/0));
-    EXPECT_FALSE(table.evict_block(/*block_id=*/0));
     return table.evict_block(/*block_id=*/0);
   };
 
@@ -1390,9 +1387,12 @@ TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
   ASSERT_TRUE(age_and_evict());
 
   ASSERT_TRUE(load_page());
-  char *reused = table.acquire_block(/*block_id=*/0);
-  ASSERT_NE(nullptr, reused);
-  table.release_block(/*block_id=*/0);
+  // Validate the ghost admission through the sampled reuse path.
+  for (size_t i = 0; i < 16; ++i) {
+    char *reused = table.acquire_block(/*block_id=*/0);
+    ASSERT_NE(nullptr, reused);
+    table.release_block(/*block_id=*/0);
+  }
   ASSERT_TRUE(age_and_evict());
 
   ASSERT_TRUE(load_page());
@@ -1617,8 +1617,10 @@ TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {
   handle.release_pages(page_ids, 1);
   EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(1));
 
-  ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
-  handle.release_pages(page_ids, 1);
+  for (size_t i = 0; i < 16; ++i) {
+    ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
+    handle.release_pages(page_ids, 1);
+  }
   EXPECT_EQ(VecBufferPool::kNormalPriority,
             pool.page_table_.eviction_priority(1));
 }

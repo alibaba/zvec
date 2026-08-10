@@ -44,8 +44,7 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   level_t cur_level = cur_max_level;
   dist_t dist = ctx->dist_calculator().batch_dist(entry_point);
   for (; cur_level > level; --cur_level) {
-    select_entry_point(cur_level, &entry_point, &dist, ctx,
-                       /*protect_hotset=*/false);
+    select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
   for (; cur_level >= 0; --cur_level) {
@@ -83,8 +82,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
   for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
-    select_entry_point(cur_level, &entry_point, &dist, ctx,
-                       /*protect_hotset=*/true);
+    select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
   auto &topk_heap = ctx->topk_heap();
@@ -102,8 +100,7 @@ template <typename EntityType>
 void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
                                                    node_id_t *entry_point,
                                                    dist_t *dist,
-                                                   HnswContext *ctx,
-                                                   bool protect_hotset) const {
+                                                   HnswContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
   while (true) {
@@ -123,16 +120,6 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
     }
     if (ailego_unlikely(ret != 0)) {
       break;
-    }
-
-    if constexpr (std::is_same_v<EntityType, HnswBufferPoolStreamerEntity>) {
-      if (protect_hotset) {
-        // The batch read has populated and pinned these pages. Promote them
-        // now so a cache miss still uses one batched I/O submission instead
-        // of one prefetch per neighbor. Builds skip the extra cache hints.
-        entity.prefetch_vectors(&neighbors[0], size,
-                                IndexStorage::Segment::CachePriority::kNormal);
-      }
     }
 
     bool find_closer = false;

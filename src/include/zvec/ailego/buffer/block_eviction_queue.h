@@ -148,7 +148,10 @@ class BlockEvictionQueue {
   }
 
  private:
-  bool evict_block(BlockType &item, size_t &attempts, size_t max_attempts);
+  bool evict_single_block(BlockType &item, bool age_protected);
+
+  bool evict_block(BlockType &item, size_t &attempts, size_t max_attempts,
+                   bool &age_protected);
 
   size_t recover_owner_queues();
 
@@ -157,10 +160,9 @@ class BlockEvictionQueue {
   }
 
  private:
-  // Periodically inspect the protected queue when it dominates probation.
-  // This prevents one historical hit from protecting a page forever while a
-  // continuous cold stream keeps the probation queue non-empty.
-  static constexpr uint64_t kProtectedAgingInterval = 8;
+  // Foreground one-page reclaim should not pay for protected aging. Larger
+  // reclaim batches inspect the protected queue at most once.
+  static constexpr size_t kProtectedAgingMinBatch = 8;
   static constexpr size_t kProtectedDominanceRatio = 3;
   size_t evict_batch_size_{0};
   std::vector<ConcurrentQueue> evict_queues_;
@@ -168,7 +170,6 @@ class BlockEvictionQueue {
   std::shared_mutex valid_owners_mutex_;
   std::atomic<version_t> version_sequence_{1};
   std::array<std::atomic<size_t>, kQueueCount> approximate_queue_sizes_{};
-  std::atomic<uint64_t> eviction_selection_sequence_{0};
   std::atomic<uint64_t> protected_aging_dequeues_{0};
 };
 

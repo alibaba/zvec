@@ -184,9 +184,12 @@ int BlockEvictionQueue::init() {
 }
 
 bool BlockEvictionQueue::evict_single_block(BlockType &item) {
-  const uint64_t sequence =
-      eviction_selection_sequence_.fetch_add(1, std::memory_order_relaxed);
-  if (sequence % kProtectedAgingInterval == 0) {
+  return evict_single_block(item, /*age_protected=*/false);
+}
+
+bool BlockEvictionQueue::evict_single_block(BlockType &item,
+                                            bool age_protected) {
+  if (age_protected) {
     const size_t probation = approximate_queue_sizes_[kProbationPriority].load(
         std::memory_order_relaxed);
     const size_t protected_pages =
@@ -217,15 +220,19 @@ bool BlockEvictionQueue::evict_single_block(BlockType &item) {
 
 bool BlockEvictionQueue::evict_block(BlockType &item) {
   size_t attempts = 0;
-  return evict_block(item, attempts, std::numeric_limits<size_t>::max());
+  bool age_protected = true;
+  return evict_block(item, attempts, std::numeric_limits<size_t>::max(),
+                     age_protected);
 }
 
 bool BlockEvictionQueue::evict_block(BlockType &item, size_t &attempts,
-                                     size_t max_attempts) {
+                                     size_t max_attempts, bool &age_protected) {
   while (attempts < max_attempts) {
-    if (!evict_single_block(item)) {
+    if (!evict_single_block(item, age_protected)) {
       return false;
     }
+    // Protected aging is deliberately a once-per-reclaim-batch decision.
+    age_protected = false;
     ++attempts;
     std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
     if (item.owner == nullptr ||
@@ -253,8 +260,9 @@ void BlockEvictionQueue::recycle() {
   const size_t max_attempts = evict_batch_size_ * 200 * kQueueCount + 16;
   size_t attempts = 0;
   bool recovered = false;
+  bool age_protected = true;
   while (MemoryLimitPool::get_instance().is_full() && attempts < max_attempts) {
-    if (!evict_block(item, attempts, max_attempts)) {
+    if (!evict_block(item, attempts, max_attempts, age_protected)) {
       if (attempts >= max_attempts) {
         break;
       }
@@ -284,9 +292,10 @@ size_t BlockEvictionQueue::batch_recycle(size_t count) {
           : count * 4 + 16;
   size_t attempts = 0;
   bool recovered = false;
+  bool age_protected = count >= kProtectedAgingMinBatch;
   while (evicted < count && attempts < max_attempts) {
     BlockType item;
-    if (!evict_block(item, attempts, max_attempts)) {
+    if (!evict_block(item, attempts, max_attempts, age_protected)) {
       if (attempts >= max_attempts) {
         break;
       }

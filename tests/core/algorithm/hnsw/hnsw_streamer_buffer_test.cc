@@ -143,8 +143,9 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
 
-  // Upper-level descent promotes only the vector pages it actually visits to
-  // normal priority; the much larger L0 working set remains low priority.
+  // Query execution must not repeat range-prefetch priority scans after the
+  // one-time open protection above. With no eviction pressure, the number of
+  // normal-priority pages therefore remains unchanged.
   size_t normal_before = 0;
   for (size_t page = 0; page < pool->page_table_.entry_num(); ++page) {
     normal_before += pool->is_page_resident(page) &&
@@ -163,7 +164,7 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
                     pool->page_table_.eviction_priority(page) ==
                         VecBufferPool::kNormalPriority;
   }
-  EXPECT_GT(normal_after, normal_before);
+  EXPECT_EQ(normal_after, normal_before);
 
   for (size_t i = 0; i < cnt; i += 1) {
     NumericalVector<float> vec(dim);

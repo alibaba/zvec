@@ -396,30 +396,35 @@ char *VectorPageTable::acquire_block(block_id_t block_id, bool record_reuse) {
     if (e.ref_count.compare_exchange_weak(count, count + 1,
                                           std::memory_order_acquire,
                                           std::memory_order_relaxed)) {
-      if (record_reuse && adaptive_priority_enabled_ &&
-          has_evicted_.load(std::memory_order_relaxed)) {
-        // A reuse after ghost admission validates that the page is still hot.
-        // Its next protected residency may therefore leave another ghost.
-        if (e.ghost_state.load(std::memory_order_relaxed) == kGhostAdmitted) {
-          uint8_t ghost_admitted = kGhostAdmitted;
-          (void)e.ghost_state.compare_exchange_strong(
-              ghost_admitted, kNoGhostHistory, std::memory_order_relaxed,
-              std::memory_order_relaxed);
+      if (record_reuse) {
+        const uint32_t sample = next_hit_sample();
+        // Reuse policy is approximate: a genuinely hot page is sampled
+        // quickly, while the common hit path avoids repeated atomic metadata
+        // updates. Also stop policy work after pressure has subsided.
+        if ((sample & (kReusePolicySampleRate - 1)) == 0 &&
+            adaptive_priority_enabled_ &&
+            has_evicted_.load(std::memory_order_relaxed) &&
+            MemoryLimitPool::get_instance().under_cache_pressure()) {
+          // A sampled reuse after ghost admission validates that the page is
+          // still hot. Its next protected residency may leave another ghost.
+          if (e.ghost_state.load(std::memory_order_relaxed) == kGhostAdmitted) {
+            uint8_t ghost_admitted = kGhostAdmitted;
+            (void)e.ghost_state.compare_exchange_strong(
+                ghost_admitted, kNoGhostHistory, std::memory_order_relaxed,
+                std::memory_order_relaxed);
+          }
+          (void)promote_evict_priority(block_id, kNormalPriority);
+          if (!e.referenced.load(std::memory_order_relaxed)) {
+            e.referenced.store(true, std::memory_order_relaxed);
+          }
         }
-        (void)promote_evict_priority(block_id, kNormalPriority);
-        // Under pressure every real reuse must refresh CLOCK. Sampling is
-        // sufficient for statistics but would let a frequently reused
-        // protected page age out between sampled hits.
-        if (!e.referenced.load(std::memory_order_relaxed)) {
-          e.referenced.store(true, std::memory_order_relaxed);
+        // Sample the observability counter and CLOCK reference bit together.
+        if ((sample & (kHitSampleRate - 1)) == 0) {
+          if (!e.referenced.load(std::memory_order_relaxed)) {
+            e.referenced.store(true, std::memory_order_relaxed);
+          }
+          inc_sampled_hit();
         }
-      }
-      // Sample the observability counter and CLOCK reference bit together.
-      if (record_reuse && sample_hit()) {
-        if (!e.referenced.load(std::memory_order_relaxed)) {
-          e.referenced.store(true, std::memory_order_relaxed);
-        }
-        inc_sampled_hit();
       }
       return resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
     }
@@ -708,10 +713,10 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
           e.ghost_state.store(kEvictedHot, std::memory_order_relaxed);
           ghost_hot_marks_.fetch_add(1, std::memory_order_relaxed);
         }
-        // Demotion is an aging step, not an eviction decision. Give the page
-        // one probation CLOCK turn so a reclaim loop cannot immediately
-        // consume the freshly demoted tail entry in the same pressure burst.
-        e.referenced.store(true, std::memory_order_relaxed);
+        // Demotion already gives the page another queue turn. A real reuse can
+        // set CLOCK again; an unconditional second chance only amplifies CPU
+        // work during sustained pressure.
+        e.referenced.store(false, std::memory_order_relaxed);
         e.ref_count.store(0, std::memory_order_release);
         BlockEvictionQueue::BlockType block;
         block.owner = this;
