@@ -675,6 +675,26 @@ class BufferStorage : public IndexStorage {
       return shared_from_this();
     }
 
+    //! Preload a read-only range and attach its eviction priority. Writable
+    //! storage deliberately skips this hint: construction has a different
+    //! access pattern and dirty-page lifetime must drive admission there.
+    void prefetch(size_t offset, size_t len,
+                  CachePriority priority = CachePriority::kLow) override {
+      if (!owner_->cache_enabled_ || !owner_->buffer_pool_ ||
+          !owner_->buffer_pool_handle_ || owner_->buffer_pool_->writable()) {
+        return;
+      }
+      const size_t data_size =
+          bs_load_acquire(&segment_info_->segment.meta()->data_size);
+      if (offset >= data_size || len == 0) {
+        return;
+      }
+      len = std::min(len, data_size - offset);
+      const size_t abs_offset = data_offset() + offset;
+      owner_->buffer_pool_handle_->prefetch_range(
+          abs_offset, len, static_cast<uint8_t>(priority));
+    }
+
    protected:
     friend BufferStorage;
     // Stable unordered_map value address; reparses update this object in place.
@@ -696,6 +716,10 @@ class BufferStorage : public IndexStorage {
   //! Retrieve the memory block type of this storage
   MemoryBlock::MemoryBlockType memory_block_type(void) const override {
     return MemoryBlock::MBT_BUFFERPOOL;
+  }
+
+  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const override {
+    return cache_enabled_ ? buffer_pool_ : nullptr;
   }
 
   //! Initialize storage

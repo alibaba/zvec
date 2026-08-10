@@ -320,6 +320,14 @@ class IndexStorage : public IndexModule {
     //! Index Storage Pointer
     typedef std::shared_ptr<Segment> Pointer;
 
+    //! Cache admission/eviction hint. Backends without an evictable cache
+    //! ignore it; page-backed storage maps it to its eviction queues.
+    enum class CachePriority : uint8_t {
+      kLow = 0,
+      kNormal = 1,
+      kHigh = 2,
+    };
+
     //! One bounded-lifetime read in a batch. Requests may reference different
     //! segments owned by the same storage so backends can merge their page
     //! misses into one I/O submission.
@@ -432,9 +440,11 @@ class IndexStorage : public IndexModule {
       return 0;
     }
 
-    virtual void prefetch(size_t offset, size_t len) {
+    virtual void prefetch(size_t offset, size_t len,
+                          CachePriority priority = CachePriority::kLow) {
       (void)offset;
       (void)len;
+      (void)priority;
     }
   };
 

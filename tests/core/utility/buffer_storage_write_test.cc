@@ -1322,6 +1322,50 @@ TEST_F(BufferStorageWriteTest, CR_BorrowedReadAvoidsOwningHandle) {
   ASSERT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, ReadOnlyPrefetchPreservesCachePriority) {
+  const size_t page_size = ailego::kVectorPageSize;
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("hot", 3 * page_size));
+    auto segment = storage->get("hot");
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(3 * page_size, segment->resize(3 * page_size));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto segment = storage->get("hot");
+  ASSERT_TRUE(segment);
+  auto pool = storage->vec_buffer_pool();
+  ASSERT_TRUE(pool);
+
+  const size_t first_page = segment->data_offset() / page_size;
+  segment->prefetch(0, 1, IndexStorage::Segment::CachePriority::kHigh);
+  EXPECT_TRUE(pool->is_page_resident(first_page));
+  EXPECT_EQ(ailego::VecBufferPool::kHighPriority,
+            pool->page_table_.eviction_priority(first_page));
+
+  // A later, colder hint must not demote an already protected page.
+  segment->prefetch(0, 1, IndexStorage::Segment::CachePriority::kNormal);
+  EXPECT_EQ(ailego::VecBufferPool::kHighPriority,
+            pool->page_table_.eviction_priority(first_page));
+
+  const size_t second_page_offset =
+      page_size - (segment->data_offset() % page_size);
+  const size_t second_page =
+      (segment->data_offset() + second_page_offset) / page_size;
+  segment->prefetch(second_page_offset, 1,
+                    IndexStorage::Segment::CachePriority::kNormal);
+  EXPECT_TRUE(pool->is_page_resident(second_page));
+  EXPECT_EQ(ailego::VecBufferPool::kNormalPriority,
+            pool->page_table_.eviction_priority(second_page));
+
+  ASSERT_EQ(0, storage->close());
+}
+
 TEST_F(BufferStorageWriteTest, BatchBorrowedReadAcrossSegments) {
   const size_t page_size = ailego::kVectorPageSize;
   std::vector<char> payload_a(3 * page_size);

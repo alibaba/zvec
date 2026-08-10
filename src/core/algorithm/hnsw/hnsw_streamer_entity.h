@@ -208,6 +208,12 @@ class HnswStreamerEntity : public HnswEntity {
   inline int get_vector_typed(const node_id_t *ids, uint32_t count,
                               std::vector<MemBlock> &vec_blocks) const;
 
+  //! Admit vector pages used during upper-level descent above the cold
+  //! level-0 working set. Non-page-backed storage ignores the hint.
+  inline void prefetch_vectors(
+      const node_id_t *ids, uint32_t count,
+      IndexStorage::Segment::CachePriority priority) const;
+
   //! Typed get_key: reads key using typed MemBlock
   template <typename MemBlock>
   inline key_t get_key_typed(node_id_t id) const;
@@ -532,6 +538,9 @@ class HnswStreamerEntity : public HnswEntity {
   //! Init node chunk and neighbor chunks
   int init_chunks(const Chunk::Pointer &header_chunk);
 
+  //! Preload the small, universally hot search root for BufferStorage.
+  void protect_search_hotset();
+
   int flush_header(void) {
     if (!broker_->dirty()) {
       // do not need to flush
@@ -622,6 +631,18 @@ class HnswStreamerEntity : public HnswEntity {
 };
 
 // --- Template specializations for typed MemoryBlock access ---
+
+inline void HnswStreamerEntity::prefetch_vectors(
+    const node_id_t *ids, uint32_t count,
+    IndexStorage::Segment::CachePriority priority) const {
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto loc = get_vector_chunk_loc(ids[i]);
+    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                       "invalid chunk offset");
+    node_chunks_[loc.first]->prefetch(loc.second, vector_size(), priority);
+  }
+}
 
 //! MmapMemoryBlock specialization: uses pointer-based Chunk::read
 template <>

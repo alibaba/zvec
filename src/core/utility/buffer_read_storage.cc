@@ -278,11 +278,13 @@ class BufferReadStorage : public IndexStorage {
       return std::make_shared<BufferReadStorage::Segment>(*this);
     }
 
-    void prefetch(size_t offset, size_t len) override {
+    void prefetch(size_t offset, size_t len,
+                  CachePriority priority = CachePriority::kLow) override {
       if (!cache_enabled_) return;
       len = clamp_length(&offset, len);
       if (len == 0) return;
-      handle_->prefetch_range(data_offset_ + offset, len);
+      handle_->prefetch_range(data_offset_ + offset, len,
+                              static_cast<uint8_t>(priority));
     }
 
     //! Cached pages do not expose a stable base address.

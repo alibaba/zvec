@@ -105,7 +105,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
  private:
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
-                          HnswContext *ctx) const;
+                          HnswContext *ctx, bool protect_hotset) const;
 
   //! update node id neighbors from topkHeap, and reverse link is also updated
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,

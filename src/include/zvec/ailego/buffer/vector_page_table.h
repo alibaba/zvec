@@ -133,6 +133,20 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     // Existing queue membership adopts the priority on its next requeue.
   }
 
+  //! Raise an admission hint without allowing a colder caller to demote an
+  //! already protected page.
+  void promote_evict_priority(block_id_t block_id, uint8_t priority) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    Entry &e = entry_at(block_id);
+    uint8_t current = e.evict_priority.load(std::memory_order_relaxed);
+    while (current < priority &&
+           !e.evict_priority.compare_exchange_weak(current, priority,
+                                                   std::memory_order_relaxed,
+                                                   std::memory_order_relaxed)) {
+    }
+    // Existing queue membership adopts the priority on its next requeue.
+  }
+
   [[nodiscard]] char *set_block_acquired(block_id_t block_id, char *buffer,
                                          size_t file_offset);
 

@@ -1503,6 +1503,18 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
   }
   page_count = std::min(page_count, total_pages - first_page);
 
+  bool all_loaded = true;
+  for (size_t page = first_page; page < first_page + page_count; ++page) {
+    if (page_table_.is_loaded(page)) {
+      page_table_.promote_evict_priority(page, priority);
+    } else {
+      all_loaded = false;
+    }
+  }
+  if (all_loaded) {
+    return;
+  }
+
 #if defined(__linux) || defined(__linux__)
   if (aio_enabled_) {
     prefetch_pages_aio(first_page, page_count, priority);
@@ -1517,15 +1529,6 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
                                         size_t page_count, uint8_t priority) {
   const size_t end_page = first_page + page_count;
 
-  bool all_loaded = true;
-  for (size_t pg = first_page; pg < end_page; ++pg) {
-    if (!page_table_.is_loaded(pg)) {
-      all_loaded = false;
-      break;
-    }
-  }
-  if (all_loaded) return;
-
   static constexpr size_t kChunkPages = 1024;
   const size_t kChunkSize = kChunkPages * kVectorPageSize;
   char *chunk_buf =
@@ -1536,6 +1539,7 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
   size_t pg = first_page;
   while (pg < end_page && !pool_full) {
     if (page_table_.is_loaded(pg)) {
+      page_table_.promote_evict_priority(pg, priority);
       ++pg;
       continue;
     }
@@ -1561,7 +1565,10 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
 
     for (size_t j = 0; j < run_pages; ++j) {
       block_id_t pid = static_cast<block_id_t>(run_start + j);
-      if (page_table_.is_loaded(pid)) continue;
+      if (page_table_.is_loaded(pid)) {
+        page_table_.promote_evict_priority(pid, priority);
+        continue;
+      }
       char *buf = nullptr;
       bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
           kVectorPageSize, buf);
@@ -1575,7 +1582,7 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
         }
       }
       std::memcpy(buf, chunk_buf + j * kVectorPageSize, kVectorPageSize);
-      page_table_.set_evict_priority(pid, priority);
+      page_table_.promote_evict_priority(pid, priority);
       char *installed = page_table_.set_block_acquired(
           pid, buf, file_off + j * kVectorPageSize);
       if (installed != nullptr) {
@@ -1727,7 +1734,10 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     while (cursor < count && miss_count < kMaxBatch) {
       const block_id_t pid = page_ids[cursor++];
       if (pid >= page_table_.entry_num()) return false;
-      if (page_table_.is_loaded(pid)) continue;
+      if (page_table_.is_loaded(pid)) {
+        page_table_.promote_evict_priority(pid, priority);
+        continue;
+      }
       bool duplicate = false;
       for (size_t i = 0; i < miss_count; ++i) {
         if (miss_pages[i] == pid) {
@@ -1885,10 +1895,11 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       std::unique_lock<std::shared_mutex> lock(
           block_mutexes_[pid % block_mutex_count_]);
       if (page_table_.is_loaded(pid)) {
+        page_table_.promote_evict_priority(pid, priority);
         MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                        kVectorPageSize);
       } else {
-        page_table_.set_evict_priority(pid, priority);
+        page_table_.promote_evict_priority(pid, priority);
         char *installed = page_table_.set_block_acquired(pid, buffers[i],
                                                          pid * kVectorPageSize);
         if (installed != nullptr) page_table_.release_block(pid);

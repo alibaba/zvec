@@ -370,6 +370,32 @@ int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
   return 0;
 }
 
+void HnswStreamerEntity::protect_search_hotset() {
+  using CachePriority = IndexStorage::Segment::CachePriority;
+
+  // Upper-level adjacency is a small fraction of the index and participates
+  // in every search, so keep it ahead of the much larger level-0/vector
+  // working set. BufferStorage performs a blocking batched prefetch here;
+  // mmap and other backends ignore the hint.
+  for (const auto &chunk : upper_neighbor_chunks_) {
+    chunk->prefetch(0, chunk->data_size(), CachePriority::kHigh);
+  }
+
+  // Every search starts at the entry point. Protect its vector, key and L0
+  // adjacency together because a node record may straddle two cache pages.
+  // Admit it last so it remains resident even when the upper graph is larger
+  // than an unusually small pool.
+  if (doc_cnt() == 0 || entry_point() == kInvalidNodeId) {
+    return;
+  }
+  const uint32_t chunk_idx = entry_point() >> node_index_mask_bits_;
+  const size_t offset =
+      static_cast<size_t>(entry_point() & node_index_mask_) * node_size();
+  sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
+  ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
+  node_chunks_[chunk_idx]->prefetch(offset, node_size(), CachePriority::kHigh);
+}
+
 int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
                              bool check_crc) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -455,6 +481,10 @@ int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
   }
 
   stats_.set_loaded_count(doc_cnt());
+
+  if (storage_mode() == HnswStorageMode::kBufferPool) {
+    protect_search_hotset();
+  }
 
   return 0;
 }

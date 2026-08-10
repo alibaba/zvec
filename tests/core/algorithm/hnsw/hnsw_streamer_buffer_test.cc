@@ -3,6 +3,7 @@
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
+#include <algorithm/hnsw/hnsw_entity.h>
 #include <algorithm/hnsw/hnsw_params.h>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_framework.h>
@@ -88,8 +89,82 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
   ASSERT_EQ(0, read_storage->init(stg_params));
   ASSERT_EQ(0, read_storage->open(dir_ + "Test/HnswSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
+
+  auto pool = read_storage->vec_buffer_pool();
+  ASSERT_TRUE(pool);
+  const size_t page_size = kVectorPageSize;
+
+  // The complete upper graph is a small, universal search hotset and should
+  // be resident at high priority immediately after open.
+  auto upper_chunk = read_storage->get("HnswT4S0");
+  ASSERT_TRUE(upper_chunk);
+  ASSERT_GT(upper_chunk->data_size(), 0U);
+  const size_t upper_first = upper_chunk->data_offset() / page_size;
+  const size_t upper_last =
+      (upper_chunk->data_offset() + upper_chunk->data_size() - 1) / page_size;
+  for (size_t page = upper_first; page <= upper_last; ++page) {
+    EXPECT_TRUE(pool->is_page_resident(page));
+    EXPECT_EQ(VecBufferPool::kHighPriority,
+              pool->page_table_.eviction_priority(page));
+  }
+
+  // The entry node record (vector + key + L0 adjacency) is also shared by
+  // every query and must retain high priority.
+  auto header_chunk = read_storage->get("HnswT1S0");
+  ASSERT_TRUE(header_chunk);
+  HNSWHeader hnsw_header;
+  ASSERT_EQ(sizeof(hnsw_header),
+            header_chunk->fetch(0, &hnsw_header, sizeof(hnsw_header)));
+  ASSERT_NE(kInvalidNodeId, hnsw_header.entry_point());
+  auto first_node_chunk = read_storage->get("HnswT3S0");
+  ASSERT_TRUE(first_node_chunk);
+  ASSERT_GT(hnsw_header.graph.node_size, 0U);
+  const size_t nodes_per_chunk =
+      first_node_chunk->data_size() / hnsw_header.graph.node_size;
+  ASSERT_GT(nodes_per_chunk, 0U);
+  const size_t entry_chunk_id = hnsw_header.entry_point() / nodes_per_chunk;
+  const size_t entry_local_id = hnsw_header.entry_point() % nodes_per_chunk;
+  auto entry_chunk =
+      read_storage->get("HnswT3S" + std::to_string(entry_chunk_id));
+  ASSERT_TRUE(entry_chunk);
+  const size_t entry_offset =
+      entry_local_id * static_cast<size_t>(hnsw_header.graph.node_size);
+  const size_t entry_first =
+      (entry_chunk->data_offset() + entry_offset) / page_size;
+  const size_t entry_last = (entry_chunk->data_offset() + entry_offset +
+                             hnsw_header.graph.node_size - 1) /
+                            page_size;
+  for (size_t page = entry_first; page <= entry_last; ++page) {
+    EXPECT_TRUE(pool->is_page_resident(page));
+    EXPECT_EQ(VecBufferPool::kHighPriority,
+              pool->page_table_.eviction_priority(page));
+  }
+
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
+
+  // Upper-level descent promotes only the vector pages it actually visits to
+  // normal priority; the much larger L0 working set remains low priority.
+  size_t normal_before = 0;
+  for (size_t page = 0; page < pool->page_table_.entry_num(); ++page) {
+    normal_before += pool->is_page_resident(page) &&
+                     pool->page_table_.eviction_priority(page) ==
+                         VecBufferPool::kNormalPriority;
+  }
+  NumericalVector<float> hotset_query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    hotset_query[j] = cnt / 2;
+  }
+  ctx->set_topk(topk);
+  ASSERT_EQ(0, read_streamer->search_impl(hotset_query.data(), qmeta, ctx));
+  size_t normal_after = 0;
+  for (size_t page = 0; page < pool->page_table_.entry_num(); ++page) {
+    normal_after += pool->is_page_resident(page) &&
+                    pool->page_table_.eviction_priority(page) ==
+                        VecBufferPool::kNormalPriority;
+  }
+  EXPECT_GT(normal_after, normal_before);
+
   for (size_t i = 0; i < cnt; i += 1) {
     NumericalVector<float> vec(dim);
     for (size_t j = 0; j < dim; ++j) {
@@ -334,7 +409,8 @@ TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
+  ASSERT_EQ(0,
+            read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
