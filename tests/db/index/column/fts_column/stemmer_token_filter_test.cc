@@ -41,19 +41,20 @@ static FtsIndexParams make_stemmer_params(
 // ============================================================
 
 TEST(StemmerTokenFilterTest, CreatePipelineDefaultEnglish) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params());
+  auto pipeline = TokenizerFactory::create(make_stemmer_params()).value();
   ASSERT_NE(pipeline, nullptr);
 }
 
 TEST(StemmerTokenFilterTest, CreatePipelineExplicitLanguage) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params("german"));
+  auto pipeline =
+      TokenizerFactory::create(make_stemmer_params("german")).value();
   ASSERT_NE(pipeline, nullptr);
 }
 
 TEST(StemmerTokenFilterTest, CreatePipelineInvalidLanguageFails) {
   auto pipeline =
       TokenizerFactory::create(make_stemmer_params("nonexistent_lang"));
-  EXPECT_EQ(pipeline, nullptr);
+  EXPECT_FALSE(pipeline.has_value());
 }
 
 // ============================================================
@@ -61,7 +62,7 @@ TEST(StemmerTokenFilterTest, CreatePipelineInvalidLanguageFails) {
 // ============================================================
 
 TEST(StemmerTokenFilterTest, EnglishStemming) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params());
+  auto pipeline = TokenizerFactory::create(make_stemmer_params()).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("running cats easily connection");
@@ -73,7 +74,7 @@ TEST(StemmerTokenFilterTest, EnglishStemming) {
 }
 
 TEST(StemmerTokenFilterTest, AlreadyStemmedWordsUnchanged) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params());
+  auto pipeline = TokenizerFactory::create(make_stemmer_params()).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("run cat");
@@ -83,7 +84,7 @@ TEST(StemmerTokenFilterTest, AlreadyStemmedWordsUnchanged) {
 }
 
 TEST(StemmerTokenFilterTest, EmptyInput) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params());
+  auto pipeline = TokenizerFactory::create(make_stemmer_params()).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("");
@@ -91,7 +92,7 @@ TEST(StemmerTokenFilterTest, EmptyInput) {
 }
 
 TEST(StemmerTokenFilterTest, PreservesOffsetAndPosition) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params());
+  auto pipeline = TokenizerFactory::create(make_stemmer_params()).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("running dogs");
@@ -107,7 +108,7 @@ TEST(StemmerTokenFilterTest, PreservesOffsetAndPosition) {
 // ============================================================
 
 TEST(StemmerTokenFilterTest, LowercaseThenStem) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params());
+  auto pipeline = TokenizerFactory::create(make_stemmer_params()).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("Running Cats EASILY");
@@ -123,7 +124,7 @@ TEST(StemmerTokenFilterTest, LowercaseThenStem) {
 
 TEST(StemmerTokenFilterTest, StemmerOnlyNoLowercase) {
   auto pipeline =
-      TokenizerFactory::create(make_stemmer_params("", {"stemmer"}));
+      TokenizerFactory::create(make_stemmer_params("", {"stemmer"})).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("running");
@@ -136,7 +137,8 @@ TEST(StemmerTokenFilterTest, StemmerOnlyNoLowercase) {
 // ============================================================
 
 TEST(StemmerTokenFilterTest, GermanStemming) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params("german"));
+  auto pipeline =
+      TokenizerFactory::create(make_stemmer_params("german")).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("laufen");
@@ -149,7 +151,7 @@ TEST(StemmerTokenFilterTest, GermanStemming) {
 // ============================================================
 
 TEST(StemmerTokenFilterTest, LanguageByISOCode) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params("en"));
+  auto pipeline = TokenizerFactory::create(make_stemmer_params("en")).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("running");
@@ -158,7 +160,8 @@ TEST(StemmerTokenFilterTest, LanguageByISOCode) {
 }
 
 TEST(StemmerTokenFilterTest, PorterAlgorithm) {
-  auto pipeline = TokenizerFactory::create(make_stemmer_params("porter"));
+  auto pipeline =
+      TokenizerFactory::create(make_stemmer_params("porter")).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("running");

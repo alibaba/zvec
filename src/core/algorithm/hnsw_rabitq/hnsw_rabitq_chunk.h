@@ -22,8 +22,8 @@
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/string_helper.h>
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_error.h"
-#include "zvec/core/framework/index_logger.h"
 #include "zvec/core/framework/index_storage.h"
 #include "zvec/core/framework/index_streamer.h"
 

@@ -4,7 +4,7 @@ set(SNOWBALL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/snowball-3.1.1")
 set(SNOWBALL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/snowball-codegen")
 set(SNOWBALL_HOST_CC "" CACHE STRING
     "Optional host C compiler for building the Snowball code generator")
-find_program(_SNOWBALL_MAKE NAMES make gmake REQUIRED)
+find_program(_SNOWBALL_MAKE NAMES make gmake nmake REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Parse modules.txt → UTF-8 algorithm list

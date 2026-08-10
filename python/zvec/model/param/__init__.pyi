@@ -834,8 +834,8 @@ class FtsIndexParam(IndexParam):
 
     Attributes:
         type (IndexType): Always ``IndexType.FTS``.
-        tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
-            "whitespace").
+        tokenizer_name (str): Name of the tokenizer (one of "standard", "ngram",
+            "jieba", "whitespace").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
             Supported filters are "lowercase", "ascii_folding", and "stemmer".
@@ -845,6 +845,13 @@ class FtsIndexParam(IndexParam):
             Tokenizers:
                 standard:
                     - "max_token_length" (positive integer).
+                ngram:
+                    - "ngram_min" (positive integer, default 2).
+                    - "ngram_max" (positive integer, default 2).
+                    - "token_chars" (array of "letter", "digit",
+                      "whitespace", "punctuation", "symbol"; default [] keeps
+                      all valid UTF-8 characters). custom_token_chars is not
+                      supported.
                 jieba:
                     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
                       hmm_model.utf8).
@@ -892,6 +899,13 @@ class FtsIndexParam(IndexParam):
                 Tokenizers:
                     standard:
                         - "max_token_length" (positive integer).
+                    ngram:
+                        - "ngram_min" (positive integer, default 2).
+                        - "ngram_max" (positive integer, default 2).
+                        - "token_chars" (array of "letter", "digit",
+                          "whitespace", "punctuation", "symbol"; default []
+                          keeps all valid UTF-8 characters). custom_token_chars
+                          is not supported.
                     jieba:
                         - "jieba_dict_dir".
                         - "user_dict_path".

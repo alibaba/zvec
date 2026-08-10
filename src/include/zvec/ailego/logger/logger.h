@@ -128,34 +128,34 @@ class ZVEC_AILEGO_API LoggerBroker {
  public:
   //! Register Logger
   static Logger::Pointer Register(Logger::Pointer logger) {
-    Logger::Pointer ret = std::move(logger_);
-    logger_ = std::move(logger);
+    Logger::Pointer ret = std::move(LoggerInstance());
+    LoggerInstance() = std::move(logger);
     return ret;
   }
 
   //! Register Logger with init params
   static int Register(Logger::Pointer logger, const ailego::Params &params) {
     //! Cleanup the previous, before initizlizing the new one
-    if (logger_) {
-      logger_->cleanup();
+    if (LoggerInstance()) {
+      LoggerInstance()->cleanup();
     }
-    logger_ = std::move(logger);
-    return logger_->init(params);
+    LoggerInstance() = std::move(logger);
+    return LoggerInstance()->init(params);
   }
 
   //! Unregister Logger
   static void Unregister(void) {
-    logger_ = nullptr;
+    LoggerInstance() = nullptr;
   }
 
   //! Set Level of Logger
   static void SetLevel(int level) {
-    logger_level_ = level;
+    LoggerLevel() = level;
   }
 
   //! Check if log level is enabled
   static bool IsLevelEnabled(int level) {
-    return logger_level_ <= level && logger_;
+    return LoggerLevel() <= level && LoggerInstance();
   }
 
   //! Log Message
@@ -165,7 +165,7 @@ class ZVEC_AILEGO_API LoggerBroker {
     if (IsLevelEnabled(level)) {
       va_list args;
       va_start(args, format);
-      logger_->log(level, file, line, format, args);
+      LoggerInstance()->log(level, file, line, format, args);
       va_end(args);
     }
   }
@@ -176,9 +176,23 @@ class ZVEC_AILEGO_API LoggerBroker {
   LoggerBroker(const LoggerBroker &) = delete;
   LoggerBroker(LoggerBroker &&) = delete;
 
-  //! Members
-  static int logger_level_;
-  static Logger::Pointer logger_;
+  //! Accessors of logger state (Meyers singleton to avoid multiple
+  //! __cxa_atexit registrations when logger.cc is compiled into multiple
+  //! shared libraries via --whole-archive; the guard variable is shared
+  //! across all modules through .dynsym, ensuring initialization and
+  //! destruction happen exactly once)
+  static int &LoggerLevel() {
+    static int logger_level = Logger::LEVEL_WARN;
+    return logger_level;
+  }
+  static Logger::Pointer &LoggerInstance() {
+    static Logger::Pointer instance = MakeDefaultLogger();
+    return instance;
+  }
+
+  //! Factory for the default logger used to initialize the Meyers singleton.
+  //! Defined in logger.cc so the concrete ConsoleLogger type stays private.
+  static Logger::Pointer MakeDefaultLogger();
 };
 
 }  // namespace ailego
