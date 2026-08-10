@@ -403,19 +403,33 @@ char *VectorPageTable::acquire_block(block_id_t block_id, bool record_reuse) {
         // updates. Also stop policy work after pressure has subsided.
         if ((sample & (kReusePolicySampleRate - 1)) == 0 &&
             adaptive_priority_enabled_ &&
-            has_evicted_.load(std::memory_order_relaxed) &&
-            MemoryLimitPool::get_instance().under_cache_pressure()) {
-          // A sampled reuse after ghost admission validates that the page is
-          // still hot. Its next protected residency may leave another ghost.
-          if (e.ghost_state.load(std::memory_order_relaxed) == kGhostAdmitted) {
-            uint8_t ghost_admitted = kGhostAdmitted;
-            (void)e.ghost_state.compare_exchange_strong(
-                ghost_admitted, kNoGhostHistory, std::memory_order_relaxed,
-                std::memory_order_relaxed);
-          }
-          (void)promote_evict_priority(block_id, kNormalPriority);
-          if (!e.referenced.load(std::memory_order_relaxed)) {
-            e.referenced.store(true, std::memory_order_relaxed);
+            has_evicted_.load(std::memory_order_relaxed)) {
+          const uint8_t ghost_state =
+              e.ghost_state.load(std::memory_order_relaxed);
+          const uint8_t priority =
+              e.evict_priority.load(std::memory_order_relaxed);
+          // Most HNSW hits are already protected by the one-time hot-set hint.
+          // Avoid global pressure checks and no-op promotion attempts for
+          // those pages. A ghost-admitted protected page remains eligible so
+          // one sampled reuse can validate its renewed hot history.
+          const bool needs_policy_update =
+              ghost_state == kGhostAdmitted || priority < kNormalPriority;
+          if (needs_policy_update &&
+              MemoryLimitPool::get_instance().under_cache_pressure()) {
+            // A sampled reuse after ghost admission validates that the page is
+            // still hot. Its next protected residency may leave another ghost.
+            if (ghost_state == kGhostAdmitted) {
+              uint8_t ghost_admitted = kGhostAdmitted;
+              (void)e.ghost_state.compare_exchange_strong(
+                  ghost_admitted, kNoGhostHistory, std::memory_order_relaxed,
+                  std::memory_order_relaxed);
+            }
+            if (priority < kNormalPriority) {
+              (void)promote_evict_priority(block_id, kNormalPriority);
+            }
+            if (!e.referenced.load(std::memory_order_relaxed)) {
+              e.referenced.store(true, std::memory_order_relaxed);
+            }
           }
         }
         // Sample the observability counter and CLOCK reference bit together.

@@ -300,7 +300,6 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   }
 
   //! Check if a page is loaded (has a non-null buffer).
-  //! Used by try_acquire_buffer to avoid ref_count leaks on unloaded pages.
   bool is_loaded(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     return resident_entry_at(block_id).buffer.load(std::memory_order_acquire) !=
@@ -655,8 +654,6 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! Acquire a resident page without triggering I/O.
   char *try_acquire_buffer(block_id_t page_id) {
     assert(page_id < page_table_.entry_num());
-    // Do not touch ref_count for unloaded pages.
-    if (!page_table_.is_loaded(page_id)) return nullptr;
     return page_table_.acquire_block(page_id);
   }
 

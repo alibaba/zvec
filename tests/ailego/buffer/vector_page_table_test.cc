@@ -301,6 +301,34 @@ TEST_F(BufferPoolTest, BypassRecheckRecognizesResidencyActivity) {
   pool.page_table_.release_block(1);
 }
 
+TEST_F(BufferPoolTest, ResidentOnlyAcquirePreservesTransitionStates) {
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/1);
+  std::string file = NewFile(/*num_pages=*/1);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+
+  // The resident-only fast path must not claim or pin an unloaded page.
+  EXPECT_EQ(nullptr, pool.try_acquire_buffer(/*page_id=*/0));
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(/*block_id=*/0));
+
+  // Observing an in-flight page must leave ownership with the loader.
+  EXPECT_EQ(nullptr, pool.try_acquire_buffer(/*page_id=*/0));
+  EXPECT_EQ(VectorPageTable::LoadClaimResult::kLoading,
+            pool.page_table_.try_claim_block_load(/*block_id=*/0));
+  ASSERT_TRUE(pool.page_table_.cancel_block_load(/*block_id=*/0));
+
+  char *loaded = pool.acquire_buffer(/*page_id=*/0, /*retry=*/10);
+  ASSERT_NE(nullptr, loaded);
+  char *resident = pool.try_acquire_buffer(/*page_id=*/0);
+  EXPECT_EQ(loaded, resident);
+  if (resident != nullptr) {
+    pool.page_table_.release_block(/*block_id=*/0);
+  }
+  pool.page_table_.release_block(/*block_id=*/0);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Data stays correct when the working set far exceeds pool capacity, which
 //    forces the CLOCK evictor to run repeatedly. Also asserts the observability
@@ -1248,8 +1276,9 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
             pool.page_table_.eviction_priority(0));
   const auto stats = pool.stats();
   EXPECT_EQ(1u, stats.priority_promotions[VecBufferPool::kNormalPriority]);
-  const auto resident = pool.page_table_.resident_pages_by_priority();
-  EXPECT_EQ(1u, resident[VecBufferPool::kNormalPriority]);
+  // Residency is not stable after the final read releases its pin: the
+  // background reclaimer may run between assertions. The priority and
+  // promotion counter are the durable policy outcomes under test.
 }
 
 TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
