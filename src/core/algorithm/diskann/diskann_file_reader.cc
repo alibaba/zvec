@@ -690,11 +690,32 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
     return 0;
   }
 
-  // If no async I/O backend is available, use synchronous pread.
-  if (ailego::IOBackend::Instance().is_pread()) {
+  // If this context has no async I/O backend (null/sentinel context or
+  // explicit pread backend), use synchronous pread.
+  if (ctx == nullptr || ctx == (IOContext)-1 ||
+      ctx->backend == IoBackend::NONE) {
     int pread_ret = execute_io_pread(this->file_desc, read_reqs);
     if (pread_ret != 0) {
       return pread_ret;
+    }
+    batch.used_pread = true;
+    batch.n_submitted = (uint32_t)read_reqs.size();
+    return 0;
+  }
+
+  // io_uring only offers a synchronous batched execute(): the reads are
+  // already copied into the caller's buffers when it returns, so report the
+  // batch as complete the same way the pread path does.
+  if (ctx->backend == IoBackend::IO_URING) {
+    int ring_ret = ctx->ring.execute(this->file_desc, read_reqs);
+    if (ring_ret != 0) {
+      // The kernel only ever writes into the ring-owned staging pool, so a
+      // pread fallback cannot race with requests still in flight.
+      LOG_WARN("submit: io_uring execute failed; falling back to pread");
+      int pread_ret = execute_io_pread(this->file_desc, read_reqs);
+      if (pread_ret != 0) {
+        return pread_ret;
+      }
     }
     batch.used_pread = true;
     batch.n_submitted = (uint32_t)read_reqs.size();
@@ -712,7 +733,7 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
     batch.cb_ptrs[j] = &batch.cbs[j];
   }
 
-  int ret = LibAioLoader::Instance().io_submit(ctx, (int64_t)n_ops,
+  int ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)n_ops,
                                                batch.cb_ptrs.data());
   if (ret == (int)n_ops) {
     batch.n_submitted = n_ops;
@@ -728,7 +749,7 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   bool submission_ok = (submitted > 0) || ret == -EAGAIN || ret == -EINTR;
   while (submission_ok && submitted < n_ops) {
     uint32_t remaining = n_ops - submitted;
-    ret = LibAioLoader::Instance().io_submit(ctx, (int64_t)remaining,
+    ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)remaining,
                                              batch.cb_ptrs.data() + submitted);
     if (ret > 0 && (uint32_t)ret <= remaining) {
       submitted += (uint32_t)ret;
@@ -759,9 +780,9 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   uint32_t drained = 0;
   while (drained < submitted) {
     uint32_t remaining = submitted - drained;
-    ret = LibAioLoader::Instance().io_getevents(ctx, (int64_t)remaining,
-                                                (int64_t)remaining,
-                                                evts.data() + drained, nullptr);
+    ret = LibAioLoader::Instance().io_getevents(
+        ctx->aio_ctx, (int64_t)remaining, (int64_t)remaining,
+        evts.data() + drained, nullptr);
     if (ret > 0 && (uint32_t)ret <= remaining) {
       drained += (uint32_t)ret;
       continue;
@@ -773,7 +794,7 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
         "submit: io_getevents failed while draining %u in-flight requests; "
         "returned: %d. resetting the AIO context before falling back to pread",
         submitted, ret);
-    if (!reset_aio_context(ctx)) {
+    if (!reset_aio_context(ctx->aio_ctx)) {
       // Do not run pread unless io_destroy confirmed that no request can
       // still write into these buffers.
       return IndexError_Runtime;
@@ -794,8 +815,10 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
 // error, so the kernel cannot keep writing into the caller's buffers or
 // leave stale completion events for the next batch on this context.
 static void quiesce_batch(PendingBatch &batch, IOContext &ctx) {
+  // Only the libaio path leaves requests in flight: pread and io_uring
+  // batches are complete before submit() returns (used_pread == true).
   if (batch.n_reaped < batch.n_submitted && !batch.used_pread) {
-    if (reset_aio_context(ctx)) {
+    if (reset_aio_context(ctx->aio_ctx)) {
       batch.n_reaped = batch.n_submitted;
     }
   }
@@ -828,8 +851,9 @@ int LinuxAlignedFileReader::get_completed(
     // Once requests are in flight, EINTR must be retried: returning here
     // would leave them unquiesced, free to overwrite the caller's buffers
     // or leak completion events into the next batch.
-    ret = LibAioLoader::Instance().io_getevents(
-        ctx, (int64_t)min_req, (int64_t)n_remaining, evts.data(), nullptr);
+    ret = LibAioLoader::Instance().io_getevents(ctx->aio_ctx, (int64_t)min_req,
+                                                (int64_t)n_remaining,
+                                                evts.data(), nullptr);
   } while (ret == -EINTR);
   if (ret < 0) {
     LOG_ERROR("get_completed: io_getevents failed, ret=%d, %s", ret,
