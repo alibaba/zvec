@@ -13,11 +13,167 @@
 // limitations under the License.
 
 #include <chrono>
+#include <new>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/logger/logger.h>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#endif
+
 namespace zvec {
 namespace ailego {
+
+namespace {
+
+constexpr size_t kMinimumPageBytes = 4096UL;
+constexpr size_t kSlabBytes = MemoryLimitPool::slab_size();
+constexpr size_t kSlabAlignment = MemoryLimitPool::slab_alignment();
+constexpr size_t kMaxSlabDataPages = kSlabBytes / kMinimumPageBytes - 1;
+
+static_assert((kSlabAlignment & (kSlabAlignment - 1)) == 0,
+              "slab alignment must be a power of two");
+static_assert(kSlabBytes == kSlabAlignment,
+              "slab owner lookup relies on size matching alignment");
+static_assert(kMaxSlabDataPages <= UINT16_MAX,
+              "slab page indexes must fit in uint16_t");
+
+struct AlignedSlabMapping {
+  char *base{nullptr};
+  void *reservation_base{nullptr};
+  size_t reservation_size{0};
+};
+
+AlignedSlabMapping reserve_aligned_slab(size_t page_size) {
+  constexpr size_t kReservationBytes = kSlabBytes + kSlabAlignment;
+#if defined(_WIN32)
+  void *reservation =
+      ::VirtualAlloc(nullptr, kReservationBytes, MEM_RESERVE, PAGE_READWRITE);
+  if (reservation == nullptr) {
+    return {};
+  }
+  const uintptr_t raw = reinterpret_cast<uintptr_t>(reservation);
+  const uintptr_t aligned = (raw + kSlabAlignment - 1) & ~(kSlabAlignment - 1);
+  void *header = ::VirtualAlloc(reinterpret_cast<void *>(aligned), page_size,
+                                MEM_COMMIT, PAGE_READWRITE);
+  if (header == nullptr) {
+    ::VirtualFree(reservation, 0, MEM_RELEASE);
+    return {};
+  }
+  return {reinterpret_cast<char *>(aligned), reservation, kReservationBytes};
+#else
+  (void)page_size;
+  void *reservation = ::mmap(nullptr, kReservationBytes, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (reservation == MAP_FAILED) {
+    return {};
+  }
+
+  const uintptr_t raw = reinterpret_cast<uintptr_t>(reservation);
+  const uintptr_t aligned = (raw + kSlabAlignment - 1) & ~(kSlabAlignment - 1);
+  const size_t prefix = aligned - raw;
+  const size_t suffix = kReservationBytes - prefix - kSlabBytes;
+  if (prefix != 0 && ::munmap(reservation, prefix) != 0) {
+    ::munmap(reservation, kReservationBytes);
+    return {};
+  }
+  if (suffix != 0 &&
+      ::munmap(reinterpret_cast<void *>(aligned + kSlabBytes), suffix) != 0) {
+    ::munmap(reinterpret_cast<void *>(aligned), kSlabBytes + suffix);
+    return {};
+  }
+  return {reinterpret_cast<char *>(aligned), reinterpret_cast<void *>(aligned),
+          kSlabBytes};
+#endif
+}
+
+void release_aligned_slab(void *reservation_base, size_t reservation_size) {
+#if defined(_WIN32)
+  (void)reservation_size;
+  ::VirtualFree(reservation_base, 0, MEM_RELEASE);
+#else
+  ::munmap(reservation_base, reservation_size);
+#endif
+}
+
+bool commit_slab_page(char *page, size_t page_size, bool reclaimed) {
+#if defined(_WIN32)
+  (void)reclaimed;
+  return ::VirtualAlloc(page, page_size, MEM_COMMIT, PAGE_READWRITE) == page;
+#elif defined(__APPLE__) && defined(MADV_FREE_REUSE)
+  if (!reclaimed) {
+    return true;
+  }
+  return ::madvise(page, page_size, MADV_FREE_REUSE) == 0;
+#else
+  (void)page;
+  (void)page_size;
+  (void)reclaimed;
+  return true;
+#endif
+}
+
+bool discard_slab_page(char *page, size_t page_size) {
+#if defined(_WIN32)
+  return ::VirtualFree(page, page_size, MEM_DECOMMIT) != 0;
+#elif defined(__APPLE__) && defined(MADV_FREE_REUSABLE)
+  return ::madvise(page, page_size, MADV_FREE_REUSABLE) == 0;
+#else
+  return ::madvise(page, page_size, MADV_DONTNEED) == 0;
+#endif
+}
+
+}  // namespace
+
+struct MemoryLimitPool::ReclaimableSlab {
+  static constexpr uint64_t kMagic = 0x5A564543534C4142ULL;
+
+  ReclaimableSlab(MemoryLimitPool *pool, void *reservation,
+                  size_t reservation_bytes, size_t system_page_size)
+      : owner(pool),
+        reservation_base(reservation),
+        reservation_size(reservation_bytes),
+        page_size(system_page_size),
+        data_page_count(
+            static_cast<uint16_t>(kSlabBytes / system_page_size - 1)) {}
+
+  uint64_t magic{kMagic};
+  MemoryLimitPool *owner{nullptr};
+  ReclaimableSlab *next{nullptr};
+  void *reservation_base{nullptr};
+  size_t reservation_size{0};
+  size_t page_size{0};
+  std::mutex mutex;
+  uint16_t next_unused{1};
+  uint16_t reclaimed_count{0};
+  uint16_t data_page_count{0};
+  size_t committed_pages{0};
+  uint16_t reclaimed_pages[kMaxSlabDataPages]{};
+};
+
+size_t MemoryLimitPool::page_buffer_size() {
+  static const size_t page_size = []() -> size_t {
+#if defined(_WIN32)
+    SYSTEM_INFO info;
+    ::GetSystemInfo(&info);
+    return static_cast<size_t>(info.dwPageSize);
+#else
+    return static_cast<size_t>(::getpagesize());
+#endif
+  }();
+  assert(page_size >= kMinimumPageBytes && page_size < kSlabBytes &&
+         (page_size & (page_size - 1)) == 0);
+  return page_size;
+}
 
 int BlockEvictionQueue::init() {
   evict_batch_size_ = 512;
@@ -161,30 +317,17 @@ MemoryLimitPool::~MemoryLimitPool() {
 }
 
 void MemoryLimitPool::drain_free_list() {
-  const size_t buffer_size =
-      cached_buffer_size_.load(std::memory_order_relaxed);
   size_t released = 0;
   for (size_t i = 0; i < kNumFreeShards; ++i) {
     std::lock_guard<std::mutex> lk(free_shards_[i].mutex);
-    char *buffer = free_shards_[i].head;
-    while (buffer) {
-      char *next = *reinterpret_cast<char **>(buffer);
-      ailego_free(buffer);
-      buffer = next;
-      ++released;
-    }
+    released += free_shards_[i].count.load(std::memory_order_relaxed);
     free_shards_[i].head = nullptr;
     free_shards_[i].count.store(0, std::memory_order_relaxed);
   }
+  release_all_slabs_locked();
   if (released != 0) {
-    size_t released_bytes = released * buffer_size;
-    size_t prev =
-        committed_size_.fetch_sub(released_bytes, std::memory_order_relaxed);
-    (void)prev;
-    assert(buffer_size != 0 && prev >= released_bytes);
-    LOG_INFO("MemoryLimitPool: released %zu cached buffers", released);
+    LOG_INFO("MemoryLimitPool: released %zu cached slab pages", released);
   }
-  cached_buffer_size_.store(0, std::memory_order_relaxed);
 }
 
 size_t MemoryLimitPool::pick_shard() {
@@ -220,20 +363,7 @@ bool MemoryLimitPool::try_reserve_committed(size_t bytes) {
 }
 
 bool MemoryLimitPool::is_cacheable_buffer_size(size_t buffer_size) {
-  // Free-list nodes store their next pointer in the released buffer.
-  if (buffer_size < sizeof(char *)) {
-    return false;
-  }
-  size_t cached = cached_buffer_size_.load(std::memory_order_relaxed);
-  if (cached == 0) {
-    cached_buffer_size_.compare_exchange_strong(cached, buffer_size,
-                                                std::memory_order_relaxed,
-                                                std::memory_order_relaxed);
-    if (cached == 0) {
-      cached = buffer_size;
-    }
-  }
-  return cached == buffer_size;
+  return buffer_size == page_buffer_size();
 }
 
 char *MemoryLimitPool::pop_free_buffer(size_t start_shard) {
@@ -250,10 +380,148 @@ char *MemoryLimitPool::pop_free_buffer(size_t start_shard) {
   return nullptr;
 }
 
+void MemoryLimitPool::push_free_buffer(char *buffer, size_t shard) {
+  shard %= kNumFreeShards;
+  std::lock_guard<std::mutex> lock(free_shards_[shard].mutex);
+  *reinterpret_cast<char **>(buffer) = free_shards_[shard].head;
+  free_shards_[shard].head = buffer;
+  free_shards_[shard].count.fetch_add(1, std::memory_order_relaxed);
+}
+
+char *MemoryLimitPool::acquire_slab_buffer() {
+  static_assert(sizeof(ReclaimableSlab) <= kMinimumPageBytes,
+                "slab metadata must fit in its header page");
+
+  std::lock_guard<std::mutex> slabs_lock(slab_mutex_);
+  auto acquire_from = [](ReclaimableSlab *slab) -> char * {
+    std::lock_guard<std::mutex> slab_lock(slab->mutex);
+    uint16_t page_index = 0;
+    bool reclaimed = false;
+    if (slab->reclaimed_count != 0) {
+      reclaimed = true;
+      page_index = slab->reclaimed_pages[--slab->reclaimed_count];
+    } else if (slab->next_unused <= slab->data_page_count) {
+      page_index = slab->next_unused++;
+    } else {
+      return nullptr;
+    }
+
+    char *page = reinterpret_cast<char *>(slab) +
+                 static_cast<size_t>(page_index) * slab->page_size;
+    if (!commit_slab_page(page, slab->page_size, reclaimed)) {
+      if (reclaimed) {
+        slab->reclaimed_pages[slab->reclaimed_count++] = page_index;
+      } else {
+        --slab->next_unused;
+      }
+      return nullptr;
+    }
+    ++slab->committed_pages;
+    return page;
+  };
+
+  if (allocation_slab_ != nullptr) {
+    if (char *page = acquire_from(allocation_slab_)) {
+      return page;
+    }
+  }
+  for (ReclaimableSlab *slab = slabs_; slab != nullptr; slab = slab->next) {
+    if (slab == allocation_slab_) {
+      continue;
+    }
+    if (char *page = acquire_from(slab)) {
+      allocation_slab_ = slab;
+      return page;
+    }
+  }
+
+  const size_t page_size = page_buffer_size();
+  AlignedSlabMapping mapping = reserve_aligned_slab(page_size);
+  if (mapping.base == nullptr) {
+    LOG_ERROR("MemoryLimitPool: failed to reserve an aligned slab");
+    return nullptr;
+  }
+  ReclaimableSlab *slab = new (mapping.base) ReclaimableSlab(
+      this, mapping.reservation_base, mapping.reservation_size, page_size);
+  slab->next = slabs_;
+  slabs_ = slab;
+  allocation_slab_ = slab;
+  slab_count_.fetch_add(1, std::memory_order_relaxed);
+  slab_mapped_bytes_.fetch_add(mapping.reservation_size,
+                               std::memory_order_relaxed);
+  char *page = acquire_from(slab);
+  if (page != nullptr) {
+    return page;
+  }
+
+  slabs_ = slab->next;
+  allocation_slab_ = nullptr;
+  slab_count_.fetch_sub(1, std::memory_order_relaxed);
+  slab_mapped_bytes_.fetch_sub(mapping.reservation_size,
+                               std::memory_order_relaxed);
+  slab->~ReclaimableSlab();
+  release_aligned_slab(mapping.reservation_base, mapping.reservation_size);
+  return nullptr;
+}
+
+bool MemoryLimitPool::reclaim_slab_buffer(char *buffer) {
+  const uintptr_t address = reinterpret_cast<uintptr_t>(buffer);
+  const uintptr_t slab_address = address & ~(kSlabAlignment - 1);
+  auto *slab = reinterpret_cast<ReclaimableSlab *>(slab_address);
+  const size_t offset = address - slab_address;
+  if (slab->magic != ReclaimableSlab::kMagic || slab->owner != this ||
+      offset < slab->page_size || offset >= kSlabBytes ||
+      offset % slab->page_size != 0) {
+    LOG_ERROR("MemoryLimitPool: invalid page returned to slab allocator");
+    return false;
+  }
+
+  const auto page_index = static_cast<uint16_t>(offset / slab->page_size);
+  std::lock_guard<std::mutex> slab_lock(slab->mutex);
+  if (!discard_slab_page(buffer, slab->page_size)) {
+    LOG_ERROR("MemoryLimitPool: failed to discard a free slab page");
+    return false;
+  }
+
+  assert(slab->committed_pages != 0);
+  --slab->committed_pages;
+  size_t previous =
+      committed_size_.fetch_sub(slab->page_size, std::memory_order_relaxed);
+  (void)previous;
+  assert(previous >= slab->page_size);
+  assert(slab->reclaimed_count < slab->data_page_count);
+  slab->reclaimed_pages[slab->reclaimed_count++] = page_index;
+  slab_reclaimed_pages_.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
+void MemoryLimitPool::release_all_slabs_locked() {
+  std::lock_guard<std::mutex> slabs_lock(slab_mutex_);
+  size_t released_bytes = 0;
+  ReclaimableSlab *slab = slabs_;
+  while (slab != nullptr) {
+    ReclaimableSlab *next = slab->next;
+    released_bytes += slab->committed_pages * slab->page_size;
+    void *reservation_base = slab->reservation_base;
+    size_t reservation_size = slab->reservation_size;
+    slab->~ReclaimableSlab();
+    release_aligned_slab(reservation_base, reservation_size);
+    slab = next;
+  }
+  slabs_ = nullptr;
+  allocation_slab_ = nullptr;
+  slab_count_.store(0, std::memory_order_relaxed);
+  slab_mapped_bytes_.store(0, std::memory_order_relaxed);
+  if (released_bytes != 0) {
+    size_t previous =
+        committed_size_.fetch_sub(released_bytes, std::memory_order_relaxed);
+    (void)previous;
+    assert(previous >= released_bytes);
+  }
+}
+
 size_t MemoryLimitPool::trim_free_buffers(size_t bytes_needed) {
-  const size_t buffer_size =
-      cached_buffer_size_.load(std::memory_order_relaxed);
-  if (buffer_size == 0 || bytes_needed == 0) {
+  if (bytes_needed == 0) {
     return 0;
   }
 
@@ -264,14 +532,12 @@ size_t MemoryLimitPool::trim_free_buffers(size_t bytes_needed) {
     if (!buffer) {
       break;
     }
-    // Publish the freed capacity only after the allocation is actually gone;
-    // otherwise a concurrent reservation could briefly exceed the hard cap.
-    ailego_free(buffer);
-    size_t prev =
-        committed_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
-    (void)prev;
-    assert(prev >= buffer_size);
-    released_bytes += buffer_size;
+    // Only publish capacity after the physical page has been discarded.
+    if (!reclaim_slab_buffer(buffer)) {
+      push_free_buffer(buffer, shard);
+      break;
+    }
+    released_bytes += page_buffer_size();
   }
   return released_bytes;
 }
@@ -401,8 +667,6 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
     }
   }
 
-  // Cold buffers are individually allocated so retained free-list memory can
-  // be returned to the OS when an external cache needs the shared budget.
   if (!try_reserve_committed(buffer_size)) {
     // This is primarily useful for a non-cacheable size. For the normal page
     // size, all currently visible free buffers were already checked above.
@@ -413,7 +677,9 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
       return false;
     }
   }
-  buffer = static_cast<char *>(ailego_aligned_malloc(buffer_size, 4096UL));
+  buffer = cacheable ? acquire_slab_buffer()
+                     : static_cast<char *>(ailego_aligned_malloc(
+                           buffer_size, kMinimumPageBytes));
   if (!buffer) {
     committed_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
     used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
@@ -488,13 +754,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     assert(prev >= buffer_size);
     return;
   }
-  size_t s = pick_shard();
-  {
-    std::lock_guard<std::mutex> lock(free_shards_[s].mutex);
-    *reinterpret_cast<char **>(buffer) = free_shards_[s].head;
-    free_shards_[s].head = buffer;
-    free_shards_[s].count.fetch_add(1, std::memory_order_relaxed);
-  }
+  push_free_buffer(buffer, pick_shard());
   // Publish the free buffer before releasing its logical budget slot.
   size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)prev;
@@ -554,7 +814,8 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
 
   size_t acquired = 0;
   size_t s = pick_shard();
-  if (is_cacheable_buffer_size(buffer_size)) {
+  const bool cacheable = is_cacheable_buffer_size(buffer_size);
+  if (cacheable) {
     while (acquired < actual_count) {
       out[acquired] = pop_free_buffer(s);
       if (!out[acquired]) {
@@ -572,8 +833,9 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
         break;
       }
     }
-    out[acquired] =
-        static_cast<char *>(ailego_aligned_malloc(buffer_size, 4096UL));
+    out[acquired] = cacheable ? acquire_slab_buffer()
+                              : static_cast<char *>(ailego_aligned_malloc(
+                                    buffer_size, kMinimumPageBytes));
     if (!out[acquired]) {
       committed_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
       break;
@@ -602,8 +864,13 @@ MemoryLimitPool::PoolStats MemoryLimitPool::stats() const {
     free_buffers += free_shards_[i].count.load(std::memory_order_relaxed);
   }
   s.free_buffers = free_buffers;
+  s.slab_count = slab_count_.load(std::memory_order_relaxed);
+  s.slab_mapped_bytes = slab_mapped_bytes_.load(std::memory_order_relaxed);
+  s.slab_header_bytes = s.slab_count * page_buffer_size();
   s.alloc_from_freelist = alloc_from_freelist_.load(std::memory_order_relaxed);
   s.alloc_from_slab = alloc_from_slab_.load(std::memory_order_relaxed);
+  s.slab_reclaimed_pages =
+      slab_reclaimed_pages_.load(std::memory_order_relaxed);
   s.bg_evict_rounds = bg_evict_rounds_.load(std::memory_order_relaxed);
   s.bg_evicted_buffers = bg_evicted_buffers_.load(std::memory_order_relaxed);
   s.bg_no_progress_sleeps =
@@ -617,8 +884,10 @@ void MemoryLimitPool::log_stats() const {
   LOG_INFO(
       "Shared cache stats: capacity=%llu used=%llu committed=%llu "
       "page_used=%llu external_used=%llu metadata_used=%llu "
-      "free_buffers=%llu "
+      "free_buffers=%llu slab_count=%llu slab_mapped_bytes=%llu "
+      "slab_header_bytes=%llu "
       "alloc_from_freelist=%llu alloc_from_slab=%llu "
+      "slab_reclaimed_pages=%llu "
       "bg_evict_rounds=%llu bg_evicted_buffers=%llu "
       "bg_no_progress_sleeps=%llu "
       "high_watermark_hits=%llu",
@@ -629,8 +898,12 @@ void MemoryLimitPool::log_stats() const {
       static_cast<unsigned long long>(s.external_used),
       static_cast<unsigned long long>(s.metadata_used),
       static_cast<unsigned long long>(s.free_buffers),
+      static_cast<unsigned long long>(s.slab_count),
+      static_cast<unsigned long long>(s.slab_mapped_bytes),
+      static_cast<unsigned long long>(s.slab_header_bytes),
       static_cast<unsigned long long>(s.alloc_from_freelist),
       static_cast<unsigned long long>(s.alloc_from_slab),
+      static_cast<unsigned long long>(s.slab_reclaimed_pages),
       static_cast<unsigned long long>(s.bg_evict_rounds),
       static_cast<unsigned long long>(s.bg_evicted_buffers),
       static_cast<unsigned long long>(s.bg_no_progress_sleeps),

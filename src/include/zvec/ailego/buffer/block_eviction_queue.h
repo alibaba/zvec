@@ -224,6 +224,15 @@ class MemoryLimitPool {
     return initialized_.load(std::memory_order_acquire);
   }
 
+  //! VecBufferPool pages are carved from 4 MiB-aligned virtual mappings.
+  static size_t page_buffer_size();
+  static constexpr size_t slab_size() {
+    return 4UL << 20;
+  }
+  static constexpr size_t slab_alignment() {
+    return slab_size();
+  }
+
   //! Snapshot of pool-level counters for monitoring / export.
   struct PoolStats {
     size_t pool_size{0};
@@ -232,11 +241,15 @@ class MemoryLimitPool {
     size_t page_used{0};
     size_t external_used{0};
     size_t metadata_used{0};
-    size_t free_buffers{0};           // buffers cached across all shards
-    uint64_t alloc_from_freelist{0};  // acquisitions served from a shard
-    uint64_t alloc_from_slab{0};      // cold page-buffer allocations
-    uint64_t bg_evict_rounds{0};      // background reclaim passes
-    uint64_t bg_evicted_buffers{0};   // buffers reclaimed by background thread
+    size_t free_buffers{0};            // buffers cached across all shards
+    size_t slab_count{0};              // live 4 MiB virtual mappings
+    size_t slab_mapped_bytes{0};       // virtual address space held by slabs
+    size_t slab_header_bytes{0};       // resident-capable allocator metadata
+    uint64_t alloc_from_freelist{0};   // acquisitions served from a shard
+    uint64_t alloc_from_slab{0};       // cold page acquisitions from slabs
+    uint64_t slab_reclaimed_pages{0};  // pages decommitted under pressure
+    uint64_t bg_evict_rounds{0};       // background reclaim passes
+    uint64_t bg_evicted_buffers{0};    // buffers reclaimed by background thread
     uint64_t bg_no_progress_sleeps{0};  // backoffs after zero-page reclaim
     uint64_t high_watermark_hits{0};  // foreground acquire hit the capacity cap
   };
@@ -244,6 +257,8 @@ class MemoryLimitPool {
   void log_stats() const;
 
  private:
+  struct ReclaimableSlab;
+
   MemoryLimitPool() = default;
   ~MemoryLimitPool();
 
@@ -254,6 +269,10 @@ class MemoryLimitPool {
   void release_fixed(size_t bytes, std::atomic<size_t> *counter);
   bool is_cacheable_buffer_size(size_t buffer_size);
   char *pop_free_buffer(size_t start_shard);
+  void push_free_buffer(char *buffer, size_t shard);
+  char *acquire_slab_buffer();
+  bool reclaim_slab_buffer(char *buffer);
+  void release_all_slabs_locked();
   size_t trim_free_buffers(size_t bytes_needed);
   size_t pick_shard();
 
@@ -315,12 +334,18 @@ class MemoryLimitPool {
 
   FreeShard free_shards_[kNumFreeShards];
   std::atomic<size_t> shard_seq_{0};
-  // Cache only one buffer size because free-list nodes are untyped.
-  std::atomic<size_t> cached_buffer_size_{0};
+
+  // Cold allocations are serialized; the page reuse hot path remains sharded.
+  std::mutex slab_mutex_;
+  ReclaimableSlab *slabs_{nullptr};
+  ReclaimableSlab *allocation_slab_{nullptr};
+  std::atomic<size_t> slab_count_{0};
+  std::atomic<size_t> slab_mapped_bytes_{0};
 
   // Observability counters (relaxed atomics; statistics only).
   std::atomic<uint64_t> alloc_from_freelist_{0};
   std::atomic<uint64_t> alloc_from_slab_{0};
+  std::atomic<uint64_t> slab_reclaimed_pages_{0};
   std::atomic<uint64_t> bg_evict_rounds_{0};
   std::atomic<uint64_t> bg_evicted_buffers_{0};
   std::atomic<uint64_t> bg_no_progress_sleeps_{0};

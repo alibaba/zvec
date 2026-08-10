@@ -16,7 +16,8 @@
 //   1. CLOCK second-chance eviction (access-aware, data-correct under pressure)
 //   2. Background evictor (proactive reclaim down to the low watermark)
 //   3. Sharded free-list correctness under concurrent access
-//   4. Observability counters (hit / miss / evict / second_chance / stats)
+//   4. Reclaimable 4 MiB-aligned slab allocation
+//   5. Observability counters (hit / miss / evict / second_chance / stats)
 
 #include <array>
 #include <atomic>
@@ -931,6 +932,8 @@ TEST_F(BufferPoolTest, ExternalReservationTrimsRetainedPageBuffers) {
   EXPECT_EQ(0u, cached.used);
   EXPECT_EQ(kCapacityPages * kVectorPageSize, cached.committed);
   EXPECT_EQ(kCapacityPages, cached.free_buffers);
+  EXPECT_EQ(1u, cached.slab_count);
+  const uint64_t reclaimed_before = cached.slab_reclaimed_pages;
 
   ASSERT_TRUE(
       memory_pool.try_charge_external(kCapacityPages * kVectorPageSize));
@@ -940,10 +943,27 @@ TEST_F(BufferPoolTest, ExternalReservationTrimsRetainedPageBuffers) {
   EXPECT_EQ(0u, charged.page_used);
   EXPECT_EQ(kCapacityPages * kVectorPageSize, charged.external_used);
   EXPECT_EQ(0u, charged.free_buffers);
+  EXPECT_EQ(1u, charged.slab_count);
+  EXPECT_GE(charged.slab_reclaimed_pages, reclaimed_before + kCapacityPages);
 
   memory_pool.release_external(kCapacityPages * kVectorPageSize);
   EXPECT_EQ(0u, memory_pool.used());
   EXPECT_EQ(0u, memory_pool.committed());
+
+  pages.clear();
+  for (size_t i = 0; i < kCapacityPages; ++i) {
+    char *page = nullptr;
+    ASSERT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+    ASSERT_NE(nullptr, page);
+    std::memset(page, static_cast<int>(i + 1), kVectorPageSize);
+    EXPECT_EQ(static_cast<char>(i + 1), page[0]);
+    EXPECT_EQ(static_cast<char>(i + 1), page[kVectorPageSize - 1]);
+    pages.push_back(page);
+  }
+  EXPECT_EQ(kCapacityPages * kVectorPageSize, memory_pool.committed());
+  for (char *page : pages) {
+    memory_pool.release_buffer(page, kVectorPageSize);
+  }
 }
 
 TEST_F(BufferPoolTest, LargeExternalReservationReclaimsMultipleBatches) {
@@ -1272,4 +1292,57 @@ TEST_F(BufferPoolTest, ShardedPoolAllocFreeAccounting) {
   MemoryLimitPool::PoolStats after = mp.stats();
   EXPECT_GT(after.alloc_from_freelist, before.alloc_from_freelist);
   mp.release_buffer(b, kVectorPageSize);
+}
+
+TEST_F(BufferPoolTest, SlabBaseIsFourMiBAlignedAndPagesAreDirectIoAligned) {
+  constexpr size_t kPages = 8;
+  InitPool(kPages);
+  auto &mp = MemoryLimitPool::get_instance();
+
+  std::vector<char *> pages;
+  uintptr_t slab_base = 0;
+  for (size_t i = 0; i < kPages; ++i) {
+    char *page = nullptr;
+    ASSERT_TRUE(mp.try_acquire_buffer(kVectorPageSize, page));
+    ASSERT_NE(nullptr, page);
+    const uintptr_t address = reinterpret_cast<uintptr_t>(page);
+    EXPECT_EQ(0u, address % MemoryLimitPool::page_buffer_size());
+    const uintptr_t current_slab =
+        address & ~(MemoryLimitPool::slab_alignment() - 1);
+    EXPECT_EQ(0u, current_slab % MemoryLimitPool::slab_alignment());
+    EXPECT_GE(address - current_slab, MemoryLimitPool::page_buffer_size());
+    if (slab_base == 0) {
+      slab_base = current_slab;
+    } else {
+      EXPECT_EQ(slab_base, current_slab);
+    }
+    pages.push_back(page);
+  }
+
+  const auto allocated = mp.stats();
+  EXPECT_EQ(1u, allocated.slab_count);
+  EXPECT_GE(allocated.slab_mapped_bytes, MemoryLimitPool::slab_size());
+  EXPECT_EQ(MemoryLimitPool::page_buffer_size(), allocated.slab_header_bytes);
+  for (char *page : pages) {
+    mp.release_buffer(page, kVectorPageSize);
+  }
+}
+
+TEST_F(BufferPoolTest, ReinitializationReleasesSlabMappings) {
+  InitPool(/*capacity_pages=*/4);
+  auto &mp = MemoryLimitPool::get_instance();
+
+  char *page = nullptr;
+  ASSERT_TRUE(mp.try_acquire_buffer(kVectorPageSize, page));
+  mp.release_buffer(page, kVectorPageSize);
+  ASSERT_EQ(1u, mp.stats().slab_count);
+
+  ASSERT_EQ(0, mp.init(8 * kVectorPageSize));
+  const auto reinitialized = mp.stats();
+  EXPECT_EQ(0u, reinitialized.used);
+  EXPECT_EQ(0u, reinitialized.committed);
+  EXPECT_EQ(0u, reinitialized.free_buffers);
+  EXPECT_EQ(0u, reinitialized.slab_count);
+  EXPECT_EQ(0u, reinitialized.slab_mapped_bytes);
+  EXPECT_EQ(0u, reinitialized.slab_header_bytes);
 }
