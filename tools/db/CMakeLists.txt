@@ -4,7 +4,7 @@ cc_binary(
     NAME fts_bench PACKED
     SRCS fts_bench_main.cc
     LIBS
-         zvec_shared
+         zvec
          gflags
          roaring
          rocksdb

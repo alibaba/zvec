@@ -61,7 +61,7 @@ static zvec::fts::TokenizerPipelinePtr make_whitespace_pipeline() {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "whitespace";
   params.filters = {"lowercase"};
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 // Helper: parse a query string and call search() on a reader/indexer.
@@ -797,7 +797,7 @@ TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerFailsWithoutDictDir) {
   bad_params.tokenizer_name = "jieba";
   bad_params.extra_params = "";
   auto pipeline = TokenizerFactory::create(bad_params);
-  EXPECT_EQ(pipeline, nullptr);
+  EXPECT_FALSE(pipeline.has_value());
 }
 
 // Insert a Chinese sentence and verify that total_docs and total_tokens are
@@ -915,7 +915,7 @@ static zvec::fts::TokenizerPipelinePtr make_jieba_pipeline_for_test() {
   params.filters = {"lowercase"};
   params.extra_params =
       std::string(R"({"jieba_dict_dir":")") + kJiebaDictDir + R"("})";
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 // Phrase queries on a jieba-indexed doc must hit when the query goes through
@@ -1778,7 +1778,8 @@ TEST_F(FtsColumnIndexerTest, BruteForceCoexistsWithFilterPushdown) {
 
   zvec::fts::FtsQueryParams qp;
   qp.topk = 10;
-  qp.candidate_ids = {0, 1, 2};          // candidates restrict to {0,1,2}
+  qp.candidate_ids =
+      std::vector<uint64_t>{0, 1, 2};    // candidates restrict to {0,1,2}
   qp.filter = make_blocked_filter({1});  // further drop doc 1
   auto ret = indexer->search(*ast, qp);
   ASSERT_TRUE(ret.has_value());
@@ -1792,9 +1793,8 @@ TEST_F(FtsColumnIndexerTest, BruteForceCoexistsWithFilterPushdown) {
   EXPECT_EQ(ids[1], 2ull);
 }
 
-// Empty candidate_ids takes the regular posting-driven path (the wrap guard
-// requires non-empty), so search still finds all matching docs.
-TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesFallsBack) {
+// A present empty candidate_ids means the upstream filter matched no docs.
+TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesReturnsEmpty) {
   auto indexer = make_indexer("content");
   EXPECT_TRUE(indexer->insert(0, "alpha beta").has_value());
   EXPECT_TRUE(indexer->insert(1, "alpha gamma").has_value());
@@ -1802,7 +1802,7 @@ TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesFallsBack) {
 
   std::vector<FtsResult> r;
   EXPECT_TRUE(search_ok_with_candidates(*indexer, "alpha", 10, {}, &r));
-  EXPECT_EQ(r.size(), 2u);
+  EXPECT_TRUE(r.empty());
 }
 
 // Regression guard: a null filter yields the same doc_ids and scores as the
@@ -1841,7 +1841,7 @@ static zvec::fts::TokenizerPipelinePtr make_stemmer_pipeline() {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "standard";
   params.filters = {"lowercase", "stemmer"};
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 class FtsStemmerIndexerTest : public FtsColumnIndexerTest {

@@ -20,7 +20,6 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#include <zvec/plugin/diskann_plugin.h>
 #include "ailego/internal/cpu_features.h"
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
@@ -30,12 +29,6 @@
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
-
-#if defined(RABITQ_COMPILED_AVX512)
-constexpr const int kRabitqCompiledAvx512 = RABITQ_COMPILED_AVX512;
-#else
-constexpr const int kRabitqCompiledAvx512 = 0;
-#endif
 
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
@@ -77,10 +70,10 @@ static Status validate_fts_index_params(const FieldSchema &field) {
   internal_params.extra_params = params->extra_params();
 
   auto pipeline = fts::TokenizerFactory::create(internal_params);
-  if (!pipeline) {
+  if (!pipeline.has_value()) {
     return Status::InvalidArgument(
         "schema validate failed: invalid FTS index params for field[",
-        field.name(), "]");
+        field.name(), "]: ", pipeline.error().message());
   }
   return Status::OK();
 }
@@ -154,7 +147,8 @@ Status FieldSchema::validate() const {
             support_dense_vector_index.end()) {
           return Status::InvalidArgument(
               "schema validate failed: dense_vector's index_params only "
-              "support FLAT|HNSW|IVF index, but field[",
+              "support FLAT|HNSW|HNSW_RABITQ|IVF|DISKANN|VAMANA index, but "
+              "field[",
               name_, "]'s index_type is ",
               IndexTypeCodeBook::AsString(index_params_->type()));
         }
@@ -184,44 +178,30 @@ Status FieldSchema::validate() const {
             "RabitQ is not supported on this platform (Linux x86_64 only)");
 #endif
         auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
-        if (!flags.AVX2 && !flags.AVX512F) {
+        const bool supports_rabitq_avx2 = flags.AVX2 && flags.FMA;
+        const bool supports_rabitq_avx512 =
+            flags.AVX512F && flags.AVX512BW && flags.AVX512DQ;
+        if (!supports_rabitq_avx2 && !supports_rabitq_avx512) {
           return Status::NotSupported(
-              "RabitQ requires AVX2/AVX512F to be supported");
-        }
-
-        if constexpr (kRabitqCompiledAvx512) {
-          if (!flags.AVX512F) {
-            return Status::NotSupported(
-                "RabitQ compiled with AVX512F while runtime does not support");
-          }
+              "RabitQ requires AVX2/FMA or AVX512F/BW/DQ to be supported");
         }
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
-        // Probe the DiskAnn runtime eagerly at creation time so unsupported
-        // platforms (non Linux x86_64), missing libaio, or a missing plugin
-        // .so fail fast with a clear message instead of surfacing later during
-        // optimize(). This reuses the same gate DiskAnnIndex applies on first
-        // use (zvec::LoadDiskAnnPlugin, wrapped by EnsureDiskAnnRuntimeReady).
-        // All validate() call sites are creation-time only, so triggering the
-        // plugin load here is safe (and idempotent/cached).
-        const int rc = ::zvec::LoadDiskAnnPlugin();
-        switch (rc) {
-          case kDiskAnnPluginOk:
-            break;
-          case kDiskAnnPluginUnsupportedPlatform:
-            return Status::NotSupported(
-                "DiskAnn is not supported on this platform (Linux x86_64 "
-                "only)");
-          case kDiskAnnPluginLibAioMissing:
-            return Status::NotSupported(
-                "DiskAnn requires libaio at runtime, but it was not found on "
-                "this host. Install it (e.g. 'apt-get install libaio1', or "
-                "'libaio1t64' on Ubuntu 24.04+) and retry.");
-          default:
-            return Status::NotSupported(
-                "DiskAnn runtime could not be initialized on this host");
-        }
+        // DiskAnn requires Linux x86_64/i686/i386.  The CMake variable
+        // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
+        // single source of truth for platform eligibility — it is also used by
+        // index_factory.cc to conditionally compile the DiskAnn index
+        // registration.  Using the same macro here ensures that schema
+        // validation and index registration agree on supported platforms.
+        //
+        // libaio is loaded eagerly (via dlopen) inside DiskAnnBuilder::init()
+        // and DiskAnnStreamer::init(); if libaio is missing, DiskAnn falls
+        // back to synchronous pread() with degraded performance.
+#if !DISKANN_SUPPORTED
+        return Status::NotSupported(
+            "DiskAnn is not supported on this platform (Linux x86_64 only)");
+#endif
       }
 
 

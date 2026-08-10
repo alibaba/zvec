@@ -65,6 +65,13 @@ class VamanaDistCalculator {
     dim_ = dim;
   }
 
+  inline void update_distance(
+      const IndexMetric::MatrixDistance &distance,
+      const IndexMetric::MatrixBatchDistance &batch_distance) {
+    distance_ = distance;
+    batch_distance_ = batch_distance;
+  }
+
   inline void reset_query(const void *query) {
     error_ = false;
     query_ = query;

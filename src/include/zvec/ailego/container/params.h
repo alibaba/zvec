@@ -15,6 +15,7 @@
 #pragma once
 
 #include <zvec/ailego/container/hypercube.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
@@ -45,7 +46,7 @@ namespace ailego {
 
 /*! Index Params
  */
-class Params {
+class ZVEC_AILEGO_API Params {
  public:
   //! Constructor
   Params(void) : hypercube_() {}

@@ -160,6 +160,11 @@ class CollectionImpl : public Collection {
   Status switch_to_new_segment_for_writing(
       const CollectionSchema::Ptr &schema = nullptr);
 
+  Status commit_schema_change_with_new_writing_segment(
+      const CollectionSchema::Ptr &new_schema,
+      const Segment::Ptr &old_writing_segment, const Version &old_version,
+      Version *new_version, uint64_t writing_min_doc_id);
+
   Result<WriteResults> write_impl(std::vector<Doc> &docs, WriteMode mode);
 
   std::vector<Segment::Ptr> get_all_segments() const;
@@ -237,6 +242,13 @@ class CollectionImpl : public Collection {
 
   mutable std::shared_mutex schema_handle_mtx_;
   mutable std::shared_mutex write_mtx_;
+  // Serializes maintenance operations (Optimize, schema DDL, Close and
+  // Destroy) without holding schema_handle_mtx_, so a maintenance
+  // operation waiting for a running Optimize never becomes a pending
+  // exclusive acquirer of the schema lock (which would block new readers).
+  // Lock order: maintenance -> schema -> write -> SegmentManager; never
+  // acquire maintenance_mtx_ after any of the others.
+  mutable std::mutex maintenance_mtx_;
 
   std::atomic<SegmentID> segment_id_allocator_;
   std::atomic<SegmentID> tmp_segment_id_allocator_;
@@ -328,6 +340,7 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
 }
 
 Status CollectionImpl::Close() {
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -367,6 +380,7 @@ Status CollectionImpl::close_unsafe() {
 Status CollectionImpl::Destroy() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -385,6 +399,9 @@ Status CollectionImpl::Destroy() {
 Status CollectionImpl::Flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  // Only flushes the writing segment's WAL (no schema/segment-structure
+  // change), so it needs neither maintenance_mtx_ nor exclusion from a
+  // running Optimize.
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -472,6 +489,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
                                    const CreateIndexOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -509,54 +527,18 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
-  Version new_version = version_manager_->get_current_version();
-
-  if (writing_segment_->doc_count() > 0) {
-    s = writing_segment_->dump();
+  if (writing_segment_->has_record()) {
+    s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
-
-    s = segment_manager_->add_segment(writing_segment_);
-    CHECK_RETURN_STATUS(s);
-
-    auto seg_options =
-        SegmentOptions{false, options_.enable_mmap_, options_.max_buffer_size_};
-    auto new_segment = Segment::CreateAndOpen(
-        path_, *new_schema, allocate_segment_id(),
-        writing_segment_->meta()->max_doc_id() + 1, id_map_, delete_store_,
-        version_manager_, seg_options);
-    if (!new_segment) {
-      return new_segment.error();
-    }
-
-    s = new_version.add_persisted_segment_meta(writing_segment_->meta());
-    CHECK_RETURN_STATUS(s);
-
-    writing_segment_ = new_segment.value();
-    new_version.set_next_segment_id(segment_id_allocator_.load());
-
-  } else {
-    // TODO: allocate new segment id and clear current writing segment at last
-    // recreate writing segment
-    s = writing_segment_->destroy();
-    CHECK_RETURN_STATUS(s);
-    auto id = writing_segment_->id();
-    auto min_doc_id = writing_segment_->meta()->min_doc_id();
-    writing_segment_.reset();
-    SegmentOptions seg_options;
-    seg_options.enable_mmap_ = options_.enable_mmap_;
-    seg_options.max_buffer_size_ = options_.max_buffer_size_;
-    seg_options.read_only_ = options_.read_only_;
-    auto writing_segment =
-        Segment::CreateAndOpen(path_, *new_schema, id, min_doc_id, id_map_,
-                               delete_store_, version_manager_, seg_options);
-    if (!writing_segment) {
-      return writing_segment.error();
-    }
-    writing_segment_ = writing_segment.value();
   }
-  new_version.reset_writing_segment_meta(writing_segment_->meta());
 
-  // get_all_segment will return writing segment if it has docs
+  auto old_writing_segment = writing_segment_;
+  Version old_version = version_manager_->get_current_version();
+  Version new_version = old_version;
+  auto writing_min_doc_id = old_writing_segment->meta()->min_doc_id();
+
+  // DDL tasks only run on persisted segments. Non-empty writing segment has
+  // already been switched to a persisted segment above.
   auto persist_segments = get_all_persist_segments();
 
   bool is_vector_field = field->is_vector_field();
@@ -578,22 +560,10 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
         "] is not supported");
   }
 
-  if (tasks.empty()) {
-    new_version.set_schema(*new_schema);
-
-    s = version_manager_->apply(new_version);
+  if (!tasks.empty()) {
+    s = execute_tasks(tasks);
     CHECK_RETURN_STATUS(s);
-
-    // persist manifest
-    s = version_manager_->flush();
-    CHECK_RETURN_STATUS(s);
-
-    schema_ = new_schema;
-    return Status::OK();
   }
-
-  s = execute_tasks(tasks);
-  CHECK_RETURN_STATUS(s);
 
   new_version.set_schema(*new_schema);
 
@@ -616,12 +586,9 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
     CHECK_RETURN_STATUS(s);
   }
 
-  // 2. update version
-  s = version_manager_->apply(new_version);
-  CHECK_RETURN_STATUS(s);
-
-  // 3. persist version
-  s = version_manager_->flush();
+  s = commit_schema_change_with_new_writing_segment(
+      new_schema, old_writing_segment, old_version, &new_version,
+      writing_min_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // 4. remove old segments or block
@@ -647,8 +614,6 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
     }
     CHECK_RETURN_STATUS(s);
   }
-
-  schema_ = new_schema;
 
   return Status::OK();
 }
@@ -714,6 +679,7 @@ Status CollectionImpl::execute_tasks(
 Status CollectionImpl::DropIndex(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -736,52 +702,15 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
-  Version new_version = version_manager_->get_current_version();
-
-  if (writing_segment_->doc_count() > 0) {
-    s = writing_segment_->dump();
+  if (writing_segment_->has_record()) {
+    s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
-
-    s = segment_manager_->add_segment(writing_segment_);
-    CHECK_RETURN_STATUS(s);
-
-    auto new_segment =
-        Segment::CreateAndOpen(path_, *new_schema, allocate_segment_id(),
-                               writing_segment_->meta()->max_doc_id() + 1,
-                               id_map_, delete_store_, version_manager_,
-                               SegmentOptions{false, options_.enable_mmap_,
-                                              options_.max_buffer_size_});
-    if (!new_segment) {
-      return new_segment.error();
-    }
-
-    s = new_version.add_persisted_segment_meta(writing_segment_->meta());
-    CHECK_RETURN_STATUS(s);
-
-    writing_segment_ = new_segment.value();
-    new_version.set_next_segment_id(segment_id_allocator_.load());
-
-  } else {
-    // recreate writing segment
-    s = writing_segment_->destroy();
-    CHECK_RETURN_STATUS(s);
-    auto id = writing_segment_->id();
-    auto min_doc_id = writing_segment_->meta()->min_doc_id();
-    writing_segment_.reset();
-    SegmentOptions seg_options;
-    seg_options.enable_mmap_ = options_.enable_mmap_;
-    seg_options.max_buffer_size_ = options_.max_buffer_size_;
-    seg_options.read_only_ = options_.read_only_;
-    auto writing_segment =
-        Segment::CreateAndOpen(path_, *new_schema, id, min_doc_id, id_map_,
-                               delete_store_, version_manager_, seg_options);
-    if (!writing_segment) {
-      return writing_segment.error();
-    }
-
-    writing_segment_ = writing_segment.value();
   }
-  new_version.reset_writing_segment_meta(writing_segment_->meta());
+
+  auto old_writing_segment = writing_segment_;
+  Version old_version = version_manager_->get_current_version();
+  Version new_version = old_version;
+  auto writing_min_doc_id = old_writing_segment->meta()->min_doc_id();
 
   auto persist_segments = get_all_persist_segments();
 
@@ -801,22 +730,10 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
         "] on column[", column_name, "] is not supported");
   }
 
-  if (tasks.empty()) {
-    new_version.set_schema(*new_schema);
-
-    s = version_manager_->apply(new_version);
+  if (!tasks.empty()) {
+    s = execute_tasks(tasks);
     CHECK_RETURN_STATUS(s);
-
-    // persist manifest
-    s = version_manager_->flush();
-    CHECK_RETURN_STATUS(s);
-
-    schema_ = new_schema;
-    return Status::OK();
   }
-
-  s = execute_tasks(tasks);
-  CHECK_RETURN_STATUS(s);
 
   new_version.set_schema(*new_schema);
 
@@ -839,11 +756,9 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
     CHECK_RETURN_STATUS(s);
   }
 
-  s = version_manager_->apply(new_version);
-  CHECK_RETURN_STATUS(s);
-
-  // persist manifest
-  s = version_manager_->flush();
+  s = commit_schema_change_with_new_writing_segment(
+      new_schema, old_writing_segment, old_version, &new_version,
+      writing_min_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // 4. remove old segments or block
@@ -868,8 +783,6 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
     }
     CHECK_RETURN_STATUS(s);
   }
-
-  schema_ = new_schema;
 
   return Status::OK();
 }
@@ -897,21 +810,21 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_drop_scalar_index_task(
 Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  std::lock_guard lock(schema_handle_mtx_);
-  // when optimizing, schema operations(include another optimize) are not
-  // allowed
-
-  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
-  CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  // Serialize against other maintenance operations for the whole optimize.
+  std::lock_guard maintenance_lock(maintenance_mtx_);
 
   std::vector<Segment::Ptr> persist_segments;
 
+  // Phase 1: exclusively seal the current writing segment and snapshot
+  // the persisted segment set.
   {
-    // forbidden writing for a while
+    std::unique_lock schema_lock(schema_handle_mtx_);
     std::lock_guard write_lock(write_mtx_);
 
-    if (writing_segment_->doc_count() != 0) {
-      // flush and create new segment
+    CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+    CHECK_CLOSED_RETURN_STATUS(closed_, false);
+
+    if (writing_segment_->has_record()) {
       auto s = switch_to_new_segment_for_writing();
       if (!s.ok()) {
         return s;
@@ -920,15 +833,13 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
 
     persist_segments =
         get_all_persist_segments();  // will not return writing segment
-    // after leave this scope, writing action is allowed
   }
 
   if (persist_segments.size() == 0) {
-    // no need to optimize
     return Status::OK();
   }
 
-  // build segment compact task
+  // Phase 2: lock-free compact. Readers and writers proceed freely.
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,
@@ -938,9 +849,56 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
+  // End of phase 2 (still lock-free): move built tmp segments to their
+  // final paths and open them before the manifest is persisted, so a
+  // failure aborts cleanly without a version/disk mismatch.
+  std::vector<Segment::Ptr> opened_segments;
+  std::vector<std::string> moved_dirs;
+  auto cleanup_moved_dirs = [&]() {
+    for (auto &dir : moved_dirs) {
+      FileHelper::RemoveDirectory(dir);
+    }
+  };
+  for (auto &task : tasks) {
+    auto task_info = task->task_info();
+    if (!std::holds_alternative<CompactTask>(task_info)) {
+      continue;
+    }
+    auto compact_task = std::get<CompactTask>(task_info);
+    if (!compact_task.output_segment_meta_) {
+      continue;
+    }
+
+    auto tmp_segment_path =
+        FileHelper::MakeTempSegmentPath(path_, compact_task.output_segment_id_);
+    auto new_segment_id = allocate_segment_id();
+    auto new_segment_path = FileHelper::MakeSegmentPath(path_, new_segment_id);
+
+    if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
+      cleanup_moved_dirs();
+      return Status::InternalError("move segment directory failed");
+    }
+    moved_dirs.push_back(new_segment_path);
+    compact_task.output_segment_meta_->set_id(new_segment_id);
+
+    auto new_segment =
+        Segment::Open(path_, *schema_, *compact_task.output_segment_meta_,
+                      id_map_, delete_store_, version_manager_,
+                      SegmentOptions{true, options_.enable_mmap_});
+    if (!new_segment.has_value()) {
+      // best-effort cleanup: these directories are not referenced by any
+      // manifest yet, so remove them rather than leaking them on disk
+      cleanup_moved_dirs();
+      return new_segment.error();
+    }
+    opened_segments.push_back(new_segment.value());
+  }
+
+  // Phase 3: short exclusive commit. No readers can be using the old
+  // indexers — they all hold the shared schema lock — so in-place
+  // reload_vector_index() is safe.
   {
-    // forbidden writing for updating version
-    // writing action may trigger updating version where confict occurs
+    std::unique_lock schema_lock(schema_handle_mtx_);
     std::lock_guard write_lock(write_mtx_);
 
     Version new_version = version_manager_->get_current_version();
@@ -951,24 +909,7 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
       if (std::holds_alternative<CompactTask>(task_info)) {
         auto compact_task = std::get<CompactTask>(task_info);
 
-        // 0. check if has output segment meta
         if (compact_task.output_segment_meta_) {
-          // 1. rename built tmp segments
-          auto tmp_segment_id = compact_task.output_segment_id_;
-          auto tmp_segment_path =
-              FileHelper::MakeTempSegmentPath(path_, tmp_segment_id);
-
-          auto new_segment_id = allocate_segment_id();
-          auto new_segment_path =
-              FileHelper::MakeSegmentPath(path_, new_segment_id);
-
-          if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
-            return Status::InternalError("move segment directory failed");
-          }
-
-          // update output_segment_meta_'s segment id
-          compact_task.output_segment_meta_->set_id(new_segment_id);
-
           s = new_version.add_persisted_segment_meta(
               compact_task.output_segment_meta_);
           CHECK_RETURN_STATUS(s);
@@ -987,15 +928,15 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
       }
     }
 
-    // 2. update version
     s = version_manager_->apply(new_version);
     CHECK_RETURN_STATUS(s);
 
-    // 3. persist version
     s = version_manager_->flush();
     CHECK_RETURN_STATUS(s);
 
-    // 4. remove old segments or block
+    // publish new segments, retire compacted inputs and reload rebuilt
+    // vector indexes
+    size_t opened_index = 0;
     for (auto &task : tasks) {
       auto task_info = task->task_info();
 
@@ -1003,14 +944,10 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         auto compact_task = std::get<CompactTask>(task_info);
 
         if (compact_task.output_segment_meta_) {
-          auto new_segment =
-              Segment::Open(path_, *schema_, *compact_task.output_segment_meta_,
-                            id_map_, delete_store_, version_manager_,
-                            SegmentOptions{true, options_.enable_mmap_});
-          if (!new_segment.has_value()) {
-            return new_segment.error();
+          if (opened_index >= opened_segments.size()) {
+            return Status::InternalError("opened_segments index out of bounds");
           }
-          s = segment_manager_->add_segment(new_segment.value());
+          s = segment_manager_->add_segment(opened_segments[opened_index++]);
           CHECK_RETURN_STATUS(s);
         }
 
@@ -1255,6 +1192,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
                                  const AddColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1271,7 +1209,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
   s = new_schema->add_field(column_schema);
   CHECK_RETURN_STATUS(s);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -1328,6 +1266,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
 Status CollectionImpl::DropColumn(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1344,7 +1283,7 @@ Status CollectionImpl::DropColumn(const std::string &column_name) {
   s = new_schema->drop_field(column_name);
   CHECK_RETURN_STATUS(s);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -1403,6 +1342,7 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
                                    const AlterColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
+  std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1429,7 +1369,7 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
   s = new_schema->alter_field(column_name, new_field_schema);
   CHECK_RETURN_STATUS(s);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -1596,8 +1536,53 @@ bool CollectionImpl::need_switch_to_new_segment() const {
   return writing_segment_->doc_count() >= schema_->max_doc_count_per_segment();
 }
 
+Status CollectionImpl::commit_schema_change_with_new_writing_segment(
+    const CollectionSchema::Ptr &new_schema,
+    const Segment::Ptr &old_writing_segment, const Version &old_version,
+    Version *new_version, uint64_t writing_min_doc_id) {
+  if (new_version == nullptr) {
+    return Status::InvalidArgument("new_version is null");
+  }
+
+  auto seg_options =
+      SegmentOptions{false, options_.enable_mmap_, options_.max_buffer_size_};
+  auto new_writing_segment = Segment::CreateAndOpen(
+      path_, *new_schema, allocate_segment_id(), writing_min_doc_id, id_map_,
+      delete_store_, version_manager_, seg_options);
+  if (!new_writing_segment) {
+    return new_writing_segment.error();
+  }
+  new_version->reset_writing_segment_meta(new_writing_segment.value()->meta());
+  new_version->set_next_segment_id(segment_id_allocator_.load());
+
+  auto s = version_manager_->apply(*new_version);
+  if (!s.ok()) {
+    new_writing_segment.value()->destroy();
+    return s;
+  }
+
+  s = version_manager_->flush();
+  if (!s.ok()) {
+    new_writing_segment.value()->destroy();
+    auto rollback_status = version_manager_->apply(old_version);
+    CHECK_RETURN_STATUS(rollback_status);
+    return s;
+  }
+
+  schema_ = new_schema;
+  writing_segment_ = new_writing_segment.value();
+  s = old_writing_segment->destroy();
+  CHECK_RETURN_STATUS(s);
+
+  return Status::OK();
+}
+
 Status CollectionImpl::switch_to_new_segment_for_writing(
     const CollectionSchema::Ptr &schema) {
+  if (writing_segment_->doc_count() == 0) {
+    return writing_segment_->flush();
+  }
+
   auto s = writing_segment_->dump();
   CHECK_RETURN_STATUS(s);
 
@@ -2016,7 +2001,8 @@ Status CollectionImpl::create() {
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] exists");
+                                   "] exists, create expects a path that does "
+                                   "not exist");
   }
 
   // check schema

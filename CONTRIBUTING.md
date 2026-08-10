@@ -15,7 +15,8 @@ By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md
 > **Linux** is the recommended environment for development and performance benchmarking.
 
 ### Prerequisites
-- Python 3.10 - 3.14
+
+- Python 3.10 - 3.14 (64-bit only)
 - CMake ≥ 3.26, < 4.0 (`cmake --version`)
 - A C++17-compatible compiler (e.g., `g++-11+`, `clang++`, Apple Clang on macOS)
 

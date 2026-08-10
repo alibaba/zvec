@@ -16,13 +16,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Float Helper
  */
-struct FloatHelper {
+struct ZVEC_AILEGO_API FloatHelper {
   //! Convert FP16 to FP32
   static float ToFP32(uint16_t val);
 

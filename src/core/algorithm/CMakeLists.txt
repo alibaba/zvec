@@ -23,7 +23,12 @@ else()
 
   if(MSVC)
     # MSVC: STATIC-only stub to avoid creating an empty DLL with no exports
-    # (MSVC linker fails to produce an import library when there are zero exports)
+    # (MSVC linker fails to produce an import library when there are zero exports).
+    # cc_library with STATIC-only creates target "core_knn_diskann" but NOT the
+    # "core_knn_diskann_static" variant (that only happens with STATIC+SHARED).
+    # The Python binding references core_knn_diskann_static on all platforms, so
+    # create an ALIAS so the same target name works under MSVC as well.
+    # ($<TARGET_FILE:> supports ALIAS targets since CMake 3.18.)
     cc_library(
         NAME core_knn_diskann
         STATIC STRICT ALWAYS_LINK
@@ -32,6 +37,7 @@ else()
         INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
         VERSION "${PROXIMA_ZVEC_VERSION}"
       )
+    add_library(core_knn_diskann_static ALIAS core_knn_diskann)
   else()
     cc_library(
         NAME core_knn_diskann

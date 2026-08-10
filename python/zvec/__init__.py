@@ -20,6 +20,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from importlib.metadata import PackageNotFoundError
 
+# zvec ships a native C++ extension that is only built and tested for 64-bit
+# CPython. A 32-bit interpreter would fail to load the extension with an
+# obscure error, so fail fast here with an actionable message.
+if sys.maxsize <= 2**32:
+    raise ImportError(
+        "zvec requires a 64-bit Python interpreter; "
+        "the current interpreter is 32-bit and is not supported."
+    )
+
 
 # Register the wheel-bundled jieba dict dir so `import zvec` alone makes
 # the jieba FTS tokenizer usable. Users can still override via
@@ -30,6 +39,8 @@ try:
 
     from zvec._zvec import (
         get_default_jieba_dict_dir,
+        io_backend_description,
+        io_backend_type,
         set_default_jieba_dict_dir,
     )
 
@@ -42,21 +53,6 @@ except Exception:
 # ==============================
 # Public API — grouped by category
 # ==============================
-
-# —— DiskAnn runtime plugin ——
-# Re-export the plugin management entry points defined by the C++ extension.
-# DiskAnn normally auto-loads on first use; these APIs let tests and
-# diagnostic tools preload the plugin and get a clear error if libaio is
-# missing or the plugin shared object cannot be located.
-from zvec._zvec import (
-    DISKANN_PLUGIN_DLOPEN_FAILED,
-    DISKANN_PLUGIN_LIBAIO_MISSING,
-    DISKANN_PLUGIN_OK,
-    DISKANN_PLUGIN_UNSUPPORTED_PLATFORM,
-    is_diskann_plugin_loaded,
-    is_libaio_available,
-    load_diskann_plugin,
-)
 
 from . import model as model
 
@@ -86,7 +82,7 @@ from .model import schema as schema
 
 # —— Core data structures ——
 from .model.collection import Collection
-from .model.doc import Doc, DocList
+from .model.doc import Doc, DocList, GroupResult
 
 # —— Query & index parameters ——
 # —— FTS params (C++ binding) ——
@@ -122,6 +118,7 @@ from .tool import require_module
 from .typing import (
     DataType,
     IndexType,
+    IOBackendType,
     MetricType,
     QuantizeType,
     Status,
@@ -142,6 +139,8 @@ __all__ = [
     "open",
     "set_default_jieba_dict_dir",
     "get_default_jieba_dict_dir",
+    "io_backend_type",
+    "io_backend_description",
     # Core classes
     "Collection",
     "Doc",
@@ -152,6 +151,7 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "GroupResult",
     "Query",
     "VectorQuery",
     "Fts",
@@ -194,6 +194,7 @@ __all__ = [
     "QwenReRanker",
     # Typing
     "DataType",
+    "IOBackendType",
     "MetricType",
     "QuantizeType",
     "IndexType",
@@ -203,14 +204,6 @@ __all__ = [
     "StatusCode",
     # Tools
     "require_module",
-    # DiskAnn plugin
-    "load_diskann_plugin",
-    "is_diskann_plugin_loaded",
-    "is_libaio_available",
-    "DISKANN_PLUGIN_OK",
-    "DISKANN_PLUGIN_UNSUPPORTED_PLATFORM",
-    "DISKANN_PLUGIN_LIBAIO_MISSING",
-    "DISKANN_PLUGIN_DLOPEN_FAILED",
 ]
 
 # ==============================

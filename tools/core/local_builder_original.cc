@@ -24,9 +24,9 @@
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #endif
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_logger.h"
 #include "zvec/core/framework/index_plugin.h"
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
@@ -283,6 +283,7 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
                                 uint32_t thread_count) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -437,6 +438,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
                          uint32_t thread_count, RetrievalMode retrieval_mode) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -1217,11 +1219,11 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_root["BuilderCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> LOG_LEVEL = {{"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+                                {"info", zvec::ailego::Logger::LEVEL_INFO},
+                                {"warn", zvec::ailego::Logger::LEVEL_WARN},
+                                {"error", zvec::ailego::Logger::LEVEL_ERROR},
+                                {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
 
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
@@ -1229,7 +1231,6 @@ int main(int argc, char *argv[]) {
 
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
   if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
     zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
   }
 

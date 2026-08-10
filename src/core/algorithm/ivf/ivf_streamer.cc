@@ -108,6 +108,9 @@ int IVFStreamer::open(IndexStorage::Pointer storage) {
   stats_.set_loaded_count(entity_->vector_count());
   stats_.set_loaded_costtime(timer.milli_seconds());
 
+  LOG_INFO("IVFStreamer open done, vector_count=%zu, inverted_list_count=%zu",
+           entity_->vector_count(), entity_->inverted_list_count());
+
   searcher_state_ = STATE_LOADED;
   return 0;
 }

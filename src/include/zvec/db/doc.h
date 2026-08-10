@@ -23,12 +23,13 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
 using float16_t = ailego::Float16;
 
-class Doc {
+class ZVEC_API Doc {
  public:
   using Value = std::variant<
       std::monostate,  // 0 - represents null value
@@ -355,7 +356,8 @@ class Doc {
   std::unordered_map<std::string, Value> fields_;
 };
 
-std::string get_value_type_name(const Doc::Value &value, bool is_vector);
+ZVEC_API std::string get_value_type_name(const Doc::Value &value,
+                                         bool is_vector);
 
 using DocPtrList = std::vector<Doc::Ptr>;
 

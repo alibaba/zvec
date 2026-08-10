@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <iostream>
 #include <ailego/container/bitmap.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "zvec/ailego/utility/string_helper.h"
 #include "zvec/core/framework/index_plugin.h"
@@ -69,12 +70,13 @@ class Bench {
         retrieval_mode_{retrieval_mode},
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(false);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
       pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -380,12 +382,13 @@ class SparseBench {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(false);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
       pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -875,17 +878,17 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["SearcherCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> LOG_LEVEL = {{"debug", Logger::LEVEL_DEBUG},
+                                {"info", Logger::LEVEL_INFO},
+                                {"warn", Logger::LEVEL_WARN},
+                                {"error", Logger::LEVEL_ERROR},
+                                {"fatal", Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
   if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
   }
 
   // Calculate Bench

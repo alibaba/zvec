@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 
 namespace zvec {
@@ -32,23 +33,6 @@ bool IndexFactory::HasMetric(const std::string &name) {
 
 std::vector<std::string> IndexFactory::AllMetrics(void) {
   return ailego::Factory<IndexMetric>::Classes();
-}
-
-IndexLogger::Pointer IndexFactory::CreateLogger(const std::string &name) {
-  IndexLogger::Pointer obj =
-      ailego::Factory<IndexLogger>::MakeShared(name.c_str());
-  if (obj) {
-    obj->set_name(name);
-  }
-  return obj;
-}
-
-bool IndexFactory::HasLogger(const std::string &name) {
-  return ailego::Factory<IndexLogger>::Has(name.c_str());
-}
-
-std::vector<std::string> IndexFactory::AllLoggers(void) {
-  return ailego::Factory<IndexLogger>::Classes();
 }
 
 IndexDumper::Pointer IndexFactory::CreateDumper(const std::string &name) {
@@ -255,6 +239,19 @@ bool IndexFactory::HasRefiner(const std::string &name) {
 
 std::vector<std::string> IndexFactory::AllRefiners(void) {
   return ailego::Factory<IndexRefiner>::Classes();
+}
+
+std::shared_ptr<turbo::Quantizer> IndexFactory::CreateQuantizer(
+    const std::string &name) {
+  return ailego::Factory<zvec::turbo::Quantizer>::MakeShared(name.c_str());
+}
+
+bool IndexFactory::HasQuantizer(const std::string &name) {
+  return ailego::Factory<turbo::Quantizer>::Has(name.c_str());
+}
+
+std::vector<std::string> IndexFactory::AllQuantizers(void) {
+  return ailego::Factory<turbo::Quantizer>::Classes();
 }
 
 }  // namespace core

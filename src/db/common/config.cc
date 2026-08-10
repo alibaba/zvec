@@ -35,10 +35,12 @@ GlobalConfig::ConfigData::ConfigData()
                          DEFAULT_MEMORY_LIMIT_RATIO),
       log_config(std::make_shared<ConsoleLogConfig>()),
       query_thread_count(CgroupUtil::getCpuLimit()),
+      query_thread_binding(false),
       invert_to_forward_scan_ratio(0.9),
       brute_force_by_keys_ratio(0.1),
       fts_brute_force_by_keys_ratio(0.05),
-      optimize_thread_count(CgroupUtil::getCpuLimit()),
+      optimize_thread_count(query_thread_count),
+      optimize_thread_binding(false),
       jieba_dict_dir() {}
 
 Status GlobalConfig::Validate(const ConfigData &config) const {

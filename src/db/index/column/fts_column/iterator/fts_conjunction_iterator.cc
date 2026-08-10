@@ -55,7 +55,7 @@ uint32_t ConjunctionIterator::next_doc() {
 
   // Advance the lead iterator and try to find agreement
   uint32_t candidate = must_iterators_[0]->next_doc();
-  cached_doc_id_ = do_next(candidate);
+  cached_doc_id_ = do_next(candidate, true);
   return cached_doc_id_;
 }
 
@@ -75,7 +75,7 @@ uint32_t ConjunctionIterator::next_doc(const zvec::IndexFilter *filter) {
   // reach do_next() alignment.
   uint32_t candidate = must_iterators_[0]->next_doc(filter);
   while (candidate != NO_MORE_DOCS) {
-    candidate = do_next(candidate);
+    candidate = do_next(candidate, true);
     if (candidate == NO_MORE_DOCS || !filter->is_filtered(candidate)) {
       break;
     }
@@ -93,18 +93,66 @@ uint32_t ConjunctionIterator::advance(uint32_t target) {
     return NO_MORE_DOCS;
   }
 
-  // MaxScore pruning
-  if (min_competitive_score_ > 0.0f && max_score() < min_competitive_score_) {
-    cached_doc_id_ = NO_MORE_DOCS;
-    return NO_MORE_DOCS;
-  }
-
   uint32_t candidate = must_iterators_[0]->advance(target);
-  cached_doc_id_ = do_next(candidate);
+  cached_doc_id_ = do_next(candidate, false);
   return cached_doc_id_;
 }
 
-uint32_t ConjunctionIterator::do_next(uint32_t candidate) {
+uint32_t ConjunctionIterator::skip_non_competitive_blocks(uint32_t candidate) {
+  while (true) {
+    float block_max_sum = 0.0f;
+    float must_only_sum = 0.0f;
+    uint32_t min_block_end = NO_MORE_DOCS;
+
+    for (auto &iter : must_iterators_) {
+      auto info = iter->block_max_info_for(candidate);
+      block_max_sum += info.block_max_score;
+      must_only_sum += info.block_max_score;
+      if (info.block_last_doc < min_block_end) {
+        min_block_end = info.block_last_doc;
+      }
+    }
+    for (auto &iter : should_iterators_) {
+      auto info = iter->block_max_info_for(candidate);
+      block_max_sum += info.block_max_score;
+      if (info.block_last_doc < min_block_end) {
+        min_block_end = info.block_last_doc;
+      }
+    }
+
+    // All iterators returned NO_MORE_DOCS — no block info, pass through
+    if (min_block_end == NO_MORE_DOCS) {
+      block_max_up_to_ = NO_MORE_DOCS;
+      must_block_max_sum_ = must_only_sum;
+      opt_is_required_ = (!should_iterators_.empty() &&
+                          must_block_max_sum_ < min_competitive_score_);
+      return candidate;
+    }
+
+    if (block_max_sum >= min_competitive_score_) {
+      // Current block is competitive
+      block_max_up_to_ = min_block_end;
+      must_block_max_sum_ = must_only_sum;
+      opt_is_required_ = (!should_iterators_.empty() &&
+                          must_block_max_sum_ < min_competitive_score_);
+      return candidate;
+    }
+
+    // Current block is non-competitive, skip to the next block
+    uint32_t next_block_start = min_block_end + 1;
+    if (next_block_start == 0) {
+      // Overflow: min_block_end was MAX, so the iterator is exhausted.
+      return NO_MORE_DOCS;
+    }
+    candidate = must_iterators_[0]->advance(next_block_start);
+    if (candidate == NO_MORE_DOCS) {
+      return NO_MORE_DOCS;
+    }
+  }
+}
+
+uint32_t ConjunctionIterator::do_next(uint32_t candidate,
+                                      bool apply_competitive_pruning) {
   if (candidate == NO_MORE_DOCS) {
     return NO_MORE_DOCS;
   }
@@ -130,9 +178,40 @@ uint32_t ConjunctionIterator::do_next(uint32_t candidate) {
     }
 
     if (all_match) {
+      // Block-Max: skip non-competitive blocks before must_not check
+      if (apply_competitive_pruning && min_competitive_score_ > 0.0f &&
+          candidate > block_max_up_to_) {
+        uint32_t orig = candidate;
+        candidate = skip_non_competitive_blocks(candidate);
+        if (candidate == NO_MORE_DOCS) {
+          return NO_MORE_DOCS;
+        }
+        if (candidate != orig) {
+          continue;
+        }
+      }
+
       // All must iterators agree on this candidate
       // Check must_not exclusion
       if (!is_excluded(candidate)) {
+        // optIsRequired: should clauses promoted to required
+        if (apply_competitive_pruning && opt_is_required_) {
+          bool any_should_match = false;
+          for (auto &iter : should_iterators_) {
+            uint32_t doc = iter->advance(candidate);
+            if (doc == candidate && iter->matches()) {
+              any_should_match = true;
+              break;
+            }
+          }
+          if (!any_should_match) {
+            candidate = must_iterators_[0]->next_doc();
+            if (candidate == NO_MORE_DOCS) {
+              return NO_MORE_DOCS;
+            }
+            continue;
+          }
+        }
         return candidate;
       }
       // Excluded by must_not, advance lead to next doc
@@ -167,15 +246,30 @@ bool ConjunctionIterator::matches() {
 
 float ConjunctionIterator::score() {
   float total = 0.0f;
+  float remaining_max = cached_max_score_;
+
   for (auto &iter : must_iterators_) {
+    remaining_max -= iter->cached_max_score_;
     total += iter->score();
+    // accumulated + remaining upper bound < threshold — cannot compete
+    if (min_competitive_score_ > 0.0f &&
+        total + remaining_max < min_competitive_score_) {
+      return total;
+    }
   }
+
   for (auto &iter : should_iterators_) {
+    remaining_max -= iter->cached_max_score_;
     uint32_t doc = iter->advance(cached_doc_id_);
     if (doc == cached_doc_id_ && iter->matches()) {
       total += iter->score();
     }
+    if (min_competitive_score_ > 0.0f &&
+        total + remaining_max < min_competitive_score_) {
+      return total;
+    }
   }
+
   return total;
 }
 
