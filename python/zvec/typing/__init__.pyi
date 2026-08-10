@@ -130,6 +130,7 @@ class IOBackendType:
 
     - PREAD: Synchronous pread() — no async I/O.
     - LIBAIO: libaio loaded at runtime via dlopen().
+    - IO_URING: io_uring via raw kernel syscalls (zero dependency).
 
     Examples:
         >>> from zvec.typing import IOBackendType
@@ -142,13 +143,16 @@ class IOBackendType:
       PREAD
 
       LIBAIO
+
+      IO_URING
     """
 
+    IO_URING: typing.ClassVar[IOBackendType]  # value = <IOBackendType.IO_URING: 2>
     LIBAIO: typing.ClassVar[IOBackendType]  # value = <IOBackendType.LIBAIO: 1>
     PREAD: typing.ClassVar[IOBackendType]  # value = <IOBackendType.PREAD: 0>
     __members__: typing.ClassVar[
         dict[str, IOBackendType]
-    ]  # value = {'PREAD': <IOBackendType.PREAD: 0>, 'LIBAIO': <IOBackendType.LIBAIO: 1>}
+    ]  # value = {'PREAD': <IOBackendType.PREAD: 0>, 'LIBAIO': <IOBackendType.LIBAIO: 1>, 'IO_URING': <IOBackendType.IO_URING: 2>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
