@@ -27,16 +27,40 @@
 
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <vector>
 #include <ailego/io/iouring_def.h>
 
 namespace zvec {
-namespace core {
+namespace ailego {
 
-// AlignedRead lives in diskann_file_reader.h; a forward declaration
-// suffices since execute() takes it by reference.
-struct AlignedRead;
+// Generic aligned read request shared by DiskANN and Buffer Storage.
+// expected_len may be smaller than len for the final page of a file: the
+// kernel still receives an O_DIRECT-aligned length, while execute() accepts
+// the expected short read and zero-fills the rest of the destination.
+struct IoUringRead {
+  uint64_t offset{0};
+  uint64_t len{0};
+  void *buf{nullptr};
+  uint64_t expected_len{0};
+
+  IoUringRead() = default;
+
+  IoUringRead(uint64_t offset, uint64_t len, void *buf,
+              uint64_t expected_len = 0)
+      : offset(offset),
+        len(len),
+        buf(buf),
+        expected_len(expected_len == 0 ? len : expected_len) {
+    assert(static_cast<size_t>(offset) % 512 == 0);
+    assert(static_cast<size_t>(len) % 512 == 0);
+    assert(reinterpret_cast<size_t>(buf) % 512 == 0);
+    assert(this->expected_len <= len);
+  }
+};
 
 // Max SQEs submitted per io_uring_enter() call.
 static constexpr uint32_t kIoUringMaxBatch = 128;
@@ -80,11 +104,14 @@ class IoUringRing {
     return ring_fd_ >= 0;
   }
 
-  // Execute a batch of aligned reads via io_uring.  Returns 0 on success,
-  // -1 on failure — the caller may always fall back to pread, since the
-  // kernel only writes into the staging pool.  In diskann_file_reader.cc
-  // (AlignedRead is defined there).
-  int execute(int fd, std::vector<AlignedRead> &read_reqs);
+  // Execute a batch of aligned reads via io_uring. Returns 0 on success and
+  // -1 on failure. The caller may always fall back to pread because the
+  // kernel only writes into the ring-owned staging pool.
+  int execute(int fd, const IoUringRead *read_reqs, size_t count);
+
+  int execute(int fd, const std::vector<IoUringRead> &read_reqs) {
+    return execute(fd, read_reqs.data(), read_reqs.size());
+  }
 
  private:
   int ring_fd_{-1};
@@ -93,6 +120,9 @@ class IoUringRing {
   void *sq_ring_ptr_{nullptr};
   struct io_uring_sqe *sqes_ptr_{nullptr};
   void *cq_ring_ptr_{nullptr};
+  size_t sq_ring_size_{0};
+  size_t sqes_size_{0};
+  size_t cq_ring_size_{0};
 
   // SQ ring field pointers (into sq_ring_ptr_).
   unsigned *sq_head_{nullptr};
@@ -123,7 +153,7 @@ class IoUringRing {
   unsigned cq_entries_{0};
 };
 
-}  // namespace core
+}  // namespace ailego
 }  // namespace zvec
 
 #endif  // __linux__

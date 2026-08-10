@@ -264,6 +264,37 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
   std::free(output);
 }
 
+TEST(DiskAnnLinuxIoUringTest, ReadsBatchAndZeroPadsExpectedShortRead) {
+  ailego::IoUringRing ring;
+  if (!ring.setup(/*entries=*/8)) {
+    GTEST_SKIP() << "io_uring is unavailable";
+  }
+
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  constexpr size_t kTailSize = 123;
+  std::vector<uint8_t> source(kBlockSize + kTailSize);
+  std::fill(source.begin(), source.begin() + kBlockSize, 0x3c);
+  std::fill(source.begin() + kBlockSize, source.end(), 0x7d);
+  ASSERT_EQ(::pwrite(file.fd(), source.data(), source.size(), 0),
+            static_cast<ssize_t>(source.size()));
+
+  void *output = allocate_aligned(2 * kBlockSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<ailego::IoUringRead> requests;
+  requests.emplace_back(/*offset=*/0, kBlockSize, output);
+  requests.emplace_back(kBlockSize, kBlockSize,
+                        static_cast<uint8_t *>(output) + kBlockSize, kTailSize);
+
+  ASSERT_EQ(ring.execute(file.fd(), requests), 0);
+  EXPECT_EQ(std::memcmp(output, source.data(), kBlockSize), 0);
+  const auto *tail = static_cast<const uint8_t *>(output) + kBlockSize;
+  EXPECT_EQ(std::memcmp(tail, source.data() + kBlockSize, kTailSize), 0);
+  EXPECT_TRUE(std::all_of(tail + kTailSize, tail + kBlockSize,
+                          [](uint8_t value) { return value == 0; }));
+  std::free(output);
+}
+
 TEST(DiskAnnBufferPoolFileReaderTest,
      ReadsScatteredRequestsThroughOnePinnedPageBatch) {
   if (ailego::kVectorPageSize != DiskAnnUtil::kSectorSize) {

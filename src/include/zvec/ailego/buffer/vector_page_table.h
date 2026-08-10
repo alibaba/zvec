@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/export.h>
 #include "block_eviction_queue.h"
 
@@ -449,10 +450,18 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   bool aio_enabled() const {
 #if defined(__linux) || defined(__linux__)
-    // Kernel AIO contexts are created lazily per calling thread.
+    // Backend contexts are created lazily per calling thread.
     return aio_enabled_;
 #else
     return false;
+#endif
+  }
+
+  IOBackendType io_backend_type() const {
+#if defined(__linux) || defined(__linux__)
+    return io_backend_type_;
+#else
+    return IOBackendType::kPread;
 #endif
   }
 
@@ -486,6 +495,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> bypass_reads_{0};
   std::atomic<uint64_t> bypass_bytes_{0};
 #if defined(__linux) || defined(__linux__)
+  IOBackendType io_backend_type_{IOBackendType::kPread};
   bool aio_enabled_{false};
 #endif
 

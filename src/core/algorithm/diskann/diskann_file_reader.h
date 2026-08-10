@@ -55,7 +55,7 @@ struct IoBackend {
   };
 
   Backend backend{NONE};
-  IoUringRing ring{};
+  ailego::IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
 };
 
@@ -72,6 +72,9 @@ int destroy_io_ctx(IOContext &ctx);
 // Probes the backend on first call.  No-op on non-Linux platforms.
 void log_diskann_io_backend();
 
+#if (defined(__linux) || defined(__linux__))
+using AlignedRead = ailego::IoUringRead;
+#else
 struct AlignedRead {
   uint64_t offset;
   uint64_t len;
@@ -86,6 +89,7 @@ struct AlignedRead {
     ailego_assert(reinterpret_cast<size_t>(buf) % 512 == 0);
   }
 };
+#endif
 
 class AlignedFileReader {
  protected:

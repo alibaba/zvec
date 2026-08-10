@@ -16,13 +16,22 @@
 
 #include <sys/syscall.h>  // syscall(), __NR_io_uring_setup
 #include <unistd.h>       // close()
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <limits>
+#include <thread>
 #include <ailego/io/iouring_loader.h>
 #include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
-namespace core {
+namespace ailego {
+
+// Retry budget for draining in-flight requests when the kernel keeps
+// returning EAGAIN/EBUSY (100 us sleep per retry, about one second total).
+static constexpr size_t kIoUringDrainRetries = 10000;
 
 bool IoUringRing::setup(uint32_t entries) {
   struct io_uring_params params;
@@ -58,10 +67,10 @@ bool IoUringRing::setup(uint32_t entries) {
   // --- mmap the three shared regions ---
 
   // 1. SQ ring (includes head, tail, mask, entries, flags, dropped, array).
-  size_t sq_ring_sz =
+  sq_ring_size_ =
       static_cast<size_t>(params.sq_off.array) + sq_entries_ * sizeof(uint32_t);
-  sq_ring_ptr_ = ::mmap(nullptr, sq_ring_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        ring_fd_, IORING_OFF_SQ_RING);
+  sq_ring_ptr_ = ::mmap(nullptr, sq_ring_size_, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, ring_fd_, IORING_OFF_SQ_RING);
   if (sq_ring_ptr_ == MAP_FAILED) {
     LOG_ERROR("mmap SQ ring failed: %s", ::strerror(errno));
     sq_ring_ptr_ = nullptr;
@@ -70,9 +79,9 @@ bool IoUringRing::setup(uint32_t entries) {
   }
 
   // 2. SQE array.
-  size_t sqes_sz = sq_entries_ * sizeof(struct io_uring_sqe);
+  sqes_size_ = sq_entries_ * sizeof(struct io_uring_sqe);
   sqes_ptr_ = reinterpret_cast<struct io_uring_sqe *>(
-      ::mmap(nullptr, sqes_sz, PROT_READ | PROT_WRITE, MAP_SHARED, ring_fd_,
+      ::mmap(nullptr, sqes_size_, PROT_READ | PROT_WRITE, MAP_SHARED, ring_fd_,
              IORING_OFF_SQES));
   if (sqes_ptr_ == MAP_FAILED) {
     LOG_ERROR("mmap SQEs failed: %s", ::strerror(errno));
@@ -82,10 +91,10 @@ bool IoUringRing::setup(uint32_t entries) {
   }
 
   // 3. CQ ring (includes head, tail, mask, entries, overflow, cqes[]).
-  size_t cq_ring_sz = static_cast<size_t>(params.cq_off.cqes) +
-                      cq_entries_ * sizeof(struct io_uring_cqe);
-  cq_ring_ptr_ = ::mmap(nullptr, cq_ring_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        ring_fd_, IORING_OFF_CQ_RING);
+  cq_ring_size_ = static_cast<size_t>(params.cq_off.cqes) +
+                  cq_entries_ * sizeof(struct io_uring_cqe);
+  cq_ring_ptr_ = ::mmap(nullptr, cq_ring_size_, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, ring_fd_, IORING_OFF_CQ_RING);
   if (cq_ring_ptr_ == MAP_FAILED) {
     LOG_ERROR("mmap CQ ring failed: %s", ::strerror(errno));
     cq_ring_ptr_ = nullptr;
@@ -139,25 +148,21 @@ bool IoUringRing::setup(uint32_t entries) {
 
 void IoUringRing::teardown() {
   if (sq_ring_ptr_ && sq_ring_ptr_ != MAP_FAILED) {
-    // We don't track the exact mmap size; munmap with a large enough size
-    // is safe because the kernel only unmaps what was actually mapped.
-    // However, to be correct we use the page-aligned size.
-    size_t sz = static_cast<size_t>(sq_entries_) * sizeof(uint32_t) + 4096;
-    ::munmap(sq_ring_ptr_, sz);
+    ::munmap(sq_ring_ptr_, sq_ring_size_);
   }
   if (sqes_ptr_ && sqes_ptr_ != MAP_FAILED) {
-    size_t sz = static_cast<size_t>(sq_entries_) * sizeof(struct io_uring_sqe);
-    ::munmap(sqes_ptr_, sz);
+    ::munmap(sqes_ptr_, sqes_size_);
   }
   if (cq_ring_ptr_ && cq_ring_ptr_ != MAP_FAILED) {
-    size_t sz =
-        static_cast<size_t>(cq_entries_) * sizeof(struct io_uring_cqe) + 4096;
-    ::munmap(cq_ring_ptr_, sz);
+    ::munmap(cq_ring_ptr_, cq_ring_size_);
   }
 
   sq_ring_ptr_ = nullptr;
   sqes_ptr_ = nullptr;
   cq_ring_ptr_ = nullptr;
+  sq_ring_size_ = 0;
+  sqes_size_ = 0;
+  cq_ring_size_ = 0;
   sqes_ = nullptr;
   cqes_ = nullptr;
   sq_head_ = sq_tail_ = sq_ring_mask_ = sq_ring_entries_ = nullptr;
@@ -195,7 +200,168 @@ bool IoUringRing::ensure_staging(size_t bytes) {
   return true;
 }
 
-}  // namespace core
+int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
+  if (!is_valid() || (read_reqs == nullptr && count != 0)) {
+    return -1;
+  }
+  if (count == 0) {
+    return 0;
+  }
+
+  const size_t batch_size = std::min<size_t>(sq_entries_, kIoUringMaxBatch);
+  if (batch_size == 0) {
+    return -1;
+  }
+
+  for (size_t batch_start = 0; batch_start < count; batch_start += batch_size) {
+    const size_t n_ops = std::min(batch_size, count - batch_start);
+    std::array<size_t, kIoUringMaxBatch> slot_offsets{};
+    size_t staging_bytes = 0;
+    for (size_t j = 0; j < n_ops; ++j) {
+      const IoUringRead &req = read_reqs[batch_start + j];
+      const uint64_t expected_len =
+          req.expected_len == 0 ? req.len : req.expected_len;
+      if (req.buf == nullptr || req.len == 0 || expected_len > req.len ||
+          req.len > std::numeric_limits<uint32_t>::max() ||
+          req.offset % 512 != 0 || req.len % 512 != 0 ||
+          reinterpret_cast<uintptr_t>(req.buf) % 512 != 0) {
+        return -1;
+      }
+      const size_t aligned_len =
+          (static_cast<size_t>(req.len) + kIoUringStagingAlign - 1) &
+          ~(kIoUringStagingAlign - 1);
+      if (aligned_len < req.len ||
+          staging_bytes > std::numeric_limits<size_t>::max() - aligned_len) {
+        return -1;
+      }
+      slot_offsets[j] = staging_bytes;
+      staging_bytes += aligned_len;
+    }
+    if (!ensure_staging(staging_bytes)) {
+      return -1;
+    }
+
+    const unsigned tail = __atomic_load_n(sq_tail_, __ATOMIC_ACQUIRE);
+    const unsigned mask = *sq_ring_mask_;
+    for (size_t j = 0; j < n_ops; ++j) {
+      const unsigned idx = (tail + static_cast<unsigned>(j)) & mask;
+      const unsigned sqe_idx = sq_array_[idx];
+      struct io_uring_sqe *sqe = &sqes_[sqe_idx];
+      const size_t req_idx = batch_start + j;
+      io_uring_prep_read(sqe, fd, staging_ + slot_offsets[j],
+                         static_cast<uint32_t>(read_reqs[req_idx].len),
+                         read_reqs[req_idx].offset);
+      sqe->user_data = req_idx;
+    }
+
+    __sync_synchronize();
+    __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(n_ops),
+                     __ATOMIC_RELEASE);
+
+    size_t submitted = 0;
+    size_t completed = 0;
+    bool all_ok = true;
+    auto reap_available = [&]() {
+      unsigned chead = *cq_head_;
+      const unsigned ctail = __atomic_load_n(cq_tail_, __ATOMIC_ACQUIRE);
+      const unsigned cq_mask = *cq_ring_mask_;
+      while (chead != ctail) {
+        struct io_uring_cqe *cqe = &cqes_[chead & cq_mask];
+        const size_t req_idx = static_cast<size_t>(cqe->user_data);
+        if (req_idx < batch_start || req_idx >= batch_start + n_ops) {
+          LOG_WARN("io_uring completion referenced unknown request: %zu",
+                   req_idx);
+          all_ok = false;
+        } else {
+          const IoUringRead &req = read_reqs[req_idx];
+          const uint64_t expected_len =
+              req.expected_len == 0 ? req.len : req.expected_len;
+          if (cqe->res < 0) {
+            LOG_WARN("io_uring read failed: req=%zu, res=%d, offset=%lu",
+                     req_idx, cqe->res, static_cast<unsigned long>(req.offset));
+            all_ok = false;
+          } else if (static_cast<uint64_t>(cqe->res) != expected_len) {
+            LOG_WARN("io_uring short read: req=%zu, got=%d, expected=%lu",
+                     req_idx, cqe->res,
+                     static_cast<unsigned long>(expected_len));
+            all_ok = false;
+          } else {
+            const size_t slot = req_idx - batch_start;
+            std::memcpy(req.buf, staging_ + slot_offsets[slot], expected_len);
+            if (expected_len < req.len) {
+              std::memset(static_cast<char *>(req.buf) + expected_len, 0,
+                          req.len - expected_len);
+            }
+          }
+        }
+        ++chead;
+        ++completed;
+      }
+      __atomic_store_n(cq_head_, chead, __ATOMIC_RELEASE);
+    };
+
+    while (completed < n_ops) {
+      reap_available();
+      if (completed >= n_ops) {
+        break;
+      }
+
+      const unsigned to_submit = static_cast<unsigned>(n_ops - submitted);
+      const int ret = static_cast<int>(syscall(
+          __NR_io_uring_enter, ring_fd_, to_submit, 1u, IORING_ENTER_GETEVENTS,
+          static_cast<void *>(nullptr), static_cast<size_t>(0)));
+      if (ret >= 0) {
+        submitted += static_cast<size_t>(ret);
+        continue;
+      }
+      if (errno == EINTR ||
+          ((errno == EAGAIN || errno == EBUSY) && completed < submitted)) {
+        continue;
+      }
+
+      LOG_WARN(
+          "io_uring_enter failed; errno=%d, %s, submitted=%zu/%zu, "
+          "completed=%zu. draining before falling back to pread",
+          errno, ::strerror(errno), submitted, n_ops, completed);
+      __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(submitted),
+                       __ATOMIC_RELEASE);
+
+      size_t drain_retries = 0;
+      while (completed < submitted) {
+        reap_available();
+        if (completed >= submitted) {
+          break;
+        }
+        const int wait_ret = static_cast<int>(syscall(
+            __NR_io_uring_enter, ring_fd_, 0u, 1u, IORING_ENTER_GETEVENTS,
+            static_cast<void *>(nullptr), static_cast<size_t>(0)));
+        if (wait_ret >= 0 || errno == EINTR) {
+          continue;
+        }
+        if ((errno == EAGAIN || errno == EBUSY) &&
+            drain_retries++ < kIoUringDrainRetries) {
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+          continue;
+        }
+        LOG_ERROR(
+            "io_uring drain failed; errno=%d, %s. leaking the staging pool "
+            "and disabling io_uring for this context",
+            errno, ::strerror(errno));
+        abandon_staging();
+        teardown();
+        return -1;
+      }
+      return -1;
+    }
+
+    if (!all_ok) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+}  // namespace ailego
 }  // namespace zvec
 
 #endif  // __linux__

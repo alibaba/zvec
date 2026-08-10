@@ -1051,8 +1051,10 @@ TEST_F(BufferPoolTest, AioAdmissionUsesFreeCapacityBeforeEviction) {
   VecBufferPool pool(file, /*writable=*/false);
   ASSERT_EQ(pool.init(), 0);
   if (!pool.aio_enabled()) {
-    GTEST_SKIP() << "libaio is unavailable";
+    GTEST_SKIP() << "no asynchronous backend is available";
   }
+  EXPECT_EQ(current_io_backend_type(), pool.io_backend_type());
+  EXPECT_NE(IOBackendType::kPread, pool.io_backend_type());
 
   char *resident = pool.acquire_buffer(/*page_id=*/0);
   ASSERT_NE(nullptr, resident);
