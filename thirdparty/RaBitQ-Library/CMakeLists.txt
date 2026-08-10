@@ -5,6 +5,12 @@ target_include_directories(
 
 if(RABITQ_SUPPORTED)
   set(RABITQ_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/RaBitQ-Library-0.1")
+  set(RABITQ_DISPATCH_PATCH
+      "${CMAKE_CURRENT_SOURCE_DIR}/rabitq.defer_simd_errors.patch")
+  apply_patch_once(
+      "rabitq_defer_simd_errors"
+      "${RABITQ_SOURCE_DIR}"
+      "${RABITQ_DISPATCH_PATCH}")
 
   set(RABITQ_COMMON_SOURCES
       "${RABITQ_SOURCE_DIR}/src/utils/cpu_features.cpp"

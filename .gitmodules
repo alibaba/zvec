@@ -41,6 +41,7 @@
 [submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
 	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
 	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git
+	ignore = dirty
 [submodule "thirdparty/aio/libaio-0.3"]
 	path = thirdparty/aio/libaio-0.3
 	url = https://github.com/yugabyte/libaio.git
