@@ -281,7 +281,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)33, builder.stats().built_count());
   EXPECT_EQ((size_t)33, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -415,7 +415,7 @@ TEST_F(IVFSearcherTest, TestSimpleCosine) {
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   EXPECT_EQ(0, dumper->create(index_path_));
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)33, builder.stats().built_count());
   EXPECT_EQ((size_t)33, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -494,7 +494,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -613,7 +613,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
@@ -739,7 +739,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
@@ -859,7 +859,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithFilter) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
@@ -991,7 +991,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWith1LevelAndBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
@@ -1118,7 +1118,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWith1LevelAndBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
@@ -1243,7 +1243,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorInt8WithBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)fnum, builder.stats().built_count());
   EXPECT_EQ((size_t)fnum, builder.stats().dumped_count());
@@ -1367,7 +1367,7 @@ TEST_F(IVFSearcherTest, TestRowMajorInt8WithBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
   EXPECT_EQ((size_t)fnum, builder.stats().built_count());
   EXPECT_EQ((size_t)fnum, builder.stats().dumped_count());
@@ -1509,8 +1509,7 @@ TEST_F(IVFSearcherTest, TestSearchWithEmptyCentroid) {
   ret = dumper->create(path);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
-  EXPECT_EQ(0, ret);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)10, builder.stats().built_count());
   EXPECT_EQ((size_t)10, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -1597,7 +1596,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFp16WithBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -1735,7 +1734,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -1872,7 +1871,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -1996,7 +1995,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithSsgGraphType) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -2118,7 +2117,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithInt8Converter) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -2242,7 +2241,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFloat16Quantizer) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -2370,7 +2369,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithConverterAndQuantizer) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -2500,7 +2499,7 @@ TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -3234,7 +3233,7 @@ TEST_F(IVFSearcherTest, TestSameValue) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)33, builder.stats().built_count());
   EXPECT_EQ((size_t)33, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -3360,7 +3359,7 @@ TEST_F(IVFSearcherTest, TestConverterClassEndToEnd) {
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)total, builder.stats().built_count());
   EXPECT_EQ((size_t)total, builder.stats().dumped_count());
   EXPECT_EQ(0, dumper->close());
@@ -3469,7 +3468,7 @@ TEST_F(IVFSearcherTest, TestNprobeParameter) {
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
 
   // Load searcher
@@ -3549,7 +3548,7 @@ TEST_F(IVFSearcherTest, TestNprobeOne) {
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
 
   IVFSearcher searcher;
@@ -3637,7 +3636,7 @@ TEST_F(IVFSearcherTest, TestNprobeScansAllSelectedLists) {
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
 
   IVFSearcher searcher;
@@ -3704,7 +3703,7 @@ TEST_F(IVFSearcherTest, TestNprobeMaxScanCountValue) {
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
 
   IVFSearcher searcher;
@@ -3791,7 +3790,7 @@ TEST_F(IVFSearcherTest, TestNprobeClampToListCount) {
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   ret = dumper->create(index_path_);
   EXPECT_EQ(0, ret);
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ(0, dumper->close());
 
   IVFSearcher searcher;

@@ -230,7 +230,6 @@ int IndexMapping::init_hugepage_meta_section() {
   meta_footer.total_size = len;
   IndexFormat::UpdateMetaFooter(&meta_footer, 0);
   memcpy((char *)addr + file_offset, &meta_footer, sizeof(meta_footer));
-  file_offset += sizeof(meta_footer);
 
   return this->init_index_mapping(len);
 }
@@ -303,6 +302,10 @@ int IndexMapping::append(const std::string &id, size_t size) {
         huge_page_ ? init_hugepage_meta_section() : init_meta_section();
     if (ret != 0) {
       return ret;
+    }
+    if (header_ == nullptr || footer_ == nullptr || segment_start_ == nullptr) {
+      LOG_ERROR("Failed to initialize expanded segment meta section");
+      return IndexError_Uninitialized;
     }
   }
 

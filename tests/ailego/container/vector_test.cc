@@ -119,13 +119,13 @@ TEST(NumericalVector, Assign) {
 
   ailego::NumericalVector<size_t> vec5;
   vec5 = std::move(vec4);
-  EXPECT_TRUE(vec4.data());
+  EXPECT_TRUE(vec4.data());  // NOLINT(clang-analyzer-cplusplus.Move)
   EXPECT_EQ(0u, vec4.size());
   EXPECT_TRUE(!!vec5.data());
   EXPECT_EQ(222u, vec5.size());
 
   ailego::NumericalVector<size_t> vec6(std::move(vec5));
-  EXPECT_TRUE(vec5.data());
+  EXPECT_TRUE(vec5.data());  // NOLINT(clang-analyzer-cplusplus.Move)
   EXPECT_EQ(0u, vec5.size());
   EXPECT_TRUE(!!vec6.data());
   EXPECT_EQ(222u, vec6.size());

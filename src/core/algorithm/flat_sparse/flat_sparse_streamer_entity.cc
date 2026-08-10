@@ -641,7 +641,6 @@ int FlatSparseStreamerEntity::add(uint64_t key,
       return IndexError_NoMemory;
     }
     sparse_offset_chunks_.emplace_back(sparse_offset_chunk);
-    sparse_offset_chunk_index = sparse_offset_chunks_.size() - 1U;
     sparse_offset_chunk_offset = 0UL;
   } else {
     sparse_offset_chunk = sparse_offset_chunks_[sparse_offset_chunk_index];

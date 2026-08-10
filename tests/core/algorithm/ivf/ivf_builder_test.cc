@@ -232,7 +232,7 @@ TEST_F(IVFBuilderTest, TestDump) {
   ret = dumper->create("path");
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -286,7 +286,7 @@ TEST_F(IVFBuilderTest, TestBuildWithEnoughMemory) {
   ret = dumper->create("path");
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -342,7 +342,7 @@ TEST_F(IVFBuilderTest, TestBuildWithRowMajorAndMemory) {
   ret = dumper->create("path");
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -383,7 +383,7 @@ TEST_F(IVFBuilderTest, TestBuildWithEmptyCentroid) {
   ret = dumper->create("path");
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)10, builder.stats().built_count());
   EXPECT_EQ((size_t)10, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -429,7 +429,7 @@ TEST_F(IVFBuilderTest, TestBuildWithConverterClass) {
   ret = dumper->create("path");
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());
@@ -460,7 +460,7 @@ TEST_F(IVFBuilderTest, TestBuildWithConverterClassMultiLevel) {
   ret = dumper->create("./ivf_converter_test.index");
   EXPECT_EQ(0, ret);
 
-  ret = builder.dump(dumper);
+  EXPECT_EQ(0, builder.dump(dumper));
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
   EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
   EXPECT_EQ((size_t)0, builder.stats().discarded_count());

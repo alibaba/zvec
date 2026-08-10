@@ -30,7 +30,7 @@ struct FileDumper : public IndexDumper {
 
   //! Destructor
   ~FileDumper(void) override {
-    this->cleanup();
+    FileDumper::cleanup();
   }
 
   //! Initialize dumper

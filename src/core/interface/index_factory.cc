@@ -79,7 +79,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
   ailego::JsonObject json_obj = json_value.as_object();
   ailego::JsonValue tmp_json_value;
 
-  IndexType index_type;
+  IndexType index_type = IndexType::kNone;
 
   if (!extract_enum_from_json<IndexType>(json_obj, "index_type", index_type,
                                          tmp_json_value)) {
@@ -255,7 +255,7 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
     return true;
   };
 
-  IndexType index_type;
+  IndexType index_type = IndexType::kNone;
 
   if (!extract_enum_from_json<IndexType>(json_obj, "index_type", index_type,
                                          tmp_json_value)) {

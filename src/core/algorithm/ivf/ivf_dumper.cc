@@ -316,10 +316,6 @@ int IVFDumper::dump_offsets_segment(void) const {
         idx = 0;
       }
     }
-    if (idx != 0) {
-      off += (vec_cnt - align_idx) * meta_.element_size();
-    }
-
     size_t len = offsets.size() * sizeof(offsets[0]);
     size_t actual_len = dumper_->write(offsets.data(), len);
     if (actual_len != len) {

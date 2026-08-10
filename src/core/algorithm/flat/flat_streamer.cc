@@ -35,7 +35,7 @@ FlatStreamer<BATCH_SIZE>::FlatStreamer() : entity_(stats_) {}
 template <size_t BATCH_SIZE>
 FlatStreamer<BATCH_SIZE>::~FlatStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
-    this->cleanup();
+    FlatStreamer<BATCH_SIZE>::cleanup();
   }
 }
 
@@ -122,7 +122,7 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::cleanup() {
   if (state_ == STATE_OPENED) {
-    this->close();
+    FlatStreamer<BATCH_SIZE>::close();
   }
 
   LOG_DEBUG("FlatStreamer cleanup");

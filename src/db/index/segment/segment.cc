@@ -110,9 +110,9 @@ class SegmentImpl : public Segment,
   }
 
   virtual ~SegmentImpl() {
-    close();
+    SegmentImpl::close();
     if (need_destroyed_) {
-      cleanup();
+      SegmentImpl::cleanup();
     }
   }
 
@@ -551,7 +551,7 @@ Status SegmentImpl::Create(const SegmentOptions &options, uint64_t min_doc_id) {
 }
 
 Status SegmentImpl::close() {
-  flush();
+  SegmentImpl::flush();
   if (invert_indexers_) {
     invert_indexers_.reset();
   }

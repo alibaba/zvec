@@ -22,7 +22,7 @@ namespace zvec::sqlengine {
 Node::Node() : Generic_Node(NodeOp::T_NONE) {}
 
 Node::Node(NodeOp m_op) : Generic_Node(m_op) {
-  set_op(m_op);
+  Node::set_op(m_op);
 }
 
 void Node::set_op(NodeOp value) {

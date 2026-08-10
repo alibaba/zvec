@@ -208,7 +208,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
 
   //! Reset the context
   void reset(const FlatStreamer<BATCH_SIZE> *owner) {
-    this->reset();
+    FlatStreamerContext<BATCH_SIZE>::reset();
     magic_ = owner->magic();
     feature_size_ = owner->meta().element_size();
 

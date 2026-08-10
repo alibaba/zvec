@@ -45,8 +45,8 @@ TEST(BlobWrap, Constructor) {
   EXPECT_TRUE(blob4.is_valid());
 
   ailego::BlobWrap blob5(std::move(blob4));
-  EXPECT_EQ(0u, blob4.size());
-  EXPECT_FALSE(blob4.buffer());
+  EXPECT_EQ(0u, blob4.size());   // NOLINT(clang-analyzer-cplusplus.Move)
+  EXPECT_FALSE(blob4.buffer());  // NOLINT(clang-analyzer-cplusplus.Move)
   EXPECT_NE(0u, blob5.size());
   EXPECT_TRUE(blob5.buffer());
 
@@ -59,8 +59,8 @@ TEST(BlobWrap, Constructor) {
   blob1 = std::move(blob5);
   EXPECT_NE(0u, blob1.size());
   EXPECT_TRUE(blob1.buffer());
-  EXPECT_EQ(0u, blob5.size());
-  EXPECT_FALSE(blob5.buffer());
+  EXPECT_EQ(0u, blob5.size());   // NOLINT(clang-analyzer-cplusplus.Move)
+  EXPECT_FALSE(blob5.buffer());  // NOLINT(clang-analyzer-cplusplus.Move)
 }
 
 TEST(BlobWrap, General) {

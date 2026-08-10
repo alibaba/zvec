@@ -467,7 +467,7 @@ class BufferStorage : public IndexStorage {
 
   //! Destructor
   ~BufferStorage(void) override {
-    this->cleanup();
+    BufferStorage::cleanup();
   }
 
   //! Retrieve the memory block type of this storage

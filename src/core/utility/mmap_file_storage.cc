@@ -153,7 +153,7 @@ class MMapFileStorage : public IndexStorage {
 
   //! Destructor
   ~MMapFileStorage(void) override {
-    this->cleanup();
+    MMapFileStorage::cleanup();
   }
 
   //! Initialize storage

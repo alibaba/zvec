@@ -454,8 +454,10 @@ int HnswSparseSearcherEntity::get_fixed_neighbors(
     (*fixed_neighbors)[neighbors_cnt_offset + id] = cur_neighbor_cnt;
     total_neighbor_cnt += cur_neighbor_cnt;
   }
+  const size_t document_count = doc_cnt();
   LOG_INFO("total neighbor cnt: %zu, average neighbor cnt: %zu",
-           total_neighbor_cnt, total_neighbor_cnt / doc_cnt());
+           total_neighbor_cnt,
+           document_count == 0 ? 0 : total_neighbor_cnt / document_count);
 
   return 0;
 }

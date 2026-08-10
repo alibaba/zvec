@@ -25,7 +25,7 @@ ParquetWriter::ParquetWriter(const std::string &filepath,
 
 ParquetWriter::~ParquetWriter() {
   if (!finalized_ && writer_) {
-    auto status = finalize();
+    auto status = ParquetWriter::finalize();
     if (!status.ok()) {
       std::cerr << "Auto-finalize failed: " << status.ToString() << std::endl;
     }

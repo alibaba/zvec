@@ -28,7 +28,7 @@ HnswSparseStreamer::HnswSparseStreamer() : entity_(stats_) {}
 
 HnswSparseStreamer::~HnswSparseStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
-    this->cleanup();
+    HnswSparseStreamer::cleanup();
   }
 }
 
@@ -216,7 +216,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
 
 int HnswSparseStreamer::cleanup(void) {
   if (state_ == STATE_OPENED) {
-    this->close();
+    HnswSparseStreamer::close();
   }
 
   LOG_INFO("HnswSparseStreamer cleanup");

@@ -27,7 +27,7 @@ VamanaStreamer::VamanaStreamer() = default;
 
 VamanaStreamer::~VamanaStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
-    this->cleanup();
+    VamanaStreamer::cleanup();
   }
 }
 
@@ -113,7 +113,7 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
 
 int VamanaStreamer::cleanup(void) {
   if (state_ == STATE_OPENED) {
-    this->close();
+    VamanaStreamer::close();
   }
 
   LOG_INFO("VamanaStreamer cleanup");

@@ -122,7 +122,6 @@ void IndexMeta::serialize(std::string *out) const {
     IndexMetaFormatHeader *header = (IndexMetaFormatHeader *)out->data();
     header->attachment_offset = static_cast<uint32_t>(offset);
     header->attachment_size = static_cast<uint32_t>(buf.size());
-    offset += buf.size();
   }
 }
 

@@ -200,7 +200,7 @@ class ZVEC_API Doc {
 
    private:
     FieldGetStatus status_;
-    T value_;
+    T value_{};
   };
 
 

@@ -17,6 +17,9 @@
 
 using namespace zvec;
 
+// These conversion tests intentionally pass invalid enum sentinels.
+// NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange)
+
 TEST(IndexTypeCodeBookTest, ProtoToCppConversion) {
   // Test conversion from protobuf to C++ IndexType
   EXPECT_EQ(IndexTypeCodeBook::Get(proto::IT_HNSW), IndexType::HNSW);
@@ -289,3 +292,5 @@ TEST(BlockTypeCodeBookTest, CppToProtoConversion) {
   EXPECT_EQ(BlockTypeCodeBook::Get(static_cast<BlockType>(999)),
             proto::BT_UNDEFINED);
 }
+
+// NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)

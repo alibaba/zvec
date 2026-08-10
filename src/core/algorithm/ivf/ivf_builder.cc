@@ -112,7 +112,7 @@ class LabelFilteredIndexHolder : public IndexHolder {
 IVFBuilder::IVFBuilder() {}
 
 IVFBuilder::~IVFBuilder() {
-  this->cleanup();
+  IVFBuilder::cleanup();
 }
 
 int IVFBuilder::init(const IndexMeta &meta, const ailego::Params &params) {

@@ -1396,9 +1396,8 @@ using DenseVectorDataBuffer = vector_column_params::DenseVectorBuffer;
 using SparseVectorBuffer = vector_column_params::SparseVectorBuffer;
 
 DenseVectorDataBuffer create_dense_vector(int dim, DataType data_type, int pk,
-                                          size_t count,
+                                          size_t /*count*/,
                                           float float_offset = 0.1f) {
-  count += 1;
   switch (data_type) {
     case DataType::VECTOR_FP32: {
       std::string ret;
@@ -2049,6 +2048,8 @@ TEST(VectorColumnIndexerTest, Failure) {
   // Test case 6: Unsupported quantize type in engine helper
   {
     auto index_params = std::make_shared<FlatIndexParams>(MetricType::IP);
+    // This invalid sentinel exercises the unsupported-quantization path.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     index_params->set_quantize_type(static_cast<QuantizeType>(999));
 
 

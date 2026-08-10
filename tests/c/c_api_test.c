@@ -61,6 +61,12 @@ static int test_count = 0;
 static int passed_count = 0;
 static int current_test_passed = 1;  // Track if current test function passes
 
+#ifdef __clang_analyzer__
+#define TEST_ANALYZER_UNREACHABLE() __builtin_unreachable()
+#else
+#define TEST_ANALYZER_UNREACHABLE() ((void)0)
+#endif
+
 #define TEST_START()                        \
   do {                                      \
     printf("Running test: %s\n", __func__); \
@@ -75,6 +81,7 @@ static int current_test_passed = 1;  // Track if current test function passes
     } else {                                     \
       printf("  ✗ FAIL at line %d\n", __LINE__); \
       current_test_passed = 0;                   \
+      TEST_ANALYZER_UNREACHABLE();               \
     }                                            \
   } while (0)
 

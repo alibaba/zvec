@@ -27,7 +27,7 @@ ArrowIpcWriter::ArrowIpcWriter(const std::string &filepath,
 
 ArrowIpcWriter::~ArrowIpcWriter() {
   if (!finalized_ && writer_) {
-    auto status = finalize();
+    auto status = ArrowIpcWriter::finalize();
     if (!status.ok()) {
       std::cerr << "Auto-finalize failed: " << status.ToString() << std::endl;
     }

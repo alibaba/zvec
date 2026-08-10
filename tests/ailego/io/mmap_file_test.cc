@@ -74,7 +74,7 @@ TEST(MMapFile, Open) {
     MMapFile file2 = std::move(file);
     memset(file2.region(), 0x74, file2.size());
     EXPECT_EQ(0, memcmp(file2.region(), raw_data.data(), raw_data.size()));
-    file.flush();
+    file.flush();  // NOLINT(clang-analyzer-cplusplus.Move)
     file2.lock();
   }
 
@@ -95,8 +95,8 @@ TEST(MMapFile, Open) {
     MMapFile file2 = std::move(file);
     EXPECT_TRUE(file2.open(file_path2, false));
 
-    EXPECT_FALSE(file.lock());
-    EXPECT_FALSE(file.unlock());
+    EXPECT_FALSE(file.lock());    // NOLINT(clang-analyzer-cplusplus.Move)
+    EXPECT_FALSE(file.unlock());  // NOLINT(clang-analyzer-cplusplus.Move)
     file2.warmup();
     file2.lock();
     file2.unlock();

@@ -1,5 +1,8 @@
 Checks: >
   -*,
+  clang-analyzer-*,
+  -clang-analyzer-cplusplus.NewDeleteLeaks,
+  -clang-analyzer-security.insecureAPI.rand,
   bugprone-multiple-statement-macro,
   bugprone-sizeof-expression,
   modernize-use-nullptr,

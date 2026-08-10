@@ -398,8 +398,14 @@ class VisitFilter {
   }
 
   inline void destroy() {
-    if (ctx_ != nullptr) {
-      PROXIMA_HNSW_VISITFILTER_CALL_IMPL(destroy);
+    void *ctx = ctx_;
+    ctx_ = nullptr;
+    if (ctx != nullptr) {
+      switch (mode_) {
+        PROXIMA_HNSW_VISITFILTER_SWITCH_CASE(VisitBloomFilter, destroy, ctx)
+        PROXIMA_HNSW_VISITFILTER_SWITCH_CASE(VisitBitMap, destroy, ctx)
+        PROXIMA_HNSW_VISITFILTER_SWITCH_CASE(VisitByteMap, destroy, ctx)
+      }
     }
   }
 

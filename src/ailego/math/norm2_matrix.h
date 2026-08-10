@@ -116,11 +116,8 @@ struct Norm2Matrix<
   static inline void Compute(const ValueType *m, size_t dim, float *out) {
     ailego_assert(m && dim && out);
 
+    *out = 0.0f;
     const ValueType *m_end = m + dim;
-    if (m != m_end) {
-      ValueType v = *m++;
-      *out = static_cast<float>(v * v);
-    }
     while (m != m_end) {
       ValueType v = *m++;
       *out += static_cast<float>(v * v);
@@ -290,11 +287,8 @@ struct SquaredNorm2Matrix<
   static inline void Compute(const ValueType *m, size_t dim, float *out) {
     ailego_assert(m && dim && out);
 
+    *out = 0.0f;
     const ValueType *m_end = m + dim;
-    if (m != m_end) {
-      ValueType v = *m++;
-      *out = static_cast<float>(v * v);
-    }
     while (m != m_end) {
       ValueType v = *m++;
       *out += static_cast<float>(v * v);

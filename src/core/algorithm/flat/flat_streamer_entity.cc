@@ -325,7 +325,7 @@ void FlatStreamerEntity::search_block(
 int FlatStreamerEntity::search_bf(const void *query, const IndexFilter &filter,
                                   IndexDocumentHeap *heap,
                                   IndexContext::Stats *context_stats) const {
-  uint32_t scan_count;
+  uint32_t scan_count = 0;
   return this->search(query, filter, &scan_count, heap, context_stats);
 }
 

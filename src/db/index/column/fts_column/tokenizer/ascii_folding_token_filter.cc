@@ -208,6 +208,8 @@ bool fold_codepoint_to_ascii(const utf8proc_uint8_t *data, utf8proc_ssize_t len,
   utf8proc_uint8_t *mapped_raw = nullptr;
   utf8proc_ssize_t mapped_len = utf8proc_map(
       data, len, &mapped_raw,
+      // The utf8proc API represents bitwise option combinations with its enum.
+      // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
       static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPAT |
                                      UTF8PROC_DECOMPOSE | UTF8PROC_STRIPMARK));
   // RAII guard: utf8proc_map allocates with malloc, free with free().

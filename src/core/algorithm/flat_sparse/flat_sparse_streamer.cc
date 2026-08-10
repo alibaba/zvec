@@ -30,7 +30,7 @@ const uint32_t FlatSparseStreamer::VERSION = 0U;
 FlatSparseStreamer::FlatSparseStreamer() : entity_(stats_) {}
 
 FlatSparseStreamer::~FlatSparseStreamer() {
-  this->close();
+  FlatSparseStreamer::close();
 }
 
 int FlatSparseStreamer::init(const IndexMeta &imeta,
@@ -48,7 +48,7 @@ int FlatSparseStreamer::init(const IndexMeta &imeta,
 int FlatSparseStreamer::cleanup() {
   LOG_DEBUG("FlatSparseStreamer cleanup");
 
-  this->close();
+  FlatSparseStreamer::close();
 
   meta_.clear();
 

@@ -77,9 +77,9 @@ TEST(NumericalVectorArray, General) {
   EXPECT_EQ(10u, arr.count());
 
   ailego::NumericalVectorArray<float> arr1 = std::move(arr);
-  EXPECT_TRUE(arr.empty());
-  EXPECT_EQ(2u, arr.dimension());
-  EXPECT_EQ(0u, arr.count());
+  EXPECT_TRUE(arr.empty());        // NOLINT(clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(2u, arr.dimension());  // NOLINT(clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(0u, arr.count());      // NOLINT(clang-analyzer-cplusplus.Move)
   EXPECT_EQ(2u, arr1.dimension());
   EXPECT_EQ(10u, arr1.count());
 
@@ -176,9 +176,9 @@ TEST(BinaryVectorArray, General) {
   EXPECT_EQ(0u, arr64.bytes() % sizeof(uint32_t));
 
   ailego::BinaryVectorArray<uint32_t> arr1 = std::move(arr32);
-  EXPECT_TRUE(arr32.empty());
-  EXPECT_EQ(32u, arr32.dimension());
-  EXPECT_EQ(0u, arr32.count());
+  EXPECT_TRUE(arr32.empty());         // NOLINT(clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(32u, arr32.dimension());  // NOLINT(clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(0u, arr32.count());       // NOLINT(clang-analyzer-cplusplus.Move)
   EXPECT_EQ(32u, arr1.dimension());
   EXPECT_EQ(4u, arr1.count());
 

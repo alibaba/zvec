@@ -131,12 +131,15 @@ class FlatSparseEntity {
 
   //! Get sparse vector by key
   int get_sparse_vector(uint64_t key, std::string *sparse_vector) const {
-    const void *sparse_vector_ptr;
-    uint32_t sparse_vector_len;
+    const void *sparse_vector_ptr = nullptr;
+    uint32_t sparse_vector_len = 0;
     int ret = get_sparse_vector_ptr_by_key(key, &sparse_vector_ptr,
                                            &sparse_vector_len);
     if (ret != 0) {
       return ret;
+    }
+    if (sparse_vector_ptr == nullptr) {
+      return IndexError_Uninitialized;
     }
     *sparse_vector = std::string(static_cast<const char *>(sparse_vector_ptr),
                                  sparse_vector_len);
@@ -145,8 +148,8 @@ class FlatSparseEntity {
 
   //! Get sparse vector by node id
   const void *get_sparse_vector(node_id_t id) const {
-    const void *sparse_vector_ptr;
-    uint32_t sparse_vector_len;
+    const void *sparse_vector_ptr = nullptr;
+    uint32_t sparse_vector_len = 0;
     int ret =
         get_sparse_vector_ptr_by_id(id, &sparse_vector_ptr, &sparse_vector_len);
     if (ret != 0) {
@@ -157,7 +160,7 @@ class FlatSparseEntity {
 
   int get_sparse_vector_by_key(const uint64_t key,
                                std::string *sparse_vector) const {
-    uint32_t sparse_vector_len;
+    uint32_t sparse_vector_len = 0;
     IndexStorage::MemoryBlock sparse_vector_block;
     int ret = get_sparse_vector_ptr_by_key(key, sparse_vector_block,
                                            &sparse_vector_len);
@@ -181,6 +184,8 @@ class FlatSparseEntity {
                                    uint32_t *sparse_vector_len_ptr) const {
     auto node_id = get_id(key);
     if (node_id == kInvalidNodeId) {
+      *sparse_vector_ptr = nullptr;
+      *sparse_vector_len_ptr = 0;
       return IndexError_NoExist;
     }
 
@@ -193,6 +198,7 @@ class FlatSparseEntity {
       uint32_t *sparse_vector_len_ptr) const {
     auto node_id = get_id(key);
     if (node_id == kInvalidNodeId) {
+      *sparse_vector_len_ptr = 0;
       return IndexError_NoExist;
     }
 

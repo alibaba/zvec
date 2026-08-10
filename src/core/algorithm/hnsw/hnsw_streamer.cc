@@ -29,7 +29,7 @@ HnswStreamer::HnswStreamer() = default;
 
 HnswStreamer::~HnswStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
-    this->cleanup();
+    HnswStreamer::cleanup();
   }
 }
 
@@ -179,7 +179,7 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
 
 int HnswStreamer::cleanup(void) {
   if (state_ == STATE_OPENED) {
-    this->close();
+    HnswStreamer::close();
   }
 
   LOG_INFO("HnswStreamer cleanup");
