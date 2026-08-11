@@ -99,8 +99,8 @@ int setup_io_ctx(IOContext &ctx) {
   ctx->backend = IoBackend::NONE;
   return 0;
 #elif defined(__APPLE__) || defined(__MACH__)
-  // Create a kqueue for this context. On macOS the kqueue is used to
-  // monitor file descriptor readiness for async-style I/O.
+  // Create a kqueue for this context. It is used to wait for descriptor
+  // readiness if pread() reports EAGAIN or EWOULDBLOCK.
   int kq = ::kqueue();
   if (kq == -1) {
     LOG_WARN(
@@ -188,15 +188,12 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
 }
 
 #if defined(__APPLE__) || defined(__MACH__)
-// Execute batch I/O on macOS using kqueue to monitor file descriptor
-// readiness and pread for actual data transfer.
+// Execute batch I/O on macOS using pread for data transfer and kqueue for
+// readiness notification when a read cannot be completed immediately.
 //
-// On macOS, regular file descriptors are almost always "readable", so
-// kqueue's primary value here is providing the same async I/O interface
-// as Linux's libaio. For each read request we:
-//   1. Attempt a non-blocking pread (via O_NONBLOCK on the fd).
-//   2. If EAGAIN, wait on kqueue for EVFILT_READ readiness, then retry.
-//   3. Fall back to blocking pread if kqueue encounters an error.
+// Regular-file pread() may block on cache misses. If it reports EAGAIN or
+// EWOULDBLOCK, wait for EVFILT_READ readiness and retry. If kqueue fails, fall
+// back to plain pread().
 //
 // The kqueue fd is passed in as the IOContext. If no valid kqueue is
 // available, we fall back to plain blocking pread.
@@ -207,7 +204,7 @@ static int execute_io_kqueue(int kq, int fd,
     return execute_io_pread(fd, read_reqs);
   }
 
-  // Register the file descriptor with the kqueue for read events.
+  // Prepare the file descriptor change for a possible readiness wait.
   // EV_CLEAR gives edge-triggered semantics so we only get notified
   // when new data becomes available.
   struct kevent ke;

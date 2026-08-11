@@ -138,16 +138,16 @@ endif()
 message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 
 # DiskAnn support:
-#   - Linux (x86_64, i686, i386, aarch64, arm64) with io_uring, libaio, or pread
-#   - macOS (x86_64, ARM64/Apple Silicon) with kqueue and pread
+#   - Linux (existing x86 targets and ARM64) with io_uring, libaio, or pread
+#   - macOS ARM64 (Apple Silicon) with kqueue and pread
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|aarch64|arm64" AND NOT ANDROID AND NOT IOS)
-    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT IOS))
+    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled - supported on Linux (x86_64/x86/ARM64) and macOS (x86_64/ARM64)")
+  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 
