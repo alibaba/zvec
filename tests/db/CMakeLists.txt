@@ -5,6 +5,7 @@ cc_directory(common)
 cc_directories(crash_recovery)
 cc_directory(sqlengine)
 cc_directories(index)
+cc_directory(utf8_acp)
 
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS

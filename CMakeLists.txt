@@ -5,6 +5,7 @@ set(CC_CXX_STANDARD 17)
 
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
+    add_compile_options(/utf-8)
     # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
     # Use CACHE FORCE so it propagates into thirdparty subdirectories that call project().
     foreach(_cfg DEBUG RELWITHDEBINFO)
