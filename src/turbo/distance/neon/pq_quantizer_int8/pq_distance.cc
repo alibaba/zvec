@@ -53,7 +53,7 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
 
   size_t m = 0;
 
-  // Main loop: process 4 subquantizers per iteration.
+  // Main loop: process 4 chunks per iteration.
   // Scalar LUT lookups (NEON has no gather), then NEON pairwise accumulation.
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     float d0 = lut[(m + 0) * kNumCentroids + pq_code[m + 0]];
@@ -66,7 +66,7 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
 
   float sum = horizontal_sum_neon(acc);
 
-  // Scalar leftover: process remaining subquantizers
+  // Scalar leftover: process remaining chunks
   for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
@@ -85,7 +85,7 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
                                float *out) {
 #if defined(__ARM_NEON) && defined(__aarch64__)
   constexpr int kNumCentroids = 256;
-  constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
+  constexpr int chunk = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 4;
   const auto *a = reinterpret_cast<const uint8_t *>(a_v);
   const auto *b = reinterpret_cast<const uint8_t *>(b_v);
@@ -95,18 +95,18 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
 
   size_t m = 0;
 
-  // Main loop: process 4 subquantizers per iteration.
+  // Main loop: process 4 chunks per iteration.
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
-    float d0 = dist_table[(m + 0) * kTablePerSub +
+    float d0 = dist_table[(m + 0) * chunk +
                           static_cast<size_t>(a[m + 0]) * kNumCentroids +
                           static_cast<size_t>(b[m + 0])];
-    float d1 = dist_table[(m + 1) * kTablePerSub +
+    float d1 = dist_table[(m + 1) * chunk +
                           static_cast<size_t>(a[m + 1]) * kNumCentroids +
                           static_cast<size_t>(b[m + 1])];
-    float d2 = dist_table[(m + 2) * kTablePerSub +
+    float d2 = dist_table[(m + 2) * chunk +
                           static_cast<size_t>(a[m + 2]) * kNumCentroids +
                           static_cast<size_t>(b[m + 2])];
-    float d3 = dist_table[(m + 3) * kTablePerSub +
+    float d3 = dist_table[(m + 3) * chunk +
                           static_cast<size_t>(a[m + 3]) * kNumCentroids +
                           static_cast<size_t>(b[m + 3])];
     float32x4_t d = {d0, d1, d2, d3};
@@ -117,7 +117,7 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
 
   // Scalar leftover
   for (; m < num_chunk; ++m) {
-    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * chunk + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -178,7 +178,7 @@ void pq_adc_int8_batch_distance_neon(const void **candidates_v,
     float s2 = horizontal_sum_neon(acc2);
     float s3 = horizontal_sum_neon(acc3);
 
-    // Scalar leftover for remaining subquantizers.
+    // Scalar leftover for remaining chunks.
     for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];

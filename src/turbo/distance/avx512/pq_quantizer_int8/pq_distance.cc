@@ -59,7 +59,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
 
   size_t m = 0;
 
-  // Main loop: process 16 subquantizers per iteration
+  // Main loop: process 16 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load 16 uint8 codes and zero-extend to int32
     // Use unaligned load of 16 bytes
@@ -78,7 +78,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
 
   float sum = horizontal_sum_avx512(acc);
 
-  // Scalar leftover: process remaining subquantizers
+  // Scalar leftover: process remaining chunks
   for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
@@ -97,7 +97,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
                                  float *out) {
 #if defined(__AVX512F__)
   constexpr int kNumCentroids = 256;
-  constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
+  constexpr int chunk = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 16;
   const auto *a = reinterpret_cast<const uint8_t *>(a_v);
   const auto *b = reinterpret_cast<const uint8_t *>(b_v);
@@ -107,18 +107,16 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 
   // Base offsets for SDC: m * 65536
   const __m512i base_offsets = _mm512_setr_epi32(
-      0 * kTablePerSub, 1 * kTablePerSub, 2 * kTablePerSub, 3 * kTablePerSub,
-      4 * kTablePerSub, 5 * kTablePerSub, 6 * kTablePerSub, 7 * kTablePerSub,
-      8 * kTablePerSub, 9 * kTablePerSub, 10 * kTablePerSub, 11 * kTablePerSub,
-      12 * kTablePerSub, 13 * kTablePerSub, 14 * kTablePerSub,
-      15 * kTablePerSub);
+      0 * chunk, 1 * chunk, 2 * chunk, 3 * chunk, 4 * chunk, 5 * chunk,
+      6 * chunk, 7 * chunk, 8 * chunk, 9 * chunk, 10 * chunk, 11 * chunk,
+      12 * chunk, 13 * chunk, 14 * chunk, 15 * chunk);
 
   // Multiplier for a[m] * 256
   const __m512i a_multiplier = _mm512_set1_epi32(kNumCentroids);
 
   size_t m = 0;
 
-  // Main loop: process 16 subquantizers per iteration
+  // Main loop: process 16 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load a[m..m+15] and b[m..m+15], zero-extend to int32
     __m128i a_16x8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + m));
@@ -133,12 +131,11 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
     indices = _mm512_add_epi32(indices, base_offsets);
 
     // Gather 16 floats from dist_table. The gather base must include the
-    // per-iteration m * kTablePerSub offset; base_offsets only carries the
-    // in-lane k * kTablePerSub component (k = 0..15), so gathering from a
-    // fixed dist_table base would read the wrong subquantizer tables once
+    // per-iteration m * chunk offset; base_offsets only carries the
+    // in-lane k * chunk component (k = 0..15), so gathering from a
+    // fixed dist_table base would read the wrong chunk tables once
     // num_chunk > 16 (m >= 16).
-    __m512 gathered =
-        _mm512_i32gather_ps(indices, dist_table + m * kTablePerSub, 4);
+    __m512 gathered = _mm512_i32gather_ps(indices, dist_table + m * chunk, 4);
 
     acc = _mm512_add_ps(acc, gathered);
   }
@@ -147,7 +144,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 
   // Scalar leftover
   for (; m < num_chunk; ++m) {
-    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * chunk + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -226,7 +223,7 @@ void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
     float s2 = _mm512_reduce_add_ps(acc2);
     float s3 = _mm512_reduce_add_ps(acc3);
 
-    // Scalar leftover for remaining subquantizers.
+    // Scalar leftover for remaining chunks.
     for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];

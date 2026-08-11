@@ -32,13 +32,13 @@ void pq_sdc_int8_distance(const void *a_v, const void *b_v,
                           const void *dist_table_v, size_t num_chunk,
                           float *out) {
   constexpr size_t kNumCentroids = 256;
-  constexpr size_t kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
+  constexpr size_t chunk = kNumCentroids * kNumCentroids;  // 65536
   const auto *a = reinterpret_cast<const uint8_t *>(a_v);
   const auto *b = reinterpret_cast<const uint8_t *>(b_v);
   const auto *dist_table = reinterpret_cast<const float *>(dist_table_v);
   float sum = 0.0f;
   for (size_t m = 0; m < num_chunk; ++m) {
-    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * chunk + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -55,7 +55,7 @@ void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
 
   size_t i = 0;
   // Main loop: process 4 candidates per iteration.
-  // Shared LUT base pointer (tab) is computed once per subquantizer,
+  // Shared LUT base pointer (tab) is computed once per chunk,
   // reducing redundant pointer arithmetic across the 4 candidates.
   for (; i + 4 <= num; i += 4) {
     const uint8_t *c0 = candidates[i];

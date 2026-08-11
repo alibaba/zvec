@@ -79,12 +79,6 @@ class Quantizer {
     return 0;
   }
 
-  //! Train the quantizer with data from an IndexHolder using multiple threads.
-  //! Default implementation ignores thread_count and delegates to train().
-  virtual int train(IndexHolder::Pointer holder, int /*thread_count*/) {
-    return train(holder);
-  }
-
   //! Byte length of a quantized datapoint vector
   virtual size_t quantized_datapoint_vector_length() const = 0;
 
@@ -134,11 +128,6 @@ class Quantizer {
   virtual DistanceImpl distance(const void * /*query*/,
                                 const IndexQueryMeta & /*qmeta*/) const {
     return DistanceImpl{};
-  }
-
-  virtual DistanceImpl sym_distance(const void *query,
-                                    const IndexQueryMeta &qmeta) const {
-    return distance(query, qmeta);
   }
 
   //! Serialize quantizer parameters

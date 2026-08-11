@@ -201,7 +201,7 @@ TEST(PqInt8Quantizer, AdcDistance) {
   quantizer->quantize_query(raw_vecs[0].data(), lut.data());
 
   // ADC distances should be a reasonable approximation of true distance.
-  // With 8 sub-quantizers and 32 dims (sub_dim=4), PQ error is non-trivial
+  // With 8 chunks and 32 dims (sub_dim=4), PQ error is non-trivial
   // but should be bounded.
   float max_rel_error = 0.0f;
   for (size_t i = 1; i < COUNT; ++i) {

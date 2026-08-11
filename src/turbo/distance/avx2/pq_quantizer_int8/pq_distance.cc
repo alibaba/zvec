@@ -65,7 +65,7 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 
   size_t m = 0;
 
-  // Main loop: process 8 subquantizers per iteration
+  // Main loop: process 8 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load 8 uint8 codes and zero-extend to int32
     // pq_code[m..m+7] -> 8 int32 indices
@@ -85,7 +85,7 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 
   float sum = horizontal_sum_avx2(acc);
 
-  // Scalar leftover: process remaining subquantizers
+  // Scalar leftover: process remaining chunks
   for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
@@ -104,7 +104,7 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
                                float *out) {
 #if defined(__AVX2__)
   constexpr int kNumCentroids = 256;
-  constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
+  constexpr int chunk = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 8;
   const auto *a = reinterpret_cast<const uint8_t *>(a_v);
   const auto *b = reinterpret_cast<const uint8_t *>(b_v);
@@ -113,16 +113,16 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
   __m256 acc = _mm256_setzero_ps();
 
   // Base offsets for SDC: m * 65536 (float indices into dist_table)
-  const __m256i base_offsets = _mm256_setr_epi32(
-      0, kTablePerSub, 2 * kTablePerSub, 3 * kTablePerSub, 4 * kTablePerSub,
-      5 * kTablePerSub, 6 * kTablePerSub, 7 * kTablePerSub);
+  const __m256i base_offsets =
+      _mm256_setr_epi32(0, chunk, 2 * chunk, 3 * chunk, 4 * chunk, 5 * chunk,
+                        6 * chunk, 7 * chunk);
 
   // Multiplier for a[m] * 256
   const __m256i a_multiplier = _mm256_set1_epi32(kNumCentroids);
 
   size_t m = 0;
 
-  // Main loop: process 8 subquantizers per iteration
+  // Main loop: process 8 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load a[m..m+7] and b[m..m+7], zero-extend to int32
     __m128i a_8x8 = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(a + m));
@@ -137,12 +137,11 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
     indices = _mm256_add_epi32(indices, base_offsets);
 
     // Gather 8 floats from dist_table. The gather base must include the
-    // per-iteration m * kTablePerSub offset; base_offsets only carries the
-    // in-lane k * kTablePerSub component (k = 0..7), so gathering from a
-    // fixed dist_table base would read the wrong subquantizer tables once
+    // per-iteration m * chunk offset; base_offsets only carries the
+    // in-lane k * chunk component (k = 0..7), so gathering from a
+    // fixed dist_table base would read the wrong chunk tables once
     // num_chunk > 8 (m >= 8).
-    __m256 gathered =
-        _mm256_i32gather_ps(dist_table + m * kTablePerSub, indices, 4);
+    __m256 gathered = _mm256_i32gather_ps(dist_table + m * chunk, indices, 4);
 
     acc = _mm256_add_ps(acc, gathered);
   }
@@ -151,7 +150,7 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
 
   // Scalar leftover
   for (; m < num_chunk; ++m) {
-    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * chunk + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -226,7 +225,7 @@ void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
     float s2 = horizontal_sum_avx2(acc2);
     float s3 = horizontal_sum_avx2(acc3);
 
-    // Scalar leftover for remaining subquantizers.
+    // Scalar leftover for remaining chunks.
     for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];

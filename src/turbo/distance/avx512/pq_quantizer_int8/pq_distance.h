@@ -20,7 +20,7 @@
 namespace zvec::turbo::avx512 {
 
 // ADC (Asymmetric Distance Computation) via AVX512 gather.
-// Processes 16 subquantizers per _mm512_i32gather_ps iteration.
+// Processes 16 chunks per _mm512_i32gather_ps iteration.
 void pq_adc_int8_distance_avx512(const void *pq_code, const void *lut,
                                  size_t num_chunk, float *out);
 

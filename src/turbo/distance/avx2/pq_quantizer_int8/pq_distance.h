@@ -20,13 +20,13 @@
 namespace zvec::turbo::avx2 {
 
 // ADC (Asymmetric Distance Computation) via AVX2 gather.
-// Processes 8 subquantizers per _mm256_i32gather_ps iteration.
+// Processes 8 chunks per _mm256_i32gather_ps iteration.
 // For general M: loop in chunks of 8, scalar leftover.
 void pq_adc_int8_distance_avx2(const void *pq_code, const void *lut,
                                size_t num_chunk, float *out);
 
 // SDC (Symmetric Distance Computation) via AVX2 gather.
-// Computes indices (a[m]*256 + b[m]) as int32, adds per-subquantizer
+// Computes indices (a[m]*256 + b[m]) as int32, adds per-chunk
 // base offsets, gathers 8 floats per iteration.
 void pq_sdc_int8_distance_avx2(const void *a, const void *b,
                                const void *dist_table, size_t num_chunk,

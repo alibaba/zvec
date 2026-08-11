@@ -72,8 +72,6 @@ class PqInt8Quantizer : public Quantizer {
 
   int train(IndexHolder::Pointer holder) override;
 
-  int train(IndexHolder::Pointer holder, int thread_count) override;
-
   size_t quantized_datapoint_vector_length() const override {
     return num_chunk_ + extra_meta_size_;
   }
@@ -112,7 +110,7 @@ class PqInt8Quantizer : public Quantizer {
                         const IndexQueryMeta &qmeta) const override;
 
   DistanceImpl sym_distance(const void *query,
-                            const IndexQueryMeta &qmeta) const override;
+                            const IndexQueryMeta &qmeta) const;
 
   int serialize(std::string *out) const override;
 
@@ -121,24 +119,25 @@ class PqInt8Quantizer : public Quantizer {
   int deserialize(const void *data, size_t len) override;
 
  private:
-  //! Train a single sub-quantizer (KMeans, k=256) on the sub-vectors
-  //! extracted from holder.  sub_idx selects which sub-quantizer to train.
+  //! Train a single chunk (KMeans, k=256) on the sub-vectors.
+  //! Templated on the data type T (float or ailego::Float16) so that
+  //! NumericalKmeans<T> operates natively in the input precision.
+  //! sub_idx selects which chunk to train.
   template <typename T>
-  void train_subquantizer(const T *data, size_t num, size_t stride,
-                          size_t sub_idx);
+  void train_chunk(const T *data, size_t num, size_t stride, size_t sub_idx);
 
-  //! L2-normalize a batch of vectors (train-time use).
+  //! L2-normalize a batch of vectors in-place (train-time use).
   template <typename T>
-  void normalize_batch(T *data, size_t num) const;
+  void normalize(T *data, size_t num) const;
 
   //! Compute the per-dimension mean (accumulated in float to avoid FP16
   //! overflow) and subtract it from all training vectors in-place.
   template <typename T>
   void compute_and_subtract_center(T *data, size_t num);
 
-  //! L2-normalize a single vector; optionally writes the norm out.
+  //! L2-normalize a single vector in-place; optionally writes the norm out.
   template <typename T>
-  void normalize_single(T *vec, float *norm_out = nullptr) const;
+  void normalize(T *vec, float *norm_out = nullptr) const;
 
   //! Subtract the pre-computed centroid_ from a single vector.
   template <typename T>
@@ -198,7 +197,7 @@ class PqInt8Quantizer : public Quantizer {
   //! [num_chunk * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
 
-  //! Pre-built centroid pointer arrays for each sub-quantizer.
+  //! Pre-built centroid pointer arrays for each chunk.
   //! Layout: centroid_ptrs_cache_[sub_idx][centroid_idx] = pointer to centroid.
   //! Built once during init/deserialize, reused by compute_dist_table
   //! and quantize_query to avoid repeated allocations.
@@ -206,7 +205,7 @@ class PqInt8Quantizer : public Quantizer {
 
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   PqAdcDistanceFunc adc_fn_{nullptr};
-  PqSdcKernelFunc sdc_fn_{nullptr};
+  PqSdcDistanceFunc sdc_fn_{nullptr};
   PqBatchAdcFunc batch_adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for search-side LUT
