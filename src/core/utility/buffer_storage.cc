@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -289,6 +290,22 @@ class BufferStorage : public IndexStorage {
         return IndexStorage::Segment::read_borrowed_batch(reads, count);
       }
 
+      // Cross-page vectors need a contiguous copy. A thread-local scratch arena
+      // is reused across calls instead of a per-vector malloc/free: the arena
+      // is safe to recycle because the previous hop's blocks are destroyed
+      // before this call runs (see fast_search_neighbors_buffer). Cross-page
+      // results become non-owning views into the arena. On by default;
+      // ZVEC_CROSS_ARENA=0 restores the per-vector malloc path.
+      static const bool cross_arena = [] {
+        const char *v = std::getenv("ZVEC_CROSS_ARENA");
+        return !(v != nullptr && *v == '0');
+      }();
+      // Cap the per-thread arena: a batch needing more falls back to malloc so
+      // an abnormally wide batch cannot pin unbounded out-of-pool RSS. HNSW
+      // hops need only about max_degree * vector_size (tens of KiB).
+      static constexpr size_t kMaxArenaBytes = 2UL << 20;  // 2 MiB / thread
+      bool batch_arena = false;
+
       struct BatchState {
         BorrowedRead *request{nullptr};
         size_t abs_offset{0};
@@ -300,6 +317,7 @@ class BufferStorage : public IndexStorage {
         std::vector<BatchState> states;
         std::vector<ailego::block_id_t> page_ids;
         std::vector<char *> pages;
+        std::vector<char> arena;  // reused cross-page scratch (arena mode)
       };
       static thread_local BatchScratch scratch;
 
@@ -312,12 +330,13 @@ class BufferStorage : public IndexStorage {
         }
       }
 
-      auto cleanup_owned = []() {
+      auto cleanup_owned = [&]() {
+        // Arena slices are non-owning; only malloc-mode buffers are freed.
         for (BatchState &state : scratch.states) {
-          if (state.owned != nullptr) {
+          if (!batch_arena && state.owned != nullptr) {
             ailego_free(state.owned);
-            state.owned = nullptr;
           }
+          state.owned = nullptr;
         }
       };
       auto fail = [&]() {
@@ -380,19 +399,50 @@ class BufferStorage : public IndexStorage {
 
       // Cross-page values need an owned contiguous result, but their source
       // pages still participate in the same batched AIO submission.
-      for (BatchState &state : scratch.states) {
-        if (state.page_count <= 1) {
-          continue;
+      if (cross_arena) {
+        // Reserve the whole batch's cross bytes once (no live pointers into the
+        // arena remain from the previous hop), then hand out bump slices. A
+        // batch over the cap falls back to malloc so the arena stays bounded.
+        static constexpr size_t kArenaAlign = 64;
+        size_t total = 0;
+        for (BatchState &state : scratch.states) {
+          if (state.page_count <= 1) {
+            continue;
+          }
+          total +=
+              (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
         }
-        const size_t length = state.request->length;
-        size_t alloc_size = 0;
-        if (!AlignBufferSize(length, &alloc_size)) {
-          return fail();
+        batch_arena = total <= kMaxArenaBytes;
+        if (batch_arena) {
+          if (scratch.arena.size() < total) {
+            scratch.arena.resize(total);
+          }
+          size_t off = 0;
+          for (BatchState &state : scratch.states) {
+            if (state.page_count <= 1) {
+              continue;
+            }
+            state.owned = scratch.arena.data() + off;
+            off +=
+                (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+          }
         }
-        state.owned = static_cast<char *>(
-            ailego_aligned_malloc(alloc_size, kBufferAlignment));
-        if (state.owned == nullptr) {
-          return fail();
+      }
+      if (!batch_arena) {
+        for (BatchState &state : scratch.states) {
+          if (state.page_count <= 1) {
+            continue;
+          }
+          const size_t length = state.request->length;
+          size_t alloc_size = 0;
+          if (!AlignBufferSize(length, &alloc_size)) {
+            return fail();
+          }
+          state.owned = static_cast<char *>(
+              ailego_aligned_malloc(alloc_size, kBufferAlignment));
+          if (state.owned == nullptr) {
+            return fail();
+          }
         }
       }
 
@@ -435,7 +485,9 @@ class BufferStorage : public IndexStorage {
           offset_in_page = 0;
         }
         *state.request->block =
-            MemoryBlock::MakeOwned(state.owned, state.request->length);
+            batch_arena
+                ? MemoryBlock::MakeBorrowedView(state.owned)
+                : MemoryBlock::MakeOwned(state.owned, state.request->length);
         state.owned = nullptr;
       }
       return true;

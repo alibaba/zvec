@@ -1458,7 +1458,10 @@ TEST_F(BufferStorageWriteTest, BatchBorrowedReadAcrossSegments) {
 
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[0].type_);
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[1].type_);
-  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, blocks[2].type_);
+  // Cross-page reads are served from the reused thread-local scratch arena as
+  // non-owning views (ZVEC_CROSS_ARENA default on); the reassembled bytes are
+  // still validated below.
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[2].type_);
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[3].type_);
   EXPECT_EQ(0, std::memcmp(payload_a.data() + a_page_aligned_offset,
                            blocks[0].data(), 64));

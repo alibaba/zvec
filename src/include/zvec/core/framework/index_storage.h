@@ -68,6 +68,17 @@ class IndexStorage : public IndexModule {
       return mb;
     }
 
+    //! Build a non-owning view over caller-managed memory (e.g. a query-level
+    //! scratch arena). The block frees and pins nothing on destruction, so the
+    //! backing buffer must outlive every copy of this block. Uses the MMAP
+    //! representation whose destructor is a no-op.
+    static MemoryBlock MakeBorrowedView(void *data) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_MMAP;
+      mb.data_ = data;
+      return mb;
+    }
+
     MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
