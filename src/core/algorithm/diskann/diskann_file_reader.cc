@@ -671,6 +671,238 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   return ret;
 }
 
+#if (defined(__linux) || defined(__linux__))
+int LinuxAlignedFileReader::submit(PendingBatch &batch,
+                                   std::vector<AlignedRead> &read_reqs,
+                                   IOContext &ctx) {
+  batch.n_submitted = 0;
+  batch.n_reaped = 0;
+  batch.used_pread = false;
+  batch.cbs.clear();
+  batch.cb_ptrs.clear();
+
+  if (this->file_desc == -1) {
+    LOG_ERROR("submit: invalid file descriptor");
+    return IndexError_Runtime;
+  }
+
+  if (read_reqs.empty()) {
+    return 0;
+  }
+
+  // If this context has no async I/O backend (null/sentinel context or
+  // explicit pread backend), use synchronous pread.
+  if (ctx == nullptr || ctx == (IOContext)-1 ||
+      ctx->backend == IoBackend::NONE) {
+    int pread_ret = execute_io_pread(this->file_desc, read_reqs);
+    if (pread_ret != 0) {
+      return pread_ret;
+    }
+    batch.used_pread = true;
+    batch.n_submitted = (uint32_t)read_reqs.size();
+    return 0;
+  }
+
+  // io_uring only offers a synchronous batched execute(): the reads are
+  // already copied into the caller's buffers when it returns, so report the
+  // batch as complete the same way the pread path does.
+  if (ctx->backend == IoBackend::IO_URING) {
+    int ring_ret = ctx->ring.execute(this->file_desc, read_reqs);
+    if (ring_ret != 0) {
+      // The kernel only ever writes into the ring-owned staging pool, so a
+      // pread fallback cannot race with requests still in flight.
+      LOG_WARN("submit: io_uring execute failed; falling back to pread");
+      int pread_ret = execute_io_pread(this->file_desc, read_reqs);
+      if (pread_ret != 0) {
+        return pread_ret;
+      }
+    }
+    batch.used_pread = true;
+    batch.n_submitted = (uint32_t)read_reqs.size();
+    return 0;
+  }
+
+  uint32_t n_ops = (uint32_t)read_reqs.size();
+  batch.cbs.resize(n_ops);
+  batch.cb_ptrs.resize(n_ops);
+
+  for (uint32_t j = 0; j < n_ops; j++) {
+    io_prep_pread(&batch.cbs[j], this->file_desc, read_reqs[j].buf,
+                  read_reqs[j].len, read_reqs[j].offset);
+    batch.cbs[j].data = (void *)(uintptr_t)j;
+    batch.cb_ptrs[j] = &batch.cbs[j];
+  }
+
+  int ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)n_ops,
+                                               batch.cb_ptrs.data());
+  if (ret == (int)n_ops) {
+    batch.n_submitted = n_ops;
+    return 0;
+  }
+
+  // Partial submission: a positive return value means exactly that prefix is
+  // now in flight and must never be submitted again. Keep submitting the
+  // remainder; -EAGAIN/-EINTR are transient and worth a bounded retry.
+  constexpr size_t kMaxSubmitRetries = 8;
+  uint32_t submitted = (ret > 0 && ret < (int)n_ops) ? (uint32_t)ret : 0;
+  size_t n_tries = 0;
+  bool submission_ok = (submitted > 0) || ret == -EAGAIN || ret == -EINTR;
+  while (submission_ok && submitted < n_ops) {
+    uint32_t remaining = n_ops - submitted;
+    ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)remaining,
+                                             batch.cb_ptrs.data() + submitted);
+    if (ret > 0 && (uint32_t)ret <= remaining) {
+      submitted += (uint32_t)ret;
+      n_tries = 0;
+      continue;
+    }
+    if ((ret == -EAGAIN || ret == -EINTR) && n_tries < kMaxSubmitRetries) {
+      n_tries++;
+      continue;
+    }
+    submission_ok = false;
+  }
+
+  if (submission_ok) {
+    batch.n_submitted = n_ops;
+    return 0;
+  }
+
+  LOG_WARN(
+      "submit: io_submit stopped after %u/%u requests; returned: %d. "
+      "falling back to pread after draining submitted AIO",
+      submitted, n_ops, ret);
+
+  // Drain every request already in flight before any synchronous read can
+  // reuse its destination buffer, and before batch.cbs may be reused; the
+  // kernel keeps writing through those iocbs until their events are reaped.
+  std::vector<io_event_t> evts(submitted);
+  uint32_t drained = 0;
+  while (drained < submitted) {
+    uint32_t remaining = submitted - drained;
+    ret = LibAioLoader::Instance().io_getevents(
+        ctx->aio_ctx, (int64_t)remaining, (int64_t)remaining,
+        evts.data() + drained, nullptr);
+    if (ret > 0 && (uint32_t)ret <= remaining) {
+      drained += (uint32_t)ret;
+      continue;
+    }
+    if (ret == -EINTR) {
+      continue;
+    }
+    LOG_ERROR(
+        "submit: io_getevents failed while draining %u in-flight requests; "
+        "returned: %d. resetting the AIO context before falling back to pread",
+        submitted, ret);
+    if (!reset_aio_context(ctx->aio_ctx)) {
+      // Do not run pread unless io_destroy confirmed that no request can
+      // still write into these buffers.
+      return IndexError_Runtime;
+    }
+    break;
+  }
+
+  int pread_ret = execute_io_pread(this->file_desc, read_reqs);
+  if (pread_ret != 0) {
+    return pread_ret;
+  }
+  batch.used_pread = true;
+  batch.n_submitted = n_ops;
+  return 0;
+}
+
+// Quiesce any requests of the batch still in flight before reporting an
+// error, so the kernel cannot keep writing into the caller's buffers or
+// leave stale completion events for the next batch on this context.
+static void quiesce_batch(PendingBatch &batch, IOContext &ctx) {
+  // Only the libaio path leaves requests in flight: pread and io_uring
+  // batches are complete before submit() returns (used_pread == true).
+  if (batch.n_reaped < batch.n_submitted && !batch.used_pread) {
+    if (reset_aio_context(ctx->aio_ctx)) {
+      batch.n_reaped = batch.n_submitted;
+    }
+  }
+}
+
+int LinuxAlignedFileReader::get_completed(
+    PendingBatch &batch, IOContext &ctx, int min_completed,
+    std::vector<uint32_t> &completed_indices) {
+  completed_indices.clear();
+
+  if (batch.n_reaped >= batch.n_submitted) {
+    return 0;
+  }
+
+  if (batch.used_pread) {
+    for (uint32_t i = batch.n_reaped; i < batch.n_submitted; i++) {
+      completed_indices.push_back(i);
+    }
+    batch.n_reaped = batch.n_submitted;
+    return (int)completed_indices.size();
+  }
+
+  uint32_t n_remaining = batch.n_submitted - batch.n_reaped;
+  int min_req = std::min((int)n_remaining, min_completed);
+  if (min_req < 1) min_req = 1;
+
+  std::vector<io_event_t> evts(n_remaining);
+  int ret;
+  do {
+    // Once requests are in flight, EINTR must be retried: returning here
+    // would leave them unquiesced, free to overwrite the caller's buffers
+    // or leak completion events into the next batch.
+    ret = LibAioLoader::Instance().io_getevents(ctx->aio_ctx, (int64_t)min_req,
+                                                (int64_t)n_remaining,
+                                                evts.data(), nullptr);
+  } while (ret == -EINTR);
+  if (ret < 0) {
+    LOG_ERROR("get_completed: io_getevents failed, ret=%d, %s", ret,
+              ::strerror(-ret));
+    quiesce_batch(batch, ctx);
+    return IndexError_Runtime;
+  }
+
+  for (int i = 0; i < ret; i++) {
+    uint32_t idx = (uint32_t)(uintptr_t)evts[i].data;
+    if (idx >= batch.n_submitted) {
+      LOG_ERROR("get_completed: completion referenced an unknown request %u",
+                idx);
+      batch.n_reaped += (uint32_t)ret;
+      quiesce_batch(batch, ctx);
+      return IndexError_Runtime;
+    }
+    int64_t res = (int64_t)evts[i].res;
+    int64_t res2 = (int64_t)evts[i].res2;
+    int64_t expected = (int64_t)batch.cbs[idx].u.c.nbytes;
+    if (res != expected || res2 != 0) {
+      // The async read failed, so the destination buffer content is
+      // undefined. Degrade to a synchronous pread for this request before
+      // handing the buffer to the caller.
+      LOG_WARN(
+          "get_completed: read %u failed: res=%ld, res2=%ld, expected=%ld; "
+          "retrying with pread",
+          idx, (long)res, (long)res2, (long)expected);
+      ssize_t bytes_read =
+          ::pread(this->file_desc, batch.cbs[idx].u.c.buf,
+                  batch.cbs[idx].u.c.nbytes, batch.cbs[idx].u.c.offset);
+      if (bytes_read != (ssize_t)expected) {
+        LOG_ERROR(
+            "get_completed: pread retry for read %u failed; got=%zd, "
+            "expected=%ld, errno=%d, %s",
+            idx, bytes_read, (long)expected, errno, ::strerror(errno));
+        batch.n_reaped += (uint32_t)ret;
+        quiesce_batch(batch, ctx);
+        return IndexError_Runtime;
+      }
+    }
+    completed_indices.push_back(idx);
+  }
+
+  batch.n_reaped += (uint32_t)ret;
+  return ret;
+}
+#endif
+
 
 }  // namespace core
 }  // namespace zvec
