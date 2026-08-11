@@ -15,8 +15,6 @@
 
 #include <memory>
 #include <arrow/api.h>
-#include <arrow/compute/api.h>
-#include "db/common/constants.h"
 #include "db/index/common/index_filter.h"
 
 namespace zvec {
@@ -43,71 +41,7 @@ class FilteringReader : public arrow::RecordBatchReader {
     return inner_reader_->schema();
   }
 
-  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch> *batch) override {
-    while (true) {
-      ARROW_RETURN_NOT_OK(inner_reader_->ReadNext(batch));
-      if (!*batch) {
-        return arrow::Status::OK();
-      }
-
-      // No filter → return as-is
-      if (!filter_) {
-        return arrow::Status::OK();
-      }
-
-      // The _zvec_g_doc_id_ column is required for delete filtering.
-      int gdoc_col = (*batch)->schema()->GetFieldIndex(GLOBAL_DOC_ID);
-      if (gdoc_col < 0) {
-        return arrow::Status::FromArgs(
-            arrow::StatusCode::ExecutionError,
-            "FilteringReader batch is missing the global doc id column");
-      }
-
-      const auto &col = (*batch)->column(gdoc_col);
-      if (col->type_id() != arrow::Type::UINT64) {
-        return arrow::Status::FromArgs(
-            arrow::StatusCode::ExecutionError,
-            "FilteringReader global doc id column is not a UInt64 array");
-      }
-      auto *gdoc_array = static_cast<const arrow::UInt64Array *>(col.get());
-
-      // Build filter mask: true = keep, false = skip (deleted)
-      arrow::BooleanBuilder mask_builder;
-      int64_t num_rows = (*batch)->num_rows();
-      ARROW_RETURN_NOT_OK(mask_builder.Reserve(num_rows));
-
-      bool has_filtered = false;
-      for (int64_t i = 0; i < num_rows; ++i) {
-        uint64_t g_doc_id = gdoc_array->Value(i);
-        bool is_deleted = filter_->is_filtered(g_doc_id);
-        if (is_deleted) has_filtered = true;
-        mask_builder.UnsafeAppend(!is_deleted);
-      }
-
-      // No rows filtered → return batch as-is
-      if (!has_filtered) {
-        return arrow::Status::OK();
-      }
-
-      // Apply filter
-      std::shared_ptr<arrow::Array> mask_array;
-      ARROW_RETURN_NOT_OK(mask_builder.Finish(&mask_array));
-
-      arrow::Datum result;
-      ARROW_ASSIGN_OR_RAISE(result,
-                            arrow::compute::Filter(arrow::Datum(*batch),
-                                                   arrow::Datum(mask_array)));
-
-      *batch = result.record_batch();
-
-      // If all rows filtered out, continue to next batch
-      if ((*batch)->num_rows() == 0) {
-        continue;
-      }
-
-      return arrow::Status::OK();
-    }
-  }
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch> *batch) override;
 
  private:
   std::shared_ptr<arrow::RecordBatchReader> inner_reader_;

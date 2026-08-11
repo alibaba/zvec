@@ -84,20 +84,14 @@ DocIterator::~DocIterator() {
 }
 
 void DocIterator::Close() {
-  if (impl_) {
-    impl_->closed = true;
-    impl_->current_reader.reset();
-    impl_->current_batch.reset();
-    impl_->vector_cache_.clear();
-    impl_->segments.clear();
-    impl_->delete_store.reset();
-    impl_->schema.reset();
-    impl_.reset();
-  }
+  // Impl's member declaration order alone guarantees a safe teardown
+  // (current_reader is declared last, so it releases its file handles
+  // before the kept-alive segments are destroyed).
+  impl_.reset();
 }
 
 Result<Doc::Ptr> DocIterator::Next() {
-  if (!impl_ || impl_->closed) {
+  if (!impl_) {
     return tl::make_unexpected(Status::InternalError("Iterator is closed"));
   }
 
@@ -191,8 +185,7 @@ Result<Doc::Ptr> DocIterator::Next() {
   }
 
   // 3. Extract scalar/array fields from the Arrow batch via the shared
-  //    row-level converter (same type coverage and null semantics as the
-  //    SQL engine).
+  //    row-level converter.
   for (const auto &[field, col] : impl_->forward_cols) {
     auto s = ConvertArrowRowToDocField(batch.columns()[col].get(), row, *field,
                                        doc.get());

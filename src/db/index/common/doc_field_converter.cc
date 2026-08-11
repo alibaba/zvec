@@ -52,28 +52,30 @@ Status SparseVectorDataConverter(
   return Status::OK();
 }
 
-//! Set a scalar Doc field from row `row` of a typed Arrow array.
-//! Uses static_cast (type is guaranteed by the caller's switch dispatch).
+//! Set the value at `row` of a typed Arrow array into a Doc field. The row
+//! must be valid (non-null); callers dispatch by field type, which guarantees
+//! the array's dynamic type.
 template <typename ArrowArrayT>
-Status SetScalarField(const arrow::Array *array, int64_t row,
-                      const std::string &name, Doc *doc) {
-  auto *typed_array = static_cast<const ArrowArrayT *>(array);
-  if (typed_array->IsNull(row)) {
-    return Status::OK();
-  }
+void SetScalarValue(const ArrowArrayT *typed_array, int64_t row,
+                    const std::string &name, Doc *doc) {
   if constexpr (std::is_same_v<ArrowArrayT, arrow::StringArray> ||
                 std::is_same_v<ArrowArrayT, arrow::BinaryArray>) {
     doc->set(name, std::string(typed_array->GetView(row)));
   } else {
     doc->set(name, typed_array->Value(row));
   }
+}
+
+//! Row-level scalar setter: the caller has already null-checked `row`.
+template <typename ArrowArrayT>
+Status SetScalarField(const arrow::Array *array, int64_t row,
+                      const std::string &name, Doc *doc) {
+  SetScalarValue(static_cast<const ArrowArrayT *>(array), row, name, doc);
   return Status::OK();
 }
 
 //! Set an array Doc field from row `row` of an Arrow ListArray whose values
-//! are of type ArrowArrayT. Null elements inside the list are skipped.
-//! Uses Value() uniformly (returns string_view for string/binary types,
-//! which emplace_back converts to std::string in place).
+//! are of type ArrowArrayT.
 template <typename ArrowArrayT, typename T>
 Status SetListField(const arrow::Array *array, int64_t row,
                     const std::string &name, Doc *doc) {
@@ -81,6 +83,38 @@ Status SetListField(const arrow::Array *array, int64_t row,
   auto values_slice = list_array->value_slice(row);
   auto *values = static_cast<const ArrowArrayT *>(values_slice.get());
   doc->set(name, ExtractTypedArrayValues<ArrowArrayT, T>(values));
+  return Status::OK();
+}
+
+//! Column-level scalar setter: checks null_count() once, so all-valid
+//! columns are filled without per-row null checks.
+template <typename ArrowArrayT>
+Status SetScalarColumn(const arrow::Array *array, const std::string &name,
+                       DocPtrList::iterator doc_it) {
+  auto *typed_array = static_cast<const ArrowArrayT *>(array);
+  const bool no_null = typed_array->null_count() == 0;
+  for (int64_t i = 0; i < typed_array->length(); ++i, ++doc_it) {
+    if (no_null || !typed_array->IsNull(i)) {
+      SetScalarValue(typed_array, i, name, doc_it->get());
+    }
+  }
+  return Status::OK();
+}
+
+//! Column-level list setter. null_count() refers to row-level nulls (whole
+//! list null for a row); list elements never store nulls in zvec.
+template <typename ArrowArrayT, typename T>
+Status SetListColumn(const arrow::Array *array, const std::string &name,
+                     DocPtrList::iterator doc_it) {
+  auto *list_array = static_cast<const arrow::ListArray *>(array);
+  const bool no_null = list_array->null_count() == 0;
+  for (int64_t i = 0; i < list_array->length(); ++i, ++doc_it) {
+    if (no_null || !list_array->IsNull(i)) {
+      auto values_slice = list_array->value_slice(i);
+      auto *values = static_cast<const ArrowArrayT *>(values_slice.get());
+      doc_it->get()->set(name, ExtractTypedArrayValues<ArrowArrayT, T>(values));
+    }
+  }
   return Status::OK();
 }
 
@@ -181,6 +215,60 @@ Status ConvertArrowRowToDocField(const arrow::Array *array, int64_t row,
       return SetListField<arrow::FloatArray, float>(array, row, name, doc);
     case DataType::ARRAY_DOUBLE:
       return SetListField<arrow::DoubleArray, double>(array, row, name, doc);
+    default:
+      return Status::InvalidArgument("Unsupported data type for field: ", name,
+                                     ": ", field.data_type());
+  }
+}
+
+Status ConvertArrowColumnToDocFields(const arrow::Array *array,
+                                     const FieldSchema &field,
+                                     DocPtrList::iterator doc_it) {
+  if (!array) {
+    return Status::InvalidArgument("Arrow array is null for field: ",
+                                   field.name());
+  }
+
+  const auto &name = field.name();
+  switch (field.data_type()) {
+    case DataType::BINARY:
+      return SetScalarColumn<arrow::BinaryArray>(array, name, doc_it);
+    case DataType::STRING:
+      return SetScalarColumn<arrow::StringArray>(array, name, doc_it);
+    case DataType::BOOL:
+      return SetScalarColumn<arrow::BooleanArray>(array, name, doc_it);
+    case DataType::INT32:
+      return SetScalarColumn<arrow::Int32Array>(array, name, doc_it);
+    case DataType::INT64:
+      return SetScalarColumn<arrow::Int64Array>(array, name, doc_it);
+    case DataType::UINT32:
+      return SetScalarColumn<arrow::UInt32Array>(array, name, doc_it);
+    case DataType::UINT64:
+      return SetScalarColumn<arrow::UInt64Array>(array, name, doc_it);
+    case DataType::FLOAT:
+      return SetScalarColumn<arrow::FloatArray>(array, name, doc_it);
+    case DataType::DOUBLE:
+      return SetScalarColumn<arrow::DoubleArray>(array, name, doc_it);
+    case DataType::ARRAY_BINARY:
+      return SetListColumn<arrow::BinaryArray, std::string>(array, name,
+                                                            doc_it);
+    case DataType::ARRAY_STRING:
+      return SetListColumn<arrow::StringArray, std::string>(array, name,
+                                                            doc_it);
+    case DataType::ARRAY_BOOL:
+      return SetListColumn<arrow::BooleanArray, bool>(array, name, doc_it);
+    case DataType::ARRAY_INT32:
+      return SetListColumn<arrow::Int32Array, int32_t>(array, name, doc_it);
+    case DataType::ARRAY_INT64:
+      return SetListColumn<arrow::Int64Array, int64_t>(array, name, doc_it);
+    case DataType::ARRAY_UINT32:
+      return SetListColumn<arrow::UInt32Array, uint32_t>(array, name, doc_it);
+    case DataType::ARRAY_UINT64:
+      return SetListColumn<arrow::UInt64Array, uint64_t>(array, name, doc_it);
+    case DataType::ARRAY_FLOAT:
+      return SetListColumn<arrow::FloatArray, float>(array, name, doc_it);
+    case DataType::ARRAY_DOUBLE:
+      return SetListColumn<arrow::DoubleArray, double>(array, name, doc_it);
     default:
       return Status::InvalidArgument("Unsupported data type for field: ", name,
                                      ": ", field.data_type());

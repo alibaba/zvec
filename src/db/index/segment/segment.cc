@@ -1098,9 +1098,7 @@ Doc::Ptr SegmentImpl::Fetch(
     return nullptr;
   }
 
-  // other forward columns (scalar-shaped input: read each Scalar directly,
-  // no boxing into an Array — DocIterator/sqlengine use the row-level
-  // ConvertArrowRowToDocField helper instead because their input is columnar)
+  // other forward columns
   for (int col_idx = 2; col_idx < exec_batch->num_values(); ++col_idx) {
     auto column_name = forward_columns[col_idx];
     auto column = result_schema->GetFieldByName(column_name);
@@ -1170,9 +1168,7 @@ Doc::Ptr SegmentImpl::Fetch(
           auto list_type =
               std::dynamic_pointer_cast<arrow::ListType>(column->type());
           if (list_type) {
-            // Element array type is guaranteed by value_type; extract the
-            // values with the shared helper (same null semantics as the
-            // iterator and SQL engine list converters).
+            // Element array type is guaranteed by value_type.
             const arrow::Array *values = list_scalar->value.get();
             switch (list_type->value_type()->id()) {
               case arrow::Type::BOOL:

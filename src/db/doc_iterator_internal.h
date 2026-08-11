@@ -47,7 +47,6 @@ struct DocIterator::Impl {
   // Index of the segment currently being read.
   size_t current_segment_index{0};
   int64_t current_row{0};
-  bool closed{false};
   bool include_vector{false};  // whether to fetch vector fields
   std::shared_ptr<arrow::RecordBatch> current_batch;
   // Column indices resolved once per loaded batch (the batch schema is stable

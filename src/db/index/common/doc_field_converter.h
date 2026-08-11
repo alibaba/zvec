@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Shared row-level converters that fill Doc fields, used by SegmentImpl,
-// DocIterator and the SQL engine so that field-type coverage and null/list
-// semantics stay in one place.
+// Shared converters that fill Doc fields, used by SegmentImpl, DocIterator
+// and the SQL engine so that field-type coverage and null semantics stay in
+// one place.
 #pragma once
 
 #include <memory>
@@ -29,27 +29,14 @@
 namespace zvec {
 
 //! Extract the values of a typed Arrow array into a std::vector. Shared by
-//! the row-level list converter (iterator/SQL-engine path, which starts from
-//! a ListArray) and SegmentImpl::Fetch (which holds the inner value array of
-//! a ListScalar directly). Inner nulls are skipped; write paths never produce
-//! them, so this is only defensive.
+//! the list converters and SegmentImpl::Fetch. zvec array fields never store
+//! null elements, so no per-element null check is needed.
 template <typename ArrowArrayT, typename T>
 std::vector<T> ExtractTypedArrayValues(const ArrowArrayT *values) {
   std::vector<T> vec;
   vec.reserve(values->length());
-  // null_count() is O(1); skip per-element validity checks when the array
-  // has no nulls (the common case).
-  if (values->null_count() == 0) {
-    for (int64_t i = 0; i < values->length(); ++i) {
-      vec.emplace_back(values->Value(i));
-    }
-  } else {
-    for (int64_t i = 0; i < values->length(); ++i) {
-      if (values->IsNull(i)) {
-        continue;
-      }
-      vec.emplace_back(values->Value(i));
-    }
+  for (int64_t i = 0; i < values->length(); ++i) {
+    vec.emplace_back(values->Value(i));
   }
   return vec;
 }
@@ -66,5 +53,14 @@ Status ConvertVectorDataBufferToDocField(
 //! and every ARRAY_* DataType.
 Status ConvertArrowRowToDocField(const arrow::Array *array, int64_t row,
                                  const FieldSchema &field, Doc *doc);
+
+//! Column-level variant: convert every row of an Arrow array into the docs
+//! starting at `doc_it` (one doc per row). Dispatches the field type once and
+//! checks null_count() once per column, so rows of an all-valid column are
+//! filled without per-row null checks. Same type coverage and null semantics
+//! as ConvertArrowRowToDocField.
+Status ConvertArrowColumnToDocFields(const arrow::Array *array,
+                                     const FieldSchema &field,
+                                     DocPtrList::iterator doc_it);
 
 }  // namespace zvec

@@ -448,18 +448,11 @@ Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
     case DataType::ARRAY_UINT32:
     case DataType::ARRAY_UINT64:
     case DataType::ARRAY_FLOAT:
-    case DataType::ARRAY_DOUBLE: {
-      // Scalar/array fields: shared row-level conversion (same type coverage
-      // and null semantics as DocIterator; see doc_field_converter.h).
-      for (int64_t i = 0; i < chunk->length(); ++i, ++doc_it) {
-        auto status = ConvertArrowRowToDocField(chunk.get(), i, field_schema,
-                                                doc_it->get());
-        if (!status.ok()) {
-          return status;
-        }
-      }
-      return Status::OK();
-    }
+    case DataType::ARRAY_DOUBLE:
+      // Scalar/array fields: shared column-level conversion (dispatches the
+      // type and checks null_count once per column; see
+      // doc_field_converter.h).
+      return ConvertArrowColumnToDocFields(chunk.get(), field_schema, doc_it);
 
     case DataType::VECTOR_FP32:
       return fill_doc_vector<float>((arrow::BinaryArray *)chunk.get(),

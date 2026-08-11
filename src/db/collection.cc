@@ -2174,7 +2174,8 @@ Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
     const auto &requested = *output_fields;
     std::unordered_set<std::string> seen;
     for (const auto &name : requested) {
-      if (schema_->get_forward_field(name) == nullptr) {
+      const auto *field = schema_->get_forward_field(name);
+      if (field == nullptr) {
         return tl::make_unexpected(Status::InvalidArgument(
             "output_fields contains unknown or non-scalar field: ", name));
       }
@@ -2182,11 +2183,7 @@ Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
         return tl::make_unexpected(Status::InvalidArgument(
             "output_fields contains duplicate field: ", name));
       }
-    }
-    for (const auto &field : schema_->forward_fields()) {
-      if (seen.count(field->name())) {
-        columns.push_back(field->name());
-      }
+      columns.push_back(field->name());
     }
   }
 
