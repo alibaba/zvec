@@ -38,7 +38,6 @@ from zvec import (
         (IndexType.HNSW, "HNSW"),
         (IOBackendType.PREAD, "PREAD"),
         (IOBackendType.IO_URING, "IO_URING"),
-        (IOBackendType.KQUEUE, "KQUEUE"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
         (StatusCode.OK, "OK"),
@@ -55,7 +54,6 @@ def test_enum_names(member, name):
         (IndexType.HNSW, 1),
         (IOBackendType.PREAD, 0),
         (IOBackendType.IO_URING, 2),
-        (IOBackendType.KQUEUE, 3),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
         (StatusCode.OK, 0),
@@ -120,7 +118,7 @@ def test_index_type_has_member(member):
     assert member in IndexType.__members__
 
 
-@pytest.mark.parametrize("member", ["PREAD", "LIBAIO", "IO_URING", "KQUEUE"])
+@pytest.mark.parametrize("member", ["PREAD", "LIBAIO", "IO_URING"])
 def test_io_backend_type_has_member(member):
     assert member in IOBackendType.__members__
 
@@ -130,8 +128,8 @@ def test_current_io_backend_type():
     assert isinstance(backend, IOBackendType)
     assert zvec.io_backend_description()
     if platform.system() == "Darwin":
-        assert backend == IOBackendType.KQUEUE
-        assert "kqueue" in zvec.io_backend_description().lower()
+        assert backend == IOBackendType.PREAD
+        assert "pread" in zvec.io_backend_description().lower()
 
 
 @pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "RABITQ", "UNDEFINED"])

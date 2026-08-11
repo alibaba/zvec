@@ -229,7 +229,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       "Returns the current I/O backend type for DiskAnn async disk reads "
       "as an IOBackendType enum (zvec.typing.IOBackendType). "
       "IOBackendType.IO_URING or IOBackendType.LIBAIO on Linux, "
-      "IOBackendType.KQUEUE on macOS, and IOBackendType.PREAD otherwise.");
+      "and IOBackendType.PREAD on macOS and other platforms.");
 
   // Returns a human-readable description of the I/O backend, including
   // installation guidance for libaio when only pread is available.

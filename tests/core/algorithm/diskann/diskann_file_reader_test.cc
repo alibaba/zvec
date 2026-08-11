@@ -168,7 +168,7 @@ TEST(DiskAnnFileReaderTest, ReadBeforeOpenReturnsError) {
 }
 
 #if defined(__APPLE__) || defined(__MACH__)
-TEST(DiskAnnFileReaderTest, InvalidKqueueContextFallsBackToPread) {
+TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
   TemporaryFile file;
   ASSERT_GE(file.fd(), 0);
 
@@ -182,8 +182,16 @@ TEST(DiskAnnFileReaderTest, InvalidKqueueContextFallsBackToPread) {
 
   LinuxAlignedFileReader reader;
   reader.open(file.path());
-  IOContext ctx = -1;
-  ASSERT_EQ(reader.read(requests, ctx, false), 0);
+  IOContext ctx = 0;
+  PendingBatch batch;
+  ASSERT_EQ(reader.submit(batch, requests, ctx), 0);
+  EXPECT_TRUE(batch.used_pread);
+  EXPECT_EQ(batch.n_submitted, 1U);
+
+  std::vector<uint32_t> completed;
+  EXPECT_EQ(reader.get_completed(batch, ctx, 1, completed), 1);
+  ASSERT_EQ(completed.size(), 1U);
+  EXPECT_EQ(completed[0], 0U);
   EXPECT_EQ(std::memcmp(output.get(), source.data(), source.size()), 0);
   reader.close();
 }

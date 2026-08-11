@@ -56,7 +56,7 @@ def io_backend_type() -> IOBackendType:
     as an IOBackendType enum (zvec.typing.IOBackendType).
     IOBackendType.IO_URING if io_uring is available,
     IOBackendType.LIBAIO if libaio is available,
-    IOBackendType.KQUEUE on macOS, and IOBackendType.PREAD otherwise."""
+    and IOBackendType.PREAD on macOS and other platforms."""
 
 def io_backend_description() -> str:
     """Returns a human-readable description of the current I/O backend.

@@ -25,7 +25,9 @@ def _ensure_diskann_runtime_or_reason() -> str | None:
     _DISKANN_PRELOAD_DONE = True
 
     if not DISKANN_SUPPORTED:
-        _DISKANN_PRELOAD_REASON = "DiskAnn is supported on Linux (x86_64/ARM64 with libaio) and macOS (kqueue)"
+        _DISKANN_PRELOAD_REASON = (
+            "DiskAnn is supported on Linux (x86_64/ARM64) and macOS ARM64"
+        )
         return _DISKANN_PRELOAD_REASON
     _DISKANN_PRELOAD_REASON = None
     return None

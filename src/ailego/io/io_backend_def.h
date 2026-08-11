@@ -45,8 +45,6 @@ inline const char *IOBackendTypeName(IOBackendType type) {
       return "io_uring";
     case IOBackendType::kLibAio:
       return "libaio";
-    case IOBackendType::kKqueue:
-      return "kqueue";
     case IOBackendType::kPread:
       return "pread";
   }
@@ -62,14 +60,15 @@ inline const char *IOBackendDescription(IOBackendType type) {
              "dependency).";
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
-    case IOBackendType::kKqueue:
-      return "kqueue readiness notification with pread() data transfer on "
-             "macOS.";
     case IOBackendType::kPread:
+#if defined(__linux) || defined(__linux__)
       return "No async I/O backend available. Install libaio (e.g. "
              "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
              "and retry. DiskAnn will fall back to synchronous pread(); "
              "performance will be degraded.";
+#else
+      return "Synchronous pread() I/O backend.";
+#endif
   }
   return "Unknown I/O backend.";
 }
@@ -87,7 +86,7 @@ class IOBackend {
   }
 
   // Returns the active backend, probing on the first call. Linux prefers
-  // io_uring, then libaio, then pread; macOS uses kqueue.
+  // io_uring, then libaio, then pread; other platforms use pread.
   IOBackendType available() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (probed_) {
@@ -102,8 +101,6 @@ class IOBackend {
     } else {
       type_ = IOBackendType::kPread;
     }
-#elif defined(__APPLE__) || defined(__MACH__)
-    type_ = IOBackendType::kKqueue;
 #else
     type_ = IOBackendType::kPread;
 #endif
@@ -121,10 +118,6 @@ class IOBackend {
 
   bool is_io_uring() {
     return available() == IOBackendType::kIoUring;
-  }
-
-  bool is_kqueue() {
-    return available() == IOBackendType::kKqueue;
   }
 
   // Returns the cached backend type without triggering the probe.

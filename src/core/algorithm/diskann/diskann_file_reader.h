@@ -22,14 +22,7 @@
 #include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #endif
 
-#if defined(__APPLE__) || defined(__MACH__)
-#include <sys/event.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#endif
-
 #include <unistd.h>
-#include <atomic>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -41,7 +34,6 @@ namespace zvec {
 namespace core {
 
 // On Linux, IOContext selects io_uring, libaio, or pread.
-// On macOS, IOContext is an int holding a kqueue file descriptor.
 // On other platforms, IOContext is a uint32_t placeholder.
 #if (defined(__linux) || defined(__linux__))
 
@@ -69,8 +61,6 @@ struct IoBackend {
 
 typedef IoBackend *IOContext;
 
-#elif defined(__APPLE__) || defined(__MACH__)
-typedef int IOContext;
 #else
 typedef uint32_t IOContext;
 #endif
@@ -79,7 +69,7 @@ int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
 
 // Log the current DiskAnn I/O backend status (async vs. synchronous pread).
-// Probes the backend on first call.  No-op on non-Linux platforms.
+// Probes the backend on first call. No-op outside Linux and macOS.
 void log_diskann_io_backend();
 
 struct AlignedRead {
@@ -138,10 +128,8 @@ class AlignedFileReader {
                             std::vector<uint32_t> &completed_indices) = 0;
 };
 
-// Reader implementation used on all supported platforms.
-// On Linux (x86_64 and ARM64) it uses libaio for asynchronous batch I/O.
-// On macOS (including ARM/Apple Silicon) it uses kqueue to monitor file
-// descriptor readiness and pread for actual data transfer.
+// Reader implementation used on all supported platforms. Linux selects
+// io_uring, libaio, or pread. macOS uses synchronous pread.
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
