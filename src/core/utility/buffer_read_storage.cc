@@ -23,7 +23,6 @@
 #include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/internal/platform.h>
-#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_format.h>
@@ -70,9 +69,6 @@ class BufferReadStorage : public IndexStorage {
    */
   class Segment : public IndexStorage::Segment {
    public:
-    //! Index Storage Pointer
-    typedef std::shared_ptr<Segment> Pointer;
-
     //! Constructor
     Segment(const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
             bool cache_enabled, size_t index_offset,
@@ -193,21 +189,8 @@ class BufferReadStorage : public IndexStorage {
         data.reset();
         return 0;
       }
-      size_t abs_offset = data_offset_ + offset;
-      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
-      bool force_bypass = !cache_enabled_;
-      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
-        // Tie the zero-copy page pin to the MemoryBlock lifetime.
-        size_t page_id = 0;
-        char *raw = handle_->get_single_page(abs_offset, len, page_id);
-        if (raw != nullptr) {
-          data.reset(handle_, page_id, raw);
-          return len;
-        }
-        force_bypass = true;
-      }
-      // Copy cross-page and bypass reads into owned memory.
-      return read_owned(abs_offset, data, len, force_bypass);
+      return read_memory_block(data_offset_ + offset, data, len,
+                               /*borrow_handle=*/false);
     }
 
     //! Borrowed read; the caller keeps this Segment alive until block release.
@@ -218,19 +201,8 @@ class BufferReadStorage : public IndexStorage {
         data.reset();
         return 0;
       }
-      const size_t abs_offset = data_offset_ + offset;
-      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
-      bool force_bypass = !cache_enabled_;
-      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
-        size_t page_id = 0;
-        char *raw = handle_->get_single_page(abs_offset, len, page_id);
-        if (raw != nullptr) {
-          data.reset(handle_.get(), page_id, raw);
-          return len;
-        }
-        force_bypass = true;
-      }
-      return read_owned(abs_offset, data, len, force_bypass);
+      return read_memory_block(data_offset_ + offset, data, len,
+                               /*borrow_handle=*/true);
     }
 
     //! Read scattered data (stable until this thread's next pointer read)
@@ -269,9 +241,7 @@ class BufferReadStorage : public IndexStorage {
       return IndexError_NotImplemented;
     }
 
-    void update_data_crc(uint32_t) override {
-      return;
-    }
+    void update_data_crc(uint32_t) override {}
 
     //! Clone the segment
     IndexStorage::Segment::Pointer clone(void) override {
@@ -301,28 +271,6 @@ class BufferReadStorage : public IndexStorage {
 
       ThreadScratch(const ThreadScratch &) = delete;
       ThreadScratch &operator=(const ThreadScratch &) = delete;
-
-      ThreadScratch(ThreadScratch &&rhs) noexcept
-          : owner(std::move(rhs.owner)),
-            buffer(std::move(rhs.buffer)),
-            handle(std::move(rhs.handle)),
-            pinned_page_id(rhs.pinned_page_id),
-            page_pinned(rhs.page_pinned) {
-        rhs.page_pinned = false;
-      }
-
-      ThreadScratch &operator=(ThreadScratch &&rhs) noexcept {
-        if (this != &rhs) {
-          release_pin();
-          owner = std::move(rhs.owner);
-          buffer = std::move(rhs.buffer);
-          handle = std::move(rhs.handle);
-          pinned_page_id = rhs.pinned_page_id;
-          page_pinned = rhs.page_pinned;
-          rhs.page_pinned = false;
-        }
-        return *this;
-      }
 
       ~ThreadScratch() {
         release_pin();
@@ -401,6 +349,27 @@ class BufferReadStorage : public IndexStorage {
                             : handle_->read_range_bypass(abs_offset, len, out);
     }
 
+    size_t read_memory_block(size_t abs_offset, MemoryBlock &data, size_t len,
+                             bool borrow_handle) const {
+      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+      bool force_bypass = !cache_enabled_;
+      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
+        size_t page_id = 0;
+        char *raw = handle_->get_single_page(abs_offset, len, page_id);
+        if (raw != nullptr) {
+          if (borrow_handle) {
+            data.reset(handle_.get(), page_id, raw);
+          } else {
+            data.reset(handle_, page_id, raw);
+          }
+          return len;
+        }
+        force_bypass = true;
+      }
+      // Copy cross-page and bypass reads into owned memory.
+      return read_owned(abs_offset, data, len, force_bypass);
+    }
+
     size_t read_owned(size_t abs_offset, MemoryBlock &data, size_t len,
                       bool force_bypass) const {
       static constexpr size_t kAlign = 4096UL;
@@ -456,7 +425,7 @@ class BufferReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~BufferReadStorage(void) override {}
+  ~BufferReadStorage(void) override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {
@@ -481,9 +450,7 @@ class BufferReadStorage : public IndexStorage {
     return IndexError_NotImplemented;
   }
 
-  void refresh(uint64_t) override {
-    return;
-  }
+  void refresh(uint64_t) override {}
 
   uint64_t check_point(void) const override {
     return 0;
@@ -497,7 +464,6 @@ class BufferReadStorage : public IndexStorage {
   //! Load an index file into the container
   int open(const std::string &path, bool) override {
     try {
-      std::string candidate_file_path(path);
       // Publish new state only after open succeeds.
       auto candidate_pool =
           std::make_shared<ailego::VecBufferPool>(path, /*writable=*/false);
@@ -594,7 +560,7 @@ class BufferReadStorage : public IndexStorage {
         candidate_pool->warmup();
       }
 
-      file_path_ = std::move(candidate_file_path);
+      file_path_ = path;
       index_offset_ = candidate_index_offset;
       magic_ = candidate_magic;
       segments_ = std::move(candidate_segments);
@@ -629,12 +595,12 @@ class BufferReadStorage : public IndexStorage {
 
   //! Retrieve a segment by id
   IndexStorage::Segment::Pointer get(const std::string &id, int) override {
-    if (!buffer_pool_ || !handle_) {
-      return IndexStorage::Segment::Pointer();
+    if (!handle_) {
+      return {};
     }
     auto it = segments_.find(id);
     if (it == segments_.end()) {
-      return IndexStorage::Segment::Pointer();
+      return {};
     }
     return std::make_shared<BufferReadStorage::Segment>(
         handle_, cache_enabled_, index_offset_, it->second);
@@ -643,7 +609,7 @@ class BufferReadStorage : public IndexStorage {
   std::map<std::string, IndexStorage::Segment::Pointer> get_all(
       void) const override {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
-    if (buffer_pool_ && handle_) {
+    if (handle_) {
       for (const auto &it : segments_) {
         result.emplace(it.first,
                        std::make_shared<BufferReadStorage::Segment>(
@@ -655,7 +621,7 @@ class BufferReadStorage : public IndexStorage {
 
   //! Test if a segment exists
   bool has(const std::string &id) const override {
-    return (segments_.find(id) != segments_.end());
+    return segments_.find(id) != segments_.end();
   }
 
   //! Retrieve magic number of index

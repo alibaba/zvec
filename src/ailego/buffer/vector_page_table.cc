@@ -24,7 +24,7 @@
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/logger/logger.h>
 
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
 #include <ailego/io/io_backend_def.h>
 #include <ailego/io/iouring_loader.h>
 #endif
@@ -77,6 +77,10 @@ namespace ailego {
 
 const size_t kVectorPageSize = MemoryHelper::PageSize();
 
+namespace {
+constexpr size_t kBlockingAioBatchSize = 128;
+}
+
 VecBufferPool::~VecBufferPool() {
   // Preserve per-file cache statistics before teardown.
   log_stats();
@@ -84,8 +88,8 @@ VecBufferPool::~VecBufferPool() {
   (void)this->flush_all();
   page_table_.force_evict_all_loaded();
   block_mutexes_.reset();
-  MemoryLimitPool::get_instance().release_metadata(mutex_metadata_charge_);
-  mutex_metadata_charge_ = 0;
+  MemoryLimitPool::get_instance().release_metadata(
+      block_mutex_metadata_bytes());
   block_mutex_count_ = 0;
   initialized_ = false;
 #if defined(_MSC_VER)
@@ -248,7 +252,6 @@ bool VectorPageTable::init(size_t entry_num) {
   }
   segments_ = std::move(new_segment_directory);
   resident_segments_ = std::move(new_resident_segment_directory);
-  metadata_charge_ = charge;
   // Publish segments before the externally visible entry count.
   segment_count_.store(need_segments, std::memory_order_release);
   entry_num_.store(entry_num, std::memory_order_release);
@@ -334,7 +337,6 @@ bool VectorPageTable::extend(size_t new_entry_num) {
     segments_ = std::move(new_segment_directory);
     resident_segments_ = std::move(new_resident_segment_directory);
   }
-  metadata_charge_ += added_charge;
   // Match init() publication order: segments first, entry count last.
   segment_count_.store(new_segment_count, std::memory_order_release);
   entry_num_.store(new_entry_num, std::memory_order_release);
@@ -382,7 +384,6 @@ bool VectorPageTable::rollback_extend(size_t old_entry_num) {
     resident_segments_.reset();
     released_charge += kSegmentDirectoryBytes;
   }
-  metadata_charge_ -= released_charge;
   MemoryLimitPool::get_instance().release_metadata(released_charge);
   return true;
 }
@@ -912,7 +913,7 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   }
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
   // Select the process-wide backend; thread-local contexts are created lazily.
   io_backend_type_ = direct_io_enabled_ ? IOBackend::Instance().available()
                                         : IOBackendType::kPread;
@@ -1011,7 +1012,6 @@ int VecBufferPool::init() {
   }
   block_mutexes_ = std::move(mutexes);
   block_mutex_count_ = mutex_count;
-  mutex_metadata_charge_ = mutex_charge;
   LOG_DEBUG("entry num: %zu, file_size: %zu", page_table_.entry_num(),
             file_size_);
 
@@ -1118,8 +1118,7 @@ bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
   if (!page_ids || !pages) return false;
 
   std::fill_n(pages, count, nullptr);
-  static constexpr size_t kBatchPages = 128;
-  std::array<block_id_t, kBatchPages> miss_batch{};
+  std::array<block_id_t, kBlockingAioBatchSize> miss_batch{};
   size_t miss_count = 0;
 
   // Pin hits before I/O so eviction cannot reclaim them before delivery.
@@ -1796,7 +1795,7 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
     return;
   }
 
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
   if (aio_enabled_) {
     prefetch_pages_aio(first_page, page_count, priority);
     return;
@@ -1885,19 +1884,19 @@ void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len,
                        last_page - first_page + 1, priority);
 }
 
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
 namespace {
 template <unsigned QueueDepth>
 struct ThreadLocalIoUringContext {
   IoUringRing ring{};
   bool inited{false};
-  bool ok{false};
 
   bool ensure() {
-    if (inited) return ok && ring.is_valid();
-    inited = true;
-    ok = ring.setup(QueueDepth);
-    return ok;
+    if (!inited) {
+      inited = true;
+      ring.setup(QueueDepth);
+    }
+    return ring.is_valid();
   }
 };
 
@@ -1905,24 +1904,22 @@ template <unsigned QueueDepth>
 struct ThreadLocalAioContext {
   io_context_t ctx{nullptr};
   bool inited{false};
-  bool ok{false};
 
   bool ensure() {
-    if (inited) return ok;
+    if (inited) return ctx != nullptr;
     inited = true;
     if (!LibAioLoader::Instance().load() ||
         !LibAioLoader::Instance().is_available()) {
       return false;
     }
-    ctx = nullptr;
     if (LibAioLoader::Instance().io_setup(QueueDepth, &ctx) == 0) {
-      ok = true;
+      return true;
     }
-    return ok;
+    ctx = nullptr;
+    return false;
   }
 
   bool destroy_context(const char *context_name) {
-    ok = false;
     if (!ctx) return true;
     const int ret = LibAioLoader::Instance().io_destroy(ctx);
     if (ret != 0) {
@@ -1938,14 +1935,15 @@ struct ThreadLocalAioContext {
 };
 
 // One blocking AIO context per calling thread, shared by reads and prefetches.
-struct ThreadLocalBlockingAioCtx : ThreadLocalAioContext<128> {
-  char *quarantined[128]{};
+struct ThreadLocalBlockingAioCtx
+    : ThreadLocalAioContext<kBlockingAioBatchSize> {
+  char *quarantined[kBlockingAioBatchSize]{};
   size_t quarantined_count{0};
 
   void quarantine(char **buffers, size_t count) {
     for (size_t i = 0; i < count; ++i) {
       if (buffers[i]) {
-        assert(quarantined_count < 128);
+        assert(quarantined_count < kBlockingAioBatchSize);
         quarantined[quarantined_count++] = buffers[i];
         buffers[i] = nullptr;
       }
@@ -1966,25 +1964,24 @@ struct ThreadLocalBlockingAioCtx : ThreadLocalAioContext<128> {
     }
   }
 };
-static thread_local ThreadLocalIoUringContext<128> tl_blocking_io_uring;
+static thread_local ThreadLocalIoUringContext<kBlockingAioBatchSize>
+    tl_blocking_io_uring;
 static thread_local ThreadLocalBlockingAioCtx tl_blocking_aio;
 }  // namespace
 #endif
 
-void VecBufferPool::prefetch_pages_aio([[maybe_unused]] block_id_t first_page,
-                                       [[maybe_unused]] size_t page_count,
-                                       [[maybe_unused]] uint8_t priority) {
+void VecBufferPool::prefetch_pages_aio(block_id_t first_page, size_t page_count,
+                                       uint8_t priority) {
   const size_t total_pages = page_table_.entry_num();
   if (priority > kHighPriority || page_count == 0 ||
       first_page >= total_pages) {
     return;
   }
   page_count = std::min(page_count, total_pages - first_page);
-  static constexpr size_t kMaxBatch = 128;
-  std::array<block_id_t, kMaxBatch> pages{};
+  std::array<block_id_t, kBlockingAioBatchSize> pages{};
   size_t offset = 0;
   while (offset < page_count) {
-    const size_t batch = std::min(kMaxBatch, page_count - offset);
+    const size_t batch = std::min(kBlockingAioBatchSize, page_count - offset);
     for (size_t i = 0; i < batch; ++i) {
       pages[i] = first_page + offset + i;
     }
@@ -2001,8 +1998,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
   if (count == 0) return true;
   if (page_ids == nullptr || priority > kHighPriority) return false;
 
-#if defined(__linux) || defined(__linux__)
-  static constexpr size_t kMaxBatch = 128;
+#if defined(__linux__)
   if (!aio_enabled_) return false;
   bool use_io_uring = io_backend_type_ == IOBackendType::kIoUring &&
                       tl_blocking_io_uring.ensure();
@@ -2010,9 +2006,9 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
 
   size_t cursor = 0;
   while (cursor < count) {
-    std::array<block_id_t, kMaxBatch> candidate_pages{};
+    std::array<block_id_t, kBlockingAioBatchSize> candidate_pages{};
     size_t candidate_count = 0;
-    while (cursor < count && candidate_count < kMaxBatch) {
+    while (cursor < count && candidate_count < kBlockingAioBatchSize) {
       const block_id_t pid = page_ids[cursor++];
       if (pid >= page_table_.entry_num()) return false;
       bool duplicate = false;
@@ -2025,7 +2021,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       if (!duplicate) candidate_pages[candidate_count++] = pid;
     }
 
-    std::array<block_id_t, kMaxBatch> load_pages{};
+    std::array<block_id_t, kBlockingAioBatchSize> load_pages{};
     size_t load_count = 0;
     for (size_t i = 0; i < candidate_count; ++i) {
       const block_id_t pid = candidate_pages[i];
@@ -2048,7 +2044,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     }
     if (load_count == 0) continue;
 
-    std::array<char *, kMaxBatch> buffers{};
+    std::array<char *, kBlockingAioBatchSize> buffers{};
     size_t allocated = MemoryLimitPool::get_instance().batch_acquire_buffers(
         kVectorPageSize, buffers.data(), load_count);
 
@@ -2097,9 +2093,9 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       }
     };
 
-    std::array<bool, kMaxBatch> read_ok{};
+    std::array<bool, kBlockingAioBatchSize> read_ok{};
     if (use_io_uring) {
-      std::array<IoUringRead, kMaxBatch> requests{};
+      std::array<IoUringRead, kBlockingAioBatchSize> requests{};
       for (size_t i = 0; i < allocated; ++i) {
         const size_t offset = load_pages[i] * kVectorPageSize;
         const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
@@ -2121,8 +2117,8 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     }
 
     if (!use_io_uring) {
-      std::array<struct iocb, kMaxBatch> cbs{};
-      std::array<struct iocb *, kMaxBatch> cb_ptrs{};
+      std::array<struct iocb, kBlockingAioBatchSize> cbs{};
+      std::array<struct iocb *, kBlockingAioBatchSize> cb_ptrs{};
       for (size_t i = 0; i < allocated; ++i) {
         const size_t offset = load_pages[i] * kVectorPageSize;
         io_prep_pread(&cbs[i], fd_, buffers[i], kVectorPageSize,
@@ -2153,7 +2149,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
         }
       }
 
-      std::array<struct io_event, kMaxBatch> events{};
+      std::array<struct io_event, kBlockingAioBatchSize> events{};
       size_t completed = 0;
       bool wait_failed = false;
       while (completed < accepted) {
@@ -2182,7 +2178,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
         return false;
       }
 
-      std::array<bool, kMaxBatch> seen{};
+      std::array<bool, kBlockingAioBatchSize> seen{};
       for (size_t i = 0; i < completed; ++i) {
         const size_t idx = reinterpret_cast<size_t>(events[i].data);
         if (idx >= accepted || seen[idx] || buffers[idx] == nullptr) {

@@ -1322,6 +1322,42 @@ TEST_F(BufferStorageWriteTest, CR_BorrowedReadAvoidsOwningHandle) {
   ASSERT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, BorrowedReadUsesOneColdPageLoadSequence) {
+  const std::string expected = "borrowed pressure fallback";
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("seg1", 4096));
+    auto segment = storage->get("seg1");
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(expected.size(),
+              segment->write(0, expected.data(), expected.size()));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto segment = storage->get("seg1");
+  ASSERT_TRUE(segment);
+
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  const size_t external_charge = pool.available();
+  ASSERT_GT(external_charge, 0u);
+  ASSERT_TRUE(pool.try_charge_external(external_charge));
+  const uint64_t high_watermark_hits_before = pool.stats().high_watermark_hits;
+
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(expected.size(), segment->read_borrowed(0, block, expected.size()));
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
+  EXPECT_EQ(0, std::memcmp(expected.data(), block.data(), expected.size()));
+  // get_single_page() performs one initial attempt plus at most 50 retries.
+  EXPECT_LE(pool.stats().high_watermark_hits - high_watermark_hits_before, 51u);
+
+  pool.release_external(external_charge);
+  ASSERT_EQ(0, storage->close());
+}
+
 TEST_F(BufferStorageWriteTest, ReadOnlyPrefetchPreservesCachePriority) {
   const size_t page_size = ailego::kVectorPageSize;
   {

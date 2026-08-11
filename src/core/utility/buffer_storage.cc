@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <sys/stat.h>
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
 #include <cstring>
-#include <functional>
 #include <limits>
 #include <mutex>
 #include <shared_mutex>
@@ -25,7 +23,6 @@
 #include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
-#include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_mapping.h>
@@ -35,6 +32,16 @@
 namespace zvec {
 namespace core {
 namespace {
+
+constexpr size_t kBufferAlignment = 4096UL;
+
+inline bool AlignBufferSize(size_t size, size_t *aligned_size) {
+  if (size > std::numeric_limits<size_t>::max() - (kBufferAlignment - 1)) {
+    return false;
+  }
+  *aligned_size = (size + (kBufferAlignment - 1)) & ~(kBufferAlignment - 1);
+  return true;
+}
 
 // C++17-compatible atomic access to serialized uint64_t fields.
 inline uint64_t bs_load_acquire(const uint64_t *p) {
@@ -86,19 +93,16 @@ class BufferStorage : public IndexStorage {
   class WrappedSegment : public IndexStorage::Segment,
                          public std::enable_shared_from_this<Segment> {
    public:
-    //! Index Storage Pointer
-    typedef std::shared_ptr<Segment> Pointer;
-
     //! Constructor.  See segment_info_ for the pointer-stability contract.
     WrappedSegment(BufferStorage *owner, IndexMapping::SegmentInfo *info,
-                   size_t segment_id)
+                   const std::string *segment_id)
         : segment_info_(info),
           owner_(owner),
           segment_id_(segment_id),
           capacity_(static_cast<size_t>(info->segment.meta()->data_size +
                                         info->segment.meta()->padding_size)) {}
     //! Destructor
-    ~WrappedSegment(void) override {}
+    ~WrappedSegment(void) override = default;
 
     //! Retrieve size of data. Paired acquire/release operations publish
     //! concurrent write/resize metadata changes to lock-free readers.
@@ -132,29 +136,20 @@ class BufferStorage : public IndexStorage {
     //! Fetch data from segment (with own buffer)
     size_t fetch(size_t offset, void *buf, size_t len) const override {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
-        LOG_ERROR("WrappedSegment::fetch: handle is null, file[%s], id[%zu]",
-                  owner_->file_name_.c_str(), segment_id_);
+        LOG_ERROR("WrappedSegment::fetch: handle is null, file[%s], id[%s]",
+                  owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
-      }
+      len = clamp_length(&offset, len);
       if (len == 0) {
         return 0;
       }
-      size_t abs_offset = segment_info_->segment_header_start_offset +
-                          segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
+      const size_t abs_offset = absolute_offset(offset);
       if (!owner_->read_range(abs_offset, len, static_cast<char *>(buf))) {
         LOG_ERROR(
-            "WrappedSegment::fetch: read_range failed, file[%s], id[%zu], "
+            "WrappedSegment::fetch: read_range failed, file[%s], id[%s], "
             "abs_offset=%zu, len=%zu",
-            owner_->file_name_.c_str(), segment_id_, abs_offset, len);
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
         return 0;
       }
       return len;
@@ -163,55 +158,24 @@ class BufferStorage : public IndexStorage {
     //! Read data from segment
     size_t read(size_t offset, const void **data, size_t len) override {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
-        LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%zu]",
-                  owner_->file_name_.c_str(), segment_id_);
+        LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%s]",
+                  owner_->file_name_.c_str(), segment_id_->c_str());
         *data = nullptr;
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
-      }
+      len = clamp_length(&offset, len);
       if (len == 0) {
         *data = nullptr;
         return 0;
       }
-      size_t abs_offset = segment_info_->segment_header_start_offset +
-                          segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
+      const size_t abs_offset = absolute_offset(offset);
       // Without a page cache, retain a copied result for the legacy pointer
       // lifetime. Cached single-page reads below pin the page until close(),
       // including for writable pools, instead of retaining one copy per read.
-      if (!owner_->cache_enabled_) {
-        static constexpr size_t kAlign = 4096UL;
-        if (ailego_unlikely(len > std::numeric_limits<size_t>::max() -
-                                      (kAlign - 1))) {
-          *data = nullptr;
-          return 0;
-        }
-        const size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-        char *tmp = nullptr;
-        {
-          std::lock_guard<std::mutex> tmp_latch(owner_->tmp_buffers_mutex_);
-          tmp = owner_->tmp_arena_alloc_locked(alloc_size);
-        }
-        if (tmp == nullptr || !owner_->read_range(abs_offset, len, tmp)) {
-          *data = nullptr;
-          return 0;
-        }
-        *data = tmp;
-        return len;
-      }
       size_t first_page = abs_offset / ailego::kVectorPageSize;
-      size_t last_page = (len == 0)
-                             ? first_page
-                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
-      bool force_bypass = false;
-      if (first_page == last_page) {
+      size_t last_page = (abs_offset + len - 1) / ailego::kVectorPageSize;
+      bool force_bypass = !owner_->cache_enabled_;
+      if (owner_->cache_enabled_ && first_page == last_page) {
         size_t page_id = 0;
         char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
                                                                  len, page_id);
@@ -228,8 +192,11 @@ class BufferStorage : public IndexStorage {
       }
       // Keep scratch buffers 4K-aligned without over-allocating on platforms
       // whose native page size is larger.
-      static constexpr size_t kAlign = 4096UL;
-      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
+      size_t alloc_size = 0;
+      if (ailego_unlikely(!AlignBufferSize(len, &alloc_size))) {
+        *data = nullptr;
+        return 0;
+      }
       // The arena amortizes aligned allocation and avoids fragmented-heap
       // failures observed with many small aligned allocations on Android.
       char *tmp = nullptr;
@@ -240,9 +207,9 @@ class BufferStorage : public IndexStorage {
       if (!tmp) {
         LOG_ERROR(
             "WrappedSegment::read: cross-page alloc failed, file[%s], "
-            "id[%zu], abs_offset=%zu, len=%zu, alloc_size=%zu, align=%zu",
-            owner_->file_name_.c_str(), segment_id_, abs_offset, len,
-            alloc_size, kAlign);
+            "id[%s], abs_offset=%zu, len=%zu, alloc_size=%zu, align=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len,
+            alloc_size, kBufferAlignment);
         *data = nullptr;
         return 0;
       }
@@ -253,8 +220,8 @@ class BufferStorage : public IndexStorage {
       if (!read_ok) {
         LOG_ERROR(
             "WrappedSegment::read: cross-page read_range failed, file[%s], "
-            "id[%zu], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
-            owner_->file_name_.c_str(), segment_id_, abs_offset, len,
+            "id[%s], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len,
             first_page, last_page);
         // Avoid holding the arena lock across I/O; a failed read loses one
         // temporary slot.
@@ -270,79 +237,17 @@ class BufferStorage : public IndexStorage {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR(
             "WrappedSegment::read(MemoryBlock&): handle is null, file[%s], "
-            "id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
-      }
+      len = clamp_length(&offset, len);
       if (len == 0) {
         data.reset();
         return 0;
       }
-      size_t abs_offset = segment_info_->segment_header_start_offset +
-                          segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
-      if (!owner_->cache_enabled_ || owner_->buffer_pool_->writable()) {
-        static constexpr size_t kAlign = 4096UL;
-        if (ailego_unlikely(len > std::numeric_limits<size_t>::max() -
-                                      (kAlign - 1))) {
-          return 0;
-        }
-        const size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-        char *tmp =
-            static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
-        if (tmp == nullptr) {
-          return 0;
-        }
-        if (!owner_->read_range(abs_offset, len, tmp)) {
-          ailego_free(tmp);
-          return 0;
-        }
-        data = MemoryBlock::MakeOwned(tmp, len);
-        return len;
-      }
-      size_t first_page = abs_offset / ailego::kVectorPageSize;
-      size_t last_page = (len == 0)
-                             ? first_page
-                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
-      bool force_bypass = false;
-      if (first_page == last_page) {
-        size_t page_id = 0;
-        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
-                                                                 len, page_id);
-        if (raw != nullptr) {
-          data.reset(owner_->buffer_pool_handle_, page_id, raw);
-          return len;
-        }
-        force_bypass = true;
-      }
-      // aligned_alloc requires a size that is a multiple of the alignment.
-      static constexpr size_t kAlign = 4096UL;
-      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      char *tmp =
-          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
-      if (!tmp) {
-        LOG_ERROR("read error (alloc cross-page temp buffer failed).");
-        return 0;
-      }
-      const bool read_ok = force_bypass
-                               ? owner_->buffer_pool_handle_->read_range_bypass(
-                                     abs_offset, len, tmp)
-                               : owner_->read_range(abs_offset, len, tmp);
-      if (!read_ok) {
-        ailego_free(tmp);
-        LOG_ERROR("read error (cross-page read_range failed).");
-        return 0;
-      }
-      data = MemoryBlock::MakeOwned(tmp, len);
-      return len;
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/false);
     }
 
     //! Borrowed read: the caller keeps the Segment alive until block release.
@@ -351,40 +256,17 @@ class BufferStorage : public IndexStorage {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR(
             "WrappedSegment::read_borrowed: handle is null, file[%s], "
-            "id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
-      }
+      len = clamp_length(&offset, len);
       if (len == 0) {
         data.reset();
         return 0;
       }
-
-      const size_t abs_offset = segment_info_->segment_header_start_offset +
-                                segment_info_->segment_header->content_offset +
-                                segment_info_->segment.meta()->data_index +
-                                offset;
-      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
-      if (owner_->cache_enabled_ && !owner_->buffer_pool_->writable() &&
-          len <= ailego::kVectorPageSize - offset_in_page) {
-        size_t page_id = 0;
-        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
-                                                                 len, page_id);
-        if (raw != nullptr) {
-          data.reset(owner_->buffer_pool_handle_.get(), page_id, raw);
-          return len;
-        }
-      }
-
-      return read(offset, data, len);
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/true);
     }
 
     bool prefer_borrowed_batch() const override {
@@ -458,8 +340,7 @@ class BufferStorage : public IndexStorage {
           return IndexStorage::Segment::read_borrowed_batch(reads, count);
         }
 
-        const size_t data_size =
-            bs_load_acquire(&segment->segment_info_->segment.meta()->data_size);
+        const size_t data_size = segment->data_size();
         if (request.offset > data_size ||
             request.length > data_size - request.offset) {
           return fail();
@@ -472,10 +353,7 @@ class BufferStorage : public IndexStorage {
           continue;
         }
 
-        const size_t data_offset =
-            segment->segment_info_->segment_header_start_offset +
-            segment->segment_info_->segment_header->content_offset +
-            segment->segment_info_->segment.meta()->data_index;
+        const size_t data_offset = segment->data_offset();
         if (data_offset > std::numeric_limits<size_t>::max() - request.offset) {
           return fail();
         }
@@ -502,19 +380,17 @@ class BufferStorage : public IndexStorage {
 
       // Cross-page values need an owned contiguous result, but their source
       // pages still participate in the same batched AIO submission.
-      static constexpr size_t kAlignment = 4096UL;
       for (BatchState &state : scratch.states) {
         if (state.page_count <= 1) {
           continue;
         }
         const size_t length = state.request->length;
-        if (length > std::numeric_limits<size_t>::max() - (kAlignment - 1)) {
+        size_t alloc_size = 0;
+        if (!AlignBufferSize(length, &alloc_size)) {
           return fail();
         }
-        const size_t alloc_size =
-            (length + (kAlignment - 1)) & ~(kAlignment - 1);
-        state.owned =
-            static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlignment));
+        state.owned = static_cast<char *>(
+            ailego_aligned_malloc(alloc_size, kBufferAlignment));
         if (state.owned == nullptr) {
           return fail();
         }
@@ -572,15 +448,15 @@ class BufferStorage : public IndexStorage {
           owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_ ||
                           !owner_->buffer_pool_)) {
-        LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%zu]",
-                  owner_->file_name_.c_str(), segment_id_);
+        LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%s]",
+                  owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
       if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::write: storage is marked corrupted, refusing "
-            "write, file[%s], id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "write, file[%s], id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
       // In read-only mode the write is a silent no-op so that callers that
@@ -627,8 +503,8 @@ class BufferStorage : public IndexStorage {
       if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::resize: storage is marked corrupted, refusing "
-            "resize, file[%s], id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "resize, file[%s], id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
       auto meta = segment_info_->segment.meta();
@@ -659,8 +535,8 @@ class BufferStorage : public IndexStorage {
       if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::update_data_crc: storage is marked corrupted, "
-            "refusing CRC update, file[%s], id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "refusing CRC update, file[%s], id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return;
       }
       {
@@ -695,16 +571,79 @@ class BufferStorage : public IndexStorage {
           abs_offset, len, static_cast<uint8_t>(priority));
     }
 
-   protected:
-    friend BufferStorage;
+   private:
     // Stable unordered_map value address; reparses update this object in place.
     IndexMapping::SegmentInfo *segment_info_{nullptr};
     // Serializes metadata writers within this segment.
     mutable std::mutex meta_mtx_{};
 
-   private:
+    size_t clamp_length(size_t *offset, size_t len) const {
+      const size_t current_size = data_size();
+      if (ailego_unlikely(*offset > current_size)) {
+        *offset = current_size;
+        return 0;
+      }
+      return std::min(len, current_size - *offset);
+    }
+
+    size_t absolute_offset(size_t offset) const {
+      return data_offset() + offset;
+    }
+
+    size_t read_memory_block(size_t abs_offset, MemoryBlock &data, size_t len,
+                             bool borrow_handle) const {
+      const bool can_pin =
+          owner_->cache_enabled_ && !owner_->buffer_pool_->writable();
+      bool force_bypass = !owner_->cache_enabled_;
+      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+      if (can_pin && len <= ailego::kVectorPageSize - offset_in_page) {
+        size_t page_id = 0;
+        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
+                                                                 len, page_id);
+        if (raw != nullptr) {
+          if (borrow_handle) {
+            data.reset(owner_->buffer_pool_handle_.get(), page_id, raw);
+          } else {
+            data.reset(owner_->buffer_pool_handle_, page_id, raw);
+          }
+          return len;
+        }
+        force_bypass = true;
+      }
+
+      size_t alloc_size = 0;
+      if (ailego_unlikely(!AlignBufferSize(len, &alloc_size))) {
+        return 0;
+      }
+      char *tmp = static_cast<char *>(
+          ailego_aligned_malloc(alloc_size, kBufferAlignment));
+      if (tmp == nullptr) {
+        LOG_ERROR(
+            "WrappedSegment::read: owned buffer allocation failed, file[%s], "
+            "id[%s], abs_offset=%zu, len=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
+        return 0;
+      }
+      const bool read_ok = force_bypass
+                               ? owner_->buffer_pool_handle_->read_range_bypass(
+                                     abs_offset, len, tmp)
+                               : owner_->read_range(abs_offset, len, tmp);
+      if (!read_ok) {
+        ailego_free(tmp);
+        LOG_ERROR(
+            "WrappedSegment::read: owned read failed, file[%s], id[%s], "
+            "abs_offset=%zu, len=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
+        return 0;
+      }
+      data = MemoryBlock::MakeOwned(tmp, len);
+      return len;
+    }
+
     BufferStorage *owner_{nullptr};
-    size_t segment_id_{};
+    // Stable alongside segment_info_; unordered_map rehash preserves element
+    // references and pointers.
+    const std::string *segment_id_{nullptr};
     size_t capacity_{};
   };
 
@@ -787,23 +726,20 @@ class BufferStorage : public IndexStorage {
           "available=%zu metadata=%zu page_size=%zu",
           path.c_str(), available, metadata_bytes, ailego::kVectorPageSize);
     }
-    LOG_INFO(
-        "BufferStorage opened: file=%s, writable=%d, max_segment_size=%" PRIu64
-        ", segment_count=%zu",
-        file_name_.c_str(), static_cast<int>(create_if_missing),
-        max_segment_size_, segments_.size());
+    LOG_INFO("BufferStorage opened: file=%s, writable=%d, segment_count=%zu",
+             file_name_.c_str(), static_cast<int>(create_if_missing),
+             segments_.size());
     return 0;
   }
 
   // Called from single-threaded open or under AllShardsExclusiveLatch.
   int ParseHeader(size_t offset, IndexFormat::MetaHeader *out) {
     constexpr size_t kHeaderSize = sizeof(IndexFormat::MetaHeader);
-    std::unique_ptr<char[]> buffer(new char[kHeaderSize]);
-    if (buffer_pool_handle_->get_meta(offset, kHeaderSize, buffer.get()) != 0) {
+    if (buffer_pool_handle_->get_meta(offset, kHeaderSize,
+                                      reinterpret_cast<char *>(out)) != 0) {
       LOG_ERROR("Get segment header failed.");
       return IndexError_Runtime;
     }
-    memcpy(out, buffer.get(), kHeaderSize);
     if (out->meta_header_size != kHeaderSize) {
       LOG_ERROR("Header meta size is invalid.");
       return IndexError_InvalidLength;
@@ -816,67 +752,69 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseFooter(size_t offset) {
-    std::unique_ptr<char[]> buffer(new char[sizeof(footer_)]);
-    if (buffer_pool_handle_->get_meta(offset, sizeof(footer_), buffer.get()) !=
-        0) {
+  int ParseFooter(size_t offset, IndexFormat::MetaFooter *footer) {
+    if (buffer_pool_handle_->get_meta(offset, sizeof(*footer),
+                                      reinterpret_cast<char *>(footer)) != 0) {
       LOG_ERROR("Get segment footer failed.");
       return IndexError_Runtime;
     }
-    uint8_t *footer_ptr = reinterpret_cast<uint8_t *>(buffer.get());
-    memcpy(&footer_, footer_ptr, sizeof(footer_));
-    if (offset < (size_t)footer_.segments_meta_size) {
+    if (offset < static_cast<size_t>(footer->segments_meta_size)) {
       LOG_ERROR("Footer meta size is invalid.");
       return IndexError_InvalidLength;
     }
-    if (ailego::Crc32c::Hash(&footer_, sizeof(footer_), footer_.footer_crc) !=
-        footer_.footer_crc) {
+    if (ailego::Crc32c::Hash(footer, sizeof(*footer), footer->footer_crc) !=
+        footer->footer_crc) {
       LOG_ERROR("Footer meta checksum is invalid.");
       return IndexError_InvalidChecksum;
     }
     return 0;
   }
 
-  int ParseSegment(size_t offset, IndexFormat::MetaHeader *chain_header,
-                   uint32_t *out_segment_ids_offset) {
-    std::unique_ptr<char[]> segment_buffer =
-        std::make_unique<char[]>(footer_.segments_meta_size);
-    if (buffer_pool_handle_->get_meta(offset, footer_.segments_meta_size,
+  int ParseSegment(size_t offset, uint64_t header_start_offset,
+                   IndexFormat::MetaHeader *chain_header,
+                   const IndexFormat::MetaFooter &footer,
+                   uint32_t &out_segment_ids_offset,
+                   std::unique_ptr<char[]> &segment_buffer) {
+    segment_buffer = std::make_unique<char[]>(footer.segments_meta_size);
+    if (buffer_pool_handle_->get_meta(offset, footer.segments_meta_size,
                                       segment_buffer.get()) != 0) {
       LOG_ERROR("Get segment meta failed.");
       return IndexError_Runtime;
     }
-    if (ailego::Crc32c::Hash(segment_buffer.get(), footer_.segments_meta_size,
-                             0u) != footer_.segments_meta_crc) {
+    if (ailego::Crc32c::Hash(segment_buffer.get(), footer.segments_meta_size,
+                             0u) != footer.segments_meta_crc) {
       LOG_ERROR("Index segments meta checksum is invalid.");
       return IndexError_InvalidChecksum;
     }
+    if (sizeof(IndexFormat::SegmentMeta) * footer.segment_count >
+        footer.segments_meta_size) {
+      return IndexError_InvalidLength;
+    }
     IndexFormat::SegmentMeta *segment_start =
         reinterpret_cast<IndexFormat::SegmentMeta *>(segment_buffer.get());
-    uint32_t segment_ids_offset = footer_.segments_meta_size;
+    uint32_t segment_ids_offset = footer.segments_meta_size;
     for (IndexFormat::SegmentMeta *iter = segment_start,
-                                  *end = segment_start + footer_.segment_count;
+                                  *end = segment_start + footer.segment_count;
          iter != end; ++iter) {
-      if (iter->segment_id_offset >= footer_.segments_meta_size) {
+      if (iter->segment_id_offset >= footer.segments_meta_size) {
         return IndexError_InvalidValue;
       }
-      if (iter->data_index > footer_.content_size) {
+      if (iter->data_index > footer.content_size) {
         return IndexError_InvalidValue;
       }
-      if (iter->data_index + iter->data_size > footer_.content_size) {
+      if (iter->data_index + iter->data_size > footer.content_size) {
         return IndexError_InvalidLength;
       }
 
       if (iter->segment_id_offset < segment_ids_offset) {
         segment_ids_offset = iter->segment_id_offset;
       }
-      // segments_ retains stable entries across appends; id_hash_ is the
-      // authoritative id sequence. Bound ID parsing to the metadata buffer.
+      // Bound ID parsing to the metadata buffer.
       const char *seg_name_start =
           reinterpret_cast<const char *>(segment_start) +
           iter->segment_id_offset;
       const size_t seg_name_max =
-          footer_.segments_meta_size - iter->segment_id_offset;
+          footer.segments_meta_size - iter->segment_id_offset;
       const size_t seg_name_len = ::strnlen(seg_name_start, seg_name_max);
       if (seg_name_len == seg_name_max) {
         LOG_ERROR("ParseSegment: segment_id missing NUL terminator, file[%s]",
@@ -884,33 +822,21 @@ class BufferStorage : public IndexStorage {
         return IndexError_InvalidValue;
       }
       const std::string seg_name(seg_name_start, seg_name_len);
-      const size_t seg_id = id_hash_.size();
-      id_hash_[seg_name] = seg_id;
       // Update in place so existing WrappedSegment pointers remain valid.
-      segments_[seg_name] =
-          IndexMapping::SegmentInfo{IndexMapping::Segment{iter},
-                                    current_header_start_offset_, chain_header};
-      max_segment_size_ =
-          std::max(max_segment_size_, iter->data_size + iter->padding_size);
-      if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
-          footer_.segments_meta_size) {
-        return IndexError_InvalidLength;
-      }
+      segments_[seg_name] = IndexMapping::SegmentInfo{
+          IndexMapping::Segment{iter}, header_start_offset, chain_header};
     }
-    buffer_pool_buffers_.push_back(std::move(segment_buffer));
-    if (out_segment_ids_offset) {
-      *out_segment_ids_offset = segment_ids_offset;
-    }
+    out_segment_ids_offset = segment_ids_offset;
     return 0;
   }
 
   int ParseToMapping() {
+    uint64_t header_start_offset = 0;
     while (true) {
       int ret;
-      // Per-chain owning MetaHeader; see chain_headers_ field comment.
-      chain_headers_.emplace_back(std::make_unique<IndexFormat::MetaHeader>());
-      IndexFormat::MetaHeader *chain_header = chain_headers_.back().get();
-      ret = ParseHeader(current_header_start_offset_, chain_header);
+      auto header = std::make_unique<IndexFormat::MetaHeader>();
+      IndexFormat::MetaHeader *chain_header = header.get();
+      ret = ParseHeader(header_start_offset, chain_header);
       if (ret != 0) {
         LOG_ERROR("Failed to parse header, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -933,18 +859,19 @@ class BufferStorage : public IndexStorage {
         return IndexError_Unsupported;
       }
       uint64_t footer_offset =
-          chain_header->meta_footer_offset + current_header_start_offset_;
+          chain_header->meta_footer_offset + header_start_offset;
       // Reject uint64 wrap-around and offsets past file_size.
-      if (footer_offset < current_header_start_offset_ ||
+      if (footer_offset < header_start_offset ||
           footer_offset + sizeof(IndexFormat::MetaFooter) >
               buffer_pool_->file_size()) {
         LOG_ERROR("ParseToMapping: invalid footer_offset=%" PRIu64
                   " (header=%" PRIu64 ", file_size=%zu), file[%s]",
-                  footer_offset, current_header_start_offset_,
-                  buffer_pool_->file_size(), file_name_.c_str());
+                  footer_offset, header_start_offset, buffer_pool_->file_size(),
+                  file_name_.c_str());
         return IndexError_InvalidValue;
       }
-      ret = ParseFooter(footer_offset);
+      IndexFormat::MetaFooter footer{};
+      ret = ParseFooter(footer_offset, &footer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse footer, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -952,50 +879,47 @@ class BufferStorage : public IndexStorage {
       }
 
       // Unpack segment table
-      if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
-          footer_.segments_meta_size) {
-        return IndexError_InvalidLength;
-      }
       const uint64_t segment_start_offset =
-          footer_offset - footer_.segments_meta_size;
-      uint32_t segment_ids_offset = footer_.segments_meta_size;
+          footer_offset - footer.segments_meta_size;
+      uint32_t segment_ids_offset = footer.segments_meta_size;
+      std::unique_ptr<char[]> segment_buffer;
       ret =
-          ParseSegment(segment_start_offset, chain_header, &segment_ids_offset);
+          ParseSegment(segment_start_offset, header_start_offset, chain_header,
+                       footer, segment_ids_offset, segment_buffer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
         return ret;
       }
 
-      // Retain the offsets needed to flush each metadata chain.
-      meta_chains_.push_back({current_header_start_offset_, footer_offset,
-                              segment_start_offset, footer_.segments_meta_size,
-                              segment_ids_offset, footer_});
+      // Own all state referenced by this metadata chain in one object.
+      meta_chains_.push_back({std::move(header), std::move(segment_buffer),
+                              header_start_offset, segment_ids_offset, footer});
 
-      if (footer_.next_meta_header_offset == 0) {
+      if (footer.next_meta_header_offset == 0) {
         break;
       }
       // Reject invalid links before following the metadata chain.
-      const uint64_t next_off = footer_.next_meta_header_offset;
-      if (next_off <= current_header_start_offset_ ||
+      const uint64_t next_off = footer.next_meta_header_offset;
+      if (next_off <= header_start_offset ||
           next_off + sizeof(IndexFormat::MetaHeader) >
               buffer_pool_->file_size()) {
         LOG_ERROR("ParseToMapping: invalid next_meta_header_offset=%" PRIu64
                   " (current=%" PRIu64 ", file_size=%zu), file[%s]",
-                  next_off, current_header_start_offset_,
-                  buffer_pool_->file_size(), file_name_.c_str());
+                  next_off, header_start_offset, buffer_pool_->file_size(),
+                  file_name_.c_str());
         return IndexError_InvalidValue;
       }
       // Bound corrupted metadata chains.
       constexpr size_t kMaxChains = 1024;
-      if (chain_headers_.size() >= kMaxChains) {
+      if (meta_chains_.size() >= kMaxChains) {
         LOG_ERROR(
             "ParseToMapping: chain count exceeds limit %zu, file[%s] may "
             "be corrupted",
             kMaxChains, file_name_.c_str());
         return IndexError_InvalidLength;
       }
-      current_header_start_offset_ = next_off;
+      header_start_offset = next_off;
     }
     return 0;
   }
@@ -1023,7 +947,7 @@ class BufferStorage : public IndexStorage {
 
   //! Retrieve check point of storage
   uint64_t check_point(void) const override {
-    return footer_.check_point;
+    return meta_chains_.empty() ? 0 : meta_chains_.back().footer.check_point;
   }
 
   //! Retrieve a segment by id
@@ -1032,27 +956,25 @@ class BufferStorage : public IndexStorage {
         mapping_shards_[mapping_shard_id()].mtx);
     auto seg_iter = segments_.find(id);
     if (seg_iter == segments_.end()) {
-      return WrappedSegment::Pointer{};
-    }
-    auto id_iter = id_hash_.find(id);
-    if (id_iter == id_hash_.end()) {
-      return WrappedSegment::Pointer{};
+      return {};
     }
     return std::make_shared<WrappedSegment>(this, &seg_iter->second,
-                                            id_iter->second);
+                                            &seg_iter->first);
   }
 
   //! Test if it a segment exists
   bool has(const std::string &id) const override {
-    return this->has_segment(id);
+    std::shared_lock<std::shared_mutex> latch(
+        mapping_shards_[mapping_shard_id()].mtx);
+    return segments_.find(id) != segments_.end();
   }
 
   //! Retrieve magic number of index
   uint32_t magic(void) const override {
-    if (chain_headers_.empty()) {
+    if (meta_chains_.empty()) {
       return 0u;
     }
-    return chain_headers_.front()->magic;
+    return meta_chains_.front().header->magic;
   }
 
  protected:
@@ -1072,7 +994,6 @@ class BufferStorage : public IndexStorage {
     size_t capacity = static_cast<size_t>(meta->padding_size + meta->data_size);
     memcpy(segment->data(), IndexVersion::Details(), data_size);
     segment->set_dirty();
-    set_as_dirty();
     meta->data_crc = ailego::Crc32c::Hash(segment->data(), data_size, 0);
     meta->data_size = data_size;
     meta->padding_size = capacity - data_size;
@@ -1192,15 +1113,14 @@ class BufferStorage : public IndexStorage {
       return IndexError_WriteData;
     }
     // Refresh and persist metadata for each chain.
-    for (size_t ci = 0;
-         ci < meta_chains_.size() && ci < buffer_pool_buffers_.size(); ++ci) {
+    for (size_t ci = 0; ci < meta_chains_.size(); ++ci) {
       MetaChain &mchain = meta_chains_[ci];
-      const char *seg_buf = buffer_pool_buffers_[ci].get();
+      const char *seg_buf = mchain.segment_meta.get();
       mchain.footer.segments_meta_crc =
-          ailego::Crc32c::Hash(seg_buf, mchain.segment_meta_size, 0u);
+          ailego::Crc32c::Hash(seg_buf, mchain.footer.segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&mchain.footer, consumed_chkp);
-      if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset,
-                                          mchain.segment_meta_size,
+      if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset(),
+                                          mchain.footer.segments_meta_size,
                                           seg_buf) != 0) {
         LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
@@ -1209,7 +1129,7 @@ class BufferStorage : public IndexStorage {
         return IndexError_WriteData;
       }
       if (buffer_pool_handle_->write_meta(
-              mchain.footer_file_offset, sizeof(mchain.footer),
+              mchain.footer_file_offset(), sizeof(mchain.footer),
               reinterpret_cast<const char *>(&mchain.footer)) != 0) {
         LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
@@ -1217,9 +1137,6 @@ class BufferStorage : public IndexStorage {
         restore_chkp_on_failure();
         return IndexError_WriteData;
       }
-    }
-    if (!meta_chains_.empty()) {
-      footer_ = meta_chains_.back().footer;
     }
     // Consume only the checkpoint observed by this flush.
     uint64_t expected_chkp = consumed_chkp;
@@ -1234,10 +1151,8 @@ class BufferStorage : public IndexStorage {
     AllShardsExclusiveLatch latch(mapping_shards_);
     flush_index_locked();
     file_name_.clear();
-    id_hash_.clear();
     segments_.clear();
-    chain_headers_.clear();
-    memset(&footer_, 0, sizeof(footer_));
+    meta_chains_.clear();
     {
       std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
       for (const ArenaBlock &b : tmp_buffers_) {
@@ -1260,10 +1175,6 @@ class BufferStorage : public IndexStorage {
     buffer_pool_handle_.reset();
     buffer_pool_.reset();
     cache_enabled_ = false;
-    max_segment_size_ = 0;
-    buffer_pool_buffers_.clear();
-    meta_chains_.clear();
-    current_header_start_offset_ = 0;
     pending_check_point_.store(0, std::memory_order_relaxed);
     index_dirty_.store(false, std::memory_order_relaxed);
     corrupted_.store(false, std::memory_order_relaxed);
@@ -1298,8 +1209,7 @@ class BufferStorage : public IndexStorage {
     if (segments_.find(id) != segments_.end()) {
       return IndexError_Duplicate;
     }
-    if (meta_chains_.empty() || chain_headers_.empty() ||
-        buffer_pool_buffers_.empty()) {
+    if (meta_chains_.empty()) {
       LOG_ERROR("append_segment: invalid state, file[%s]", file_name_.c_str());
       return IndexError_Runtime;
     }
@@ -1308,18 +1218,19 @@ class BufferStorage : public IndexStorage {
     const size_t page_size = ailego::kVectorPageSize;
     const size_t padded_size = (size + page_size - 1) / page_size * page_size;
 
-    // The current last chain owns footer_ (overwritten by ParseFooter).
     size_t id_size = id.length() + 1;
     size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
     MetaChain *chain = &meta_chains_.back();
-    IndexFormat::MetaHeader *header = chain_headers_.back().get();
-    char *meta_buf = buffer_pool_buffers_.back().get();
+    IndexFormat::MetaHeader *header = chain->header.get();
+    char *meta_buf = chain->segment_meta.get();
+    IndexFormat::MetaFooter *footer = &chain->footer;
 
-    // Set after a chain split so a later append failure can unlink it.
-    std::function<void()> rollback_step1 = []() {};
+    const auto footer_before_split = *footer;
+    const uint64_t old_footer_file_offset = chain->footer_file_offset();
+    bool chain_split = false;
 
     // Step 1: split a full metadata chain.
-    if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count + need_size >
+    if (sizeof(IndexFormat::SegmentMeta) * footer->segment_count + need_size >
         chain->segment_ids_offset) {
       size_t new_chain_start = buffer_pool_->file_size();
       new_chain_start =
@@ -1332,14 +1243,13 @@ class BufferStorage : public IndexStorage {
           new_meta_total - sizeof(IndexFormat::MetaHeader) -
           sizeof(IndexFormat::MetaFooter));
 
-      // Stage the linked old footer without mutating footer_ yet.
-      const auto saved_footer_before_split = footer_;
-      IndexFormat::MetaFooter linked_footer = footer_;
+      // Stage the linked old footer without mutating the chain yet.
+      IndexFormat::MetaFooter linked_footer = footer_before_split;
       linked_footer.next_meta_header_offset = new_chain_start;
       IndexFormat::UpdateMetaFooter(&linked_footer, 0);
 
       if (buffer_pool_handle_->write_meta(
-              chain->footer_file_offset, sizeof(linked_footer),
+              chain->footer_file_offset(), sizeof(linked_footer),
               reinterpret_cast<const char *>(&linked_footer)) != 0) {
         LOG_ERROR("append_segment: write old footer failed, file[%s]",
                   file_name_.c_str());
@@ -1348,11 +1258,10 @@ class BufferStorage : public IndexStorage {
 
       // Restore the old link after a failed split; reject writes if rollback
       // also fails.
-      auto undo_old_footer = [this, chain, &saved_footer_before_split]() {
+      auto undo_old_footer = [this, chain, &footer_before_split]() {
         if (buffer_pool_handle_->write_meta(
-                chain->footer_file_offset, sizeof(saved_footer_before_split),
-                reinterpret_cast<const char *>(&saved_footer_before_split)) !=
-            0) {
+                chain->footer_file_offset(), sizeof(footer_before_split),
+                reinterpret_cast<const char *>(&footer_before_split)) != 0) {
           LOG_ERROR(
               "append_segment: rollback write of old footer FAILED, file[%s] "
               "is now in an inconsistent state -- marking storage as "
@@ -1393,8 +1302,6 @@ class BufferStorage : public IndexStorage {
         undo_old_footer();
         return IndexError_WriteData;
       }
-      uint64_t new_segment_meta_file_offset =
-          new_chain_start + sizeof(IndexFormat::MetaHeader);
       uint64_t new_footer_file_offset =
           new_chain_start + new_header->meta_footer_offset;
       if (buffer_pool_handle_->write_meta(
@@ -1404,15 +1311,8 @@ class BufferStorage : public IndexStorage {
         return IndexError_WriteData;
       }
 
-      // Snapshot the old chain before reassigning `chain`.
-      const auto saved_old_chain_footer = chain->footer;
-      const uint64_t saved_old_footer_file_offset = chain->footer_file_offset;
-      const uint64_t saved_current_header_start = current_header_start_offset_;
-
-      // Reserve all parallel vectors before committing the split.
+      // Reserve before committing the split so pointer updates cannot fail.
       try {
-        chain_headers_.reserve(chain_headers_.size() + 1);
-        buffer_pool_buffers_.reserve(buffer_pool_buffers_.size() + 1);
         meta_chains_.reserve(meta_chains_.size() + 1);
       } catch (const std::bad_alloc &) {
         LOG_ERROR(
@@ -1423,63 +1323,54 @@ class BufferStorage : public IndexStorage {
       }
       chain = &meta_chains_.back();
       chain->footer = linked_footer;  // old chain keeps linked footer
-      chain_headers_.push_back(std::move(new_header));
-      buffer_pool_buffers_.push_back(std::move(new_meta_buf));
-      meta_chains_.push_back(MetaChain{
-          new_chain_start, new_footer_file_offset, new_segment_meta_file_offset,
-          new_segments_meta_size, new_segments_meta_size, new_footer});
-      footer_ = new_footer;
-      current_header_start_offset_ = new_chain_start;
+      meta_chains_.push_back(MetaChain{std::move(new_header),
+                                       std::move(new_meta_buf), new_chain_start,
+                                       new_segments_meta_size, new_footer});
 
       chain = &meta_chains_.back();
-      header = chain_headers_.back().get();
-      meta_buf = buffer_pool_buffers_.back().get();
+      header = chain->header.get();
+      meta_buf = chain->segment_meta.get();
+      footer = &chain->footer;
+      chain_split = true;
+    }
 
-      // Capture rollback state by value before local pointers change.
-      rollback_step1 = [this, saved_footer_before_split, saved_old_chain_footer,
-                        saved_old_footer_file_offset,
-                        saved_current_header_start]() {
+    auto rollback_chain_split = [&]() {
+      if (chain_split) {
         // Unlink the new chain before dropping its in-memory state.
         if (buffer_pool_handle_->write_meta(
-                saved_old_footer_file_offset, sizeof(saved_footer_before_split),
-                reinterpret_cast<const char *>(&saved_footer_before_split)) !=
-            0) {
+                old_footer_file_offset, sizeof(footer_before_split),
+                reinterpret_cast<const char *>(&footer_before_split)) != 0) {
           LOG_ERROR(
-              "append_segment: rollback_step1 write of old footer FAILED, "
+              "append_segment: chain-split rollback write of old footer "
+              "FAILED, "
               "file[%s] is now in an inconsistent state -- marking storage "
               "as corrupted; further writes will be rejected.",
               file_name_.c_str());
           corrupted_.store(true, std::memory_order_release);
         }
-        if (!meta_chains_.empty()) meta_chains_.pop_back();
-        if (!chain_headers_.empty()) chain_headers_.pop_back();
-        if (!buffer_pool_buffers_.empty()) buffer_pool_buffers_.pop_back();
-        if (!meta_chains_.empty()) {
-          meta_chains_.back().footer = saved_old_chain_footer;
-        }
+        meta_chains_.pop_back();
+        meta_chains_.back().footer = footer_before_split;
         // The unreachable file tail is reusable; shrinking is unnecessary.
-        footer_ = saved_footer_before_split;
-        current_header_start_offset_ = saved_current_header_start;
-      };
-    }
+      }
+    };
 
     // Step 2: append the segment metadata and persist the last chain.
-    uint64_t new_data_index = footer_.content_size;
+    uint64_t new_data_index = footer->content_size;
     uint64_t new_seg_abs_offset =
         chain->header_start_offset + header->content_offset + new_data_index;
     uint64_t new_file_size = new_seg_abs_offset + padded_size;
     if (new_file_size > buffer_pool_->file_size()) {
       if (!buffer_pool_->extend_file(new_file_size)) {
+        rollback_chain_split();
         return IndexError_Runtime;
       }
     }
 
     // Snapshot every overwritten metadata region for rollback.
-    const auto saved_footer = footer_;
-    const auto saved_chain_footer = chain->footer;
+    const auto saved_footer = *footer;
     const auto saved_segment_ids_offset = chain->segment_ids_offset;
     const size_t meta_entry_off =
-        sizeof(IndexFormat::SegmentMeta) * footer_.segment_count;
+        sizeof(IndexFormat::SegmentMeta) * footer->segment_count;
     const uint32_t new_ids_off =
         chain->segment_ids_offset - static_cast<uint32_t>(id_size);
     char saved_meta_entry[sizeof(IndexFormat::SegmentMeta)];
@@ -1491,7 +1382,7 @@ class BufferStorage : public IndexStorage {
     chain->segment_ids_offset -= static_cast<uint32_t>(id_size);
     IndexFormat::SegmentMeta *new_seg =
         reinterpret_cast<IndexFormat::SegmentMeta *>(meta_buf) +
-        footer_.segment_count;
+        footer->segment_count;
     new_seg->segment_id_offset = chain->segment_ids_offset;
     new_seg->data_index = new_data_index;
     new_seg->data_size = 0;
@@ -1499,28 +1390,27 @@ class BufferStorage : public IndexStorage {
     new_seg->padding_size = padded_size;
     std::memcpy(meta_buf + chain->segment_ids_offset, id.c_str(), id_size);
 
-    footer_.segment_count += 1;
-    footer_.content_size += padded_size;
-    footer_.total_size += padded_size;
-    footer_.segments_meta_crc =
-        ailego::Crc32c::Hash(meta_buf, chain->segment_meta_size, 0u);
-    IndexFormat::UpdateMetaFooter(&footer_, 0);
-    chain->footer = footer_;  // sync in-memory copy for flush_index
+    footer->segment_count += 1;
+    footer->content_size += padded_size;
+    footer->total_size += padded_size;
+    footer->segments_meta_crc =
+        ailego::Crc32c::Hash(meta_buf, footer->segments_meta_size, 0u);
+    IndexFormat::UpdateMetaFooter(footer, 0);
 
     // Restore memory and disk together; a failed restore marks the file bad.
     auto rollback_step2 = [&]() {
       std::memcpy(meta_buf + meta_entry_off, saved_meta_entry,
                   sizeof(IndexFormat::SegmentMeta));
       std::memcpy(meta_buf + new_ids_off, saved_id_bytes.get(), id_size);
-      footer_ = saved_footer;
-      chain->footer = saved_chain_footer;
+      *footer = saved_footer;
       chain->segment_ids_offset = saved_segment_ids_offset;
 
-      const int rc_meta = buffer_pool_handle_->write_meta(
-          chain->segment_meta_file_offset, chain->segment_meta_size, meta_buf);
+      const int rc_meta =
+          buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
+                                          footer->segments_meta_size, meta_buf);
       const int rc_footer = buffer_pool_handle_->write_meta(
-          chain->footer_file_offset, sizeof(footer_),
-          reinterpret_cast<const char *>(&footer_));
+          chain->footer_file_offset(), sizeof(*footer),
+          reinterpret_cast<const char *>(footer));
       if (rc_meta != 0 || rc_footer != 0) {
         LOG_ERROR(
             "append_segment: rollback_step2 disk rewrite FAILED "
@@ -1532,28 +1422,26 @@ class BufferStorage : public IndexStorage {
       }
     };
 
-    if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset,
-                                        chain->segment_meta_size,
+    if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
+                                        footer->segments_meta_size,
                                         meta_buf) != 0) {
       LOG_ERROR("append_segment: write segment_meta failed, file[%s]",
                 file_name_.c_str());
       rollback_step2();
-      rollback_step1();
+      rollback_chain_split();
       return IndexError_WriteData;
     }
     if (buffer_pool_handle_->write_meta(
-            chain->footer_file_offset, sizeof(footer_),
-            reinterpret_cast<const char *>(&footer_)) != 0) {
+            chain->footer_file_offset(), sizeof(*footer),
+            reinterpret_cast<const char *>(footer)) != 0) {
       LOG_ERROR("append_segment: write footer failed, file[%s]",
                 file_name_.c_str());
       rollback_step2();
-      rollback_step1();
+      rollback_chain_split();
       return IndexError_WriteData;
     }
 
-    // Commit both maps transactionally while preserving value addresses.
-    auto seg_ins = segments_.end();
-    bool seg_inserted = false;
+    // Publish the segment only after its metadata is durable.
     try {
       auto ins = segments_.emplace(
           id, IndexMapping::SegmentInfo{IndexMapping::Segment{new_seg},
@@ -1565,35 +1453,20 @@ class BufferStorage : public IndexStorage {
             "id[%s]",
             file_name_.c_str(), id.c_str());
         rollback_step2();
-        rollback_step1();
+        rollback_chain_split();
         return IndexError_Duplicate;
       }
-      seg_ins = ins.first;
-      seg_inserted = true;
-      const size_t new_id = id_hash_.size();
-      id_hash_.emplace(id, new_id);
     } catch (const std::bad_alloc &) {
       LOG_ERROR(
           "append_segment: in-memory commit OOM, rolling back, file[%s], "
           "id[%s]",
           file_name_.c_str(), id.c_str());
-      if (seg_inserted) {
-        segments_.erase(seg_ins);
-      }
       rollback_step2();
-      rollback_step1();
+      rollback_chain_split();
       return IndexError_Runtime;
     }
-    max_segment_size_ = std::max<uint64_t>(max_segment_size_, padded_size);
     // extend_file() already grew the page table in place.
     return 0;
-  }
-
-  //! Test if a segment exists
-  bool has_segment(const std::string &id) const {
-    std::shared_lock<std::shared_mutex> latch(
-        mapping_shards_[mapping_shard_id()].mtx);
-    return (segments_.find(id) != segments_.end());
   }
 
  private:
@@ -1645,7 +1518,6 @@ class BufferStorage : public IndexStorage {
   };
   // Requires tmp_buffers_mutex_; alloc_size must be 4K-aligned.
   char *tmp_arena_alloc_locked(size_t alloc_size) {
-    static constexpr size_t kAlign = 4096UL;
     static constexpr size_t kArenaSize = 1UL << 20;  // 1 MiB
     if (!tmp_buffers_.empty()) {
       ArenaBlock &back = tmp_buffers_.back();
@@ -1656,7 +1528,8 @@ class BufferStorage : public IndexStorage {
       }
     }
     size_t new_size = alloc_size > kArenaSize ? alloc_size : kArenaSize;
-    char *p = static_cast<char *>(ailego_aligned_malloc(new_size, kAlign));
+    char *p =
+        static_cast<char *>(ailego_aligned_malloc(new_size, kBufferAlignment));
     if (!p) {
       return nullptr;
     }
@@ -1672,32 +1545,33 @@ class BufferStorage : public IndexStorage {
 
   // buffer manager
   std::string file_name_;
-  // Own every chain header referenced by segments_.
-  std::vector<std::unique_ptr<IndexFormat::MetaHeader>> chain_headers_{};
-  IndexFormat::MetaFooter footer_{};
   std::unordered_map<std::string, IndexMapping::SegmentInfo> segments_{};
-  std::unordered_map<std::string, size_t> id_hash_{};
-  uint64_t max_segment_size_{0};
-  std::vector<std::unique_ptr<char[]>> buffer_pool_buffers_{};
 
   ailego::VecBufferPool::Pointer buffer_pool_{nullptr};
   bool cache_enabled_{false};
   ailego::VecBufferPoolHandle::Pointer buffer_pool_handle_{nullptr};
-  uint64_t current_header_start_offset_{0u};
 
   // Segment metadata capacity written by init_index().
   uint32_t segment_meta_capacity_{4096u};
 
-  // Per-chain state used by flush_index() and append_segment().
+  // Per-chain ownership and state used by parsing, flushing, and appending.
   struct MetaChain {
+    // Pointees stay stable across vector moves and are referenced by segments_.
+    std::unique_ptr<IndexFormat::MetaHeader> header;
+    std::unique_ptr<char[]> segment_meta;
     uint64_t header_start_offset;
-    uint64_t footer_file_offset;
-    uint64_t segment_meta_file_offset;
-    uint32_t segment_meta_size;
     // Lowest ID-string offset; detects metadata exhaustion.
     uint32_t segment_ids_offset;
-    // In-memory footer synchronized by flush and append.
+    // Authoritative in-memory footer for this chain.
     IndexFormat::MetaFooter footer;
+
+    uint64_t footer_file_offset() const {
+      return header_start_offset + header->meta_footer_offset;
+    }
+
+    uint64_t segment_meta_file_offset() const {
+      return footer_file_offset() - footer.segments_meta_size;
+    }
   };
   std::vector<MetaChain> meta_chains_{};
 };

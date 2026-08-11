@@ -98,8 +98,6 @@ class BlockEvictionQueue {
   BlockEvictionQueue(BlockEvictionQueue &&) = delete;
   BlockEvictionQueue &operator=(BlockEvictionQueue &&) = delete;
 
-  int init();
-
   bool evict_single_block(BlockType &item);
 
   bool evict_block(BlockType &item);
@@ -156,15 +154,16 @@ class BlockEvictionQueue {
   size_t recover_owner_queues();
 
   BlockEvictionQueue() {
-    init();
+    for (size_t i = 0; i < kQueueCount; ++i) {
+      evict_queues_.push_back(ConcurrentQueue(kEvictQueueCapacity));
+    }
   }
 
- private:
   // Foreground one-page reclaim should not pay for protected aging. Larger
   // reclaim batches inspect the protected queue at most once.
+  static constexpr size_t kEvictQueueCapacity = 512 * 200;
   static constexpr size_t kProtectedAgingMinBatch = 8;
   static constexpr size_t kProtectedDominanceRatio = 3;
-  size_t evict_batch_size_{0};
   std::vector<ConcurrentQueue> evict_queues_;
   std::unordered_set<EvictableBlockOwner *> valid_owners_;
   std::shared_mutex valid_owners_mutex_;
@@ -361,7 +360,6 @@ class MemoryLimitPool {
     return used > fixed && used >= high_watermark();
   }
 
- private:
   // Shard the aligned free list to reduce allocation-path contention.
   static constexpr size_t kNumFreeShards = 64;
   struct alignas(64) FreeShard {

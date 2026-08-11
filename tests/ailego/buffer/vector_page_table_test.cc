@@ -1517,7 +1517,7 @@ TEST_F(BufferPoolTest, ReadAndPrefetchRangesRejectOverflow) {
   EXPECT_EQ(0u, pool.stats().miss);
 }
 
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
 TEST_F(BufferPoolTest, AioAdmissionUsesFreeCapacityBeforeEviction) {
   InitVecPool(/*capacity_pages=*/8, /*file_pages=*/4);
   std::string file = NewFile(/*num_pages=*/4);

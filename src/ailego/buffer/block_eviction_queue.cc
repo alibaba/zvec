@@ -175,14 +175,6 @@ size_t MemoryLimitPool::page_buffer_size() {
   return page_size;
 }
 
-int BlockEvictionQueue::init() {
-  evict_batch_size_ = 512;
-  for (size_t i = 0; i < kQueueCount; i++) {
-    evict_queues_.push_back(ConcurrentQueue(evict_batch_size_ * 200));
-  }
-  return 0;
-}
-
 bool BlockEvictionQueue::evict_single_block(BlockType &item) {
   return evict_single_block(item, /*age_protected=*/false);
 }
@@ -257,7 +249,7 @@ bool BlockEvictionQueue::evict_block(BlockType &item, size_t &attempts,
 void BlockEvictionQueue::recycle() {
   BlockType item;
   // Bound foreground work when CLOCK requeues hot pages.
-  const size_t max_attempts = evict_batch_size_ * 200 * kQueueCount + 16;
+  const size_t max_attempts = kEvictQueueCapacity * kQueueCount + 16;
   size_t attempts = 0;
   bool recovered = false;
   bool age_protected = true;
@@ -642,7 +634,9 @@ void MemoryLimitPool::stop_background_evictor() {
   if (!bg_running_.exchange(false)) {
     return;  // not running
   }
-  { std::lock_guard<std::mutex> lk(bg_mutex_); }
+  {
+    std::lock_guard<std::mutex> lk(bg_mutex_);
+  }
   bg_cv_.notify_all();
   if (bg_thread_.joinable()) {
     bg_thread_.join();
@@ -768,7 +762,6 @@ bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
       return false;
     }
   }
-  return false;
 }
 
 void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {

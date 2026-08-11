@@ -96,7 +96,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
       delete[] segments_[i];
       delete[] resident_segments_[i];
     }
-    MemoryLimitPool::get_instance().release_metadata(metadata_charge_);
+    MemoryLimitPool::get_instance().release_metadata(metadata_bytes());
   }
 
   VectorPageTable(const VectorPageTable &) = delete;
@@ -355,7 +355,6 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
       kMaxSegments * (sizeof(Entry *) + sizeof(ResidentEntry *));
   std::unique_ptr<Entry *[]> segments_{};
   std::unique_ptr<ResidentEntry *[]> resident_segments_{};
-  size_t metadata_charge_{0};
   static constexpr size_t kInvalidLoadedBlock =
       std::numeric_limits<size_t>::max();
   static constexpr int kUnloadedRefCount = std::numeric_limits<int>::min();
@@ -537,7 +536,7 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.ghost_hot_marks = p.ghost_hot_marks;
     s.ghost_hot_hits = p.ghost_hot_hits;
     s.page_table_metadata_bytes = page_table_.metadata_bytes();
-    s.page_lock_metadata_bytes = mutex_metadata_charge_;
+    s.page_lock_metadata_bytes = block_mutex_metadata_bytes();
     return s;
   }
 
@@ -635,7 +634,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
 
   bool aio_enabled() const {
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
     // Backend contexts are created lazily per calling thread.
     return aio_enabled_;
 #else
@@ -644,7 +643,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
 
   IOBackendType io_backend_type() const {
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
     return io_backend_type_;
 #else
     return IOBackendType::kPread;
@@ -686,7 +685,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> admission_observations_{0};
   std::atomic<uint64_t> admission_admitted_{0};
   std::atomic<uint64_t> admission_rejected_{0};
-#if defined(__linux) || defined(__linux__)
+#if defined(__linux__)
   IOBackendType io_backend_type_{IOBackendType::kPread};
   bool aio_enabled_{false};
 #endif
@@ -696,9 +695,11 @@ class ZVEC_AILEGO_API VecBufferPool {
 
  private:
   // Serialize writable in-place payload access. Single-flight owns loading.
+  size_t block_mutex_metadata_bytes() const {
+    return block_mutex_count_ * sizeof(std::shared_mutex);
+  }
   std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};
-  size_t mutex_metadata_charge_{0};
 };
 
 class ZVEC_AILEGO_API VecBufferPoolHandle {
