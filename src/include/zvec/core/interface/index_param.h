@@ -73,6 +73,7 @@ enum class IndexType {
   kHNSWRabitq,
   kDiskAnn,
   kVamana,
+  kIVFRabitq,
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -455,6 +456,46 @@ struct ZVEC_CORE_API HNSWRabitqIndexParam : public BaseIndexParam {
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
   ailego::JsonObject SerializeToJsonObject(
       bool omit_empty_value = false) const override;
+};
+
+struct ZVEC_CORE_API IVFRabitqIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<IVFRabitqIndexParam>;
+
+  // IVF parameters
+  int nlist = kDefaultIvfRabitqNlist;
+
+  // Rabitq parameters
+  int total_bits = kDefaultRabitqTotalBits;
+  int sample_count = 0;
+
+  IVFRabitqIndexParam();
+  explicit IVFRabitqIndexParam(int nlist);
+  IVFRabitqIndexParam(MetricType metric, int dim, int nlist);
+  IVFRabitqIndexParam(const IVFRabitqIndexParam &);
+  IVFRabitqIndexParam(IVFRabitqIndexParam &&);
+  IVFRabitqIndexParam &operator=(const IVFRabitqIndexParam &);
+  IVFRabitqIndexParam &operator=(IVFRabitqIndexParam &&);
+  ~IVFRabitqIndexParam() override;
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<IVFRabitqQueryParam>;
+
+  IVFRabitqQueryParam();
+  IVFRabitqQueryParam(const IVFRabitqQueryParam &);
+  IVFRabitqQueryParam(IVFRabitqQueryParam &&) noexcept;
+  IVFRabitqQueryParam &operator=(const IVFRabitqQueryParam &);
+  IVFRabitqQueryParam &operator=(IVFRabitqQueryParam &&) noexcept;
+  ~IVFRabitqQueryParam() override;
+
+  uint32_t nprobe = kDefaultIvfRabitqNprobe;
+
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
 struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {

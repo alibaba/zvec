@@ -35,6 +35,7 @@ from .param import (
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
+    IvfRabitqIndexParam,
     OptimizeOption,
 )
 from .param.query import Query
@@ -59,6 +60,20 @@ class Collection:
 
     def __init__(self, obj: _Collection):
         self._obj = obj
+        self._schema = None
+        self._querier = None
+
+    def close(self) -> None:
+        """Close the collection and release its native resources.
+
+        Flushes pending writes and releases the collection's file lock so the
+        path can be reopened or removed, even if other references to this
+        collection still exist. Closing an already-closed collection is a
+        no-op.
+        """
+        if self._obj is not None:
+            self._obj.Close()
+        self._obj = None
         self._schema = None
         self._querier = None
 
@@ -116,6 +131,7 @@ class Collection:
         index_param: Union[
             HnswIndexParam,
             HnswRabitqIndexParam,
+            IvfRabitqIndexParam,
             IVFIndexParam,
             FlatIndexParam,
             InvertIndexParam,
@@ -125,13 +141,13 @@ class Collection:
     ) -> None:
         """Create an index on a field.
 
-        Vector index types (HNSW, IVF, FLAT) can only be applied to vector fields.
+        Vector index types (HNSW, HNSW_RABITQ, IVF, IVF_RABITQ, FLAT) can only be applied to vector fields.
         Inverted index (`InvertIndexParam`) is for scalar fields.
         FTS index (`FtsIndexParam`) is for full-text search on STRING fields.
 
         Args:
             field_name (str): Name of the field to index.
-            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
+            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
                 Index configuration.
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.

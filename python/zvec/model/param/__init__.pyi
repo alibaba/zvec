@@ -27,6 +27,8 @@ __all__: list[str] = [
     "IndexOption",
     "IndexParam",
     "InvertIndexParam",
+    "IvfRabitqIndexParam",
+    "IvfRabitqQueryParam",
     "OptimizeOption",
     "QuantizerParam",
     "QueryParam",
@@ -585,6 +587,72 @@ class HnswRabitqQueryParam(QueryParam):
     def ef(self) -> int:
         """
         int: Size of the dynamic candidate list during HNSW search.
+        """
+
+class IvfRabitqIndexParam(VectorIndexParam):
+    """
+    Parameters for configuring an IVF index with RaBitQ quantization.
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        nlist: typing.SupportsInt = 1024,
+        total_bits: typing.SupportsInt = 7,
+        sample_count: typing.SupportsInt = 0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def nlist(self) -> int:
+        """
+        int: Number of IVF cluster centers.
+        """
+
+    @property
+    def total_bits(self) -> int:
+        """
+        int: Total bits for RaBitQ quantization.
+        """
+
+    @property
+    def sample_count(self) -> int:
+        """
+        int: Sample count for RaBitQ training.
+        """
+
+class IvfRabitqQueryParam(QueryParam):
+    """
+    Query parameters for IVF RaBitQ index.
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        nprobe: typing.SupportsInt = 10,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def nprobe(self) -> int:
+        """
+        int: Number of inverted lists to search during IVF RaBitQ query.
+        """
+
+    @property
+    def scale_factor(self) -> float:
+        """
+        float: Candidate expansion factor used by the refiner.
         """
 
 class IVFIndexParam(VectorIndexParam):

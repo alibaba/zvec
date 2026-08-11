@@ -204,6 +204,28 @@ class HNSWRabitqIndexParamBuilder
   }
 };
 
+class IVFRabitqIndexParamBuilder
+    : public BaseIndexParamBuilder<IVFRabitqIndexParamBuilder,
+                                   IVFRabitqIndexParam> {
+ public:
+  IVFRabitqIndexParamBuilder() = default;
+  IVFRabitqIndexParamBuilder &WithNlist(int nlist) {
+    param->nlist = nlist;
+    return *this;
+  }
+  IVFRabitqIndexParamBuilder &WithTotalBits(int total_bits) {
+    param->total_bits = total_bits;
+    return *this;
+  }
+  IVFRabitqIndexParamBuilder &WithSampleCount(int sample_count) {
+    param->sample_count = sample_count;
+    return *this;
+  }
+  std::shared_ptr<IVFRabitqIndexParam> Build() override {
+    return param;
+  }
+};
+
 class DiskAnnIndexParamBuilder
     : public BaseIndexParamBuilder<DiskAnnIndexParamBuilder,
                                    DiskAnnIndexParam> {

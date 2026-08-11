@@ -98,6 +98,7 @@ Examples:
       .value("UNDEFINED", IndexType::UNDEFINED)
       .value("HNSW", IndexType::HNSW)
       .value("IVF", IndexType::IVF)
+      .value("IVF_RABITQ", IndexType::IVF_RABITQ)
       .value("FLAT", IndexType::FLAT)
       .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("DISKANN", IndexType::DISKANN)

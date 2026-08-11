@@ -29,6 +29,8 @@ from .model.param import (
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
+    IvfRabitqIndexParam,
+    IvfRabitqQueryParam,
     OptimizeOption,
     QuantizerParam,
     VamanaIndexParam,
@@ -96,6 +98,8 @@ __all__: list = [
     "IndexOption",
     "IndexType",
     "InvertIndexParam",
+    "IvfRabitqIndexParam",
+    "IvfRabitqQueryParam",
     "LogLevel",
     "LogType",
     "MetricType",
@@ -142,6 +146,7 @@ class _Collection:
         arg2: schema._FieldSchema,
         arg3: param.AlterColumnOption,
     ) -> None: ...
+    def Close(self) -> None: ...
     def CreateIndex(
         self, arg0: str, arg1: param.IndexParam, arg2: param.IndexOption
     ) -> None: ...

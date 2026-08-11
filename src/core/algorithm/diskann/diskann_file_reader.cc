@@ -769,8 +769,8 @@ void LinuxAlignedFileReader::register_thread() {
   } else {
     LOG_INFO("allocating kqueue ctx: %d", kq);
     ctx = kq;
-    ctx_map[thread_id] = ctx;
   }
+  ctx_map[thread_id] = ctx;
   lk.unlock();
 #endif
 }

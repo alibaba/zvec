@@ -38,6 +38,7 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
 if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/ivf_rabitq/.*")
 endif()
 
 # Keep the guarded DiskAnn interface available everywhere, but pack its

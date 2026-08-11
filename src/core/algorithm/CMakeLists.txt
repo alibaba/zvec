@@ -53,6 +53,7 @@ endif()
 if(RABITQ_SUPPORTED)
   message(STATUS "BUILD RABITQ")
   cc_directory(hnsw_rabitq)
+  cc_directory(ivf_rabitq)
 else()
   message(STATUS "NOT BUILD RABITQ")
   # Empty stub library for unsupported platforms
@@ -70,4 +71,33 @@ else()
       INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
       VERSION "${PROXIMA_ZVEC_VERSION}"
     )
+
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+    "// Stub implementation for unsupported platforms\n"
+    "// IVF RaBitQ only supports Linux x86_64\n"
+    "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
+  )
+
+  if(MSVC)
+    # MSVC cannot create an import library for an empty DLL. Keep the
+    # cross-platform static target name expected by the Python binding.
+    cc_library(
+        NAME core_knn_ivf_rabitq
+        STATIC STRICT ALWAYS_LINK
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+        LIBS core_framework
+        INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+        VERSION "${PROXIMA_ZVEC_VERSION}"
+      )
+    add_library(core_knn_ivf_rabitq_static ALIAS core_knn_ivf_rabitq)
+  else()
+    cc_library(
+        NAME core_knn_ivf_rabitq
+        STATIC SHARED STRICT ALWAYS_LINK
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+        LIBS core_framework
+        INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+        VERSION "${PROXIMA_ZVEC_VERSION}"
+      )
+  endif()
 endif()

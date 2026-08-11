@@ -21,6 +21,7 @@
 #include <zvec/ailego/utility/time_helper.h>
 #include "algorithm/flat/flat_utility.h"
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
+#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
@@ -1050,6 +1051,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   for (auto &param : id_map_param_list) {
     params.set(param, !g_disable_id_map);
   }
+  // Pass original dimension for Cosine support (before converter modifies it)
+  params.set(PARAM_RABITQ_GENERAL_DIMENSION, input_meta.dimension());
 
   // INIT
   int ret =
