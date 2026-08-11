@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <ailego/io/libaio_loader.h>
 #include <zvec/ailego/io/io_backend.h>
@@ -88,24 +89,19 @@ class IOBackend {
   // Returns the active backend, probing on the first call. Linux prefers
   // io_uring, then libaio, then pread; other platforms use pread.
   IOBackendType available() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (probed_) {
-      return type_;
-    }
+    std::call_once(probe_once_, [this]() {
+      IOBackendType selected = IOBackendType::kPread;
 #if defined(__linux) || defined(__linux__)
-    if (io_uring_supported()) {
-      type_ = IOBackendType::kIoUring;
-    } else if (LibAioLoader::Instance().load() &&
-               LibAioLoader::Instance().is_available()) {
-      type_ = IOBackendType::kLibAio;
-    } else {
-      type_ = IOBackendType::kPread;
-    }
-#else
-    type_ = IOBackendType::kPread;
+      if (io_uring_supported()) {
+        selected = IOBackendType::kIoUring;
+      } else if (LibAioLoader::Instance().load() &&
+                 LibAioLoader::Instance().is_available()) {
+        selected = IOBackendType::kLibAio;
+      }
 #endif
-    probed_ = true;
-    return type_;
+      type_.store(selected, std::memory_order_release);
+    });
+    return type_.load(std::memory_order_acquire);
   }
 
   bool is_pread() {
@@ -122,8 +118,7 @@ class IOBackend {
 
   // Returns the cached backend type without triggering the probe.
   IOBackendType type() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return type_;
+    return type_.load(std::memory_order_acquire);
   }
 
   // Human-readable name for the selected backend.
@@ -159,12 +154,11 @@ class IOBackend {
   }
 #endif
 
-  // kPread doubles as the pre-probe default; probed_ marks whether the
-  // one-shot probe has run so that a pread-only outcome is cached too.
-  // (IOBackendType values are C ABI — no kNone sentinel is added there.)
-  mutable std::mutex mutex_;
-  IOBackendType type_{IOBackendType::kPread};
-  bool probed_{false};
+  // kPread doubles as the pre-probe default. call_once performs the probe once,
+  // while the atomic keeps cached reads lock-free, including type() calls that
+  // intentionally do not trigger probing.
+  std::once_flag probe_once_;
+  std::atomic<IOBackendType> type_{IOBackendType::kPread};
 };
 
 }  // namespace ailego
