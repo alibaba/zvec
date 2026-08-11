@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <thread>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
@@ -34,6 +35,10 @@
 namespace zvec {
 namespace core {
 
+// Ensures the I/O backend selection is logged exactly once per process,
+// regardless of which DiskAnn entry point triggers it first.
+static std::once_flag g_io_backend_log_once;
+
 #if (defined(__linux) || defined(__linux__))
 typedef struct io_event io_event_t;
 typedef struct iocb iocb_t;
@@ -41,32 +46,36 @@ typedef struct iocb iocb_t;
 // Retry budget for draining in-flight io_uring requests when the kernel
 // keeps returning EAGAIN/EBUSY (100 us sleep per retry, ~1 s total).
 static constexpr size_t kIoUringDrainRetries = 10000;
-
-// Ensures the I/O backend selection is logged exactly once per process,
-// regardless of which entry point (setup_io_ctx or register_thread)
-// triggers it first.
-static std::once_flag g_io_backend_log_once;
 #endif
 
 void log_diskann_io_backend() {
+#if (defined(__linux) || defined(__linux__) || defined(__APPLE__) || \
+     defined(__MACH__))
+  std::call_once(g_io_backend_log_once, []() {
+    auto &backend = ailego::IOBackend::Instance();
 #if (defined(__linux) || defined(__linux__))
-  auto &backend = ailego::IOBackend::Instance();
-  if (backend.is_pread()) {
-    LOG_WARN(
-        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
-        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
-        "retry. DiskAnn will fall back to synchronous pread() — performance "
-        "will be degraded.");
-  } else {
-    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
+    if (backend.is_pread()) {
+      LOG_WARN(
+          "DiskAnn: no async I/O backend available. Install libaio (e.g. "
+          "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
+          "retry. DiskAnn will fall back to synchronous pread() — performance "
+          "will be degraded.");
+    } else {
+      LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
+               backend.name());
+    }
+#else
+    LOG_INFO("DiskAnn: I/O backend '%s' loaded — pread() performs data "
+             "transfer.",
              backend.name());
-  }
+#endif
+  });
 #endif
 }
 
 int setup_io_ctx(IOContext &ctx) {
+  log_diskann_io_backend();
 #if (defined(__linux) || defined(__linux__))
-  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
   if (ailego::IOBackend::Instance().is_pread()) {
     // No async backend available — leave ctx null so callers fall back to
     // synchronous pread().
@@ -271,6 +280,13 @@ static int execute_io_kqueue(int kq, int fd,
         if (n_ev == 0) {
           // Timeout — fall back to blocking pread.
           LOG_WARN("kqueue timeout, falling back to pread");
+          return execute_io_pread(fd, read_reqs);
+        }
+        if (events[0].flags & EV_ERROR) {
+          int event_error = static_cast<int>(events[0].data);
+          LOG_WARN(
+              "kevent returned EV_ERROR; errno=%d, %s, falling back to pread",
+              event_error, ::strerror(event_error));
           return execute_io_pread(fd, read_reqs);
         }
         // Event triggered — retry pread.
