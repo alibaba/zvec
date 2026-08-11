@@ -857,7 +857,8 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   int base_flags = writable_ ? O_RDWR : O_RDONLY;
   // Buffered channel for unaligned metadata I/O.
   meta_fd_ = ::open(filename.c_str(), base_flags, 0644);
-  // Fall back to buffered page I/O when O_DIRECT is unsupported.
+  // Keep metadata buffered, but bypass the kernel page cache for page data.
+  // Linux uses O_DIRECT; Darwin provides the equivalent through F_NOCACHE.
   int data_flags = base_flags;
 #ifdef O_DIRECT
   data_flags |= O_DIRECT;
@@ -873,6 +874,21 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
     direct_io_enabled_ = false;
   } else {
     direct_io_enabled_ = true;
+  }
+#elif defined(F_NOCACHE)
+  if (fd_ >= 0) {
+    if (::fcntl(fd_, F_NOCACHE, 1) != 0) {
+      const int error = errno;
+      LOG_ERROR(
+          "VecBufferPool: failed to enable F_NOCACHE for file[%s] "
+          "(errno=%d)",
+          filename.c_str(), error);
+      ::close(fd_);
+      fd_ = -1;
+      errno = error;
+    } else {
+      direct_io_enabled_ = true;
+    }
   }
 #else
   direct_io_enabled_ = false;

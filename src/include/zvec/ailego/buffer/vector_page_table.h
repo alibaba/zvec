@@ -667,7 +667,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   bool load_pages_aio(const block_id_t *page_ids, size_t count,
                       uint8_t priority);
 
-  int fd_;       // page-data channel: may carry O_DIRECT
+  int fd_;       // page-data channel: O_DIRECT or F_NOCACHE when supported
   int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
   size_t initial_file_size_;  // file size at open time; pages beyond this
