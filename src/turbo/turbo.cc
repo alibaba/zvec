@@ -190,8 +190,8 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
   return nullptr;
 }
 
-PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
-                         CpuArchType cpu_arch_type) {
+CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
+                               CpuArchType cpu_arch_type) {
   (void)data_type;
   if (quantize_type == QuantizeType::kPQ) {
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&

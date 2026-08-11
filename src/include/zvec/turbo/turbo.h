@@ -65,27 +65,33 @@ using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
 using UnrotateFunc = void (*)(const float *in, float *out, size_t in_dim,
                               size_t out_dim, void *ctx);
 
-// PQ kernel function pointer types.
+// Codebook kernel function pointer types (shared by all codebook-based
+// quantizers, e.g. int8/int4 PQ).
 //
-// ADC: LUT look-up distance between a PQ code and a query (via LUT).
-//   pq_code:           [num_chunk] uint8_t
-//   lut:               [num_chunk * 256] float
+// Asymmetric (ADC): LUT look-up distance between a code and a query LUT.
+//   code:              [num_chunk] code ids
+//   lut:               [num_chunk * num_centroids] float
 // Uses void* to match DistanceFunc signature for direct assignment.
-using PqAdcDistanceFunc = void (*)(const void *pq_code, const void *lut,
-                                   size_t num_chunk, float *out);
+using CodebookAsymmetricDistanceFunc = void (*)(const void *code,
+                                                const void *lut,
+                                                size_t num_chunk, float *out);
 
-// SDC kernel: centroid-to-centroid distance between two PQ codes.
-//   a, b:              [num_chunk] uint8_t
-//   dist_table:        [num_chunk * 256 * 256] float
-// Uses void* for consistency with DistanceFunc / PqAdcDistanceFunc.
-using PqSdcDistanceFunc = void (*)(const void *a, const void *b,
-                                   const void *dist_table, size_t num_chunk,
-                                   float *out);
+// Symmetric (SDC): centroid-to-centroid distance between two codes.
+//   a, b:              [num_chunk] code ids
+//   dist_table:        [num_chunk * num_centroids * num_centroids] float
+// Uses void* for consistency with DistanceFunc /
+// CodebookAsymmetricDistanceFunc.
+using CodebookSymmetricDistanceFunc = void (*)(const void *a, const void *b,
+                                               const void *dist_table,
+                                               size_t num_chunk, float *out);
 
-// Batch ADC: compute distances for multiple PQ codes against a shared LUT.
+// Batch asymmetric: distances for multiple codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
-using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
-                                size_t num, size_t num_chunk, float *out);
+using CodebookBatchAsymmetricDistanceFunc = void (*)(const void **codes,
+                                                     const void *lut,
+                                                     size_t num,
+                                                     size_t num_chunk,
+                                                     float *out);
 
 // ISA-dispatched rotate/unrotate kernels.
 struct RotatorKernels {
@@ -95,10 +101,10 @@ struct RotatorKernels {
 
 // data_type selects the code packing layout:
 //   kInt8: one uint8 per chunk (256 centroids, stride=256)
-struct PqKernels {
-  PqAdcDistanceFunc adc_distance = nullptr;
-  PqSdcDistanceFunc sdc_distance = nullptr;
-  PqBatchAdcFunc batch_adc_distance = nullptr;
+struct CodebookKernels {
+  CodebookAsymmetricDistanceFunc asymmetric_distance = nullptr;
+  CodebookSymmetricDistanceFunc symmetric_distance = nullptr;
+  CodebookBatchAsymmetricDistanceFunc batch_asymmetric_distance = nullptr;
 };
 
 enum class MetricType {
@@ -174,8 +180,8 @@ RotatorKernels get_rotator_kernels(
 
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
 // and CPU arch.
-PqKernels get_pq_kernels(DataType data_type,
-                         QuantizeType quantize_type = QuantizeType::kPQ,
-                         CpuArchType cpu_arch_type = CpuArchType::kAuto);
+CodebookKernels get_pq_kernels(DataType data_type,
+                               QuantizeType quantize_type = QuantizeType::kPQ,
+                               CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo
