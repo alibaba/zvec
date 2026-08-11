@@ -3207,9 +3207,13 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
     ASSERT_TRUE(fs::create_directories(dir));
     std::ofstream((fs::path(dir) / "dummy.data").string()) << "orphan";
   }
-  // Not a canonical segment directory name; must never be touched.
+  // Not canonical segment directory names; must never be touched.
   auto non_segment_dir = (fs::path(col_path) / "007").string();
-  ASSERT_TRUE(fs::create_directories(non_segment_dir));
+  auto dot_tmp_dir = (fs::path(col_path) / ".tmp").string();
+  auto bad_suffix_dir = (fs::path(col_path) / "5.tmpx").string();
+  for (const auto &dir : {non_segment_dir, dot_tmp_dir, bad_suffix_dir}) {
+    ASSERT_TRUE(fs::create_directories(dir));
+  }
 
   // A read-only open holds only a shared file lock and must not delete
   // anything.
@@ -3230,7 +3234,9 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   for (const auto &dir : {orphan_next, orphan_far, orphan_tmp}) {
     ASSERT_FALSE(fs::exists(dir));
   }
-  ASSERT_TRUE(fs::exists(non_segment_dir));
+  for (const auto &dir : {non_segment_dir, dot_tmp_dir, bad_suffix_dir}) {
+    ASSERT_TRUE(fs::exists(dir));
+  }
   for (auto id : referenced_ids) {
     ASSERT_TRUE(fs::exists(FileHelper::MakeSegmentPath(col_path, id)));
   }
@@ -3251,6 +3257,13 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
     ASSERT_NE(doc, nullptr);
     ASSERT_EQ(*doc, expect_doc);
   }
+
+  // A schema DDL switches the writing segment and allocates ids too;
+  // confirm it no longer collides with any leftover directory.
+  auto field_schema =
+      std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
+  ASSERT_TRUE(
+      collection->AddColumn(field_schema, "int32", AddColumnOptions()).ok());
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {

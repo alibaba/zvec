@@ -1939,13 +1939,9 @@ Status CollectionImpl::recovery() {
 
   auto segment_metas = v.persisted_segment_metas();
 
-  // A crash can leave segment directories on disk that the recovered
-  // manifest does not reference (e.g. Optimize renamed its output but did
-  // not reach the commit-phase flush). The recovered id allocator would
-  // collide with such a directory on the next allocation, so remove them
-  // now. The exclusive collection file lock is already held, hence nothing
-  // can be producing segment directories concurrently. Read-only opens
-  // hold only a shared lock and must not modify the collection.
+  // Remove crash-leftover segment dirs before opening segments; safe
+  // under the exclusive file lock held above. Read-only opens hold only
+  // a shared lock and must not modify the collection.
   if (!options_.read_only_) {
     cleanup_orphan_segment_dirs(v);
   }
@@ -2017,11 +2013,13 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
   for (auto &meta : version.persisted_segment_metas()) {
     referenced_ids.insert(meta->id());
   }
-  referenced_ids.insert(version.writing_segment_meta()->id());
+  if (version.writing_segment_meta()) {
+    referenced_ids.insert(version.writing_segment_meta()->id());
+  }
 
   // A name counts as a segment id only if it round-trips through the id
-  // formatting (no leading zeros, fits in SegmentID); anything else was
-  // not created by the collection and is left untouched.
+  // formatting (all digits, no leading zeros, fits SegmentID); anything
+  // else was not created by the collection and is left untouched.
   auto parse_segment_id = [](const std::string &name, SegmentID *id) {
     if (name.empty() || name.size() > 10) {
       return false;
@@ -2041,30 +2039,41 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
     return true;
   };
 
+  // Collect candidates first and remove them after the scan: deleting an
+  // entry while iterating a directory is implementation-defined, and this
+  // matches the CleanupDirectory precedent.
+  std::vector<std::string> orphan_names;
   std::error_code ec;
-  for (const auto &entry : std::filesystem::directory_iterator(
-           ailego::FileHelper::PathFromUtf8(path_), ec)) {
+  std::filesystem::directory_iterator it(
+      ailego::FileHelper::PathFromUtf8(path_), ec);
+  std::filesystem::directory_iterator end;
+  while (!ec && it != end) {
     std::error_code entry_ec;
-    if (!entry.is_directory(entry_ec) || entry_ec) {
-      continue;
-    }
-    std::string name = entry.path().filename().u8string();
+    if (it->is_directory(entry_ec) && !entry_ec) {
+      std::string name = it->path().filename().u8string();
 
-    std::string stem = name;
-    bool is_tmp = false;
-    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0) {
-      stem = name.substr(0, name.size() - 4);
-      is_tmp = true;
-    }
+      std::string stem = name;
+      bool is_tmp = false;
+      if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0) {
+        stem = name.substr(0, name.size() - 4);
+        is_tmp = true;
+      }
 
-    SegmentID segment_id = 0;
-    if (!parse_segment_id(stem, &segment_id)) {
-      continue;
+      SegmentID segment_id = 0;
+      if (parse_segment_id(stem, &segment_id) &&
+          (is_tmp || referenced_ids.count(segment_id) == 0)) {
+        orphan_names.push_back(name);
+      }
     }
-    if (!is_tmp && referenced_ids.count(segment_id) != 0) {
-      continue;
-    }
+    it.increment(ec);
+  }
+  if (ec) {
+    LOG_WARN("Failed to list collection directory for orphan cleanup: %s",
+             ec.message().c_str());
+    return;
+  }
 
+  for (const auto &name : orphan_names) {
     auto orphan_path = ailego::FileHelper::PathJoin(path_, name);
     LOG_WARN("Removing segment directory left by an uncommitted operation: %s",
              orphan_path.c_str());
