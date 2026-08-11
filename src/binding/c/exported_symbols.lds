@@ -194,6 +194,7 @@
     zvec_group_by_vector_query_set_hnsw_params;
     zvec_group_by_vector_query_set_include_vector;
     zvec_group_by_vector_query_set_ivf_params;
+    zvec_group_by_vector_query_set_ivf_rabitq_params;
     zvec_group_by_vector_query_set_output_fields;
     zvec_group_by_vector_query_set_query_params;
     zvec_group_by_vector_query_set_query_vector;
@@ -209,6 +210,7 @@
     zvec_index_params_get_hnsw_m;
     zvec_index_params_get_invert_params;
     zvec_index_params_get_ivf_params;
+    zvec_index_params_get_ivf_rabitq_params;
     zvec_index_params_get_metric_type;
     zvec_index_params_get_quantize_type;
     zvec_index_params_get_quantizer_enable_rotate;
@@ -219,6 +221,7 @@
     zvec_index_params_set_hnsw_params;
     zvec_index_params_set_invert_params;
     zvec_index_params_set_ivf_params;
+    zvec_index_params_set_ivf_rabitq_params;
     zvec_index_params_set_metric_type;
     zvec_index_params_set_quantize_type;
     zvec_index_params_set_quantizer_enable_rotate;
@@ -285,6 +288,18 @@
     zvec_query_params_ivf_get_nprobe;
     zvec_query_params_ivf_get_radius;
     zvec_query_params_ivf_get_scale_factor;
+    zvec_query_params_ivf_rabitq_create;
+    zvec_query_params_ivf_rabitq_destroy;
+    zvec_query_params_ivf_rabitq_get_is_linear;
+    zvec_query_params_ivf_rabitq_get_is_using_refiner;
+    zvec_query_params_ivf_rabitq_get_nprobe;
+    zvec_query_params_ivf_rabitq_get_radius;
+    zvec_query_params_ivf_rabitq_get_scale_factor;
+    zvec_query_params_ivf_rabitq_set_is_linear;
+    zvec_query_params_ivf_rabitq_set_is_using_refiner;
+    zvec_query_params_ivf_rabitq_set_nprobe;
+    zvec_query_params_ivf_rabitq_set_radius;
+    zvec_query_params_ivf_rabitq_set_scale_factor;
     zvec_query_params_ivf_set_is_linear;
     zvec_query_params_ivf_set_is_using_refiner;
     zvec_query_params_ivf_set_nprobe;
@@ -322,6 +337,7 @@
     zvec_sub_query_set_fts_params;
     zvec_sub_query_set_hnsw_params;
     zvec_sub_query_set_ivf_params;
+    zvec_sub_query_set_ivf_rabitq_params;
     zvec_sub_query_set_num_candidates;
     zvec_sub_query_set_query_vector;
     zvec_sub_query_set_sparse_indices;
@@ -347,6 +363,7 @@
     zvec_vector_query_set_include_doc_id;
     zvec_vector_query_set_include_vector;
     zvec_vector_query_set_ivf_params;
+    zvec_vector_query_set_ivf_rabitq_params;
     zvec_vector_query_set_output_fields;
     zvec_vector_query_set_query_params;
     zvec_vector_query_set_query_vector;
