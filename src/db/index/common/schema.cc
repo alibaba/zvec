@@ -30,12 +30,6 @@
 
 namespace zvec {
 
-#if defined(RABITQ_COMPILED_AVX512)
-constexpr const int kRabitqCompiledAvx512 = RABITQ_COMPILED_AVX512;
-#else
-constexpr const int kRabitqCompiledAvx512 = 0;
-#endif
-
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
@@ -184,16 +178,12 @@ Status FieldSchema::validate() const {
             "RabitQ is not supported on this platform (Linux x86_64 only)");
 #endif
         auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
-        if (!flags.AVX2 && !flags.AVX512F) {
+        const bool supports_rabitq_avx2 = flags.AVX2 && flags.FMA;
+        const bool supports_rabitq_avx512 =
+            flags.AVX512F && flags.AVX512BW && flags.AVX512DQ;
+        if (!supports_rabitq_avx2 && !supports_rabitq_avx512) {
           return Status::NotSupported(
-              "RabitQ requires AVX2/AVX512F to be supported");
-        }
-
-        if constexpr (kRabitqCompiledAvx512) {
-          if (!flags.AVX512F) {
-            return Status::NotSupported(
-                "RabitQ compiled with AVX512F while runtime does not support");
-          }
+              "RabitQ requires AVX2/FMA or AVX512F/BW/DQ to be supported");
         }
       }
 

@@ -1,26 +1,6 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-if(RABITQ_SUPPORTED AND AUTO_DETECT_ARCH)
-  set(HNSW_RABITQ_FILES
-      hnsw_rabitq_query_algorithm.cc
-      hnsw_rabitq_streamer.cc
-      hnsw_rabitq_searcher.cc
-      hnsw_rabitq_entity.cc
-      rabitq_reformer.cc
-      rabitq_converter.cc
-  )
-  set(HNSW_RABITQ_FILES_FULL ${HNSW_RABITQ_FILES})
-  list(TRANSFORM HNSW_RABITQ_FILES_FULL PREPEND "algorithm/hnsw_rabitq/")
-  foreach(FILE ${HNSW_RABITQ_FILES_FULL})
-      set_source_files_properties(
-          ${FILE}
-          PROPERTIES
-          COMPILE_FLAGS "${RABITQ_ARCH_FLAG}"
-      )
-  endforeach()
-endif()
-
 # utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
 # host toolchain supports it, compile this source with an AVX2-capable
 # -march so AVX2 codegen is emitted. zvec_core glob-collects this source

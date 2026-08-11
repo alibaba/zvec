@@ -100,6 +100,16 @@ struct AlignedRead {
   }
 };
 
+struct PendingBatch {
+#if (defined(__linux) || defined(__linux__))
+  std::vector<struct iocb> cbs;
+  std::vector<struct iocb *> cb_ptrs;
+#endif
+  uint32_t n_submitted{0};
+  uint32_t n_reaped{0};
+  bool used_pread{false};
+};
+
 class AlignedFileReader {
  protected:
   std::map<std::thread::id, IOContext> ctx_map;
@@ -119,6 +129,13 @@ class AlignedFileReader {
 
   virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
                    bool async = false) = 0;
+
+  virtual int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+                     IOContext &ctx) = 0;
+
+  virtual int get_completed(PendingBatch &batch, IOContext &ctx,
+                            int min_completed,
+                            std::vector<uint32_t> &completed_indices) = 0;
 };
 
 // Reader implementation used on all supported platforms.
@@ -147,6 +164,12 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false);
+
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx);
+
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices);
 };
 
 }  // namespace core
