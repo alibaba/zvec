@@ -225,13 +225,14 @@ Status FieldSchema::validate() const {
         // registration.  Using the same macro here ensures that schema
         // validation and index registration agree on supported platforms.
         //
-        // On Linux, libaio is loaded eagerly (via dlopen); if it is missing,
-        // DiskAnn falls back to synchronous pread() with degraded performance.
-        // On macOS, DiskAnn uses kqueue.
+        // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
+        // synchronous pread() if neither async backend is available. On macOS,
+        // DiskAnn uses kqueue with pread().
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/ARM64 with libaio) and macOS (with kqueue).");
+            "Linux (x86_64/x86/ARM64 with io_uring, libaio, or pread) and "
+            "macOS ARM64 (with kqueue and pread).");
 #endif
       }
 
