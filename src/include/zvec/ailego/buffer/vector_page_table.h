@@ -37,33 +37,35 @@ namespace ailego {
 extern const size_t kVectorPageSize;
 
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
-  // Keep resident pointers separate from frequently mutated page metadata.
-  struct alignas(32) Entry {
+  // Keep every field used by the resident hit/release path in one compact
+  // object. Four entries fit in a 64-byte cache line and no entry straddles a
+  // line, so pinning a page also brings its resident pointer into cache.
+  struct alignas(16) Entry {
+    std::atomic<char *> buffer{nullptr};
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
-    std::atomic<bool> is_dirty;
-    // CLOCK second-chance bit.
     std::atomic<bool> referenced;
     std::atomic<uint8_t> evict_priority{0};
-    std::atomic<bool> ever_loaded{
-        false};  // true once the page has been loaded at least once
-    // Remember one protected residency after its buffer is reclaimed.
     std::atomic<uint8_t> ghost_state{0};
-    // High 24 bits: aging epoch; low 8 bits: recent rejected-miss count.
-    // This occupies existing alignment padding, keeping Entry at 32 bytes.
-    std::atomic<uint32_t> admission_state{0};
+  };
+  static_assert(sizeof(Entry) == 16,
+                "VectorPageTable::Entry must stay hot and compact");
+
+  // Metadata that is not needed by a resident cache hit. Field order keeps
+  // the combined hot+cold cost at the previous 40 bytes per page.
+  struct MetadataEntry {
     size_t next_loaded;
     size_t file_offset;
+    // High 24 bits: aging epoch; low 8 bits: recent rejected-miss count.
+    std::atomic<uint32_t> admission_state{0};
+    std::atomic<bool> is_dirty;
+    std::atomic<bool> ever_loaded{
+        false};  // true once the page has been loaded at least once
   };
-  static_assert(sizeof(Entry) == 32,
-                "VectorPageTable::Entry must stay compact");
-
-  // Compact resident-pointer table.
-  struct ResidentEntry {
-    std::atomic<char *> buffer{nullptr};
-  };
-  static_assert(sizeof(ResidentEntry) == sizeof(char *),
-                "ResidentEntry must contain only one pointer");
+  static_assert(sizeof(MetadataEntry) == 24,
+                "VectorPageTable::MetadataEntry must stay compact");
+  static_assert(sizeof(Entry) + sizeof(MetadataEntry) == 40,
+                "VectorPageTable metadata must remain 40 bytes per page");
 
  public:
   static constexpr uint8_t kLowPriority =
@@ -94,7 +96,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     size_t cnt = segment_count_.load(std::memory_order_relaxed);
     for (size_t i = 0; i < cnt; ++i) {
       delete[] segments_[i];
-      delete[] resident_segments_[i];
+      delete[] metadata_segments_[i];
     }
     MemoryLimitPool::get_instance().release_metadata(metadata_bytes());
   }
@@ -203,18 +205,19 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
+    metadata_entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
   }
 
   bool is_block_dirty(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
+    return metadata_entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
   }
 
   //! Clear the dirty flag after a successful batched flush.
   void clear_dirty(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    entry_at(block_id).is_dirty.store(false, std::memory_order_relaxed);
+    metadata_entry_at(block_id).is_dirty.store(false,
+                                               std::memory_order_relaxed);
   }
 
   //! Flush a single dirty block without evicting it. Caller guarantees the
@@ -222,17 +225,18 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   int flush_block(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     Entry &e = entry_at(block_id);
-    char *buffer =
-        resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
+    MetadataEntry &metadata = metadata_entry_at(block_id);
+    char *buffer = e.buffer.load(std::memory_order_acquire);
     if (!buffer || !flush_callback_) {
       return 0;
     }
-    if (!e.is_dirty.load(std::memory_order_relaxed)) {
+    if (!metadata.is_dirty.load(std::memory_order_relaxed)) {
       return 0;
     }
-    int rc = flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
+    int rc = flush_callback_(block_id, buffer, kVectorPageSize,
+                             metadata.file_offset);
     if (rc == 0) {
-      e.is_dirty.store(false, std::memory_order_relaxed);
+      metadata.is_dirty.store(false, std::memory_order_relaxed);
     }
     return rc;
   }
@@ -302,14 +306,14 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   //! Check if a page is loaded (has a non-null buffer).
   bool is_loaded(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    return resident_entry_at(block_id).buffer.load(std::memory_order_acquire) !=
-           nullptr;
+    return entry_at(block_id).buffer.load(std::memory_order_acquire) != nullptr;
   }
 
   //! Check whether reload requires I/O rather than initial zero-fill.
   bool is_ever_loaded(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    return entry_at(block_id).ever_loaded.load(std::memory_order_relaxed);
+    return metadata_entry_at(block_id).ever_loaded.load(
+        std::memory_order_relaxed);
   }
 
   bool has_evicted() const {
@@ -350,11 +354,11 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   std::atomic<size_t> entry_num_{0};
   std::atomic<size_t> segment_count_{0};
   static constexpr size_t kSegmentMetadataBytes =
-      kSegmentSize * (sizeof(Entry) + sizeof(ResidentEntry));
+      kSegmentSize * (sizeof(Entry) + sizeof(MetadataEntry));
   static constexpr size_t kSegmentDirectoryBytes =
-      kMaxSegments * (sizeof(Entry *) + sizeof(ResidentEntry *));
+      kMaxSegments * (sizeof(Entry *) + sizeof(MetadataEntry *));
   std::unique_ptr<Entry *[]> segments_{};
-  std::unique_ptr<ResidentEntry *[]> resident_segments_{};
+  std::unique_ptr<MetadataEntry *[]> metadata_segments_{};
   static constexpr size_t kInvalidLoadedBlock =
       std::numeric_limits<size_t>::max();
   static constexpr int kUnloadedRefCount = std::numeric_limits<int>::min();
@@ -376,18 +380,18 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     (void)segment_count_.load(std::memory_order_acquire);
     return segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
-  ResidentEntry &resident_entry_at(size_t idx) {
+  MetadataEntry &metadata_entry_at(size_t idx) {
     (void)segment_count_.load(std::memory_order_acquire);
-    return resident_segments_[idx >> kSegmentShift][idx & kSegmentMask];
+    return metadata_segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
-  const ResidentEntry &resident_entry_at(size_t idx) const {
+  const MetadataEntry &metadata_entry_at(size_t idx) const {
     (void)segment_count_.load(std::memory_order_acquire);
-    return resident_segments_[idx >> kSegmentShift][idx & kSegmentMask];
+    return metadata_segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
 
   // `force` bypasses CLOCK second chance.
   static void initialize_segment(Entry *entries,
-                                 ResidentEntry *resident_entries);
+                                 MetadataEntry *metadata_entries);
   bool do_evict_block(block_id_t block_id, bool force);
   static version_t next_owner_version();
 

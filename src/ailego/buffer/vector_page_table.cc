@@ -123,19 +123,19 @@ size_t VectorPageTable::metadata_bytes_for_entries(size_t entry_num) {
 }
 
 void VectorPageTable::initialize_segment(Entry *entries,
-                                         ResidentEntry *resident_entries) {
+                                         MetadataEntry *metadata_entries) {
   for (size_t i = 0; i < kSegmentSize; ++i) {
+    entries[i].buffer.store(nullptr, std::memory_order_relaxed);
     entries[i].ref_count.store(kUnloadedRefCount, std::memory_order_relaxed);
     entries[i].in_evict_queue.store(false, std::memory_order_relaxed);
-    entries[i].is_dirty.store(false, std::memory_order_relaxed);
     entries[i].referenced.store(false, std::memory_order_relaxed);
     entries[i].evict_priority.store(0, std::memory_order_relaxed);
-    entries[i].ever_loaded.store(false, std::memory_order_relaxed);
     entries[i].ghost_state.store(kNoGhostHistory, std::memory_order_relaxed);
-    entries[i].admission_state.store(0, std::memory_order_relaxed);
-    entries[i].next_loaded = kInvalidLoadedBlock;
-    entries[i].file_offset = 0;
-    resident_entries[i].buffer.store(nullptr, std::memory_order_relaxed);
+    metadata_entries[i].next_loaded = kInvalidLoadedBlock;
+    metadata_entries[i].file_offset = 0;
+    metadata_entries[i].admission_state.store(0, std::memory_order_relaxed);
+    metadata_entries[i].is_dirty.store(false, std::memory_order_relaxed);
+    metadata_entries[i].ever_loaded.store(false, std::memory_order_relaxed);
   }
 }
 
@@ -151,11 +151,12 @@ bool VectorPageTable::should_admit_miss(block_id_t block_id, uint32_t epoch) {
     return true;
   }
 
+  MetadataEntry &metadata = metadata_entry_at(block_id);
   static constexpr uint32_t kEpochMask = (uint32_t{1} << 24) - 1;
   static constexpr uint8_t kAdmissionThreshold = 2;
   epoch &= kEpochMask;
 
-  uint32_t state = entry.admission_state.load(std::memory_order_relaxed);
+  uint32_t state = metadata.admission_state.load(std::memory_order_relaxed);
   while (true) {
     const uint32_t previous_epoch = state >> 8;
     const uint8_t previous_count = static_cast<uint8_t>(state);
@@ -170,7 +171,7 @@ bool VectorPageTable::should_admit_miss(block_id_t block_id, uint32_t epoch) {
       count = static_cast<uint8_t>(previous_count / 2 + 1);
     }
     const uint32_t updated = (epoch << 8) | count;
-    if (entry.admission_state.compare_exchange_weak(
+    if (metadata.admission_state.compare_exchange_weak(
             state, updated, std::memory_order_relaxed,
             std::memory_order_relaxed)) {
       // Close the race with a loader that claimed the page while its miss was
@@ -220,23 +221,23 @@ bool VectorPageTable::init(size_t entry_num) {
   }
 
   std::vector<std::unique_ptr<Entry[]>> new_segments;
-  std::vector<std::unique_ptr<ResidentEntry[]>> new_resident_segments;
+  std::vector<std::unique_ptr<MetadataEntry[]>> new_metadata_segments;
   std::unique_ptr<Entry *[]> new_segment_directory;
-  std::unique_ptr<ResidentEntry *[]> new_resident_segment_directory;
+  std::unique_ptr<MetadataEntry *[]> new_metadata_segment_directory;
   try {
     if (need_segments != 0) {
       new_segment_directory = std::make_unique<Entry *[]>(kMaxSegments);
-      new_resident_segment_directory =
-          std::make_unique<ResidentEntry *[]>(kMaxSegments);
+      new_metadata_segment_directory =
+          std::make_unique<MetadataEntry *[]>(kMaxSegments);
     }
     new_segments.reserve(need_segments);
-    new_resident_segments.reserve(need_segments);
+    new_metadata_segments.reserve(need_segments);
     for (size_t s = 0; s < need_segments; ++s) {
       auto entries = std::make_unique<Entry[]>(kSegmentSize);
-      auto resident_entries = std::make_unique<ResidentEntry[]>(kSegmentSize);
-      initialize_segment(entries.get(), resident_entries.get());
+      auto metadata_entries = std::make_unique<MetadataEntry[]>(kSegmentSize);
+      initialize_segment(entries.get(), metadata_entries.get());
       new_segments.push_back(std::move(entries));
-      new_resident_segments.push_back(std::move(resident_entries));
+      new_metadata_segments.push_back(std::move(metadata_entries));
     }
   } catch (const std::bad_alloc &) {
     MemoryLimitPool::get_instance().release_metadata(charge);
@@ -248,10 +249,10 @@ bool VectorPageTable::init(size_t entry_num) {
   }
   for (size_t s = 0; s < need_segments; ++s) {
     new_segment_directory[s] = new_segments[s].release();
-    new_resident_segment_directory[s] = new_resident_segments[s].release();
+    new_metadata_segment_directory[s] = new_metadata_segments[s].release();
   }
   segments_ = std::move(new_segment_directory);
-  resident_segments_ = std::move(new_resident_segment_directory);
+  metadata_segments_ = std::move(new_metadata_segment_directory);
   // Publish segments before the externally visible entry count.
   segment_count_.store(need_segments, std::memory_order_release);
   entry_num_.store(entry_num, std::memory_order_release);
@@ -297,23 +298,23 @@ bool VectorPageTable::extend(size_t new_entry_num) {
   }
 
   std::vector<std::unique_ptr<Entry[]>> new_segments;
-  std::vector<std::unique_ptr<ResidentEntry[]>> new_resident_segments;
+  std::vector<std::unique_ptr<MetadataEntry[]>> new_metadata_segments;
   std::unique_ptr<Entry *[]> new_segment_directory;
-  std::unique_ptr<ResidentEntry *[]> new_resident_segment_directory;
+  std::unique_ptr<MetadataEntry *[]> new_metadata_segment_directory;
   try {
     if (needs_directory) {
       new_segment_directory = std::make_unique<Entry *[]>(kMaxSegments);
-      new_resident_segment_directory =
-          std::make_unique<ResidentEntry *[]>(kMaxSegments);
+      new_metadata_segment_directory =
+          std::make_unique<MetadataEntry *[]>(kMaxSegments);
     }
     new_segments.reserve(new_segment_count - old_count);
-    new_resident_segments.reserve(new_segment_count - old_count);
+    new_metadata_segments.reserve(new_segment_count - old_count);
     for (size_t s = old_count; s < new_segment_count; ++s) {
       auto entries = std::make_unique<Entry[]>(kSegmentSize);
-      auto resident_entries = std::make_unique<ResidentEntry[]>(kSegmentSize);
-      initialize_segment(entries.get(), resident_entries.get());
+      auto metadata_entries = std::make_unique<MetadataEntry[]>(kSegmentSize);
+      initialize_segment(entries.get(), metadata_entries.get());
       new_segments.push_back(std::move(entries));
-      new_resident_segments.push_back(std::move(resident_entries));
+      new_metadata_segments.push_back(std::move(metadata_entries));
     }
   } catch (const std::bad_alloc &) {
     MemoryLimitPool::get_instance().release_metadata(added_charge);
@@ -325,17 +326,17 @@ bool VectorPageTable::extend(size_t new_entry_num) {
   }
   Entry **segment_directory =
       needs_directory ? new_segment_directory.get() : segments_.get();
-  ResidentEntry **resident_segment_directory =
-      needs_directory ? new_resident_segment_directory.get()
-                      : resident_segments_.get();
+  MetadataEntry **metadata_segment_directory =
+      needs_directory ? new_metadata_segment_directory.get()
+                      : metadata_segments_.get();
   for (size_t s = old_count; s < new_segment_count; ++s) {
     const size_t idx = s - old_count;
     segment_directory[s] = new_segments[idx].release();
-    resident_segment_directory[s] = new_resident_segments[idx].release();
+    metadata_segment_directory[s] = new_metadata_segments[idx].release();
   }
   if (needs_directory) {
     segments_ = std::move(new_segment_directory);
-    resident_segments_ = std::move(new_resident_segment_directory);
+    metadata_segments_ = std::move(new_metadata_segment_directory);
   }
   // Match init() publication order: segments first, entry count last.
   segment_count_.store(new_segment_count, std::memory_order_release);
@@ -352,11 +353,10 @@ bool VectorPageTable::rollback_extend(size_t old_entry_num) {
     return true;
   }
   for (size_t i = old_entry_num; i < current_entry_num; ++i) {
-    if (resident_entry_at(i).buffer.load(std::memory_order_relaxed) !=
-            nullptr ||
+    if (entry_at(i).buffer.load(std::memory_order_relaxed) != nullptr ||
         entry_at(i).ref_count.load(std::memory_order_relaxed) !=
             std::numeric_limits<int>::min() ||
-        entry_at(i).ever_loaded.load(std::memory_order_relaxed)) {
+        metadata_entry_at(i).ever_loaded.load(std::memory_order_relaxed)) {
       LOG_ERROR(
           "VectorPageTable::rollback_extend: new entry %zu is already in "
           "use; refusing rollback",
@@ -374,14 +374,14 @@ bool VectorPageTable::rollback_extend(size_t old_entry_num) {
   for (size_t s = old_segment_count; s < current_segment_count; ++s) {
     delete[] segments_[s];
     segments_[s] = nullptr;
-    delete[] resident_segments_[s];
-    resident_segments_[s] = nullptr;
+    delete[] metadata_segments_[s];
+    metadata_segments_[s] = nullptr;
   }
   size_t released_charge =
       (current_segment_count - old_segment_count) * kSegmentMetadataBytes;
   if (old_segment_count == 0) {
     segments_.reset();
-    resident_segments_.reset();
+    metadata_segments_.reset();
     released_charge += kSegmentDirectoryBytes;
   }
   MemoryLimitPool::get_instance().release_metadata(released_charge);
@@ -441,7 +441,7 @@ char *VectorPageTable::acquire_block(block_id_t block_id, bool record_reuse) {
           inc_sampled_hit();
         }
       }
-      return resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
+      return e.buffer.load(std::memory_order_acquire);
     }
   }
   return nullptr;
@@ -532,6 +532,7 @@ char *VectorPageTable::publish_claimed_block(block_id_t block_id, char *buffer,
   assert(block_id < entry_num_.load(std::memory_order_acquire));
   assert(buffer != nullptr);
   Entry &entry = entry_at(block_id);
+  MetadataEntry &metadata = metadata_entry_at(block_id);
   if (entry.ref_count.load(std::memory_order_acquire) != kLoadingRefCount) {
     LOG_ERROR(
         "publish_claimed_block: block_id=%zu is not owned by a loader, "
@@ -542,10 +543,10 @@ char *VectorPageTable::publish_claimed_block(block_id_t block_id, char *buffer,
     return nullptr;
   }
 
-  entry.file_offset = file_offset;
-  entry.is_dirty.store(false, std::memory_order_relaxed);
+  metadata.file_offset = file_offset;
+  metadata.is_dirty.store(false, std::memory_order_relaxed);
   entry.referenced.store(false, std::memory_order_relaxed);
-  entry.admission_state.store(0, std::memory_order_relaxed);
+  metadata.admission_state.store(0, std::memory_order_relaxed);
   if (adaptive_priority_enabled_) {
     uint8_t evicted_hot = kEvictedHot;
     if (entry.ghost_state.compare_exchange_strong(evicted_hot, kGhostAdmitted,
@@ -557,14 +558,14 @@ char *VectorPageTable::publish_claimed_block(block_id_t block_id, char *buffer,
       ghost_hot_hits_.fetch_add(1, std::memory_order_relaxed);
     }
   }
-  if (!entry.ever_loaded.exchange(true, std::memory_order_acq_rel)) {
+  if (!metadata.ever_loaded.exchange(true, std::memory_order_acq_rel)) {
     size_t head = loaded_head_.load(std::memory_order_relaxed);
     do {
-      entry.next_loaded = head;
+      metadata.next_loaded = head;
     } while (!loaded_head_.compare_exchange_weak(
         head, block_id, std::memory_order_release, std::memory_order_relaxed));
   }
-  resident_entry_at(block_id).buffer.store(buffer, std::memory_order_release);
+  entry.buffer.store(buffer, std::memory_order_release);
   entry.in_evict_queue.store(true, std::memory_order_relaxed);
   entry.ref_count.store(1, std::memory_order_release);
 
@@ -628,8 +629,7 @@ bool VectorPageTable::force_evict_block(block_id_t block_id) {
 void VectorPageTable::force_evict_all_loaded() {
   size_t block_id = loaded_head_.load(std::memory_order_acquire);
   while (block_id != kInvalidLoadedBlock) {
-    Entry &entry = entry_at(block_id);
-    const size_t next = entry.next_loaded;
+    const size_t next = metadata_entry_at(block_id).next_loaded;
     assert(is_released(block_id));
     (void)force_evict_block(block_id);
     block_id = next;
@@ -644,9 +644,8 @@ size_t VectorPageTable::recover_eviction_queue() {
   size_t block_id = loaded_head_.load(std::memory_order_acquire);
   while (block_id != kInvalidLoadedBlock) {
     Entry &entry = entry_at(block_id);
-    const size_t next = entry.next_loaded;
-    if (resident_entry_at(block_id).buffer.load(std::memory_order_acquire) !=
-            nullptr &&
+    const size_t next = metadata_entry_at(block_id).next_loaded;
+    if (entry.buffer.load(std::memory_order_acquire) != nullptr &&
         entry.ref_count.load(std::memory_order_acquire) == 0) {
       bool expected = false;
       if (entry.in_evict_queue.compare_exchange_strong(
@@ -677,9 +676,8 @@ VectorPageTable::resident_pages_by_priority() const {
   size_t block_id = loaded_head_.load(std::memory_order_acquire);
   while (block_id != kInvalidLoadedBlock) {
     const Entry &entry = entry_at(block_id);
-    const size_t next = entry.next_loaded;
-    if (resident_entry_at(block_id).buffer.load(std::memory_order_acquire) !=
-        nullptr) {
+    const size_t next = metadata_entry_at(block_id).next_loaded;
+    if (entry.buffer.load(std::memory_order_acquire) != nullptr) {
       const uint8_t priority =
           entry.evict_priority.load(std::memory_order_relaxed);
       if (priority < kPriorityCount) {
@@ -744,14 +742,14 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
         return false;
       }
     }
-    char *buffer =
-        resident_entry_at(block_id).buffer.load(std::memory_order_acquire);
-    if (buffer && e.is_dirty.load(std::memory_order_relaxed)) {
+    MetadataEntry &metadata = metadata_entry_at(block_id);
+    char *buffer = e.buffer.load(std::memory_order_acquire);
+    if (buffer && metadata.is_dirty.load(std::memory_order_relaxed)) {
       int flush_rc = -1;
       if (flush_callback_) {
         try {
-          flush_rc =
-              flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
+          flush_rc = flush_callback_(block_id, buffer, kVectorPageSize,
+                                     metadata.file_offset);
         } catch (...) {
           LOG_ERROR(
               "VectorPageTable::evict_block: flush callback threw for "
@@ -780,7 +778,7 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
         return false;
       }
       if (flush_rc == 0) {
-        e.is_dirty.store(false, std::memory_order_relaxed);
+        metadata.is_dirty.store(false, std::memory_order_relaxed);
         inc_dirty_flush();
       } else {
         LOG_ERROR(
@@ -789,8 +787,7 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
             static_cast<size_t>(block_id));
       }
     }
-    buffer = resident_entry_at(block_id).buffer.exchange(
-        nullptr, std::memory_order_acq_rel);
+    buffer = e.buffer.exchange(nullptr, std::memory_order_acq_rel);
     if (buffer) {
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
