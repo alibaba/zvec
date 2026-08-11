@@ -228,6 +228,14 @@ jobs:
           "$GITHUB_WORKSPACE/examples/c++/build/diskann-core-example"
         shell: bash
 
+      - name: Run DiskAnn C++ Tests (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R diskann --output-on-failure --parallel $NPROC
+          "$GITHUB_WORKSPACE/examples/c++/build/diskann-core-example"
+        shell: bash
+
       - name: Run DiskAnn Python Tests (w/ libaio)
         if: matrix.platform == 'linux-x64'
         run: |

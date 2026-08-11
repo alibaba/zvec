@@ -15,7 +15,6 @@ endif()
 get_filename_component(ZVEC_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 
 set(ZVEC_INCLUDE_DIR ${ZVEC_ROOT_DIR}/src/include)
-set(ZVEC_SRC_DIR ${ZVEC_ROOT_DIR}/src)
 set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
 
 include_directories(${ZVEC_INCLUDE_DIR})
