@@ -66,6 +66,20 @@ BaseIndexQueryParam::Pointer HNSWRabitqQueryParam::Clone() const {
   return std::make_shared<HNSWRabitqQueryParam>(*this);
 }
 
+IVFRabitqQueryParam::IVFRabitqQueryParam() = default;
+IVFRabitqQueryParam::IVFRabitqQueryParam(const IVFRabitqQueryParam &) = default;
+IVFRabitqQueryParam::IVFRabitqQueryParam(IVFRabitqQueryParam &&) noexcept =
+    default;
+IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
+    const IVFRabitqQueryParam &) = default;
+IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
+    IVFRabitqQueryParam &&) noexcept = default;
+IVFRabitqQueryParam::~IVFRabitqQueryParam() = default;
+
+BaseIndexQueryParam::Pointer IVFRabitqQueryParam::Clone() const {
+  return std::make_shared<IVFRabitqQueryParam>(*this);
+}
+
 IVFQueryParam::IVFQueryParam() = default;
 IVFQueryParam::IVFQueryParam(const IVFQueryParam &) = default;
 IVFQueryParam::IVFQueryParam(IVFQueryParam &&) noexcept = default;
@@ -146,6 +160,20 @@ HNSWRabitqIndexParam &HNSWRabitqIndexParam::operator=(
 HNSWRabitqIndexParam &HNSWRabitqIndexParam::operator=(HNSWRabitqIndexParam &&) =
     default;
 HNSWRabitqIndexParam::~HNSWRabitqIndexParam() = default;
+
+IVFRabitqIndexParam::IVFRabitqIndexParam()
+    : BaseIndexParam(IndexType::kIVFRabitq) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(int nlist)
+    : BaseIndexParam(IndexType::kIVFRabitq), nlist(nlist) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(MetricType metric, int dim, int nlist)
+    : BaseIndexParam(IndexType::kIVFRabitq, metric, dim), nlist(nlist) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(const IVFRabitqIndexParam &) = default;
+IVFRabitqIndexParam::IVFRabitqIndexParam(IVFRabitqIndexParam &&) = default;
+IVFRabitqIndexParam &IVFRabitqIndexParam::operator=(
+    const IVFRabitqIndexParam &) = default;
+IVFRabitqIndexParam &IVFRabitqIndexParam::operator=(IVFRabitqIndexParam &&) =
+    default;
+IVFRabitqIndexParam::~IVFRabitqIndexParam() = default;
 
 ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
     bool omit_empty_value) const {
@@ -306,6 +334,35 @@ ailego::JsonObject HNSWRabitqIndexParam::SerializeToJsonObject(
   json_obj.set("ef_construction", ailego::JsonValue(ef_construction));
   json_obj.set("total_bits", ailego::JsonValue(total_bits));
   json_obj.set("num_clusters", ailego::JsonValue(num_clusters));
+  if (!omit_empty_value || sample_count != 0) {
+    json_obj.set("sample_count", ailego::JsonValue(sample_count));
+  }
+  return json_obj;
+}
+
+bool IVFRabitqIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVFRabitq) {
+    LOG_ERROR("index_type is not kIVFRabitq");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+
+  return true;
+}
+
+ailego::JsonObject IVFRabitqIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("total_bits", ailego::JsonValue(total_bits));
   if (!omit_empty_value || sample_count != 0) {
     json_obj.set("sample_count", ailego::JsonValue(sample_count));
   }

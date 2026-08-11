@@ -30,7 +30,7 @@
 
 namespace zvec {
 namespace core {
-int execute_io_libaio(IOContext &ctx, int fd,
+int execute_io_libaio(io_context_t &ctx, int fd,
                       std::vector<AlignedRead> &read_reqs,
                       uint64_t n_retries = 0);
 }  // namespace core
@@ -192,7 +192,7 @@ TEST(DiskAnnLinuxAioTest, AccumulatesPartialSubmissionsAndCompletions) {
   state.submit_results = {2, 2};
   state.completion_results = {1, 2, 1};
   FakeAioGuard guard(&state);
-  IOContext ctx = reinterpret_cast<IOContext>(static_cast<uintptr_t>(1));
+  io_context_t ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
 
   // An invalid fd makes any accidental pread fallback fail the test.
   EXPECT_EQ(execute_io_libaio(ctx, -1, requests), 0);
@@ -221,7 +221,7 @@ TEST(DiskAnnLinuxAioTest, DrainsPartialSubmissionBeforePreadFallback) {
   state.submit_results = {2, -EAGAIN};
   state.completion_results = {1, 1};
   FakeAioGuard guard(&state);
-  IOContext ctx = reinterpret_cast<IOContext>(static_cast<uintptr_t>(1));
+  io_context_t ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
 
   EXPECT_EQ(execute_io_libaio(ctx, file.fd(), requests), 0);
   EXPECT_EQ(state.submit_sizes, (std::vector<long>{4, 2}));
@@ -248,7 +248,7 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
   state.completion_results = {1, 1, 2};
   state.short_completion = 0;
   FakeAioGuard guard(&state);
-  IOContext ctx = reinterpret_cast<IOContext>(static_cast<uintptr_t>(1));
+  io_context_t ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
 
   EXPECT_EQ(execute_io_libaio(ctx, file.fd(), requests), 0);
   EXPECT_EQ(state.completion_sizes, (std::vector<long>{4, 3, 2}));

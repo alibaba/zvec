@@ -177,9 +177,31 @@ jobs:
         shell: bash
 
       # ------------------------------------------------------------------ #
-      # DiskAnn libaio round: install libaio and re-run tests 
+      # DiskAnn io_uring round: GitHub-hosted runners are full VMs on
+      # kernel 6.8+, so raw io_uring syscalls are available and win the
+      # backend priority (io_uring > libaio > pread).  The main test
+      # rounds above therefore already exercised the io_uring path;
+      # this step asserts it so a silent probe regression fails CI.
       # ------------------------------------------------------------------ #
-      - name: Install libaio runtime
+      - name: Verify io_uring backend is active
+        if: runner.os == 'Linux'
+        run: |
+          uname -r
+          python -c "
+          import zvec
+          from zvec.typing import IOBackendType
+          t = zvec.io_backend_type()
+          print('Active I/O backend:', t, '-', zvec.io_backend_description())
+          assert t == IOBackendType.IO_URING, f'expected IO_URING, got {t}'
+          "
+        shell: bash
+
+      # ------------------------------------------------------------------ #
+      # DiskAnn libaio round: disable io_uring via sysctl (kernel 6.6+,
+      # makes io_uring_setup() fail with -EPERM), install libaio, and
+      # re-run tests so the libaio fallback path is genuinely exercised.
+      # ------------------------------------------------------------------ #
+      - name: Install libaio runtime and disable io_uring
         if: matrix.platform == 'linux-x64'
         run: |
           sudo apt-get update -y
@@ -188,6 +210,14 @@ jobs:
           echo "=== libaio status (should be present) ==="
           dpkg -l | grep -i libaio || true
           ldconfig -p | grep libaio || true
+          sudo sysctl -w kernel.io_uring_disabled=2
+          python -c "
+          import zvec
+          from zvec.typing import IOBackendType
+          t = zvec.io_backend_type()
+          print('Active I/O backend:', t)
+          assert t == IOBackendType.LIBAIO, f'expected LIBAIO, got {t}'
+          "
         shell: bash
 
       - name: Run DiskAnn C++ Tests (w/ libaio)
@@ -202,6 +232,32 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/test_collection_diskann.py -v
+        shell: bash
+
+      # ------------------------------------------------------------------ #
+      # DiskAnn pread round: with io_uring still disabled, remove libaio
+      # so the final synchronous pread() fallback is exercised too.
+      # ------------------------------------------------------------------ #
+      - name: Remove libaio (force pread fallback)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get remove -y libaio1t64 libaio1 2>/dev/null || \
+            sudo apt-get remove -y libaio1t64 || \
+            sudo apt-get remove -y libaio1
+          python -c "
+          import zvec
+          from zvec.typing import IOBackendType
+          t = zvec.io_backend_type()
+          print('Active I/O backend:', t)
+          assert t == IOBackendType.PREAD, f'expected PREAD, got {t}'
+          "
+        shell: bash
+
+      - name: Run DiskAnn C++ Tests (w/ pread)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R diskann --output-on-failure --parallel $NPROC
         shell: bash
 
       # Verify installing libaio does not affect existing non-DiskAnn tests.

@@ -558,10 +558,11 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  if (_prepare_for_search(vector_data, search_param, context) != 0) {
+  int prepare_ret = _prepare_for_search(vector_data, search_param, context);
+  if (prepare_ret != 0) {
     LOG_ERROR("Failed to prepare for search");
     context->reset();
-    return core::IndexError_Runtime;
+    return prepare_ret;
   }
 
   if (is_sparse_) {

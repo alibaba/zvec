@@ -44,6 +44,7 @@ struct GroupByCase {
   bool is_sparse = false;
   uint32_t dimension = kDimension;
   bool with_refiner = false;
+  int expected_error = 0;
 };
 
 std::shared_ptr<std::vector<uint64_t>> AllPks() {
@@ -181,6 +182,31 @@ BaseIndexQueryParam::Pointer HnswRabitqQuery(bool fetch_vector = false,
   }
   return builder.build();
 }
+
+BaseIndexParam::Pointer DenseIvfRabitqParam(uint32_t dimension) {
+  return IVFRabitqIndexParamBuilder()
+      .WithMetricType(MetricType::kInnerProduct)
+      .WithDataType(DataType::DT_FP32)
+      .WithDimension(dimension)
+      .WithIsSparse(false)
+      .WithNlist(4)
+      .WithTotalBits(7)
+      .Build();
+}
+
+BaseIndexQueryParam::Pointer IvfRabitqQuery(bool is_linear = false,
+                                            bool with_bf_pks = false,
+                                            bool fetch_vector = false) {
+  auto query = std::make_shared<IVFRabitqQueryParam>();
+  query->topk = kSearchTopk;
+  query->nprobe = 4;
+  query->is_linear = is_linear;
+  query->fetch_vector = fetch_vector;
+  if (with_bf_pks) {
+    query->bf_pks = AllPks();
+  }
+  return query;
+}
 #endif
 
 #if DISKANN_SUPPORTED
@@ -264,7 +290,11 @@ class GroupByInterfaceTest : public ::testing::Test {
     SearchResult result;
     const int ret = index->Search(query.data, query_param, &result);
     if (expect_error) {
-      ASSERT_NE(0, ret) << test_case.name;
+      if (test_case.expected_error != 0) {
+        ASSERT_EQ(test_case.expected_error, ret) << test_case.name;
+      } else {
+        ASSERT_NE(0, ret) << test_case.name;
+      }
     } else {
       ASSERT_EQ(0, ret) << test_case.name;
       AssertGroupedResult(result, query_param, test_case);
@@ -337,6 +367,16 @@ class GroupByInterfaceTest : public ::testing::Test {
     }
 
     if (!query_param->fetch_vector) {
+      return;
+    }
+    if (test_case.index_param->index_type == IndexType::kIVFRabitq) {
+      ASSERT_TRUE(result.group_reverted_vector_list_.empty());
+      for (const auto &group : result.group_doc_list_) {
+        for (const auto &doc : group.docs()) {
+          ASSERT_EQ(nullptr, doc.vector());
+          ASSERT_TRUE(doc.vector_string().empty());
+        }
+      }
       return;
     }
     if (test_case.is_sparse) {
@@ -458,9 +498,27 @@ TEST_F(GroupByInterfaceTest, Dense) {
        HnswRabitqQuery(/*fetch_vector=*/false, /*is_linear=*/false,
                        /*with_bf_pks=*/true),
        /*is_sparse=*/false, /*dimension=*/64},
-  // Note: fetch_vector is not supported for RabitQ because the entity
-  // stores quantized binary data (not original float vectors), and
-  // RabitqReformer does not implement revert().
+      {"dense_ivf_rabitq_graph", DenseIvfRabitqParam(64), IvfRabitqQuery(),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_linear", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_bf_pks", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_fetch_vector_ignored", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/false,
+                      /*fetch_vector=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_large_nprobe", DenseIvfRabitqParam(64),
+       [] {
+         auto query = IvfRabitqQuery();
+         std::dynamic_pointer_cast<IVFRabitqQueryParam>(query)->nprobe = 1025;
+         return query;
+       }(),
+       /*is_sparse=*/false, /*dimension=*/64},
+  // IVF RaBitQ ignores fetch_vector; DB queries fetch original vectors from
+  // the accompanying Flat index after recall.
 
 #endif
   };
@@ -521,6 +579,15 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
        /*is_sparse=*/false,
        /*dimension=*/kDimension,
        /*with_refiner=*/true},
+#if RABITQ_SUPPORTED
+      {"unsupported_ivf_rabitq_zero_nprobe", DenseIvfRabitqParam(64),
+       [] {
+         auto query = IvfRabitqQuery();
+         std::dynamic_pointer_cast<IVFRabitqQueryParam>(query)->nprobe = 0;
+         return query;
+       }(),
+       /*is_sparse=*/false, /*dimension=*/64},
+#endif
 #if DISKANN_SUPPORTED
       {"unsupported_diskann_graph", DenseDiskAnnParam(), DiskAnnQuery()},
       {"unsupported_diskann_linear", DenseDiskAnnParam(),

@@ -1,0 +1,80 @@
+diff --git a/include/rabitqlib/index/lut.hpp b/include/rabitqlib/index/lut.hpp
+index 5690dcf..e6c3dd2 100644
+--- a/include/rabitqlib/index/lut.hpp
++++ b/include/rabitqlib/index/lut.hpp
+@@ -22,2 +22,4 @@ class Lut {
+-    T delta_;
+-    T sum_vl_lut_;
++    std::vector<float> lut_float_;
++    std::vector<uint16_t> lut_u16_;
++    T delta_ = 0;
++    T sum_vl_lut_ = 0;
+@@ -27,3 +29,8 @@ class Lut {
+-    explicit Lut(const T* rotated_query, size_t padded_dim, bool use_hacc = false)
+-        : table_length_(padded_dim << 2)
+-        , lut_(table_length_ * (static_cast<int>(use_hacc) + 1)) {
++    explicit Lut(const T* rotated_query, size_t padded_dim, bool use_hacc = false) {
++        reset(rotated_query, padded_dim, use_hacc);
++    }
++
++    void reset(const T* rotated_query, size_t padded_dim, bool use_hacc = false) {
++        table_length_ = padded_dim << 2;
++        lut_.resize(table_length_ * (static_cast<int>(use_hacc) + 1));
++
+@@ -31,2 +38,2 @@ class Lut {
+-        std::vector<float> lut_float(table_length_);
+-        fastscan::pack_lut(padded_dim, rotated_query, lut_float.data());
++        lut_float_.resize(table_length_);
++        fastscan::pack_lut(padded_dim, rotated_query, lut_float_.data());
+@@ -35 +42 @@ class Lut {
+-        data_range(lut_float.data(), table_length_, vl_lut, vr_lut);
++        data_range(lut_float_.data(), table_length_, vl_lut, vr_lut);
+@@ -41 +48 @@ class Lut {
+-            std::vector<uint16_t> lut_u16(table_length_);
++            lut_u16_.resize(table_length_);
+@@ -43 +50 @@ class Lut {
+-                lut_u16.data(), lut_float.data(), table_length_, vl_lut, delta_
++                lut_u16_.data(), lut_float_.data(), table_length_, vl_lut, delta_
+@@ -45 +52 @@ class Lut {
+-            fastscan::transfer_lut_hacc(lut_u16.data(), padded_dim, lut_.data());
++            fastscan::transfer_lut_hacc(lut_u16_.data(), padded_dim, lut_.data());
+@@ -48 +55 @@ class Lut {
+-            scalar_quantize(lut_.data(), lut_float.data(), table_length_, vl_lut, delta_);
++            scalar_quantize(lut_.data(), lut_float_.data(), table_length_, vl_lut, delta_);
+@@ -54,0 +62 @@ class Lut {
++        table_length_ = other.table_length_;
+@@ -55,0 +64,2 @@ class Lut {
++        lut_float_ = std::move(other.lut_float_);
++        lut_u16_ = std::move(other.lut_u16_);
+@@ -65 +75 @@ class Lut {
+-}  // namespace rabitqlib
+\ No newline at end of file
++}  // namespace rabitqlib
+diff --git a/include/rabitqlib/index/query.hpp b/include/rabitqlib/index/query.hpp
+index fb98479..cde2f4f 100644
+--- a/include/rabitqlib/index/query.hpp
++++ b/include/rabitqlib/index/query.hpp
+@@ -71,3 +71,3 @@ class SplitBatchQuery {
+-    )
+-        : rotated_query_(rotated_query) {
+-        lookup_table_ = std::move(Lut<T>(rotated_query, padded_dim, use_hacc));
++    ) {
++        reset(rotated_query, padded_dim, ex_bits, metric_type, use_hacc);
++    }
+@@ -74,0 +75,9 @@ class SplitBatchQuery {
++    void reset(
++        const T* rotated_query,
++        size_t padded_dim,
++        size_t ex_bits,
++        MetricType metric_type = METRIC_L2,
++        bool use_hacc = true
++    ) {
++        rotated_query_ = rotated_query;
++        lookup_table_.reset(rotated_query, padded_dim, use_hacc);
+@@ -75,0 +85,2 @@ class SplitBatchQuery {
++        G_add_ = 0;
++        G_error_ = 0;
+@@ -187 +198 @@ class SplitSingleQuery {
+-}  // namespace rabitqlib
+\ No newline at end of file
++}  // namespace rabitqlib

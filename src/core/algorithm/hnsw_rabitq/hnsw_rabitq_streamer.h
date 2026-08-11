@@ -42,6 +42,15 @@ class HnswRabitqStreamer : public IndexStreamer {
     provider_ = std::move(provider);
   }
 
+  //! The build-from-original provider binding is not supported: rabitq
+  //! already builds from its own provider with rerank semantics, and
+  //! accepting this call would silently overwrite it
+  int set_provider(IndexProvider::Pointer /*provider*/,
+                   const IndexMeta & /*provider_meta*/) override {
+    LOG_ERROR("Build from original provider is not supported by rabitq");
+    return IndexError_Unsupported;
+  }
+
   void set_reformer(IndexReformer::Pointer reformer) {
     reformer_ = std::dynamic_pointer_cast<RabitqReformer>(reformer);
   }

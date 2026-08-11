@@ -4,6 +4,18 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Disable LTO on musl: Alpine's fortify-headers use always_inline wrappers
+# around external symbols (e.g. __orig_vsnprintf), which conflicts with GCC's
+# LTO ("function body can be overwritten at link time"). glibc uses compiler
+# builtins (__builtin___vsnprintf_chk) and is unaffected. This must run before
+# find_package(pybind11), which checks CMAKE_INTERPROCEDURAL_OPTIMIZATION at
+# load time to decide whether to inject -flto.
+# ZVEC_ON_MUSL is detected globally in the root CMakeLists.txt via ldd output.
+if(ZVEC_ON_MUSL AND NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+    message(STATUS "Disabled LTO on musl (conflicts with fortify-headers)")
+endif()
+
 find_package(pybind11 REQUIRED)
 
 set(SRC_LISTS
@@ -38,6 +50,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_knn_flat_sparse_static>
             $<TARGET_FILE:core_knn_hnsw_static>
             $<TARGET_FILE:core_knn_hnsw_rabitq_static>
+            $<TARGET_FILE:core_knn_ivf_rabitq_static>
             $<TARGET_FILE:core_knn_hnsw_sparse_static>
             $<TARGET_FILE:core_knn_ivf_static>
             $<TARGET_FILE:core_knn_vamana_static>
@@ -54,6 +67,16 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(_zvec PRIVATE
             "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
     )
+    # On musl, dynamic linking would force auditwheel to rewrite the ELF via
+    # patchelf so it can vendor libstdc++/libgcc. The patchelf versions used in
+    # current build environments (0.17.x/0.18.x) corrupt protobuf's
+    # protodesc_cold section on musl 1.2.5 x86_64, causing init crashes.
+    # Statically linking libstdc++ and libgcc avoids patchelf entirely and
+    # keeps _zvec self-contained.
+    if(ZVEC_ON_MUSL)
+        target_link_options(_zvec PRIVATE -static-libstdc++ -static-libgcc)
+        message(STATUS "_zvec: statically linking libstdc++ and libgcc on musl")
+    endif()
     # DiskAnn is now statically linked into _zvec.so via --whole-archive, so
     # no separate runtime .so is shipped in the wheel. libaio is still loaded
     # at runtime via dlopen() (see libaio_loader.h); if it is missing, DiskAnn
@@ -65,6 +88,7 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_rabitq_static>
+            -Wl,-force_load,$<TARGET_FILE:core_knn_ivf_rabitq_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_ivf_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_vamana_static>

@@ -31,7 +31,8 @@ function(apply_patch_once patch_name target_dir patch_file)
 
     #message(STATUS "Applying patch '${patch_name}' to ${target_dir} ...")
     execute_process(
-        COMMAND git apply --ignore-space-change --ignore-whitespace "${patch_file}"
+        COMMAND git apply ${ARGN} --ignore-space-change --ignore-whitespace
+                "${patch_file}"
         WORKING_DIRECTORY "${target_dir}"
         RESULT_VARIABLE patch_result
         OUTPUT_VARIABLE patch_stdout

@@ -217,6 +217,25 @@ class ProximaEngineHelper {
         return std::move(ivf_query_param);
       }
 
+      case IndexType::IVF_RABITQ: {
+        auto ivf_rabitq_query_param_result =
+            _build_common_query_param<core_interface::IVFRabitqQueryParam>(
+                query_params);
+        if (!ivf_rabitq_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              ivf_rabitq_query_param_result.error().message()));
+        }
+        auto &ivf_rabitq_query_param = ivf_rabitq_query_param_result.value();
+        if (query_params.query_params) {
+          auto db_ivf_rabitq_query_params =
+              dynamic_cast<const IvfRabitqQueryParams *>(
+                  query_params.query_params.get());
+          ivf_rabitq_query_param->nprobe = db_ivf_rabitq_query_params->nprobe();
+        }
+        return std::move(ivf_rabitq_query_param);
+      }
+
       case IndexType::DISKANN: {
         auto diskann_query_param_result =
             _build_common_query_param<core_interface::DiskAnnQueryParam>(
@@ -452,6 +471,26 @@ class ProximaEngineHelper {
         index_param_builder->WithNList(db_index_params->n_list());
         index_param_builder->WithNiters(db_index_params->n_iters());
         index_param_builder->WithUseSoar(db_index_params->use_soar());
+
+        return index_param_builder->Build();
+      }
+
+      case IndexType::IVF_RABITQ: {
+        auto index_param_builder_result = _build_common_index_param<
+            IvfRabitqIndexParams, core_interface::IVFRabitqIndexParamBuilder>(
+            field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const IvfRabitqIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithNlist(db_index_params->nlist());
+        index_param_builder->WithTotalBits(db_index_params->total_bits());
+        index_param_builder->WithSampleCount(db_index_params->sample_count());
 
         return index_param_builder->Build();
       }

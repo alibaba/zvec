@@ -103,6 +103,7 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
                                                    HnswContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
+  const bool use_provider = dc.has_provider();
   while (true) {
     const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
     if (ailego_unlikely(ctx->debugging())) {
@@ -114,7 +115,13 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
     }
 
     std::vector<MemBlockType> neighbor_vec_blocks;
-    int ret = entity.get_vector_typed(&neighbors[0], size, neighbor_vec_blocks);
+    std::vector<IndexStorage::MemoryBlock> provider_vec_blocks;
+    int ret;
+    if (ailego_unlikely(use_provider)) {
+      ret = dc.get_vector(&neighbors[0], size, provider_vec_blocks);
+    } else {
+      ret = entity.get_vector_typed(&neighbors[0], size, neighbor_vec_blocks);
+    }
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -126,8 +133,14 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
 
     std::vector<float> dists(size);
     std::vector<const void *> neighbor_vecs(size);
-    for (uint32_t i = 0; i < size; ++i) {
-      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    if (ailego_unlikely(use_provider)) {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = provider_vec_blocks[i].data();
+      }
+    } else {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      }
     }
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data());
@@ -277,8 +290,14 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
   std::vector<node_id_t> neighbor_ids(buf_capacity);
   std::vector<MemBlockType> neighbor_vec_blocks;
   neighbor_vec_blocks.reserve(buf_capacity);
+  std::vector<IndexStorage::MemoryBlock> provider_vec_blocks;
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
+
+  const bool use_provider = dc.has_provider();
+  if (ailego_unlikely(use_provider)) {
+    provider_vec_blocks.reserve(buf_capacity);
+  }
 
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
@@ -332,8 +351,14 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     }
 
     neighbor_vec_blocks.clear();
-    int ret =
-        entity.get_vector_typed(neighbor_ids.data(), size, neighbor_vec_blocks);
+    provider_vec_blocks.clear();
+    int ret;
+    if (ailego_unlikely(use_provider)) {
+      ret = dc.get_vector(neighbor_ids.data(), size, provider_vec_blocks);
+    } else {
+      ret = entity.get_vector_typed(neighbor_ids.data(), size,
+                                    neighbor_vec_blocks);
+    }
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -341,17 +366,22 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
       break;
     }
 
-    // do prefetch
-    for (uint32_t i = 0; i < std::min(prefetch_offset, size); ++i) {
-      const char *base =
-          static_cast<const char *>(neighbor_vec_blocks[i].data());
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(base + cl * 64);
+    if (ailego_unlikely(use_provider)) {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = provider_vec_blocks[i].data();
+      }
+    } else {
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
       }
     }
 
-    for (uint32_t i = 0; i < size; ++i) {
-      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    // do prefetch
+    for (uint32_t i = 0; i < std::min(prefetch_offset, size); ++i) {
+      const char *base = static_cast<const char *>(neighbor_vecs[i]);
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        ailego_prefetch(base + cl * 64);
+      }
     }
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data());
