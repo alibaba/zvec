@@ -625,13 +625,11 @@ void LinuxAlignedFileReader::register_thread() {
 #else
   auto thread_id = std::this_thread::get_id();
   std::unique_lock<std::mutex> lk(ctx_mut);
-  if (ctx_map.find(thread_id) != ctx_map.end()) {
-    LOG_ERROR("multiple calls to register_thread from the same thread");
-    return;
-  }
-
   IOContext ctx = 0;
-  ctx_map[thread_id] = ctx;
+  auto result = ctx_map.emplace(thread_id, ctx);
+  if (!result.second) {
+    LOG_ERROR("multiple calls to register_thread from the same thread");
+  }
 #endif
 }
 
@@ -657,12 +655,9 @@ void LinuxAlignedFileReader::deregister_thread() {
 #else
   auto thread_id = std::this_thread::get_id();
   std::lock_guard<std::mutex> lk(ctx_mut);
-  auto it = ctx_map.find(thread_id);
-  if (it == ctx_map.end()) {
+  if (ctx_map.erase(thread_id) == 0) {
     LOG_ERROR("deregister_thread: thread not registered");
-    return;
   }
-  ctx_map.erase(it);
 #endif
 }
 
