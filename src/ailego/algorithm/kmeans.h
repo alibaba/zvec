@@ -14,8 +14,8 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <random>
 #include <ailego/container/vector_array.h>
 #include <ailego/math/euclidean_distance_matrix.h>
@@ -170,10 +170,7 @@ class Kmc2CentroidsGenerator {
     group->wait_finish();
 
     // Update probabilities
-    double p_sum = std::accumulate(probs.begin(), probs.end(), 0.0);
-    for (auto it = probs.begin(); it != probs.end(); ++it) {
-      *it = static_cast<float>((*it / p_sum + 1.0 / probs.size()) * 0.5);
-    }
+    NormalizeProbabilities(&probs);
 
     std::mt19937 mt((std::random_device())());
     std::uniform_real_distribution<float> dist(0.0, 1.0);
@@ -319,6 +316,25 @@ class Kmc2CentroidsGenerator {
       }
     }
     *out = min_score;
+  }
+
+  //! Normalize AFK-MC2 sampling probabilities
+  static void NormalizeProbabilities(std::vector<float> *probs) {
+    double p_sum = 0.0;
+    bool valid = true;
+    for (float prob : *probs) {
+      p_sum += prob;
+      valid = valid && prob >= 0.0f && std::isfinite(prob);
+    }
+
+    const double uniform_prob = 1.0 / probs->size();
+    if (valid && p_sum > 0.0 && std::isfinite(p_sum)) {
+      for (auto &prob : *probs) {
+        prob = static_cast<float>((prob / p_sum + uniform_prob) * 0.5);
+      }
+    } else {
+      std::fill(probs->begin(), probs->end(), static_cast<float>(uniform_prob));
+    }
   }
 
   //! Select k benches randomly

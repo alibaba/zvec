@@ -109,6 +109,17 @@ TEST(NumericalInnerProductKmeans, Afkmc2UsesNonNegativeWeightForRawVectors) {
   EXPECT_NEAR(weight, 0.0f, 1e-6f);
 }
 
+TEST(NumericalInnerProductKmeans,
+     Afkmc2UsesUniformProbabilitiesForZeroWeights) {
+  std::vector<float> probabilities = {0.0f, 0.0f};
+
+  SmallInnerProductKmc2Generator::NormalizeProbabilities(&probabilities);
+
+  ASSERT_EQ(2u, probabilities.size());
+  EXPECT_FLOAT_EQ(0.5f, probabilities[0]);
+  EXPECT_FLOAT_EQ(0.5f, probabilities[1]);
+}
+
 TEST(NumericalInnerProductKmeans, NonSphericalKmc2KeepsInnerProductScore) {
   SmallInnerProductKmeans kmeans(1, 2, false);
   const float centroid[] = {1.0f, 0.0f};
