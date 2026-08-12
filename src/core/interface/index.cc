@@ -212,8 +212,11 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
-        case QuantizerType::kUniformInt8:
-          converter_name = "UniformInt8StreamingConverter";
+        case QuantizerType::kUniformUint7:
+          converter_name = "UniformUint7StreamingConverter";
+          break;
+        case QuantizerType::kUniformUint8:
+          converter_name = "UniformUint8StreamingConverter";
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
@@ -371,7 +374,7 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   }
 
   // If a converter exists but reformer was not created during Init()
-  // (converters like UniformInt8 whose reformer params are only available
+  // (uniform quantizers whose reformer params are only available
   // after train()), create it now from the persisted meta that the streamer
   // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
   // is nullptr by design — skip this block entirely.

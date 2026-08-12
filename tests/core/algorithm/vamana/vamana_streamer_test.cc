@@ -18,11 +18,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 #endif
+#include <cstdint>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include "metric/metric_params.h"
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -38,6 +42,32 @@ namespace zvec {
 namespace core {
 
 constexpr size_t kDim = 16;
+
+std::vector<int8_t> EncodeUniformUint8Record(
+    const std::vector<uint8_t> &codes) {
+  std::vector<int8_t> encoded(codes.size() + sizeof(uint32_t), 0);
+  uint64_t sum_squared = 0;
+  for (size_t i = 0; i < codes.size(); ++i) {
+    encoded[i] = static_cast<int8_t>(static_cast<int>(codes[i]) - 128);
+    sum_squared += static_cast<uint64_t>(codes[i]) * codes[i];
+  }
+  const uint32_t tail = static_cast<uint32_t>(sum_squared);
+  std::memcpy(encoded.data() + codes.size(), &tail, sizeof(tail));
+  return encoded;
+}
+
+std::vector<int8_t> EncodeUniformUint8Query(const std::vector<uint8_t> &codes) {
+  std::vector<int8_t> encoded(codes.size() + sizeof(uint32_t), 0);
+  uint64_t sum_squared = 0;
+  auto *bytes = reinterpret_cast<uint8_t *>(encoded.data());
+  for (size_t i = 0; i < codes.size(); ++i) {
+    bytes[i] = codes[i];
+    sum_squared += static_cast<uint64_t>(codes[i]) * codes[i];
+  }
+  const uint32_t tail = static_cast<uint32_t>(sum_squared);
+  std::memcpy(encoded.data() + codes.size(), &tail, sizeof(tail));
+  return encoded;
+}
 
 class VamanaStreamerTest : public testing::Test {
  protected:
@@ -859,6 +889,83 @@ TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {
   ASSERT_EQ(2UL, primary_key_context->result().size());
   EXPECT_EQ(20UL, primary_key_context->result()[0].key());
   EXPECT_FLOAT_EQ(-2.0f, primary_key_context->result()[0].score());
+}
+
+TEST_F(VamanaStreamerTest, TestUniformUint8UsesQueryMetric) {
+  constexpr size_t kOriginalDimension = 4;
+  constexpr size_t kEncodedDimension = kOriginalDimension + sizeof(uint32_t);
+
+  ailego::Params metric_params;
+  metric_params.set(UNIFORM_UINT8_METRIC_ORIGIN_METRIC_NAME,
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 8U);
+  params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 16U);
+  params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+  params.set(PARAM_VAMANA_STREAMER_EF, 16U);
+  params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+
+  auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
+  ASSERT_TRUE(streamer);
+  ASSERT_EQ(0, streamer->init(meta, params));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(
+      0, storage->open(dir_ + "TestUniformUint8UsesQueryMetric.index", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  const IndexQueryMeta encoded_meta(IndexMeta::DataType::DT_INT8,
+                                    kEncodedDimension);
+  const auto zero_record =
+      EncodeUniformUint8Record(std::vector<uint8_t>(kOriginalDimension, 0));
+  const auto mid_record =
+      EncodeUniformUint8Record(std::vector<uint8_t>(kOriginalDimension, 127));
+  const auto zero_query =
+      EncodeUniformUint8Query(std::vector<uint8_t>(kOriginalDimension, 0));
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(context);
+  ASSERT_EQ(0,
+            streamer->add_impl(10, zero_record.data(), encoded_meta, context));
+  ASSERT_EQ(0,
+            streamer->add_impl(20, mid_record.data(), encoded_meta, context));
+
+  auto brute_force_context = streamer->create_context();
+  ASSERT_TRUE(brute_force_context);
+  brute_force_context->set_topk(2);
+  ASSERT_EQ(0, streamer->search_bf_impl(zero_query.data(), encoded_meta,
+                                        brute_force_context));
+  ASSERT_EQ(2, brute_force_context->result().size());
+  EXPECT_EQ(10, brute_force_context->result()[0].key());
+  EXPECT_FLOAT_EQ(0.0f, brute_force_context->result()[0].score());
+  EXPECT_EQ(20, brute_force_context->result()[1].key());
+  EXPECT_FLOAT_EQ(static_cast<float>(kOriginalDimension * 127 * 127),
+                  brute_force_context->result()[1].score());
+
+  auto graph_context = streamer->create_context();
+  ASSERT_TRUE(graph_context);
+  graph_context->set_topk(1);
+  ASSERT_EQ(
+      0, streamer->search_impl(zero_query.data(), encoded_meta, graph_context));
+  ASSERT_EQ(1, graph_context->result().size());
+  EXPECT_EQ(10, graph_context->result()[0].key());
+  EXPECT_FLOAT_EQ(0.0f, graph_context->result()[0].score());
+
+  auto primary_key_context = streamer->create_context();
+  ASSERT_TRUE(primary_key_context);
+  primary_key_context->set_topk(2);
+  const std::vector<std::vector<uint64_t>> primary_keys{{10, 20}};
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(zero_query.data(), primary_keys,
+                                            encoded_meta, primary_key_context));
+  ASSERT_EQ(2, primary_key_context->result().size());
+  EXPECT_EQ(10, primary_key_context->result()[0].key());
+  EXPECT_FLOAT_EQ(0.0f, primary_key_context->result()[0].score());
 }
 
 // Test Vamana + INT8 quantization + rotation end-to-end

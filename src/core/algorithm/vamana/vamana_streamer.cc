@@ -236,7 +236,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     metric_params.merge(meta_.metric_params());
     meta_.set_metric(index_meta.metric_name(), 0, metric_params);
     // Propagate reformer info from stored meta (needed for quantizers
-    // whose reformer params are computed during training, e.g. UniformInt8)
+    // whose reformer params are computed during training, e.g. UniformUint7)
     if (!index_meta.reformer_name().empty()) {
       meta_.set_reformer(index_meta.reformer_name(), 0,
                          index_meta.reformer_params());

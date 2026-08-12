@@ -16,38 +16,44 @@
 #include <ailego/math_batch/euclidean_distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/core/interface/index_param.h>
 #include <zvec/turbo/turbo.h>
 #include "metric_params.h"
 
 namespace zvec {
 namespace core {
 
-/*! Index Metric for Uniform Int8 Quantization (Global Scale)
+/*! Index Metric for Uniform Uint7 Quantization (Global Scale)
  *
  * Uses direct int8 L2 distance computation. Since all vectors share
  * a single global scale/bias, no per-vector reconstruction is needed.
  * This is the key benefit: distance = sum((a[i] - b[i])^2) on raw int8
  * values, with optional post-scaling by 1/scale^2 for real L2 distances.
  */
-class UniformInt8Metric : public IndexMetric {
+class UniformUint7Metric : public IndexMetric {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
     if (meta.data_type() != IndexMeta::DataType::DT_INT8) {
-      LOG_ERROR("UniformInt8Metric: unsupported type %d", meta.data_type());
+      LOG_ERROR("UniformUint7Metric: unsupported type %d", meta.data_type());
       return IndexError_Unsupported;
+    }
+    if (meta.dimension() == 0 || meta.dimension() > MAX_DIMENSION) {
+      LOG_ERROR("UniformUint7Metric: dimension=%u must be in [1, %d]",
+                meta.dimension(), MAX_DIMENSION);
+      return IndexError_InvalidArgument;
     }
 
     std::string metric_name;
-    index_params.get(UNIFORM_INT8_METRIC_ORIGIN_METRIC_NAME, &metric_name);
+    index_params.get(UNIFORM_UINT7_METRIC_ORIGIN_METRIC_NAME, &metric_name);
     if (metric_name.empty()) {
-      LOG_ERROR("UniformInt8Metric: param %s is required",
-                UNIFORM_INT8_METRIC_ORIGIN_METRIC_NAME.c_str());
+      LOG_ERROR("UniformUint7Metric: param %s is required",
+                UNIFORM_UINT7_METRIC_ORIGIN_METRIC_NAME.c_str());
       return IndexError_InvalidArgument;
     }
 
     if (metric_name != "SquaredEuclidean") {
-      LOG_ERROR("UniformInt8Metric: only SquaredEuclidean supported, got %s",
+      LOG_ERROR("UniformUint7Metric: only SquaredEuclidean supported, got %s",
                 metric_name.c_str());
       return IndexError_Unsupported;
     }
@@ -55,7 +61,7 @@ class UniformInt8Metric : public IndexMetric {
     meta_ = meta;
     params_ = index_params;
 
-    LOG_INFO("UniformInt8Metric initialized: dimension=%u", meta_.dimension());
+    LOG_INFO("UniformUint7Metric initialized: dimension=%u", meta_.dimension());
     return 0;
   }
 
@@ -67,15 +73,16 @@ class UniformInt8Metric : public IndexMetric {
   //! Retrieve if it matched
   bool is_matched(const IndexMeta &meta) const override {
     return meta.data_type() == meta_.data_type() &&
-           meta.unit_size() == meta_.unit_size();
+           meta.unit_size() == meta_.unit_size() &&
+           meta.dimension() == meta_.dimension();
   }
 
   //! Retrieve if it matched
   bool is_matched(const IndexMeta &meta,
                   const IndexQueryMeta &qmeta) const override {
-    return qmeta.data_type() == meta_.data_type() &&
+    return is_matched(meta) && qmeta.data_type() == meta_.data_type() &&
            qmeta.unit_size() == meta_.unit_size() &&
-           qmeta.dimension() == meta.dimension();
+           qmeta.dimension() == meta_.dimension();
   }
 
   //! Retrieve distance function for query (1x1)
@@ -152,7 +159,7 @@ class UniformInt8Metric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformInt8, UniformInt8Metric);
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformUint7, UniformUint7Metric);
 
 }  // namespace core
 }  // namespace zvec
