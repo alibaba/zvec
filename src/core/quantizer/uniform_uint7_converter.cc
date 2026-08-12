@@ -33,16 +33,16 @@ namespace core {
  * All vectors share the same quantization parameters, enabling direct int8
  * L2 distance computation without per-vector reconstruction.
  */
-class UniformUint7StreamingConverter : public IndexConverter {
+class UniformUint7Converter : public IndexConverter {
  public:
   //! Constructor.
   //! `dst_type` is required by the INDEX_FACTORY_REGISTER_CONVERTER_ALIAS
   //! macro signature but is unused here: the output type is always
   //! IndexMeta::DataType::DT_INT8, hard-coded in init().
-  UniformUint7StreamingConverter(IndexMeta::DataType /*dst_type*/) {}
+  UniformUint7Converter(IndexMeta::DataType /*dst_type*/) {}
 
   //! Destructor
-  ~UniformUint7StreamingConverter() override {}
+  ~UniformUint7Converter() override {}
 
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
@@ -58,14 +58,13 @@ class UniformUint7StreamingConverter : public IndexConverter {
     *stats_.mutable_transformed_count() = 0;
 
     if (original_dimension_ == 0 || original_dimension_ > MAX_DIMENSION) {
-      LOG_ERROR(
-          "UniformUint7StreamingConverter: dimension=%zu must be in [1, %d]",
-          original_dimension_, MAX_DIMENSION);
+      LOG_ERROR("UniformUint7Converter: dimension=%zu must be in [1, %d]",
+                original_dimension_, MAX_DIMENSION);
       return IndexError_InvalidArgument;
     }
 
     // Store converter info in meta
-    meta_.set_converter("UniformUint7StreamingConverter", 0, params);
+    meta_.set_converter("UniformUint7Converter", 0, params);
 
     // Set data type to INT8, dimension stays the same (no per-vector extras)
     meta_.set_meta(IndexMeta::DataType::DT_INT8, original_dimension_);
@@ -81,7 +80,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
     if (has_scale != has_bias ||
         (has_scale &&
          (!std::isfinite(scale_) || scale_ <= 0.0f || !std::isfinite(bias_)))) {
-      LOG_ERROR("UniformUint7StreamingConverter: invalid scale/bias params");
+      LOG_ERROR("UniformUint7Converter: invalid scale/bias params");
       return IndexError_InvalidArgument;
     }
 
@@ -89,7 +88,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
       ailego::Params reformer_params;
       reformer_params.set(UNIFORM_UINT7_REFORMER_SCALE, scale_);
       reformer_params.set(UNIFORM_UINT7_REFORMER_BIAS, bias_);
-      meta_.set_reformer("UniformUint7StreamingReformer", 0, reformer_params);
+      meta_.set_reformer("UniformUint7Reformer", 0, reformer_params);
     }
 
     return 0;
@@ -108,7 +107,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
   //! Train: compute global min/max and derive scale/bias
   int train(IndexHolder::Pointer holder) override {
     if (!holder) {
-      LOG_ERROR("UniformUint7StreamingConverter: null holder in train");
+      LOG_ERROR("UniformUint7Converter: null holder in train");
       return IndexError_InvalidArgument;
     }
     if (holder->data_type() != IndexMeta::DataType::DT_FP32 ||
@@ -125,7 +124,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
 
     auto iter = holder->create_iterator();
     if (!iter) {
-      LOG_ERROR("UniformUint7StreamingConverter: failed to create iterator");
+      LOG_ERROR("UniformUint7Converter: failed to create iterator");
       return IndexError_Runtime;
     }
 
@@ -136,7 +135,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
         float v = vec[i];
         if (!std::isfinite(v)) {
           LOG_ERROR(
-              "UniformUint7StreamingConverter: non-finite value in training "
+              "UniformUint7Converter: non-finite value in training "
               "set (record_idx=%zu, dim_idx=%zu, value=%f)",
               (size_t)*stats_.mutable_trained_count(), i, v);
           return IndexError_InvalidArgument;
@@ -153,7 +152,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
     // Reject empty training set: scale/bias would be undefined and would
     // silently produce all-clipped int8 vectors at search time.
     if (*stats_.mutable_trained_count() == 0) {
-      LOG_ERROR("UniformUint7StreamingConverter: empty training set");
+      LOG_ERROR("UniformUint7Converter: empty training set");
       return IndexError_InvalidArgument;
     }
 
@@ -171,7 +170,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
     constexpr float epsilon = std::numeric_limits<float>::epsilon();
     const float range = global_max - global_min;
     if (!std::isfinite(range)) {
-      LOG_ERROR("UniformUint7StreamingConverter: non-finite training range");
+      LOG_ERROR("UniformUint7Converter: non-finite training range");
       return IndexError_InvalidArgument;
     }
     if (all_integer && range <= 127.0f) {
@@ -183,7 +182,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
     }
 
     LOG_INFO(
-        "UniformUint7StreamingConverter train done: costtime %zums, "
+        "UniformUint7Converter train done: costtime %zums, "
         "global_min=%f, global_max=%f, scale=%f, bias=%f",
         (size_t)timer.milli_seconds(), global_min, global_max, scale_, bias_);
 
@@ -191,7 +190,7 @@ class UniformUint7StreamingConverter : public IndexConverter {
     ailego::Params reformer_params;
     reformer_params.set(UNIFORM_UINT7_REFORMER_SCALE, scale_);
     reformer_params.set(UNIFORM_UINT7_REFORMER_BIAS, bias_);
-    meta_.set_reformer("UniformUint7StreamingReformer", 0, reformer_params);
+    meta_.set_reformer("UniformUint7Reformer", 0, reformer_params);
 
     // Publish scale/bias through converter params so IndexMeta can carry them.
     ailego::Params conv_params = meta_.converter_params();
@@ -355,8 +354,8 @@ class UniformUint7StreamingConverter : public IndexConverter {
   float bias_{0.0f};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint7StreamingConverter,
-                                       UniformUint7StreamingConverter,
+INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint7Converter,
+                                       UniformUint7Converter,
                                        IndexMeta::DataType::DT_INT8);
 
 }  // namespace core

@@ -22,13 +22,9 @@ namespace zvec::turbo::avx512_vnni {
 //   [ original_dim bytes: int8 values stored as uint8(code) - 128 ]
 //   [ uint32 sum_sq_u8 ]
 //
-// Query layout:
-//   [ original_dim raw uint8 bytes ]
-//   [ int32 query correction ]
-//
 // The index data type remains DT_INT8. Build distance computes exact L2
 // between two shifted records. Batch search compares shifted records with a
-// preprocessed raw query and returns exact squared L2:
+// once-preprocessed raw query and returns exact squared L2:
 //   sum_sq(record_raw) - 2 * dot(record_shifted, query_raw)
 //       + sum_sq(query_raw) - 256 * sum(query_raw)
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
@@ -39,9 +35,10 @@ void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
                                                     size_t dim,
                                                     float *distances);
 
-// Replace the raw query's uint32 squared-sum tail with:
+// Convert one canonical shifted query into the batch-query representation:
+//   body: int8(raw - 128) -> uint8(raw)
+// Replace its uint32 squared-sum tail with:
 //   sum_sq(query_raw) - 256 * sum(query_raw)
-// The query body is already raw uint8 and remains unchanged.
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim);
 
 }  // namespace zvec::turbo::avx512_vnni

@@ -76,14 +76,13 @@ TEST(UniformUint8Reformer, EncodesFullRangeAndStoresTrainingParamsInMeta) {
 
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto converter =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0, converter->init(meta, ailego::Params()));
   ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, holder));
 
   EXPECT_EQ("UniformUint8", converter->meta().metric_name());
-  EXPECT_EQ("UniformUint8StreamingReformer", converter->meta().reformer_name());
+  EXPECT_EQ("UniformUint8Reformer", converter->meta().reformer_name());
   EXPECT_EQ(IndexMeta::DataType::DT_INT8, converter->meta().data_type());
   EXPECT_EQ(kEncodedDimension, converter->meta().dimension());
   float scale = 0.0f;
@@ -109,7 +108,7 @@ TEST(UniformUint8Reformer, EncodesFullRangeAndStoresTrainingParamsInMeta) {
   }
   EXPECT_EQ(SumSquared(vectors[0]), ReadTail(stored));
 
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(converter->meta().reformer_params()));
 
@@ -131,7 +130,7 @@ TEST(UniformUint8Reformer, EncodesFullRangeAndStoresTrainingParamsInMeta) {
   }
 }
 
-TEST(UniformUint8Reformer, UsesAsymmetricRecordAndQueryLayouts) {
+TEST(UniformUint8Reformer, UsesCanonicalRecordAndQueryLayout) {
   const std::vector<std::vector<float>> vectors{
       {0.0f, 1.0f, 127.0f, 128.0f, 254.0f, 255.0f},
       {255.0f, 0.0f, 200.0f, 100.0f, 50.0f, 25.0f},
@@ -139,13 +138,12 @@ TEST(UniformUint8Reformer, UsesAsymmetricRecordAndQueryLayouts) {
   auto holder = MakeHolder(vectors);
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto converter =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0, converter->init(meta, ailego::Params()));
   ASSERT_EQ(0, converter->train(holder));
 
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(converter->meta().reformer_params()));
 
@@ -161,14 +159,16 @@ TEST(UniformUint8Reformer, UsesAsymmetricRecordAndQueryLayouts) {
   EXPECT_EQ(kEncodedDimension, record_meta.dimension());
   EXPECT_EQ(kEncodedDimension, query_meta.dimension());
   EXPECT_EQ(record_meta.element_size(), query_meta.element_size());
-  EXPECT_NE(record, query);
+  EXPECT_EQ(record, query);
 
-  const auto *query_bytes = reinterpret_cast<const uint8_t *>(query.data());
+  const auto *query_bytes = reinterpret_cast<const int8_t *>(query.data());
   for (size_t i = 0; i < kDimension; ++i) {
     const auto record_code = static_cast<uint8_t>(
         static_cast<int>(static_cast<int8_t>(record[i])) + 128);
     EXPECT_EQ(static_cast<uint8_t>(vectors[0][i]), record_code);
-    EXPECT_EQ(static_cast<uint8_t>(vectors[0][i]), query_bytes[i]);
+    const auto query_code =
+        static_cast<uint8_t>(static_cast<int>(query_bytes[i]) + 128);
+    EXPECT_EQ(static_cast<uint8_t>(vectors[0][i]), query_code);
   }
   EXPECT_EQ(SumSquared(vectors[0]), ReadTail(record.data()));
   EXPECT_EQ(SumSquared(vectors[0]), ReadTail(query.data()));
@@ -182,13 +182,12 @@ TEST(UniformUint8Reformer, BatchEncodingUsesEncodedStride) {
   auto holder = MakeHolder(vectors);
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto converter =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0, converter->init(meta, ailego::Params()));
   ASSERT_EQ(0, converter->train(holder));
 
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(converter->meta().reformer_params()));
 
@@ -213,11 +212,12 @@ TEST(UniformUint8Reformer, BatchEncodingUsesEncodedStride) {
     const auto *record =
         reinterpret_cast<const int8_t *>(records.data() + offset);
     const auto *query =
-        reinterpret_cast<const uint8_t *>(queries.data() + offset);
+        reinterpret_cast<const int8_t *>(queries.data() + offset);
     for (size_t i = 0; i < kDimension; ++i) {
       EXPECT_EQ(static_cast<uint8_t>(vectors[vector_index][i]),
                 static_cast<uint8_t>(static_cast<int>(record[i]) + 128));
-      EXPECT_EQ(static_cast<uint8_t>(vectors[vector_index][i]), query[i]);
+      EXPECT_EQ(static_cast<uint8_t>(vectors[vector_index][i]),
+                static_cast<uint8_t>(static_cast<int>(query[i]) + 128));
     }
     EXPECT_EQ(SumSquared(vectors[vector_index]), ReadTail(record));
     EXPECT_EQ(SumSquared(vectors[vector_index]), ReadTail(query));
@@ -232,17 +232,15 @@ TEST(UniformUint8Reformer, RestoresParamsFromConverterMetaWithoutRetraining) {
   auto holder = MakeHolder(vectors);
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto trained =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto trained = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(trained);
   ASSERT_EQ(0, trained->init(meta, ailego::Params()));
   ASSERT_EQ(0, trained->train(holder));
 
-  auto restored =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto restored = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(restored);
   ASSERT_EQ(0, restored->init(meta, trained->meta().converter_params()));
-  EXPECT_EQ("UniformUint8StreamingReformer", restored->meta().reformer_name());
+  EXPECT_EQ("UniformUint8Reformer", restored->meta().reformer_name());
   ASSERT_EQ(0, restored->transform(holder));
   EXPECT_EQ(vectors.size(), restored->stats().transformed_count());
   ASSERT_TRUE(restored->result());
@@ -258,7 +256,7 @@ TEST(UniformUint8Reformer, RejectsEmptyParamsAndResetsInitializedState) {
   params.set("uniform_uint8.reformer.scale", 1.0f);
   params.set("uniform_uint8.reformer.bias", 0.0f);
 
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(params));
 
@@ -281,8 +279,7 @@ TEST(UniformUint8Reformer, RejectsNonFiniteTrainingData) {
   auto holder = MakeHolder(vectors);
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto converter =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0, converter->init(meta, ailego::Params()));
   EXPECT_NE(0, converter->train(holder));
@@ -295,7 +292,7 @@ TEST(UniformUint8Reformer, StoresUint32SquaredSumAtMaximumDimension) {
   ailego::Params params;
   params.set("uniform_uint8.reformer.scale", 1.0f);
   params.set("uniform_uint8.reformer.bias", 0.0f);
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(params));
 
@@ -314,7 +311,7 @@ TEST(UniformUint8Reformer, RejectsDimensionsOutsidePublicRange) {
   ailego::Params params;
   params.set("uniform_uint8.reformer.scale", 1.0f);
   params.set("uniform_uint8.reformer.bias", 0.0f);
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(params));
 
@@ -332,8 +329,7 @@ TEST(UniformUint8Reformer, RejectsDimensionsOutsidePublicRange) {
 
   IndexMeta oversized_meta(IndexMeta::DataType::DT_FP32, MAX_DIMENSION + 1);
   oversized_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto converter =
-      IndexFactory::CreateConverter("UniformUint8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint8Converter");
   ASSERT_TRUE(converter);
   EXPECT_NE(0, converter->init(oversized_meta, ailego::Params()));
 }
@@ -342,7 +338,7 @@ TEST(UniformUint8Reformer, RejectsMalformedRevertMetadata) {
   ailego::Params params;
   params.set("uniform_uint8.reformer.scale", 1.0f);
   params.set("uniform_uint8.reformer.bias", 0.0f);
-  auto reformer = IndexFactory::CreateReformer("UniformUint8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint8Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0, reformer->init(params));
 

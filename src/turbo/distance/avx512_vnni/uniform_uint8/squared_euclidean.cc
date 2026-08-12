@@ -15,7 +15,8 @@
 // AVX512-VNNI optimized squared L2 for uniform uint8 quantization.
 //
 // Stored record layout: [dim int8(code - 128) | uint32 sum_sq(raw code)].
-// Query layout:         [dim raw uint8 code    | int32 query correction].
+// Canonical query layout matches records. Query preprocessing converts a
+// private copy to:      [dim raw uint8 code    | int32 query correction].
 //
 // Build-time pairwise distance uses true L2 between two stored shifted
 // vectors. Search-time batch distance includes the query-only correction:
@@ -403,21 +404,24 @@ void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {
     return;
   }
 
-  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
-  // The tail may already contain a correction from an earlier call. Derive
-  // everything from the immutable query body so preprocessing is idempotent.
+  auto *raw_query = reinterpret_cast<uint8_t *>(query);
+  // Match the existing record-quantizer contract: this converts one private
+  // canonical query copy exactly once before the query batch kernel uses it.
   uint64_t sum = 0;
   uint64_t sum_squared = 0;
   size_t d = 0;
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+  const __m512i sign_bit = _mm512_set1_epi8(static_cast<char>(0x80));
   const __m512i zero = _mm512_setzero_si512();
   __m512i sums = _mm512_setzero_si512();
   __m512i squared_sums = _mm512_setzero_si512();
   size_t iterations_since_flush = 0;
   constexpr size_t kSquaredSumFlushIterations = 4096;
   for (; d + 64 <= orig_dim; d += 64) {
-    const __m512i values = _mm512_loadu_si512(raw_query + d);
+    const __m512i stored = _mm512_loadu_si512(raw_query + d);
+    const __m512i values = _mm512_xor_si512(stored, sign_bit);
+    _mm512_storeu_si512(raw_query + d, values);
     sums = _mm512_add_epi64(sums, _mm512_sad_epu8(values, zero));
     const __m512i low_values =
         _mm512_cvtepu8_epi16(_mm512_castsi512_si256(values));
@@ -441,6 +445,7 @@ void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {
 #endif
 
   for (; d < orig_dim; ++d) {
+    raw_query[d] ^= uint8_t{0x80};
     const uint64_t value = raw_query[d];
     sum += value;
     sum_squared += value * value;

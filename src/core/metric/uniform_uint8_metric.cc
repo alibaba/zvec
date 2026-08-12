@@ -39,12 +39,14 @@ void UniformUint8QueryPreprocess(void *query, size_t encoded_dimension) {
     return;
   }
 
-  const auto *raw_query = static_cast<const uint8_t *>(query);
-  // The tail may already contain a correction from an earlier call. Derive
-  // everything from the immutable query body so preprocessing is idempotent.
+  auto *raw_query = static_cast<uint8_t *>(query);
+  // Match the existing record-quantizer contract: transform() emits the
+  // canonical shifted layout, and graph contexts preprocess their private
+  // query copy exactly once before using the query-oriented distance kernels.
   uint64_t sum = 0;
   uint64_t sum_squared = 0;
   for (size_t i = 0; i < original_dimension; ++i) {
+    raw_query[i] ^= uint8_t{0x80};
     const uint64_t value = raw_query[i];
     sum += value;
     sum_squared += value * value;
@@ -97,16 +99,6 @@ IndexMetric::MatrixDistance UniformUint8StoredDistance() {
     return turbo_distance ? turbo_distance : UniformUint8StoredSquaredEuclidean;
   }();
   return distance;
-}
-
-void UniformUint8StoredSquaredEuclideanBatch(const void *const *vectors,
-                                             const void *query, size_t count,
-                                             size_t encoded_dimension,
-                                             float *distances) {
-  const auto distance = UniformUint8StoredDistance();
-  for (size_t i = 0; i < count; ++i) {
-    distance(vectors[i], query, encoded_dimension, distances + i);
-  }
 }
 
 void UniformUint8StoredQuerySquaredEuclidean(const void *stored_data,
@@ -196,6 +188,14 @@ class UniformUint8QueryMetric : public IndexMetric {
     return UniformUint8StoredQuerySquaredEuclidean;
   }
 
+  // FlatSearcher scans canonical query/record encodings through
+  // distance_matrix(), just like the existing record quantizer.
+  // Query-oriented distance() and batch_distance() are reserved for the
+  // once-preprocessed graph path.
+  MatrixDistance distance_matrix(size_t rows, size_t columns) const override {
+    return rows == 1 && columns == 1 ? UniformUint8StoredDistance() : nullptr;
+  }
+
   MatrixBatchDistance batch_distance(void) const override {
     const size_t original_dimension = OriginalDimension(meta_.dimension());
     // The VNNI kernel reduces its signed dot product in int32 lanes. The
@@ -253,9 +253,9 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
     return rows == 1 && columns == 1 ? UniformUint8StoredDistance() : nullptr;
   }
 
-  MatrixBatchDistance batch_distance(void) const override {
-    return UniformUint8StoredSquaredEuclideanBatch;
-  }
+  // Deliberately inherit the query-oriented batch_distance(). Graph builders
+  // preprocess their private build-query copy before batch comparisons, while
+  // pairwise pruning and Flat use the stored-stored functions above.
 
   Pointer query_metric(void) const override {
     return std::make_shared<UniformUint8QueryMetric>(meta_, params_);

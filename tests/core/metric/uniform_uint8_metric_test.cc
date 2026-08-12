@@ -43,16 +43,7 @@ std::vector<int8_t> EncodeRecord(const std::vector<uint8_t> &codes) {
 }
 
 std::vector<int8_t> EncodeQuery(const std::vector<uint8_t> &codes) {
-  std::vector<int8_t> encoded(codes.size() + kTailBytes, 0);
-  int64_t sum_squared = 0;
-  auto *bytes = reinterpret_cast<uint8_t *>(encoded.data());
-  for (size_t i = 0; i < codes.size(); ++i) {
-    bytes[i] = codes[i];
-    sum_squared += static_cast<int>(codes[i]) * codes[i];
-  }
-  const uint32_t tail = static_cast<uint32_t>(sum_squared);
-  std::memcpy(encoded.data() + codes.size(), &tail, sizeof(tail));
-  return encoded;
+  return EncodeRecord(codes);
 }
 
 uint32_t ReadTail(const std::vector<int8_t> &encoded,
@@ -119,22 +110,22 @@ TEST(UniformUint8Metric, UsesExactBuildAndQueryDistance) {
   auto query_metric = metric->query_metric();
   ASSERT_TRUE(query_metric);
   ASSERT_TRUE(query_metric->distance());
+  ASSERT_TRUE(query_metric->distance_matrix(1, 1));
 
   float distance = 0.0f;
   metric->distance()(first.data(), second.data(), first.size(), &distance);
   EXPECT_FLOAT_EQ(static_cast<float>(SquaredL2(first_codes, second_codes)),
                   distance);
 
-  auto prepared_stored_query = second;
-  metric->get_query_preprocess_func()(prepared_stored_query.data(),
-                                      prepared_stored_query.size());
+  const auto prepared_stored_query = PrepareQuery(metric, second);
   const void *stored_vectors[] = {first.data()};
   metric->batch_distance()(stored_vectors, prepared_stored_query.data(), 1,
                            first.size(), &distance);
   EXPECT_FLOAT_EQ(static_cast<float>(SquaredL2(first_codes, second_codes)),
                   distance);
 
-  query_metric->distance()(first.data(), query.data(), first.size(), &distance);
+  query_metric->distance_matrix(1, 1)(first.data(), query.data(), first.size(),
+                                      &distance);
   EXPECT_FLOAT_EQ(static_cast<float>(SquaredL2(first_codes, query_codes)),
                   distance);
 
@@ -199,7 +190,7 @@ TEST(UniformUint8Metric, QueryBatchMatchesScalarAcrossKernelBoundaries) {
   }
 }
 
-TEST(UniformUint8Metric, QueryPreprocessIsIdempotent) {
+TEST(UniformUint8Metric, QueryPreprocessConvertsCanonicalLayout) {
   constexpr size_t kDimension = MAX_DIMENSION;
   const std::vector<uint8_t> query_codes(kDimension, uint8_t{255});
   auto query = EncodeQuery(query_codes);
@@ -210,12 +201,12 @@ TEST(UniformUint8Metric, QueryPreprocessIsIdempotent) {
   ASSERT_TRUE(preprocess);
 
   preprocess(query.data(), query.size());
-  const auto once_preprocessed = query;
+  const auto *raw_query = reinterpret_cast<const uint8_t *>(query.data());
+  for (size_t i = 0; i < kDimension; ++i) {
+    ASSERT_EQ(query_codes[i], raw_query[i]) << "dimension offset=" << i;
+  }
   EXPECT_EQ(-static_cast<int64_t>(kDimension) * 255,
             ReadQueryCorrection(query, kDimension));
-
-  preprocess(query.data(), query.size());
-  EXPECT_EQ(once_preprocessed, query);
 }
 
 TEST(UniformUint8Metric, TurboBatchCallWritesEveryDistanceWhenAvailable) {
@@ -282,12 +273,12 @@ TEST(UniformUint8Metric,
     ASSERT_LE(static_cast<uint64_t>(expected),
               (std::numeric_limits<uint32_t>::max)());
 
+    const auto prepared_query = PrepareQuery(query_metric, query);
     float scalar_distance = 0.0f;
-    query_metric->distance()(record.data(), query.data(),
+    query_metric->distance()(record.data(), prepared_query.data(),
                              kDimension + kTailBytes, &scalar_distance);
     EXPECT_FLOAT_EQ(static_cast<float>(expected), scalar_distance);
 
-    const auto prepared_query = PrepareQuery(query_metric, query);
     const void *records[kVectorCount] = {record.data(), record.data(),
                                          record.data(), record.data()};
     float batch_distances[kVectorCount] = {};
@@ -326,12 +317,12 @@ TEST(UniformUint8Metric, ExactQueryDistanceFallsBackAboveTurboDimensionLimit) {
     const int64_t expected = SquaredL2(record_codes, query_codes);
     ASSERT_GT(expected, (std::numeric_limits<uint32_t>::max)());
 
+    const auto prepared_query = PrepareQuery(query_metric, query);
     float scalar_distance = 0.0f;
-    query_metric->distance()(record.data(), query.data(),
+    query_metric->distance()(record.data(), prepared_query.data(),
                              kDimension + kTailBytes, &scalar_distance);
     EXPECT_FLOAT_EQ(static_cast<float>(expected), scalar_distance);
 
-    const auto prepared_query = PrepareQuery(query_metric, query);
     const void *records[kVectorCount] = {record.data(), record.data(),
                                          record.data(), record.data()};
     float distances[kVectorCount] = {};

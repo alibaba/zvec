@@ -119,13 +119,13 @@ static const std::string INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE =
 static const std::string INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN =
     "integer_streaming.reformer.is_euclidean";
 
-//! UniformUint7StreamingConverter / Reformer
+//! UniformUint7Converter / Reformer
 static const std::string UNIFORM_UINT7_REFORMER_SCALE =
     "uniform_uint7.reformer.scale";
 static const std::string UNIFORM_UINT7_REFORMER_BIAS =
     "uniform_uint7.reformer.bias";
 
-//! UniformUint8StreamingConverter / Reformer
+//! UniformUint8Converter / Reformer
 static const std::string UNIFORM_UINT8_REFORMER_SCALE =
     "uniform_uint8.reformer.scale";
 static const std::string UNIFORM_UINT8_REFORMER_BIAS =

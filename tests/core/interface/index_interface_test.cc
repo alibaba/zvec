@@ -314,9 +314,9 @@ TEST(IndexInterface, ReopenRestoresUniformReformer) {
     const char *index_name;
   };
   const TestCase test_cases[] = {
-      {QuantizerType::kUniformUint7, "UniformUint7StreamingConverter",
+      {QuantizerType::kUniformUint7, "UniformUint7Converter",
        "test_uniform_uint7_reopen.index"},
-      {QuantizerType::kUniformUint8, "UniformUint8StreamingConverter",
+      {QuantizerType::kUniformUint8, "UniformUint8Converter",
        "test_uniform_uint8_reopen.index"},
   };
 

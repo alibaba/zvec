@@ -27,10 +27,9 @@
 namespace zvec {
 namespace core {
 
-class UniformUint8StreamingConverter : public IndexConverter {
+class UniformUint8Converter : public IndexConverter {
  public:
-  explicit UniformUint8StreamingConverter(
-      IndexMeta::DataType /*destination_type*/) {}
+  explicit UniformUint8Converter(IndexMeta::DataType /*destination_type*/) {}
 
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
     meta_ = index_meta;
@@ -43,14 +42,13 @@ class UniformUint8StreamingConverter : public IndexConverter {
     stats_.set_transformed_count(0);
 
     if (original_dimension_ == 0 || original_dimension_ > MAX_DIMENSION) {
-      LOG_ERROR(
-          "UniformUint8StreamingConverter: dimension=%zu must be in [1, %d]",
-          original_dimension_, MAX_DIMENSION);
+      LOG_ERROR("UniformUint8Converter: dimension=%zu must be in [1, %d]",
+                original_dimension_, MAX_DIMENSION);
       return IndexError_InvalidArgument;
     }
     encoded_dimension_ = original_dimension_ + kTailBytes;
 
-    meta_.set_converter("UniformUint8StreamingConverter", 0, params);
+    meta_.set_converter("UniformUint8Converter", 0, params);
     meta_.set_meta(IndexMeta::DataType::DT_INT8, encoded_dimension_);
 
     ailego::Params metric_params;
@@ -63,7 +61,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
     if (has_scale != has_bias ||
         (has_scale &&
          (!std::isfinite(scale_) || scale_ <= 0.0f || !std::isfinite(bias_)))) {
-      LOG_ERROR("UniformUint8StreamingConverter: invalid scale/bias params");
+      LOG_ERROR("UniformUint8Converter: invalid scale/bias params");
       return IndexError_InvalidArgument;
     }
 
@@ -71,7 +69,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
       ailego::Params reformer_params;
       reformer_params.set(UNIFORM_UINT8_REFORMER_SCALE, scale_);
       reformer_params.set(UNIFORM_UINT8_REFORMER_BIAS, bias_);
-      meta_.set_reformer("UniformUint8StreamingReformer", 0, reformer_params);
+      meta_.set_reformer("UniformUint8Reformer", 0, reformer_params);
     }
     return 0;
   }
@@ -87,7 +85,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
 
   int train(IndexHolder::Pointer holder) override {
     if (!holder) {
-      LOG_ERROR("UniformUint8StreamingConverter: null training holder");
+      LOG_ERROR("UniformUint8Converter: null training holder");
       return IndexError_InvalidArgument;
     }
     if (holder->data_type() != IndexMeta::DataType::DT_FP32 ||
@@ -105,7 +103,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
 
     auto iterator = holder->create_iterator();
     if (!iterator) {
-      LOG_ERROR("UniformUint8StreamingConverter: failed to create iterator");
+      LOG_ERROR("UniformUint8Converter: failed to create iterator");
       return IndexError_Runtime;
     }
 
@@ -115,7 +113,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
         const float value = vector[i];
         if (!std::isfinite(value)) {
           LOG_ERROR(
-              "UniformUint8StreamingConverter: non-finite training value "
+              "UniformUint8Converter: non-finite training value "
               "(record_idx=%zu, dim_idx=%zu, value=%f)",
               static_cast<size_t>(stats_.trained_count()), i, value);
           return IndexError_InvalidArgument;
@@ -130,13 +128,13 @@ class UniformUint8StreamingConverter : public IndexConverter {
     }
 
     if (stats_.trained_count() == 0) {
-      LOG_ERROR("UniformUint8StreamingConverter: empty training set");
+      LOG_ERROR("UniformUint8Converter: empty training set");
       return IndexError_InvalidArgument;
     }
 
     const float range = global_max - global_min;
     if (!std::isfinite(range)) {
-      LOG_ERROR("UniformUint8StreamingConverter: non-finite training range");
+      LOG_ERROR("UniformUint8Converter: non-finite training range");
       return IndexError_InvalidArgument;
     }
     if (all_integer && range <= 255.0f) {
@@ -151,7 +149,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
     ailego::Params reformer_params;
     reformer_params.set(UNIFORM_UINT8_REFORMER_SCALE, scale_);
     reformer_params.set(UNIFORM_UINT8_REFORMER_BIAS, bias_);
-    meta_.set_reformer("UniformUint8StreamingReformer", 0, reformer_params);
+    meta_.set_reformer("UniformUint8Reformer", 0, reformer_params);
 
     ailego::Params converter_params = meta_.converter_params();
     converter_params.set(UNIFORM_UINT8_REFORMER_SCALE, scale_);
@@ -160,7 +158,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
                         converter_params);
 
     LOG_INFO(
-        "UniformUint8StreamingConverter trained: count=%zu min=%f max=%f "
+        "UniformUint8Converter trained: count=%zu min=%f max=%f "
         "scale=%f bias=%f cost=%zums",
         static_cast<size_t>(stats_.trained_count()), global_min, global_max,
         scale_, bias_, static_cast<size_t>(timer.milli_seconds()));
@@ -323,8 +321,8 @@ class UniformUint8StreamingConverter : public IndexConverter {
   float bias_{0.0f};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint8StreamingConverter,
-                                       UniformUint8StreamingConverter,
+INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint8Converter,
+                                       UniformUint8Converter,
                                        IndexMeta::DataType::DT_INT8);
 
 }  // namespace core

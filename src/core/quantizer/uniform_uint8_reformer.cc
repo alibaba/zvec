@@ -24,10 +24,9 @@
 namespace zvec {
 namespace core {
 
-class UniformUint8StreamingReformer : public IndexReformer {
+class UniformUint8Reformer : public IndexReformer {
  public:
-  explicit UniformUint8StreamingReformer(
-      IndexMeta::DataType /*destination_type*/) {}
+  explicit UniformUint8Reformer(IndexMeta::DataType /*destination_type*/) {}
 
   int init(const ailego::Params &params) override {
     Reset();
@@ -38,7 +37,7 @@ class UniformUint8StreamingReformer : public IndexReformer {
     const bool has_bias = params.get(UNIFORM_UINT8_REFORMER_BIAS, &bias);
     if (!has_scale || !has_bias) {
       LOG_ERROR(
-          "UniformUint8StreamingReformer: missing scale/bias params "
+          "UniformUint8Reformer: missing scale/bias params "
           "(scale_present=%d, bias_present=%d)",
           static_cast<int>(has_scale), static_cast<int>(has_bias));
       return IndexError_InvalidArgument;
@@ -62,28 +61,24 @@ class UniformUint8StreamingReformer : public IndexReformer {
   int transform(const void *query, const IndexQueryMeta &query_meta,
                 std::string *output,
                 IndexQueryMeta *output_meta) const override {
-    return Encode(query, query_meta, 1, output, output_meta,
-                  /*shift_output=*/false);
+    return Encode(query, query_meta, 1, output, output_meta);
   }
 
   int transform(const void *queries, const IndexQueryMeta &query_meta,
                 uint32_t count, std::string *output,
                 IndexQueryMeta *output_meta) const override {
-    return Encode(queries, query_meta, count, output, output_meta,
-                  /*shift_output=*/false);
+    return Encode(queries, query_meta, count, output, output_meta);
   }
 
   int convert(const void *record, const IndexQueryMeta &record_meta,
               std::string *output, IndexQueryMeta *output_meta) const override {
-    return Encode(record, record_meta, 1, output, output_meta,
-                  /*shift_output=*/true);
+    return Encode(record, record_meta, 1, output, output_meta);
   }
 
   int convert(const void *records, const IndexQueryMeta &record_meta,
               uint32_t count, std::string *output,
               IndexQueryMeta *output_meta) const override {
-    return Encode(records, record_meta, count, output, output_meta,
-                  /*shift_output=*/true);
+    return Encode(records, record_meta, count, output, output_meta);
   }
 
   int normalize(const void * /*query*/, const IndexQueryMeta & /*query_meta*/,
@@ -101,8 +96,7 @@ class UniformUint8StreamingReformer : public IndexReformer {
     return true;
   }
 
-  // Revert only accepts the shifted record layout emitted by convert().
-  // transform() emits an unshifted query layout and is not a valid input.
+  // Both transform() and convert() emit the canonical shifted layout.
   int revert(const void *input, const IndexQueryMeta &record_meta,
              std::string *output) const override {
     if (!initialized_ || !input || !output ||
@@ -117,9 +111,8 @@ class UniformUint8StreamingReformer : public IndexReformer {
     }
     const size_t dimension = record_meta.dimension() - kTailBytes;
     if (dimension > MAX_DIMENSION) {
-      LOG_ERROR(
-          "UniformUint8StreamingReformer: dimension=%zu must be in [1, %d]",
-          dimension, MAX_DIMENSION);
+      LOG_ERROR("UniformUint8Reformer: dimension=%zu must be in [1, %d]",
+                dimension, MAX_DIMENSION);
       return IndexError_InvalidArgument;
     }
     output->resize(dimension * sizeof(float));
@@ -144,9 +137,8 @@ class UniformUint8StreamingReformer : public IndexReformer {
 
   int SetParams(float scale, float bias) {
     if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(bias)) {
-      LOG_ERROR(
-          "UniformUint8StreamingReformer: invalid params scale=%f bias=%f",
-          scale, bias);
+      LOG_ERROR("UniformUint8Reformer: invalid params scale=%f bias=%f", scale,
+                bias);
       initialized_ = false;
       return IndexError_InvalidArgument;
     }
@@ -158,8 +150,8 @@ class UniformUint8StreamingReformer : public IndexReformer {
   }
 
   int Encode(const void *input, const IndexQueryMeta &input_meta,
-             uint32_t count, std::string *output, IndexQueryMeta *output_meta,
-             bool shift_output) const {
+             uint32_t count, std::string *output,
+             IndexQueryMeta *output_meta) const {
     if (!initialized_ || !input || !output || !output_meta || count == 0) {
       return IndexError_InvalidArgument;
     }
@@ -171,9 +163,8 @@ class UniformUint8StreamingReformer : public IndexReformer {
 
     const size_t dimension = input_meta.dimension();
     if (dimension == 0 || dimension > MAX_DIMENSION) {
-      LOG_ERROR(
-          "UniformUint8StreamingReformer: dimension=%zu must be in [1, %d]",
-          dimension, MAX_DIMENSION);
+      LOG_ERROR("UniformUint8Reformer: dimension=%zu must be in [1, %d]",
+                dimension, MAX_DIMENSION);
       return IndexError_InvalidArgument;
     }
     const size_t encoded_dimension = dimension + kTailBytes;
@@ -186,28 +177,19 @@ class UniformUint8StreamingReformer : public IndexReformer {
     auto *destination = reinterpret_cast<int8_t *>(output->data());
     for (uint32_t i = 0; i < count; ++i) {
       EncodeOne(source + static_cast<size_t>(i) * dimension, dimension,
-                destination + static_cast<size_t>(i) * output_stride,
-                shift_output);
+                destination + static_cast<size_t>(i) * output_stride);
     }
     return 0;
   }
 
-  void EncodeOne(const float *input, size_t dimension, int8_t *output,
-                 bool shift_output) const {
-    auto *bytes = reinterpret_cast<uint8_t *>(output);
+  void EncodeOne(const float *input, size_t dimension, int8_t *output) const {
+    int64_t sum_squared = 0;
     for (size_t i = 0; i < dimension; ++i) {
       float value = std::round(input[i] * scale_ + bias_);
       value = std::max(0.0f, std::min(255.0f, value));
-      bytes[i] = static_cast<uint8_t>(value);
-    }
-
-    int64_t sum_squared = 0;
-    for (size_t i = 0; i < dimension; ++i) {
-      const int code = static_cast<int>(bytes[i]);
+      const int code = static_cast<int>(value);
+      output[i] = static_cast<int8_t>(code - 128);
       sum_squared += code * code;
-      if (shift_output) {
-        bytes[i] = static_cast<uint8_t>(code - 128);
-      }
     }
     const uint32_t tail = static_cast<uint32_t>(sum_squared);
     std::memcpy(output + dimension, &tail, sizeof(tail));
@@ -231,8 +213,8 @@ class UniformUint8StreamingReformer : public IndexReformer {
   bool initialized_{false};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint8StreamingReformer,
-                                      UniformUint8StreamingReformer,
+INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint8Reformer,
+                                      UniformUint8Reformer,
                                       IndexMeta::DataType::DT_INT8);
 
 }  // namespace core

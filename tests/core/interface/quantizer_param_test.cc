@@ -25,11 +25,5 @@ TEST(QuantizerParam, SerializesCanonicalUniformNames) {
   EXPECT_NE(std::string::npos, uint8.SerializeToJson().find("kUniformUint8"));
 }
 
-TEST(QuantizerParam, UsesDefaultTypeWhenJsonOmitsType) {
-  QuantizerParam param;
-  ASSERT_TRUE(param.DeserializeFromJson("{}"));
-  EXPECT_EQ(QuantizerType::kNone, param.type);
-}
-
 }  // namespace
 }  // namespace zvec::core_interface

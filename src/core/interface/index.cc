@@ -213,10 +213,10 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
           // no converter here
           return 0;
         case QuantizerType::kUniformUint7:
-          converter_name = "UniformUint7StreamingConverter";
+          converter_name = "UniformUint7Converter";
           break;
         case QuantizerType::kUniformUint8:
-          converter_name = "UniformUint8StreamingConverter";
+          converter_name = "UniformUint8Converter";
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
@@ -373,11 +373,10 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // If a converter exists but reformer was not created during Init()
-  // (uniform quantizers whose reformer params are only available
-  // after train()), create it now from the persisted meta that the streamer
-  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
-  // is nullptr by design — skip this block entirely.
+  // If a converter exists but reformer was not created during Init() because
+  // its params are only available after training, create it now from the
+  // persisted meta loaded by the streamer. When there is no converter
+  // (QuantizerType::kNone), reformer_ is nullptr by design.
   if (converter_ != nullptr && reformer_ == nullptr) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {

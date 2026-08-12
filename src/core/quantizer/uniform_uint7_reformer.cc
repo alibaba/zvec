@@ -25,17 +25,17 @@ namespace core {
 
 /*! Reformer for Uniform Uint7 Quantization (Global Scale)
  *
- * Uses a global scale/bias (computed by UniformUint7StreamingConverter) to
+ * Uses a global scale/bias (computed by UniformUint7Converter) to
  * quantize query vectors and build-time record vectors to int8.
  * No per-vector extras are appended — the output is pure int8.
  */
-class UniformUint7StreamingReformer : public IndexReformer {
+class UniformUint7Reformer : public IndexReformer {
  public:
   //! Constructor.
   //! `dst_type` is required by the INDEX_FACTORY_REGISTER_REFORMER_ALIAS
   //! macro signature but is unused here: the quantization output is
   //! always int8, governed by the (scale, bias) pair received in init().
-  UniformUint7StreamingReformer(IndexMeta::DataType /*dst_type*/) {}
+  UniformUint7Reformer(IndexMeta::DataType /*dst_type*/) {}
 
   //! Initialize Reformer
   //!
@@ -49,15 +49,14 @@ class UniformUint7StreamingReformer : public IndexReformer {
     const bool has_bias = params.get(UNIFORM_UINT7_REFORMER_BIAS, &bias);
     if (!has_scale || !has_bias) {
       LOG_ERROR(
-          "UniformUint7StreamingReformer: missing scale/bias params "
+          "UniformUint7Reformer: missing scale/bias params "
           "(scale_present=%d, bias_present=%d)",
           static_cast<int>(has_scale), static_cast<int>(has_bias));
       return IndexError_InvalidArgument;
     }
     if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(bias)) {
-      LOG_ERROR(
-          "UniformUint7StreamingReformer: invalid params scale=%f, bias=%f",
-          scale, bias);
+      LOG_ERROR("UniformUint7Reformer: invalid params scale=%f, bias=%f", scale,
+                bias);
       return IndexError_InvalidArgument;
     }
 
@@ -67,8 +66,8 @@ class UniformUint7StreamingReformer : public IndexReformer {
     initialized_ = true;
     quantize_func_ = turbo::get_uniform_quantize_func(turbo::DataType::kInt8);
 
-    LOG_INFO("UniformUint7StreamingReformer init: scale=%f, bias=%f, simd=%s",
-             scale_, bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
+    LOG_INFO("UniformUint7Reformer init: scale=%f, bias=%f, simd=%s", scale_,
+             bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
     return 0;
   }
 
@@ -117,7 +116,7 @@ class UniformUint7StreamingReformer : public IndexReformer {
                 IndexDocumentList &result) const override {
     if (!initialized_) {
       LOG_ERROR(
-          "UniformUint7StreamingReformer::normalize called before init "
+          "UniformUint7Reformer::normalize called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -137,7 +136,7 @@ class UniformUint7StreamingReformer : public IndexReformer {
              std::string *out) const override {
     if (!initialized_) {
       LOG_ERROR(
-          "UniformUint7StreamingReformer::revert called before init "
+          "UniformUint7Reformer::revert called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -148,9 +147,8 @@ class UniformUint7StreamingReformer : public IndexReformer {
     }
     const size_t dim = qmeta.dimension();
     if (dim == 0 || dim > MAX_DIMENSION) {
-      LOG_ERROR(
-          "UniformUint7StreamingReformer: dimension=%zu must be in [1, %d]",
-          dim, MAX_DIMENSION);
+      LOG_ERROR("UniformUint7Reformer: dimension=%zu must be in [1, %d]", dim,
+                MAX_DIMENSION);
       return IndexError_InvalidArgument;
     }
     out->resize(dim * sizeof(float));
@@ -185,7 +183,7 @@ class UniformUint7StreamingReformer : public IndexReformer {
                   std::string *out, IndexQueryMeta *ometa) const {
     if (!initialized_) {
       LOG_ERROR(
-          "UniformUint7StreamingReformer: quantize called before init "
+          "UniformUint7Reformer: quantize called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -200,9 +198,8 @@ class UniformUint7StreamingReformer : public IndexReformer {
 
     const size_t dim = smeta.dimension();
     if (dim == 0 || dim > MAX_DIMENSION) {
-      LOG_ERROR(
-          "UniformUint7StreamingReformer: dimension=%zu must be in [1, %d]",
-          dim, MAX_DIMENSION);
+      LOG_ERROR("UniformUint7Reformer: dimension=%zu must be in [1, %d]", dim,
+                MAX_DIMENSION);
       return IndexError_InvalidArgument;
     }
     *ometa = smeta;
@@ -244,8 +241,8 @@ class UniformUint7StreamingReformer : public IndexReformer {
   turbo::UniformQuantizeFunc quantize_func_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint7StreamingReformer,
-                                      UniformUint7StreamingReformer,
+INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint7Reformer,
+                                      UniformUint7Reformer,
                                       IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
