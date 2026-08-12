@@ -248,7 +248,23 @@ class BufferStorage : public IndexStorage {
         return 0;
       }
       return read_memory_block(absolute_offset(offset), data, len,
-                               /*borrow_handle=*/false);
+                               /*borrow_handle=*/false,
+                               /*immutable=*/false);
+    }
+
+    size_t read_immutable(size_t offset, MemoryBlock &data,
+                          size_t len) override {
+      if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
+        return 0;
+      }
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
+      }
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/false,
+                               /*immutable=*/true);
     }
 
     //! Borrowed read: the caller keeps the Segment alive until block release.
@@ -267,7 +283,23 @@ class BufferStorage : public IndexStorage {
         return 0;
       }
       return read_memory_block(absolute_offset(offset), data, len,
-                               /*borrow_handle=*/true);
+                               /*borrow_handle=*/true,
+                               /*immutable=*/false);
+    }
+
+    size_t read_borrowed_immutable(size_t offset, MemoryBlock &data,
+                                   size_t len) override {
+      if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
+        return 0;
+      }
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
+      }
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/true,
+                               /*immutable=*/true);
     }
 
     bool prefer_borrowed_batch() const override {
@@ -643,9 +675,9 @@ class BufferStorage : public IndexStorage {
     }
 
     size_t read_memory_block(size_t abs_offset, MemoryBlock &data, size_t len,
-                             bool borrow_handle) const {
-      const bool can_pin =
-          owner_->cache_enabled_ && !owner_->buffer_pool_->writable();
+                             bool borrow_handle, bool immutable) const {
+      const bool can_pin = owner_->cache_enabled_ &&
+                           (immutable || !owner_->buffer_pool_->writable());
       bool force_bypass = !owner_->cache_enabled_;
       const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
       if (can_pin && len <= ailego::kVectorPageSize - offset_in_page) {

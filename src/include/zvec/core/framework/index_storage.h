@@ -384,10 +384,24 @@ class IndexStorage : public IndexModule {
 
     virtual size_t read(size_t offset, MemoryBlock &data, size_t len) = 0;
 
+    //! Read bytes that the caller guarantees will never be modified after
+    //! publication. Page-backed writable storage may safely return a pinned
+    //! direct view instead of copying the range for snapshot isolation.
+    virtual size_t read_immutable(size_t offset, MemoryBlock &data,
+                                  size_t len) {
+      return read(offset, data, len);
+    }
+
     //! Borrowed read; release the block before this Segment. The default keeps
     //! the owning read behavior.
     virtual size_t read_borrowed(size_t offset, MemoryBlock &data, size_t len) {
       return read(offset, data, len);
+    }
+
+    //! Borrowed-handle variant of read_immutable().
+    virtual size_t read_borrowed_immutable(size_t offset, MemoryBlock &data,
+                                           size_t len) {
+      return read_immutable(offset, data, len);
     }
 
     //! Whether batching is currently preferable to scalar borrowed reads.

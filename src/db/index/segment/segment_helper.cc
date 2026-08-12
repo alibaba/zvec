@@ -150,7 +150,8 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
 
   s = ReduceVectorIndex(schema, input_segments, output_segment_path,
                         row_id_filter, block_id_generator, min_doc_id,
-                        max_doc_id, doc_count, task.concurrency_, &block_metas);
+                        max_doc_id, doc_count, task.enable_mmap_,
+                        task.concurrency_, &block_metas);
   CHECK_RETURN_STATUS(s);
 
   LOG_INFO("Compacted vector index");
@@ -640,7 +641,7 @@ Status SegmentHelper::ReduceVectorIndex(
     const std::vector<Segment::Ptr> &input_segments,
     const std::string &output_segment_path, const IndexFilter::Ptr &filter,
     std::function<BlockID()> &block_id_generator, uint64_t min_doc_id,
-    uint64_t max_doc_id, uint32_t doc_count, int concurrency,
+    uint64_t max_doc_id, uint32_t doc_count, bool enable_mmap, int concurrency,
     std::vector<BlockMeta> *output_block_metas) {
   Status s;
 
@@ -671,7 +672,7 @@ Status SegmentHelper::ReduceVectorIndex(
       s = MergeWithOptionalReuse(
           vector_index_path, *field,
           collect_merge_indexers(&Segment::get_vector_indexer), filter,
-          concurrency, nullptr);
+          enable_mmap, concurrency, nullptr);
       CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
@@ -695,7 +696,7 @@ Status SegmentHelper::ReduceVectorIndex(
       s = MergeWithOptionalReuse(
           vector_index_path, *field_without_quantize,
           collect_merge_indexers(&Segment::get_vector_indexer), filter,
-          concurrency, &vector_indexer);
+          enable_mmap, concurrency, &vector_indexer);
       CHECK_RETURN_STATUS(s);
 
       // The training step (for RABITQ) and the subsequent quantize merge both
@@ -735,8 +736,8 @@ Status SegmentHelper::ReduceVectorIndex(
               : collect_merge_indexers(&Segment::get_quant_vector_indexer);
 
       s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
-                                 quant_merge_sources, filter, concurrency,
-                                 nullptr);
+                                 quant_merge_sources, filter, enable_mmap,
+                                 concurrency, nullptr);
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer->Close();
@@ -791,7 +792,7 @@ bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
 Status SegmentHelper::MergeWithOptionalReuse(
     const std::string &output_index_path, const FieldSchema &index_field,
     std::vector<VectorColumnIndexer::Ptr> source_indexers,
-    const IndexFilter::Ptr &filter, int concurrency,
+    const IndexFilter::Ptr &filter, bool enable_mmap, int concurrency,
     VectorColumnIndexer::Ptr *merged_indexer) {
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
@@ -810,7 +811,12 @@ Status SegmentHelper::MergeWithOptionalReuse(
   bool reused_base_index = false;
   Status s;
 
-  if (CanReuseFirstIndexer(source_indexers, index_field, filter)) {
+  // BufferStorage currently treats opening an existing file as read-only.
+  // Until writable reopen is explicit in IndexStorage::open(), rebuilding a
+  // BufferStorage target is the only way to keep every build page charged to
+  // MemoryLimitPool without silently falling back to mmap.
+  if (enable_mmap &&
+      CanReuseFirstIndexer(source_indexers, index_field, filter)) {
     const auto &first_indexer = source_indexers.front();
     LOG_INFO(
         "Reusing first indexer as merge base. "
@@ -820,7 +826,8 @@ Status SegmentHelper::MergeWithOptionalReuse(
     if (FileHelper::CopyFile(first_indexer->index_file_path(),
                              output_index_path)) {
       // Open the copied file in-place (create_new=false).
-      s = vector_indexer->Open(vector_column_params::ReadOptions{true, false});
+      s = vector_indexer->Open(
+          vector_column_params::ReadOptions{enable_mmap, false});
       CHECK_RETURN_STATUS(s);
 
       source_indexers.erase(source_indexers.begin());
@@ -835,7 +842,8 @@ Status SegmentHelper::MergeWithOptionalReuse(
   }
 
   if (!reused_base_index) {
-    s = vector_indexer->Open(vector_column_params::ReadOptions{true, true});
+    s = vector_indexer->Open(
+        vector_column_params::ReadOptions{enable_mmap, true});
     CHECK_RETURN_STATUS(s);
 
     s = vector_indexer->Merge(source_indexers, filter, merge_options);

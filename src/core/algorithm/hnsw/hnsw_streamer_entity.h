@@ -737,7 +737,7 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
       ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                          "invalid chunk offset");
       IndexStorage::MemoryBlock mem_block;
-      const size_t ret = node_chunks_[loc.first]->read_borrowed(
+      const size_t ret = node_chunks_[loc.first]->read_borrowed_immutable(
           loc.second, mem_block, read_size);
       if (ailego_unlikely(ret != read_size)) {
         LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",

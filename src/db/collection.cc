@@ -989,10 +989,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
         if (current_actual_doc_count + actual_doc_count >
             max_doc_count_per_segment) {
           // only create SegmentCompactTask when rebuild=true
-          task = SegmentTask::CreateCompactTask(
-              CompactTask{path_, schema, current_group,
-                          allocate_segment_id_for_tmp_segment(), filter,
-                          !options_.enable_mmap_, concurrency});
+          task = SegmentTask::CreateCompactTask(CompactTask{
+              path_, schema, current_group,
+              allocate_segment_id_for_tmp_segment(), filter,
+              !options_.enable_mmap_, options_.enable_mmap_, concurrency});
         }
       } else {
         if (current_doc_count + doc_count > max_doc_count_per_segment) {
@@ -1003,10 +1003,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
                     current_group[0], "", nullptr, concurrency});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
-            task = SegmentTask::CreateCompactTask(
-                CompactTask{path_, schema, current_group,
-                            allocate_segment_id_for_tmp_segment(), nullptr,
-                            !options_.enable_mmap_, concurrency});
+            task = SegmentTask::CreateCompactTask(CompactTask{
+                path_, schema, current_group,
+                allocate_segment_id_for_tmp_segment(), nullptr,
+                !options_.enable_mmap_, options_.enable_mmap_, concurrency});
           }
         }
       }
@@ -1034,7 +1034,8 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
     } else {
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
-          rebuild ? filter : nullptr, !options_.enable_mmap_, concurrency});
+          rebuild ? filter : nullptr, !options_.enable_mmap_,
+          options_.enable_mmap_, concurrency});
     }
     tasks.push_back(task);
   }

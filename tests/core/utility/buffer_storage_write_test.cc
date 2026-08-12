@@ -1006,6 +1006,45 @@ TEST_F(BufferStorageWriteTest, CR_CrossPageWriteAndRead) {
   EXPECT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, ImmutableReadPinsWritablePageWithoutCopy) {
+  auto storage = OpenWritable();
+  ASSERT_TRUE(storage);
+
+  ASSERT_EQ(0, storage->append("immutable_read_seg", 8192));
+  auto segment = storage->get("immutable_read_seg");
+  ASSERT_TRUE(segment);
+  const size_t page_offset = segment->data_offset() % ailego::kVectorPageSize;
+  const size_t offset = page_offset + 256 <= ailego::kVectorPageSize
+                            ? 0
+                            : ailego::kVectorPageSize - page_offset;
+  const std::string expected = "immutable-vector-bytes";
+  ASSERT_EQ(expected.size(),
+            segment->write(offset, expected.data(), expected.size()));
+
+  IndexStorage::MemoryBlock snapshot;
+  ASSERT_EQ(expected.size(), segment->read(offset, snapshot, expected.size()));
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, snapshot.type_);
+
+  IndexStorage::MemoryBlock pinned;
+  ASSERT_EQ(expected.size(),
+            segment->read_immutable(offset, pinned, expected.size()));
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, pinned.type_);
+  EXPECT_TRUE(pinned.buffer_pool_handle_owner_);
+  EXPECT_EQ(expected, std::string(static_cast<const char *>(pinned.data()),
+                                  expected.size()));
+
+  IndexStorage::MemoryBlock borrowed;
+  ASSERT_EQ(expected.size(), segment->read_borrowed_immutable(offset, borrowed,
+                                                              expected.size()));
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, borrowed.type_);
+  EXPECT_FALSE(borrowed.buffer_pool_handle_owner_);
+
+  borrowed.reset();
+  pinned.reset();
+  snapshot.reset();
+  EXPECT_EQ(0, storage->close());
+}
+
 // Repeated legacy pointer reads from a writable cached page must reuse the
 // pinned page. Retaining a separate 4K-aligned snapshot for every read grows
 // memory until close() and makes long Optimize workloads consume gigabytes.

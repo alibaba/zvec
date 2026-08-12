@@ -228,7 +228,8 @@ int HnswStreamerEntity::get_vector(const node_id_t id,
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                      "invalid chunk offset");
   size_t read_size = vector_size();
-  size_t ret = node_chunks_[loc.first]->read(loc.second, block, read_size);
+  size_t ret =
+      node_chunks_[loc.first]->read_immutable(loc.second, block, read_size);
   if (ailego_unlikely(ret != read_size)) {
     LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
               loc.second, read_size, ret);
@@ -257,8 +258,8 @@ int HnswStreamerEntity::get_vector(
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
     size_t read_size = vector_size();
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, vec_blocks[i], read_size);
+    size_t ret = node_chunks_[loc.first]->read_immutable(
+        loc.second, vec_blocks[i], read_size);
     if (ailego_unlikely(ret != read_size)) {
       LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
                 loc.second, read_size, ret);

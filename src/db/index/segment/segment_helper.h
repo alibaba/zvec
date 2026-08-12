@@ -35,13 +35,14 @@ struct CompactTask {
               const CollectionSchema::Ptr &schema,
               const std::vector<Segment::Ptr> &input_segments,
               SegmentID output_segment_id, const IndexFilter::Ptr filter,
-              bool forward_use_parquet, int concurrency)
+              bool forward_use_parquet, bool enable_mmap, int concurrency)
       : collection_path_(collection_path),
         schema_(schema),
         input_segments_(input_segments),
         output_segment_id_(output_segment_id),
         filter_(std::move(filter)),
         forward_use_parquet_(forward_use_parquet),
+        enable_mmap_(enable_mmap),
         concurrency_(concurrency) {}
 
   const std::string collection_path_;
@@ -52,6 +53,7 @@ struct CompactTask {
   SegmentID output_segment_id_;
   const IndexFilter::Ptr filter_;
   bool forward_use_parquet_;
+  bool enable_mmap_;
   int concurrency_;
 
   // output
@@ -255,8 +257,8 @@ class SegmentHelper {
       const std::vector<Segment::Ptr> &input_segments,
       const std::string &output_segment_path, const IndexFilter::Ptr &filter,
       std::function<BlockID()> &block_id_generator, uint64_t min_doc_id,
-      uint64_t max_doc_id, uint32_t doc_count, int concurrency,
-      std::vector<BlockMeta> *output_block_metas);
+      uint64_t max_doc_id, uint32_t doc_count, bool enable_mmap,
+      int concurrency, std::vector<BlockMeta> *output_block_metas);
 
   // Merges `source_indexers` into a new VectorColumnIndexer at
   // `output_index_path`. When the first indexer is eligible for reuse (see
@@ -267,7 +269,7 @@ class SegmentHelper {
   static Status MergeWithOptionalReuse(
       const std::string &output_index_path, const FieldSchema &index_field,
       std::vector<VectorColumnIndexer::Ptr> source_indexers,
-      const IndexFilter::Ptr &filter, int concurrency,
+      const IndexFilter::Ptr &filter, bool enable_mmap, int concurrency,
       VectorColumnIndexer::Ptr *merged_indexer);
 
   // Returns a FieldSchema clone whose index_params is ready for building the

@@ -2901,6 +2901,9 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     stats = collection->Stats().value();
     ASSERT_EQ(stats.doc_count, doc_count);
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    auto storage_mode = collection->DebugGetHnswStorageMode("dense_fp32");
+    ASSERT_TRUE(storage_mode.has_value());
+    ASSERT_EQ(enable_mmap ? "mmap" : "buffer_pool", storage_mode.value());
 
     check_doc();
     std::cout << "check success 2" << std::endl;
@@ -2910,6 +2913,10 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
+    storage_mode = collection->DebugGetHnswStorageMode("dense_fp32");
+    ASSERT_TRUE(storage_mode.has_value());
+    ASSERT_EQ(enable_mmap ? "mmap" : "buffer_pool", storage_mode.value());
+
     check_doc();
     std::cout << "check success 3" << std::endl;
   };
@@ -2918,6 +2925,80 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     func(enable_mmap, 0);
     func(enable_mmap, 4);
   }
+}
+
+TEST_F(CollectionTest, Feature_BufferStorage_OnlineWriteAndOptimize) {
+  constexpr uint64_t kDocCount = 64;
+  constexpr uint32_t kDimension = 16;
+
+  auto schema = std::make_shared<CollectionSchema>("buffer_write");
+  schema->set_max_doc_count_per_segment(MAX_DOC_COUNT_PER_SEGMENT);
+  schema->add_field(std::make_shared<FieldSchema>(
+      "dense_fp32", DataType::VECTOR_FP32, kDimension, false,
+      std::make_shared<HnswIndexParams>(MetricType::L2, 16, 100)));
+
+  auto options = CollectionOptions{false, false, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, kDocCount, false);
+  ASSERT_NE(nullptr, collection);
+
+  auto check_query = [&](uint64_t doc_id) {
+    auto query_doc = TestHelper::CreateDoc(doc_id, *schema);
+    auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vector.has_value());
+
+    SearchQuery query;
+    query.topk_ = 1;
+    query.target_.field_name_ = "dense_fp32";
+    query.target_.set_vector(
+        std::string(reinterpret_cast<const char *>(vector.value().data()),
+                    vector.value().size() * sizeof(float)));
+    auto result = collection->Query(query);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(1U, result.value().size());
+    ASSERT_EQ(TestHelper::MakePK(doc_id), result.value()[0]->pk());
+  };
+
+  // New writes are immediately searchable through the BufferStorage-backed
+  // active FLAT index, before HNSW has been built.
+  check_query(7);
+  auto pool_stats = ailego::MemoryLimitPool::get_instance().stats();
+  ASSERT_GT(pool_stats.page_used, 0U);
+  ASSERT_LE(pool_stats.used, pool_stats.pool_size);
+  ASSERT_TRUE(collection->Flush().ok());
+  check_query(7);
+
+  ASSERT_TRUE(collection->Optimize().ok());
+  auto storage_mode = collection->DebugGetHnswStorageMode("dense_fp32");
+  ASSERT_TRUE(storage_mode.has_value());
+  ASSERT_EQ("buffer_pool", storage_mode.value());
+  pool_stats = ailego::MemoryLimitPool::get_instance().stats();
+  ASSERT_GT(pool_stats.page_used, 0U);
+  ASSERT_LE(pool_stats.used, pool_stats.pool_size);
+  check_query(7);
+
+  // The second optimize compacts an immutable HNSW segment with a new delta.
+  // Its target must also be built through writable BufferStorage.
+  ASSERT_TRUE(
+      TestHelper::CollectionInsertDoc(collection, kDocCount, kDocCount + 16)
+          .ok());
+  check_query(kDocCount + 3);
+  ASSERT_TRUE(collection->Optimize().ok());
+  storage_mode = collection->DebugGetHnswStorageMode("dense_fp32");
+  ASSERT_TRUE(storage_mode.has_value());
+  ASSERT_EQ("buffer_pool", storage_mode.value());
+  check_query(7);
+  check_query(kDocCount + 3);
+
+  collection.reset();
+  auto reopened = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopened.has_value());
+  collection = std::move(reopened.value());
+  storage_mode = collection->DebugGetHnswStorageMode("dense_fp32");
+  ASSERT_TRUE(storage_mode.has_value());
+  ASSERT_EQ("buffer_pool", storage_mode.value());
+  check_query(7);
+  check_query(kDocCount + 3);
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
