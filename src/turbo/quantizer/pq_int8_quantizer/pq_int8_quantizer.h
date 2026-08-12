@@ -177,10 +177,10 @@ class PqInt8Quantizer : public Quantizer {
   IndexMeta meta_{};
   uint32_t original_dim_{0};
   uint32_t num_chunk_{0};
-  uint32_t sub_dim_{0};
+  uint32_t chunk_dim_{0};
 
   //! Centroids stored as raw bytes in the original data type:
-  //! [num_chunk * kNumCentroids * sub_dim * sizeof(T)]
+  //! [num_chunk * kNumCentroids * chunk_dim * sizeof(T)]
   //! T = float for kFp32, ailego::Float16 for kFp16.
   std::vector<uint8_t> centroids_;
 

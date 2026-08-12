@@ -66,11 +66,11 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   }
 
   num_chunk_ = nsq;
-  sub_dim_ = d / nsq;
+  chunk_dim_ = d / nsq;
 
   // Pre-allocate centroids as raw bytes in the original data type.
-  centroids_.resize(static_cast<size_t>(num_chunk_) * kNumCentroids * sub_dim_ *
-                    element_size());
+  centroids_.resize(static_cast<size_t>(num_chunk_) * kNumCentroids *
+                    chunk_dim_ * element_size());
 
   // Dispatch ISA kernels (scalar only for now).
   auto pq_k = get_pq_kernels(DataType::kInt8);
@@ -128,7 +128,7 @@ template <typename T>
 void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
                                   size_t sub_idx) {
   const size_t k = kNumCentroids;
-  const size_t d = sub_dim_;
+  const size_t d = chunk_dim_;
   uint8_t *centroids_m =
       centroids_.data() + static_cast<size_t>(sub_idx) * k * d * sizeof(T);
 
@@ -301,7 +301,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
 
 void PqInt8Quantizer::build_centroid_ptrs_cache() {
   const size_t k = kNumCentroids;
-  const size_t d = sub_dim_;
+  const size_t d = chunk_dim_;
   const size_t type_sz = element_size();
   const uint8_t *base = centroids_.data();
 
@@ -317,7 +317,7 @@ void PqInt8Quantizer::build_centroid_ptrs_cache() {
 
 void PqInt8Quantizer::compute_dist_table() {
   const size_t k = kNumCentroids;
-  const size_t d = sub_dim_;
+  const size_t d = chunk_dim_;
   dist_table_.resize(static_cast<size_t>(num_chunk_) * k * k, 0.0f);
 
   // Centroid-to-centroid distances via the metric-aware batch_fn_:
@@ -395,12 +395,12 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const void *sub_vec =
-        vec_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size;
+        vec_bytes + static_cast<size_t>(m) * chunk_dim_ * elem_size;
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
 
     // Compute L2 distances from this sub-vector to all 256 centroids.
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
-                 kNumCentroids, sub_dim_, dists);
+                 kNumCentroids, chunk_dim_, dists);
 
     // Argmin: find nearest centroid.  Seed with +infinity instead of
     // dists[0]: k-means may leave dead centroids that yield NaN distances,
@@ -479,9 +479,9 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     const void *sub_query =
-        query_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size;
+        query_bytes + static_cast<size_t>(m) * chunk_dim_ * elem_size;
     batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_query,
-              kNumCentroids, sub_dim_, lut + m * kNumCentroids);
+              kNumCentroids, chunk_dim_, lut + m * kNumCentroids);
   }
 
   // Cosine: the LUT holds ||q_m - c_m[j]||^2 on L2-normalized vectors, and
@@ -588,7 +588,7 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   // Reconstruct by concatenating the selected centroids per chunk,
   // converting from the original data type to float.
   const size_t k = kNumCentroids;
-  const size_t d = sub_dim_;
+  const size_t d = chunk_dim_;
   const uint32_t elem_size = element_size();
 
   for (uint32_t m = 0; m < num_chunk_; ++m) {
@@ -691,7 +691,7 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   PqInt8SerPayload payload{};
   payload.original_dim = original_dim_;
   payload.num_chunk = num_chunk_;
-  payload.chunk_dim = sub_dim_;
+  payload.chunk_dim = chunk_dim_;
   payload.num_centroids = kNumCentroids;
   payload.use_zero_mean = use_zero_mean_ ? 1 : 0;
   payload.input_data_type = static_cast<uint8_t>(input_data_type_);
@@ -750,7 +750,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   original_dim_ = payload.original_dim;
   num_chunk_ = payload.num_chunk;
-  sub_dim_ = payload.chunk_dim;
+  chunk_dim_ = payload.chunk_dim;
 
   // Restore input data type.  Old payloads have input_data_type == 0
   // (was reserved), which maps to kInt4 -- treat as kFp32 for compat.
@@ -764,7 +764,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   // Restore centroids (raw bytes in original data type).
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
-                           sub_dim_ * element_size();
+                           chunk_dim_ * element_size();
   centroids_.resize(centroids_bytes);
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
   ptr += centroids_bytes;
