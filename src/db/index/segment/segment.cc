@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <limits>
 #include <map>
 #include <memory>
@@ -404,7 +403,7 @@ class SegmentImpl : public Segment,
   std::atomic<uint64_t> doc_id_allocator_{0};
   std::atomic<BlockID> block_id_allocator_{0};
 
-  // wal
+  // WAL
   WalFilePtr wal_file_{nullptr};
 
   bool sealed_{false};
@@ -924,7 +923,7 @@ Status SegmentImpl::Insert(Doc &doc) {
 
   doc.set_operator(Operator::INSERT);
 
-  // append wal
+  // append WAL
   auto s = append_wal(doc);
   CHECK_RETURN_STATUS(s);
 
@@ -942,7 +941,7 @@ Status SegmentImpl::Update(Doc &doc) {
   doc.set_doc_id(g_doc_id);
   doc.set_operator(Operator::UPDATE);
 
-  // append wal
+  // append WAL
   auto s = append_wal(doc);
   CHECK_RETURN_STATUS(s);
 
@@ -954,7 +953,7 @@ Status SegmentImpl::Upsert(Doc &doc) {
 
   doc.set_operator(Operator::UPSERT);
 
-  // append wal
+  // append WAL
   auto s = append_wal(doc);
   CHECK_RETURN_STATUS(s);
 
@@ -978,7 +977,7 @@ Status SegmentImpl::Delete(const std::string &pk) {
   mutable_doc.set_doc_id(g_doc_id);
   mutable_doc.set_operator(Operator::DELETE);
 
-  // append wal
+  // append WAL
   auto s = append_wal(mutable_doc);
   CHECK_RETURN_STATUS(s);
 
@@ -996,7 +995,7 @@ Status SegmentImpl::Delete(uint64_t g_doc_id) {
   mutable_doc.set_doc_id(g_doc_id);
   mutable_doc.set_operator(Operator::DELETE);
 
-  // append wal
+  // append WAL
   auto s = append_wal(mutable_doc);
   CHECK_RETURN_STATUS(s);
   return internal_delete(mutable_doc);
@@ -2238,7 +2237,7 @@ Status SegmentImpl::flush() {
   if (wal_file_) {
     if (wal_file_->flush() != 0) {
       LOG_ERROR("WAL flush failed: segment[%d]", id());
-      return Status::InternalError("Failed to flush wal");
+      return Status::InternalError("Failed to flush WAL: segment[", id(), "]");
     }
   }
 
@@ -2315,17 +2314,16 @@ Status SegmentImpl::flush() {
   s = update_version(delete_snapshot_path_suffix);
   CHECK_RETURN_STATUS(s);
 
-  // clear wal file
+  // clear WAL file
   if (wal_file_) {
     auto ret = wal_file_->remove();
     if (ret != 0) {
-      LOG_ERROR(
-          "WAL cleanup failed: unable to remove WAL file from segment[%d]",
-          id());
-      return Status::InternalError("Failed to remove WAL file");
+      LOG_ERROR("WAL cleanup failed: unable to remove file, segment[%d]", id());
+      return Status::InternalError("Failed to remove WAL file: segment[", id(),
+                                   "]");
     }
     wal_file_.reset();
-    LOG_INFO("WAL cleaned up: segment[%d]", id());
+    LOG_INFO("WAL cleanup completed: segment[%d]", id());
   }
 
   if (delete_snapshot_path_suffix_current != UINT32_MAX) {
@@ -4298,7 +4296,7 @@ Status SegmentImpl::recover() {
 
   std::string wal_file_path =
       FileHelper::MakeWalPath(path_, segment_meta_->id(), mem_block.id_);
-  if (!std::filesystem::exists(wal_file_path)) {
+  if (!FileHelper::FileExists(wal_file_path)) {
     LOG_INFO("WAL recovery skipped: no WAL file exists [%s]",
              wal_file_path.c_str());
     return Status::OK();
@@ -4320,28 +4318,32 @@ Status SegmentImpl::recover() {
   int ret = recover_wal_file->prepare_for_read();
   if (ret != 0) {
     LOG_ERROR(
-        "WAL recovery failed: unable to prepare WAL file [%s] for reading",
-        wal_file_path.c_str());
-    return Status::InternalError("Failed to prepare wal file: ", wal_file_path,
-                                 " for read");
+        "WAL recovery failed: unable to prepare file for reading, path[%s], "
+        "segment[%d], ret[%d]",
+        wal_file_path.c_str(), id(), ret);
+    return Status::InternalError(
+        "Failed to prepare WAL file for reading: path[", wal_file_path,
+        "], segment[", id(), "], ret[", ret, "]");
   }
 
-  LOG_INFO("WAL recovery started [%s]", wal_file_path.c_str());
+  LOG_INFO("WAL recovery started: path[%s], segment[%d]", wal_file_path.c_str(),
+           id());
 
   std::lock_guard<std::mutex> lock(seg_mtx_);
 
   while (true) {
     std::string buf = recover_wal_file->next();
     if (buf.empty()) {
-      LOG_INFO("WAL recovery completed [%s]", wal_file_path.c_str());
       break;
     }
     total_recovered_doc_count++;
     auto doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(buf.data()),
                                 buf.size());
     if (doc == nullptr) {
-      LOG_ERROR("WAL recovery failed [%s]: doc deserialization error at %zu",
-                wal_file_path.c_str(), (size_t)total_recovered_doc_count);
+      LOG_ERROR(
+          "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
+          "reason[deserialization failed]",
+          wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count);
       continue;
     }
 
@@ -4364,17 +4366,20 @@ Status SegmentImpl::recover() {
         break;
       }
       default:
-        LOG_ERROR("WAL recovery failed [%s]: unknown operator type %d at %zu ",
-                  wal_file_path.c_str(), static_cast<int>(doc->get_operator()),
-                  (size_t)total_recovered_doc_count);
+        LOG_ERROR(
+            "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
+            "operator[%d], reason[unknown operator]",
+            wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
+            static_cast<int>(doc->get_operator()));
         break;
     }
 
     if (!status.ok()) {
       LOG_ERROR(
-          "WAL recovery failed [%s]: operation %d failed at %zu, reason: %s",
-          wal_file_path.c_str(), static_cast<int>(doc->get_operator()),
-          (size_t)total_recovered_doc_count, status.message().c_str());
+          "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
+          "operator[%d], reason[%s]",
+          wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
+          static_cast<int>(doc->get_operator()), status.message().c_str());
       continue;
     }
 
@@ -4386,21 +4391,27 @@ Status SegmentImpl::recover() {
                           recovered_doc_count[2];   // UPDATE
   mem_block.max_doc_id_ += added_docs;
 
+  ret = recover_wal_file->close();
+  if (ret != 0) {
+    LOG_ERROR(
+        "WAL recovery failed: unable to close file, path[%s], "
+        "segment[%d], ret[%d]",
+        wal_file_path.c_str(), id(), ret);
+    return Status::InternalError("Failed to close recovered WAL file: path[",
+                                 wal_file_path, "], segment[", id(), "], ret[",
+                                 ret, "]");
+  }
+  recover_wal_file.reset();
+
   LOG_INFO(
-      "WAL recovery completed [%s]: segment[%d], total_recovered[%zu] "
-      "(insert[%zu], upsert[%zu], update[%zu], delete[%zu])",
+      "WAL recovery completed: path[%s], segment[%d], total[%zu], "
+      "insert[%zu], upsert[%zu], update[%zu], delete[%zu]",
       wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
       (size_t)recovered_doc_count[0],  // INSERT
       (size_t)recovered_doc_count[1],  // UPSERT
       (size_t)recovered_doc_count[2],  // UPDATE
       (size_t)recovered_doc_count[3]   // DELETE
   );
-
-  if (recover_wal_file->close() != 0) {
-    return Status::InternalError("Failed to close recovered wal file: ",
-                                 wal_file_path);
-  }
-  recover_wal_file.reset();
 
   // Keep the recovered WAL attached to the segment. Operations such as
   // optimize() flush the writing segment before sealing it; without an open
@@ -4414,7 +4425,7 @@ Status SegmentImpl::open_wal_file() {
   std::string wal_file_path =
       FileHelper::MakeWalPath(path_, segment_meta_->id(), mem_block.id_);
   WalOptions wal_option;
-  if (std::filesystem::exists(wal_file_path)) {
+  if (FileHelper::FileExists(wal_file_path)) {
     wal_option.create_new = false;
   } else {
     wal_option.create_new = true;
@@ -4426,7 +4437,8 @@ Status SegmentImpl::open_wal_file() {
     return Status::InternalError("Failed to open wal file: ", wal_file_path);
   }
 
-  LOG_INFO("WAL opened [%s]: segment[%d]", wal_file_path.c_str(), id());
+  LOG_INFO("WAL opened: path[%s], segment[%d], create_new[%d]",
+           wal_file_path.c_str(), id(), wal_option.create_new);
   return Status::OK();
 }
 
@@ -4440,9 +4452,13 @@ Status SegmentImpl::append_wal(const Doc &doc) {
 
   auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
   if (ret != 0) {
-    LOG_ERROR("WAL append failed: segment[%d], pk[%s], op[%d], ret[%d]", id(),
-              doc.pk().c_str(), static_cast<int>(doc.get_operator()), ret);
-    return Status::InternalError("Failed to append wal");
+    LOG_ERROR("WAL append failed: segment[%d], pk[%s], operator[%d], ret[%d]",
+              id(), doc.pk().c_str(), static_cast<int>(doc.get_operator()),
+              ret);
+    return Status::InternalError("Failed to append WAL: segment[", id(),
+                                 "], pk[", doc.pk(), "], operator[",
+                                 static_cast<int>(doc.get_operator()),
+                                 "], ret[", ret, "]");
   }
 
   return Status::OK();

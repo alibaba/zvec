@@ -176,6 +176,55 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
 #endif
 }
 
+//! Handle the general [BuildFromOriginal] option: bind a provider of the
+//! original vectors so the graph is built from them
+IndexHolder::Pointer convert_holder(const std::string &name,
+                                    const ailego::Params &params,
+                                    VecsIndexHolder::Pointer &in_holder,
+                                    IndexMeta &index_meta,
+                                    IndexConverter::Pointer *out_converter);
+
+int setup_build_from_original(const string &builder_class,
+                              const IndexStreamer::Pointer &streamer,
+                              const IndexHolder::Pointer &build_holder,
+                              const IndexMeta &input_meta) {
+  IndexProvider::Pointer provider;
+  IndexMeta provider_meta = input_meta;
+
+  if (input_meta.metric_name() == "Cosine") {
+    // normalize the original vectors so they match the cosine metric space;
+    // note this materializes a full fp32 copy of the dataset in memory
+    VecsIndexHolder::Pointer vecs_holder =
+        std::dynamic_pointer_cast<VecsIndexHolder>(build_holder);
+    if (!vecs_holder) {
+      LOG_ERROR("Failed to cast build holder to VecsIndexHolder");
+      return -1;
+    }
+    IndexHolder::Pointer cv_holder =
+        convert_holder("CosineFp32Converter", ailego::Params(), vecs_holder,
+                       provider_meta, nullptr);
+    if (!cv_holder) {
+      LOG_ERROR("Failed to convert holder for BuildFromOriginal");
+      return -1;
+    }
+    provider = convert_holder_to_provider(cv_holder);
+  } else {
+    provider = std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  }
+
+  if (!provider) {
+    LOG_ERROR("Failed to create provider for BuildFromOriginal");
+    return -1;
+  }
+  if (!streamer || streamer->set_provider(provider, provider_meta) != 0) {
+    LOG_ERROR("[BuildFromOriginal] is not supported by builder class %s",
+              builder_class.c_str());
+    return -1;
+  }
+  cout << "Build " << builder_class << " graph from original vectors" << endl;
+  return 0;
+}
+
 bool check_config(YAML::Node &config_root) {
   auto common = config_root["BuilderCommon"];
   if (!common) {
@@ -1202,6 +1251,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   if (builder_class == "HnswRabitqStreamer") {
     if (setup_hnsw_rabitq_streamer(streamer, input_meta, config_root,
                                    converter_name, &cv_build_holder) != 0) {
+      return -1;
+    }
+  }
+
+  if (config_common["BuildFromOriginal"] &&
+      config_common["BuildFromOriginal"].as<bool>()) {
+    if (setup_build_from_original(builder_class, streamer, build_holder,
+                                  input_meta) != 0) {
       return -1;
     }
   }

@@ -369,6 +369,11 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
 
+  // Optional provider of the original vectors used to build the graph,
+  // with their meta. Runtime only, not serialized.
+  core::IndexProvider::Pointer provider = nullptr;
+  core::IndexMeta provider_meta{};
+
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}
 

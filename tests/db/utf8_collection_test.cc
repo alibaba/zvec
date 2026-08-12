@@ -45,14 +45,20 @@ using namespace zvec::test;
 // If the path handling is broken, the OS will show garbled names (mojibake).
 static const std::string kUtf8Dir =
     "utf8_col_\xe4\xb8\xad\xe6\x96\x87\xe6\xb5\x8b\xe8\xaf\x95";  // utf8_col_中文测试
+static const std::string kIssueUtf8Segment =
+    "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e-"
+    "\xed\x95\x9c\xea\xb5\xad\xec\x96\xb4";  // 日本語-한국어
+static const std::string kIssueUtf8Dir = "utf8_col_" + kIssueUtf8Segment;
 
 class Utf8CollectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ailego::FileHelper::RemovePath(kUtf8Dir.c_str());
+    ailego::FileHelper::RemovePath(kIssueUtf8Dir.c_str());
   }
   void TearDown() override {
     ailego::FileHelper::RemovePath(kUtf8Dir.c_str());
+    ailego::FileHelper::RemovePath(kIssueUtf8Dir.c_str());
   }
 };
 
@@ -92,6 +98,29 @@ TEST_F(Utf8CollectionTest, CreateInsertFlushReopen) {
   auto col2 = std::move(reopen).value();
   auto stats2 = col2->Stats().value();
   ASSERT_EQ(stats2.doc_count, kDocCount);
+}
+
+TEST_F(Utf8CollectionTest, Issue665MixedUnicodePath) {
+  CollectionOptions opts;
+  opts.read_only_ = false;
+  opts.enable_mmap_ = true;
+
+  auto schema = TestHelper::CreateNormalSchema();
+  auto result = Collection::CreateAndOpen(kIssueUtf8Dir, *schema, opts);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+
+  auto col = std::move(result).value();
+  auto insert_status = TestHelper::CollectionInsertDoc(col, 0, 3);
+  ASSERT_TRUE(insert_status.ok()) << insert_status.message();
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  auto reopen = Collection::Open(kIssueUtf8Dir, opts);
+  ASSERT_TRUE(reopen.has_value()) << reopen.error().message();
+  auto reopened_col = std::move(reopen).value();
+  auto stats = reopened_col->Stats();
+  ASSERT_TRUE(stats.has_value()) << stats.error().message();
+  ASSERT_EQ(stats.value().doc_count, 3);
 }
 
 // ---------------------------------------------------------------------------

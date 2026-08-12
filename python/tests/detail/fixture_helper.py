@@ -5,10 +5,7 @@ import platform
 DISKANN_SUPPORTED = (
     platform.system() == "Linux"
     and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
-) or (
-    platform.system() == "Darwin"
-    and platform.machine() in ("aarch64", "arm64")
-)
+) or (platform.system() == "Darwin" and platform.machine() in ("aarch64", "arm64"))
 
 from typing import Any, Generator
 from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
