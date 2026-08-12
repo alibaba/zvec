@@ -39,7 +39,10 @@ pytestmark = pytest.mark.skipif(
             sys.platform == "linux"
             and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
         )
-        or sys.platform == "darwin"
+        or (
+            sys.platform == "darwin"
+            and platform.machine() in ("aarch64", "arm64")
+        )
     ),
     reason="DiskAnn is supported on Linux (x86_64/ARM64) and macOS ARM64",
 )

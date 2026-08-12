@@ -231,7 +231,7 @@ Status FieldSchema::validate() const {
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/x86/ARM64 with io_uring, libaio, or pread) and "
+            "Linux (x86_64/ARM64 with io_uring, libaio, or pread) and "
             "macOS ARM64 (with pread).");
 #endif
       }
