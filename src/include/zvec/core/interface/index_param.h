@@ -96,7 +96,10 @@ enum class QuantizerType {
   kInt4,
   kRabitq,
   // Global uniform quantization with a shared scale/bias and 128 code values
-  // in [0, 127].
+  // in [0, 127]. It can be slightly faster than kUniformUint8, but loses more
+  // precision and may lower the recall ceiling. Prefer kUniformUint8 by
+  // default; use this only after validating that recall is sufficient and
+  // when pursuing maximum performance.
   kUniformUint7 = 8,
   // Global uniform quantization with the full uint8 code range [0, 255].
   kUniformUint8 = 9,
