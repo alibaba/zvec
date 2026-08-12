@@ -187,6 +187,52 @@ TEST_F(BufferStorageWriteTest, WriteOverwrite) {
   EXPECT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, WriteBatchSamePagePersists) {
+  auto storage = OpenWritable();
+  ASSERT_TRUE(storage);
+
+  ASSERT_EQ(0, storage->append("batch_seg", 8192));
+  auto segment = storage->get("batch_seg");
+  ASSERT_TRUE(segment);
+
+  const size_t base_in_page = segment->data_offset() % ailego::kVectorPageSize;
+  const size_t offset = base_in_page + 128 <= ailego::kVectorPageSize
+                            ? 0
+                            : ailego::kVectorPageSize - base_in_page;
+  const uint32_t payload = 0x12345678u;
+  const uint32_t published_count = 7;
+  const IndexStorage::SegmentData writes[] = {
+      {offset + 64, sizeof(payload), &payload},
+      {offset, sizeof(published_count), &published_count},
+  };
+  ASSERT_TRUE(segment->write_batch(writes, 2));
+  EXPECT_EQ(offset + 64 + sizeof(payload), segment->data_size());
+
+  uint32_t got_count = 0;
+  uint32_t got_payload = 0;
+  EXPECT_EQ(sizeof(got_count),
+            segment->fetch(offset, &got_count, sizeof(got_count)));
+  EXPECT_EQ(sizeof(got_payload),
+            segment->fetch(offset + 64, &got_payload, sizeof(got_payload)));
+  EXPECT_EQ(published_count, got_count);
+  EXPECT_EQ(payload, got_payload);
+
+  ASSERT_EQ(0, storage->close());
+  storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  segment = storage->get("batch_seg");
+  ASSERT_TRUE(segment);
+  got_count = 0;
+  got_payload = 0;
+  EXPECT_EQ(sizeof(got_count),
+            segment->fetch(offset, &got_count, sizeof(got_count)));
+  EXPECT_EQ(sizeof(got_payload),
+            segment->fetch(offset + 64, &got_payload, sizeof(got_payload)));
+  EXPECT_EQ(published_count, got_count);
+  EXPECT_EQ(payload, got_payload);
+  EXPECT_EQ(0, storage->close());
+}
+
 // ===== Boundary / Error Tests =====
 
 // Test: Write exceeding segment capacity returns 0
@@ -1042,6 +1088,73 @@ TEST_F(BufferStorageWriteTest, ImmutableReadPinsWritablePageWithoutCopy) {
   borrowed.reset();
   pinned.reset();
   snapshot.reset();
+  EXPECT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, ImmutableReadCopiesCrossPageRange) {
+  auto storage = OpenWritable();
+  ASSERT_TRUE(storage);
+
+  const size_t page_size = ailego::kVectorPageSize;
+  ASSERT_EQ(0, storage->append("immutable_cross_page", 3 * page_size));
+  auto segment = storage->get("immutable_cross_page");
+  ASSERT_TRUE(segment);
+
+  const size_t aligned_offset =
+      (page_size - segment->data_offset() % page_size) % page_size;
+  const size_t offset = aligned_offset + page_size - 128;
+  std::vector<char> expected(3072);
+  for (size_t i = 0; i < expected.size(); ++i) {
+    expected[i] = static_cast<char>((i * 17 + 11) % 251);
+  }
+  ASSERT_EQ(expected.size(),
+            segment->write(offset, expected.data(), expected.size()));
+
+  IndexStorage::MemoryBlock snapshot;
+  ASSERT_EQ(expected.size(),
+            segment->read_immutable(offset, snapshot, expected.size()));
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, snapshot.type_);
+  EXPECT_EQ(0, std::memcmp(expected.data(), snapshot.data(), expected.size()));
+  snapshot.reset();
+  EXPECT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, ImmutableBatchReadUsesWritableCache) {
+  auto storage = OpenWritable();
+  ASSERT_TRUE(storage);
+  const size_t page_size = ailego::kVectorPageSize;
+  ASSERT_EQ(0, storage->append("immutable_batch", 3 * page_size));
+  auto segment = storage->get("immutable_batch");
+  ASSERT_TRUE(segment);
+
+  EXPECT_FALSE(segment->prefer_borrowed_batch_for(
+      std::max<size_t>(1, page_size / 8) - 1));
+  EXPECT_TRUE(
+      segment->prefer_borrowed_batch_for(std::max<size_t>(1, page_size / 8)));
+
+  std::vector<char> payload(3 * page_size);
+  for (size_t i = 0; i < payload.size(); ++i) {
+    payload[i] = static_cast<char>((i * 31 + 7) % 251);
+  }
+  ASSERT_EQ(payload.size(), segment->write(0, payload.data(), payload.size()));
+
+  const size_t aligned_offset =
+      (page_size - segment->data_offset() % page_size) % page_size;
+  const size_t cross_offset = aligned_offset + page_size - 64;
+  IndexStorage::MemoryBlock blocks[2];
+  IndexStorage::Segment::BorrowedRead reads[] = {
+      {segment.get(), aligned_offset, 128, &blocks[0]},
+      {segment.get(), cross_offset, 128, &blocks[1]},
+  };
+  ASSERT_TRUE(segment->read_borrowed_batch_immutable(reads, 2));
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[0].type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[1].type_);
+  EXPECT_EQ(0, std::memcmp(payload.data() + aligned_offset, blocks[0].data(),
+                           reads[0].length));
+  EXPECT_EQ(0, std::memcmp(payload.data() + cross_offset, blocks[1].data(),
+                           reads[1].length));
+  blocks[0].reset();
+  blocks[1].reset();
   EXPECT_EQ(0, storage->close());
 }
 

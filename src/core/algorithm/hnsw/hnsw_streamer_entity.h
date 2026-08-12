@@ -67,6 +67,9 @@ class HnswStreamerEntity : public HnswEntity {
   int get_vector(const node_id_t id,
                  IndexStorage::MemoryBlock &block) const override;
 
+  int get_vector_borrowed(const node_id_t id,
+                          IndexStorage::MemoryBlock &block) const override;
+
   int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override;
@@ -729,7 +732,8 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
   ailego_assert_with(
       first_loc.second < node_chunks_[first_loc.first]->data_size(),
       "invalid chunk offset");
-  if (!node_chunks_[first_loc.first]->prefer_borrowed_batch()) {
+  if (!node_chunks_[first_loc.first]->prefer_borrowed_batch_for(
+          vector_size())) {
     const size_t read_size = vector_size();
     for (auto i = 0U; i < count; ++i) {
       auto loc = get_vector_chunk_loc(ids[i]);
@@ -765,8 +769,9 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
     batch_reads.emplace_back(node_chunks_[loc.first].get(), loc.second,
                              read_size, &vec_blocks[i]);
   }
-  if (ailego_unlikely(!batch_reads.front().segment->read_borrowed_batch(
-          batch_reads.data(), batch_reads.size()))) {
+  if (ailego_unlikely(
+          !batch_reads.front().segment->read_borrowed_batch_immutable(
+              batch_reads.data(), batch_reads.size()))) {
     LOG_ERROR("Batch read vectors failed, count=%u, read size=%zu", count,
               read_size);
     return IndexError_ReadData;

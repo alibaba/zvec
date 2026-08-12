@@ -18,15 +18,20 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/export.h>
 #include "block_eviction_queue.h"
@@ -35,6 +40,10 @@ namespace zvec {
 namespace ailego {
 
 extern const size_t kVectorPageSize;
+
+#if defined(__linux__)
+class IoUringRing;
+#endif
 
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Keep every field used by the resident hit/release path in one compact
@@ -59,6 +68,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     // High 24 bits: aging epoch; low 8 bits: recent rejected-miss count.
     std::atomic<uint32_t> admission_state{0};
     std::atomic<bool> is_dirty;
+    std::atomic<bool> writeback_pending{false};
     std::atomic<bool> ever_loaded{
         false};  // true once the page has been loaded at least once
   };
@@ -86,6 +96,9 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Callback invoked by evict_block() to persist a dirty block before its
   // memory is released. Signature: (block_id, buffer, size, file_offset).
   using FlushCallback = std::function<int(block_id_t, char *, size_t, size_t)>;
+  // Writable pools enqueue dirty candidates here instead of performing disk
+  // I/O on the global eviction thread.
+  using WritebackCallback = std::function<bool(block_id_t)>;
 
   VectorPageTable() : owner_version_(next_owner_version()) {
     BlockEvictionQueue::get_instance().set_valid(this);
@@ -161,6 +174,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   //! Reclaim a block without CLOCK second chance.
   bool force_evict_block(block_id_t block_id);
 
+  //! Reclaim only if the released block is already clean. Unlike teardown
+  //! eviction this never persists or discards a dirty page.
+  bool reclaim_clean_block(block_id_t block_id);
+
   //! Reclaim loaded entries without scanning untouched file pages.
   void force_evict_all_loaded();
 
@@ -202,15 +219,44 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     flush_callback_ = std::move(cb);
   }
 
+  void set_writeback_callback(WritebackCallback cb) {
+    writeback_callback_ = std::move(cb);
+  }
+
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    metadata_entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
+    auto &dirty = metadata_entry_at(block_id).is_dirty;
+    // Page writers hold the page's exclusive latch, while flush keeps its
+    // shared latch through dirty clearing. Avoid repeatedly taking ownership
+    // of the cold metadata cache line once a build page is already dirty.
+    if (!dirty.load(std::memory_order_relaxed)) {
+      dirty.store(true, std::memory_order_relaxed);
+    }
   }
 
   bool is_block_dirty(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     return metadata_entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
+  }
+
+  bool try_mark_writeback_pending(block_id_t block_id) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    bool expected = false;
+    return metadata_entry_at(block_id)
+        .writeback_pending.compare_exchange_strong(expected, true,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_relaxed);
+  }
+
+  void clear_writeback_pending(block_id_t block_id) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    metadata_entry_at(block_id).writeback_pending.store(
+        false, std::memory_order_release);
+  }
+
+  void record_dirty_flush(size_t count) {
+    inc_dirty_flush(count);
   }
 
   //! Clear the dirty flag after a successful batched flush.
@@ -399,6 +445,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   const version_t owner_version_;
 
   FlushCallback flush_callback_{};
+  WritebackCallback writeback_callback_{};
   // Scan loaded entries only after a queue insertion failure.
   std::atomic<bool> eviction_recovery_needed_{false};
 
@@ -452,6 +499,10 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     counters_[counter_shard()].dirty_flush.fetch_add(1,
                                                      std::memory_order_relaxed);
   }
+  void inc_dirty_flush(size_t count) {
+    counters_[counter_shard()].dirty_flush.fetch_add(count,
+                                                     std::memory_order_relaxed);
+  }
   void inc_priority_promotion(uint8_t priority) {
     if (priority < kPriorityCount) {
       priority_promotions_[priority].fetch_add(1, std::memory_order_relaxed);
@@ -467,11 +518,18 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
 class VecBufferPool;
 class VecBufferPoolHandle;
 
+struct VecBufferWriteFragment {
+  size_t file_offset;
+  size_t length;
+  const char *src;
+};
+
 class ZVEC_AILEGO_API VecBufferPool {
  public:
   typedef std::shared_ptr<VecBufferPool> Pointer;
 
   static constexpr size_t kMutexBucketCount = 4UL * 1024UL;
+  static constexpr size_t kWritebackBatchPages = 128;
   static constexpr uint8_t kLowPriority = VectorPageTable::kLowPriority;
   static constexpr uint8_t kNormalPriority = VectorPageTable::kNormalPriority;
   static constexpr uint8_t kHighPriority = VectorPageTable::kHighPriority;
@@ -493,6 +551,17 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t evict{0};
     uint64_t second_chance{0};
     uint64_t dirty_flush{0};
+    uint64_t writeback_requests{0};
+    uint64_t writeback_batches{0};
+    uint64_t writeback_pages{0};
+    uint64_t writeback_failures{0};
+    uint64_t writeback_aio_batches{0};
+    uint64_t writeback_aio_pages{0};
+    uint64_t writeback_aio_fallbacks{0};
+    uint64_t writeback_waits{0};
+    uint64_t writeback_wait_us{0};
+    uint64_t writeback_pending{0};
+    uint64_t writeback_peak_pending{0};
     uint64_t bypass_reads{0};
     uint64_t bypass_bytes{0};
     uint64_t bypass_io_requests{0};
@@ -506,6 +575,8 @@ class ZVEC_AILEGO_API VecBufferPool {
     uint64_t ghost_hot_hits{0};
     size_t page_table_metadata_bytes{0};
     size_t page_lock_metadata_bytes{0};
+    size_t writeback_staging_bytes{0};
+    size_t writeback_io_staging_bytes{0};
     std::array<uint64_t, VectorPageTable::kPriorityCount> priority_promotions{};
     std::array<uint64_t, VectorPageTable::kPriorityCount> priority_demotions{};
     std::array<uint64_t, VectorPageTable::kPriorityCount>
@@ -523,6 +594,21 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.evict = p.evict;
     s.second_chance = p.second_chance;
     s.dirty_flush = p.dirty_flush;
+    s.writeback_requests = writeback_requests_.load(std::memory_order_relaxed);
+    s.writeback_batches = writeback_batches_.load(std::memory_order_relaxed);
+    s.writeback_pages = writeback_pages_.load(std::memory_order_relaxed);
+    s.writeback_failures = writeback_failures_.load(std::memory_order_relaxed);
+    s.writeback_aio_batches =
+        writeback_aio_batches_.load(std::memory_order_relaxed);
+    s.writeback_aio_pages =
+        writeback_aio_pages_.load(std::memory_order_relaxed);
+    s.writeback_aio_fallbacks =
+        writeback_aio_fallbacks_.load(std::memory_order_relaxed);
+    s.writeback_waits = writeback_waits_.load(std::memory_order_relaxed);
+    s.writeback_wait_us = writeback_wait_us_.load(std::memory_order_relaxed);
+    s.writeback_pending = writeback_pending_.load(std::memory_order_relaxed);
+    s.writeback_peak_pending =
+        writeback_peak_pending_.load(std::memory_order_relaxed);
     s.priority_promotions = p.priority_promotions;
     s.priority_demotions = p.priority_demotions;
     s.evictions_by_priority = p.evictions_by_priority;
@@ -541,6 +627,8 @@ class ZVEC_AILEGO_API VecBufferPool {
     s.ghost_hot_hits = p.ghost_hot_hits;
     s.page_table_metadata_bytes = page_table_.metadata_bytes();
     s.page_lock_metadata_bytes = block_mutex_metadata_bytes();
+    s.writeback_staging_bytes = writeback_staging_size_;
+    s.writeback_io_staging_bytes = writeback_io_staging_charge_;
     return s;
   }
 
@@ -597,6 +685,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! Write a contiguous range via the page cache; marks touched pages dirty.
   //! Returns 0 on success, -1 on failure (e.g. read-only pool or I/O error).
   int write_range(size_t file_offset, size_t length, const char *src);
+
+  //! Apply ordered fragments that all lie in one page under one pin/latch.
+  int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
 
   //! Write metadata without cache admission.
   int write_meta(size_t offset, size_t length, const char *buffer);
@@ -666,6 +757,15 @@ class ZVEC_AILEGO_API VecBufferPool {
                            uint8_t priority);
   bool load_pages_aio(const block_id_t *page_ids, size_t count,
                       uint8_t priority);
+  bool enqueue_writeback(block_id_t page_id);
+  void start_writeback();
+  void stop_writeback();
+  void drain_writeback();
+  void writeback_loop();
+  bool flush_writeback_batch(std::vector<block_id_t> &page_ids, char *staging);
+  int writeback_error() const {
+    return writeback_error_.load(std::memory_order_acquire);
+  }
 
   int fd_;       // page-data channel: O_DIRECT or F_NOCACHE when supported
   int meta_fd_;  // metadata channel: always buffered IO
@@ -689,6 +789,18 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> admission_observations_{0};
   std::atomic<uint64_t> admission_admitted_{0};
   std::atomic<uint64_t> admission_rejected_{0};
+  std::atomic<uint64_t> writeback_requests_{0};
+  std::atomic<uint64_t> writeback_batches_{0};
+  std::atomic<uint64_t> writeback_pages_{0};
+  std::atomic<uint64_t> writeback_failures_{0};
+  std::atomic<uint64_t> writeback_aio_batches_{0};
+  std::atomic<uint64_t> writeback_aio_pages_{0};
+  std::atomic<uint64_t> writeback_aio_fallbacks_{0};
+  std::atomic<uint64_t> writeback_waits_{0};
+  std::atomic<uint64_t> writeback_wait_us_{0};
+  std::atomic<uint64_t> writeback_pending_{0};
+  std::atomic<uint64_t> writeback_peak_pending_{0};
+  std::atomic<int> writeback_error_{0};
 #if defined(__linux__)
   IOBackendType io_backend_type_{IOBackendType::kPread};
   bool aio_enabled_{false};
@@ -704,6 +816,21 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
   std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};
+
+  std::thread writeback_thread_{};
+  char *writeback_staging_{nullptr};
+  size_t writeback_staging_size_{0};
+  size_t writeback_io_staging_charge_{0};
+#if defined(__linux__)
+  std::unique_ptr<IoUringRing> writeback_io_uring_{};
+#endif
+  std::mutex writeback_mutex_{};
+  std::condition_variable writeback_cv_{};
+  std::condition_variable writeback_drained_cv_{};
+  std::deque<block_id_t> writeback_queue_{};
+  std::mutex writeback_flush_mutex_{};
+  size_t writeback_inflight_{0};
+  bool writeback_stopping_{false};
 };
 
 class ZVEC_AILEGO_API VecBufferPoolHandle {
@@ -726,6 +853,11 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
 
   bool read_range(size_t file_offset, size_t len, char *out);
 
+  // Copy a range whose bytes are immutable after publication. Writers may
+  // still update disjoint records in the same page, so pages stay pinned for
+  // the copy but do not need the writable payload latch.
+  bool read_range_immutable(size_t file_offset, size_t len, char *out);
+
   bool read_range_bypass(size_t file_offset, size_t len, char *out);
 
   void prefetch_range(size_t file_offset, size_t len,
@@ -734,6 +866,8 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
   int get_meta(size_t offset, size_t length, char *buffer);
 
   int write_range(size_t file_offset, size_t len, const char *src);
+
+  int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
 
   int write_meta(size_t offset, size_t length, const char *buffer);
 

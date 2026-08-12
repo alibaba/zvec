@@ -238,6 +238,30 @@ int HnswStreamerEntity::get_vector(const node_id_t id,
   return 0;
 }
 
+int HnswStreamerEntity::get_vector_borrowed(
+    const node_id_t id, IndexStorage::MemoryBlock &block) const {
+  auto loc = get_vector_chunk_loc(id);
+  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+  if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+      (*node_chunk_bases_)[loc.first]) {
+    block.reset((void *)((*node_chunk_bases_)[loc.first] + loc.second));
+    return 0;
+  }
+
+  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                     "invalid chunk offset");
+  const size_t read_size = vector_size();
+  const size_t ret = node_chunks_[loc.first]->read_borrowed_immutable(
+      loc.second, block, read_size);
+  if (ailego_unlikely(ret != read_size)) {
+    LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
+              loc.second, read_size, ret);
+    return IndexError_ReadData;
+  }
+  return 0;
+}
+
 int HnswStreamerEntity::get_vector(
     const node_id_t *ids, uint32_t count,
     std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
@@ -304,16 +328,14 @@ void HnswStreamerEntity::add_neighbor(level_t level, node_id_t id,
       loc.second + sizeof(NeighborsHeader) + size * sizeof(node_id_t);
   ailego_assert_with(size < neighbor_cnt(level), "invalid neighbor size");
   ailego_assert_with(offset < loc.first->data_size(), "invalid chunk offset");
-  size_t ret = loc.first->write(offset, &neighbor_id, sizeof(node_id_t));
-  if (ailego_unlikely(ret != sizeof(node_id_t))) {
-    LOG_ERROR("Write neighbor id failed, ret=%zu", ret);
-    return;
-  }
-
   uint32_t neighbors = size + 1;
-  ret = loc.first->write(loc.second, &neighbors, sizeof(uint32_t));
-  if (ailego_unlikely(ret != sizeof(uint32_t))) {
-    LOG_ERROR("Write neighbor cnt failed, ret=%zu", ret);
+  // Preserve publication order (payload before count), but let page-backed
+  // storage share one page pin and exclusive latch for both four-byte writes.
+  IndexStorage::SegmentData writes[2];
+  writes[0] = {offset, sizeof(neighbor_id), &neighbor_id};
+  writes[1] = {loc.second, sizeof(neighbors), &neighbors};
+  if (ailego_unlikely(!loc.first->write_batch(writes, 2))) {
+    LOG_ERROR("Append neighbor failed");
   }
 
   return;

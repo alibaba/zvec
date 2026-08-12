@@ -201,7 +201,19 @@ bool IoUringRing::ensure_staging(size_t bytes) {
 }
 
 int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
-  if (!is_valid() || (read_reqs == nullptr && count != 0)) {
+  return execute_impl(fd, read_reqs, nullptr, count);
+}
+
+int IoUringRing::execute_writes(int fd, const IoUringWrite *write_reqs,
+                                size_t count) {
+  return execute_impl(fd, nullptr, write_reqs, count);
+}
+
+int IoUringRing::execute_impl(int fd, const IoUringRead *read_reqs,
+                              const IoUringWrite *write_reqs, size_t count) {
+  const bool is_write = write_reqs != nullptr;
+  if (!is_valid() ||
+      (count != 0 && ((read_reqs == nullptr) == (write_reqs == nullptr)))) {
     return -1;
   }
   if (count == 0) {
@@ -218,19 +230,28 @@ int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
     std::array<size_t, kIoUringMaxBatch> slot_offsets{};
     size_t staging_bytes = 0;
     for (size_t j = 0; j < n_ops; ++j) {
-      const IoUringRead &req = read_reqs[batch_start + j];
+      const size_t req_idx = batch_start + j;
+      const uint64_t offset =
+          is_write ? write_reqs[req_idx].offset : read_reqs[req_idx].offset;
+      const uint64_t len =
+          is_write ? write_reqs[req_idx].len : read_reqs[req_idx].len;
       const uint64_t expected_len =
-          req.expected_len == 0 ? req.len : req.expected_len;
-      if (req.buf == nullptr || req.len == 0 || expected_len > req.len ||
-          req.len > std::numeric_limits<uint32_t>::max() ||
-          req.offset % 512 != 0 || req.len % 512 != 0 ||
-          reinterpret_cast<uintptr_t>(req.buf) % 512 != 0) {
+          is_write ? len
+                   : (read_reqs[req_idx].expected_len == 0
+                          ? len
+                          : read_reqs[req_idx].expected_len);
+      const void *buf =
+          is_write ? write_reqs[req_idx].buf : read_reqs[req_idx].buf;
+      if (buf == nullptr || len == 0 || expected_len > len ||
+          len > std::numeric_limits<uint32_t>::max() || offset % 512 != 0 ||
+          len % 512 != 0 ||
+          (!is_write && reinterpret_cast<uintptr_t>(buf) % 512 != 0)) {
         return -1;
       }
       const size_t aligned_len =
-          (static_cast<size_t>(req.len) + kIoUringStagingAlign - 1) &
+          (static_cast<size_t>(len) + kIoUringStagingAlign - 1) &
           ~(kIoUringStagingAlign - 1);
-      if (aligned_len < req.len ||
+      if (aligned_len < len ||
           staging_bytes > std::numeric_limits<size_t>::max() - aligned_len) {
         return -1;
       }
@@ -248,9 +269,16 @@ int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
       const unsigned sqe_idx = sq_array_[idx];
       struct io_uring_sqe *sqe = &sqes_[sqe_idx];
       const size_t req_idx = batch_start + j;
-      io_uring_prep_read(sqe, fd, staging_ + slot_offsets[j],
-                         static_cast<uint32_t>(read_reqs[req_idx].len),
-                         read_reqs[req_idx].offset);
+      if (is_write) {
+        const IoUringWrite &req = write_reqs[req_idx];
+        std::memcpy(staging_ + slot_offsets[j], req.buf, req.len);
+        io_uring_prep_write(sqe, fd, staging_ + slot_offsets[j],
+                            static_cast<uint32_t>(req.len), req.offset);
+      } else {
+        const IoUringRead &req = read_reqs[req_idx];
+        io_uring_prep_read(sqe, fd, staging_ + slot_offsets[j],
+                           static_cast<uint32_t>(req.len), req.offset);
+      }
       sqe->user_data = req_idx;
     }
 
@@ -273,24 +301,33 @@ int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
                    req_idx);
           all_ok = false;
         } else {
-          const IoUringRead &req = read_reqs[req_idx];
+          const uint64_t offset =
+              is_write ? write_reqs[req_idx].offset : read_reqs[req_idx].offset;
+          const uint64_t len =
+              is_write ? write_reqs[req_idx].len : read_reqs[req_idx].len;
           const uint64_t expected_len =
-              req.expected_len == 0 ? req.len : req.expected_len;
+              is_write ? len
+                       : (read_reqs[req_idx].expected_len == 0
+                              ? len
+                              : read_reqs[req_idx].expected_len);
+          const char *operation = is_write ? "write" : "read";
           if (cqe->res < 0) {
-            LOG_WARN("io_uring read failed: req=%zu, res=%d, offset=%lu",
-                     req_idx, cqe->res, static_cast<unsigned long>(req.offset));
+            LOG_WARN("io_uring %s failed: req=%zu, res=%d, offset=%lu",
+                     operation, req_idx, cqe->res,
+                     static_cast<unsigned long>(offset));
             all_ok = false;
           } else if (static_cast<uint64_t>(cqe->res) != expected_len) {
-            LOG_WARN("io_uring short read: req=%zu, got=%d, expected=%lu",
-                     req_idx, cqe->res,
+            LOG_WARN("io_uring short %s: req=%zu, got=%d, expected=%lu",
+                     operation, req_idx, cqe->res,
                      static_cast<unsigned long>(expected_len));
             all_ok = false;
-          } else {
+          } else if (!is_write) {
+            const IoUringRead &req = read_reqs[req_idx];
             const size_t slot = req_idx - batch_start;
             std::memcpy(req.buf, staging_ + slot_offsets[slot], expected_len);
-            if (expected_len < req.len) {
+            if (expected_len < len) {
               std::memset(static_cast<char *>(req.buf) + expected_len, 0,
-                          req.len - expected_len);
+                          len - expected_len);
             }
           }
         }
@@ -321,8 +358,9 @@ int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
 
       LOG_WARN(
           "io_uring_enter failed; errno=%d, %s, submitted=%zu/%zu, "
-          "completed=%zu. draining before falling back to pread",
-          errno, ::strerror(errno), submitted, n_ops, completed);
+          "completed=%zu. draining before falling back to p%s",
+          errno, ::strerror(errno), submitted, n_ops, completed,
+          is_write ? "write" : "read");
       __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(submitted),
                        __ATOMIC_RELEASE);
 

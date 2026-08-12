@@ -78,19 +78,34 @@ namespace ailego {
 const size_t kVectorPageSize = MemoryHelper::PageSize();
 
 namespace {
-constexpr size_t kBlockingAioBatchSize = 128;
+constexpr size_t kBlockingAioBatchSize = VecBufferPool::kWritebackBatchPages;
 }
 
 VecBufferPool::~VecBufferPool() {
-  // Preserve per-file cache statistics before teardown.
-  log_stats();
+  // Finish queued writes before page buffers, latches, and descriptors go
+  // away. The synchronous pass below catches any prior writeback error.
+  stop_writeback();
   // Flush dirty pages before releasing memory and descriptors.
   (void)this->flush_all();
+  // Preserve final cache and writeback statistics after both persistence
+  // paths have drained.
+  log_stats();
   page_table_.force_evict_all_loaded();
+  const size_t writable_metadata_bytes = block_mutex_metadata_bytes() +
+                                         writeback_staging_size_ +
+                                         writeback_io_staging_charge_;
   block_mutexes_.reset();
-  MemoryLimitPool::get_instance().release_metadata(
-      block_mutex_metadata_bytes());
+  if (writeback_staging_ != nullptr) {
+    ailego_free(writeback_staging_);
+    writeback_staging_ = nullptr;
+  }
+#if defined(__linux__)
+  writeback_io_uring_.reset();
+#endif
+  MemoryLimitPool::get_instance().release_metadata(writable_metadata_bytes);
   block_mutex_count_ = 0;
+  writeback_staging_size_ = 0;
+  writeback_io_staging_charge_ = 0;
   initialized_ = false;
 #if defined(_MSC_VER)
   _close(fd_);
@@ -135,6 +150,8 @@ void VectorPageTable::initialize_segment(Entry *entries,
     metadata_entries[i].file_offset = 0;
     metadata_entries[i].admission_state.store(0, std::memory_order_relaxed);
     metadata_entries[i].is_dirty.store(false, std::memory_order_relaxed);
+    metadata_entries[i].writeback_pending.store(false,
+                                                std::memory_order_relaxed);
     metadata_entries[i].ever_loaded.store(false, std::memory_order_relaxed);
   }
 }
@@ -626,6 +643,28 @@ bool VectorPageTable::force_evict_block(block_id_t block_id) {
   return do_evict_block(block_id, /*force=*/true);
 }
 
+bool VectorPageTable::reclaim_clean_block(block_id_t block_id) {
+  assert(block_id < entry_num_.load(std::memory_order_relaxed));
+  Entry &entry = entry_at(block_id);
+  int expected = 0;
+  if (!entry.ref_count.compare_exchange_strong(expected, kEvictingRefCount)) {
+    return false;
+  }
+  if (metadata_entry_at(block_id).is_dirty.load(std::memory_order_acquire)) {
+    entry.ref_count.store(0, std::memory_order_release);
+    return false;
+  }
+
+  char *buffer = entry.buffer.exchange(nullptr, std::memory_order_acq_rel);
+  if (buffer != nullptr) {
+    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
+  }
+  inc_evict(entry.evict_priority.load(std::memory_order_relaxed));
+  entry.in_evict_queue.store(false, std::memory_order_relaxed);
+  entry.ref_count.store(kUnloadedRefCount, std::memory_order_release);
+  return true;
+}
+
 void VectorPageTable::force_evict_all_loaded() {
   size_t block_id = loaded_head_.load(std::memory_order_acquire);
   while (block_id != kInvalidLoadedBlock) {
@@ -745,6 +784,33 @@ bool VectorPageTable::do_evict_block(block_id_t block_id, bool force) {
     MetadataEntry &metadata = metadata_entry_at(block_id);
     char *buffer = e.buffer.load(std::memory_order_acquire);
     if (buffer && metadata.is_dirty.load(std::memory_order_relaxed)) {
+      if (!force && writeback_callback_) {
+        bool scheduled = false;
+        try {
+          scheduled = writeback_callback_(block_id);
+        } catch (...) {
+          LOG_ERROR(
+              "VectorPageTable::evict_block: writeback callback threw for "
+              "block_id=%zu",
+              static_cast<size_t>(block_id));
+        }
+        if (scheduled) {
+          // Persistence belongs to the pool's writeback worker. Keep this
+          // page resident and queued until the worker makes it clean.
+          e.ref_count.store(0, std::memory_order_release);
+          BlockEvictionQueue::BlockType block;
+          block.owner = this;
+          block.owner_key = block_id;
+          block.version = owner_version_;
+          if (!BlockEvictionQueue::get_instance().add_single_block(
+                  block, static_cast<int>(e.evict_priority.load(
+                             std::memory_order_relaxed)))) {
+            e.in_evict_queue.store(false, std::memory_order_relaxed);
+            eviction_recovery_needed_.store(true, std::memory_order_release);
+          }
+          return false;
+        }
+      }
       int flush_rc = -1;
       if (flush_callback_) {
         try {
@@ -941,14 +1007,31 @@ size_t VecBufferPool::metadata_bytes_for_page_count(size_t page_count,
   if (page_table_bytes == std::numeric_limits<size_t>::max()) {
     return page_table_bytes;
   }
-  const size_t mutex_count =
-      writable ? std::max<size_t>(1, std::min(page_count, kMutexBucketCount))
-               : 0;
+  // Writable files can grow after the pool opens. The mutex array cannot be
+  // replaced while readers and writers hold stripes, so allocate the stable
+  // maximum up front. Besides avoiding cross-page write contention, this
+  // lets a 128-page writeback batch hold distinct stripes after extend_file().
+  const size_t mutex_count = writable ? kMutexBucketCount : 0;
   const size_t mutex_bytes = mutex_count * sizeof(std::shared_mutex);
-  if (page_table_bytes > std::numeric_limits<size_t>::max() - mutex_bytes) {
+  const size_t staging_bytes =
+      writable ? kBlockingAioBatchSize * kVectorPageSize : 0;
+  size_t io_staging_bytes = 0;
+#if defined(__linux__)
+  if (writable &&
+      IOBackend::Instance().available() == IOBackendType::kIoUring) {
+    io_staging_bytes = kBlockingAioBatchSize * kVectorPageSize;
+  }
+#endif
+  if (mutex_bytes > std::numeric_limits<size_t>::max() - staging_bytes ||
+      mutex_bytes + staging_bytes >
+          std::numeric_limits<size_t>::max() - io_staging_bytes) {
     return std::numeric_limits<size_t>::max();
   }
-  return page_table_bytes + mutex_bytes;
+  const size_t writable_bytes = mutex_bytes + staging_bytes + io_staging_bytes;
+  if (page_table_bytes > std::numeric_limits<size_t>::max() - writable_bytes) {
+    return std::numeric_limits<size_t>::max();
+  }
+  return page_table_bytes + writable_bytes;
 }
 
 int VecBufferPool::init() {
@@ -972,6 +1055,8 @@ int VecBufferPool::init() {
             }
             return 0;
           });
+      page_table_.set_writeback_callback(
+          [this](block_id_t block_id) { return enqueue_writeback(block_id); });
     } catch (const std::bad_alloc &) {
       LOG_ERROR(
           "VecBufferPool::init: failed to allocate flush callback for file[%s]",
@@ -989,16 +1074,47 @@ int VecBufferPool::init() {
         file_name_.c_str(), block_num, VectorPageTable::kMaxEntries);
     return -1;
   }
-  const size_t mutex_count =
-      writable_ ? std::max<size_t>(1, std::min(block_num, kMutexBucketCount))
-                : 0;
+  // Writable files grow in place. Keep stripe addresses stable for the pool's
+  // lifetime and avoid collapsing future writeback batches onto the few pages
+  // present when the file was opened.
+  const size_t mutex_count = writable_ ? kMutexBucketCount : 0;
   const size_t mutex_charge = mutex_count * sizeof(std::shared_mutex);
-  if (mutex_charge != 0 &&
-      !MemoryLimitPool::get_instance().try_charge_metadata(mutex_charge)) {
+  const size_t staging_charge =
+      writable_ ? kBlockingAioBatchSize * kVectorPageSize : 0;
+  size_t io_staging_charge = 0;
+#if defined(__linux__)
+  std::unique_ptr<IoUringRing> writeback_io_uring;
+  if (writable_ && io_backend_type_ == IOBackendType::kIoUring) {
+    // Keep the estimator and actual reservation stable even if creating this
+    // pool's ring fails and it must fall back to pwrite.
+    io_staging_charge = kBlockingAioBatchSize * kVectorPageSize;
+    try {
+      writeback_io_uring = std::make_unique<IoUringRing>();
+      if (!writeback_io_uring->setup(kBlockingAioBatchSize)) {
+        writeback_io_uring.reset();
+        LOG_WARN(
+            "VecBufferPool::init: io_uring writeback setup failed for "
+            "file[%s], falling back to pwrite",
+            file_name_.c_str());
+      }
+    } catch (const std::bad_alloc &) {
+      writeback_io_uring.reset();
+      LOG_WARN(
+          "VecBufferPool::init: cannot allocate io_uring writeback context "
+          "for file[%s], falling back to pwrite",
+          file_name_.c_str());
+    }
+  }
+#endif
+  const size_t writable_metadata_charge =
+      mutex_charge + staging_charge + io_staging_charge;
+  if (writable_metadata_charge != 0 &&
+      !MemoryLimitPool::get_instance().try_charge_metadata(
+          writable_metadata_charge)) {
     LOG_ERROR(
         "VecBufferPool::init: shared memory budget cannot reserve %zu bytes "
-        "for %zu page-lock stripes (file=%s)",
-        mutex_charge, mutex_count, file_name_.c_str());
+        "for %zu page-lock stripes and writeback staging (file=%s)",
+        writable_metadata_charge, mutex_count, file_name_.c_str());
     return -1;
   }
   std::unique_ptr<std::shared_mutex[]> mutexes;
@@ -1006,7 +1122,8 @@ int VecBufferPool::init() {
     try {
       mutexes = std::make_unique<std::shared_mutex[]>(mutex_count);
     } catch (const std::bad_alloc &) {
-      MemoryLimitPool::get_instance().release_metadata(mutex_charge);
+      MemoryLimitPool::get_instance().release_metadata(
+          writable_metadata_charge);
       LOG_ERROR(
           "VecBufferPool::init: failed to allocate %zu page-lock stripes "
           "(file=%s)",
@@ -1014,8 +1131,25 @@ int VecBufferPool::init() {
       return -1;
     }
   }
+  char *writeback_staging = nullptr;
+  if (staging_charge != 0) {
+    writeback_staging = static_cast<char *>(
+        ailego_aligned_malloc(staging_charge, kVectorPageSize));
+    if (writeback_staging == nullptr) {
+      MemoryLimitPool::get_instance().release_metadata(
+          writable_metadata_charge);
+      LOG_ERROR(
+          "VecBufferPool::init: failed to allocate %zu bytes of writeback "
+          "staging (file=%s)",
+          staging_charge, file_name_.c_str());
+      return -1;
+    }
+  }
   if (!page_table_.init(block_num)) {
-    MemoryLimitPool::get_instance().release_metadata(mutex_charge);
+    if (writeback_staging != nullptr) {
+      ailego_free(writeback_staging);
+    }
+    MemoryLimitPool::get_instance().release_metadata(writable_metadata_charge);
     LOG_ERROR(
         "VecBufferPool::init: page_table_ init failed for file[%s], "
         "file_size=%zu, block_num=%zu, required_metadata=%zu",
@@ -1025,15 +1159,378 @@ int VecBufferPool::init() {
   }
   block_mutexes_ = std::move(mutexes);
   block_mutex_count_ = mutex_count;
+  writeback_staging_ = writeback_staging;
+  writeback_staging_size_ = staging_charge;
+  writeback_io_staging_charge_ = io_staging_charge;
+#if defined(__linux__)
+  writeback_io_uring_ = std::move(writeback_io_uring);
+#endif
   LOG_DEBUG("entry num: %zu, file_size: %zu", page_table_.entry_num(),
             file_size_);
 
   initialized_ = true;
+  if (writable_) {
+    try {
+      start_writeback();
+    } catch (const std::exception &e) {
+      page_table_.set_writeback_callback({});
+      LOG_WARN(
+          "VecBufferPool::init: failed to start background writeback for "
+          "file[%s], falling back to synchronous dirty eviction: %s",
+          file_name_.c_str(), e.what());
+    } catch (...) {
+      page_table_.set_writeback_callback({});
+      LOG_WARN(
+          "VecBufferPool::init: failed to start background writeback for "
+          "file[%s], falling back to synchronous dirty eviction",
+          file_name_.c_str());
+    }
+  }
   return 0;
 }
 
 VecBufferPoolHandle VecBufferPool::get_handle() {
   return VecBufferPoolHandle(*this);
+}
+
+bool VecBufferPool::enqueue_writeback(block_id_t page_id) {
+  if (writeback_error() != 0) {
+    return false;
+  }
+  if (!page_table_.try_mark_writeback_pending(page_id)) {
+    return true;
+  }
+
+  try {
+    {
+      std::lock_guard<std::mutex> lock(writeback_mutex_);
+      if (writeback_stopping_) {
+        page_table_.clear_writeback_pending(page_id);
+        return false;
+      }
+      writeback_queue_.push_back(page_id);
+      writeback_requests_.fetch_add(1, std::memory_order_relaxed);
+      const uint64_t pending =
+          writeback_pending_.fetch_add(1, std::memory_order_relaxed) + 1;
+      uint64_t peak = writeback_peak_pending_.load(std::memory_order_relaxed);
+      while (peak < pending && !writeback_peak_pending_.compare_exchange_weak(
+                                   peak, pending, std::memory_order_relaxed,
+                                   std::memory_order_relaxed)) {
+      }
+    }
+  } catch (...) {
+    page_table_.clear_writeback_pending(page_id);
+    return false;
+  }
+  writeback_cv_.notify_one();
+  return true;
+}
+
+void VecBufferPool::start_writeback() {
+  std::lock_guard<std::mutex> lock(writeback_mutex_);
+  if (writeback_thread_.joinable()) {
+    return;
+  }
+  writeback_stopping_ = false;
+  writeback_error_.store(0, std::memory_order_release);
+  writeback_thread_ = std::thread([this] { writeback_loop(); });
+}
+
+void VecBufferPool::stop_writeback() {
+  {
+    std::lock_guard<std::mutex> lock(writeback_mutex_);
+    if (!writeback_thread_.joinable()) {
+      return;
+    }
+    writeback_stopping_ = true;
+  }
+  writeback_cv_.notify_all();
+  writeback_thread_.join();
+}
+
+void VecBufferPool::drain_writeback() {
+  std::unique_lock<std::mutex> lock(writeback_mutex_);
+  if (!writeback_thread_.joinable()) {
+    return;
+  }
+  writeback_drained_cv_.wait(lock, [this] {
+    return writeback_queue_.empty() && writeback_inflight_ == 0;
+  });
+}
+
+void VecBufferPool::writeback_loop() {
+  std::vector<block_id_t> page_ids;
+  page_ids.reserve(kBlockingAioBatchSize);
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lock(writeback_mutex_);
+      writeback_cv_.wait(lock, [this] {
+        return writeback_stopping_ || !writeback_queue_.empty();
+      });
+      if (writeback_queue_.empty()) {
+        if (writeback_stopping_) {
+          break;
+        }
+        continue;
+      }
+      page_ids.clear();
+      while (!writeback_queue_.empty() &&
+             page_ids.size() < kBlockingAioBatchSize) {
+        page_ids.push_back(writeback_queue_.front());
+        writeback_queue_.pop_front();
+      }
+      writeback_inflight_ += page_ids.size();
+    }
+
+    try {
+      std::lock_guard<std::mutex> flush_lock(writeback_flush_mutex_);
+      flush_writeback_batch(page_ids, writeback_staging_);
+    } catch (...) {
+      writeback_failures_.fetch_add(page_ids.size(), std::memory_order_relaxed);
+      int expected = 0;
+      (void)writeback_error_.compare_exchange_strong(
+          expected, EIO, std::memory_order_release, std::memory_order_relaxed);
+      LOG_ERROR("VecBufferPool writeback threw: file[%s], pages[%zu]",
+                file_name_.c_str(), page_ids.size());
+    }
+
+    for (block_id_t page_id : page_ids) {
+      page_table_.clear_writeback_pending(page_id);
+    }
+    writeback_pending_.fetch_sub(page_ids.size(), std::memory_order_relaxed);
+    for (block_id_t page_id : page_ids) {
+      (void)page_table_.reclaim_clean_block(page_id);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(writeback_mutex_);
+      writeback_inflight_ -= page_ids.size();
+      if (writeback_queue_.empty() && writeback_inflight_ == 0) {
+        writeback_drained_cv_.notify_all();
+      }
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(writeback_mutex_);
+    if (writeback_queue_.empty() && writeback_inflight_ == 0) {
+      writeback_drained_cv_.notify_all();
+    }
+  }
+}
+
+bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
+                                          char *staging) {
+  if (page_ids.empty()) {
+    return true;
+  }
+  std::sort(page_ids.begin(), page_ids.end());
+  page_ids.erase(std::unique(page_ids.begin(), page_ids.end()), page_ids.end());
+
+#if defined(__linux__)
+  if (writeback_io_uring_ && writeback_io_uring_->is_valid()) {
+    bool all_ok = true;
+    size_t pos = 0;
+    while (pos < page_ids.size()) {
+      std::array<block_id_t, kBlockingAioBatchSize> selected_pages{};
+      std::array<char *, kBlockingAioBatchSize> buffers{};
+      std::array<size_t, kBlockingAioBatchSize> locked_stripes{};
+      std::array<std::shared_lock<std::shared_mutex>, kBlockingAioBatchSize>
+          locks;
+      size_t selected = 0;
+
+      while (pos < page_ids.size() && selected < kBlockingAioBatchSize) {
+        const block_id_t page_id = page_ids[pos];
+        if (!page_table_.is_block_dirty(page_id)) {
+          ++pos;
+          continue;
+        }
+
+        const size_t stripe = page_id % block_mutex_count_;
+        bool stripe_already_locked = false;
+        for (size_t i = 0; i < selected; ++i) {
+          if (locked_stripes[i] == stripe) {
+            stripe_already_locked = true;
+            break;
+          }
+        }
+        // std::shared_mutex does not guarantee recursive shared ownership.
+        // Submit the current group before taking the same stripe again.
+        if (stripe_already_locked) {
+          break;
+        }
+
+        char *buffer = page_table_.acquire_block(page_id,
+                                                 /*record_reuse=*/false);
+        if (buffer == nullptr) {
+          ++pos;
+          continue;
+        }
+        locks[selected] =
+            std::shared_lock<std::shared_mutex>(block_mutexes_[stripe]);
+        if (!page_table_.is_block_dirty(page_id)) {
+          locks[selected].unlock();
+          page_table_.release_block(page_id);
+          ++pos;
+          continue;
+        }
+        selected_pages[selected] = page_id;
+        buffers[selected] = buffer;
+        locked_stripes[selected] = stripe;
+        ++selected;
+        ++pos;
+      }
+
+      if (selected == 0) {
+        continue;
+      }
+
+      std::array<IoUringWrite, kBlockingAioBatchSize> requests{};
+      for (size_t i = 0; i < selected; ++i) {
+        requests[i] = IoUringWrite(selected_pages[i] * kVectorPageSize,
+                                   kVectorPageSize, buffers[i]);
+      }
+
+      writeback_batches_.fetch_add(1, std::memory_order_relaxed);
+      writeback_aio_batches_.fetch_add(1, std::memory_order_relaxed);
+      writeback_aio_pages_.fetch_add(selected, std::memory_order_relaxed);
+      bool aio_ok = writeback_io_uring_->execute_writes(fd_, requests.data(),
+                                                        selected) == 0;
+      if (!aio_ok) {
+        writeback_aio_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      size_t flushed = 0;
+      size_t failed = 0;
+      int batch_error = 0;
+      for (size_t i = 0; i < selected; ++i) {
+        bool page_ok = aio_ok;
+        if (!page_ok) {
+          errno = 0;
+          const ssize_t written =
+              zvec_pwrite(fd_, buffers[i], kVectorPageSize,
+                          selected_pages[i] * kVectorPageSize);
+          page_ok = written == static_cast<ssize_t>(kVectorPageSize);
+          if (!page_ok) {
+            const int error = errno != 0 ? errno : EIO;
+            if (batch_error == 0) {
+              batch_error = error;
+            }
+            LOG_ERROR(
+                "VecBufferPool writeback fallback failed: file[%s], "
+                "page[%zu], expected[%zu], got[%zd], errno[%d]",
+                file_name_.c_str(), static_cast<size_t>(selected_pages[i]),
+                kVectorPageSize, written, error);
+          }
+        }
+        if (page_ok) {
+          page_table_.clear_dirty(selected_pages[i]);
+          ++flushed;
+        } else {
+          ++failed;
+        }
+      }
+      if (flushed != 0) {
+        page_table_.record_dirty_flush(flushed);
+        writeback_pages_.fetch_add(flushed, std::memory_order_relaxed);
+      }
+      if (failed != 0) {
+        writeback_failures_.fetch_add(failed, std::memory_order_relaxed);
+        int expected = 0;
+        (void)writeback_error_.compare_exchange_strong(
+            expected, batch_error != 0 ? batch_error : EIO,
+            std::memory_order_release, std::memory_order_relaxed);
+        all_ok = false;
+      }
+
+      for (size_t i = 0; i < selected; ++i) {
+        locks[i].unlock();
+        page_table_.release_block(selected_pages[i]);
+      }
+    }
+    return all_ok;
+  }
+#endif
+
+  bool all_ok = true;
+  const size_t max_run =
+      std::max<size_t>(1, std::min(kBlockingAioBatchSize, block_mutex_count_));
+  const size_t run_limit = staging != nullptr ? max_run : 1;
+  std::array<char *, kBlockingAioBatchSize> buffers{};
+  std::array<std::shared_lock<std::shared_mutex>, kBlockingAioBatchSize> locks;
+
+  size_t pos = 0;
+  while (pos < page_ids.size()) {
+    const block_id_t run_start = page_ids[pos];
+    size_t run_count = 0;
+    while (pos + run_count < page_ids.size() && run_count < run_limit &&
+           page_ids[pos + run_count] == run_start + run_count) {
+      const block_id_t page_id = page_ids[pos + run_count];
+      if (!page_table_.is_block_dirty(page_id)) {
+        break;
+      }
+      char *buffer = page_table_.acquire_block(page_id,
+                                               /*record_reuse=*/false);
+      if (buffer == nullptr) {
+        break;
+      }
+      locks[run_count] = std::shared_lock<std::shared_mutex>(
+          block_mutexes_[page_id % block_mutex_count_]);
+      if (!page_table_.is_block_dirty(page_id)) {
+        locks[run_count].unlock();
+        page_table_.release_block(page_id);
+        break;
+      }
+      buffers[run_count] = buffer;
+      if (staging != nullptr) {
+        std::memcpy(staging + run_count * kVectorPageSize, buffer,
+                    kVectorPageSize);
+      }
+      ++run_count;
+    }
+
+    if (run_count == 0) {
+      ++pos;
+      continue;
+    }
+
+    const char *write_buffer = staging != nullptr ? staging : buffers[0];
+    // Without staging, resident pages are not contiguous; preserve correctness
+    // by submitting one page at a time.
+    const size_t submitted_pages = staging != nullptr ? run_count : 1;
+    const size_t submitted_size = submitted_pages * kVectorPageSize;
+    writeback_batches_.fetch_add(1, std::memory_order_relaxed);
+    const ssize_t written = zvec_pwrite(fd_, write_buffer, submitted_size,
+                                        run_start * kVectorPageSize);
+    const bool ok = written == static_cast<ssize_t>(submitted_size);
+    if (ok) {
+      for (size_t i = 0; i < submitted_pages; ++i) {
+        page_table_.clear_dirty(run_start + i);
+      }
+      page_table_.record_dirty_flush(submitted_pages);
+      writeback_pages_.fetch_add(submitted_pages, std::memory_order_relaxed);
+    } else {
+      writeback_failures_.fetch_add(submitted_pages, std::memory_order_relaxed);
+      int expected = 0;
+      const int error = errno != 0 ? errno : EIO;
+      (void)writeback_error_.compare_exchange_strong(expected, error,
+                                                     std::memory_order_release,
+                                                     std::memory_order_relaxed);
+      LOG_ERROR(
+          "VecBufferPool writeback failed: file[%s], offset[%zu], "
+          "expected[%zu], got[%zd], errno[%d]",
+          file_name_.c_str(), run_start * kVectorPageSize, submitted_size,
+          written, error);
+      all_ok = false;
+    }
+
+    for (size_t i = 0; i < run_count; ++i) {
+      locks[i].unlock();
+      page_table_.release_block(run_start + i);
+    }
+    pos += staging != nullptr ? run_count : submitted_pages;
+  }
+  return all_ok;
 }
 
 char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
@@ -1062,7 +1559,40 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
 
     bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
         kVectorPageSize, buffer);
-    if (!found) {
+    if (!found && writable_ && retry > 0) {
+      int no_progress_waits = 0;
+      uint64_t completed = writeback_pages_.load(std::memory_order_relaxed);
+      while (!found && no_progress_waits < retry) {
+        // Bound foreground queue scanning. Dirty candidates are only queued;
+        // disk I/O belongs to the writeback worker.
+        (void)BlockEvictionQueue::get_instance().batch_recycle(64);
+        found = MemoryLimitPool::get_instance().try_acquire_buffer(
+            kVectorPageSize, buffer);
+        if (found || writeback_error() != 0) {
+          break;
+        }
+
+        writeback_waits_.fetch_add(1, std::memory_order_relaxed);
+        const auto wait_start = std::chrono::steady_clock::now();
+        const bool capacity_released =
+            MemoryLimitPool::get_instance().wait_for_available(
+                kVectorPageSize, std::chrono::milliseconds(100));
+        const auto wait_end = std::chrono::steady_clock::now();
+        writeback_wait_us_.fetch_add(
+            static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    wait_end - wait_start)
+                    .count()),
+            std::memory_order_relaxed);
+        const uint64_t now = writeback_pages_.load(std::memory_order_relaxed);
+        if (capacity_released || now != completed) {
+          no_progress_waits = 0;
+          completed = now;
+        } else {
+          ++no_progress_waits;
+        }
+      }
+    } else if (!found) {
       for (int i = 0; i < retry; i++) {
         BlockEvictionQueue::get_instance().recycle();
         found = MemoryLimitPool::get_instance().try_acquire_buffer(
@@ -1075,14 +1605,33 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
     if (!found) {
       const auto memory_stats = MemoryLimitPool::get_instance().stats();
       const auto page_stats = page_table_.stats();
-      LOG_DEBUG(
-          "Buffer pool failed to get free buffer: file[%s], page_id[%zu], "
-          "used[%zu], committed[%zu], free_buffers[%zu], evict[%llu], "
-          "second_chance[%llu]",
-          file_name_.c_str(), page_id, memory_stats.used,
-          memory_stats.committed, memory_stats.free_buffers,
-          static_cast<unsigned long long>(page_stats.evict),
-          static_cast<unsigned long long>(page_stats.second_chance));
+      const int error = writeback_error();
+      if (error != 0) {
+        LOG_ERROR(
+            "Buffer pool allocation stopped after writeback failure: "
+            "file[%s], page_id[%zu], error[%d], used[%zu], "
+            "committed[%zu], free_buffers[%zu]",
+            file_name_.c_str(), page_id, error, memory_stats.used,
+            memory_stats.committed, memory_stats.free_buffers);
+      } else if (writable_) {
+        LOG_WARN(
+            "Buffer pool allocation made no progress: file[%s], "
+            "page_id[%zu], used[%zu], committed[%zu], free_buffers[%zu], "
+            "evict[%llu], second_chance[%llu]",
+            file_name_.c_str(), page_id, memory_stats.used,
+            memory_stats.committed, memory_stats.free_buffers,
+            static_cast<unsigned long long>(page_stats.evict),
+            static_cast<unsigned long long>(page_stats.second_chance));
+      } else {
+        LOG_DEBUG(
+            "Buffer pool failed to get free buffer: file[%s], page_id[%zu], "
+            "used[%zu], committed[%zu], free_buffers[%zu], evict[%llu], "
+            "second_chance[%llu]",
+            file_name_.c_str(), page_id, memory_stats.used,
+            memory_stats.committed, memory_stats.free_buffers,
+            static_cast<unsigned long long>(page_stats.evict),
+            static_cast<unsigned long long>(page_stats.second_chance));
+      }
       (void)page_table_.cancel_block_load(page_id);
       return nullptr;
     }
@@ -1322,6 +1871,59 @@ int VecBufferPool::write_range(size_t file_offset, size_t length,
   return 0;
 }
 
+int VecBufferPool::write_fragments(const VecBufferWriteFragment *fragments,
+                                   size_t count) {
+  if (!writable_ || (count != 0 && fragments == nullptr)) {
+    return -1;
+  }
+  if (count == 0) {
+    return 0;
+  }
+
+  size_t page_id = std::numeric_limits<size_t>::max();
+  bool has_data = false;
+  for (size_t i = 0; i < count; ++i) {
+    const auto &fragment = fragments[i];
+    if (fragment.length == 0) {
+      continue;
+    }
+    if (fragment.src == nullptr || fragment.file_offset > file_size_ ||
+        fragment.length > file_size_ - fragment.file_offset) {
+      return -1;
+    }
+    const size_t fragment_page = fragment.file_offset / kVectorPageSize;
+    const size_t offset_in_page = fragment.file_offset % kVectorPageSize;
+    if (fragment.length > kVectorPageSize - offset_in_page ||
+        (has_data && fragment_page != page_id)) {
+      return -1;
+    }
+    page_id = fragment_page;
+    has_data = true;
+  }
+  if (!has_data) {
+    return 0;
+  }
+
+  char *page = acquire_buffer(static_cast<block_id_t>(page_id), 50);
+  if (page == nullptr) {
+    return -1;
+  }
+  {
+    std::unique_lock<std::shared_mutex> page_lock(
+        block_mutexes_[page_id % block_mutex_count_]);
+    for (size_t i = 0; i < count; ++i) {
+      const auto &fragment = fragments[i];
+      if (fragment.length != 0) {
+        std::memcpy(page + fragment.file_offset % kVectorPageSize, fragment.src,
+                    fragment.length);
+      }
+    }
+    page_table_.mark_dirty(page_id);
+  }
+  page_table_.release_block(page_id);
+  return 0;
+}
+
 int VecBufferPool::write_meta(size_t offset, size_t length,
                               const char *buffer) {
   if (!writable_) {
@@ -1351,93 +1953,47 @@ int VecBufferPool::flush_all() {
   if (!writable_) {
     return 0;
   }
+  // Establish one persistence owner before the full scan. This also gives
+  // callers a deterministic drain point for all previously queued pages.
+  drain_writeback();
+  std::unique_lock<std::mutex> flush_lock(writeback_flush_mutex_);
   const size_t total = page_table_.entry_num();
   if (total == 0) {
     return 0;
   }
 
-  static constexpr size_t kBatchPages = 256;
-  const size_t kBatchSize = kBatchPages * kVectorPageSize;
-  char *batch_buf =
-      static_cast<char *>(ailego_aligned_malloc(kBatchSize, 4096));
-  std::array<std::shared_lock<std::shared_mutex>, kBatchPages> page_locks;
-
   int rc = 0;
   size_t total_dirty = 0;
-  size_t fail_count = 0;
-  size_t i = 0;
-
-  while (i < total) {
-    if (!page_table_.is_block_dirty(i)) {
-      ++i;
-      continue;
+  size_t failed_batches = 0;
+  std::vector<block_id_t> dirty_pages;
+  dirty_pages.reserve(kBlockingAioBatchSize);
+  for (size_t page_id = 0; page_id < total; ++page_id) {
+    if (page_table_.is_block_dirty(page_id)) {
+      dirty_pages.push_back(page_id);
     }
-
-    const size_t run_start = i;
-    size_t run_count = 0;
-    const size_t limit = batch_buf ? kBatchPages : 1;
-    while (i < total && run_count < limit && page_table_.is_block_dirty(i)) {
-      char *buf = page_table_.acquire_block(i);
-      if (!buf) {
-        break;
+    if (dirty_pages.size() == kBlockingAioBatchSize ||
+        (page_id + 1 == total && !dirty_pages.empty())) {
+      total_dirty += dirty_pages.size();
+      if (!flush_writeback_batch(dirty_pages, writeback_staging_)) {
+        rc = -1;
+        ++failed_batches;
       }
-      // Hold the page latch through writeback and dirty-flag clearing.
-      page_locks[run_count] = std::shared_lock<std::shared_mutex>(
-          block_mutexes_[i % block_mutex_count_]);
-      // Recheck dirty state after pinning.
-      if (!page_table_.is_block_dirty(i)) {
-        page_locks[run_count].unlock();
-        page_table_.release_block(i);
-        break;
-      }
-      if (batch_buf) {
-        std::memcpy(batch_buf + run_count * kVectorPageSize, buf,
-                    kVectorPageSize);
-      }
-      ++run_count;
-      ++i;
-    }
-    if (run_count == 0) {
-      ++i;
-      continue;
-    }
-    total_dirty += run_count;
-
-    bool ok = false;
-    if (batch_buf && run_count > 0) {
-      const size_t write_size = run_count * kVectorPageSize;
-      ssize_t w =
-          zvec_pwrite(fd_, batch_buf, write_size, run_start * kVectorPageSize);
-      ok = (w == static_cast<ssize_t>(write_size));
-    }
-    if (ok) {
-      for (size_t j = run_start; j < run_start + run_count; ++j) {
-        page_table_.clear_dirty(j);
-      }
-    } else {
-      for (size_t j = run_start; j < run_start + run_count; ++j) {
-        int r = page_table_.flush_block(j);
-        if (r != 0) {
-          rc = r;
-          ++fail_count;
-        }
-      }
-    }
-    // Keep pages pinned and latched through writeback completion.
-    for (size_t j = 0; j < run_count; ++j) {
-      page_locks[j].unlock();
-      page_table_.release_block(run_start + j);
+      dirty_pages.clear();
     }
   }
 
-  if (batch_buf) {
-    ailego_free(batch_buf);
-  }
-  if (fail_count != 0) {
+  if (failed_batches != 0) {
     LOG_ERROR(
-        "VecBufferPool::flush_all: %zu/%zu dirty page(s) failed to flush, "
-        "file[%s] last_rc=%d -- on-disk data may be stale.",
-        fail_count, total_dirty, file_name_.c_str(), rc);
+        "VecBufferPool::flush_all: %zu writeback batch(es) covering %zu dirty "
+        "page(s) failed, file[%s] last_rc=%d -- on-disk data may be stale.",
+        failed_batches, total_dirty, file_name_.c_str(), rc);
+  } else {
+    writeback_error_.store(0, std::memory_order_release);
+  }
+  flush_lock.unlock();
+  drain_writeback();
+  if (writeback_error() != 0) {
+    rc = -1;
   }
   return rc;
 }
@@ -1690,6 +2246,36 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
   return true;
 }
 
+bool VecBufferPoolHandle::read_range_immutable(size_t file_offset, size_t len,
+                                               char *out) {
+  if (len == 0) {
+    return true;
+  }
+  if (out == nullptr || file_offset > pool_.file_size_ ||
+      len > pool_.file_size_ - file_offset) {
+    return false;
+  }
+
+  const size_t first_page = file_offset / kVectorPageSize;
+  const size_t last_page = (file_offset + len - 1) / kVectorPageSize;
+  size_t remaining = len;
+  size_t dst_cursor = 0;
+  for (size_t pg = first_page; pg <= last_page; ++pg) {
+    char *page = pool_.acquire_buffer(static_cast<block_id_t>(pg), 50);
+    if (page == nullptr) {
+      return false;
+    }
+    const size_t page_start = pg * kVectorPageSize;
+    const size_t intra_offset = pg == first_page ? file_offset - page_start : 0;
+    const size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
+    std::memcpy(out + dst_cursor, page + intra_offset, chunk);
+    pool_.page_table_.release_block(static_cast<block_id_t>(pg));
+    dst_cursor += chunk;
+    remaining -= chunk;
+  }
+  return true;
+}
+
 bool VecBufferPoolHandle::read_range_bypass(size_t file_offset, size_t len,
                                             char *out) {
   return pool_.read_range_bypass(file_offset, len, out);
@@ -1702,6 +2288,11 @@ int VecBufferPoolHandle::get_meta(size_t offset, size_t length, char *buffer) {
 int VecBufferPoolHandle::write_range(size_t file_offset, size_t len,
                                      const char *src) {
   return pool_.write_range(file_offset, len, src);
+}
+
+int VecBufferPoolHandle::write_fragments(
+    const VecBufferWriteFragment *fragments, size_t count) {
+  return pool_.write_fragments(fragments, count);
 }
 
 int VecBufferPoolHandle::write_meta(size_t offset, size_t length,
@@ -2258,13 +2849,21 @@ void VecBufferPool::log_stats() const {
   const auto queue_stats = BlockEvictionQueue::get_instance().stats();
   LOG_INFO(
       "VecBufferPool stats: file[%s] hit=%llu miss=%llu hit_rate=%.4f "
-      "evict=%llu second_chance=%llu dirty_flush=%llu bypass_reads=%llu "
+      "evict=%llu second_chance=%llu dirty_flush=%llu "
+      "writeback_requests=%llu writeback_batches=%llu "
+      "writeback_pages=%llu writeback_failures=%llu "
+      "writeback_aio_batches=%llu writeback_aio_pages=%llu "
+      "writeback_aio_fallbacks=%llu "
+      "writeback_waits=%llu writeback_wait_us=%llu "
+      "writeback_pending=%llu writeback_peak_pending=%llu "
+      "bypass_reads=%llu "
       "bypass_bytes=%llu bypass_io_requests=%llu bypass_rechecks=%llu "
       "bypass_cache_joins=%llu singleflight_waits=%llu "
       "aio_pages_submitted=%llu "
       "admission_admitted=%llu admission_rejected=%llu "
       "ghost_hot_marks=%llu ghost_hot_hits=%llu "
       "page_table_metadata_bytes=%zu page_lock_metadata_bytes=%zu "
+      "writeback_staging_bytes=%zu writeback_io_staging_bytes=%zu "
       "resident_by_priority=[%zu,%zu,%zu] "
       "promotions=[%llu,%llu,%llu] demotions=[%llu,%llu,%llu] "
       "evictions_by_priority=[%llu,%llu,%llu] "
@@ -2274,6 +2873,17 @@ void VecBufferPool::log_stats() const {
       static_cast<unsigned long long>(s.evict),
       static_cast<unsigned long long>(s.second_chance),
       static_cast<unsigned long long>(s.dirty_flush),
+      static_cast<unsigned long long>(s.writeback_requests),
+      static_cast<unsigned long long>(s.writeback_batches),
+      static_cast<unsigned long long>(s.writeback_pages),
+      static_cast<unsigned long long>(s.writeback_failures),
+      static_cast<unsigned long long>(s.writeback_aio_batches),
+      static_cast<unsigned long long>(s.writeback_aio_pages),
+      static_cast<unsigned long long>(s.writeback_aio_fallbacks),
+      static_cast<unsigned long long>(s.writeback_waits),
+      static_cast<unsigned long long>(s.writeback_wait_us),
+      static_cast<unsigned long long>(s.writeback_pending),
+      static_cast<unsigned long long>(s.writeback_peak_pending),
       static_cast<unsigned long long>(s.bypass_reads),
       static_cast<unsigned long long>(s.bypass_bytes),
       static_cast<unsigned long long>(s.bypass_io_requests),
@@ -2285,7 +2895,8 @@ void VecBufferPool::log_stats() const {
       static_cast<unsigned long long>(s.admission_rejected),
       static_cast<unsigned long long>(s.ghost_hot_marks),
       static_cast<unsigned long long>(s.ghost_hot_hits),
-      s.page_table_metadata_bytes, s.page_lock_metadata_bytes, resident[0],
+      s.page_table_metadata_bytes, s.page_lock_metadata_bytes,
+      s.writeback_staging_bytes, s.writeback_io_staging_bytes, resident[0],
       resident[1], resident[2],
       static_cast<unsigned long long>(s.priority_promotions[0]),
       static_cast<unsigned long long>(s.priority_promotions[1]),

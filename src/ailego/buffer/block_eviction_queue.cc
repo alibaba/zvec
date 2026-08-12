@@ -718,6 +718,25 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
   return true;
 }
 
+bool MemoryLimitPool::wait_for_available(const size_t buffer_size,
+                                         std::chrono::milliseconds timeout) {
+  if (buffer_size == 0) {
+    return true;
+  }
+  capacity_waits_.fetch_add(1, std::memory_order_relaxed);
+  std::unique_lock<std::mutex> lock(capacity_mutex_);
+  const bool available =
+      capacity_cv_.wait_for(lock, timeout, [this, buffer_size] {
+        const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+        const size_t used = used_size_.load(std::memory_order_relaxed);
+        return capacity >= used && buffer_size <= capacity - used;
+      });
+  if (!available) {
+    capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
+  }
+  return available;
+}
+
 bool MemoryLimitPool::try_charge_external(const size_t buffer_size) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   return try_charge_fixed(buffer_size, &external_used_size_);
@@ -769,6 +788,10 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
     (void)prev;
     assert(prev >= buffer_size);
+    {
+      std::lock_guard<std::mutex> lock(capacity_mutex_);
+    }
+    capacity_cv_.notify_one();
     return;
   }
   if (!is_cacheable_buffer_size(buffer_size)) {
@@ -780,6 +803,10 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
     (void)prev;
     assert(prev >= buffer_size);
+    {
+      std::lock_guard<std::mutex> lock(capacity_mutex_);
+    }
+    capacity_cv_.notify_one();
     return;
   }
   push_free_buffer(buffer, pick_shard());
@@ -787,6 +814,10 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
   size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)prev;
   assert(prev >= buffer_size);
+  {
+    std::lock_guard<std::mutex> lock(capacity_mutex_);
+  }
+  capacity_cv_.notify_one();
 }
 
 void MemoryLimitPool::release_external(const size_t buffer_size) {
@@ -814,6 +845,10 @@ void MemoryLimitPool::release_fixed(const size_t buffer_size,
       committed_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)committed_prev;
   assert(committed_prev >= buffer_size);
+  {
+    std::lock_guard<std::mutex> lock(capacity_mutex_);
+  }
+  capacity_cv_.notify_all();
 }
 
 bool MemoryLimitPool::is_full() {
@@ -904,6 +939,9 @@ MemoryLimitPool::PoolStats MemoryLimitPool::stats() const {
   s.bg_no_progress_sleeps =
       bg_no_progress_sleeps_.load(std::memory_order_relaxed);
   s.high_watermark_hits = high_watermark_hits_.load(std::memory_order_relaxed);
+  s.capacity_waits = capacity_waits_.load(std::memory_order_relaxed);
+  s.capacity_wait_timeouts =
+      capacity_wait_timeouts_.load(std::memory_order_relaxed);
   return s;
 }
 
@@ -918,7 +956,8 @@ void MemoryLimitPool::log_stats() const {
       "slab_reclaimed_pages=%llu "
       "bg_evict_rounds=%llu bg_evicted_buffers=%llu "
       "bg_no_progress_sleeps=%llu "
-      "high_watermark_hits=%llu",
+      "high_watermark_hits=%llu capacity_waits=%llu "
+      "capacity_wait_timeouts=%llu",
       static_cast<unsigned long long>(s.pool_size),
       static_cast<unsigned long long>(s.used),
       static_cast<unsigned long long>(s.committed),
@@ -935,7 +974,9 @@ void MemoryLimitPool::log_stats() const {
       static_cast<unsigned long long>(s.bg_evict_rounds),
       static_cast<unsigned long long>(s.bg_evicted_buffers),
       static_cast<unsigned long long>(s.bg_no_progress_sleeps),
-      static_cast<unsigned long long>(s.high_watermark_hits));
+      static_cast<unsigned long long>(s.high_watermark_hits),
+      static_cast<unsigned long long>(s.capacity_waits),
+      static_cast<unsigned long long>(s.capacity_wait_timeouts));
 }
 
 }  // namespace ailego

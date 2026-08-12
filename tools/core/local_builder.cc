@@ -477,12 +477,9 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
                          uint32_t thread_count, RetrievalMode retrieval_mode,
                          const IndexStorage::Pointer &storage = nullptr) {
   int ret;
-  ailego::ThreadPool pool(thread_count, false);
-  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
-  int errcode = 0;
+  std::atomic<int> errcode{0};
   std::mutex mutex;
-  std::atomic_bool error{false};
   std::condition_variable cond{};
 
   auto meta = streamer->meta();
@@ -528,6 +525,12 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     };
   }
 
+  // Declare the pool after every object captured by worker tasks. Destruction
+  // is reversed, so an early return joins active workers before their captured
+  // state is destroyed.
+  ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
+
   auto do_build = [&](size_t idx) {
     AILEGO_DEFER([&]() {
       std::lock_guard<std::mutex> latch(mutex);
@@ -535,50 +538,57 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     });
     auto ctx = streamer->create_context();
     if (!ctx) {
-      if (!error.exchange(true)) {
+      int expected = 0;
+      if (errcode.compare_exchange_strong(expected, IndexError_NoMemory)) {
         LOG_ERROR("Failed to create streamer context");
-        errcode = IndexError_NoMemory;
       }
       return;
     }
     std::string ovec;
     IndexQueryMeta ometa;
-    for (uint32_t id = idx; id < holder->count() && !stop_now;
+    for (uint32_t id = idx; id < holder->count() && !stop_now &&
+                            errcode.load(std::memory_order_acquire) == 0;
          id += thread_count) {
       uint64_t key = holder->get_key(id);
+      int task_ret = 0;
       if (retrieval_mode == RM_DENSE) {
         if (reformer) {
-          ret = reformer->convert(holder->get_vector_by_index(id), qmeta, &ovec,
-                                  &ometa);
-          if (ret != 0) {
-            LOG_ERROR("Failed to convert vector for %s", IndexError::What(ret));
-            errcode = ret;
+          task_ret = reformer->convert(holder->get_vector_by_index(id), qmeta,
+                                       &ovec, &ometa);
+          if (task_ret != 0) {
+            int expected = 0;
+            if (errcode.compare_exchange_strong(expected, task_ret)) {
+              LOG_ERROR("Failed to convert vector for %s",
+                        IndexError::What(task_ret));
+            }
             return;
           }
-          ret = add_to_streamer(key, ovec.data(), ometa, ctx);
+          task_ret = add_to_streamer(key, ovec.data(), ometa, ctx);
         } else {
-          ret =
+          task_ret =
               add_to_streamer(key, holder->get_vector_by_index(id), qmeta, ctx);
         }
       } else {
-        LOG_ERROR("Retrieval mode not supported");
-        errcode = IndexError_Unsupported;
+        int expected = 0;
+        if (errcode.compare_exchange_strong(expected, IndexError_Unsupported)) {
+          LOG_ERROR("Retrieval mode not supported");
+        }
         return;
       }
 
-      if (ailego_unlikely(ret != 0)) {
-        if (!error.exchange(true)) {
+      if (ailego_unlikely(task_ret != 0)) {
+        int expected = 0;
+        if (errcode.compare_exchange_strong(expected, task_ret)) {
           LOG_ERROR("streamer add_impl failed");
-          errcode = ret;
         }
         return;
       }
       if (id >= keep_docs) {
-        ret = streamer->remove_impl(holder->get_key(id - keep_docs), ctx);
-        if (ailego_unlikely(ret != 0)) {
-          if (!error.exchange(true)) {
+        task_ret = streamer->remove_impl(holder->get_key(id - keep_docs), ctx);
+        if (ailego_unlikely(task_ret != 0)) {
+          int expected = 0;
+          if (errcode.compare_exchange_strong(expected, task_ret)) {
             LOG_ERROR("streamer remove_impl failed");
-            errcode = ret;
           }
           return;
         }
@@ -596,16 +606,16 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     std::unique_lock<std::mutex> lk(mutex);
     cond.wait_until(
         lk, std::chrono::system_clock::now() + std::chrono::seconds(15));
-    if (error.load(std::memory_order_acquire)) {
+    if (errcode.load(std::memory_order_acquire) != 0) {
       LOG_ERROR("Failed to build index while waiting finish");
-      return errcode;
+      return errcode.load(std::memory_order_relaxed);
     }
     LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
              finished.load() * 100.0f / holder->count());
   }
-  if (error.load(std::memory_order_acquire)) {
+  if (errcode.load(std::memory_order_acquire) != 0) {
     LOG_ERROR("Failed to build index while waiting finish");
-    return errcode;
+    return errcode.load(std::memory_order_relaxed);
   }
   pool.wait_finish();
 
@@ -669,9 +679,7 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
 
   LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
             retrieval_mode == 1 ? "Dense" : "Sparse");
-  do_build_by_streamer(streamer, thread_count, retrieval_mode, storage);
-
-  return 0;
+  return do_build_by_streamer(streamer, thread_count, retrieval_mode, storage);
 }
 
 IndexSparseHolder::Pointer convert_sparse_holder(

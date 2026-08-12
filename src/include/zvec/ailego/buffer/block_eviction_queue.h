@@ -17,6 +17,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -200,6 +201,12 @@ class MemoryLimitPool {
 
   bool try_acquire_buffer(const size_t buffer_size, char *&buffer);
 
+  //! Wait briefly for another cache owner to release enough logical budget.
+  //! This is used as writable-cache backpressure after eviction has been
+  //! requested; it never reserves the returned capacity.
+  bool wait_for_available(const size_t buffer_size,
+                          std::chrono::milliseconds timeout);
+
   //! Reserve bounded capacity outside the page cache, evicting if needed.
   bool try_charge_external(const size_t buffer_size);
 
@@ -300,6 +307,8 @@ class MemoryLimitPool {
     uint64_t bg_evicted_buffers{0};    // buffers reclaimed by background thread
     uint64_t bg_no_progress_sleeps{0};  // backoffs after zero-page reclaim
     uint64_t high_watermark_hits{0};  // foreground acquire hit the capacity cap
+    uint64_t capacity_waits{0};       // waits for a released budget slot
+    uint64_t capacity_wait_timeouts{0};  // waits that observed no release
   };
   PoolStats stats() const;
   void log_stats() const;
@@ -397,6 +406,11 @@ class MemoryLimitPool {
   std::atomic<uint64_t> bg_evicted_buffers_{0};
   std::atomic<uint64_t> bg_no_progress_sleeps_{0};
   std::atomic<uint64_t> high_watermark_hits_{0};
+  std::atomic<uint64_t> capacity_waits_{0};
+  std::atomic<uint64_t> capacity_wait_timeouts_{0};
+
+  std::mutex capacity_mutex_;
+  std::condition_variable capacity_cv_;
 
   std::thread bg_thread_;
   std::atomic<bool> bg_running_{false};

@@ -572,6 +572,81 @@ TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
   EXPECT_FALSE(table.is_block_dirty(/*block_id=*/0));
 }
 
+TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
+  constexpr size_t kCapacityPages = 4;
+  constexpr size_t kFilePages = 64;
+  constexpr size_t kThreadCount = 8;
+  InitVecPool(kCapacityPages, kFilePages, /*writable=*/true);
+  // BufferStorage creates a small metadata-only file and grows it as segments
+  // are appended. Exercise that path instead of opening a pre-sized file.
+  std::string file = NewFile(/*num_pages=*/1);
+
+  VecBufferPool::Stats final_stats;
+  {
+    VecBufferPool pool(file, /*writable=*/true);
+    ASSERT_EQ(0, pool.init());
+    ASSERT_TRUE(pool.extend_file(kFilePages * kVectorPageSize));
+
+    std::atomic<size_t> next_page{0};
+    std::atomic<size_t> failures{0};
+    std::vector<std::thread> writers;
+    writers.reserve(kThreadCount);
+    for (size_t thread_id = 0; thread_id < kThreadCount; ++thread_id) {
+      writers.emplace_back([&, thread_id] {
+        std::vector<char> payload(kVectorPageSize,
+                                  static_cast<char>(thread_id + 1));
+        while (true) {
+          const size_t page_id =
+              next_page.fetch_add(1, std::memory_order_relaxed);
+          if (page_id >= kFilePages) {
+            break;
+          }
+          std::fill(payload.begin(), payload.end(),
+                    static_cast<char>(page_id + 1));
+          if (pool.write_range(page_id * kVectorPageSize, kVectorPageSize,
+                               payload.data()) != 0) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+            break;
+          }
+        }
+      });
+    }
+    for (auto &writer : writers) {
+      writer.join();
+    }
+
+    EXPECT_EQ(0u, failures.load(std::memory_order_relaxed));
+    EXPECT_EQ(0, pool.flush_all());
+    final_stats = pool.stats();
+    EXPECT_GT(final_stats.writeback_requests, 0u);
+    EXPECT_GT(final_stats.writeback_batches, 0u);
+    EXPECT_GT(final_stats.writeback_pages, 0u);
+    EXPECT_EQ(0u, final_stats.writeback_failures);
+    EXPECT_EQ(0u, final_stats.writeback_pending);
+    EXPECT_GT(final_stats.evict, 0u);
+#if defined(__linux__)
+    if (current_io_backend_type() == IOBackendType::kIoUring) {
+      EXPECT_GT(final_stats.writeback_aio_batches, 0u);
+      EXPECT_GT(final_stats.writeback_aio_pages, 0u);
+      EXPECT_EQ(0u, final_stats.writeback_aio_fallbacks);
+    }
+#endif
+  }
+
+  FILE *input = std::fopen(file.c_str(), "rb");
+  ASSERT_NE(nullptr, input);
+  std::vector<char> page(kVectorPageSize);
+  for (size_t page_id = 0; page_id < kFilePages; ++page_id) {
+    ASSERT_EQ(0, std::fseek(input, static_cast<long>(page_id * kVectorPageSize),
+                            SEEK_SET));
+    ASSERT_EQ(kVectorPageSize,
+              std::fread(page.data(), 1, kVectorPageSize, input));
+    EXPECT_EQ(static_cast<char>(page_id + 1), page.front());
+    EXPECT_EQ(static_cast<char>(page_id + 1), page.back());
+  }
+  std::fclose(input);
+}
+
 TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
   InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
   VectorPageTable table;
@@ -642,8 +717,16 @@ TEST_F(BufferPoolTest, FixedMetadataStaysCompactAndReadOnlyAvoidsPageLocks) {
 
   EXPECT_EQ(page_table_bytes, read_only_bytes);
   EXPECT_LT(read_only_bytes, 1UL * 1024UL * 1024UL);
-  EXPECT_EQ(VecBufferPool::kMutexBucketCount * sizeof(std::shared_mutex),
-            writable_bytes - read_only_bytes);
+  size_t expected_writable_bytes =
+      VecBufferPool::kMutexBucketCount * sizeof(std::shared_mutex) +
+      VecBufferPool::kWritebackBatchPages * kVectorPageSize;
+#if defined(__linux__)
+  if (current_io_backend_type() == IOBackendType::kIoUring) {
+    expected_writable_bytes +=
+        VecBufferPool::kWritebackBatchPages * kVectorPageSize;
+  }
+#endif
+  EXPECT_EQ(expected_writable_bytes, writable_bytes - read_only_bytes);
 
   InitVecPool(/*capacity_pages=*/1, /*file_pages=*/1);
   std::string file = NewFile(/*num_pages=*/1);
@@ -677,10 +760,15 @@ TEST_F(BufferPoolTest, WritablePoolReportsPageLockMetadata) {
   ASSERT_EQ(pool.init(), 0);
 
   const auto stats = pool.stats();
-  EXPECT_EQ(sizeof(std::shared_mutex), stats.page_lock_metadata_bytes);
+  EXPECT_EQ(VecBufferPool::kMutexBucketCount * sizeof(std::shared_mutex),
+            stats.page_lock_metadata_bytes);
+  EXPECT_EQ(VecBufferPool::kWritebackBatchPages * kVectorPageSize,
+            stats.writeback_staging_bytes);
   EXPECT_EQ(VecBufferPool::metadata_bytes_for_page_count(
                 /*page_count=*/1, /*writable=*/true),
-            stats.page_table_metadata_bytes + stats.page_lock_metadata_bytes);
+            stats.page_table_metadata_bytes + stats.page_lock_metadata_bytes +
+                stats.writeback_staging_bytes +
+                stats.writeback_io_staging_bytes);
 }
 
 TEST_F(BufferPoolTest, FailedPageTableExtendLeavesStateUnchanged) {

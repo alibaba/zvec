@@ -62,6 +62,23 @@ struct IoUringRead {
   }
 };
 
+// Generic aligned write request. execute_writes() copies every source into
+// ring-owned staging before submission, so caller buffers are no longer
+// referenced once the method returns, including on a drained failure.
+struct IoUringWrite {
+  uint64_t offset{0};
+  uint64_t len{0};
+  const void *buf{nullptr};
+
+  IoUringWrite() = default;
+
+  IoUringWrite(uint64_t offset, uint64_t len, const void *buf)
+      : offset(offset), len(len), buf(buf) {
+    assert(static_cast<size_t>(offset) % 512 == 0);
+    assert(static_cast<size_t>(len) % 512 == 0);
+  }
+};
+
 // Max SQEs submitted per io_uring_enter() call.
 static constexpr uint32_t kIoUringMaxBatch = 128;
 
@@ -113,7 +130,19 @@ class IoUringRing {
     return execute(fd, read_reqs.data(), read_reqs.size());
   }
 
+  // Execute a batch of aligned writes via io_uring. The call blocks until all
+  // accepted requests have completed, but the requests execute concurrently
+  // in the kernel. Returns 0 on success and -1 on a safely drained failure.
+  int execute_writes(int fd, const IoUringWrite *write_reqs, size_t count);
+
+  int execute_writes(int fd, const std::vector<IoUringWrite> &write_reqs) {
+    return execute_writes(fd, write_reqs.data(), write_reqs.size());
+  }
+
  private:
+  int execute_impl(int fd, const IoUringRead *read_reqs,
+                   const IoUringWrite *write_reqs, size_t count);
+
   int ring_fd_{-1};
 
   // mmap'd region bases (needed for munmap).

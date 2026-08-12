@@ -529,6 +529,17 @@ class HnswEntity {
     return IndexError_NotImplemented;
   }
 
+  //! Fetch a vector for an operation bounded by this entity's lifetime.
+  //!
+  //! Storage-backed implementations may omit shared ownership from the
+  //! returned block because the caller guarantees that the entity remains
+  //! alive until the block is destroyed. Kept at the end of the vtable so
+  //! existing method slots remain stable.
+  virtual int get_vector_borrowed(const node_id_t id,
+                                  IndexStorage::MemoryBlock &block) const {
+    return get_vector(id, block);
+  }
+
   static int CalcAndAddPadding(const IndexDumper::Pointer &dumper,
                                size_t data_size, size_t *padding_size);
 

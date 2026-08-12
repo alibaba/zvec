@@ -319,6 +319,9 @@ class IndexStorage : public IndexModule {
     SegmentData(size_t off, size_t len)
         : offset(off), length(len), data(nullptr) {}
 
+    SegmentData(size_t off, size_t len, const void *ptr)
+        : offset(off), length(len), data(ptr) {}
+
     //! Members
     size_t offset;
     size_t length;
@@ -470,6 +473,69 @@ class IndexStorage : public IndexModule {
       (void)offset;
       (void)len;
       (void)priority;
+    }
+
+    //! Apply ordered writes to this segment. Kept at the end of the vtable so
+    //! existing method slots remain stable. Backends may share pins/latches;
+    //! the default preserves the scalar write contract.
+    virtual bool write_batch(const SegmentData *writes, size_t count) {
+      if (count == 0) {
+        return true;
+      }
+      if (writes == nullptr) {
+        return false;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        if (writes[i].length == 0) {
+          continue;
+        }
+        if (writes[i].data == nullptr ||
+            write(writes[i].offset, writes[i].data, writes[i].length) !=
+                writes[i].length) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    //! Size-aware batch preference. The default retains the backend's existing
+    //! policy; page-backed writable storage can account for cross-page cost.
+    virtual bool prefer_borrowed_batch_for(size_t value_size) const {
+      (void)value_size;
+      return prefer_borrowed_batch();
+    }
+
+    //! Immutable counterpart of read_borrowed_batch(). Writable page-backed
+    //! storage may safely batch and pin ranges that will never be modified
+    //! after publication.
+    virtual bool read_borrowed_batch_immutable(BorrowedRead *reads,
+                                               size_t count) {
+      if (count == 0) {
+        return true;
+      }
+      if (reads == nullptr) {
+        return false;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        if (reads[i].segment == nullptr || reads[i].block == nullptr) {
+          return false;
+        }
+      }
+      for (size_t i = 0; i < count; ++i) {
+        reads[i].block->reset();
+      }
+      for (size_t i = 0; i < count; ++i) {
+        BorrowedRead &request = reads[i];
+        if (request.segment->read_borrowed_immutable(
+                request.offset, *request.block, request.length) !=
+            request.length) {
+          for (size_t j = 0; j < count; ++j) {
+            reads[j].block->reset();
+          }
+          return false;
+        }
+      }
+      return true;
     }
   };
 
