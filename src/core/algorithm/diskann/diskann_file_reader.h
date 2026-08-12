@@ -27,43 +27,35 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
 namespace zvec {
 namespace core {
 
-// On Linux, IOContext selects io_uring, libaio, or pread.
-// On other platforms, IOContext is a uint32_t placeholder.
-#if (defined(__linux) || defined(__linux__))
-
-// IoBackend holds the per-thread I/O context for whichever async backend
-// was successfully initialised at setup time.  The priority is:
+// IoBackend holds the selected backend for each thread. On Linux it also owns
+// the resources required by the asynchronous backends. The priority is:
 //   1. io_uring  (raw kernel syscalls — zero dependency)
 //   2. libaio    (dlopen — soft dependency)
 //   3. pread     (always available — synchronous fallback)
 //
-// IOContext is a *pointer* to IoBackend, which preserves the existing
+// macOS uses a real context with type kPread so that the active backend can be
+// inspected and reported consistently instead of using an opaque placeholder.
+// IOContext is a pointer to IoBackend, which preserves the existing
 // sentinel conventions: nullptr means uninitialised and (IOContext)-1 is
 // the invalid-handle sentinel returned by get_ctx() for unregistered
 // threads.
 struct IoBackend {
-  enum Backend : uint8_t {
-    NONE = 0,      // synchronous pread
-    IO_URING = 1,  // io_uring via raw syscalls
-    LIBAIO = 2,    // libaio via dlopen
-  };
+  ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
-  Backend backend{NONE};
+#if (defined(__linux) || defined(__linux__))
   IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
+#endif
 };
 
 typedef IoBackend *IOContext;
-
-#else
-typedef uint32_t IOContext;
-#endif
 
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);

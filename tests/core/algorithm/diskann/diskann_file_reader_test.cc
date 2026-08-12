@@ -182,7 +182,10 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
 
   LinuxAlignedFileReader reader;
   reader.open(file.path());
-  IOContext ctx = 0;
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
+  EXPECT_EQ(ctx->type, zvec::ailego::IOBackendType::kPread);
   PendingBatch batch;
   ASSERT_EQ(reader.submit(batch, requests, ctx), 0);
   EXPECT_TRUE(batch.used_pread);
@@ -193,6 +196,8 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
   ASSERT_EQ(completed.size(), 1U);
   EXPECT_EQ(completed[0], 0U);
   EXPECT_EQ(std::memcmp(output.get(), source.data(), source.size()), 0);
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
   reader.close();
 }
 #endif
