@@ -224,7 +224,7 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
     if (topk_heap.empty()) {
       topk_heap.limit(ctx->group_topk());
     }
-    topk_heap.emplace_back(id, score);
+    topk_heap.emplace(id, score);
   }
 
   // stage 2, expand to reach group num as possible
@@ -245,7 +245,7 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
       auto score = topk[i].second;
 
       visit.set_visited(id);
-      candidates.emplace_back(id, score);
+      candidates.emplace(id, score);
     }
 
     // do expand
@@ -291,7 +291,7 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
           if (topk_heap.empty()) {
             topk_heap.limit(ctx->group_topk());
           }
-          topk_heap.emplace_back(node, ResultRecord(candest));
+          topk_heap.emplace(node, ResultRecord(candest));
 
           if (group_topk_heaps.size() >= ctx->group_num()) {
             break;

@@ -130,6 +130,7 @@ class IOBackendType:
 
     - PREAD: Synchronous pread() — no async I/O.
     - LIBAIO: libaio loaded at runtime via dlopen().
+    - IO_URING: io_uring via raw kernel syscalls (zero dependency).
 
     Examples:
         >>> from zvec.typing import IOBackendType
@@ -142,13 +143,16 @@ class IOBackendType:
       PREAD
 
       LIBAIO
+
+      IO_URING
     """
 
+    IO_URING: typing.ClassVar[IOBackendType]  # value = <IOBackendType.IO_URING: 2>
     LIBAIO: typing.ClassVar[IOBackendType]  # value = <IOBackendType.LIBAIO: 1>
     PREAD: typing.ClassVar[IOBackendType]  # value = <IOBackendType.PREAD: 0>
     __members__: typing.ClassVar[
         dict[str, IOBackendType]
-    ]  # value = {'PREAD': <IOBackendType.PREAD: 0>, 'LIBAIO': <IOBackendType.LIBAIO: 1>}
+    ]  # value = {'PREAD': <IOBackendType.PREAD: 0>, 'LIBAIO': <IOBackendType.LIBAIO: 1>, 'IO_URING': <IOBackendType.IO_URING: 2>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
@@ -184,6 +188,8 @@ class IndexType:
 
       IVF
 
+      IVF_RABITQ
+
       FLAT
 
       HNSW_RABITQ
@@ -204,11 +210,12 @@ class IndexType:
     HNSW_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.HNSW_RABITQ: 4>
     INVERT: typing.ClassVar[IndexType]  # value = <IndexType.INVERT: 10>
     IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 2>
+    IVF_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.IVF_RABITQ: 7>
     UNDEFINED: typing.ClassVar[IndexType]  # value = <IndexType.UNDEFINED: 0>
     VAMANA: typing.ClassVar[IndexType]  # value = <IndexType.VAMANA: 6>
     __members__: typing.ClassVar[
         dict[str, IndexType]
-    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 2>, 'FLAT': <IndexType.FLAT: 3>, 'HNSW_RABITQ': <IndexType.HNSW_RABITQ: 4>, 'DISKANN': <IndexType.DISKANN: 5>, 'VAMANA': <IndexType.VAMANA: 6>, 'INVERT': <IndexType.INVERT: 10>, 'FTS': <IndexType.FTS: 11>}
+    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 2>, 'IVF_RABITQ': <IndexType.IVF_RABITQ: 7>, 'FLAT': <IndexType.FLAT: 3>, 'HNSW_RABITQ': <IndexType.HNSW_RABITQ: 4>, 'DISKANN': <IndexType.DISKANN: 5>, 'VAMANA': <IndexType.VAMANA: 6>, 'INVERT': <IndexType.INVERT: 10>, 'FTS': <IndexType.FTS: 11>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...

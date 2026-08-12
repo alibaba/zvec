@@ -72,6 +72,27 @@ std::vector<uint64_t> AllPks() {
   return pks;
 }
 
+class CapturingVectorColumnIndexer : public VectorColumnIndexer {
+ public:
+  Result<IndexResults::Ptr> Search(
+      const vector_column_params::VectorData &,
+      const vector_column_params::QueryParams &query_params) override {
+    search_called = true;
+    if (query_params.refiner_param) {
+      refiner_scale_factor = query_params.refiner_param->scale_factor_;
+      reference_indexer = query_params.refiner_param->reference_indexer;
+    }
+    IndexResults::Ptr result = std::make_shared<VectorIndexResults>(
+        false, core::IndexDocumentList{}, std::vector<std::string>{},
+        std::vector<std::string>{});
+    return result;
+  }
+
+  bool search_called{false};
+  float refiner_scale_factor{0.0f};
+  VectorColumnIndexer::Ptr reference_indexer;
+};
+
 class GroupByIndexerTest : public ::testing::Test {
  protected:
   void RunOk(const GroupByCase &tc) {
@@ -271,6 +292,17 @@ TEST_F(GroupByIndexerTest, Dense) {
        std::make_shared<HnswQueryParams>(300),
        /*is_sparse=*/false, /*dimension=*/kGbDimension,
        /*optional=*/false, /*with_bf_pks=*/false, /*fetch_vector=*/true},
+#if RABITQ_SUPPORTED
+      {"dense_ivf_rabitq_graph",
+       std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 4, 7, 0),
+       std::make_shared<IvfRabitqQueryParams>(4),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_bf_pks",
+       std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 4, 7, 0),
+       std::make_shared<IvfRabitqQueryParams>(4),
+       /*is_sparse=*/false, /*dimension=*/64,
+       /*optional=*/false, /*with_bf_pks=*/true},
+#endif
   };
 
   for (const auto &tc : cases) {
@@ -339,6 +371,35 @@ TEST_F(GroupByIndexerTest, CombinedSortsGroupsBeforeTruncating) {
   ASSERT_TRUE(block1->Close().ok());
   zvec::test_util::RemoveTestFiles(block0_path);
   zvec::test_util::RemoveTestFiles(block1_path);
+}
+
+TEST_F(GroupByIndexerTest, CombinedSupportsIvfRabitqRefiner) {
+  auto quantized_indexer = std::make_shared<CapturingVectorColumnIndexer>();
+  auto normal_indexer = std::make_shared<CapturingVectorColumnIndexer>();
+  auto index_params =
+      std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 4, 7, 0);
+  FieldSchema schema("test", DataType::VECTOR_FP32, 64, false, index_params);
+  std::vector<BlockMeta> blocks{
+      BlockMeta(0, BlockType::VECTOR_INDEX_QUANTIZE, 0, 0, 1, {"test"})};
+  SegmentMeta segment_meta;
+  CombinedVectorColumnIndexer combined({quantized_indexer}, {normal_indexer},
+                                       schema, segment_meta, blocks,
+                                       MetricType::IP, true);
+
+  std::vector<float> query(64, 1.0f);
+  vector_column_params::QueryParams query_params;
+  query_params.topk = 1;
+  query_params.query_params =
+      std::make_shared<IvfRabitqQueryParams>(4, 0.0f, false, true, 3.5f);
+
+  auto result = combined.Search(
+      vector_column_params::VectorData{
+          vector_column_params::DenseVector{query.data()}},
+      query_params);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(quantized_indexer->search_called);
+  ASSERT_FLOAT_EQ(3.5f, quantized_indexer->refiner_scale_factor);
+  ASSERT_EQ(normal_indexer, quantized_indexer->reference_indexer);
 }
 
 TEST_F(GroupByIndexerTest, Sparse) {

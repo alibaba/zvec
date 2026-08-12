@@ -44,6 +44,10 @@ constexpr size_t kDefaultRabitqTotalBits = 7;
 constexpr int kMinRabitqDimSize = 64;
 constexpr int kMaxRabitqDimSize = 4095;
 
+// Original vector dimension before converter (e.g., CosineNormalizeConverter)
+// modifies it. Used by IVF-RaBitQ to ignore extra dimensions from converter.
+static const std::string PARAM_RABITQ_GENERAL_DIMENSION(
+    "proxima.rabitq.general.dimension");
 
 }  // namespace core
 }  // namespace zvec

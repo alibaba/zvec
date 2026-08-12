@@ -3492,12 +3492,31 @@ void test_index_params_functions(void) {
   TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 50);
   TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 0);
 
+  // Test IVF RaBitQ index params
+  zvec_index_params_t *ivf_rabitq_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(ivf_rabitq_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(ivf_rabitq_params) ==
+              ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(zvec_index_params_get_metric_type(ivf_rabitq_params) ==
+              ZVEC_METRIC_TYPE_L2);
+  TEST_ASSERT(zvec_index_params_get_quantize_type(ivf_rabitq_params) ==
+              ZVEC_QUANTIZE_TYPE_RABITQ);
+
+  int nlist, total_bits, sample_count;
+  zvec_index_params_get_ivf_rabitq_params(ivf_rabitq_params, &nlist,
+                                          &total_bits, &sample_count);
+  TEST_ASSERT(nlist == 1024);
+  TEST_ASSERT(total_bits == 7);
+  TEST_ASSERT(sample_count == 0);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(ivf_params);
   zvec_index_params_destroy(diskann_params);
+  zvec_index_params_destroy(ivf_rabitq_params);
 
   TEST_END();
 }
@@ -3716,6 +3735,26 @@ void test_index_params_api_functions(void) {
   TEST_ASSERT(n_iters == 20);
   TEST_ASSERT(use_soar == true);
 
+  // Test zvec_index_params_create for IVF_RABITQ
+  zvec_index_params_t *ivf_rabitq_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(ivf_rabitq_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(ivf_rabitq_params) ==
+              ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(zvec_index_params_get_metric_type(ivf_rabitq_params) ==
+              ZVEC_METRIC_TYPE_L2);
+  TEST_ASSERT(zvec_index_params_get_quantize_type(ivf_rabitq_params) ==
+              ZVEC_QUANTIZE_TYPE_RABITQ);
+
+  // Test zvec_index_params_set_ivf_rabitq_params
+  zvec_index_params_set_ivf_rabitq_params(ivf_rabitq_params, 256, 6, 4096);
+  int nlist, total_bits, sample_count;
+  zvec_index_params_get_ivf_rabitq_params(ivf_rabitq_params, &nlist,
+                                          &total_bits, &sample_count);
+  TEST_ASSERT(nlist == 256);
+  TEST_ASSERT(total_bits == 6);
+  TEST_ASSERT(sample_count == 4096);
+
   // Test zvec_index_params_create for INVERT
   zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
@@ -3758,6 +3797,7 @@ void test_index_params_api_functions(void) {
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(ivf_params);
+  zvec_index_params_destroy(ivf_rabitq_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(diskann_params);
@@ -3792,6 +3832,14 @@ void test_utility_functions(void) {
   index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_INVERT);
   TEST_ASSERT(index_type_str != NULL);
 
+  index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_HNSW_RABITQ);
+  TEST_ASSERT(index_type_str != NULL &&
+              strcmp(index_type_str, "HNSW_RABITQ") == 0);
+
+  index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(index_type_str != NULL &&
+              strcmp(index_type_str, "IVF_RABITQ") == 0);
+
   TEST_END();
 }
 
@@ -3822,6 +3870,11 @@ void test_query_params_functions(void) {
   zvec_ivf_query_params_t *ivf_params =
       zvec_query_params_ivf_create(10, true, 1.5f);
   TEST_ASSERT(ivf_params != NULL);
+
+  // Test IVF RaBitQ query parameters
+  zvec_ivf_rabitq_query_params_t *ivf_rabitq_params =
+      zvec_query_params_ivf_rabitq_create(10, 0.2f, false, true);
+  TEST_ASSERT(ivf_rabitq_params != NULL);
 
   // Test Flat query parameters
   zvec_flat_query_params_t *flat_params =
@@ -3878,6 +3931,35 @@ void test_query_params_functions(void) {
   err = zvec_query_params_ivf_set_is_using_refiner(ivf_params, false);
   TEST_ASSERT(err == ZVEC_OK);
   is_using_refiner = zvec_query_params_ivf_get_is_using_refiner(ivf_params);
+  TEST_ASSERT(is_using_refiner == false);
+
+  // Test IVF RaBitQ-specific parameters
+  err = zvec_query_params_ivf_rabitq_set_nprobe(ivf_rabitq_params, 18);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_nprobe(ivf_rabitq_params) == 18);
+
+  // Test IVF RaBitQ scale factor setting
+  err = zvec_query_params_ivf_rabitq_set_scale_factor(ivf_rabitq_params, 3.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(
+      zvec_query_params_ivf_rabitq_get_scale_factor(ivf_rabitq_params) == 3.5f);
+
+  // Test IVF RaBitQ common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_ivf_rabitq_set_radius(ivf_rabitq_params, 0.6f);
+  TEST_ASSERT(err == ZVEC_OK);
+  radius = zvec_query_params_ivf_rabitq_get_radius(ivf_rabitq_params);
+  TEST_ASSERT(radius == 0.6f);
+
+  err = zvec_query_params_ivf_rabitq_set_is_linear(ivf_rabitq_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_linear = zvec_query_params_ivf_rabitq_get_is_linear(ivf_rabitq_params);
+  TEST_ASSERT(is_linear == true);
+
+  err = zvec_query_params_ivf_rabitq_set_is_using_refiner(ivf_rabitq_params,
+                                                          false);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_using_refiner =
+      zvec_query_params_ivf_rabitq_get_is_using_refiner(ivf_rabitq_params);
   TEST_ASSERT(is_using_refiner == false);
 
   // Test Flat scale factor setting
@@ -3955,6 +4037,7 @@ void test_query_params_functions(void) {
   // Test destruction of valid parameters
   zvec_query_params_hnsw_destroy(hnsw_params);
   zvec_query_params_ivf_destroy(ivf_params);
+  zvec_query_params_ivf_rabitq_destroy(ivf_rabitq_params);
   zvec_query_params_flat_destroy(flat_params);
   zvec_query_params_vamana_destroy(vamana_params);
   zvec_query_params_diskann_destroy(diskann_params);
@@ -3963,6 +4046,7 @@ void test_query_params_functions(void) {
   // Test boundary cases - null pointer handling
   zvec_query_params_hnsw_destroy(NULL);
   zvec_query_params_ivf_destroy(NULL);
+  zvec_query_params_ivf_rabitq_destroy(NULL);
   zvec_query_params_flat_destroy(NULL);
   zvec_query_params_vamana_destroy(NULL);
   zvec_query_params_diskann_destroy(NULL);
@@ -3971,6 +4055,10 @@ void test_query_params_functions(void) {
   err = zvec_query_params_hnsw_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_ivf_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_ivf_rabitq_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_ivf_rabitq_set_scale_factor(NULL, 2.0f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_flat_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
@@ -3984,15 +4072,20 @@ void test_query_params_functions(void) {
   // Test default values for getters with NULL
   TEST_ASSERT(zvec_query_params_hnsw_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_ivf_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_scale_factor(NULL) == 10.0f);
   TEST_ASSERT(zvec_query_params_flat_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_diskann_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_diskann_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_nprobe(NULL) == 10);
   TEST_ASSERT(zvec_query_params_vamana_get_ef_search(NULL) == 200);
   TEST_ASSERT(zvec_query_params_vamana_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_vamana_get_is_linear(NULL) == false);

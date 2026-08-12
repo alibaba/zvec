@@ -3344,6 +3344,9 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
                                                              256, 16, 200, 0));
+    run_repeated_optimize_test(
+        enable_mmap,
+        std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 32, 7, 0));
 #endif
   }
 }
@@ -5872,6 +5875,109 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
   // TODO: cosine dense not match, may be accuracy issue
   // func(MetricType::COSINE, 0);
   // func(MetricType::COSINE, 4);
+}
+#endif
+
+#if RABITQ_SUPPORTED
+TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
+  auto func = [](MetricType metric_type, int concurrency) {
+    FileHelper::RemoveDirectory(col_path);
+
+    int doc_count = 1000;
+
+    // create simple schema with only FP32 dense vector for IVF_RABITQ
+    auto schema = std::make_shared<CollectionSchema>("demo");
+    schema->set_max_doc_count_per_segment(MAX_DOC_COUNT_PER_SEGMENT);
+
+    auto ivf_rabitq_params =
+        std::make_shared<IvfRabitqIndexParams>(metric_type, 32, 7, 0);
+    schema->add_field(std::make_shared<FieldSchema>(
+        "dense_fp32", DataType::VECTOR_FP32, 128, false, ivf_rabitq_params));
+
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
+
+    auto check_doc = [&]() {
+      for (int i = 0; i < doc_count; i++) {
+        auto expect_doc = TestHelper::CreateDoc(i, *schema);
+        auto result = collection->Fetch({expect_doc.pk()});
+        ASSERT_TRUE(result.has_value());
+        ASSERT_EQ(result.value().size(), 1);
+        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+        auto doc = result.value()[expect_doc.pk()];
+        ASSERT_NE(doc, nullptr);
+        if (metric_type != MetricType::COSINE) {
+          ASSERT_EQ(*doc, expect_doc)
+              << "doc: " << doc->to_detail_string()
+              << "\nexpect_doc: " << expect_doc.to_detail_string();
+        }
+      }
+    };
+
+    auto check_query_with_vector = [&]() {
+      auto query_doc = TestHelper::CreateDoc(1, *schema);
+      auto query_vector = query_doc.get<std::vector<float>>("dense_fp32");
+      ASSERT_TRUE(query_vector.has_value());
+
+      SearchQuery query;
+      query.topk_ = 10;
+      query.include_vector_ = true;
+      query.target_.field_name_ = "dense_fp32";
+      query.target_.set_vector(
+          std::string(reinterpret_cast<const char *>(query_vector->data()),
+                      query_vector->size() * sizeof(float)));
+
+      auto result = collection->Query(query);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(10, result->size());
+      for (const auto &doc : result.value()) {
+        ASSERT_TRUE(doc->has("dense_fp32"));
+        auto actual_vector = doc->get<std::vector<float>>("dense_fp32");
+        ASSERT_TRUE(actual_vector.has_value());
+        if (metric_type != MetricType::COSINE) {
+          auto expected_doc = TestHelper::CreateDoc(
+              TestHelper::ExtractDocId(doc->pk()), *schema);
+          auto expected_vector =
+              expected_doc.get<std::vector<float>>("dense_fp32");
+          ASSERT_TRUE(expected_vector.has_value());
+          EXPECT_EQ(expected_vector.value(), actual_vector.value());
+        }
+      }
+    };
+
+    check_doc();
+
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+
+    auto s = collection->Optimize(OptimizeOptions{concurrency});
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+    check_doc();
+    check_query_with_vector();
+
+    collection.reset();
+    auto result = Collection::Open(col_path, options);
+    ASSERT_TRUE(result.has_value());
+    collection = std::move(result.value());
+
+    check_doc();
+    check_query_with_vector();
+  };
+
+  func(MetricType::L2, 0);
+  func(MetricType::L2, 4);
+  func(MetricType::IP, 0);
+  func(MetricType::IP, 4);
+  func(MetricType::COSINE, 0);
+  func(MetricType::COSINE, 4);
 }
 #endif
 

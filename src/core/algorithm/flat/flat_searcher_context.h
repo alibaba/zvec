@@ -44,17 +44,17 @@ class FlatSearcherContext : public IndexSearcher::Context {
 
   //! Retrieve search result
   const IndexDocumentList &result(void) const override {
-    return result_heaps_.at(0);
+    return result_heaps_.at(0).container();
   }
 
   //! Retrieve search result with index
   const IndexDocumentList &result(size_t index) const override {
-    return result_heaps_.at(index);
+    return result_heaps_.at(index).container();
   }
 
   //! Retrieve result object for output
   IndexDocumentList *mutable_result(size_t idx) override {
-    return &result_heaps_.at(idx);
+    return &result_heaps_.at(idx).mutable_container();
   }
 
   //! Retrieve search group result with index
@@ -486,7 +486,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_column_nofilter(
     heap->emplace(0, score, feature_index++);
   }
 
-  for (auto &it : *heap) {
+  for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }
   heap->sort();
@@ -620,7 +620,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
                                 qmeta.dimension(), &score);
     heap->emplace(0, score, feature_index++);
   }
-  for (auto &it : *heap) {
+  for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }
   heap->sort();
@@ -750,7 +750,7 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_column_nofilter(
 
   // Normalize results
   for (auto &heap : result_heaps_) {
-    for (auto &it : heap) {
+    for (auto &it : heap.mutable_container()) {
       it.set_key(owner_->key(it.index()));
     }
     heap.sort();
@@ -843,7 +843,7 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_column_filter(
 
   // Normalize results
   for (auto &heap : result_heaps_) {
-    for (auto &it : heap) {
+    for (auto &it : heap.mutable_container()) {
       it.set_key(owner_->key(it.index()));
     }
     heap.sort();
@@ -919,7 +919,7 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_nofilter(
 
   // Normalize results
   for (auto &heap : result_heaps_) {
-    for (auto &it : heap) {
+    for (auto &it : heap.mutable_container()) {
       it.set_key(owner_->key(it.index()));
     }
     heap.sort();

@@ -272,13 +272,15 @@ class SegmentHelper {
 
   // Returns a FieldSchema clone whose index_params is ready for building the
   // quantize indexer.
-  //   - RABITQ: clones HnswRabitqIndexParams, trains a RabitqConverter against
-  //     `raw_vector_provider`, and attaches the resulting reformer and raw
+  //   - HNSW_RABITQ: clones index params, trains a RabitqConverter against
+  //     `raw_vector_provider`, and attaches the resulting reformer and
   //     provider to the cloned params.
+  //   - IVF_RABITQ: uses the cloned field unchanged because its builder owns
+  //     KMeans and RaBitQ training.
   //   - Other quantize types: clones the field with its current index_params
   //     unchanged.
-  // `raw_vector_provider` must remain alive until the quantize indexer has
-  // been flushed; it may be null for non-RABITQ cases.
+  // `raw_vector_provider` must remain alive until an HNSW_RABITQ quantize
+  // indexer has been flushed; it may be null for other cases.
   static Status PrepareQuantizeField(
       const FieldSchema &field,
       const core::IndexProvider::Pointer &raw_vector_provider,
