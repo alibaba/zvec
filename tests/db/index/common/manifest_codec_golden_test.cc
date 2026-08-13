@@ -37,7 +37,7 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
-#include "db/index/common/pb_wire.h"
+#include "db/index/common/manifest/pb_wire.h"
 #include "db/index/common/manifest_codec.h"
 
 using namespace zvec;

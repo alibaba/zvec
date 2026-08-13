@@ -19,7 +19,7 @@ endif()
 
 cc_library(
     NAME zvec_index STATIC STRICT
-    SRCS *.cc segment/*.cc column/vector_column/*.cc column/inverted_column/*.cc column/fts_column/*.cc column/fts_column/tokenizer/*.cc column/fts_column/posting/*.cc column/fts_column/iterator/*.cc storage/*.cc storage/wal/*.cc common/*.cc
+    SRCS *.cc segment/*.cc column/vector_column/*.cc column/inverted_column/*.cc column/fts_column/*.cc column/fts_column/tokenizer/*.cc column/fts_column/posting/*.cc column/fts_column/iterator/*.cc storage/*.cc storage/wal/*.cc common/*.cc common/manifest/*.cc
     LIBS zvec_common
          rocksdb
          core_interface

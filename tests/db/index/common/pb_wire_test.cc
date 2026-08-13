@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/common/pb_wire.h"
+#include "db/index/common/manifest/pb_wire.h"
 #include <cstdint>
 #include <limits>
 #include <string>

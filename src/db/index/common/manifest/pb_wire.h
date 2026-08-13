@@ -17,15 +17,17 @@
 //! zvec persists its manifest in protobuf wire format. This header implements
 //! just enough of the encoding to read and write that format so that the
 //! project does not need to depend on libprotobuf/protoc. The concrete
-//! message layout lives in manifest_codec.{h,cc} (field numbers) and
-//! manifest_enum.h (enum values), which together define the format.
+//! message layout lives in manifest_codec.cc in this directory (field
+//! numbers) and in db/index/common/manifest_enum.h (enum values), which
+//! together define the format.
 //!
 //! Wire format reference:
 //! https://protobuf.dev/programming-guides/encoding/
 //!
-//! Only the wire types actually used by the manifest are supported for reading
-//! values (varint, 64-bit, length-delimited, 32-bit); deprecated groups
-//! (wire types 3 and 4) are rejected as corrupt input.
+//! The wire types used by the manifest (varint, length-delimited, 32-bit)
+//! are supported for reading values, and 64-bit fields are accepted as well
+//! for completeness. Deprecated groups (wire types 3 and 4) are rejected as
+//! corrupt input.
 
 #pragma once
 
@@ -46,10 +48,6 @@ enum WireType : uint32_t {
   kEndGroup = 4,    // deprecated, unsupported
   kFixed32 = 5,
 };
-
-//! Maximum nesting depth accepted while decoding, as a guard against
-//! maliciously crafted or corrupted input.
-constexpr int kMaxNestingDepth = 16;
 
 //! Appends protobuf-encoded fields to a string buffer.
 //!
@@ -159,65 +157,7 @@ class Reader {
 
   //! Advances to the next field. Returns false at end of buffer or on error;
   //! use ok() to distinguish the two.
-  bool Next() {
-    if (!ok_ || pos_ >= size_) {
-      return false;
-    }
-    uint64_t tag = 0;
-    if (!ReadVarintRaw(&tag)) {
-      return Fail();
-    }
-    field_ = static_cast<uint32_t>(tag >> 3);
-    type_ = static_cast<WireType>(tag & 0x7);
-    if (field_ == 0) {
-      return Fail();  // field number 0 is illegal
-    }
-
-    switch (type_) {
-      case kVarint:
-        return ReadVarintRaw(&varint_) ? true : Fail();
-      case kFixed64: {
-        if (size_ - pos_ < 8) {
-          return Fail();
-        }
-        uint64_t bits = 0;
-        for (int i = 0; i < 8; ++i) {
-          bits |= static_cast<uint64_t>(static_cast<uint8_t>(data_[pos_ + i]))
-                  << (8 * i);
-        }
-        pos_ += 8;
-        varint_ = bits;
-        return true;
-      }
-      case kFixed32: {
-        if (size_ - pos_ < 4) {
-          return Fail();
-        }
-        uint32_t bits = 0;
-        for (int i = 0; i < 4; ++i) {
-          bits |= static_cast<uint32_t>(static_cast<uint8_t>(data_[pos_ + i]))
-                  << (8 * i);
-        }
-        pos_ += 4;
-        fixed32_ = bits;
-        return true;
-      }
-      case kLenDelim: {
-        uint64_t len = 0;
-        if (!ReadVarintRaw(&len)) {
-          return Fail();
-        }
-        if (len > size_ - pos_) {
-          return Fail();
-        }
-        bytes_ = std::string_view(data_ + pos_, static_cast<size_t>(len));
-        pos_ += static_cast<size_t>(len);
-        return true;
-      }
-      default:
-        return Fail();  // groups and unknown wire types
-    }
-  }
+  bool Next();
 
   uint32_t field() const {
     return field_;
@@ -272,21 +212,7 @@ class Reader {
     return false;
   }
 
-  bool ReadVarintRaw(uint64_t *out) {
-    uint64_t result = 0;
-    for (int shift = 0; shift < 64; shift += 7) {
-      if (pos_ >= size_) {
-        return false;
-      }
-      uint8_t byte = static_cast<uint8_t>(data_[pos_++]);
-      result |= static_cast<uint64_t>(byte & 0x7F) << shift;
-      if ((byte & 0x80) == 0) {
-        *out = result;
-        return true;
-      }
-    }
-    return false;  // varint longer than 10 bytes
-  }
+  bool ReadVarintRaw(uint64_t *out);
 
   const char *data_;
   size_t size_;

@@ -19,8 +19,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "db/index/common/manifest/pb_wire.h"
 #include "db/index/common/manifest_enum.h"
-#include "db/index/common/pb_wire.h"
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
