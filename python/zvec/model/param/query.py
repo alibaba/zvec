@@ -115,14 +115,22 @@ class Query:
         return False
 
     def _fts_query_string(self) -> str:
-        return (
-            self.fts.query_string.strip() if self.fts and self.fts.query_string else ""
+        return self._fts_string(
+            "query_string", self.fts.query_string if self.fts else None
         )
 
     def _fts_match_string(self) -> str:
-        return (
-            self.fts.match_string.strip() if self.fts and self.fts.match_string else ""
+        return self._fts_string(
+            "match_string", self.fts.match_string if self.fts else None
         )
+
+    @staticmethod
+    def _fts_string(name: str, value: Optional[str]) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError(f"Fts {name} must be a string")
+        return value if value.strip() else ""
 
     def _validate(self) -> None:
         if not isinstance(self.field_name, str) or not self.field_name.strip():

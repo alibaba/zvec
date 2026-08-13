@@ -67,6 +67,19 @@ class TestFtsQueryValidation:
             q._validate()
         assert q.has_fts() is False
 
+    @pytest.mark.parametrize(
+        "fts, message",
+        [
+            (Fts(query_string=123), "Fts query_string must be a string"),
+            (Fts(match_string=123), "Fts match_string must be a string"),
+        ],
+    )
+    def test_non_string_fts_query_raises_error(self, fts, message):
+        """FTS query text must fail with a clear validation error."""
+        q = Query(field_name="content", fts=fts)
+        with pytest.raises(ValueError, match=message):
+            q._validate()
+
     def test_no_fts(self):
         """Query without FTS fields should have has_fts() == False."""
         q = Query(field_name="embedding", vector=[0.1, 0.2, 0.3])
