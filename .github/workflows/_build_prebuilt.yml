@@ -80,7 +80,7 @@ jobs:
           # Use manylinux-bundled CPython (has pip; system python3 does not).
           # Also update GITHUB_PATH so cmake/ninja installed via pip are
           # available in subsequent steps.
-          PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1)
+          PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1 || true)
           if [ -n "$PYBIN" ]; then
             echo "$PYBIN" >> "$GITHUB_PATH"
             export PATH="$PYBIN:$PATH"
