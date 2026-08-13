@@ -365,8 +365,6 @@ class SegmentMeta {
     return !(*this == other);
   }
 
-  // Add these methods to SegmentMeta class in meta.h
-
   std::string to_string() const {
     std::ostringstream oss;
     oss << "SegmentMeta{"

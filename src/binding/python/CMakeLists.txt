@@ -68,11 +68,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
     )
     # On musl, dynamic linking would force auditwheel to rewrite the ELF via
-    # patchelf so it can vendor libstdc++/libgcc. The patchelf versions used in
-    # current build environments (0.17.x/0.18.x) corrupt protobuf's
-    # protodesc_cold section on musl 1.2.5 x86_64, causing init crashes.
-    # Statically linking libstdc++ and libgcc avoids patchelf entirely and
-    # keeps _zvec self-contained.
+    # patchelf so it can vendor libstdc++/libgcc. The patchelf versions used
+    # in current build environments (0.17.x/0.18.x) have corrupted binaries
+    # on musl 1.2.5 x86_64, causing init crashes. Statically linking
+    # libstdc++ and libgcc avoids patchelf entirely and keeps _zvec
+    # self-contained.
     if(ZVEC_ON_MUSL)
         target_link_options(_zvec PRIVATE -static-libstdc++ -static-libgcc)
         message(STATUS "_zvec: statically linking libstdc++ and libgcc on musl")

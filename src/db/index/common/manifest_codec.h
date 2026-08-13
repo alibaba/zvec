@@ -14,10 +14,11 @@
 
 //! Encoder/decoder for the collection manifest.
 //!
-//! The on-disk layout is the protobuf wire format. This file and
-//! manifest_codec.cc are the authoritative definition of that format: the
-//! field numbers assigned here and the enum values in manifest_enum.h are
-//! part of the persisted format and must never change (only append).
+//! The on-disk layout is the protobuf wire format. This header and its
+//! implementation in manifest/manifest_codec.cc are the authoritative
+//! definition of that format: the field numbers assigned there and the enum
+//! values in manifest_enum.h are part of the persisted format and must never
+//! change (only append).
 //!
 //! Compared with the generated protobuf code this converts directly between
 //! zvec's own C++ types and bytes, without an intermediate message object.
