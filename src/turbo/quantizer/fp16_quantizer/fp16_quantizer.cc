@@ -19,7 +19,6 @@
 #include <ailego/math/normalizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
-#include <zvec/core/framework/index_logger.h>
 
 namespace zvec {
 namespace turbo {
