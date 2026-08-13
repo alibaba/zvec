@@ -41,7 +41,7 @@ bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
 
 //! Index Type Codebook
 struct IndexTypeCodeBook {
-  //! convert protobuf IndexType to C++ IndexType
+  //! Convert wire-format IndexType to C++ IndexType
   static IndexType Get(wire::IndexType type) {
     switch (type) {
       case wire::IndexType::IT_HNSW:
@@ -68,7 +68,7 @@ struct IndexTypeCodeBook {
     return IndexType::UNDEFINED;
   }
 
-  //! Convert C++ IndexType to protobuf IndexType
+  //! Convert C++ IndexType to wire-format IndexType
   static wire::IndexType Get(IndexType type) {
     switch (type) {
       case IndexType::HNSW:

@@ -146,7 +146,7 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     # Restrict exported symbols to zvec's own public C++ API (namespace zvec,
     # which includes nested zvec::ailego / zvec::core / zvec::turbo /
     # zvec::reranker). All third-party symbols (arrow, rocksdb, parquet,
-    # protobuf, antlr4) are hidden, and unreferenced code is dead-stripped to
+    # antlr4) are hidden, and unreferenced code is dead-stripped to
     # reduce the shared library size. The public C++ headers never expose
     # third-party types, so hiding them is safe for external C++ consumers.
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")

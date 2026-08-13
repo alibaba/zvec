@@ -3223,8 +3223,8 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
     if (!result.ok()) {
       return Status::InternalError(result.status().message());
     }
-    auto dataset = std::move(result).ValueOrDie();
-    auto eval_result = EvaluateExpressionOnTable(dataset, column_schema->name(),
+    auto table = std::move(result).ValueOrDie();
+    auto eval_result = EvaluateExpressionOnTable(table, column_schema->name(),
                                                  expr, expected_type);
     if (!eval_result.ok()) {
       return Status::InternalError("evaluate expression failed:",
@@ -3369,11 +3369,11 @@ Status SegmentImpl::alter_column(const std::string &column_name,
   if (!result.ok()) {
     return Status::InternalError(result.status().message());
   }
-  auto dataset = std::move(result).ValueOrDie();
+  auto table = std::move(result).ValueOrDie();
 
   arrow::compute::Expression expr =
       arrow::compute::field_ref(old_field_schema->name());
-  auto eval_result = EvaluateExpressionOnTable(dataset, new_column_name, expr,
+  auto eval_result = EvaluateExpressionOnTable(table, new_column_name, expr,
                                                new_arrow_field->type());
   if (!eval_result.ok()) {
     return Status::InternalError("evaluate expression failed:",
