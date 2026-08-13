@@ -5407,6 +5407,15 @@ void test_index_params_creation_functions(void) {
   TEST_ASSERT(saturate_graph == true);
   TEST_ASSERT(use_contiguous_memory == true);
 
+  // two_pass_build is independently extensible without changing the existing
+  // aggregate Vamana setter/getter ABI.
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              false);
+  verr = zvec_index_params_set_vamana_two_pass_build(vamana_params, true);
+  TEST_ASSERT(verr == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              true);
+
   // Set metric and quantize type
   zvec_index_params_set_metric_type(vamana_params, ZVEC_METRIC_TYPE_COSINE);
   TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
@@ -5416,6 +5425,13 @@ void test_index_params_creation_functions(void) {
   verr = zvec_index_params_set_vamana_params(hnsw_params, 64, 100, 1.2f, false,
                                              false);
   TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  verr = zvec_index_params_set_vamana_two_pass_build(hnsw_params, true);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(hnsw_params) ==
+              false);
+  verr = zvec_index_params_set_vamana_two_pass_build(NULL, true);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(NULL) == false);
 
   // Test DiskANN parameters using new API
   zvec_index_params_t *diskann_params =
