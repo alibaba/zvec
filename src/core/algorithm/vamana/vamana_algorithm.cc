@@ -440,16 +440,25 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
 
   greedy_search(entry_point, ctx, /*use_pool=*/false);
 
-  TopkHeap &candidates = ctx->topk_heap();
+  const TopkHeap &search_candidates = ctx->topk_heap();
   const Neighbors current_neighbors = entity_.get_neighbors(id);
-  candidates.limit(candidates.size() + current_neighbors.size() + 1);
+
+  // Unlike add_node(), the node being refined is already visible in the
+  // graph, so GreedySearch can return `id` itself with distance zero. Remove
+  // it before RobustPrune: although RobustPrune also skips self-loops, leaving
+  // it here would consume one of the max_occlusion_size candidate slots.
+  TopkHeap &candidates = ctx->update_heap();
+  candidates.clear();
+  candidates.limit(search_candidates.size() + current_neighbors.size() + 1);
 
   // GreedySearch's VisitFilter is a superset of the bounded top-k heap. Its
   // search lifetime ends here, so rebuild it from the retained candidates and
   // reuse it as membership while merging the node's existing outgoing edges.
   VisitFilter &candidate_membership = ctx->visit_filter();
   candidate_membership.clear();
-  for (const auto &candidate : candidates) {
+  for (const auto &candidate : search_candidates) {
+    if (candidate.first == id) continue;
+    candidates.emplace(candidate);
     candidate_membership.set_visited(candidate.first);
   }
 
