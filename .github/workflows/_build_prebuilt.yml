@@ -64,9 +64,10 @@ jobs:
         with:
           submodules: recursive
 
-      # Skip actions/setup-python on Linux: the manylinux container already
-      # provides Python 3 with pip, and setup-python can be unreliable inside
-      # containers (tool-cache path issues). macOS/Windows still use it.
+      # Skip actions/setup-python on Linux: the manylinux container bundles
+      # CPython under /opt/python/cp311/bin (with pip), and setup-python can
+      # be unreliable inside containers (tool-cache path issues).
+      # macOS/Windows still use it.
       - name: Set up Python
         if: runner.os != 'Linux'
         uses: actions/setup-python@v6
@@ -78,6 +79,12 @@ jobs:
       - name: Install dependencies (Unix)
         if: runner.os != 'Windows'
         run: |
+          # manylinux containers bundle CPython under /opt/python/cp311/bin
+          # (the system /usr/bin/python3 has no pip). Prefer it when available;
+          # fall back to python3 from actions/setup-python on macOS.
+          if [ -d /opt/python/cp311/bin ]; then
+            export PATH="/opt/python/cp311/bin:$PATH"
+          fi
           python3 -m pip install --upgrade pip
           python3 -m pip install \
             pybind11==3.0 \
