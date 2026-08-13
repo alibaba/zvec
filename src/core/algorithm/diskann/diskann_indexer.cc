@@ -955,9 +955,7 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
 
           cpu_timer.reset();
           std::vector<float> distances(neighbor_num);
-          pq_table_->compute_dists(neighbor_num, node_neighbors, pq_chunk_num_,
-                                   ctx->pq_table_dist_buffer(),
-                                   ctx->pq_coord_buffer(), distances.data());
+          dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
 
           stats.dist_num += neighbor_num;
           stats.cpu_us += cpu_timer.micro_seconds();

@@ -353,6 +353,7 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
 
   ailego::Params qp;
   qp.set("num_chunk", pq_chunk_num_);
+  qp.set("thread_count", build_thread_count_);
   qp.set("use_zero_mean", false);
   int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {
@@ -361,7 +362,7 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
   }
 
   // PqInt8Quantizer accepts FP16 holders directly (widened internally).
-  ret = quantizer_->train(holder_, static_cast<int>(build_thread_count_));
+  ret = quantizer_->train(holder_);
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
     return ret;
