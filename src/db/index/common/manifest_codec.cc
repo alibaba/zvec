@@ -41,7 +41,10 @@ constexpr uint32_t kQuantizerParam = 4;
 }  // namespace f_base
 namespace f_invert {
 constexpr uint32_t kEnableRangeOptimization = 1;
-}
+// Added after the protobuf dependency was dropped; old manifests simply lack
+// this field and decode to the default (false).
+constexpr uint32_t kEnableExtendedWildcard = 2;
+}  // namespace f_invert
 namespace f_hnsw {
 constexpr uint32_t kBase = 1;
 constexpr uint32_t kM = 2;
@@ -515,17 +518,23 @@ void EncodeInvert(const InvertIndexParams *params, std::string *out) {
   Writer w(out);
   w.PutBool(f_invert::kEnableRangeOptimization,
             params->enable_range_optimization());
+  w.PutBool(f_invert::kEnableExtendedWildcard,
+            params->enable_extended_wildcard());
 }
 
 InvertIndexParams::OPtr DecodeInvert(std::string_view buf) {
   bool enable_range_optimization = false;
+  bool enable_extended_wildcard = false;
   Reader r(buf);
   while (r.Next()) {
     if (r.field() == f_invert::kEnableRangeOptimization) {
       enable_range_optimization = r.bool_value();
+    } else if (r.field() == f_invert::kEnableExtendedWildcard) {
+      enable_extended_wildcard = r.bool_value();
     }
   }
-  return std::make_shared<InvertIndexParams>(enable_range_optimization);
+  return std::make_shared<InvertIndexParams>(enable_range_optimization,
+                                             enable_extended_wildcard);
 }
 
 void EncodeFts(const FtsIndexParams *params, std::string *out) {
