@@ -47,18 +47,12 @@ Status ConvertVectorDataBufferToDocField(
     const FieldSchema::Ptr &field,
     const vector_column_params::VectorDataBuffer &buf, Doc *doc);
 
-//! Convert row `row` of an Arrow array into the corresponding Doc scalar or
-//! array field. Null rows are skipped (the field is left unset). Covers every
-//! scalar DataType (BINARY/STRING/BOOL/INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE)
-//! and every ARRAY_* DataType.
-Status ConvertArrowRowToDocField(const arrow::Array *array, int64_t row,
-                                 const FieldSchema &field, Doc *doc);
-
-//! Column-level variant: convert every row of an Arrow array into the docs
-//! starting at `doc_it` (one doc per row). Dispatches the field type once and
-//! checks null_count() once per column, so rows of an all-valid column are
-//! filled without per-row null checks. Same type coverage and null semantics
-//! as ConvertArrowRowToDocField.
+//! Convert every row of an Arrow array into the docs starting at `doc_it`
+//! (one doc per row). Dispatches the field type once and checks null_count()
+//! once per column, so rows of an all-valid column are filled without
+//! per-row null checks; null rows leave the field unset. Covers every scalar
+//! DataType (BINARY/STRING/BOOL/INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE) and
+//! every ARRAY_* DataType.
 Status ConvertArrowColumnToDocFields(const arrow::Array *array,
                                      const FieldSchema &field,
                                      DocPtrList::iterator doc_it);

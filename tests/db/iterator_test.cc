@@ -843,23 +843,20 @@ TEST_F(IteratorTest, Performance100k) {
   collection->Destroy();
 }
 
-// Read-only collection iteration — reopen an existing collection in
-// read-only mode and verify the full traversal works WITHOUT flushing (the
-// read-only path reads the writing segment directly instead of flushing).
-TEST_F(IteratorTest, ParquetVectorPrefetchWindows) {
+// Multi-batch traversal with vectors on the Parquet forward store.
+TEST_F(IteratorTest, ParquetMultiBatchVectorAlignment) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;
-  // Parquet forward store: one ReadNext can return a whole row group, far
-  // larger than kIteratorVectorPrefetchWindow, so the vector prefetch must
-  // refill its window while consuming a single batch.
+  // Parquet forward store: the scan spans many batches, so per-batch
+  // materialization must keep vectors aligned with their rows throughout.
   options.enable_mmap_ = false;
 
   auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  const int N = 10000;  // > 2 * kIteratorVectorPrefetchWindow (4096)
+  const int N = 10000;  // spans multiple 4096-row batches
   const int kBatch = 1000;
   for (int base = 0; base < N; base += kBatch) {
     std::vector<Doc> docs;
@@ -899,6 +896,9 @@ TEST_F(IteratorTest, ParquetVectorPrefetchWindows) {
   collection->Destroy();
 }
 
+// Read-only collection iteration — reopen an existing collection in
+// read-only mode and verify the full traversal works WITHOUT flushing (the
+// read-only path reads the writing segment directly instead of flushing).
 TEST_F(IteratorTest, ReadOnlyCollectionIteration) {
   auto schema = TestHelper::CreateNormalSchema();
   const int N = 50;

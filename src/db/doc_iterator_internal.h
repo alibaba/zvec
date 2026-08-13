@@ -20,14 +20,11 @@
 #include <memory>
 #include <shared_mutex>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc_iterator.h>
 #include <zvec/db/schema.h>
-#include "db/index/column/vector_column/combined_vector_column_indexer.h"
-#include "db/index/column/vector_column/vector_column_params.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/segment/segment.h"
@@ -74,21 +71,20 @@ struct DocIterator::Impl {
   IndexFilter::Ptr filter;
   // Index of the segment currently being read.
   size_t current_segment_index{0};
-  int64_t current_row{0};
   bool include_vector{false};  // whether to fetch vector fields
-  std::shared_ptr<arrow::RecordBatch> current_batch;
-  // Column indices resolved once per loaded batch (the batch schema is stable
-  // for the whole scan), so Next() avoids per-row GetFieldIndex lookups.
+  // Column indices resolved once per segment reader (the reader schema is
+  // stable across its batches), so materialization skips per-batch lookups.
   int uid_col{-1};
   int gdoc_col{-1};
+  int row_id_col{-1};
   std::vector<std::pair<const FieldSchema *, int>> forward_cols;
-  // First batch row covered by vector_cache_ (prefetched in bounded windows).
-  int64_t vector_window_start{0};
-  // Pre-fetched vector data for the current window.
-  // Key: field_name, Value: one VectorDataBuffer per row in the window.
-  std::unordered_map<std::string,
-                     std::vector<vector_column_params::VectorDataBuffer>>
-      vector_cache_;
+  // Docs materialized column-by-column from the current batch; Next() hands
+  // them out one at a time. Peak memory stays bounded by one batch.
+  std::vector<Doc::Ptr> batch_docs;
+  size_t current_row{0};
+  // First materialization failure; sticky so a caller that ignores the
+  // error cannot keep iterating over a partially filled batch.
+  Status error{Status::OK()};
   // Reader for the current segment only (opened lazily, released when the
   // segment is exhausted, so at most one reader is open at any time).
   RecordBatchReaderPtr current_reader;
