@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <random>
+#include <type_traits>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -144,9 +145,14 @@ TEST(Heap, Make) {
   EXPECT_TRUE(raw_data.empty());
   EXPECT_EQ(heap1.front(), *std::max_element(heap.begin(), heap.end()));
 
-  raw_data = std::move(heap);
-  EXPECT_FALSE(raw_data.empty());
-  EXPECT_TRUE(heap.empty());
+  std::vector<float> heap_data(heap.begin(), heap.end());
+  EXPECT_FALSE(heap_data.empty());
+  EXPECT_FALSE(heap.empty());
+}
+
+TEST(Heap, BaseMutationIsPrivate) {
+  EXPECT_FALSE((
+      std::is_convertible<ailego::Heap<float> *, std::vector<float> *>::value));
 }
 
 TEST(Heap, Sort) {

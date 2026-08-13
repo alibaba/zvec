@@ -30,12 +30,6 @@
 
 namespace zvec {
 
-#if defined(RABITQ_COMPILED_AVX512)
-constexpr const int kRabitqCompiledAvx512 = RABITQ_COMPILED_AVX512;
-#else
-constexpr const int kRabitqCompiledAvx512 = 0;
-#endif
-
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
@@ -56,8 +50,9 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW,    IndexType::HNSW_RABITQ,
-    IndexType::IVF,  IndexType::DISKANN, IndexType::VAMANA};
+    IndexType::FLAT,  IndexType::HNSW,       IndexType::HNSW_RABITQ,
+    IndexType::IVF,   IndexType::IVF_RABITQ, IndexType::DISKANN,
+    IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
@@ -76,10 +71,10 @@ static Status validate_fts_index_params(const FieldSchema &field) {
   internal_params.extra_params = params->extra_params();
 
   auto pipeline = fts::TokenizerFactory::create(internal_params);
-  if (!pipeline) {
+  if (!pipeline.has_value()) {
     return Status::InvalidArgument(
         "schema validate failed: invalid FTS index params for field[",
-        field.name(), "]");
+        field.name(), "]: ", pipeline.error().message());
   }
   return Status::OK();
 }
@@ -153,30 +148,32 @@ Status FieldSchema::validate() const {
             support_dense_vector_index.end()) {
           return Status::InvalidArgument(
               "schema validate failed: dense_vector's index_params only "
-              "support FLAT|HNSW|HNSW_RABITQ|IVF|DISKANN|VAMANA index, but "
+              "support FLAT|HNSW|HNSW_RABITQ|IVF|IVF_RABITQ|DISKANN|VAMANA "
+              "index, but "
               "field[",
               name_, "]'s index_type is ",
               IndexTypeCodeBook::AsString(index_params_->type()));
         }
       }
 
-      if (index_params_->type() == IndexType::HNSW_RABITQ) {
+      if (index_params_->type() == IndexType::HNSW_RABITQ ||
+          index_params_->type() == IndexType::IVF_RABITQ) {
         if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
           return Status::InvalidArgument(
-              "schema validate failed: HNSW_RABITQ index only support "
+              "schema validate failed: RabitQ index only support "
               "dimension in [",
               kMinRabitqDimSize, ", ", kMaxRabitqDimSize, "]");
         }
         if (data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "schema validate failed: HNSW_RABITQ index only support FP32 "
+              "schema validate failed: RabitQ index only support FP32 "
               "data types");
         }
         auto metric_type = vector_index_params->metric_type();
         if (metric_type != MetricType::L2 && metric_type != MetricType::IP &&
             metric_type != MetricType::COSINE) {
           return Status::InvalidArgument(
-              "schema validate failed: HNSW_RABITQ index only support "
+              "schema validate failed: RabitQ index only support "
               "L2/IP/COSINE metric");
         }
 #if !RABITQ_SUPPORTED
@@ -184,17 +181,40 @@ Status FieldSchema::validate() const {
             "RabitQ is not supported on this platform (Linux x86_64 only)");
 #endif
         auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
-        if (!flags.AVX2 && !flags.AVX512F) {
+        const bool supports_rabitq_avx2 = flags.AVX2 && flags.FMA;
+        const bool supports_rabitq_avx512 =
+            flags.AVX512F && flags.AVX512BW && flags.AVX512DQ;
+        if (!supports_rabitq_avx2 && !supports_rabitq_avx512) {
           return Status::NotSupported(
-              "RabitQ requires AVX2/AVX512F to be supported");
+              "RabitQ requires AVX2/FMA or AVX512F/BW/DQ to be supported");
         }
+      }
 
-        if constexpr (kRabitqCompiledAvx512) {
-          if (!flags.AVX512F) {
-            return Status::NotSupported(
-                "RabitQ compiled with AVX512F while runtime does not support");
-          }
+      if (index_params_->type() == IndexType::IVF_RABITQ) {
+        auto ivf_rabitq_params =
+            std::dynamic_pointer_cast<IvfRabitqIndexParams>(index_params_);
+        if (!ivf_rabitq_params) {
+          return Status::InvalidArgument(
+              "schema validate failed: IVF_RABITQ index requires "
+              "IvfRabitqIndexParams");
         }
+        if (ivf_rabitq_params->nlist() <= 0) {
+          return Status::InvalidArgument(
+              "schema validate failed: IVF_RABITQ nlist must be greater than "
+              "0");
+        }
+        if (ivf_rabitq_params->sample_count() < 0) {
+          return Status::InvalidArgument(
+              "schema validate failed: IVF_RABITQ sample_count must be "
+              "greater than or equal to 0");
+        }
+      }
+
+      if (index_params_->type() == IndexType::IVF &&
+          vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+        return Status::InvalidArgument(
+            "schema validate failed: IVF index does not support RABITQ "
+            "quantization; use the dedicated IVF_RABITQ index instead");
       }
 
       if (index_params_->type() == IndexType::DISKANN) {

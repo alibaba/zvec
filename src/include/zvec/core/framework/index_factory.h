@@ -14,12 +14,12 @@
 
 #pragma once
 
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/factory.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_converter.h>
 #include <zvec/core/framework/index_dumper.h>
-#include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_reducer.h>
 #include <zvec/core/framework/index_refiner.h>
@@ -49,15 +49,6 @@ struct IndexFactory {
 
   //! Retrieve all Metric classes
   static std::vector<std::string> AllMetrics(void);
-
-  //! Create a index logger by name
-  static IndexLogger::Pointer CreateLogger(const std::string &name);
-
-  //! Test if the logger is exist
-  static bool HasLogger(const std::string &name);
-
-  //! Retrieve all logger classes
-  static std::vector<std::string> AllLoggers(void);
 
   //! Create a index dumper by name
   static IndexDumper::Pointer CreateDumper(const std::string &name);
@@ -192,14 +183,6 @@ struct IndexFactory {
 //! Register Index Metric
 #define INDEX_FACTORY_REGISTER_METRIC(__IMPL__, ...) \
   INDEX_FACTORY_REGISTER_METRIC_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
-
-//! Register Index Logger
-#define INDEX_FACTORY_REGISTER_LOGGER_ALIAS(__NAME__, __IMPL__, ...) \
-  AILEGO_FACTORY_REGISTER(__NAME__, IndexLogger, __IMPL__, ##__VA_ARGS__)
-
-//! Register Index Logger
-#define INDEX_FACTORY_REGISTER_LOGGER(__IMPL__, ...) \
-  INDEX_FACTORY_REGISTER_LOGGER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 //! Register Index Dumper
 #define INDEX_FACTORY_REGISTER_DUMPER_ALIAS(__NAME__, __IMPL__, ...) \

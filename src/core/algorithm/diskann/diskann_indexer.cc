@@ -80,7 +80,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 
   sector_num_per_node_ =
       DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  if (beam_width_ > sector_num_per_node_ * DiskAnnUtil::kMaxSectorReadNum) {
+  if (beam_width_ * sector_num_per_node_ > DiskAnnUtil::kMaxSectorReadNum) {
     LOG_ERROR("Beamwidth can not be higher than kMaxSectorReadNum");
 
     return IndexError_InvalidArgument;
@@ -791,18 +791,29 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
 
   uint32_t num_ios = 0;
 
+  // Cap beam width so one batch of frontier reads never exceeds the sector
+  // buffer capacity (kMaxSectorReadNum sectors), as each node occupies
+  // sector_num_per_node sectors.
+  uint32_t max_beam_width =
+      std::max(1u, static_cast<uint32_t>(DiskAnnUtil::kMaxSectorReadNum /
+                                         sector_num_per_node));
+  uint32_t effective_beam_width = std::min(
+      std::max(8u, std::min(ctx->list_size() / 5, 32u)), max_beam_width);
+
   std::vector<diskann_id_t> frontier;
-  frontier.reserve(2 * beam_width_);
+  frontier.reserve(2 * effective_beam_width);
 
   std::vector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
-  frontier_neighbors.reserve(2 * beam_width_);
+  frontier_neighbors.reserve(2 * effective_beam_width);
 
   std::vector<AlignedRead> frontier_read_reqs;
-  frontier_read_reqs.reserve(2 * beam_width_);
+  frontier_read_reqs.reserve(2 * effective_beam_width);
 
   std::vector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
-  cached_neighbors.reserve(2 * beam_width_);
+  cached_neighbors.reserve(2 * effective_beam_width);
+
+  PendingBatch pending;
 
   while (candidates.has_unexpanded_node() && num_ios < io_limit_) {
     frontier.clear();
@@ -813,8 +824,9 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
     uint64_t sector_buffer_idx = 0;
 
     uint32_t num_seen = 0;
-    while (candidates.has_unexpanded_node() && frontier.size() < beam_width_ &&
-           num_seen < beam_width_) {
+    while (candidates.has_unexpanded_node() &&
+           frontier.size() < effective_beam_width &&
+           num_seen < effective_beam_width) {
       auto neighbor = candidates.closest_unexpanded();
       num_seen++;
 
@@ -857,11 +869,10 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
       }
 
       io_timer.reset();
-
-      int read_ret = reader_->read(frontier_read_reqs, io_ctx);
+      int submit_ret = reader_->submit(pending, frontier_read_reqs, io_ctx);
       stats.io_us += io_timer.micro_seconds();
-      if (read_ret != 0) {
-        LOG_ERROR("cached_beam_search: reader_->read failed, ret=%d", read_ret);
+      if (submit_ret != 0) {
+        LOG_ERROR("cached_beam_search: submit failed, ret=%d", submit_ret);
         ctx->set_error(true);
         return IndexError_Runtime;
       }
@@ -895,55 +906,73 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
 
       for (uint64_t m = 0; m < neighbor_num; ++m) {
         diskann_id_t id = node_neighbors[m];
-        visit_filter.set_visited(id);
-
-        Neighbor nn(id, distances[m]);
-        candidates.insert(nn);
+        if (!visit_filter.visited(id)) {
+          visit_filter.set_visited(id);
+          Neighbor nn(id, distances[m]);
+          candidates.insert(nn);
+        }
       }
     }
 
-    for (auto &frontier_neighbor : frontier_neighbors) {
-      uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
-          node_per_sector_, max_node_size_, frontier_neighbor.second,
-          frontier_neighbor.first);
-      uint32_t *node_buf = DiskAnnUtil::offset_to_node_neighbor(
-          node_disk_buf, meta_.element_size());
-      uint32_t neighbor_num = *node_buf;
+    if (!frontier.empty()) {
+      std::vector<uint32_t> completed;
+      while (pending.n_reaped < pending.n_submitted) {
+        completed.clear();
+        io_timer.reset();
+        int n = reader_->get_completed(pending, io_ctx, 1, completed);
+        stats.io_us += io_timer.micro_seconds();
+        if (n < 0) {
+          LOG_ERROR("cached_beam_search: get_completed failed, ret=%d", n);
+          ctx->set_error(true);
+          return IndexError_Runtime;
+        }
 
-      void *node_fp_coords = node_disk_buf;
+        for (uint32_t idx : completed) {
+          auto &frontier_neighbor = frontier_neighbors[idx];
+          uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
+              node_per_sector_, max_node_size_, frontier_neighbor.second,
+              frontier_neighbor.first);
+          uint32_t *node_buf = DiskAnnUtil::offset_to_node_neighbor(
+              node_disk_buf, meta_.element_size());
+          uint32_t neighbor_num = *node_buf;
 
-      float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords);
+          void *node_fp_coords = node_disk_buf;
 
-      if (!ctx->filter().is_valid() ||
-          !ctx->filter()(get_key(frontier_neighbor.first))) {
-        topk_heap.emplace(
-            frontier_neighbor.first,
-            VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords)));
+          float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords);
+
+          if (!ctx->filter().is_valid() ||
+              !ctx->filter()(get_key(frontier_neighbor.first))) {
+            topk_heap.emplace(frontier_neighbor.first,
+                              VectorInfo(cur_expanded_dist,
+                                         make_vector_copy(node_fp_coords)));
+          }
+
+          diskann_id_t *node_neighbors =
+              reinterpret_cast<diskann_id_t *>(node_buf + 1);
+
+          cpu_timer.reset();
+          std::vector<float> distances(neighbor_num);
+          pq_table_->compute_dists(neighbor_num, node_neighbors, pq_chunk_num_,
+                                   ctx->pq_table_dist_buffer(),
+                                   ctx->pq_coord_buffer(), distances.data());
+
+          stats.dist_num += neighbor_num;
+          stats.cpu_us += cpu_timer.micro_seconds();
+
+          cpu_timer.reset();
+          for (uint64_t m = 0; m < neighbor_num; ++m) {
+            diskann_id_t id = node_neighbors[m];
+            if (!visit_filter.visited(id)) {
+              visit_filter.set_visited(id);
+              stats.dist_num++;
+              Neighbor nn(id, distances[m]);
+              candidates.insert(nn);
+            }
+          }
+
+          stats.cpu_us += cpu_timer.micro_seconds();
+        }
       }
-
-      diskann_id_t *node_neighbors =
-          reinterpret_cast<diskann_id_t *>(node_buf + 1);
-
-      cpu_timer.reset();
-      std::vector<float> distances(neighbor_num);
-      pq_table_->compute_dists(neighbor_num, node_neighbors, pq_chunk_num_,
-                               ctx->pq_table_dist_buffer(),
-                               ctx->pq_coord_buffer(), distances.data());
-
-      stats.dist_num += neighbor_num;
-      stats.cpu_us += cpu_timer.micro_seconds();
-
-      cpu_timer.reset();
-      for (uint64_t m = 0; m < neighbor_num; ++m) {
-        diskann_id_t id = node_neighbors[m];
-        visit_filter.set_visited(id);
-        stats.dist_num++;
-
-        Neighbor nn(id, distances[m]);
-        candidates.insert(nn);
-      }
-
-      stats.cpu_us += cpu_timer.micro_seconds();
     }
   }
 
@@ -982,7 +1011,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
       group_topk_heap.limit(ctx->group_topk());
     }
 
-    topk_heap.emplace(id, info);
+    group_topk_heap.emplace(id, info);
   }
 
   // stage 2, expand to reach group num as possible
@@ -1106,7 +1135,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
             group_topk_heap.limit(ctx->group_topk());
           }
 
-          group_topk_heap.emplace_back(
+          group_topk_heap.emplace(
               std::get<0>(cached_neighbor),
               VectorInfo(cur_expanded_dist,
                          make_vector_copy(node_fp_coords_copy)));
@@ -1160,7 +1189,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
             group_topk_heap.limit(ctx->group_topk());
           }
 
-          group_topk_heap.emplace_back(
+          group_topk_heap.emplace(
               frontier_neighbor.first,
               VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
 

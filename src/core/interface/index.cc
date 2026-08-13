@@ -212,8 +212,11 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
-        case QuantizerType::kUniformInt8:
-          converter_name = "UniformInt8StreamingConverter";
+        case QuantizerType::kUniformUint7:
+          converter_name = "UniformUint7Converter";
+          break;
+        case QuantizerType::kUniformUint8:
+          converter_name = "UniformUint8Converter";
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
@@ -290,7 +293,11 @@ int Index::Init(const BaseIndexParam &param) {
     return core::IndexError_Runtime;
   }
 
-  if (CreateAndInitConverterReformer(param.quantizer_param, param) != 0) {
+  // an absent quantizer param behaves the same as a kNone one
+  const auto quantizer_param = param.quantizer_param
+                                   ? param.quantizer_param
+                                   : std::make_shared<QuantizerParam>();
+  if (CreateAndInitConverterReformer(*quantizer_param, param) != 0) {
     LOG_ERROR("Failed to create and init converter");
     return core::IndexError_Runtime;
   }
@@ -370,11 +377,10 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // If a converter exists but reformer was not created during Init()
-  // (converters like UniformInt8 whose reformer params are only available
-  // after train()), create it now from the persisted meta that the streamer
-  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
-  // is nullptr by design — skip this block entirely.
+  // If a converter exists but reformer was not created during Init() because
+  // its params are only available after training, create it now from the
+  // persisted meta loaded by the streamer. When there is no converter
+  // (QuantizerType::kNone), reformer_ is nullptr by design.
   if (converter_ != nullptr && reformer_ == nullptr) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {
@@ -558,10 +564,11 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  if (_prepare_for_search(vector_data, search_param, context) != 0) {
+  int prepare_ret = _prepare_for_search(vector_data, search_param, context);
+  if (prepare_ret != 0) {
     LOG_ERROR("Failed to prepare for search");
     context->reset();
-    return core::IndexError_Runtime;
+    return prepare_ret;
   }
 
   if (is_sparse_) {

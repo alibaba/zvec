@@ -17,50 +17,49 @@
 #include <zvec/ailego/logger/logger.h>
 #include "ascii_folding_token_filter.h"
 #include "jieba_tokenizer.h"
+#include "ngram_tokenizer.h"
 #include "standard_tokenizer.h"
 #include "stemmer_token_filter.h"
 #include "whitespace_tokenizer.h"
 
 namespace zvec::fts {
 
-TokenizerPipelinePtr TokenizerFactory::create(const FtsIndexParams &params) {
+Result<TokenizerPipelinePtr> TokenizerFactory::create(
+    const FtsIndexParams &params) {
   // Parse extra_params JSON string into a JsonObject.
   // Empty string is treated as an empty object; malformed JSON fails.
   ailego::JsonObject extra_json;
   if (!params.extra_params.empty()) {
     ailego::JsonValue parsed;
     if (!parsed.parse(params.extra_params.c_str())) {
-      LOG_ERROR("[TokenizerFactory] failed to parse extra_params JSON: %s",
-                params.extra_params.c_str());
-      return nullptr;
+      return tl::make_unexpected(Status::InvalidArgument(
+          "TokenizerFactory: failed to parse extra_params JSON: ",
+          params.extra_params));
     }
     if (!parsed.is_object()) {
-      LOG_ERROR("[TokenizerFactory] extra_params is not a JSON object: %s",
-                params.extra_params.c_str());
-      return nullptr;
+      return tl::make_unexpected(Status::InvalidArgument(
+          "TokenizerFactory: extra_params is not a JSON object: ",
+          params.extra_params));
     }
     extra_json = parsed.as_object();
   }
 
-  TokenizerPtr tokenizer = create_tokenizer(params.tokenizer_name, extra_json);
-  if (!tokenizer) {
-    LOG_ERROR("[TokenizerFactory] failed to create tokenizer: %s",
-              params.tokenizer_name.c_str());
-    return nullptr;
+  TokenizerPtr tokenizer;
+  auto status = create_tokenizer(params.tokenizer_name, extra_json, &tokenizer);
+  if (!status.ok()) {
+    return tl::make_unexpected(std::move(status));
   }
 
   std::vector<TokenFilterPtr> filters;
   for (const auto &filter_name : params.filters) {
     TokenFilterPtr filter = create_filter(filter_name);
     if (!filter) {
-      LOG_ERROR("[TokenizerFactory] failed to create filter: %s",
-                filter_name.c_str());
-      return nullptr;
+      return tl::make_unexpected(Status::InvalidArgument(
+          "TokenizerFactory: unknown filter name: ", filter_name));
     }
     if (!filter->init(extra_json)) {
-      LOG_ERROR("[TokenizerFactory] failed to init filter: %s",
-                filter_name.c_str());
-      return nullptr;
+      return tl::make_unexpected(Status::InvalidArgument(
+          "TokenizerFactory: failed to init filter: ", filter_name));
     }
     filters.push_back(std::move(filter));
   }
@@ -77,27 +76,28 @@ std::vector<Token> TokenizerPipeline::process(const std::string &text) const {
   return tokens;
 }
 
-TokenizerPtr TokenizerFactory::create_tokenizer(
-    const std::string &tokenizer_name, const ailego::JsonObject &extra_json) {
-  TokenizerPtr tokenizer;
+Status TokenizerFactory::create_tokenizer(const std::string &tokenizer_name,
+                                          const ailego::JsonObject &extra_json,
+                                          TokenizerPtr *tokenizer) {
   if (tokenizer_name.empty() || tokenizer_name == "standard") {
-    tokenizer = std::make_shared<StandardTokenizer>();
+    *tokenizer = std::make_shared<StandardTokenizer>();
+  } else if (tokenizer_name == "ngram") {
+    *tokenizer = std::make_shared<NGramTokenizer>();
   } else if (tokenizer_name == "jieba") {
-    tokenizer = std::make_shared<JiebaTokenizer>();
+    *tokenizer = std::make_shared<JiebaTokenizer>();
   } else if (tokenizer_name == "whitespace") {
-    tokenizer = std::make_shared<WhitespaceTokenizer>();
+    *tokenizer = std::make_shared<WhitespaceTokenizer>();
   } else {
-    LOG_ERROR("[TokenizerFactory] unknown tokenizer name: %s",
-              tokenizer_name.c_str());
-    return nullptr;
+    return Status::InvalidArgument("TokenizerFactory: unknown tokenizer name: ",
+                                   tokenizer_name);
   }
 
-  if (!tokenizer->init(extra_json)) {
-    LOG_ERROR("[TokenizerFactory] failed to init tokenizer: %s",
-              tokenizer_name.c_str());
-    return nullptr;
+  auto status = (*tokenizer)->init(extra_json);
+  if (!status.ok()) {
+    tokenizer->reset();
+    return status;
   }
-  return tokenizer;
+  return Status::OK();
 }
 
 TokenFilterPtr TokenizerFactory::create_filter(const std::string &filter_name) {

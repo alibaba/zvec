@@ -20,6 +20,7 @@
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -1876,11 +1877,11 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["SearcherCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> LOG_LEVEL = {{"debug", Logger::LEVEL_DEBUG},
+                                {"info", Logger::LEVEL_INFO},
+                                {"warn", Logger::LEVEL_WARN},
+                                {"error", Logger::LEVEL_ERROR},
+                                {"fatal", Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
