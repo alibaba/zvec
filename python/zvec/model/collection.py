@@ -411,6 +411,12 @@ class Collection:
         segment (each call may produce a new small segment); read-only
         collections are scanned without any write.
 
+        The iterator holds the collection's schema lock (shared) until it is
+        exhausted or closed: while any iterator is open, schema changes
+        (create_index/drop_index/add_column/alter_column/drop_column),
+        optimize, flush and close raise an error. Concurrent writes and
+        queries are not affected.
+
         Args:
             output_fields (Optional[list[str]], optional): Scalar fields to
                 include. If None, all fields are returned. Defaults to None.

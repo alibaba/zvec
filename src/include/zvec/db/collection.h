@@ -116,6 +116,11 @@ class ZVEC_API Collection {
   // Create a document iterator over an isolated snapshot taken at call time.
   // On writable collections this seals the current writing segment; read-only
   // collections are scanned without any write.
+  //
+  // The iterator holds the collection's schema lock (shared) until Close():
+  // while any iterator is open, schema changes (CreateIndex/DropIndex/
+  // AddColumn/AlterColumn/DropColumn), Optimize, Flush, Close and Destroy
+  // return an error. Concurrent writes and queries are not affected.
   virtual Result<DocIterator::Ptr> CreateIterator(
       const IteratorOptions &options = {}) = 0;
 

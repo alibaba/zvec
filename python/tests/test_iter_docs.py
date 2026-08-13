@@ -173,7 +173,9 @@ def test_iter_docs_isolation(iter_collection):
     first = next(it)
     assert first is not None
 
-    # Insert more docs after the iterator started.
+    # Insert more docs after the iterator started. Writes are allowed while
+    # the iterator is open; flush is not (the iterator holds the schema
+    # lock), and the new docs are invisible to the snapshot either way.
     iter_collection.insert(
         [
             Doc(
@@ -184,7 +186,8 @@ def test_iter_docs_isolation(iter_collection):
             for i in range(5)
         ]
     )
-    iter_collection.flush()
+    with pytest.raises(RuntimeError):
+        iter_collection.flush()
 
     # Count remaining from the original snapshot (should be 9, total 10).
     remaining = sum(1 for _ in it)
@@ -202,7 +205,8 @@ def test_iter_docs_snapshot_at_call_time(iter_collection):
     # Create the iterator but do not consume it yet.
     it = iter_collection.iter_docs()
 
-    # Writes between the call and the first next() must not be visible.
+    # Writes between the call and the first next() must not be visible
+    # (no flush needed: the snapshot already sealed the writing segment).
     iter_collection.insert(
         [
             Doc(
@@ -212,7 +216,6 @@ def test_iter_docs_snapshot_at_call_time(iter_collection):
             )
         ]
     )
-    iter_collection.flush()
 
     assert sum(1 for _ in it) == 10
 

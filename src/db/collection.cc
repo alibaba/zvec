@@ -63,7 +63,8 @@ enum class WriteMode : uint8_t {
 
 Collection::~Collection() = default;
 
-class CollectionImpl : public Collection {
+class CollectionImpl : public Collection,
+                       public std::enable_shared_from_this<CollectionImpl> {
   friend class Collection;
 
  public:
@@ -232,6 +233,19 @@ class CollectionImpl : public Collection {
   Status execute_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
 
  private:
+  // Operations that need the exclusive schema lock must fail fast while any
+  // iterator holds it shared: a same-thread caller would deadlock waiting
+  // for its own iterator, and "schema frozen during iteration" is the
+  // documented contract.
+  Status check_no_active_iterators(const char *operation) const {
+    if (active_iterators_->load(std::memory_order_acquire) > 0) {
+      return Status::PermissionDenied(operation,
+                                      " is rejected while iterators are open; ",
+                                      "close all iterators first");
+    }
+    return Status::OK();
+  }
+
   Status handle_upsert(Doc &doc);
 
   Status handle_update(Doc &doc);
@@ -261,6 +275,13 @@ class CollectionImpl : public Collection {
 
   mutable std::shared_mutex schema_handle_mtx_;
   mutable std::shared_mutex write_mtx_;
+  // Number of open iterators. Each iterator holds schema_handle_mtx_
+  // (shared) for its whole lifetime, so operations that need the exclusive
+  // lock would deadlock a single-threaded caller; they fail fast instead
+  // (see check_no_active_iterators). Shared with DocIterator::Impl so the
+  // count survives even if the collection handle is released first.
+  std::shared_ptr<std::atomic<int>> active_iterators_{
+      std::make_shared<std::atomic<int>>(0)};
   // Serializes maintenance operations (Optimize, schema DDL, Close and
   // Destroy) without holding schema_handle_mtx_, so a maintenance
   // operation waiting for a running Optimize never becomes a pending
@@ -360,6 +381,10 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
 
 Status CollectionImpl::Close() {
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("Close");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -400,6 +425,10 @@ Status CollectionImpl::Destroy() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("Destroy");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -421,6 +450,9 @@ Status CollectionImpl::Flush() {
   // Only flushes the writing segment's WAL (no schema/segment-structure
   // change), so it needs neither maintenance_mtx_ nor exclusion from a
   // running Optimize.
+  auto iter_check = check_no_active_iterators("Flush");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -444,7 +476,9 @@ Result<std::string> CollectionImpl::Path() const {
 }
 
 Result<CollectionStats> CollectionImpl::Stats() const {
-  std::lock_guard lock(schema_handle_mtx_);
+  // Read-only: the shared lock keeps it compatible with open iterators
+  // (which hold the schema lock shared for their whole lifetime).
+  std::shared_lock<std::shared_mutex> lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
@@ -486,7 +520,7 @@ Result<CollectionStats> CollectionImpl::Stats() const {
 }
 
 Result<CollectionSchema> CollectionImpl::Schema() const {
-  std::lock_guard lock(schema_handle_mtx_);
+  std::shared_lock<std::shared_mutex> lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
@@ -495,7 +529,7 @@ Result<CollectionSchema> CollectionImpl::Schema() const {
 }
 
 Result<CollectionOptions> CollectionImpl::Options() const {
-  std::lock_guard lock(schema_handle_mtx_);
+  std::shared_lock<std::shared_mutex> lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
@@ -509,6 +543,10 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("CreateIndex");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -699,6 +737,10 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("DropIndex");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -831,6 +873,9 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
 
   // Serialize against other maintenance operations for the whole optimize.
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("Optimize");
+  CHECK_RETURN_STATUS(iter_check);
 
   std::vector<Segment::Ptr> persist_segments;
 
@@ -1212,6 +1257,10 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("AddColumn");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1286,6 +1335,10 @@ Status CollectionImpl::DropColumn(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("DropColumn");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -1362,6 +1415,10 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  auto iter_check = check_no_active_iterators("AlterColumn");
+  CHECK_RETURN_STATUS(iter_check);
+
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -2225,12 +2282,12 @@ Status CollectionImpl::Scan(const IteratorOptions &options,
                             CollectionSchema::Ptr &schema,
                             std::vector<std::string> &scan_columns,
                             IndexFilter::Ptr &filter) {
-  // shared_lock blocks schema changes and close/destroy (exclusive) while
-  // allowing concurrent Query/Fetch (shared). Snapshot consistency does not
-  // depend on blocking Optimize: the segment list and the delete-store clone
-  // are taken atomically under write_mtx_ below, and the iterator keeps the
-  // snapshotted segments alive via shared_ptr afterwards.
-  std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
+  // The caller (CreateIterator) holds schema_handle_mtx_ (shared), which
+  // blocks schema changes and close/destroy (exclusive) while allowing
+  // concurrent Query/Fetch; the lock is then transferred into the iterator
+  // and held until Close(). Snapshot consistency does not depend on
+  // blocking Optimize: the segment list and the delete-store clone are
+  // taken atomically under write_mtx_ below.
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   // Capture the schema under schema_handle_mtx_ so the iterator interprets
@@ -2276,8 +2333,13 @@ Status CollectionImpl::Scan(const IteratorOptions &options,
 
 Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     const IteratorOptions &options) {
-  // Scan() takes shared_lock(schema_handle_mtx_) internally and captures the
-  // schema + segment snapshot + delete-store clone under that lock.
+  // The iterator holds the schema lock (shared) from creation until Close():
+  // schema changes (create/drop index, add/alter/drop column), Optimize and
+  // Close/Destroy need the exclusive lock, so the snapshot taken below stays
+  // valid for the iterator's whole lifetime (those operations fail fast
+  // instead of deadlocking, see check_no_active_iterators).
+  std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
+
   std::vector<Segment::Ptr> segments;
   DeleteStore::Ptr delete_store;
   CollectionSchema::Ptr schema;
@@ -2288,9 +2350,14 @@ Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     return tl::make_unexpected(s);
   }
 
-  // Create DocIterator, keeping segments + delete_store alive. Segment
-  // readers are opened lazily from scan_columns + filter during iteration.
+  // Create DocIterator, keeping the collection + segments + delete_store
+  // alive and transferring the schema lock into it. Segment readers are
+  // opened lazily from scan_columns + filter during iteration.
   auto impl = std::make_unique<DocIterator::Impl>();
+  impl->collection = shared_from_this();
+  active_iterators_->fetch_add(1, std::memory_order_acq_rel);
+  impl->active_guard.count = active_iterators_;
+  impl->schema_lock = std::move(schema_lock);
   impl->schema = std::move(schema);
   impl->segments = std::move(segments);
   impl->delete_store = std::move(delete_store);

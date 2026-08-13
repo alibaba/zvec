@@ -24,6 +24,7 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
+#include <zvec/db/index_params.h>
 #include <zvec/db/options.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
@@ -566,8 +567,10 @@ TEST_F(IteratorTest, ConcurrentInsertNotVisible) {
     for (int i = N; i < N + 200; i++) {
       more.push_back(TestHelper::CreateDoc(i, *schema));
     }
+    // No Flush() here: it is rejected while an iterator is open. The new
+    // docs live in the writing segment; the fresh iterator below still sees
+    // them because Scan() seals the writing segment itself.
     if (!collection->Insert(more).has_value()) writer_failed = true;
-    collection->Flush();
   });
 
   int count = 1;  // already consumed one
@@ -599,8 +602,9 @@ TEST_F(IteratorTest, ConcurrentInsertNotVisible) {
   collection->Destroy();
 }
 
-// Concurrency — Optimize during iteration must not crash.
-TEST_F(IteratorTest, ConcurrentOptimizeNoCrash) {
+// Concurrency — the iterator holds the schema lock (shared), so Optimize
+// is rejected while it is open and succeeds after it is closed.
+TEST_F(IteratorTest, OptimizeRejectedWhileIteratorOpen) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;
@@ -625,9 +629,11 @@ TEST_F(IteratorTest, ConcurrentOptimizeNoCrash) {
   ASSERT_TRUE(iter_result.has_value());
   auto iter = iter_result.value();
 
-  // Kick off Optimize concurrently (destroys old segments after compaction).
-  std::thread optimizer([&]() { collection->Optimize(); });
+  // Optimize is rejected while the iterator is open.
+  auto optimize_status = collection->Optimize();
+  EXPECT_FALSE(optimize_status.ok());
 
+  // The full snapshot stays readable.
   int count = 0;
   while (true) {
     auto r = iter->Next();
@@ -635,14 +641,153 @@ TEST_F(IteratorTest, ConcurrentOptimizeNoCrash) {
     if (r.value() == nullptr) break;
     EXPECT_FALSE(r.value()->pk().empty());
     count++;
-    // Slow the consumer slightly so Optimize overlaps with iteration.
-    std::this_thread::sleep_for(std::chrono::microseconds(50));
   }
-  optimizer.join();
-
-  // Snapshot isolation: all N docs remain visible despite concurrent Optimize.
   EXPECT_EQ(count, N);
   iter->Close();
+
+  // After the iterator is closed, Optimize succeeds and data is intact.
+  ASSERT_TRUE(collection->Optimize().ok());
+  auto iter2 = collection->CreateIterator().value();
+  int count2 = 0;
+  while (true) {
+    auto r = iter2->Next();
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+    if (r.value() == nullptr) break;
+    count2++;
+  }
+  EXPECT_EQ(count2, N);
+  iter2->Close();
+  collection->Destroy();
+}
+
+// Schema changes and Flush are rejected while an iterator is open, and
+// succeed again after it is closed.
+TEST_F(IteratorTest, DdlRejectedWhileIteratorOpen) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  const int N = 100;
+  std::vector<Doc> docs;
+  for (int i = 0; i < N; i++) docs.push_back(TestHelper::CreateDoc(i, *schema));
+  ASSERT_TRUE(collection->Insert(docs).has_value());
+  collection->Flush();
+
+  auto iter = collection->CreateIterator().value();
+
+  auto index_params = std::make_shared<HnswIndexParams>(MetricType::IP);
+  EXPECT_FALSE(collection->CreateIndex("dense_fp32", index_params).ok());
+  EXPECT_FALSE(collection->DropIndex("dense_fp32").ok());
+  auto new_field =
+      std::make_shared<FieldSchema>("added_int32", DataType::INT32, false);
+  EXPECT_FALSE(collection->AddColumn(new_field, "int32", {}).ok());
+  EXPECT_FALSE(collection->DropColumn("int32").ok());
+  EXPECT_FALSE(
+      collection->AlterColumn("int32", "int32_renamed", nullptr, {}).ok());
+  EXPECT_FALSE(collection->Flush().ok());
+
+  // The rejected operations left the snapshot untouched.
+  int count = 0;
+  while (true) {
+    auto r = iter->Next();
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+    if (r.value() == nullptr) break;
+    count++;
+  }
+  EXPECT_EQ(count, N);
+  iter->Close();
+
+  // After the iterator is closed, DDL succeeds.
+  ASSERT_TRUE(collection->CreateIndex("dense_fp32", index_params).ok());
+  collection->Destroy();
+}
+
+// Close/Destroy are rejected while an iterator is open; dropping the last
+// collection handle is safe because the iterator keeps the collection alive.
+TEST_F(IteratorTest, CloseRejectedWhileIteratorOpen) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  const int N = 100;
+  std::vector<Doc> docs;
+  for (int i = 0; i < N; i++) docs.push_back(TestHelper::CreateDoc(i, *schema));
+  ASSERT_TRUE(collection->Insert(docs).has_value());
+  collection->Flush();
+
+  auto iter = collection->CreateIterator().value();
+
+  EXPECT_FALSE(collection->Close().ok());
+  EXPECT_FALSE(collection->Destroy().ok());
+
+  // Dropping the caller's handle must not tear the collection down under
+  // the iterator: the iterator holds its own reference.
+  collection.reset();
+  int count = 0;
+  while (true) {
+    auto r = iter->Next();
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+    if (r.value() == nullptr) break;
+    count++;
+  }
+  EXPECT_EQ(count, N);
+  iter->Close();
+
+  // Reopen and clean up: the collection was closed cleanly by its own
+  // destructor once the iterator released the last reference.
+  auto reopened = Collection::Open(iter_test_path, options);
+  ASSERT_TRUE(reopened.has_value());
+  reopened.value()->Destroy();
+}
+
+// Multiple iterators may be open at once; DDL stays rejected until the
+// last one is closed.
+TEST_F(IteratorTest, MultipleIteratorsShareTheLock) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  const int N = 100;
+  std::vector<Doc> docs;
+  for (int i = 0; i < N; i++) docs.push_back(TestHelper::CreateDoc(i, *schema));
+  ASSERT_TRUE(collection->Insert(docs).has_value());
+  collection->Flush();
+
+  auto iter1 = collection->CreateIterator().value();
+  auto iter2 = collection->CreateIterator().value();
+
+  auto count_all = [](const DocIterator::Ptr &it) {
+    int count = 0;
+    while (true) {
+      auto r = it->Next();
+      EXPECT_TRUE(r.has_value());
+      if (!r.has_value() || r.value() == nullptr) break;
+      count++;
+    }
+    return count;
+  };
+  EXPECT_EQ(count_all(iter1), N);
+  EXPECT_EQ(count_all(iter2), N);
+
+  iter1->Close();
+  // One iterator is still open → exclusive operations stay rejected.
+  EXPECT_FALSE(collection->Optimize().ok());
+  EXPECT_FALSE(collection->Close().ok());
+
+  iter2->Close();
+  ASSERT_TRUE(collection->Optimize().ok());
   collection->Destroy();
 }
 
