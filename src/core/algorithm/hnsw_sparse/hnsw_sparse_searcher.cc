@@ -348,7 +348,7 @@ int HnswSparseSearcher::search_bf_impl(
           if (topk_heap.empty()) {
             topk_heap.limit(ctx->group_topk());
           }
-          topk_heap.emplace_back(id, dist);
+          topk_heap.emplace(id, dist);
         }
       }
       ctx->topk_to_result(q);
@@ -459,7 +459,7 @@ int HnswSparseSearcher::search_bf_by_p_keys_impl(
             if (topk_heap.empty()) {
               topk_heap.limit(ctx->group_topk());
             }
-            topk_heap.emplace_back(id, dist);
+            topk_heap.emplace(id, dist);
           }
         }
       }

@@ -46,7 +46,7 @@ jobs:
           max-size: 300M
 
       - name: Setup Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v5.7.0
         with:
           distribution: temurin
           java-version: '17'

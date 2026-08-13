@@ -35,7 +35,11 @@ class DiskAnnUtil {
   }
 
   static inline void alloc_aligned(void **ptr, size_t size, size_t align) {
-    *ptr = ::aligned_alloc(align, size);
+    if (size == 0) {
+      *ptr = nullptr;
+      return;
+    }
+    *ptr = ::aligned_alloc(align, round_up(size, align));
   }
 
   static inline void free_aligned(void *ptr) {

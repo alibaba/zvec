@@ -43,7 +43,7 @@ static zvec::fts::TokenizerPipelinePtr make_reducer_test_pipeline() {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "whitespace";
   params.filters = {"lowercase"};
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 // Helper: parse a query string and call search() on a reader.

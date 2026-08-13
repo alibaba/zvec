@@ -16,7 +16,6 @@
 
 #include <sys/stat.h>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,7 +33,7 @@ struct ParquetBufferID {
   int column{0};
   int row_group{0};
   uint64_t file_id{0};
-  long mtime{0};
+  int64_t mtime{0};
 
   ParquetBufferID() = default;
   ParquetBufferID(const std::string &filename, int column, int row_group);

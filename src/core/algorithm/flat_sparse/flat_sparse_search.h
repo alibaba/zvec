@@ -46,8 +46,8 @@ static inline IndexGroupDocumentList ConvertGroupMapToResult(
   for (uint32_t i = 0; i < group_num && i < best_score_in_groups.size(); ++i) {
     const std::string &group_id = best_score_in_groups[i].first;
 
-    result.emplace_back(
-        GroupIndexDocument(group_id, std::move(group_map[group_id])));
+    result.emplace_back(GroupIndexDocument(
+        group_id, std::move(group_map[group_id].mutable_container())));
   }
 
   return result;

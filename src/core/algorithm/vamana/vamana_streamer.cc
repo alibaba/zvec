@@ -55,6 +55,8 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_SATURATE_GRAPH, &saturate_graph_);
   params.get(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY,
              &use_contiguous_memory_);
+  params.get(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
+             &two_pass_build_enabled_);
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -101,11 +103,19 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "docsSoftLimit=%zu maxDegree=%u searchListSize=%u alpha=%.2f "
       "maxOcclusionSize=%u ef=%u maxScanRatio=%.3f minScanLimit=%zu "
       "maxScanLimit=%zu bruteForceThreshold=%zu chunkSize=%zu "
-      "getVectorEnabled=%u forcePadding=%u",
+      "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, max_degree_,
       search_list_size_, alpha_, max_occlusion_size_, ef_, max_scan_ratio_,
       min_scan_limit_, max_scan_limit_, bruteforce_threshold_, chunk_size_,
-      get_vector_enabled_, force_padding_topk_enabled_);
+      get_vector_enabled_, force_padding_topk_enabled_,
+      two_pass_build_enabled_);
+
+  const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
+  build_finalized_.store(false);
+  stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
+  stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{1});
+  stats_.mutable_attributes()->set("vamana_initial_build_alpha",
+                                   initial_build_alpha);
 
   state_ = STATE_INITED;
   return 0;
@@ -140,6 +150,8 @@ int VamanaStreamer::cleanup(void) {
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
+  two_pass_build_enabled_ = false;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -154,7 +166,9 @@ int VamanaStreamer::setup_entity() {
   entity_->set_max_degree(max_degree_);
   entity_->set_search_list_size(search_list_size_);
   entity_->set_max_occlusion_size(max_occlusion_size_);
-  entity_->set_alpha(alpha_);
+  // Standard two-pass Vamana construction builds the initial graph with
+  // alpha=1.0, then revisits every node once with the configured target alpha.
+  entity_->set_alpha(two_pass_build_enabled_ ? 1.0f : alpha_);
   entity_->set_saturate_graph(saturate_graph_);
 
   int ret = entity_->init(docs_hard_limit_);
@@ -235,8 +249,8 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     auto metric_params = index_meta.metric_params();
     metric_params.merge(meta_.metric_params());
     meta_.set_metric(index_meta.metric_name(), 0, metric_params);
-    // Propagate reformer info from stored meta (needed for quantizers
-    // whose reformer params are computed during training, e.g. UniformInt8)
+    // Propagate reformer info from stored meta when the reformer params are
+    // only available after converter training.
     if (!index_meta.reformer_name().empty()) {
       meta_.set_reformer(index_meta.reformer_name(), 0,
                          index_meta.reformer_params());
@@ -340,6 +354,8 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
 
+  update_entry_point_to_medoid();
+
   meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
                      ailego::Params());
 
@@ -349,6 +365,10 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
     return ret;
   }
 
+  return entity_->dump(dumper);
+}
+
+void VamanaStreamer::update_entry_point_to_medoid() {
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
   if (entity_->doc_cnt() > 0) {
@@ -360,8 +380,68 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
       entity_->update_entry_point(medoid);
     }
   }
+}
 
-  return entity_->dump(dumper);
+int VamanaStreamer::finalize_build() {
+  if (!two_pass_build_enabled_) {
+    return 0;
+  }
+
+  shared_mutex_.lock();
+  AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
+  return finalize_build_locked();
+}
+
+int VamanaStreamer::finalize_build_locked() {
+  if (!two_pass_build_enabled_ || build_finalized_.load()) {
+    return 0;
+  }
+
+  update_entry_point_to_medoid();
+
+  // Reverse-link pruning reads the entity alpha, so publish the target value
+  // before starting the second pass. Persist it even for a degenerate graph.
+  entity_->set_alpha(alpha_);
+
+  if (entity_->doc_cnt() <= 1) {
+    stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
+    build_finalized_.store(true);
+    magic_ = IndexContext::GenerateMagic();
+    return 0;
+  }
+
+  VamanaEntity::Pointer entity_ref(entity_.get(), [](VamanaEntity *) {});
+  auto ctx =
+      std::make_unique<VamanaContext>(meta_.dimension(), metric_, entity_ref);
+  ctx->set_ef(ef_);
+  ctx->set_max_scan_limit(max_scan_limit_);
+  ctx->set_min_scan_limit(min_scan_limit_);
+  ctx->set_max_scan_ratio(max_scan_ratio_);
+  ctx->set_magic(magic_);
+  ctx->set_force_padding_topk(force_padding_topk_enabled_);
+  ctx->set_bruteforce_threshold(bruteforce_threshold_);
+
+  int ret = ctx->init(VamanaContext::kStreamerContext);
+  if (ret != 0) {
+    LOG_ERROR("Init Vamana refine context failed");
+    return ret;
+  }
+
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->update_dist_calculator_distance(add_distance_, add_batch_distance_);
+
+  LOG_INFO("Vamana two-pass second graph pass: alpha=%.2f", alpha_);
+  ret = alg_->refine_graph(ctx.get(), alpha_);
+  if (ret != 0) return ret;
+  if (ctx->error()) {
+    return IndexError_Runtime;
+  }
+
+  stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{1});
+  stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{2});
+  build_finalized_.store(true);
+  magic_ = IndexContext::GenerateMagic();
+  return 0;
 }
 
 IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
@@ -496,6 +576,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
     return IndexError_Runtime;
   }
   (*stats_.mutable_added_count())++;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -567,6 +648,7 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
     return IndexError_Runtime;
   }
   (*stats_.mutable_added_count())++;
+  build_finalized_.store(false);
 
   return 0;
 }
