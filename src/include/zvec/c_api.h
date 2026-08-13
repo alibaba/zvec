@@ -1109,8 +1109,8 @@ zvec_index_params_set_vamana_two_pass_build(zvec_index_params_t *params,
  * @param params Index parameters (must be VAMANA type)
  * @return true if two-pass construction is enabled, false otherwise
  */
-ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_vamana_two_pass_build(
-    const zvec_index_params_t *params);
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_index_params_get_vamana_two_pass_build(const zvec_index_params_t *params);
 
 /**
  * @brief Set DiskANN specific parameters
