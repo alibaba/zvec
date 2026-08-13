@@ -50,11 +50,9 @@ using BatchDistanceFunc = std::function<void(
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
-// Uniform int8 quantize kernel: fp32 -> int8 with a global affine transform:
-//   out[i] = clip(round(in[i] * scale + bias), 0, 127)
-// This signature is specific to the uniform-int8 quantizer and is NOT a
-// generic quantize contract. Raw function pointer (rather than std::function)
-// to avoid indirect-call overhead on the per-record / per-query hot path.
+// Uniform UINT7 quantize kernel: fp32 -> int8 code in [0, 127] with a global
+// affine transform. Raw function pointer (rather than std::function) avoids
+// indirect-call overhead on the per-record / per-query hot path.
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
@@ -89,12 +87,13 @@ enum class DataType {
 
 enum class QuantizeType {
   kDefault,
-  kUniform,
+  kUniform,  // Uniform uint7: codes are restricted to [0, 127].
   kRecord,
   kFp16,
   kFp32,
   kPQ,
-  kRabit
+  kRabit,
+  kUniformUint8,  // Uniform uint8: codes cover the full [0, 255] range.
 };
 
 enum class RotateType : uint16_t {

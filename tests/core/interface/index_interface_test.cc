@@ -27,6 +27,9 @@
 #include "zvec/core/framework/index_provider.h"
 #endif
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_holder.h>
+#include "algorithm/hnsw/hnsw_params.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
@@ -132,6 +135,25 @@ TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
   zvec::test_util::RemoveTestFiles(index_name);
 }
 #endif
+
+class ReformerInspectableHNSWIndex : public HNSWIndex {
+ public:
+  int InitForTest(const BaseIndexParam &param) {
+    return Init(param);
+  }
+
+  int TransformForTest(const std::vector<float> &query) const {
+    if (!reformer_) {
+      return zvec::core::IndexError_Uninitialized;
+    }
+    zvec::core::IndexQueryMeta input_meta(
+        zvec::core::IndexMeta::DataType::DT_FP32, query.size());
+    zvec::core::IndexQueryMeta output_meta;
+    std::string output;
+    return reformer_->transform(query.data(), input_meta, &output,
+                                &output_meta);
+  }
+};
 
 TEST(IndexInterface, General) {
   constexpr uint32_t kDimension = 64;
@@ -282,6 +304,97 @@ TEST(IndexInterface, General) {
            .with_fetch_vector(true)
            .with_ef_search(10)
            .build());
+}
+
+TEST(IndexInterface, ReopenRestoresUniformReformer) {
+  constexpr size_t kDimension = 16;
+  struct TestCase {
+    QuantizerType quantizer_type;
+    const char *converter_name;
+    const char *index_name;
+  };
+  const TestCase test_cases[] = {
+      {QuantizerType::kUniformUint7, "UniformUint7Converter",
+       "test_uniform_uint7_reopen.index"},
+      {QuantizerType::kUniformUint8, "UniformUint8Converter",
+       "test_uniform_uint8_reopen.index"},
+  };
+
+  for (const auto &test_case : test_cases) {
+    SCOPED_TRACE(test_case.converter_name);
+    zvec::test_util::RemoveTestFiles(test_case.index_name);
+
+    zvec::core::IndexMeta input_meta(zvec::core::IndexMeta::DataType::DT_FP32,
+                                     kDimension);
+    input_meta.set_metric("SquaredEuclidean", 0, zvec::ailego::Params());
+
+    auto converter =
+        zvec::core::IndexFactory::CreateConverter(test_case.converter_name);
+    ASSERT_NE(nullptr, converter);
+    ASSERT_EQ(0, converter->init(input_meta, zvec::ailego::Params()));
+
+    auto holder = std::make_shared<zvec::core::MultiPassIndexHolder<
+        zvec::core::IndexMeta::DataType::DT_FP32>>(kDimension);
+    for (uint64_t key = 0; key < 2; ++key) {
+      zvec::ailego::NumericalVector<float> vector(kDimension);
+      for (size_t i = 0; i < kDimension; ++i) {
+        vector[i] = static_cast<float>(key * kDimension + i);
+      }
+      ASSERT_TRUE(holder->emplace(key, std::move(vector)));
+    }
+    ASSERT_EQ(0, converter->train(holder));
+
+    zvec::ailego::Params streamer_params;
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100U);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT,
+                        16U);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE,
+                        true);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_EF,
+                        kDefaultHnswEfSearch);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_USE_ID_MAP, true);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
+                        false);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
+                        false);
+
+    auto streamer = zvec::core::IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(converter->meta(), streamer_params));
+
+    auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(zvec::ailego::Params()));
+    ASSERT_EQ(0, storage->open(test_case.index_name, true));
+    ASSERT_EQ(0, streamer->open(storage));
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, streamer->cleanup());
+    ASSERT_EQ(0, storage->close());
+
+    auto param =
+        HNSWIndexParamBuilder()
+            .WithMetricType(MetricType::kL2sq)
+            .WithDataType(DataType::DT_FP32)
+            .WithDimension(kDimension)
+            .WithIsSparse(false)
+            .WithM(16)
+            .WithEFConstruction(100)
+            .WithQuantizerParam(QuantizerParam(test_case.quantizer_type))
+            .Build();
+    ReformerInspectableHNSWIndex index;
+    ASSERT_EQ(0, index.InitForTest(*param));
+
+    const std::vector<float> query(kDimension, 1.0f);
+    ASSERT_NE(0, index.TransformForTest(query));
+    ASSERT_EQ(0, index.Open(test_case.index_name,
+                            {StorageOptions::StorageType::kMMAP,
+                             /*create_new=*/false, /*read_only=*/true}));
+    EXPECT_EQ(0, index.TransformForTest(query));
+    ASSERT_EQ(0, index.Close());
+
+    zvec::test_util::RemoveTestFiles(test_case.index_name);
+  }
 }
 
 TEST(IndexInterface, CopyOnWrite) {

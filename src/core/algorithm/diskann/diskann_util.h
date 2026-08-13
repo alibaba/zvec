@@ -35,10 +35,12 @@ class DiskAnnUtil {
   }
 
   static inline void alloc_aligned(void **ptr, size_t size, size_t align) {
-    // C11 aligned_alloc() requires size to be an integral multiple of
-    // alignment.  This is true on Linux (glibc relaxes the requirement)
-    // but NOT on macOS, where aligned_alloc(32, 16) returns NULL.
-    // Use posix_memalign() which is portable and has no such restriction.
+    if (size == 0) {
+      *ptr = nullptr;
+      return;
+    }
+    // Unlike aligned_alloc(), posix_memalign() does not require size to be an
+    // integral multiple of alignment and is available on Linux and macOS.
     if (::posix_memalign(ptr, align, size) != 0) {
       *ptr = nullptr;
     }

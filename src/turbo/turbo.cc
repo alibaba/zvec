@@ -19,8 +19,9 @@
 #include "avx512/rotate/fht/fht.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
-#include "avx512_vnni/uniform_int8/quantize.h"
-#include "avx512_vnni/uniform_int8/squared_euclidean.h"
+#include "avx512_vnni/uniform_uint7/quantize.h"
+#include "avx512_vnni/uniform_uint7/squared_euclidean.h"
+#include "avx512_vnni/uniform_uint8/squared_euclidean.h"
 #include "neon/rotate/fht/fht.h"
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
@@ -69,7 +70,15 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
-          return avx512_vnni::uniform_squared_euclidean_int8_distance;
+          return avx512_vnni::uniform_squared_euclidean_uint7_distance;
+        }
+      }
+    }
+    if (quantize_type == QuantizeType::kUniformUint8) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
+        if (metric_type == MetricType::kSquaredEuclidean) {
+          return avx512_vnni::uniform_squared_euclidean_uint8_distance;
         }
       }
     }
@@ -112,7 +121,15 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
-          return avx512_vnni::uniform_squared_euclidean_int8_batch_distance;
+          return avx512_vnni::uniform_squared_euclidean_uint7_batch_distance;
+        }
+      }
+    }
+    if (quantize_type == QuantizeType::kUniformUint8) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
+        if (metric_type == MetricType::kSquaredEuclidean) {
+          return avx512_vnni::uniform_squared_euclidean_uint8_batch_distance;
         }
       }
     }
@@ -137,6 +154,13 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
         }
       }
     }
+    if (quantize_type == QuantizeType::kUniformUint8) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI) &&
+          metric_type == MetricType::kSquaredEuclidean) {
+        return avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess;
+      }
+    }
   }
   return nullptr;
 }
@@ -147,7 +171,7 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
     // AVX512_VNNI flag for now since the kernel lives in the avx512_vnni
     // directory and is compiled with the same march flag.
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
-      return avx512_vnni::uniform_int8_quantize;
+      return avx512_vnni::uniform_uint7_quantize;
     }
   }
   return nullptr;

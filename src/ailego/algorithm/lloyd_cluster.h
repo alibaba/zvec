@@ -225,6 +225,11 @@ class LloydCluster {
     return k_value_;
   }
 
+  //! Retrieve spherical option
+  bool spherical(void) const {
+    return spherical_;
+  }
+
   //! Retrieve context
   const ContextType &context(void) const {
     return context_;
