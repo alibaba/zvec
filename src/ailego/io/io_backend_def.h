@@ -52,8 +52,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   return "unknown";
 }
 
-// Returns a human-readable description for the given backend type.
-// When the backend is kPread, includes installation guidance for libaio.
+// Returns a human-readable description for the given backend type. On Linux,
+// the kPread description includes guidance for enabling io_uring or libaio.
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kIoUring:
@@ -63,10 +63,11 @@ inline const char *IOBackendDescription(IOBackendType type) {
       return "libaio async I/O backend loaded at runtime via dlopen().";
     case IOBackendType::kPread:
 #if defined(__linux) || defined(__linux__)
-      return "No async I/O backend available. Install libaio (e.g. "
-             "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
-             "and retry. DiskAnn will fall back to synchronous pread(); "
-             "performance will be degraded.";
+      return "No async I/O backend available: io_uring is unavailable and "
+             "libaio could not be loaded. Enable io_uring or install libaio "
+             "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu "
+             "24.04+) and retry. DiskAnn will use synchronous pread(); "
+             "performance may be degraded.";
 #else
       return "Synchronous pread() I/O backend.";
 #endif
@@ -87,7 +88,7 @@ class IOBackend {
   }
 
   // Returns the active backend, probing on the first call. Linux prefers
-  // io_uring, then libaio, then pread; other platforms use pread.
+  // io_uring, then libaio, then pread; macOS ARM64 uses pread.
   IOBackendType available() {
     std::call_once(probe_once_, [this]() {
       IOBackendType selected = IOBackendType::kPread;

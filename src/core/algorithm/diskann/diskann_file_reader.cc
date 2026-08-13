@@ -47,10 +47,11 @@ static void log_diskann_io_backend(ailego::IOBackendType type) {
 #if (defined(__linux) || defined(__linux__))
     if (type == ailego::IOBackendType::kPread) {
       LOG_WARN(
-          "DiskAnn: no async I/O backend available. Install libaio (e.g. "
-          "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
-          "retry. DiskAnn will fall back to synchronous pread() — performance "
-          "will be degraded.");
+          "DiskAnn: no async I/O backend available: io_uring is unavailable "
+          "and libaio could not be loaded. Enable io_uring or install libaio "
+          "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
+          "and retry. DiskAnn will use synchronous pread(); performance may "
+          "be degraded.");
     } else {
       LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
                ailego::IOBackendTypeName(type));

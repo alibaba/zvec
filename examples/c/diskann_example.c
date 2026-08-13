@@ -62,6 +62,7 @@ static zvec_error_code_t handle_error(zvec_error_code_t error,
 
 int main(void) {
   printf("=== ZVec DiskANN Index Example ===\n\n");
+  printf("DiskANN I/O backend: %s\n\n", zvec_get_io_backend_description());
 
   zvec_error_code_t error;
   int i;
@@ -264,9 +265,8 @@ int main(void) {
                                 &results, &result_count);
   if (error != ZVEC_OK) {
     handle_error(error, "executing DiskANN query");
-    printf(
-        "  (This is expected on non-Linux platforms — DiskANN requires "
-        "libaio)\n");
+    printf("  Active DiskANN I/O backend: %s\n",
+           zvec_get_io_backend_description());
   } else {
     printf("  Query returned %zu results:\n", result_count);
     for (size_t r = 0; r < result_count && r < 5; r++) {

@@ -37,5 +37,19 @@ TEST(IOBackend, ConcurrentProbeReturnsStableType) {
   for (IOBackendType type : results) {
     EXPECT_EQ(type, results[0]);
   }
-  EXPECT_FALSE(current_io_backend_description().empty());
+  std::string description = current_io_backend_description();
+  EXPECT_FALSE(description.empty());
+  const char *backend_name = "";
+  switch (results[0]) {
+    case IOBackendType::kIoUring:
+      backend_name = "io_uring";
+      break;
+    case IOBackendType::kLibAio:
+      backend_name = "libaio";
+      break;
+    case IOBackendType::kPread:
+      backend_name = "pread";
+      break;
+  }
+  EXPECT_NE(description.find(backend_name), std::string::npos);
 }

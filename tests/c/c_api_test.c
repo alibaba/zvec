@@ -172,7 +172,10 @@ void test_io_backend_functions(void) {
               current == ZVEC_IO_BACKEND_TYPE_LIBAIO ||
               current == ZVEC_IO_BACKEND_TYPE_IO_URING);
 #endif
-  TEST_ASSERT(zvec_get_io_backend_description() != NULL);
+  const char *description = zvec_get_io_backend_description();
+  TEST_ASSERT(description != NULL);
+  TEST_ASSERT(strstr(description, zvec_get_io_backend_type_name(current)) !=
+              NULL);
 
   TEST_END();
 }

@@ -60,8 +60,8 @@ typedef IoBackend *IOContext;
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
 
-// Log the current DiskAnn I/O backend status (async vs. synchronous pread).
-// Probes the backend on first call. No-op outside Linux and macOS.
+// Log the current DiskAnn I/O backend (io_uring, libaio, or pread). Probes the
+// backend on first call. No-op outside Linux and macOS.
 void log_diskann_io_backend();
 
 struct AlignedRead {
@@ -121,7 +121,7 @@ class AlignedFileReader {
 };
 
 // Reader implementation used on all supported platforms. Linux selects
-// io_uring, libaio, or pread. macOS uses synchronous pread.
+// io_uring, libaio, or pread. macOS ARM64 uses synchronous pread.
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
