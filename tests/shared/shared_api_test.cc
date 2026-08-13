@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <memory>
 #include <zvec/db/doc.h>
+#include <zvec/db/index_params.h>
+#include <zvec/db/query_params.h>
 #include <zvec/db/schema.h>
 
 int main() {
@@ -34,6 +36,19 @@ int main() {
   doc.set_pk("1");
   if (!doc.set<int64_t>("id", 1)) {
     return 3;
+  }
+
+  zvec::IvfRabitqIndexParams index_params(zvec::MetricType::L2, 32, 8, 100);
+  if (index_params.type() != zvec::IndexType::IVF_RABITQ ||
+      index_params.nlist() != 32 || index_params.total_bits() != 8 ||
+      index_params.sample_count() != 100) {
+    return 4;
+  }
+
+  zvec::IvfRabitqQueryParams query_params(4);
+  if (query_params.type() != zvec::IndexType::IVF_RABITQ ||
+      query_params.nprobe() != 4) {
+    return 5;
   }
 
   return 0;

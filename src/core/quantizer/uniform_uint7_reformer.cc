@@ -14,71 +14,66 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/core/interface/index_param.h>
 #include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
 
-/*! Reformer for Uniform Int8 Quantization (Global Scale)
+/*! Reformer for Uniform Uint7 Quantization (Global Scale)
  *
- * Uses a global scale/bias (computed by UniformInt8StreamingConverter) to
+ * Uses a global scale/bias (computed by UniformUint7Converter) to
  * quantize query vectors and build-time record vectors to int8.
  * No per-vector extras are appended — the output is pure int8.
  */
-class UniformInt8StreamingReformer : public IndexReformer {
+class UniformUint7Reformer : public IndexReformer {
  public:
   //! Constructor.
   //! `dst_type` is required by the INDEX_FACTORY_REGISTER_REFORMER_ALIAS
   //! macro signature but is unused here: the quantization output is
   //! always int8, governed by the (scale, bias) pair received in init().
-  UniformInt8StreamingReformer(IndexMeta::DataType /*dst_type*/) {}
+  UniformUint7Reformer(IndexMeta::DataType /*dst_type*/) {}
 
   //! Initialize Reformer
   //!
-  //! Lifecycle note: during build, scale/bias come from the converter's
-  //! train(); during search-only path, the converter first creates the
-  //! reformer with empty params, then Index::Open re-invokes init() with
-  //! the persisted params. We treat empty-params as "not yet initialized"
-  //! and reject any quantize/normalize call until real params arrive, so a
-  //! mis-wired pipeline fails loudly instead of silently producing garbage.
+  //! Scale/bias are supplied through reformer params after converter training.
   int init(const ailego::Params &params) override {
-    bool has_scale = params.get(UNIFORM_INT8_REFORMER_SCALE, &scale_);
-    bool has_bias = params.get(UNIFORM_INT8_REFORMER_BIAS, &bias_);
+    Reset();
 
+    float scale = 0.0f;
+    float bias = 0.0f;
+    const bool has_scale = params.get(UNIFORM_UINT7_REFORMER_SCALE, &scale);
+    const bool has_bias = params.get(UNIFORM_UINT7_REFORMER_BIAS, &bias);
     if (!has_scale || !has_bias) {
       LOG_ERROR(
-          "UniformInt8StreamingReformer init: missing required params "
+          "UniformUint7Reformer: missing scale/bias params "
           "(scale_present=%d, bias_present=%d)",
-          (int)has_scale, (int)has_bias);
-      initialized_ = false;
+          static_cast<int>(has_scale), static_cast<int>(has_bias));
+      return IndexError_InvalidArgument;
+    }
+    if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(bias)) {
+      LOG_ERROR("UniformUint7Reformer: invalid params scale=%f, bias=%f", scale,
+                bias);
       return IndexError_InvalidArgument;
     }
 
-    if (!std::isfinite(scale_) || scale_ == 0.0f || !std::isfinite(bias_)) {
-      LOG_ERROR(
-          "UniformInt8StreamingReformer: invalid params scale=%f, bias=%f",
-          scale_, bias_);
-      initialized_ = false;
-      return IndexError_InvalidArgument;
-    }
-
-    // int8_l2 = scale^2 * real_l2, so real_l2 = int8_l2 / scale^2.
+    scale_ = scale;
+    bias_ = bias;
     scale_reciprocal_sq_ = 1.0f / (scale_ * scale_);
     initialized_ = true;
-
-    // Resolve the SIMD quantize kernel once; falls back to scalar when the
-    // current CPU lacks AVX-512 (turbo returns nullptr on those builds).
     quantize_func_ = turbo::get_uniform_quantize_func(turbo::DataType::kInt8);
 
-    LOG_INFO("UniformInt8StreamingReformer init: scale=%f, bias=%f, simd=%s",
-             scale_, bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
+    LOG_INFO("UniformUint7Reformer init: scale=%f, bias=%f, simd=%s", scale_,
+             bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
     return 0;
   }
 
   //! Cleanup Reformer
   int cleanup(void) override {
+    Reset();
     return 0;
   }
 
@@ -121,7 +116,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
                 IndexDocumentList &result) const override {
     if (!initialized_) {
       LOG_ERROR(
-          "UniformInt8StreamingReformer::normalize called before init "
+          "UniformUint7Reformer::normalize called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -141,36 +136,59 @@ class UniformInt8StreamingReformer : public IndexReformer {
              std::string *out) const override {
     if (!initialized_) {
       LOG_ERROR(
-          "UniformInt8StreamingReformer::revert called before init "
+          "UniformUint7Reformer::revert called before init "
           "with valid params");
       return IndexError_Runtime;
     }
-    size_t dim = qmeta.dimension();
+    if (!in || !out || qmeta.data_type() != IndexMeta::DataType::DT_INT8 ||
+        qmeta.unit_size() !=
+            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_INT8)) {
+      return IndexError_InvalidArgument;
+    }
+    const size_t dim = qmeta.dimension();
+    if (dim == 0 || dim > MAX_DIMENSION) {
+      LOG_ERROR("UniformUint7Reformer: dimension=%zu must be in [1, %d]", dim,
+                MAX_DIMENSION);
+      return IndexError_InvalidArgument;
+    }
     out->resize(dim * sizeof(float));
-    float *out_buf = reinterpret_cast<float *>(out->data());
-    const int8_t *buf = reinterpret_cast<const int8_t *>(in);
+    char *out_buf = out->data();
+    const auto *buf = static_cast<const int8_t *>(in);
 
     // Approximate dequantization (lossy):
-    //   forward:  int8 = clip(round(float * scale + bias), -127, 127)
+    //   forward:
+    //     int8 = clip(round-to-nearest-even(float * scale + bias), 0, 127)
     //   inverse:  float ≈ (int8 - bias) / scale
     // initialized_ guarantees scale_ != 0 and finite.
     float inv_scale = 1.0f / scale_;
     for (size_t i = 0; i < dim; ++i) {
-      out_buf[i] = (static_cast<float>(buf[i]) - bias_) * inv_scale;
+      const float value = (static_cast<float>(buf[i]) - bias_) * inv_scale;
+      std::memcpy(out_buf + i * sizeof(value), &value, sizeof(value));
     }
 
     return 0;
   }
 
  private:
+  void Reset() {
+    scale_ = 0.0f;
+    bias_ = 0.0f;
+    scale_reciprocal_sq_ = 1.0f;
+    initialized_ = false;
+    quantize_func_ = nullptr;
+  }
+
   //! Common quantization path shared by transform()/convert() (single & batch)
   int do_quantize(const void *src, const IndexQueryMeta &smeta, uint32_t count,
                   std::string *out, IndexQueryMeta *ometa) const {
     if (!initialized_) {
       LOG_ERROR(
-          "UniformInt8StreamingReformer: quantize called before init "
+          "UniformUint7Reformer: quantize called before init "
           "with valid params");
       return IndexError_Runtime;
+    }
+    if (!src || !out || !ometa || count == 0) {
+      return IndexError_InvalidArgument;
     }
     if (smeta.data_type() != IndexMeta::DataType::DT_FP32 ||
         smeta.unit_size() !=
@@ -178,14 +196,19 @@ class UniformInt8StreamingReformer : public IndexReformer {
       return IndexError_Unsupported;
     }
 
+    const size_t dim = smeta.dimension();
+    if (dim == 0 || dim > MAX_DIMENSION) {
+      LOG_ERROR("UniformUint7Reformer: dimension=%zu must be in [1, %d]", dim,
+                MAX_DIMENSION);
+      return IndexError_InvalidArgument;
+    }
     *ometa = smeta;
-    ometa->set_meta(IndexMeta::DataType::DT_INT8, smeta.dimension());
+    ometa->set_meta(IndexMeta::DataType::DT_INT8, dim);
     const size_t out_stride = ometa->element_size();
     out->resize(static_cast<size_t>(count) * out_stride);
 
-    const float *vec = reinterpret_cast<const float *>(src);
-    int8_t *ovec = reinterpret_cast<int8_t *>(&(*out)[0]);
-    const size_t dim = smeta.dimension();
+    const auto *vec = static_cast<const float *>(src);
+    auto *ovec = reinterpret_cast<int8_t *>(out->data());
     for (uint32_t i = 0; i < count; ++i) {
       quantize(vec + i * dim, dim, ovec + i * out_stride);
     }
@@ -202,7 +225,9 @@ class UniformInt8StreamingReformer : public IndexReformer {
       return;
     }
     for (size_t i = 0; i < dim; ++i) {
-      float v = std::round(in[i] * scale_ + bias_);
+      // Match _mm512_cvtps_epi32 used by the SIMD kernel under the default
+      // floating-point rounding mode.
+      float v = std::nearbyint(in[i] * scale_ + bias_);
       v = std::max(0.0f, std::min(127.0f, v));
       out[i] = static_cast<int8_t>(v);
     }
@@ -216,8 +241,8 @@ class UniformInt8StreamingReformer : public IndexReformer {
   turbo::UniformQuantizeFunc quantize_func_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformInt8StreamingReformer,
-                                      UniformInt8StreamingReformer,
+INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint7Reformer,
+                                      UniformUint7Reformer,
                                       IndexMeta::DataType::DT_INT8);
 
 }  // namespace core

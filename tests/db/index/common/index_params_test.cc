@@ -163,6 +163,42 @@ TEST(IndexParamsTest, IVFIndexParams) {
   EXPECT_EQ(params.n_list(), 64);
 }
 
+#if RABITQ_SUPPORTED
+TEST(IndexParamsTest, IvfRabitqIndexParams) {
+  IvfRabitqIndexParams params(MetricType::COSINE, 32, 1, 5);
+  EXPECT_EQ(params.type(), IndexType::IVF_RABITQ);
+  EXPECT_EQ(params.metric_type(), MetricType::COSINE);
+  EXPECT_EQ(params.quantize_type(), QuantizeType::RABITQ);
+  EXPECT_EQ(params.nlist(), 32);
+  EXPECT_EQ(params.total_bits(), 1);
+  EXPECT_EQ(params.sample_count(), 5);
+
+  auto cloned = params.clone();
+  EXPECT_NE(cloned.get(), &params);
+  EXPECT_EQ(cloned->type(), IndexType::IVF_RABITQ);
+  EXPECT_TRUE(*cloned == params);
+
+  IvfRabitqIndexParams same_params(MetricType::COSINE, 32, 1, 5);
+  IvfRabitqIndexParams diff_metric(MetricType::IP, 32, 1, 5);
+  IvfRabitqIndexParams diff_nlist(MetricType::COSINE, 64, 1, 5);
+  IvfRabitqIndexParams diff_total_bits(MetricType::COSINE, 32, 7, 5);
+  IvfRabitqIndexParams diff_sample_count(MetricType::COSINE, 32, 1, 0);
+
+  EXPECT_TRUE(params == same_params);
+  EXPECT_FALSE(params == diff_metric);
+  EXPECT_FALSE(params == diff_nlist);
+  EXPECT_FALSE(params == diff_total_bits);
+  EXPECT_FALSE(params == diff_sample_count);
+
+  params.set_nlist(48);
+  params.set_total_bits(7);
+  params.set_sample_count(0);
+  EXPECT_EQ(params.nlist(), 48);
+  EXPECT_EQ(params.total_bits(), 7);
+  EXPECT_EQ(params.sample_count(), 0);
+}
+#endif
+
 TEST(IndexParamsTest, DefaultVectorIndexParams) {
   // Test default vector index params
   EXPECT_EQ(DefaultVectorIndexParams.type(), IndexType::FLAT);

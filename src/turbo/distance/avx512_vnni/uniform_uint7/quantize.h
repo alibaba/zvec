@@ -19,15 +19,15 @@
 
 namespace zvec::turbo::avx512_vnni {
 
-// AVX-512 vectorized quantization for the uniform-int8 quantizer.
-//   forward:  out[i] = clip(round(in[i] * scale + bias), -127, 127)
+// AVX-512 vectorized quantization for the uniform-uint7 quantizer.
+//   forward:
+//     out[i] = clip(round-to-nearest-even(in[i] * scale + bias), 0, 127)
 //
 // Implementation detail: relies on hardware saturation in
 // vcvtsepi32_epi8 / vpackss to clip without explicit min/max.
-// Note: AVX-512 default rounding mode is round-to-nearest-even, which
-// matches std::round() to within ULP for typical embedding values; tests
-// against the scalar reference confirm bit-exact results on common inputs.
-void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
-                           float bias, std::int8_t *out);
+// Both the vectorized loop and its scalar tail honor the active floating-point
+// rounding mode; under the default mode, halfway values round to nearest even.
+void uniform_uint7_quantize(const float *in, std::size_t dim, float scale,
+                            float bias, std::int8_t *out);
 
 }  // namespace zvec::turbo::avx512_vnni

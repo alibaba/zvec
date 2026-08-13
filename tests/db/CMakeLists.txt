@@ -5,6 +5,7 @@ cc_directory(common)
 cc_directories(crash_recovery)
 cc_directory(sqlengine)
 cc_directories(index)
+cc_directory(utf8_acp)
 
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS
@@ -32,6 +33,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     core_knn_flat_sparse
     core_knn_hnsw
     core_knn_hnsw_rabitq
+    core_knn_ivf_rabitq
     core_knn_hnsw_sparse
     core_knn_ivf
     core_knn_diskann

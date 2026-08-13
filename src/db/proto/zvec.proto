@@ -62,6 +62,8 @@ enum IndexType {
   IT_VAMANA = 5;
   // Proxima DiskAnn Index
   IT_DISKANN = 6;
+  // Proxima IVF RABITQ Index
+  IT_IVF_RABITQ = 7;
   // Invert Index
   IT_INVERT = 10;
   // Full-Text Search Index
@@ -121,6 +123,13 @@ message HnswRabitqIndexParams {
   int32 sample_count = 6;
 }
 
+message IvfRabitqIndexParams {
+  BaseIndexParams base = 1;
+  int32 nlist = 2;
+  int32 total_bits = 3;
+  int32 sample_count = 4;
+}
+
 message FlatIndexParams {
   BaseIndexParams base = 1;
 }
@@ -168,6 +177,7 @@ message IndexParams {
     VamanaIndexParams vamana = 6;
     FtsIndexParams fts = 7;
     DiskAnnIndexParams diskann = 8;
+    IvfRabitqIndexParams ivf_rabitq = 9;
   };
 };
 

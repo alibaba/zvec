@@ -47,7 +47,7 @@ class JiebaTokenizer : public Tokenizer {
   // jieba_dict_dir resolution: per-field > ZVEC_JIEBA_DICT_DIR >
   // zvec::GlobalConfig::jieba_dict_dir() (set by SDK on import or via init).
   // Stop-word filtering belongs to a TokenFilter, not here.
-  bool init(const ailego::JsonObject &config) override;
+  Status init(const ailego::JsonObject &config) override;
 
   std::vector<Token> tokenize(const std::string &text) const override;
 

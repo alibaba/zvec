@@ -55,7 +55,8 @@ class ZVEC_API IndexParams {
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
-           type_ == IndexType::DISKANN || type_ == IndexType::VAMANA;
+           type_ == IndexType::IVF_RABITQ || type_ == IndexType::DISKANN ||
+           type_ == IndexType::VAMANA;
   }
 
   IndexType type() const {
@@ -398,6 +399,71 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
   core::IndexReformer::Pointer rabitq_reformer_;
 };
 
+class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
+ public:
+  IvfRabitqIndexParams(MetricType metric_type,
+                       int nlist = core_interface::kDefaultIvfRabitqNlist,
+                       int total_bits = core_interface::kDefaultRabitqTotalBits,
+                       int sample_count = 0)
+      : VectorIndexParams(IndexType::IVF_RABITQ, metric_type,
+                          QuantizeType::RABITQ),
+        nlist_(nlist),
+        total_bits_(total_bits),
+        sample_count_(sample_count) {}
+
+  using OPtr = std::shared_ptr<IvfRabitqIndexParams>;
+
+  Ptr clone() const override {
+    return std::make_shared<IvfRabitqIndexParams>(metric_type_, nlist_,
+                                                  total_bits_, sample_count_);
+  }
+
+  std::string to_string() const override {
+    auto base_str = vector_index_params_to_string("IvfRabitqIndexParams",
+                                                  metric_type_, quantize_type_);
+    std::ostringstream oss;
+    oss << base_str << ",nlist:" << nlist_ << ",total_bits:" << total_bits_
+        << ",sample_count:" << sample_count_ << "}";
+    return oss.str();
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    if (type() != other.type()) {
+      return false;
+    }
+    auto &rhs = dynamic_cast<const IvfRabitqIndexParams &>(other);
+    return metric_type() == rhs.metric_type() &&
+           quantize_type_ == rhs.quantize_type_ && nlist_ == rhs.nlist_ &&
+           total_bits_ == rhs.total_bits_ && sample_count_ == rhs.sample_count_;
+  }
+
+  void set_nlist(int nlist) {
+    nlist_ = nlist;
+  }
+  int nlist() const {
+    return nlist_;
+  }
+
+  void set_total_bits(int total_bits) {
+    total_bits_ = total_bits;
+  }
+  int total_bits() const {
+    return total_bits_;
+  }
+
+  void set_sample_count(int sample_count) {
+    sample_count_ = sample_count;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+
+ private:
+  int nlist_;
+  int total_bits_;
+  int sample_count_;
+};
+
 class ZVEC_API FlatIndexParams : public VectorIndexParams {
  public:
   FlatIndexParams(MetricType metric_type,
@@ -718,7 +784,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
 
 /*
  * FTS (Full-Text Search) index params
- * Supported tokenizers: "standard", "jieba", "whitespace".
+ * Supported tokenizers: "standard", "ngram", "jieba", "whitespace".
  * Supported filters: "lowercase", "ascii_folding", "stemmer".
  *
  * extra_params must be either empty or a JSON object string. Supported keys are
@@ -726,6 +792,13 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *   Tokenizers:
  *     standard:
  *       - "max_token_length" (positive integer).
+ *     ngram:
+ *       - "ngram_min" (positive integer, default 2).
+ *       - "ngram_max" (positive integer, default 2).
+ *         ngram_max - ngram_min must not exceed 1.
+ *       - "token_chars" (array of "letter", "digit", "whitespace",
+ *         "punctuation", "symbol"; default [] keeps all valid UTF-8
+ *         characters). custom_token_chars is not supported.
  *     jieba:
  *       - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
  *         hmm_model.utf8).

@@ -1,3 +1,6 @@
 # Auto-generated files — collapsed in GitHub PR diffs
 src/db/index/column/fts_column/gen/** linguist-generated=true
 src/db/sqlengine/antlr/gen/** linguist-generated=true
+
+# Unified diff context lines use a leading space by definition.
+thirdparty/RaBitQ-Library/*.patch whitespace=-blank-at-eol

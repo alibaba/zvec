@@ -34,9 +34,13 @@ static const std::string QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME =
 static const std::string QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_PARAMS =
     "proxima.quantized_integer.metric.origin_metric_params";
 
-//! UniformInt8 Metric
-static const std::string UNIFORM_INT8_METRIC_ORIGIN_METRIC_NAME =
-    "proxima.uniform_int8.metric.origin_metric_name";
+//! UniformUint7 Metric
+static const std::string UNIFORM_UINT7_METRIC_ORIGIN_METRIC_NAME =
+    "proxima.uniform_uint7.metric.origin_metric_name";
+
+//! UniformUint8 Metric
+static const std::string UNIFORM_UINT8_METRIC_ORIGIN_METRIC_NAME =
+    "proxima.uniform_uint8.metric.origin_metric_name";
 
 }  // namespace core
 }  // namespace zvec

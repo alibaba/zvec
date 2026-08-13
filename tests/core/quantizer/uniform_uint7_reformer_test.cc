@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -22,13 +24,24 @@
 #include <zvec/ailego/container/vector.h>
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_holder.h"
+#include "zvec/core/interface/index_param.h"
 
 using namespace zvec::core;
 
+namespace {
+
+float ReadFloat(const std::string &data, size_t index) {
+  float value = 0.0f;
+  std::memcpy(&value, data.data() + index * sizeof(value), sizeof(value));
+  return value;
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
-// UniformInt8 Converter + Reformer: General (MultiPassHolder, uniform dist)
+// UniformUint7 Converter + Reformer: General (MultiPassHolder, uniform dist)
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, General) {
+TEST(UniformUint7Reformer, General) {
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
@@ -38,8 +51,7 @@ TEST(UniformInt8Reformer, General) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -82,7 +94,7 @@ TEST(UniformInt8Reformer, General) {
   }
 
   // Create reformer from converter's trained params
-  auto reformer = IndexFactory::CreateReformer("UniformInt8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0u, reformer->init(converter->meta().reformer_params()));
 
@@ -139,10 +151,58 @@ TEST(UniformInt8Reformer, General) {
   }
 }
 
+TEST(UniformUint7Reformer, UsesNearestEvenRoundingAcrossSimdBoundary) {
+  constexpr size_t kDimension = 20;
+  const float input[kDimension] = {
+      -1.5f, -0.5f, 0.5f,  1.5f,  2.5f,   3.5f,   4.5f, 5.5f, 6.5f, 7.5f,
+      8.5f,  9.5f,  10.5f, 11.5f, 126.5f, 127.5f, 0.5f, 1.5f, 2.5f, 3.5f,
+  };
+  const int8_t expected[kDimension] = {
+      0, 0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 126, 127, 0, 2, 2, 4,
+  };
+
+  zvec::ailego::Params params;
+  params.set("uniform_uint7.reformer.scale", 1.0f);
+  params.set("uniform_uint7.reformer.bias", 0.0f);
+
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
+  ASSERT_TRUE(reformer);
+  ASSERT_EQ(0, reformer->init(params));
+
+  std::string output;
+  IndexQueryMeta output_meta;
+  ASSERT_EQ(0,
+            reformer->transform(
+                input, IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+                &output, &output_meta));
+  ASSERT_EQ(kDimension, output.size());
+  EXPECT_EQ(0, std::memcmp(expected, output.data(), kDimension));
+
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
+  ASSERT_TRUE(converter);
+  ASSERT_EQ(0, converter->init(meta, params));
+
+  auto holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+          kDimension);
+  zvec::ailego::NumericalVector<float> vector(kDimension);
+  std::copy(input, input + kDimension, vector.data());
+  holder->emplace(1, vector);
+  ASSERT_EQ(0, converter->transform(holder));
+
+  auto result = converter->result();
+  ASSERT_TRUE(result);
+  auto iterator = result->create_iterator();
+  ASSERT_TRUE(iterator);
+  ASSERT_TRUE(iterator->is_valid());
+  EXPECT_EQ(0, std::memcmp(expected, iterator->data(), kDimension));
+}
+
 // ---------------------------------------------------------------------------
 // OnePassHolder: verify converter works with single-pass holders
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, OnePassHolder) {
+TEST(UniformUint7Reformer, OnePassHolder) {
   std::mt19937 gen(123);
   std::normal_distribution<float> dist(5.0f, 2.0f);
 
@@ -152,8 +212,7 @@ TEST(UniformInt8Reformer, OnePassHolder) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -180,7 +239,7 @@ TEST(UniformInt8Reformer, OnePassHolder) {
   EXPECT_EQ(IndexMeta::DataType::DT_INT8, holder2->data_type());
   EXPECT_EQ(DIMENSION, holder2->dimension());
 
-  auto reformer = IndexFactory::CreateReformer("UniformInt8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0u, reformer->init(converter->meta().reformer_params()));
 
@@ -204,9 +263,9 @@ TEST(UniformInt8Reformer, OnePassHolder) {
 }
 
 // ---------------------------------------------------------------------------
-// TrainedParams: verify scale/bias are persisted correctly after train
+// TrainedParams: verify scale/bias are published in metadata after train
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, TrainedParams) {
+TEST(UniformUint7Reformer, TrainedParams) {
   std::mt19937 gen(99);
   std::uniform_real_distribution<float> dist(-3.0f, 7.0f);
 
@@ -216,8 +275,7 @@ TEST(UniformInt8Reformer, TrainedParams) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -238,8 +296,8 @@ TEST(UniformInt8Reformer, TrainedParams) {
   // Verify reformer params contain scale and bias
   auto reformer_params = converter->meta().reformer_params();
   float scale = 0.0f, bias = 0.0f;
-  EXPECT_TRUE(reformer_params.get("uniform_int8.reformer.scale", &scale));
-  EXPECT_TRUE(reformer_params.get("uniform_int8.reformer.bias", &bias));
+  EXPECT_TRUE(reformer_params.get("uniform_uint7.reformer.scale", &scale));
+  EXPECT_TRUE(reformer_params.get("uniform_uint7.reformer.bias", &bias));
   EXPECT_GT(scale, 0.0f);
   EXPECT_TRUE(std::isfinite(scale));
   EXPECT_TRUE(std::isfinite(bias));
@@ -247,20 +305,20 @@ TEST(UniformInt8Reformer, TrainedParams) {
   // Verify converter params also contain scale/bias (for persistence)
   auto conv_params = converter->meta().converter_params();
   float conv_scale = 0.0f, conv_bias = 0.0f;
-  EXPECT_TRUE(conv_params.get("uniform_int8.reformer.scale", &conv_scale));
-  EXPECT_TRUE(conv_params.get("uniform_int8.reformer.bias", &conv_bias));
+  EXPECT_TRUE(conv_params.get("uniform_uint7.reformer.scale", &conv_scale));
+  EXPECT_TRUE(conv_params.get("uniform_uint7.reformer.bias", &conv_bias));
   EXPECT_FLOAT_EQ(scale, conv_scale);
   EXPECT_FLOAT_EQ(bias, conv_bias);
 
   // Verify meta reflects the correct reformer and metric
-  EXPECT_EQ("UniformInt8StreamingReformer", converter->meta().reformer_name());
-  EXPECT_EQ("UniformInt8", converter->meta().metric_name());
+  EXPECT_EQ("UniformUint7Reformer", converter->meta().reformer_name());
+  EXPECT_EQ("UniformUint7", converter->meta().metric_name());
 }
 
 // ---------------------------------------------------------------------------
 // Revert: verify int8 → float dequantization round-trip quality
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, Revert) {
+TEST(UniformUint7Reformer, Revert) {
   std::mt19937 gen(77);
   std::uniform_real_distribution<float> dist(0.0f, 10.0f);
 
@@ -270,8 +328,7 @@ TEST(UniformInt8Reformer, Revert) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -288,7 +345,7 @@ TEST(UniformInt8Reformer, Revert) {
 
   ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
 
-  auto reformer = IndexFactory::CreateReformer("UniformInt8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0u, reformer->init(converter->meta().reformer_params()));
 
@@ -307,17 +364,15 @@ TEST(UniformInt8Reformer, Revert) {
 
     ASSERT_EQ(0, reformer->revert(quantized_buf.data(), qmeta, &reverted_buf));
 
-    const float *reverted =
-        reinterpret_cast<const float *>(reverted_buf.data());
-
     // Quantization error should be bounded by step_size / 2
     // step_size ≈ range / 127
     float range = 10.0f;  // approximate
     float max_error = range / 127.0f;
     for (size_t d = 0; d < DIMENSION; ++d) {
-      EXPECT_NEAR(original[d], reverted[d], max_error * 1.5f)
+      const float reverted = ReadFloat(reverted_buf, d);
+      EXPECT_NEAR(original[d], reverted, max_error * 1.5f)
           << "dim=" << d << " original=" << original[d]
-          << " reverted=" << reverted[d];
+          << " reverted=" << reverted;
     }
   }
 }
@@ -325,7 +380,7 @@ TEST(UniformInt8Reformer, Revert) {
 // ---------------------------------------------------------------------------
 // Normalize: verify score rescaling from int8 L2 to float L2
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, Normalize) {
+TEST(UniformUint7Reformer, Normalize) {
   const size_t COUNT = 1000;
   const size_t DIMENSION = 32;
 
@@ -335,8 +390,7 @@ TEST(UniformInt8Reformer, Normalize) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -355,9 +409,9 @@ TEST(UniformInt8Reformer, Normalize) {
 
   auto reformer_params = converter->meta().reformer_params();
   float scale = 0.0f;
-  ASSERT_TRUE(reformer_params.get("uniform_int8.reformer.scale", &scale));
+  ASSERT_TRUE(reformer_params.get("uniform_uint7.reformer.scale", &scale));
 
-  auto reformer = IndexFactory::CreateReformer("UniformInt8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0u, reformer->init(reformer_params));
 
@@ -379,10 +433,10 @@ TEST(UniformInt8Reformer, Normalize) {
 }
 
 // ---------------------------------------------------------------------------
-// InitConverterWithTrainedParams: simulate the search-only path where
-// scale/bias come from persisted converter params (no re-train needed)
+// InitConverterWithTrainedParams: verify a converter can reuse scale/bias from
+// previously trained converter params without retraining
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, InitConverterWithTrainedParams) {
+TEST(UniformUint7Reformer, InitConverterWithTrainedParams) {
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
@@ -393,8 +447,7 @@ TEST(UniformInt8Reformer, InitConverterWithTrainedParams) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
   // First pass: train to get params
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -414,8 +467,7 @@ TEST(UniformInt8Reformer, InitConverterWithTrainedParams) {
   auto converter_params = converter->meta().converter_params();
 
   // Second pass: create a new converter with trained params (skip train)
-  auto converter2 =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter2 = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter2);
   ASSERT_EQ(0, converter2->init(meta, converter_params));
   ASSERT_EQ(0, converter2->transform(holder));
@@ -430,8 +482,8 @@ TEST(UniformInt8Reformer, InitConverterWithTrainedParams) {
   EXPECT_EQ(IndexMeta::DataType::DT_INT8, holder2->data_type());
   EXPECT_EQ(DIMENSION, holder2->dimension());
 
-  // Verify reformer with persisted params produces same results
-  auto reformer = IndexFactory::CreateReformer("UniformInt8StreamingReformer");
+  // Verify a reformer initialized with the trained params produces same results
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0u, reformer->init(reformer_params));
 
@@ -467,15 +519,14 @@ TEST(UniformInt8Reformer, InitConverterWithTrainedParams) {
 // LosslessIntegerFastPath: when all training values are integers within
 // [0, 127], scale should be 1.0 for exact mapping
 // ---------------------------------------------------------------------------
-TEST(UniformInt8Reformer, LosslessIntegerFastPath) {
+TEST(UniformUint7Reformer, LosslessIntegerFastPath) {
   const size_t COUNT = 100;
   const size_t DIMENSION = 8;
 
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
 
-  auto converter =
-      IndexFactory::CreateConverter("UniformInt8StreamingConverter");
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
   ASSERT_TRUE(converter);
   ASSERT_EQ(0u, converter->init(meta, zvec::ailego::Params()));
 
@@ -499,11 +550,11 @@ TEST(UniformInt8Reformer, LosslessIntegerFastPath) {
   // scale should be 1.0 for lossless integer path
   auto reformer_params = converter->meta().reformer_params();
   float scale = 0.0f;
-  ASSERT_TRUE(reformer_params.get("uniform_int8.reformer.scale", &scale));
+  ASSERT_TRUE(reformer_params.get("uniform_uint7.reformer.scale", &scale));
   EXPECT_FLOAT_EQ(1.0f, scale);
 
   // Verify exact round-trip for integer values
-  auto reformer = IndexFactory::CreateReformer("UniformInt8StreamingReformer");
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
   ASSERT_TRUE(reformer);
   ASSERT_EQ(0u, reformer->init(reformer_params));
 
@@ -530,10 +581,109 @@ TEST(UniformInt8Reformer, LosslessIntegerFastPath) {
 
     // Revert should give exact values back
     ASSERT_EQ(0, reformer->revert(quantized_buf.data(), qmeta, &reverted_buf));
-    const float *reverted =
-        reinterpret_cast<const float *>(reverted_buf.data());
     for (size_t d = 0; d < DIMENSION; ++d) {
-      EXPECT_FLOAT_EQ(original[d], reverted[d]) << "dim=" << d;
+      EXPECT_FLOAT_EQ(original[d], ReadFloat(reverted_buf, d)) << "dim=" << d;
     }
   }
+}
+
+TEST(UniformUint7Converter, RejectsMismatchedTrainingHolder) {
+  constexpr size_t kDimension = 8;
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
+  ASSERT_TRUE(converter);
+  ASSERT_EQ(0, converter->init(meta, zvec::ailego::Params()));
+
+  auto wrong_type =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_INT8>>(
+          kDimension);
+  EXPECT_EQ(IndexError_Mismatch, converter->train(wrong_type));
+
+  auto wrong_dimension =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+          kDimension + 1);
+  EXPECT_EQ(IndexError_Mismatch, converter->train(wrong_dimension));
+}
+
+TEST(UniformUint7Converter, RejectsInvalidDimension) {
+  for (const uint32_t dimension : {0U, uint32_t{MAX_DIMENSION + 1}}) {
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, dimension);
+    auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
+    ASSERT_TRUE(converter);
+    EXPECT_EQ(IndexError_InvalidArgument,
+              converter->init(meta, zvec::ailego::Params()))
+        << "dimension=" << dimension;
+  }
+}
+
+TEST(UniformUint7Reformer, RejectsInvalidTransformAndRevertArguments) {
+  constexpr size_t kDimension = 4;
+  zvec::ailego::Params params;
+  params.set("uniform_uint7.reformer.scale", 1.0f);
+  params.set("uniform_uint7.reformer.bias", 0.0f);
+
+  auto reformer = IndexFactory::CreateReformer("UniformUint7Reformer");
+  ASSERT_TRUE(reformer);
+  ASSERT_EQ(0, reformer->init(params));
+
+  const std::vector<float> input(kDimension, 1.0f);
+  const IndexQueryMeta input_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  std::string output;
+  IndexQueryMeta output_meta;
+
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->transform(nullptr, input_meta, &output, &output_meta));
+  EXPECT_EQ(
+      IndexError_InvalidArgument,
+      reformer->transform(input.data(), input_meta, nullptr, &output_meta));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->transform(input.data(), input_meta, &output, nullptr));
+  EXPECT_EQ(
+      IndexError_InvalidArgument,
+      reformer->transform(input.data(), input_meta, 0, &output, &output_meta));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->transform(input.data(),
+                                IndexQueryMeta(IndexMeta::DataType::DT_FP32, 0),
+                                &output, &output_meta));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->transform(
+                input.data(),
+                IndexQueryMeta(IndexMeta::DataType::DT_FP32, MAX_DIMENSION + 1),
+                &output, &output_meta));
+
+  const std::vector<int8_t> encoded(kDimension, 0);
+  const IndexQueryMeta encoded_meta(IndexMeta::DataType::DT_INT8, kDimension);
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->revert(nullptr, encoded_meta, &output));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->revert(encoded.data(), encoded_meta, nullptr));
+  EXPECT_EQ(
+      IndexError_InvalidArgument,
+      reformer->revert(encoded.data(),
+                       IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+                       &output));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            reformer->revert(encoded.data(),
+                             IndexQueryMeta(IndexMeta::DataType::DT_INT8, 0),
+                             &output));
+}
+
+TEST(UniformUint7Converter, RejectsNonFiniteTrainingRange) {
+  constexpr size_t kDimension = 1;
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+  auto converter = IndexFactory::CreateConverter("UniformUint7Converter");
+  ASSERT_TRUE(converter);
+  ASSERT_EQ(0, converter->init(meta, zvec::ailego::Params()));
+
+  auto holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+          kDimension);
+  zvec::ailego::NumericalVector<float> low(kDimension);
+  low[0] = std::numeric_limits<float>::lowest();
+  holder->emplace(1, low);
+  zvec::ailego::NumericalVector<float> high(kDimension);
+  high[0] = std::numeric_limits<float>::max();
+  holder->emplace(2, high);
+
+  EXPECT_EQ(IndexError_InvalidArgument, converter->train(holder));
 }
