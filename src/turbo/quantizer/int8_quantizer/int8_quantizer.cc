@@ -52,6 +52,10 @@ int Int8Quantizer::init(const IndexMeta &meta,
   auto kernels =
       get_distance_kernels(metric_from_name(metric_name), DataType::kInt8,
                            QuantizeType::kRecord, CpuArchType::kAuto);
+  if (!kernels.dist || !kernels.batch) {
+    LOG_ERROR("Unsupported metric %s for INT8 quantizer", metric_name.c_str());
+    return kErrUnsupported;
+  }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
   dp_query_preprocess_func_ = kernels.preprocess;

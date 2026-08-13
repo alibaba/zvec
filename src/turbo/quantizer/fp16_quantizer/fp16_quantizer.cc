@@ -34,13 +34,16 @@ int Fp16Quantizer::init(const IndexMeta &meta,
   if (metric_name == "Cosine") {
     extra_meta_size_ = EXTRA_META_SIZE_COSINE;
     meta_.set_extra_meta_size(extra_meta_size_);
-    meta_.set_reformer("Fp16Quantizer", 0, ailego::Params());
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
   auto kernels =
       get_distance_kernels(metric_from_name(metric_name), DataType::kFp16,
                            QuantizeType::kFp16, CpuArchType::kAuto);
+  if (!kernels.dist || !kernels.batch) {
+    LOG_ERROR("Unsupported metric %s for FP16 quantizer", metric_name.c_str());
+    return kErrUnsupported;
+  }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
 
@@ -81,7 +84,7 @@ int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   }
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_FP16, static_cast<uint32_t>(raw_dim),
+  ometa->set_meta(IndexMeta::DataType::DT_FP16, raw_dim,
                   static_cast<uint32_t>(type_), extra_meta_size_);
 
   return 0;

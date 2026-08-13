@@ -159,6 +159,8 @@ message VamanaIndexParams {
   // throughput at the cost of peak memory usage. Defaults to false.
   bool use_contiguous_memory = 6;
   bool use_id_map = 7;
+  // Run the standard alpha=1.0 pass followed by a full-graph pass at alpha.
+  bool two_pass_build = 8;
 }
 
 message FtsIndexParams {

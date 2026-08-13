@@ -1696,6 +1696,42 @@ zvec_error_code_t zvec_index_params_get_vamana_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_index_params_set_vamana_two_pass_build(
+    zvec_index_params_t *params, bool two_pass_build) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *vamana_params = dynamic_cast<zvec::VamanaIndexParams *>(cpp_params);
+  if (!vamana_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  vamana_params->set_two_pass_build(two_pass_build);
+  return ZVEC_OK;
+}
+
+bool zvec_index_params_get_vamana_two_pass_build(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return false;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *vamana_params =
+      dynamic_cast<const zvec::VamanaIndexParams *>(cpp_params);
+  if (!vamana_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return false;
+  }
+  return vamana_params->two_pass_build();
+}
+
 /**
  * @brief Set DiskANN-specific parameters
  * @param params Index parameters (must be DiskANN type)

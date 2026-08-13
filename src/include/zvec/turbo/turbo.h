@@ -122,8 +122,9 @@ enum class DataType {
 };
 
 enum class QuantizeType {
-  kDefault,
-  kUniform,  // Uniform uint7: codes are restricted to [0, 127].
+  // Explicit values: type ids are persisted in serialized headers
+  // (QuantizerSerHeader.quant_type); 0 was the retired kDefault.
+  kUniform = 1,  // Uniform uint7: codes are restricted to [0, 127].
   kRecord,
   kFp16,
   kFp32,
@@ -175,7 +176,7 @@ struct DistanceKernels {
 
 // Aggregate lookup: resolves dist/batch/preprocess in one pass so callers
 // cannot pair functions from different kernel families.
-DistanceKernels get_distance_kernels(
+ZVEC_TURBO_API DistanceKernels get_distance_kernels(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
@@ -189,13 +190,13 @@ ZVEC_TURBO_API UniformQuantizeFunc
 get_uniform_quantize_func(DataType data_type);
 
 // Returns rotator kernels dispatched for the current CPU.
-RotatorKernels get_rotator_kernels(
+ZVEC_TURBO_API RotatorKernels get_rotator_kernels(
     RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
 // and CPU arch.
-CodebookKernels get_pq_kernels(DataType data_type,
-                               QuantizeType quantize_type = QuantizeType::kPQ,
-                               CpuArchType cpu_arch_type = CpuArchType::kAuto);
+ZVEC_TURBO_API CodebookKernels get_pq_kernels(
+    DataType data_type, QuantizeType quantize_type = QuantizeType::kPQ,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo

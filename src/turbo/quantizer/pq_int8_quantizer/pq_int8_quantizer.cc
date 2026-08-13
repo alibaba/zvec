@@ -52,6 +52,9 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   } else {
     return kErrUnsupported;
   }
+  const QuantizeType input_quantize_type = input_data_type_ == DataType::kFp16
+                                               ? QuantizeType::kFp16
+                                               : QuantizeType::kFp32;
 
   uint32_t d = meta.dimension();
   original_dim_ = d;
@@ -93,19 +96,23 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   // space regardless of the search metric.  Data type matches input.
   l2_batch_fn_ =
       get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                              plain_qt, CpuArchType::kAuto);
+                              input_quantize_type, CpuArchType::kAuto);
 
   // Cosine = normalize + L2: after normalization cosine distance is monotonic
   // with squared-Euclidean, so the search LUT reuses SquaredEuclidean.
   if (meta_.metric_name() == "Cosine") {
     batch_fn_ =
         get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                plain_qt, CpuArchType::kAuto);
+                                input_quantize_type, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
   } else {
-    batch_fn_ = get_batch_distance_func(mt, input_data_type_, plain_qt,
-                                        CpuArchType::kAuto);
+    batch_fn_ = get_batch_distance_func(
+        mt, input_data_type_, input_quantize_type, CpuArchType::kAuto);
+  }
+
+  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ || !batch_fn_) {
+    return kErrUnsupported;
   }
 
   // Read optional training params (aligned with multi_chunk_cluster)
@@ -767,6 +774,13 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   } else {
     input_data_type_ = static_cast<DataType>(payload.input_data_type);
   }
+  if (input_data_type_ != DataType::kFp16 &&
+      input_data_type_ != DataType::kFp32) {
+    return kErrUnsupported;
+  }
+  const QuantizeType input_quantize_type = input_data_type_ == DataType::kFp16
+                                               ? QuantizeType::kFp16
+                                               : QuantizeType::kFp32;
 
   // Restore centroids (raw bytes in original data type).
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
@@ -801,19 +815,23 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   // L2-only batch distance for encoding (always L2 regardless of metric).
   l2_batch_fn_ =
       get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                              plain_qt, CpuArchType::kAuto);
+                              input_quantize_type, CpuArchType::kAuto);
 
   // Metric-aware batch distance for search LUT.  Cosine = normalize + L2,
   // so it uses SquaredEuclidean (same as encoding), not IP.
   if (meta_.metric_name() == "Cosine") {
     batch_fn_ =
         get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                plain_qt, CpuArchType::kAuto);
+                                input_quantize_type, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
   } else {
-    batch_fn_ =
-        get_batch_distance_func(metric_from_name(meta_.metric_name()),
-                                input_data_type_, plain_qt, CpuArchType::kAuto);
+    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
+                                        input_data_type_, input_quantize_type,
+                                        CpuArchType::kAuto);
+  }
+
+  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ || !batch_fn_) {
+    return kErrUnsupported;
   }
 
   // Set output meta: the quantized representation is INT8 codes with

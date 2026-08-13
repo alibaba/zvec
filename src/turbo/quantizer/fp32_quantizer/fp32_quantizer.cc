@@ -42,6 +42,10 @@ int Fp32Quantizer::init(const IndexMeta &meta,
   auto kernels =
       get_distance_kernels(metric_from_name(metric_name), DataType::kFp32,
                            QuantizeType::kFp32, CpuArchType::kAuto);
+  if (!kernels.dist || !kernels.batch) {
+    LOG_ERROR("Unsupported metric %s for FP32 quantizer", metric_name.c_str());
+    return kErrUnsupported;
+  }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
 

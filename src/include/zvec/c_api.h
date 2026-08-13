@@ -1095,6 +1095,24 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_vamana_params(
     bool *out_use_contiguous_memory);
 
 /**
+ * @brief Enable or disable Vamana two-pass graph construction
+ * @param params Index parameters (must be VAMANA type)
+ * @param two_pass_build Whether to run the full-graph second construction pass
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_vamana_two_pass_build(zvec_index_params_t *params,
+                                            bool two_pass_build);
+
+/**
+ * @brief Get whether Vamana two-pass graph construction is enabled
+ * @param params Index parameters (must be VAMANA type)
+ * @return true if two-pass construction is enabled, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_index_params_get_vamana_two_pass_build(const zvec_index_params_t *params);
+
+/**
  * @brief Set DiskANN specific parameters
  * @param params Index parameters (must be DiskANN type)
  * @param max_degree Graph connectivity (max degree of Vamana graph)

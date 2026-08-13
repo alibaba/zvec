@@ -125,7 +125,7 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kInnerProduct, scalar::inner_product_int4_distance,
      scalar::inner_product_int4_batch_distance, nullptr},
 
-    // --- uniform-quantized uint7 (AVX512-VNNI only) ---
+    // --- uniform-quantized uint7 (stored as int8; AVX512-VNNI only) ---
     {QuantizeType::kUniform, DataType::kInt8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::uniform_squared_euclidean_uint7_distance,
@@ -245,18 +245,18 @@ CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
                                CpuArchType cpu_arch_type) {
   (void)data_type;
   if (quantize_type == QuantizeType::kPQ) {
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+    if (CpuSupports(CpuArchType::kAVX512) &&
         IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
       return {avx512::pq_adc_int8_distance_avx512,
               avx512::pq_sdc_int8_distance_avx512,
               avx512::pq_adc_int8_batch_distance_avx512};
     }
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
+    if (CpuSupports(CpuArchType::kAVX2) &&
         IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
       return {avx2::pq_adc_int8_distance_avx2, avx2::pq_sdc_int8_distance_avx2,
               avx2::pq_adc_int8_batch_distance_avx2};
     }
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.NEON &&
+    if (CpuSupports(CpuArchType::kNEON) &&
         IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
       return {neon::pq_adc_int8_distance_neon, neon::pq_sdc_int8_distance_neon,
               neon::pq_adc_int8_batch_distance_neon};

@@ -405,6 +405,9 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
   }
+  if (!omit_empty_value || two_pass_build) {
+    json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
+  }
   return json_obj;
 }
 
@@ -445,6 +448,7 @@ bool VamanaIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, max_occlusion_size);
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
 
   return true;
 }

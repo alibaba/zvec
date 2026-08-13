@@ -30,6 +30,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
@@ -1052,6 +1053,117 @@ TEST(IndexInterface, Merge) {
   }
 }
 
+TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
+  constexpr uint32_t kDimension = 16;
+  constexpr uint32_t kVectorCount = 64;
+  const std::string source_name{"vamana_two_pass_source.index"};
+  const std::string target_name{"vamana_two_pass_target.index"};
+
+  auto remove_files = [](const std::string &path) {
+    zvec::test_util::RemoveTestFiles(path);
+  };
+  remove_files(source_name);
+  remove_files(target_name);
+
+  auto source_param = FlatIndexParamBuilder()
+                          .WithMetricType(MetricType::kL2sq)
+                          .WithDataType(DataType::DT_FP32)
+                          .WithDimension(kDimension)
+                          .WithIsSparse(false)
+                          .Build();
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_EQ(
+      0, source->Open(source_name, {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<std::vector<float>> vectors(kVectorCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[i][d] = static_cast<float>((i * 17 + d * 13) % 101);
+    }
+    VectorData data{DenseVector{vectors[i].data()}};
+    ASSERT_EQ(0, source->Add(data, i));
+  }
+
+  auto run_merge = [&](bool two_pass_build) {
+    remove_files(target_name);
+    auto target_param = VamanaIndexParamBuilder()
+                            .WithMetricType(MetricType::kL2sq)
+                            .WithDataType(DataType::DT_FP32)
+                            .WithDimension(kDimension)
+                            .WithIsSparse(false)
+                            .WithMaxDegree(16)
+                            .WithSearchListSize(32)
+                            .WithAlpha(1.5f)
+                            .WithTwoPassBuild(two_pass_build)
+                            .Build();
+    auto target = IndexFactory::CreateAndInitIndex(*target_param);
+    ASSERT_NE(nullptr, target);
+    ASSERT_EQ(0, target->Open(target_name,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(0, target->Merge({source}, IndexFilter()));
+    ASSERT_EQ(kVectorCount, target->GetDocCount());
+
+    const uint32_t expected_refine_passes = two_pass_build ? 1U : 0U;
+    const uint32_t expected_build_passes = two_pass_build ? 2U : 1U;
+    const float expected_initial_alpha = two_pass_build ? 1.0f : 1.5f;
+
+    uint32_t refine_pass_count = (std::numeric_limits<uint32_t>::max)();
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_refine_pass_count", &refine_pass_count));
+    EXPECT_EQ(expected_refine_passes, refine_pass_count);
+
+    uint32_t build_pass_count = (std::numeric_limits<uint32_t>::max)();
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_build_pass_count", &build_pass_count));
+    EXPECT_EQ(expected_build_passes, build_pass_count);
+
+    float initial_build_alpha = 0.0f;
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_initial_build_alpha", &initial_build_alpha));
+    EXPECT_FLOAT_EQ(expected_initial_alpha, initial_build_alpha);
+
+    // Finalization is idempotent: persistence must not rerun the second pass.
+    auto *vamana_streamer = dynamic_cast<zvec::core::VamanaStreamer *>(
+        target->index_searcher().get());
+    ASSERT_NE(nullptr, vamana_streamer);
+    ASSERT_EQ(0, vamana_streamer->finalize_build());
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_refine_pass_count", &refine_pass_count));
+    EXPECT_EQ(expected_refine_passes, refine_pass_count);
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_build_pass_count", &build_pass_count));
+    EXPECT_EQ(expected_build_passes, build_pass_count);
+
+    ASSERT_EQ(0, target->Flush());
+    ASSERT_EQ(0, target->Close());
+
+    auto reopened = IndexFactory::CreateAndInitIndex(*target_param);
+    ASSERT_NE(nullptr, reopened);
+    ASSERT_EQ(0, reopened->Open(target_name,
+                                {StorageOptions::StorageType::kMMAP, false}));
+    auto query_param = VamanaQueryParamBuilder()
+                           .with_topk(10)
+                           .with_fetch_vector(false)
+                           .with_ef_search(64)
+                           .build();
+    VectorData query{DenseVector{vectors[7].data()}};
+    SearchResult result;
+    ASSERT_EQ(0, reopened->Search(query, query_param, &result));
+    ASSERT_FALSE(result.doc_list_.empty());
+    EXPECT_TRUE(std::any_of(result.doc_list_.begin(), result.doc_list_.end(),
+                            [](const auto &doc) { return doc.key() == 7U; }));
+    ASSERT_EQ(0, reopened->Close());
+  };
+
+  run_merge(false);
+  run_merge(true);
+
+  ASSERT_EQ(0, source->Close());
+  remove_files(source_name);
+  remove_files(target_name);
+}
 
 TEST(IndexInterface, Serialize) {
   {
@@ -1226,10 +1338,12 @@ TEST(IndexInterface, Serialize) {
     param->search_list_size = 200;
     param->alpha = 1.5f;
     param->use_contiguous_memory = true;
+    param->two_pass_build = true;
 
     auto json_str = param->SerializeToJson();
     std::cout << "vamana contiguous -- json: " << json_str << std::endl;
     ASSERT_TRUE(json_str.find("use_contiguous_memory") != std::string::npos);
+    ASSERT_TRUE(json_str.find("two_pass_build") != std::string::npos);
 
     auto deserialized_param =
         IndexFactory::DeserializeIndexParamFromJson(json_str);
@@ -1238,6 +1352,7 @@ TEST(IndexInterface, Serialize) {
         std::dynamic_pointer_cast<VamanaIndexParam>(deserialized_param);
     ASSERT_NE(nullptr, vamana_param.get());
     ASSERT_TRUE(vamana_param->use_contiguous_memory);
+    ASSERT_TRUE(vamana_param->two_pass_build);
     ASSERT_EQ(48, vamana_param->max_degree);
     ASSERT_EQ(200, vamana_param->search_list_size);
     ASSERT_FLOAT_EQ(1.5f, vamana_param->alpha);
