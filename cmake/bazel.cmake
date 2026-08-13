@@ -2430,7 +2430,14 @@ endfunction()
 
 ## Retrieve a version string from GIT
 function(git_version _RESULT _SOURCES_DIR)
-  find_package(Git REQUIRED)
+  # Git is optional: source tarballs/zips have no repository at all, and such
+  # builds must not fail just because the version cannot be determined.
+  find_package(Git QUIET)
+
+  if(NOT Git_FOUND)
+    set(${_RESULT} "" PARENT_SCOPE)
+    return()
+  endif()
 
   if(NOT IS_ABSOLUTE ${_SOURCES_DIR})
     get_filename_component(_SOURCES_DIR ${_SOURCES_DIR} ABSOLUTE)

@@ -30,7 +30,6 @@ cc_directory(utility)
 cc_directory(interface)
 cc_directory(mixed_reducer)
 
-git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 
 # Remove algorithm/hnsw_rabitq implementation files if not supported.
@@ -77,5 +76,5 @@ cc_library(
     SRCS ${ALL_CORE_SRCS}
     LIBS ${ZVEC_CORE_LIBS}
     INCS . ${PROJECT_ROOT_DIR}/src/core
-    VERSION "${GIT_SRCS_VER}"
+    VERSION "${ZVEC_VERSION_STRING}"
 )
