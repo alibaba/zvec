@@ -36,9 +36,7 @@ using namespace zvec::core;
 //! SDC (centroid-to-centroid distance table).
 class PqInt8Quantizer : public Quantizer {
  public:
-  PqInt8Quantizer() {
-    type_ = QuantizeType::kPQ;
-  }
+  PqInt8Quantizer() : Quantizer(QuantizeType::kPQ) {}
 
   ~PqInt8Quantizer() override = default;
 
