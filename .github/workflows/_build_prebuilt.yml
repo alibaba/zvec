@@ -64,7 +64,12 @@ jobs:
         with:
           submodules: recursive
 
+      # Skip actions/setup-python on Linux: it downloads a CPython built for
+      # the host glibc (2.38), which won't run inside the manylinux_2_28
+      # container (glibc 2.28).  Instead, use the manylinux-bundled CPython
+      # at /opt/python/cp3*/bin (which has pip) — see the install step below.
       - name: Set up Python
+        if: runner.os != 'Linux'
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -72,8 +77,16 @@ jobs:
       - name: Install dependencies (Unix)
         if: runner.os != 'Windows'
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install \
+          # Use manylinux-bundled CPython (has pip; system python3 does not).
+          # Also update GITHUB_PATH so cmake/ninja installed via pip are
+          # available in subsequent steps.
+          PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1)
+          if [ -n "$PYBIN" ]; then
+            echo "$PYBIN" >> "$GITHUB_PATH"
+            export PATH="$PYBIN:$PATH"
+          fi
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
             pybind11==3.0 \
             cmake==3.30.0 \
             ninja==1.11.1
