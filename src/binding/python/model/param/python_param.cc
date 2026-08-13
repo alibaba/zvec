@@ -34,6 +34,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "HNSW";
     case IndexType::HNSW_RABITQ:
       return "HNSW_RABITQ";
+    case IndexType::IVF_RABITQ:
+      return "IVF_RABITQ";
     case IndexType::DISKANN:
       return "DISKANN";
     case IndexType::VAMANA:
@@ -257,8 +259,8 @@ Controls the tokenizer pipeline used during indexing and querying.
 
 Attributes:
     type (IndexType): Always ``IndexType.FTS``.
-    tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
-        "whitespace").
+    tokenizer_name (str): Name of the tokenizer (one of "standard", "ngram",
+        "jieba", "whitespace").
         Default is "standard".
     filters (list[str]): List of token filter names applied after tokenization.
         Supported values include "lowercase", "ascii_folding", and "stemmer".
@@ -268,6 +270,12 @@ Attributes:
         Tokenizers:
             standard:
                 - "max_token_length" (positive integer).
+            ngram:
+                - "ngram_min" (positive integer, default 2).
+                - "ngram_max" (positive integer, default 2).
+                - "token_chars" (array of "letter", "digit", "whitespace",
+                  "punctuation", "symbol"; default [] keeps all valid UTF-8
+                  characters). custom_token_chars is not supported.
             jieba:
                 - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
                   hmm_model.utf8).
@@ -316,6 +324,12 @@ Args:
         Tokenizers:
             standard:
                 - "max_token_length" (positive integer).
+            ngram:
+                - "ngram_min" (positive integer, default 2).
+                - "ngram_max" (positive integer, default 2).
+                - "token_chars" (array of "letter", "digit", "whitespace",
+                  "punctuation", "symbol"; default [] keeps all valid UTF-8
+                  characters). custom_token_chars is not supported.
             jieba:
                 - "jieba_dict_dir".
                 - "user_dict_path".
@@ -702,6 +716,89 @@ Examples:
             return std::make_shared<HnswRabitqIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<int>(), t[4].cast<int>(), t[5].cast<int>());
+          }));
+
+  // binding ivf rabitq index params
+  py::class_<IvfRabitqIndexParams, VectorIndexParams,
+             std::shared_ptr<IvfRabitqIndexParams>>
+      ivf_rabitq_params(m, "IvfRabitqIndexParam", R"pbdoc(
+Parameters for configuring an IVF index with RaBitQ quantization.
+
+IVF partitions the vector space into inverted lists. RaBitQ compresses vectors
+inside each list for faster scanning with lower memory usage.
+
+Attributes:
+    metric_type (MetricType): Distance metric used for similarity computation.
+        Default is ``MetricType.IP`` (inner product).
+    nlist (int): Number of IVF cluster centers. Default is 1024.
+    total_bits (int): Total bits for RaBitQ quantization. Default is 7.
+    sample_count (int): Sample count for training. 0 means use all vectors.
+
+Examples:
+    >>> from zvec.typing import MetricType
+    >>> params = IvfRabitqIndexParam(
+    ...     metric_type=MetricType.COSINE,
+    ...     nlist=1024,
+    ...     total_bits=7,
+    ...     sample_count=10000
+    ... )
+    >>> print(params.nlist)
+    1024
+)pbdoc");
+  ivf_rabitq_params
+      .def(py::init<MetricType, int, int, int>(),
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("nlist") = core_interface::kDefaultIvfRabitqNlist,
+           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
+           py::arg("sample_count") = 0)
+      .def_property_readonly("nlist", &IvfRabitqIndexParams::nlist,
+                             "int: Number of IVF cluster centers.")
+      .def_property_readonly("total_bits", &IvfRabitqIndexParams::total_bits,
+                             "int: Total bits for RaBitQ quantization.")
+      .def_property_readonly("sample_count",
+                             &IvfRabitqIndexParams::sample_count,
+                             "int: Sample count for RaBitQ training.")
+      .def(
+          "to_dict",
+          [](const IvfRabitqIndexParams &self) -> py::dict {
+            py::dict dict;
+            dict["type"] = index_type_to_string(self.type());
+            dict["metric_type"] = metric_type_to_string(self.metric_type());
+            dict["quantize_type"] =
+                quantize_type_to_string(self.quantize_type());
+            dict["nlist"] = self.nlist();
+            dict["total_bits"] = self.total_bits();
+            dict["sample_count"] = self.sample_count();
+            return dict;
+          },
+          "Convert to dictionary with all fields")
+      .def(
+          "__repr__",
+          [](const IvfRabitqIndexParams &self) -> std::string {
+            return "{"
+                   "\"type\":\"" +
+                   index_type_to_string(self.type()) +
+                   "\", \"metric_type\":\"" +
+                   metric_type_to_string(self.metric_type()) +
+                   "\", \"nlist\":" + std::to_string(self.nlist()) +
+                   ", \"total_bits\":" + std::to_string(self.total_bits()) +
+                   ", \"sample_count\":" + std::to_string(self.sample_count()) +
+                   ", \"quantize_type\":\"" +
+                   quantize_type_to_string(self.quantize_type()) + "\"}";
+          })
+      .def(py::pickle(
+          [](const IvfRabitqIndexParams &self) {
+            return py::make_tuple(self.metric_type(), self.nlist(),
+                                  self.total_bits(), self.sample_count());
+          },
+          [](py::tuple t) {
+            if (t.size() != 4) {
+              throw std::runtime_error(
+                  "Invalid state for IvfRabitqIndexParams");
+            }
+            return std::make_shared<IvfRabitqIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<int>());
           }));
 
   // binding vamana index params
@@ -1460,6 +1557,91 @@ Args:
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            return obj;
+          }));
+
+  // binding ivf rabitq query params
+  py::class_<IvfRabitqQueryParams, QueryParams,
+             std::shared_ptr<IvfRabitqQueryParams>>
+      ivf_rabitq_query_params(m, "IvfRabitqQueryParam", R"pbdoc(
+Query parameters for IVF RaBitQ index.
+
+Controls how many IVF clusters (`nprobe`) to visit during search.
+
+Attributes:
+    type (IndexType): Always ``IndexType.IVF_RABITQ``.
+    nprobe (int): Number of closest clusters to search.
+        Higher values improve recall but increase latency.
+        Default is 10.
+    radius (float): Search radius for range queries. Default is 0.0.
+    is_linear (bool): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float): Candidate expansion factor used by the refiner.
+        Default is 10.0.
+
+Examples:
+    >>> params = IvfRabitqQueryParam(nprobe=20)
+    >>> print(params.nprobe)
+    20
+)pbdoc");
+  ivf_rabitq_query_params
+      .def(py::init<int, float, bool, bool, float>(),
+           py::arg("nprobe") = core_interface::kDefaultIvfRabitqNprobe,
+           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
+           R"pbdoc(
+Constructs an IvfRabitqQueryParam instance.
+
+Args:
+    nprobe (int, optional): Number of inverted lists to probe during search.
+        Higher values improve accuracy. Defaults to 10.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float, optional): Candidate expansion factor used by the
+        refiner. Default is 10.0.
+)pbdoc")
+      .def_property_readonly(
+          "nprobe",
+          [](const IvfRabitqQueryParams &self) -> int { return self.nprobe(); },
+          "int: Number of inverted lists to search during IVF RaBitQ query.")
+      .def_property_readonly(
+          "scale_factor",
+          [](const IvfRabitqQueryParams &self) -> float {
+            return self.scale_factor();
+          },
+          "float: Candidate expansion factor used by the refiner.")
+      .def("__repr__",
+           [](const IvfRabitqQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"nprobe\":" + std::to_string(self.nprobe()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
+           })
+      .def(py::pickle(
+          [](const IvfRabitqQueryParams &self) {
+            return py::make_tuple(self.nprobe(), self.radius(),
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.scale_factor());
+          },
+          [](py::tuple t) {
+            if (t.size() != 4 && t.size() != 5) {
+              throw std::runtime_error(
+                  "Invalid state for IvfRabitqQueryParams");
+            }
+            auto obj = std::make_shared<IvfRabitqQueryParams>(t[0].cast<int>());
+            obj->set_radius(t[1].cast<float>());
+            obj->set_is_linear(t[2].cast<bool>());
+            obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() == 5) {
+              obj->set_scale_factor(t[4].cast<float>());
+            }
             return obj;
           }));
 

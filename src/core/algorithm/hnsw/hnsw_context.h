@@ -143,6 +143,12 @@ class HnswContext : public IndexContext {
     return vector_source_;
   }
 
+  inline void reset_query_raw(const void *query, const IndexMeta &meta) {
+    dc_.set_dim(meta.dimension());
+    dc_.reset_query(query);
+    dc_.clear_compare_cnt();
+  }
+
   inline void resize_results(size_t size) {
     if (group_by_search()) {
       group_results_.resize(size);
@@ -171,7 +177,7 @@ class HnswContext : public IndexContext {
     for (size_t i = 0; i < heap.size(); ++i) {
       node_id_t id = heap[i].first;
       dist_t dist = dc_.dist(id);
-      topk_heap_.emplace_back(id, dist);
+      topk_heap_.emplace(id, dist);
     }
   }
 
@@ -273,10 +279,14 @@ class HnswContext : public IndexContext {
     }
   }
 
-  inline void reset_query(const void *query) {
+  //! Reset the query and apply the index metric query preprocess. The meta
+  //! describes the space the query lives in, so its dimension drives the
+  //! distance computation
+  inline void reset_query(const void *query, const IndexMeta &meta) {
+    dc_.set_dim(meta.dimension());
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
         query_preprocess_func != nullptr) {
-      size_t dim = dc_.dimension();
+      size_t dim = meta.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);
       query_preprocess_func(preprocess_buffer_.data(), dim);
@@ -397,6 +407,7 @@ class HnswContext : public IndexContext {
     set_group_params(0, 0);
     reset_group_by();
     set_vector_source(nullptr);
+    dc_.set_provider(nullptr);
   }
 
   inline std::map<std::string, TopkHeap> &group_topk_heaps() {
@@ -500,10 +511,16 @@ class HnswContext : public IndexContext {
     return debug_mode_;
   }
 
-  inline void update_dist_caculator_distance(
+  //! Bind the space distances are computed in: the metric functions and
+  //! the provider that supplies vectors by node id. A null provider makes
+  //! distances use the vectors stored in the entity. Callers must pass
+  //! both, so a build space cannot leak into a search by omission
+  inline void bind_dist_space(
       const IndexMetric::MatrixDistance &distance,
-      const IndexMetric::MatrixBatchDistance &batch_distance) {
+      const IndexMetric::MatrixBatchDistance &batch_distance,
+      IndexProvider::Pointer provider) {
     dc_.update_distance(distance, batch_distance);
+    dc_.set_provider(std::move(provider));
   }
 
   //! Get topk

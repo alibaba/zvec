@@ -18,8 +18,7 @@
 
 namespace zvec::turbo::scalar {
 
-// Compute squared euclidean distance between a single quantized FP16
-// vector pair.
+// Compute squared euclidean distance between a single FP16 vector pair.
 void squared_euclidean_fp16_distance(const void *a, const void *b, size_t dim,
                                      float *distance);
 

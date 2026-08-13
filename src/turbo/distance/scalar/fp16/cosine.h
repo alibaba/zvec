@@ -18,8 +18,8 @@
 
 namespace zvec::turbo::scalar {
 
-// Compute cosine distance (negative inner product after normalization)
-// between a single quantized FP16 vector pair.
+// Compute cosine distance between a single FP16 vector pair.
+// Returns 1 - dot(a, b).
 void cosine_fp16_distance(const void *a, const void *b, size_t dim,
                           float *distance);
 

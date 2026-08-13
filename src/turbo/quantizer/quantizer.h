@@ -38,7 +38,9 @@ struct QuantizerSerHeader {
   uint32_t dim;           // original dim (sanity check)
   uint32_t metric;        // MetricType  (sanity check)
   uint32_t payload_size;  // bytes following the header
-  uint32_t reserved;      // 0, for future use / alignment
+  uint16_t data_type;     // DataType of the stored codes: distinguishes e.g.
+                          // int8 vs int4 PQ blobs sharing quant_type == kPQ
+  uint16_t reserved;      // 0, for future use / alignment
 };
 static_assert(sizeof(QuantizerSerHeader) == 24,
               "QuantizerSerHeader must be 24 bytes");

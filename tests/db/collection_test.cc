@@ -14,6 +14,8 @@
 
 #include "zvec/db/collection.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -23,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -2917,6 +2920,250 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
   }
 }
 
+TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
+  // Regression: Optimize() no longer blocks writes/reads for its whole
+  // duration. Insert, Fetch and Query must all make progress during the
+  // long compact phase; only the seal/commit phases are exclusive.
+  int initial_doc_count = 20000;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, initial_doc_count, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  std::atomic<bool> optimize_done{false};
+  Status optimize_status;
+  std::thread optimizer([&] {
+    optimize_status = collection->Optimize(OptimizeOptions{0});
+    optimize_done.store(true);
+  });
+
+  // let the optimizer reach the compact phase
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  // worker failures are collected here and asserted after joins
+  struct WorkerResult {
+    int ops_during_optimize{0};
+    int errors{0};
+    std::string first_error;
+  };
+
+  auto record_error = [](WorkerResult *r, const std::string &msg) {
+    if (r->errors++ == 0) {
+      r->first_error = msg;
+    }
+  };
+
+  // writer: keeps inserting batches while Optimize is running
+  WorkerResult writer_result;
+  int batch_size = 100;
+  int inserted = 0;
+  uint64_t next_doc_id = initial_doc_count;
+  std::thread writer([&] {
+    while (!optimize_done.load() && inserted < 100000) {
+      bool started_during_optimize = !optimize_done.load();
+      std::vector<Doc> docs;
+      for (int i = 0; i < batch_size; i++) {
+        docs.push_back(TestHelper::CreateDoc(next_doc_id + i, *schema));
+      }
+      auto res = collection->Insert(docs);
+      if (!res.has_value()) {
+        record_error(&writer_result, res.error().message());
+        break;
+      }
+      for (auto &st : res.value()) {
+        if (!st.ok()) {
+          record_error(&writer_result, st.message());
+        }
+      }
+      // advance only on full batch success
+      if (writer_result.errors == 0) {
+        next_doc_id += batch_size;
+        inserted += batch_size;
+      } else {
+        break;
+      }
+      if (started_during_optimize) {
+        writer_result.ops_during_optimize++;
+      }
+    }
+  });
+
+  // fetcher: point reads must return correct data throughout, including
+  // while Optimize commits its result
+  WorkerResult fetch_result;
+  std::thread fetcher([&] {
+    auto expect_doc = TestHelper::CreateDoc(0, *schema);
+    while (!optimize_done.load() && fetch_result.ops_during_optimize < 100000) {
+      bool started_during_optimize = !optimize_done.load();
+      auto fetched = collection->Fetch({expect_doc.pk()});
+      if (!fetched.has_value()) {
+        record_error(&fetch_result, fetched.error().message());
+        break;
+      }
+      auto iter = fetched.value().find(expect_doc.pk());
+      if (iter == fetched.value().end() || iter->second == nullptr ||
+          *iter->second != expect_doc) {
+        record_error(&fetch_result, "fetched doc mismatch");
+      } else if (started_during_optimize) {
+        fetch_result.ops_during_optimize++;
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  // querier: vector searches must keep succeeding while segments are being
+  // compacted
+  WorkerResult query_result;
+  std::thread querier([&] {
+    auto query_doc = TestHelper::CreateDoc(1, *schema);
+    auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+    if (!vector.has_value()) {
+      record_error(&query_result, "query vector missing");
+      return;
+    }
+    while (!optimize_done.load() && query_result.ops_during_optimize < 100000) {
+      bool started_during_optimize = !optimize_done.load();
+      SearchQuery query;
+      query.topk_ = 10;
+      query.target_.field_name_ = "dense_fp32";
+      query.target_.set_vector(
+          std::string(reinterpret_cast<const char *>(vector.value().data()),
+                      vector.value().size() * sizeof(float)));
+      auto result = collection->Query(query);
+      if (!result.has_value()) {
+        // Tolerate only the known transient failure: a doc admitted by
+        // the writing segment's streaming vector index may not yet be
+        // visible in its forward store (pre-existing Insert/Query race,
+        // unrelated to Optimize). Any other error is a real regression.
+        const auto &error_msg = result.error().message();
+        if (error_msg.find("fetch table failed") == std::string::npos) {
+          record_error(&query_result, error_msg);
+          break;
+        }
+        continue;
+      }
+      if (result.value().empty()) {
+        record_error(&query_result, "query returned no results");
+      } else if (started_during_optimize) {
+        query_result.ops_during_optimize++;
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  optimizer.join();
+  writer.join();
+  fetcher.join();
+  querier.join();
+
+  ASSERT_TRUE(optimize_status.ok());
+  ASSERT_EQ(writer_result.errors, 0) << writer_result.first_error;
+  ASSERT_EQ(fetch_result.errors, 0) << fetch_result.first_error;
+  ASSERT_EQ(query_result.errors, 0) << query_result.first_error;
+
+  // if any had been blocked for the whole Optimize, no ops could have
+  // completed while Optimize was still running
+  ASSERT_GE(writer_result.ops_during_optimize, 2);
+  ASSERT_GE(fetch_result.ops_during_optimize, 2);
+  ASSERT_GE(query_result.ops_during_optimize, 2);
+
+  auto stats_result = collection->Stats();
+  ASSERT_TRUE(stats_result.has_value());
+  auto stats = stats_result.value();
+  ASSERT_EQ(stats.doc_count, (uint64_t)(initial_doc_count + inserted));
+
+  // once quiescent, a vector search must return the full topk
+  {
+    auto query_doc = TestHelper::CreateDoc(1, *schema);
+    auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vector.has_value());
+    SearchQuery query;
+    query.topk_ = 10;
+    query.target_.field_name_ = "dense_fp32";
+    query.target_.set_vector(
+        std::string(reinterpret_cast<const char *>(vector.value().data()),
+                    vector.value().size() * sizeof(float)));
+    auto result = collection->Query(query);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), (size_t)query.topk_);
+  }
+
+  // spot-check data written before, during and after the optimize; docs
+  // beyond initial_doc_count only exist when the writer actually made
+  // progress during Optimize, so guard against a no-insert run
+  std::vector<uint64_t> spot_check_ids{0, (uint64_t)initial_doc_count - 1};
+  if (inserted > 0) {
+    spot_check_ids.push_back((uint64_t)initial_doc_count);
+    spot_check_ids.push_back(next_doc_id - 1);
+  }
+  for (uint64_t doc_id : spot_check_ids) {
+    auto expect_doc = TestHelper::CreateDoc(doc_id, *schema);
+    auto result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+    auto doc = result.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+}
+
+TEST_F(CollectionTest, Feature_Optimize_Superseded_Index_File_Removed) {
+  namespace fs = std::filesystem;
+  int doc_count = 1000;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  ASSERT_TRUE(collection->Optimize(OptimizeOptions{0}).ok());
+
+  auto stats_result = collection->Stats();
+  ASSERT_TRUE(stats_result.has_value());
+  auto stats = stats_result.value();
+  ASSERT_EQ(stats.doc_count, (uint64_t)doc_count);
+  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+  // Vector index build supersedes the flat vector file from the segment
+  // dump. The commit phase eagerly removes the superseded file under the
+  // exclusive schema lock, leaving exactly one index file per column.
+  // Walk all segment directories (segment ids are an implementation
+  // detail) instead of assuming the persisted segment lives in "/0".
+  int dense_fp32_index_files = 0;
+  for (const auto &entry : fs::recursive_directory_iterator(col_path)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    auto name = entry.path().filename().string();
+    if (name.rfind("dense_fp32.index.", 0) == 0) {
+      dense_fp32_index_files++;
+    }
+  }
+  ASSERT_EQ(dense_fp32_index_files, 1);
+
+  // the removed file must not be one the collection still needs: a fresh
+  // open must read every doc correctly through the new index
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = std::move(result.value());
+
+  for (int i : {0, doc_count / 2, doc_count - 1}) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto fetched = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetched.has_value());
+    ASSERT_EQ(fetched.value().count(expect_doc.pk()), 1);
+    auto doc = fetched.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+}
+
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   auto run_repeated_optimize_test = [&](bool enable_mmap,
                                         IndexParams::Ptr index_params) {
@@ -3097,6 +3344,9 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
                                                              256, 16, 200, 0));
+    run_repeated_optimize_test(
+        enable_mmap,
+        std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 32, 7, 0));
 #endif
   }
 }
@@ -5625,6 +5875,109 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
   // TODO: cosine dense not match, may be accuracy issue
   // func(MetricType::COSINE, 0);
   // func(MetricType::COSINE, 4);
+}
+#endif
+
+#if RABITQ_SUPPORTED
+TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
+  auto func = [](MetricType metric_type, int concurrency) {
+    FileHelper::RemoveDirectory(col_path);
+
+    int doc_count = 1000;
+
+    // create simple schema with only FP32 dense vector for IVF_RABITQ
+    auto schema = std::make_shared<CollectionSchema>("demo");
+    schema->set_max_doc_count_per_segment(MAX_DOC_COUNT_PER_SEGMENT);
+
+    auto ivf_rabitq_params =
+        std::make_shared<IvfRabitqIndexParams>(metric_type, 32, 7, 0);
+    schema->add_field(std::make_shared<FieldSchema>(
+        "dense_fp32", DataType::VECTOR_FP32, 128, false, ivf_rabitq_params));
+
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
+
+    auto check_doc = [&]() {
+      for (int i = 0; i < doc_count; i++) {
+        auto expect_doc = TestHelper::CreateDoc(i, *schema);
+        auto result = collection->Fetch({expect_doc.pk()});
+        ASSERT_TRUE(result.has_value());
+        ASSERT_EQ(result.value().size(), 1);
+        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+        auto doc = result.value()[expect_doc.pk()];
+        ASSERT_NE(doc, nullptr);
+        if (metric_type != MetricType::COSINE) {
+          ASSERT_EQ(*doc, expect_doc)
+              << "doc: " << doc->to_detail_string()
+              << "\nexpect_doc: " << expect_doc.to_detail_string();
+        }
+      }
+    };
+
+    auto check_query_with_vector = [&]() {
+      auto query_doc = TestHelper::CreateDoc(1, *schema);
+      auto query_vector = query_doc.get<std::vector<float>>("dense_fp32");
+      ASSERT_TRUE(query_vector.has_value());
+
+      SearchQuery query;
+      query.topk_ = 10;
+      query.include_vector_ = true;
+      query.target_.field_name_ = "dense_fp32";
+      query.target_.set_vector(
+          std::string(reinterpret_cast<const char *>(query_vector->data()),
+                      query_vector->size() * sizeof(float)));
+
+      auto result = collection->Query(query);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(10, result->size());
+      for (const auto &doc : result.value()) {
+        ASSERT_TRUE(doc->has("dense_fp32"));
+        auto actual_vector = doc->get<std::vector<float>>("dense_fp32");
+        ASSERT_TRUE(actual_vector.has_value());
+        if (metric_type != MetricType::COSINE) {
+          auto expected_doc = TestHelper::CreateDoc(
+              TestHelper::ExtractDocId(doc->pk()), *schema);
+          auto expected_vector =
+              expected_doc.get<std::vector<float>>("dense_fp32");
+          ASSERT_TRUE(expected_vector.has_value());
+          EXPECT_EQ(expected_vector.value(), actual_vector.value());
+        }
+      }
+    };
+
+    check_doc();
+
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+
+    auto s = collection->Optimize(OptimizeOptions{concurrency});
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+    check_doc();
+    check_query_with_vector();
+
+    collection.reset();
+    auto result = Collection::Open(col_path, options);
+    ASSERT_TRUE(result.has_value());
+    collection = std::move(result.value());
+
+    check_doc();
+    check_query_with_vector();
+  };
+
+  func(MetricType::L2, 0);
+  func(MetricType::L2, 4);
+  func(MetricType::IP, 0);
+  func(MetricType::IP, 4);
+  func(MetricType::COSINE, 0);
+  func(MetricType::COSINE, 4);
 }
 #endif
 

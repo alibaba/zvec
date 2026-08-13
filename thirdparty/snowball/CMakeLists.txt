@@ -1,95 +1,95 @@
-include(ExternalProject)
-
 set(SNOWBALL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/snowball-3.1.1")
 set(SNOWBALL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/snowball-codegen")
-set(SNOWBALL_HOST_CC "" CACHE STRING
-    "Optional host C compiler for building the Snowball code generator")
-find_program(_SNOWBALL_MAKE NAMES make gmake REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Parse modules.txt → UTF-8 algorithm list
+# Build the Snowball compiler as a native tool. When cross-compiling, it must
+# be built directly with a host compiler instead of the target toolchain.
 # ---------------------------------------------------------------------------
-set(_snowball_gen_srcs)
-set(_snowball_gen_hdrs)
-set(_snowball_make_targets)
-file(STRINGS "${SNOWBALL_SOURCE_DIR}/libstemmer/modules.txt" _lines)
-foreach(_line IN LISTS _lines)
-  if(_line MATCHES "^#" OR _line MATCHES "^[ \t]*$")
-    continue()
-  endif()
-  if(_line MATCHES "^([a-z_]+)[ \t]+([A-Z_0-9,]+)")
-    set(_alg "${CMAKE_MATCH_1}")
-    list(APPEND _snowball_gen_srcs
-      "${SNOWBALL_BUILD_DIR}/src_c/stem_UTF_8_${_alg}.c")
-    list(APPEND _snowball_gen_hdrs
-      "${SNOWBALL_BUILD_DIR}/src_c/stem_UTF_8_${_alg}.h")
-    list(APPEND _snowball_make_targets
-      "src_c/stem_UTF_8_${_alg}.c")
-  endif()
-endforeach()
+file(GLOB _snowball_compiler_srcs CONFIGURE_DEPENDS
+  "${SNOWBALL_SOURCE_DIR}/compiler/*.c"
+)
 
-set(_snowball_make_args "CFLAGS=-O2")
-if(NOT SNOWBALL_HOST_CC STREQUAL "")
-  list(APPEND _snowball_make_args "CC=${SNOWBALL_HOST_CC}")
+if(CMAKE_CROSSCOMPILING)
+  if(NOT SNOWBALL_HOST_CC)
+    find_program(SNOWBALL_HOST_CC
+      NAMES cc gcc clang
+      DOC "Host C compiler used to build the Snowball code generator"
+    )
+  endif()
+  if(NOT SNOWBALL_HOST_CC)
+    message(FATAL_ERROR
+      "Cross-compiling Snowball requires a host C compiler. "
+      "Set SNOWBALL_HOST_CC to a host cc/gcc/clang executable.")
+  endif()
+
+  set(_snowball_compiler_exe
+      "${SNOWBALL_BUILD_DIR}/host/snowball_compiler")
+  if(CMAKE_HOST_WIN32)
+    string(APPEND _snowball_compiler_exe ".exe")
+  endif()
+
+  add_custom_command(
+    OUTPUT "${_snowball_compiler_exe}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${SNOWBALL_BUILD_DIR}/host"
+    COMMAND "${SNOWBALL_HOST_CC}"
+            -O2
+            -I "${SNOWBALL_SOURCE_DIR}/compiler"
+            -o "${_snowball_compiler_exe}"
+            ${_snowball_compiler_srcs}
+    DEPENDS ${_snowball_compiler_srcs}
+            "${SNOWBALL_SOURCE_DIR}/compiler/header.h"
+            "${SNOWBALL_SOURCE_DIR}/compiler/tokens.h"
+    COMMENT "Building Snowball compiler with ${SNOWBALL_HOST_CC}"
+    VERBATIM
+  )
+
+  set(_snowball_compiler "${_snowball_compiler_exe}")
+  set(_snowball_compiler_dependency "${_snowball_compiler_exe}")
+else()
+  if(NOT TARGET snowball_compiler)
+    add_executable(snowball_compiler EXCLUDE_FROM_ALL
+      ${_snowball_compiler_srcs}
+    )
+    target_include_directories(snowball_compiler PRIVATE
+      "${SNOWBALL_SOURCE_DIR}/compiler"
+    )
+    if(MSVC)
+      target_compile_definitions(snowball_compiler PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+      )
+    endif()
+    set_target_properties(snowball_compiler PROPERTIES C_STANDARD 99)
+  endif()
+
+  set(_snowball_compiler "$<TARGET_FILE:snowball_compiler>")
+  set(_snowball_compiler_dependency snowball_compiler)
 endif()
 
-# ---------------------------------------------------------------------------
-# Phase 1 (host): build snowball compiler & generate UTF-8 sources only
-# ---------------------------------------------------------------------------
-# Copy source tree into the build directory so the original stays clean.
-# Request only the UTF-8 stemmer sources, the utf8 libstemmer entry point,
-# and the utf8 modules header — no ISO-8859/KOI8 stemmers, no host .a.
-# Each src_c/stem_UTF_8_*.c target implicitly builds the snowball compiler
-# (host executable) as a dependency.
-# By default make uses system `cc`; set SNOWBALL_HOST_CC to override when
-# the environment CC points to a cross-compiler.
-ExternalProject_Add(snowball_codegen
-  DOWNLOAD_COMMAND  ${CMAKE_COMMAND} -E copy_directory
-                    ${SNOWBALL_SOURCE_DIR} ${SNOWBALL_BUILD_DIR}
-  SOURCE_DIR        ${SNOWBALL_BUILD_DIR}
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND     ${_SNOWBALL_MAKE}
-                    libstemmer/libstemmer_utf8.c
-                    libstemmer/modules_utf8.h
-                    ${_snowball_make_targets}
-                    ${_snowball_make_args}
-  BUILD_IN_SOURCE   TRUE
-  INSTALL_COMMAND   ""
-  BUILD_BYPRODUCTS
-    ${SNOWBALL_BUILD_DIR}/runtime/api.c
-    ${SNOWBALL_BUILD_DIR}/runtime/utilities.c
-    ${SNOWBALL_BUILD_DIR}/libstemmer/libstemmer_utf8.c
-    ${SNOWBALL_BUILD_DIR}/libstemmer/modules_utf8.h
-    ${_snowball_gen_srcs}
-    ${_snowball_gen_hdrs}
+include("${CMAKE_CURRENT_SOURCE_DIR}/snowball_codegen.cmake")
+snowball_generate_utf8(
+  SOURCE_DIR "${SNOWBALL_SOURCE_DIR}"
+  BUILD_DIR "${SNOWBALL_BUILD_DIR}"
+  COMPILER "${_snowball_compiler}"
+  COMPILER_DEPENDENCY "${_snowball_compiler_dependency}"
 )
 
-# ---------------------------------------------------------------------------
-# Phase 2 (target): compile generated sources with the project toolchain
-# ---------------------------------------------------------------------------
-set(_snowball_target_srcs
-  ${SNOWBALL_BUILD_DIR}/runtime/api.c
-  ${SNOWBALL_BUILD_DIR}/runtime/utilities.c
-  ${SNOWBALL_BUILD_DIR}/libstemmer/libstemmer_utf8.c
-  ${_snowball_gen_srcs}
-)
-
-set_source_files_properties(${_snowball_target_srcs}
+set_source_files_properties(${SNOWBALL_GENERATED_SOURCES}
   PROPERTIES GENERATED TRUE)
 
 if(NOT TARGET snowball)
-  add_library(snowball STATIC ${_snowball_target_srcs})
-  add_dependencies(snowball snowball_codegen)
+  add_library(snowball STATIC ${SNOWBALL_GENERATED_SOURCES})
+  add_dependencies(snowball ${SNOWBALL_CODEGEN_TARGET})
   # Public include points to the SOURCE directory — libstemmer.h exists at
   # configure time and does not depend on the codegen step.
   target_include_directories(snowball SYSTEM PUBLIC
-    ${SNOWBALL_SOURCE_DIR}/include
+    "${SNOWBALL_SOURCE_DIR}/include"
   )
   # Private includes for generated headers (modules_utf8.h, stem_*.h).
   target_include_directories(snowball PRIVATE
-    ${SNOWBALL_BUILD_DIR}
-    ${SNOWBALL_BUILD_DIR}/libstemmer
-    ${SNOWBALL_BUILD_DIR}/src_c
+    "${SNOWBALL_BUILD_DIR}"
+    "${SNOWBALL_BUILD_DIR}/libstemmer"
+    "${SNOWBALL_BUILD_DIR}/src_c"
   )
   set_target_properties(snowball PROPERTIES
     POSITION_INDEPENDENT_CODE ON

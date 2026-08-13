@@ -27,6 +27,8 @@ __all__: list[str] = [
     "IndexOption",
     "IndexParam",
     "InvertIndexParam",
+    "IvfRabitqIndexParam",
+    "IvfRabitqQueryParam",
     "OptimizeOption",
     "QuantizerParam",
     "QueryParam",
@@ -587,6 +589,72 @@ class HnswRabitqQueryParam(QueryParam):
         int: Size of the dynamic candidate list during HNSW search.
         """
 
+class IvfRabitqIndexParam(VectorIndexParam):
+    """
+    Parameters for configuring an IVF index with RaBitQ quantization.
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        nlist: typing.SupportsInt = 1024,
+        total_bits: typing.SupportsInt = 7,
+        sample_count: typing.SupportsInt = 0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def nlist(self) -> int:
+        """
+        int: Number of IVF cluster centers.
+        """
+
+    @property
+    def total_bits(self) -> int:
+        """
+        int: Total bits for RaBitQ quantization.
+        """
+
+    @property
+    def sample_count(self) -> int:
+        """
+        int: Sample count for RaBitQ training.
+        """
+
+class IvfRabitqQueryParam(QueryParam):
+    """
+    Query parameters for IVF RaBitQ index.
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        nprobe: typing.SupportsInt = 10,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def nprobe(self) -> int:
+        """
+        int: Number of inverted lists to search during IVF RaBitQ query.
+        """
+
+    @property
+    def scale_factor(self) -> float:
+        """
+        float: Candidate expansion factor used by the refiner.
+        """
+
 class IVFIndexParam(VectorIndexParam):
     """
 
@@ -834,8 +902,8 @@ class FtsIndexParam(IndexParam):
 
     Attributes:
         type (IndexType): Always ``IndexType.FTS``.
-        tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
-            "whitespace").
+        tokenizer_name (str): Name of the tokenizer (one of "standard", "ngram",
+            "jieba", "whitespace").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
             Supported filters are "lowercase", "ascii_folding", and "stemmer".
@@ -845,6 +913,13 @@ class FtsIndexParam(IndexParam):
             Tokenizers:
                 standard:
                     - "max_token_length" (positive integer).
+                ngram:
+                    - "ngram_min" (positive integer, default 2).
+                    - "ngram_max" (positive integer, default 2).
+                    - "token_chars" (array of "letter", "digit",
+                      "whitespace", "punctuation", "symbol"; default [] keeps
+                      all valid UTF-8 characters). custom_token_chars is not
+                      supported.
                 jieba:
                     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
                       hmm_model.utf8).
@@ -892,6 +967,13 @@ class FtsIndexParam(IndexParam):
                 Tokenizers:
                     standard:
                         - "max_token_length" (positive integer).
+                    ngram:
+                        - "ngram_min" (positive integer, default 2).
+                        - "ngram_max" (positive integer, default 2).
+                        - "token_chars" (array of "letter", "digit",
+                          "whitespace", "punctuation", "symbol"; default []
+                          keeps all valid UTF-8 characters). custom_token_chars
+                          is not supported.
                     jieba:
                         - "jieba_dict_dir".
                         - "user_dict_path".

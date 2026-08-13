@@ -29,6 +29,8 @@ from .model.param import (
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
+    IvfRabitqIndexParam,
+    IvfRabitqQueryParam,
     OptimizeOption,
     QuantizerParam,
     VamanaIndexParam,
@@ -52,7 +54,9 @@ from .zvec import create_and_open, init, open
 def io_backend_type() -> IOBackendType:
     """Returns the current I/O backend type for DiskAnn async disk reads
     as an IOBackendType enum (zvec.typing.IOBackendType).
-    IOBackendType.LIBAIO if libaio is available, IOBackendType.PREAD otherwise."""
+    IOBackendType.IO_URING if io_uring is available,
+    IOBackendType.LIBAIO if libaio is available,
+    IOBackendType.PREAD otherwise."""
 
 def io_backend_description() -> str:
     """Returns a human-readable description of the current I/O backend.
@@ -94,6 +98,8 @@ __all__: list = [
     "IndexOption",
     "IndexType",
     "InvertIndexParam",
+    "IvfRabitqIndexParam",
+    "IvfRabitqQueryParam",
     "LogLevel",
     "LogType",
     "MetricType",
@@ -140,6 +146,7 @@ class _Collection:
         arg2: schema._FieldSchema,
         arg3: param.AlterColumnOption,
     ) -> None: ...
+    def Close(self) -> None: ...
     def CreateIndex(
         self, arg0: str, arg1: param.IndexParam, arg2: param.IndexOption
     ) -> None: ...

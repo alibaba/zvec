@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <gtest/gtest.h>
+#include <rabitqlib/utils/cpu_features.hpp>
 #include "zvec/ailego/container/params.h"
 #include "zvec/ailego/utility/file_helper.h"
 #include "zvec/core/framework/index_holder.h"
@@ -45,6 +46,10 @@ std::string HnswRabitqStreamerTest::dir_("hnswRabitqStreamerTest");
 shared_ptr<IndexMeta> HnswRabitqStreamerTest::index_meta_ptr_;
 
 void HnswRabitqStreamerTest::SetUp(void) {
+  if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2()) {
+    GTEST_SKIP() << "CPU does not support AVX2/FMA or AVX512F/BW/DQ";
+  }
+
   index_meta_ptr_.reset(new (nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, ailego::Params());

@@ -235,8 +235,8 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     auto metric_params = index_meta.metric_params();
     metric_params.merge(meta_.metric_params());
     meta_.set_metric(index_meta.metric_name(), 0, metric_params);
-    // Propagate reformer info from stored meta (needed for quantizers
-    // whose reformer params are computed during training, e.g. UniformInt8)
+    // Propagate reformer info from stored meta when the reformer params are
+    // only available after converter training.
     if (!index_meta.reformer_name().empty()) {
       meta_.set_reformer(index_meta.reformer_name(), 0,
                          index_meta.reformer_params());
@@ -260,6 +260,18 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     LOG_ERROR("Invalid metric distance functions");
     cleanup_on_error();
     return IndexError_InvalidArgument;
+  }
+
+  add_distance_ = metric_->distance();
+  add_batch_distance_ = metric_->batch_distance();
+  search_distance_ = add_distance_;
+  search_batch_distance_ = add_batch_distance_;
+
+  const auto query_metric = metric_->query_metric();
+  if (query_metric && query_metric->distance() &&
+      query_metric->batch_distance()) {
+    search_distance_ = query_metric->distance();
+    search_batch_distance_ = query_metric->batch_distance();
   }
 
   // Create algorithm based on entity storage mode
@@ -451,6 +463,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(add_distance_, add_batch_distance_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -522,6 +535,7 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(add_distance_, add_batch_distance_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -584,6 +598,8 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
@@ -645,6 +661,8 @@ int VamanaStreamer::search_bf_impl(const void *query,
   }
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
   ctx->resize_results(count);
 
   const auto &filter = static_cast<IndexContext *>(ctx)->filter();
@@ -686,6 +704,8 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
   ctx->resize_results(count);
 
   auto &topk = ctx->topk_heap();

@@ -159,6 +159,19 @@ using idx_t = uint64_t;
         Status::InvalidArgument("collection is already destroyed.")); \
   }
 
+#define CHECK_CLOSED_RETURN_STATUS(status, expect)                           \
+  if (status != expect) {                                                    \
+    LOG_ERROR("Collection[%s] is already closed.", schema_->name().c_str()); \
+    return Status::InvalidArgument("collection is already closed.");         \
+  }
+
+#define CHECK_CLOSED_RETURN_STATUS_EXPECTED(status, expect)                  \
+  if (status != expect) {                                                    \
+    LOG_ERROR("Collection[%s] is already closed.", schema_->name().c_str()); \
+    return tl::make_unexpected(                                              \
+        Status::InvalidArgument("collection is already closed."));           \
+  }
+
 #define CHECK_RETURN_STATUS(status) \
   if (!status.ok()) {               \
     return status;                  \

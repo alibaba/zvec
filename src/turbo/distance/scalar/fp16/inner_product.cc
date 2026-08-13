@@ -13,28 +13,23 @@
 // limitations under the License.
 
 #include "scalar/fp16/inner_product.h"
-#include <cstdint>
 #include <zvec/ailego/utility/float_helper.h>
 
 namespace zvec::turbo::scalar {
 
-// Compute negated inner product between a single FP16 vector pair.
-// Returns -dot(a, b) so that callers can derive cosine distance as 1 + ip.
 void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
                                  float *distance) {
-  const uint16_t *m = reinterpret_cast<const uint16_t *>(a);
-  const uint16_t *q = reinterpret_cast<const uint16_t *>(b);
+  const ailego::Float16 *m = reinterpret_cast<const ailego::Float16 *>(a);
+  const ailego::Float16 *q = reinterpret_cast<const ailego::Float16 *>(b);
 
   float sum = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
-    sum += zvec::ailego::FloatHelper::ToFP32(m[i]) *
-           zvec::ailego::FloatHelper::ToFP32(q[i]);
+    sum += static_cast<float>(m[i]) * static_cast<float>(q[i]);
   }
 
   *distance = -sum;
 }
 
-// Batch version of inner_product_fp16_distance.
 void inner_product_fp16_batch_distance(const void *const *vectors,
                                        const void *query, size_t n, size_t dim,
                                        float *distances) {

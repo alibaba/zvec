@@ -25,11 +25,13 @@ from zvec import (
     CollectionOption,
     FlatIndexParam,
     HnswIndexParam,
+    IvfRabitqIndexParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
     OptimizeOption,
     HnswQueryParam,
+    IvfRabitqQueryParam,
     IVFQueryParam,
     Query,
     VectorQuery,
@@ -169,6 +171,68 @@ class TestIVFIndexParam:
     @pytest.mark.parametrize("attr", ["metric_type", "n_list", "quantize_type"])
     def test_readonly_attributes(self, attr):
         param = IVFIndexParam()
+        import sys
+
+        if sys.version_info >= (3, 11):
+            match_pattern = r"(can't set attribute|has no setter|readonly attribute)"
+        else:
+            match_pattern = r"can't set attribute"
+        with pytest.raises(AttributeError, match=match_pattern):
+            setattr(param, attr, getattr(param, attr))
+
+
+# ----------------------------
+# Ivf Rabitq Index Param Test Case
+# ----------------------------
+class TestIvfRabitqIndexParam:
+    def test_default(self):
+        param = IvfRabitqIndexParam()
+        assert param.metric_type == MetricType.IP
+        assert param.nlist == 1024
+        assert param.total_bits == 7
+        assert param.sample_count == 0
+        assert param.quantize_type == QuantizeType.RABITQ
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_custom(self):
+        param = IvfRabitqIndexParam(
+            metric_type=MetricType.L2, nlist=128, total_bits=6, sample_count=1000
+        )
+        assert param.metric_type == MetricType.L2
+        assert param.nlist == 128
+        assert param.total_bits == 6
+        assert param.sample_count == 1000
+        assert param.quantize_type == QuantizeType.RABITQ
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_to_dict(self):
+        param = IvfRabitqIndexParam(
+            metric_type=MetricType.L2, nlist=128, total_bits=6, sample_count=1000
+        )
+        data = param.to_dict()
+        assert data["type"] == "IVF_RABITQ"
+        assert data["metric_type"] == "L2"
+        assert data["quantize_type"] == "RABITQ"
+        assert data["nlist"] == 128
+        assert data["total_bits"] == 6
+        assert data["sample_count"] == 1000
+
+    def test_vector_schema_accepts_param(self):
+        param = IvfRabitqIndexParam(metric_type=MetricType.L2, nlist=128)
+        schema = VectorSchema(
+            name="embedding",
+            data_type=DataType.VECTOR_FP32,
+            dimension=128,
+            index_param=param,
+        )
+        assert schema.index_param.type == IndexType.IVF_RABITQ
+        assert schema.index_param.nlist == 128
+
+    @pytest.mark.parametrize(
+        "attr", ["metric_type", "nlist", "total_bits", "sample_count", "quantize_type"]
+    )
+    def test_readonly_attributes(self, attr):
+        param = IvfRabitqIndexParam()
         import sys
 
         if sys.version_info >= (3, 11):
@@ -358,6 +422,60 @@ class TestHnswQueryParam:
                 param.is_using_refiner = True
                 param.radius = 30
                 param.is_linear = True
+
+
+# ----------------------------
+# IvfRabitqQueryParam Test Case
+# ----------------------------
+class TestIvfRabitqQueryParam:
+    def test_default(self):
+        param = IvfRabitqQueryParam()
+        assert param is not None
+        assert param.nprobe == 10
+        assert param.is_using_refiner == False
+        assert param.radius == 0
+        assert param.is_linear == False
+        assert param.scale_factor == 10.0
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_custom(self):
+        param = IvfRabitqQueryParam(
+            nprobe=20,
+            is_using_refiner=True,
+            radius=30,
+            is_linear=True,
+            scale_factor=3.5,
+        )
+        assert param.nprobe == 20
+        assert param.is_using_refiner == True
+        assert param.radius == 30
+        assert param.is_linear == True
+        assert param.scale_factor == 3.5
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_query_accepts_param(self):
+        param = IvfRabitqQueryParam(nprobe=20)
+        query = Query(field_name="embedding", vector=[0.1, 0.2], param=param)
+        assert query.param == param
+        assert query.param.type == IndexType.IVF_RABITQ
+
+    def test_pickle_roundtrip(self):
+        import pickle
+
+        param = IvfRabitqQueryParam(nprobe=20, is_using_refiner=True, scale_factor=3.5)
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.nprobe == 20
+        assert restored.is_using_refiner == True
+        assert restored.scale_factor == 3.5
+
+    def test_readonly_attributes(self):
+        param = IvfRabitqQueryParam()
+        if sys.version_info >= (3, 11):
+            match_pattern = r"(can't set attribute|has no setter|readonly attribute)"
+        else:
+            match_pattern = r"can't set attribute"
+        with pytest.raises(AttributeError, match=match_pattern):
+            param.nprobe = 10
 
 
 # # ----------------------------

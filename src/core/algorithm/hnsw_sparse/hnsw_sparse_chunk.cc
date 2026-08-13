@@ -15,10 +15,10 @@
 #include <chrono>
 #include <random>
 #include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_helper.h>
-#include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_streamer.h>
 
 namespace zvec {

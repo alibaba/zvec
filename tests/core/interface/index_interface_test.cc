@@ -27,6 +27,10 @@
 #include "zvec/core/framework/index_provider.h"
 #endif
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_holder.h>
+#include "algorithm/hnsw/hnsw_params.h"
+#include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
 #include "zvec/core/interface/index_param.h"
@@ -38,6 +42,118 @@
 #endif
 
 using namespace zvec::core_interface;
+
+TEST(IndexInterface, IndexTypeKeepsExistingValues) {
+  EXPECT_EQ(5, static_cast<int>(IndexType::kDiskAnn));
+  EXPECT_EQ(6, static_cast<int>(IndexType::kVamana));
+  EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
+}
+
+#if RABITQ_SUPPORTED
+TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
+  auto make_param = [](int nlist, int sample_count) {
+    return IVFRabitqIndexParamBuilder()
+        .WithMetricType(MetricType::kInnerProduct)
+        .WithDataType(DataType::DT_FP32)
+        .WithDimension(64)
+        .WithNlist(nlist)
+        .WithTotalBits(7)
+        .WithSampleCount(sample_count)
+        .Build();
+  };
+
+  EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*make_param(0, 0)));
+  EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*make_param(-1, 0)));
+  EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*make_param(32, -1)));
+  EXPECT_NE(nullptr, IndexFactory::CreateAndInitIndex(*make_param(1, 0)));
+  EXPECT_NE(nullptr, IndexFactory::CreateAndInitIndex(*make_param(1024, 1)));
+  EXPECT_NE(nullptr, IndexFactory::CreateAndInitIndex(*make_param(1025, 0)));
+}
+
+TEST(IndexInterface, IvfRabitqFetchUnsupported) {
+  constexpr uint32_t kDimension = 64;
+  const std::string index_name{"ivf_rabitq_fetch.index"};
+  zvec::test_util::RemoveTestFiles(index_name);
+
+  auto param = IVFRabitqIndexParamBuilder()
+                   .WithMetricType(MetricType::kL2sq)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithNlist(1)
+                   .Build();
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(
+      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<float> vector(kDimension, 1.0f);
+  VectorData vector_data{DenseVector{vector.data()}};
+  ASSERT_EQ(0, index->Add(vector_data, 0));
+
+  VectorDataBuffer fetched;
+  EXPECT_EQ(zvec::core::IndexError_Unsupported, index->Fetch(0, &fetched));
+  ASSERT_EQ(0, index->Train());
+  EXPECT_EQ(zvec::core::IndexError_Unsupported, index->Fetch(0, &fetched));
+
+  ASSERT_EQ(0, index->Close());
+  zvec::test_util::RemoveTestFiles(index_name);
+}
+
+TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
+  constexpr uint32_t kDimension = 64;
+  const std::string index_name{"ivf_rabitq_search_fetch_vector.index"};
+  zvec::test_util::RemoveTestFiles(index_name);
+
+  auto param = IVFRabitqIndexParamBuilder()
+                   .WithMetricType(MetricType::kL2sq)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithNlist(1)
+                   .Build();
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(
+      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<float> vector(kDimension, 1.0f);
+  VectorData vector_data{DenseVector{vector.data()}};
+  ASSERT_EQ(0, index->Add(vector_data, 0));
+  ASSERT_EQ(0, index->Train());
+
+  auto query_param = std::make_shared<IVFRabitqQueryParam>();
+  query_param->topk = 1;
+  query_param->fetch_vector = true;
+  query_param->nprobe = 1;
+  SearchResult result;
+  ASSERT_EQ(0, index->Search(vector_data, query_param, &result));
+  EXPECT_TRUE(result.reverted_vector_list_.empty());
+  for (const auto &doc : result.doc_list_) {
+    EXPECT_EQ(nullptr, doc.vector());
+  }
+
+  ASSERT_EQ(0, index->Close());
+  zvec::test_util::RemoveTestFiles(index_name);
+}
+#endif
+
+class ReformerInspectableHNSWIndex : public HNSWIndex {
+ public:
+  int InitForTest(const BaseIndexParam &param) {
+    return Init(param);
+  }
+
+  int TransformForTest(const std::vector<float> &query) const {
+    if (!reformer_) {
+      return zvec::core::IndexError_Uninitialized;
+    }
+    zvec::core::IndexQueryMeta input_meta(
+        zvec::core::IndexMeta::DataType::DT_FP32, query.size());
+    zvec::core::IndexQueryMeta output_meta;
+    std::string output;
+    return reformer_->transform(query.data(), input_meta, &output,
+                                &output_meta);
+  }
+};
 
 TEST(IndexInterface, General) {
   constexpr uint32_t kDimension = 64;
@@ -188,6 +304,97 @@ TEST(IndexInterface, General) {
            .with_fetch_vector(true)
            .with_ef_search(10)
            .build());
+}
+
+TEST(IndexInterface, ReopenRestoresUniformReformer) {
+  constexpr size_t kDimension = 16;
+  struct TestCase {
+    QuantizerType quantizer_type;
+    const char *converter_name;
+    const char *index_name;
+  };
+  const TestCase test_cases[] = {
+      {QuantizerType::kUniformUint7, "UniformUint7Converter",
+       "test_uniform_uint7_reopen.index"},
+      {QuantizerType::kUniformUint8, "UniformUint8Converter",
+       "test_uniform_uint8_reopen.index"},
+  };
+
+  for (const auto &test_case : test_cases) {
+    SCOPED_TRACE(test_case.converter_name);
+    zvec::test_util::RemoveTestFiles(test_case.index_name);
+
+    zvec::core::IndexMeta input_meta(zvec::core::IndexMeta::DataType::DT_FP32,
+                                     kDimension);
+    input_meta.set_metric("SquaredEuclidean", 0, zvec::ailego::Params());
+
+    auto converter =
+        zvec::core::IndexFactory::CreateConverter(test_case.converter_name);
+    ASSERT_NE(nullptr, converter);
+    ASSERT_EQ(0, converter->init(input_meta, zvec::ailego::Params()));
+
+    auto holder = std::make_shared<zvec::core::MultiPassIndexHolder<
+        zvec::core::IndexMeta::DataType::DT_FP32>>(kDimension);
+    for (uint64_t key = 0; key < 2; ++key) {
+      zvec::ailego::NumericalVector<float> vector(kDimension);
+      for (size_t i = 0; i < kDimension; ++i) {
+        vector[i] = static_cast<float>(key * kDimension + i);
+      }
+      ASSERT_TRUE(holder->emplace(key, std::move(vector)));
+    }
+    ASSERT_EQ(0, converter->train(holder));
+
+    zvec::ailego::Params streamer_params;
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100U);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT,
+                        16U);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE,
+                        true);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_EF,
+                        kDefaultHnswEfSearch);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_USE_ID_MAP, true);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
+                        false);
+    streamer_params.set(zvec::core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
+                        false);
+
+    auto streamer = zvec::core::IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(converter->meta(), streamer_params));
+
+    auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(zvec::ailego::Params()));
+    ASSERT_EQ(0, storage->open(test_case.index_name, true));
+    ASSERT_EQ(0, streamer->open(storage));
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, streamer->cleanup());
+    ASSERT_EQ(0, storage->close());
+
+    auto param =
+        HNSWIndexParamBuilder()
+            .WithMetricType(MetricType::kL2sq)
+            .WithDataType(DataType::DT_FP32)
+            .WithDimension(kDimension)
+            .WithIsSparse(false)
+            .WithM(16)
+            .WithEFConstruction(100)
+            .WithQuantizerParam(QuantizerParam(test_case.quantizer_type))
+            .Build();
+    ReformerInspectableHNSWIndex index;
+    ASSERT_EQ(0, index.InitForTest(*param));
+
+    const std::vector<float> query(kDimension, 1.0f);
+    ASSERT_NE(0, index.TransformForTest(query));
+    ASSERT_EQ(0, index.Open(test_case.index_name,
+                            {StorageOptions::StorageType::kMMAP,
+                             /*create_new=*/false, /*read_only=*/true}));
+    EXPECT_EQ(0, index.TransformForTest(query));
+    ASSERT_EQ(0, index.Close());
+
+    zvec::test_util::RemoveTestFiles(test_case.index_name);
+  }
 }
 
 TEST(IndexInterface, CopyOnWrite) {
@@ -750,10 +957,9 @@ TEST(IndexInterface, Merge) {
       auto index3 = create_index_func(param_target, index_name + "3");
       ASSERT_NE(nullptr, index3);
       MergeOptions merge_options;
-      merge_options.write_concurrency =
-          (std::numeric_limits<uint32_t>::max)();
-      ASSERT_TRUE(0 == index3->Merge({index1, index2}, IndexFilter(),
-                                     merge_options));
+      merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
+      ASSERT_TRUE(
+          0 == index3->Merge({index1, index2}, IndexFilter(), merge_options));
       ASSERT_TRUE(3 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;
@@ -784,11 +990,9 @@ TEST(IndexInterface, Merge) {
       filter.set([](uint64_t key) { return key == 0; });  // TODO: uint32?
       zvec::ailego::ThreadPool pool(1, false);
       MergeOptions merge_options;
-      merge_options.write_concurrency =
-          (std::numeric_limits<uint32_t>::max)();
+      merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
       merge_options.pool = &pool;
-      ASSERT_TRUE(0 ==
-                  index3->Merge({index1, index2}, filter, merge_options));
+      ASSERT_TRUE(0 == index3->Merge({index1, index2}, filter, merge_options));
       ASSERT_TRUE(2 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;
@@ -2314,8 +2518,8 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
   exact_results.reserve(kNumVectors);
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     const float *vector = all_vectors.data() + i * kDimension;
-    const float score = std::inner_product(
-        query_vector.begin(), query_vector.end(), vector, 0.0f);
+    const float score = std::inner_product(query_vector.begin(),
+                                           query_vector.end(), vector, 0.0f);
     exact_results.emplace_back(score, i);
   }
   std::sort(exact_results.begin(), exact_results.end(),
@@ -2340,13 +2544,11 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
                    .Build();
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0,
-            index->Open(index_name,
-                        {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
-    VectorData vector_data{
-        DenseVector{all_vectors.data() + i * kDimension}};
+    VectorData vector_data{DenseVector{all_vectors.data() + i * kDimension}};
     ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
   }
 
@@ -2536,8 +2738,6 @@ TEST(IndexInterface, QuantizerParamDefaultIsNull) {
 
   ASSERT_NE(nullptr, param);
   EXPECT_EQ(nullptr, param->quantizer_param);
-  EXPECT_EQ(QuantizerType::kNone, param->quantizer_type());
-  EXPECT_FALSE(param->enable_rotate());
 }
 
 TEST(IndexInterface, QuantizerParamPqFields) {
@@ -2549,7 +2749,7 @@ TEST(IndexInterface, QuantizerParamPqFields) {
 
   ASSERT_NE(nullptr, param);
   ASSERT_NE(nullptr, param->quantizer_param);
-  EXPECT_EQ(QuantizerType::kPQ, param->quantizer_type());
+  EXPECT_EQ(QuantizerType::kPQ, param->quantizer_param->type);
 
   // the builder must keep the concrete type instead of slicing it
   auto pq_param =
@@ -2564,7 +2764,7 @@ TEST(IndexInterface, QuantizerParamPqFields) {
                            .WithEnableRotate(true)
                            .Build();
   ASSERT_NE(nullptr, rotated_param->quantizer_param);
-  EXPECT_TRUE(rotated_param->enable_rotate());
+  EXPECT_TRUE(rotated_param->quantizer_param->enable_rotate);
   EXPECT_NE(nullptr, std::dynamic_pointer_cast<PqQuantizerParam>(
                          rotated_param->quantizer_param));
 }
@@ -2603,8 +2803,8 @@ TEST(IndexInterface, QuantizerParamLegacyJsonCompat) {
   auto param = IndexFactory::DeserializeIndexParamFromJson(json_str);
   ASSERT_NE(nullptr, param);
   ASSERT_NE(nullptr, param->quantizer_param);
-  EXPECT_EQ(QuantizerType::kInt8, param->quantizer_type());
-  EXPECT_TRUE(param->enable_rotate());
+  EXPECT_EQ(QuantizerType::kInt8, param->quantizer_param->type);
+  EXPECT_TRUE(param->quantizer_param->enable_rotate);
   EXPECT_EQ(nullptr, std::dynamic_pointer_cast<PqQuantizerParam>(
                          param->quantizer_param));
 }

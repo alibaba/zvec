@@ -27,6 +27,7 @@
 [submodule "thirdparty/protobuf/protobuf-3.21.12"]
 	path = thirdparty/protobuf/protobuf-3.21.12
 	url = https://github.com/protocolbuffers/protobuf.git
+	ignore = dirty
 [submodule "thirdparty/lz4/lz4-1.9.4"]
 	path = thirdparty/lz4/lz4-1.9.4
 	url = https://github.com/lz4/lz4.git
@@ -41,6 +42,7 @@
 [submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
 	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
 	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git
+	ignore = dirty
 [submodule "thirdparty/aio/libaio-0.3"]
 	path = thirdparty/aio/libaio-0.3
 	url = https://github.com/yugabyte/libaio.git

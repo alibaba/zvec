@@ -35,7 +35,7 @@ class StandardTokenizerTest : public ::testing::Test {
     FtsIndexParams params;
     params.tokenizer_name = "standard";
     params.filters.clear();
-    pipeline_ = TokenizerFactory::create(params);
+    pipeline_ = TokenizerFactory::create(params).value();
     ASSERT_NE(pipeline_, nullptr);
   }
 
@@ -128,7 +128,7 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthDoesNotCreateMarkOnlyToken) {
   params.tokenizer_name = "standard";
   params.filters.clear();
   params.extra_params = R"({"max_token_length":2})";
-  auto pipeline = TokenizerFactory::create(params);
+  auto pipeline = TokenizerFactory::create(params).value();
   ASSERT_NE(pipeline, nullptr);
 
   // ab + U+0301 + c should not split into a standalone combining mark token.
@@ -254,7 +254,7 @@ TEST_F(StandardTokenizerTest, CJKRespectsMaxTokenLength) {
   params.tokenizer_name = "standard";
   params.filters.clear();
   params.extra_params = R"({"max_token_length":1})";
-  auto pipeline = TokenizerFactory::create(params);
+  auto pipeline = TokenizerFactory::create(params).value();
   ASSERT_NE(pipeline, nullptr);
 
   // "a中bc" → "a", "中", "b", "c"  (bc split into b and c)
@@ -274,7 +274,7 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthSplitsLongWords) {
   params.tokenizer_name = "standard";
   params.filters.clear();
   params.extra_params = R"({"max_token_length":5})";
-  auto pipeline = TokenizerFactory::create(params);
+  auto pipeline = TokenizerFactory::create(params).value();
   ASSERT_NE(pipeline, nullptr);
 
   auto tokens = pipeline->process("abcdefgh");
@@ -290,7 +290,7 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthCountsCodepointsNotBytes) {
   params4.tokenizer_name = "standard";
   params4.filters.clear();
   params4.extra_params = R"({"max_token_length":4})";
-  auto pipeline4 = TokenizerFactory::create(params4);
+  auto pipeline4 = TokenizerFactory::create(params4).value();
   ASSERT_NE(pipeline4, nullptr);
   auto tokens4 = pipeline4->process("caf\xC3\xA9");
   ASSERT_EQ(tokens4.size(), 1u);
@@ -301,7 +301,7 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthCountsCodepointsNotBytes) {
   params3.tokenizer_name = "standard";
   params3.filters.clear();
   params3.extra_params = R"({"max_token_length":3})";
-  auto pipeline3 = TokenizerFactory::create(params3);
+  auto pipeline3 = TokenizerFactory::create(params3).value();
   ASSERT_NE(pipeline3, nullptr);
   auto tokens3 = pipeline3->process("caf\xC3\xA9");
   ASSERT_EQ(tokens3.size(), 2u);
@@ -314,7 +314,7 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthDropsConnectorOnlySplitSegments) {
   params3.tokenizer_name = "standard";
   params3.filters.clear();
   params3.extra_params = R"({"max_token_length":3})";
-  auto pipeline3 = TokenizerFactory::create(params3);
+  auto pipeline3 = TokenizerFactory::create(params3).value();
   ASSERT_NE(pipeline3, nullptr);
   auto tokens3 = pipeline3->process("dog's");
   ASSERT_EQ(tokens3.size(), 2u);
@@ -325,7 +325,7 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthDropsConnectorOnlySplitSegments) {
   params1.tokenizer_name = "standard";
   params1.filters.clear();
   params1.extra_params = R"({"max_token_length":1})";
-  auto pipeline1 = TokenizerFactory::create(params1);
+  auto pipeline1 = TokenizerFactory::create(params1).value();
   ASSERT_NE(pipeline1, nullptr);
   auto leading = pipeline1->process("_lead");
   std::vector<std::string> expected_leading = {"l", "e", "a", "d"};
@@ -475,11 +475,11 @@ TEST(StandardTokenizerConfigTest, MaxTokenLengthValidation) {
   params.filters.clear();
 
   params.extra_params = R"({"max_token_length":0})";
-  EXPECT_EQ(TokenizerFactory::create(params), nullptr);
+  EXPECT_FALSE(TokenizerFactory::create(params).has_value());
 
   params.extra_params = R"({"max_token_length":1048577})";
-  EXPECT_EQ(TokenizerFactory::create(params), nullptr);
+  EXPECT_FALSE(TokenizerFactory::create(params).has_value());
 
   params.extra_params = R"({"max_token_length":1})";
-  EXPECT_NE(TokenizerFactory::create(params), nullptr);
+  EXPECT_TRUE(TokenizerFactory::create(params).has_value());
 }

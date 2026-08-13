@@ -13,22 +13,19 @@
 // limitations under the License.
 
 #include "scalar/fp16/squared_euclidean.h"
-#include <cstdint>
-#include <ailego/utility/math_helper.h>
 #include <zvec/ailego/utility/float_helper.h>
 
 namespace zvec::turbo::scalar {
 
 void squared_euclidean_fp16_distance(const void *a, const void *b, size_t dim,
                                      float *distance) {
-  const uint16_t *m = reinterpret_cast<const uint16_t *>(a);
-  const uint16_t *q = reinterpret_cast<const uint16_t *>(b);
+  const ailego::Float16 *m = reinterpret_cast<const ailego::Float16 *>(a);
+  const ailego::Float16 *q = reinterpret_cast<const ailego::Float16 *>(b);
 
   float sum = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
-    sum += zvec::ailego::MathHelper::SquaredDifference(
-        zvec::ailego::FloatHelper::ToFP32(m[i]),
-        zvec::ailego::FloatHelper::ToFP32(q[i]));
+    float diff = static_cast<float>(m[i]) - static_cast<float>(q[i]);
+    sum += diff * diff;
   }
 
   *distance = sum;

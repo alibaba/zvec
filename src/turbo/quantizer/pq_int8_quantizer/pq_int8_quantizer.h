@@ -34,22 +34,16 @@ using namespace zvec::core;
 //! via quantize_query().  Distance between a PQ code and a
 //! query uses ADC (LUT look-up); distance between two PQ codes uses
 //! SDC (centroid-to-centroid distance table).
-//!
-//! Accepts FP32 or FP16 input vectors (resolved from the index meta's data
-//! type at init).  The codebook is stored as raw bytes in the original input
-//! data type; all distance kernels are dispatched on that type.
 class PqInt8Quantizer : public Quantizer {
  public:
-  PqInt8Quantizer() : Quantizer(QuantizeType::kPQ) {}
+  PqInt8Quantizer() {
+    type_ = QuantizeType::kPQ;
+  }
 
   ~PqInt8Quantizer() override = default;
 
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
-  //! Describes the quantized PQ code layout: DT_INT8 x num_chunk (one
-  //! sub-code byte per chunk), plus the trailing FP32 norm as extra meta
-  //! for Cosine.  element_size() == quantized_datapoint_vector_length().
-  //! The raw input side is described by input_data_type() and dim().
   const IndexMeta &meta() const override {
     return meta_;
   }
@@ -183,10 +177,11 @@ class PqInt8Quantizer : public Quantizer {
   IndexMeta meta_{};
   uint32_t original_dim_{0};
   uint32_t num_chunk_{0};
-  uint32_t sub_dim_{0};
+  uint32_t chunk_dim_{0};
 
-  //! Centroids stored as raw bytes in the original input data type:
-  //! [num_chunk * kNumCentroids * sub_dim * element_size()]
+  //! Centroids stored as raw bytes in the original data type:
+  //! [num_chunk * kNumCentroids * chunk_dim * sizeof(T)]
+  //! T = float for kFp32, ailego::Float16 for kFp16.
   std::vector<uint8_t> centroids_;
 
   //! Global centroid (per-dimension mean) for zero-mean centering.
@@ -204,9 +199,9 @@ class PqInt8Quantizer : public Quantizer {
   std::vector<std::vector<const void *>> centroid_ptrs_cache_;
 
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
-  PqAdcDistanceFunc adc_fn_{nullptr};
-  PqSdcDistanceFunc sdc_fn_{nullptr};
-  PqBatchAdcFunc batch_adc_fn_{nullptr};
+  CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
+  CodebookSymmetricDistanceFunc sdc_fn_{nullptr};
+  CodebookBatchAsymmetricDistanceFunc batch_adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for search-side LUT
   //! computation and SDC dist_table.  Data type matches input_data_type_.
