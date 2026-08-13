@@ -731,6 +731,10 @@ void ManifestCodec::EncodeCollectionSchema(const CollectionSchema &schema,
 CollectionSchema::Ptr ManifestCodec::DecodeCollectionSchema(
     std::string_view buf) {
   auto schema = std::make_shared<CollectionSchema>();
+  // The protobuf-based converter read max_doc_count_per_segment straight from
+  // the wire, so a message without the field decoded to zero rather than to
+  // the C++ default. Mirror that to stay compatible with such manifests.
+  schema->set_max_doc_count_per_segment(0);
   Reader r(buf);
   while (r.Next()) {
     switch (r.field()) {
@@ -904,7 +908,10 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
   if (!data->schema) {
     // An absent schema means the file is not a valid manifest; the protobuf
     // parser accepted it but downstream code always expects a schema.
+    // The old reader decoded the default (empty) protobuf message in that
+    // case, yielding a schema whose max_doc_count_per_segment is zero.
     data->schema = std::make_shared<CollectionSchema>();
+    data->schema->set_max_doc_count_per_segment(0);
   }
   return Status::OK();
 }
