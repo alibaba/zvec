@@ -21,6 +21,7 @@
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/db/query_params.h>
+#include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #include "db/index/common/index_filter.h"
 
@@ -61,6 +62,12 @@ struct SparseVectorBuffer {
 struct VectorDataBuffer {
   std::variant<DenseVectorBuffer, SparseVectorBuffer> vector_buffer;
 };
+
+//! Restore a dense buffer from an internal Flat row type to the collection
+//! field type. The configurable native Flat representation is intentionally
+//! limited to FP16/UINT8 rows behind an FP32 collection field.
+Status RestoreDenseVectorBuffer(DataType source_type, DataType target_type,
+                                uint32_t dimension, DenseVectorBuffer *buffer);
 
 
 struct ReadOptions {

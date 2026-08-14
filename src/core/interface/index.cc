@@ -589,12 +589,6 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return core::IndexError_Runtime;
     }
-    // TODO: tackle query_param's type info loss to loosen the constraint
-    if (reference_index->param_.index_type != IndexType::kFlat) {
-      LOG_ERROR("Reference index is not flat");
-      context->reset();
-      return core::IndexError_Runtime;
-    }
 
     context->set_topk(_get_coarse_search_topk(search_param));
     context->set_fetch_vector(false);  // no need to fetch vector
@@ -610,15 +604,8 @@ int Index::search(const VectorData &vector_data,
       keys[i] = base_result[i].key();
     }
 
-    FlatQueryParam::Pointer flat_search_param =
-        std::make_shared<FlatQueryParam>();
-    flat_search_param->topk = search_param->topk;
-    flat_search_param->fetch_vector = search_param->fetch_vector;
-    flat_search_param->filter = search_param->filter;
-    // TODO: should copy other params?
-    flat_search_param->bf_pks = std::make_shared<std::vector<uint64_t>>(keys);
-
-    ret = reference_index->search(vector_data, flat_search_param, result);
+    ret = reference_index->_refine_search(vector_data, search_param,
+                                          std::move(keys), result);
     context->reset();
   }
   return ret;
@@ -1072,6 +1059,14 @@ int Index::_get_coarse_search_topk(
     scale_factor = 1;
   }
   return floor(search_param->topk * scale_factor);
+}
+
+int Index::_refine_search(const VectorData & /*query*/,
+                          const BaseIndexQueryParam::Pointer & /*search_param*/,
+                          std::vector<uint64_t> /*candidate_keys*/,
+                          SearchResult * /*result*/) {
+  LOG_ERROR("Candidate refinement is not supported by this index type");
+  return core::IndexError_Unsupported;
 }
 
 // Set or clear group-by state on a pooled context before each search.

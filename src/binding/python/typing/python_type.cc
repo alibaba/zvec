@@ -57,6 +57,7 @@ Examples:
       .value("VECTOR_FP32", DataType::VECTOR_FP32)
       .value("VECTOR_FP64", DataType::VECTOR_FP64)
       .value("VECTOR_INT8", DataType::VECTOR_INT8)
+      .value("VECTOR_UINT8", DataType::VECTOR_UINT8)
 
 
       // sparse vector type

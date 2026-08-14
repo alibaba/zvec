@@ -44,6 +44,7 @@ struct SparseSegmentInfo {
 struct VectorItem {
   key_t pkey_{0};
   std::vector<uint8_t> vec_{};
+  IndexQueryMeta meta_{};
   // TODO: drop support for hybrid vectors
   std::string sparse_buffer_{};
   uint32_t sparse_unit_size_{0};
@@ -51,6 +52,8 @@ struct VectorItem {
   VectorItem() {}
   VectorItem(key_t pkey, std::vector<uint8_t> vec)
       : pkey_(pkey), vec_(std::move(vec)) {}
+  VectorItem(key_t pkey, std::vector<uint8_t> vec, IndexQueryMeta meta)
+      : pkey_(pkey), vec_(std::move(vec)), meta_(std::move(meta)) {}
   // TODO: drop support for hybrid vectors
   VectorItem(key_t pkey, std::vector<uint8_t> vec, std::string sparse_buffer,
              uint32_t sparse_unit_size)

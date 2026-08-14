@@ -179,6 +179,11 @@ class ZVEC_CORE_API Index {
   int _dense_search(const VectorData &query,
                     const BaseIndexQueryParam::Pointer &search_param,
                     SearchResult *result, core::IndexContext::Pointer &context);
+  //! Candidate refinement hook owned by the reference index implementation.
+  virtual int _refine_search(const VectorData &query,
+                             const BaseIndexQueryParam::Pointer &search_param,
+                             std::vector<uint64_t> candidate_keys,
+                             SearchResult *result);
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) = 0;
@@ -247,6 +252,11 @@ class ZVEC_CORE_API FlatIndex : public Index {
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
+
+  int _refine_search(const VectorData &query,
+                     const BaseIndexQueryParam::Pointer &search_param,
+                     std::vector<uint64_t> candidate_keys,
+                     SearchResult *result) override;
 
  private:
   FlatIndexParam param_{};

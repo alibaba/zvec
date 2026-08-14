@@ -235,6 +235,30 @@ Status FieldSchema::validate() const {
 #endif
       }
 
+      const auto flat_data_type = vector_index_params->flat_data_type();
+      if (flat_data_type != DataType::UNDEFINED) {
+        if (flat_data_type != DataType::VECTOR_FP32 &&
+            flat_data_type != DataType::VECTOR_FP16 &&
+            flat_data_type != DataType::VECTOR_UINT8) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "]'s flat_data_type must be VECTOR_FP32, VECTOR_FP16, "
+              "or VECTOR_UINT8, but got ",
+              DataTypeCodeBook::AsString(flat_data_type));
+        }
+        if (is_sparse && flat_data_type != DataType::VECTOR_FP32) {
+          return Status::InvalidArgument(
+              "schema validate failed: non-FP32 flat_data_type is only "
+              "supported for dense vector fields");
+        }
+        if (!is_sparse && flat_data_type == DataType::VECTOR_UINT8 &&
+            vector_index_params->metric_type() != MetricType::L2) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "] can only use VECTOR_UINT8 Flat reference storage with L2 "
+              "metric");
+        }
+      }
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         auto iter = quantize_type_map.find(data_type_);

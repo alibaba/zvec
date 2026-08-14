@@ -272,6 +272,8 @@ class FlatIndexParam(VectorIndexParam):
             disable quantization. Default is ``QuantizeType.UNDEFINED``.
         quantizer_param (QuantizerParam): Optional quantizer parameters. See
             ``QuantizerParam`` for available options. Default is ``QuantizerParam()``.
+        use_contiguous_memory (bool): Whether Flat uses contiguous vector
+            memory. Default is False.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -289,6 +291,7 @@ class FlatIndexParam(VectorIndexParam):
         metric_type: zvec._zvec.typing.MetricType = ...,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
+        use_contiguous_memory: bool = False,
     ) -> None:
         """
         Constructs a FlatIndexParam instance.
@@ -299,6 +302,8 @@ class FlatIndexParam(VectorIndexParam):
                 Defaults to QuantizeType.UNDEFINED (no quantization).
             quantizer_param (QuantizerParam, optional): Quantizer configuration.
                 Defaults to QuantizerParam().
+            use_contiguous_memory (bool, optional): Enable contiguous Flat
+                vector memory. Defaults to False.
         """
 
     def __repr__(self) -> str: ...
@@ -307,6 +312,10 @@ class FlatIndexParam(VectorIndexParam):
         """
         Convert to dictionary with all fields
         """
+
+    @property
+    def use_contiguous_memory(self) -> bool:
+        """bool: Whether Flat uses contiguous vector memory."""
 
 class HnswIndexParam(VectorIndexParam):
     """
@@ -332,6 +341,11 @@ class HnswIndexParam(VectorIndexParam):
             single contiguous memory arena for all graph nodes, improving cache
             locality and search throughput at the cost of peak memory usage.
             Default is False.
+        use_flat_contiguous_memory (bool): If True, the refine Flat reference
+            index uses contiguous vector memory. Default is False.
+        flat_data_type (DataType): Physical type stored by the refine Flat
+            reference index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
+            ``VECTOR_UINT8`` are also supported.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -355,6 +369,8 @@ class HnswIndexParam(VectorIndexParam):
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         use_contiguous_memory: bool = False,
         quantizer_param: QuantizerParam = ...,
+        use_flat_contiguous_memory: bool = False,
+        flat_data_type: zvec._zvec.typing.DataType = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -382,6 +398,14 @@ class HnswIndexParam(VectorIndexParam):
         HNSW graph nodes. Improves cache locality and search throughput at
         the cost of peak memory usage. Defaults to False.
         """
+
+    @property
+    def use_flat_contiguous_memory(self) -> bool:
+        """bool: Whether the refine Flat reference index uses contiguous memory."""
+
+    @property
+    def flat_data_type(self) -> zvec._zvec.typing.DataType:
+        """DataType: Physical data type of the refine Flat reference index."""
 
 class HnswQueryParam(QueryParam):
     """
@@ -794,6 +818,11 @@ class VamanaIndexParam(VectorIndexParam):
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
         quantizer_param (QuantizerParam): Optional quantizer configuration.
         two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is False.
+        use_flat_contiguous_memory (bool): Allocate contiguous memory for the
+            refine Flat reference index. Default is False.
+        flat_data_type (DataType): Physical type stored by the refine Flat
+            reference index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
+            ``VECTOR_UINT8`` are also supported.
 
     Examples:
         >>> params = VamanaIndexParam(metric_type=MetricType.COSINE, max_degree=64)
@@ -812,6 +841,8 @@ class VamanaIndexParam(VectorIndexParam):
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
         two_pass_build: bool = False,
+        use_flat_contiguous_memory: bool = False,
+        flat_data_type: zvec._zvec.typing.DataType = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -843,6 +874,14 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def two_pass_build(self) -> bool:
         """bool: Whether full-graph two-pass Vamana construction is enabled."""
+
+    @property
+    def use_flat_contiguous_memory(self) -> bool:
+        """bool: Whether the refine Flat reference index uses contiguous memory."""
+
+    @property
+    def flat_data_type(self) -> zvec._zvec.typing.DataType:
+        """DataType: Physical data type of the refine Flat reference index."""
 
 class VamanaQueryParam(QueryParam):
     """

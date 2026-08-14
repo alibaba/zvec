@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "mixed_streamer_reducer.h"
+#include <cstring>
 #include <ailego/pattern/defer.h>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_context.h>
@@ -25,6 +27,64 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+int RestoreRawFlatVectorToFp32(const void *source,
+                               const IndexQueryMeta &source_meta,
+                               const IndexQueryMeta &target_meta,
+                               std::string *storage) {
+  if (!source || !storage ||
+      source_meta.dimension() != target_meta.dimension() ||
+      target_meta.data_type() != IndexMeta::DataType::DT_FP32) {
+    return IndexError_InvalidArgument;
+  }
+  const auto source_type = source_meta.data_type();
+  const bool source_supported = source_type == IndexMeta::DataType::DT_FP16 ||
+                                source_type == IndexMeta::DataType::DT_UINT8;
+  if (!source_supported) {
+    return IndexError_Unsupported;
+  }
+
+  const size_t dimension = source_meta.dimension();
+  storage->resize(target_meta.element_size());
+  auto *output = reinterpret_cast<float *>(storage->data());
+  if (source_type == IndexMeta::DataType::DT_FP16) {
+    ailego::FloatHelper::ToFP32(static_cast<const uint16_t *>(source),
+                                dimension, output);
+  } else {
+    const auto *input = static_cast<const uint8_t *>(source);
+    for (size_t i = 0; i < dimension; ++i) {
+      output[i] = static_cast<float>(input[i]);
+    }
+  }
+  return IndexError_Success;
+}
+
+int ResolveRevertedVectorMeta(size_t byte_size,
+                              const IndexQueryMeta &target_input_meta,
+                              IndexQueryMeta *meta) {
+  if (!meta || target_input_meta.dimension() == 0) {
+    return IndexError_InvalidArgument;
+  }
+  if (byte_size == target_input_meta.element_size()) {
+    *meta = target_input_meta;
+    return IndexError_Success;
+  }
+
+  // CosineHalfFloatReformer restores a raw FP16 Flat row as FP16. Reverted
+  // vectors do not carry metadata, so recognize that one additional layout by
+  // its exact size; every other reformer continues to restore the public type.
+  const uint32_t dimension = target_input_meta.dimension();
+  if (byte_size == static_cast<size_t>(dimension) * sizeof(uint16_t)) {
+    *meta = IndexQueryMeta{IndexMeta::MetaType::MT_DENSE,
+                           IndexMeta::DataType::DT_FP16, dimension};
+    return IndexError_Success;
+  }
+  return IndexError_Unsupported;
+}
+
+}  // namespace
 
 int MixedStreamerReducer::init(const ailego::Params &params) {
   enable_pk_rewrite_ =
@@ -274,6 +334,8 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     }
 
     std::vector<uint8_t> bytes;
+    IndexQueryMeta vector_meta{provider->data_type(),
+                               static_cast<uint32_t>(provider->dimension())};
     if (need_revert) {
       std::string new_vector;
       if (reformer->revert(iterator->data(), source_streamer_query_meta,
@@ -283,6 +345,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       }
       bytes.resize(new_vector.size());
       memcpy(bytes.data(), new_vector.data(), bytes.size());
+      if (ResolveRevertedVectorMeta(bytes.size(), original_query_meta_,
+                                    &vector_meta) != 0) {
+        LOG_ERROR("Failed to resolve reverted vector metadata");
+        return IndexError_Runtime;
+      }
     } else {
       // TODO: eliminate the copy
       bytes.resize(provider->element_size());
@@ -290,7 +357,8 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     }
 
     // TODO: use id instead of key
-    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(bytes)))) {
+    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(bytes),
+                                     std::move(vector_meta)))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
                 (size_t)iterator->key());
       return IndexError_Runtime;
@@ -326,10 +394,22 @@ void MixedStreamerReducer::add_vec(int *result) {
     }
 
     const void *vector = vector_item.vec_.data();
+    std::string normalized_vector;
     std::string new_vector;
 
 
     if (need_convert) {
+      if (vector_item.meta_.data_type() != original_query_meta_.data_type() ||
+          vector_item.meta_.dimension() != original_query_meta_.dimension()) {
+        if (RestoreRawFlatVectorToFp32(vector, vector_item.meta_,
+                                       original_query_meta_,
+                                       &normalized_vector) != 0) {
+          LOG_ERROR("Failed to restore native Flat vector for target reformer");
+          *result = IndexError_Runtime;
+          return;
+        }
+        vector = normalized_vector.data();
+      }
       IndexQueryMeta new_meta;
       if (target_streamer_reformer_->convert(vector, original_query_meta_,
                                              &new_vector, &new_meta) != 0) {
@@ -338,6 +418,14 @@ void MixedStreamerReducer::add_vec(int *result) {
         return;
       }
       vector = new_vector.data();
+    } else if (target_streamer_reformer_ == nullptr &&
+               (vector_item.meta_.data_type() !=
+                    target_streamer_query_meta.data_type() ||
+                vector_item.meta_.dimension() !=
+                    target_streamer_query_meta.dimension())) {
+      LOG_ERROR("Native Flat source and target metadata do not match");
+      *result = IndexError_Mismatch;
+      return;
     }
     // 1. no reformer: target_streamer_query_meta_ = original_query_meta_
     // 2. has reformer, matched(need_convert = false): use
@@ -379,9 +467,20 @@ void MixedStreamerReducer::add_vec_with_builder(int *result) {
     }
 
     const void *vector = vector_item.vec_.data();
-    std::string out_vector_buffer = std::string(
-        static_cast<const char *>(vector),
-        original_query_meta_.dimension() * original_query_meta_.unit_size());
+    std::string normalized_vector;
+    if (vector_item.meta_.data_type() != original_query_meta_.data_type() ||
+        vector_item.meta_.dimension() != original_query_meta_.dimension()) {
+      if (RestoreRawFlatVectorToFp32(vector, vector_item.meta_,
+                                     original_query_meta_,
+                                     &normalized_vector) != 0) {
+        LOG_ERROR("Failed to restore native Flat vector for target builder");
+        *result = IndexError_Runtime;
+        return;
+      }
+      vector = normalized_vector.data();
+    }
+    std::string out_vector_buffer(static_cast<const char *>(vector),
+                                  original_query_meta_.element_size());
     PushToDocCache(original_query_meta_, (uint32_t)vector_item.pkey_,
                    out_vector_buffer);
   }

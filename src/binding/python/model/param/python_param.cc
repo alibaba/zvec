@@ -77,6 +77,21 @@ static std::string quantize_type_to_string(const QuantizeType type) {
   }
 }
 
+static std::string data_type_to_string(const DataType type) {
+  switch (type) {
+    case DataType::VECTOR_FP16:
+      return "VECTOR_FP16";
+    case DataType::VECTOR_FP32:
+      return "VECTOR_FP32";
+    case DataType::VECTOR_UINT8:
+      return "VECTOR_UINT8";
+    case DataType::UNDEFINED:
+      return "UNDEFINED";
+    default:
+      return "UNSUPPORTED";
+  }
+}
+
 template <typename T>
 T checked_cast(const py::handle &h, const std::string &vector_field,
                const std::string &expected_type) {
@@ -530,6 +545,11 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
+    use_flat_contiguous_memory (bool): Whether the Flat reference index used
+        for refine should use contiguous vector memory.
+    flat_data_type (DataType): Physical data type stored by the Flat reference
+        index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
+        ``VECTOR_UINT8`` are also supported.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -546,10 +566,13 @@ Examples:
   hnsw_params
       .def(py::init([](MetricType metric_type, int m, int ef_construction,
                        QuantizeType quantize_type, bool use_contiguous_memory,
-                       QuantizerParam quantizer_param) {
+                       QuantizerParam quantizer_param,
+                       bool use_flat_contiguous_memory,
+                       DataType flat_data_type) {
              return std::make_shared<HnswIndexParams>(
                  metric_type, m, ef_construction, quantize_type,
-                 use_contiguous_memory, quantizer_param);
+                 use_contiguous_memory, quantizer_param,
+                 use_flat_contiguous_memory, flat_data_type);
            }),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
@@ -557,7 +580,9 @@ Examples:
                core_interface::kDefaultHnswEfConstruction,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_contiguous_memory") = false,
-           py::arg("quantizer_param") = QuantizerParam())
+           py::arg("quantizer_param") = QuantizerParam(),
+           py::arg("use_flat_contiguous_memory") = false,
+           py::arg("flat_data_type") = DataType::VECTOR_FP32)
       .def_property_readonly(
           "m", &HnswIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -569,6 +594,14 @@ Examples:
           "bool: Whether to allocate a single contiguous memory arena for "
           "all HNSW graph nodes. Improves cache locality and search "
           "throughput at the cost of peak memory usage. Defaults to False.")
+      .def_property_readonly(
+          "use_flat_contiguous_memory",
+          &HnswIndexParams::use_flat_contiguous_memory,
+          "bool: Whether the Flat reference index uses contiguous memory for "
+          "refine.")
+      .def_property_readonly(
+          "flat_data_type", &HnswIndexParams::flat_data_type,
+          "DataType: Physical data type of the Flat reference index.")
       .def(
           "to_dict",
           [](const HnswIndexParams &self) -> py::dict {
@@ -580,6 +613,9 @@ Examples:
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
+            dict["use_flat_contiguous_memory"] =
+                self.use_flat_contiguous_memory();
+            dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
@@ -599,24 +635,31 @@ Examples:
                    quantize_type_to_string(self.quantize_type()) +
                    ", \"use_contiguous_memory\":" +
                    (self.use_contiguous_memory() ? "true" : "false") +
+                   ", \"use_flat_contiguous_memory\":" +
+                   (self.use_flat_contiguous_memory() ? "true" : "false") +
+                   ", \"flat_data_type\":\"" +
+                   data_type_to_string(self.flat_data_type()) + "\"" +
                    ", \"quantizer_param\":{" + "\"enable_rotate\":" +
                    (self.quantizer_param().enable_rotate() ? "true" : "false") +
                    "}}";
           })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.m(),
-                                  self.ef_construction(), self.quantize_type(),
-                                  self.use_contiguous_memory(),
-                                  self.quantizer_param().enable_rotate());
+            return py::make_tuple(
+                self.metric_type(), self.m(), self.ef_construction(),
+                self.quantize_type(), self.use_contiguous_memory(),
+                self.quantizer_param().enable_rotate(),
+                self.use_flat_contiguous_memory(), self.flat_data_type());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6)
+            if (t.size() < 5 || t.size() > 8)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<QuantizeType>(), t[4].cast<bool>(), qp);
+                t[3].cast<QuantizeType>(), t[4].cast<bool>(), qp,
+                t.size() >= 7 ? t[6].cast<bool>() : false,
+                t.size() >= 8 ? t[7].cast<DataType>() : DataType::VECTOR_FP32);
           }));
 
   // binding hnsw rabitq index params
@@ -841,6 +884,11 @@ Attributes:
     two_pass_build (bool): If True, build the initial graph with alpha=1.0,
         then run one full-graph pass with the configured alpha. Default is
         False.
+    use_flat_contiguous_memory (bool): Whether the Flat reference index used
+        for refine should use contiguous vector memory.
+    flat_data_type (DataType): Physical data type stored by the Flat reference
+        index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
+        ``VECTOR_UINT8`` are also supported.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -853,16 +901,18 @@ Examples:
     ... )
 )pbdoc");
   vamana_params
-      .def(py::init([](MetricType metric_type, int max_degree,
-                       int search_list_size, float alpha, bool saturate_graph,
-                       bool use_contiguous_memory, bool use_id_map,
-                       QuantizeType quantize_type,
-                       QuantizerParam quantizer_param, bool two_pass_build) {
-             return std::make_shared<VamanaIndexParams>(
-                 metric_type, max_degree, search_list_size, alpha,
-                 saturate_graph, use_contiguous_memory, use_id_map,
-                 quantize_type, quantizer_param, two_pass_build);
-           }),
+      .def(py::init(
+               [](MetricType metric_type, int max_degree, int search_list_size,
+                  float alpha, bool saturate_graph, bool use_contiguous_memory,
+                  bool use_id_map, QuantizeType quantize_type,
+                  QuantizerParam quantizer_param, bool two_pass_build,
+                  bool use_flat_contiguous_memory, DataType flat_data_type) {
+                 return std::make_shared<VamanaIndexParams>(
+                     metric_type, max_degree, search_list_size, alpha,
+                     saturate_graph, use_contiguous_memory, use_id_map,
+                     quantize_type, quantizer_param, two_pass_build,
+                     use_flat_contiguous_memory, flat_data_type);
+               }),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -874,7 +924,9 @@ Examples:
            py::arg("use_id_map") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
-           py::arg("two_pass_build") = false)
+           py::arg("two_pass_build") = false,
+           py::arg("use_flat_contiguous_memory") = false,
+           py::arg("flat_data_type") = DataType::VECTOR_FP32)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -900,6 +952,14 @@ Examples:
           "two_pass_build", &VamanaIndexParams::two_pass_build,
           "bool: Whether to run the full-graph second Vamana construction "
           "pass.")
+      .def_property_readonly(
+          "use_flat_contiguous_memory",
+          &VamanaIndexParams::use_flat_contiguous_memory,
+          "bool: Whether the Flat reference index uses contiguous memory for "
+          "refine.")
+      .def_property_readonly(
+          "flat_data_type", &VamanaIndexParams::flat_data_type,
+          "DataType: Physical data type of the Flat reference index.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -913,6 +973,9 @@ Examples:
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             dict["use_id_map"] = self.use_id_map();
             dict["two_pass_build"] = self.two_pass_build();
+            dict["use_flat_contiguous_memory"] =
+                self.use_flat_contiguous_memory();
+            dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
@@ -942,6 +1005,11 @@ Examples:
                    std::string(self.use_id_map() ? "true" : "false") +
                    ", \"two_pass_build\":" +
                    std::string(self.two_pass_build() ? "true" : "false") +
+                   ", \"use_flat_contiguous_memory\":" +
+                   std::string(self.use_flat_contiguous_memory() ? "true"
+                                                                 : "false") +
+                   ", \"flat_data_type\":\"" +
+                   data_type_to_string(self.flat_data_type()) + "\"" +
                    ", \"quantize_type\":\"" +
                    quantize_type_to_string(self.quantize_type()) +
                    "\", \"quantizer_param\":{" + "\"enable_rotate\":" +
@@ -955,18 +1023,21 @@ Examples:
                 self.alpha(), self.saturate_graph(),
                 self.use_contiguous_memory(), self.use_id_map(),
                 self.quantize_type(), self.quantizer_param().enable_rotate(),
-                self.two_pass_build());
+                self.two_pass_build(), self.use_flat_contiguous_memory(),
+                self.flat_data_type());
           },
           [](py::tuple t) {
-            if (t.size() != 8 && t.size() != 9 && t.size() != 10)
+            if (t.size() < 8 || t.size() > 12)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             QuantizerParam qp(t.size() >= 9 ? t[8].cast<bool>() : false);
-            bool two_pass_build = t.size() == 10 ? t[9].cast<bool>() : false;
+            bool two_pass_build = t.size() >= 10 ? t[9].cast<bool>() : false;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<QuantizeType>(), qp,
-                two_pass_build);
+                two_pass_build, t.size() >= 11 ? t[10].cast<bool>() : false,
+                t.size() >= 12 ? t[11].cast<DataType>()
+                               : DataType::VECTOR_FP32);
           }));
 
   // FlatIndexParams
@@ -997,13 +1068,16 @@ Examples:
 )pbdoc");
   flat_params
       .def(py::init([](MetricType metric_type, QuantizeType quantize_type,
-                       QuantizerParam quantizer_param) {
+                       QuantizerParam quantizer_param,
+                       bool use_contiguous_memory) {
              return std::make_shared<FlatIndexParams>(
-                 metric_type, quantize_type, quantizer_param);
+                 metric_type, quantize_type, quantizer_param,
+                 use_contiguous_memory);
            }),
            py::arg("metric_type") = MetricType::IP,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
+           py::arg("use_contiguous_memory") = false,
            R"pbdoc(
 Constructs a FlatIndexParam instance.
 
@@ -1014,6 +1088,9 @@ Args:
     quantizer_param (QuantizerParam, optional): Quantizer configuration.
         Defaults to QuantizerParam().
 )pbdoc")
+      .def_property_readonly(
+          "use_contiguous_memory", &FlatIndexParams::use_contiguous_memory,
+          "bool: Whether Flat uses contiguous vector memory.")
       .def(
           "to_dict",
           [](const FlatIndexParams &self) -> py::dict {
@@ -1024,6 +1101,7 @@ Args:
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
+            dict["use_contiguous_memory"] = self.use_contiguous_memory();
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -1037,19 +1115,22 @@ Args:
                    quantize_type_to_string(self.quantize_type()) +
                    ", \"quantizer_param\":{" + "\"enable_rotate\":" +
                    (self.quantizer_param().enable_rotate() ? "true" : "false") +
-                   "}}";
+                   "}, \"use_contiguous_memory\":" +
+                   (self.use_contiguous_memory() ? "true" : "false") + "}";
           })
       .def(py::pickle(
           [](const FlatIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+                                  self.quantizer_param().enable_rotate(),
+                                  self.use_contiguous_memory());
           },
           [](py::tuple t) {
-            if (t.size() != 2 && t.size() != 3)
+            if (t.size() < 2 || t.size() > 4)
               throw std::runtime_error("Invalid state for FlatIndexParams");
             QuantizerParam qp(t.size() >= 3 ? t[2].cast<bool>() : false);
             return std::make_shared<FlatIndexParams>(
-                t[0].cast<MetricType>(), t[1].cast<QuantizeType>(), qp);
+                t[0].cast<MetricType>(), t[1].cast<QuantizeType>(), qp,
+                t.size() >= 4 ? t[3].cast<bool>() : false);
           }));
 
   // IVFIndexParams
