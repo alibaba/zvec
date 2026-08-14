@@ -393,7 +393,7 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   ailego::ElapsedTime timer;
 
   if (!quantizer_) {
-    LOG_ERROR("Quantizer not trained");
+    LOG_ERROR("Quantizer not exist");
     return IndexError_NoReady;
   }
 

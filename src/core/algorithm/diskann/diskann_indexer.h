@@ -34,7 +34,8 @@ class DiskAnnIndexer {
 
  public:
   //! Initialize with the loaded entity and the quantizer constructed by
-  //! the searcher/streamer (see DiskAnnSearcherEntity::read_pq_quantizer_blob).
+  //! the searcher/streamer (see
+  //! DiskAnnSearcherEntity::read_pq_quantizer_meta_buffer).
   //! Any turbo::Quantizer works here; PQ is just the current default.
   int init(DiskAnnSearcherEntity &entity, turbo::Quantizer::Pointer quantizer);
   int load_cache_list(const std::vector<diskann_id_t> &node_list);
