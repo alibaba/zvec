@@ -438,13 +438,13 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
           break;
         }
         task_group->submit(
-            ailego::Closure::New(this, &DiskAnnBuilder::encode_pq_range,
+            ailego::Closure::New(this, &DiskAnnBuilder::encode_pq_batch,
                                  static_cast<const uint8_t *>(block.data()),
                                  static_cast<uint64_t>(id), begin, end));
       }
       task_group->wait_finish();
     } else {
-      encode_pq_range(block.data(), id, 0, cur);
+      encode_pq_batch(block.data(), id, 0, cur);
     }
 
     id += cur;
@@ -461,7 +461,7 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   return 0;
 }
 
-void DiskAnnBuilder::encode_pq_range(const uint8_t *block_data,
+void DiskAnnBuilder::encode_pq_batch(const uint8_t *block_data,
                                      uint64_t block_start_id, uint64_t begin,
                                      uint64_t end) {
   const size_t elem_size = build_meta_.element_size();

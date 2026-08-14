@@ -59,7 +59,7 @@ class DiskAnnBuilder : public IndexBuilder {
   int train_quantized_data(IndexThreads::Pointer threads);
   int generate_quantized_data(IndexThreads::Pointer threads);
 
-  void encode_pq_range(const uint8_t *block_data, uint64_t block_start_id,
+  void encode_pq_batch(const uint8_t *block_data, uint64_t block_start_id,
                        uint64_t begin, uint64_t end);
   int build_internal(IndexThreads::Pointer threads);
   int prune_internal(IndexThreads::Pointer threads);
@@ -90,6 +90,8 @@ class DiskAnnBuilder : public IndexBuilder {
   constexpr static uint32_t kDefaultListSize = 50U;
   constexpr static uint32_t kDefaultMaxDegree = 100U;
   constexpr static uint32_t kDefaultPqChunkNum = -1U;
+  constexpr static uint32_t kDefaultMaxTrainSampleCount = 200000U;
+  constexpr static double kDefaultTrainSampleRatio = 1.0;
 
   std::string data_file_;
 
@@ -100,8 +102,8 @@ class DiskAnnBuilder : public IndexBuilder {
   uint32_t max_pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t build_thread_count_{0};
-  uint32_t max_train_sample_count_{200000};
-  double train_sample_ratio_{1.0};
+  uint32_t max_train_sample_count_{kDefaultMaxTrainSampleCount};
+  double train_sample_ratio_{kDefaultTrainSampleRatio};
   std::string universal_label_{""};
   std::string codebook_prefix_{""};
   std::string index_path_prefix_{"./diskann"};
