@@ -78,8 +78,16 @@ struct DocIterator::Impl {
   int gdoc_col{-1};
   int row_id_col{-1};
   std::vector<std::pair<const FieldSchema *, int>> forward_cols;
-  // Docs materialized column-by-column from the current batch; Next() hands
-  // them out one at a time. Peak memory stays bounded by one batch.
+  // Arrow batch currently being materialized. Memory/IPC stores emit small
+  // batches, but a Parquet scan returns a whole row group per ReadNext (up
+  // to ~1M rows), so docs are materialized from it in bounded windows.
+  std::shared_ptr<arrow::RecordBatch> current_batch;
+  // First row of the next materialization window within current_batch.
+  int64_t batch_offset{0};
+  // Docs of the current window, materialized column by column; Next() hands
+  // them out one at a time. Peak doc memory stays bounded by one window
+  // (at most kMaxRecordBatchNumRows rows), regardless of the batch size the
+  // underlying store produces.
   std::vector<Doc::Ptr> batch_docs;
   size_t current_row{0};
   // First materialization failure; sticky so a caller that ignores the

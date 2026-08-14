@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <arrow/api.h>
 #include <zvec/db/doc_iterator.h>
 #include "db/common/constants.h"
@@ -60,14 +61,16 @@ Status ResolveReaderColumns(DocIterator::Impl *impl,
   return Status::OK();
 }
 
-// Materialize every row of `batch` into impl->batch_docs, column by column:
-// the shared column-level converter dispatches the field type and checks
-// null_count() once per column, and each vector field is fetched in one pass.
-// Peak memory stays bounded by one batch of docs (the stores cap batches at
-// kMaxRecordBatchNumRows rows).
-Status MaterializeBatch(DocIterator::Impl *impl,
-                        const std::shared_ptr<arrow::RecordBatch> &batch) {
-  int64_t num_rows = batch->num_rows();
+// Materialize rows [begin, end) of impl->current_batch into impl->batch_docs,
+// column by column: the shared column-level converter dispatches the field
+// type and checks null_count() once per column, and each vector field is
+// fetched in one pass. The window — not the batch — is what bounds doc
+// materialization: memory/IPC stores emit small batches, but a Parquet scan
+// returns a whole row group per ReadNext (up to ~1M rows), far more than
+// should ever be materialized at once.
+Status MaterializeWindow(DocIterator::Impl *impl, int64_t begin, int64_t end) {
+  const auto &batch = *impl->current_batch;
+  int64_t num_rows = end - begin;
   impl->batch_docs.clear();
   impl->batch_docs.reserve(num_rows);
   for (int64_t i = 0; i < num_rows; i++) {
@@ -76,17 +79,19 @@ Status MaterializeBatch(DocIterator::Impl *impl,
 
   // System columns (types validated in ResolveReaderColumns).
   const auto *uids = static_cast<const arrow::StringArray *>(
-      batch->columns()[impl->uid_col].get());
+      batch.columns()[impl->uid_col].get());
   const auto *gdocs = static_cast<const arrow::UInt64Array *>(
-      batch->columns()[impl->gdoc_col].get());
+      batch.columns()[impl->gdoc_col].get());
   for (int64_t i = 0; i < num_rows; i++) {
-    impl->batch_docs[i]->set_pk(std::string(uids->GetView(i)));
-    impl->batch_docs[i]->set_doc_id(gdocs->Value(i));
+    impl->batch_docs[i]->set_pk(std::string(uids->GetView(begin + i)));
+    impl->batch_docs[i]->set_doc_id(gdocs->Value(begin + i));
   }
 
   for (const auto &[field, col] : impl->forward_cols) {
-    auto s = ConvertArrowColumnToDocFields(batch->columns()[col].get(), *field,
-                                           impl->batch_docs.begin());
+    // Zero-copy slice narrows the column to the window rows.
+    auto s = ConvertArrowColumnToDocFields(
+        batch.columns()[col]->Slice(begin, num_rows).get(), *field,
+        impl->batch_docs.begin());
     if (!s.ok()) {
       return s;
     }
@@ -94,7 +99,7 @@ Status MaterializeBatch(DocIterator::Impl *impl,
 
   if (impl->row_id_col >= 0) {
     const auto *row_ids = static_cast<const arrow::UInt64Array *>(
-        batch->columns()[impl->row_id_col].get());
+        batch.columns()[impl->row_id_col].get());
     const auto &seg = impl->segments[impl->current_segment_index];
     for (const auto &field : impl->schema->vector_fields()) {
       auto indexer = seg->get_combined_vector_indexer(field->name());
@@ -105,7 +110,8 @@ Status MaterializeBatch(DocIterator::Impl *impl,
                                      field->name());
       }
       for (int64_t i = 0; i < num_rows; i++) {
-        auto fetched = indexer->Fetch(static_cast<uint32_t>(row_ids->Value(i)));
+        auto fetched =
+            indexer->Fetch(static_cast<uint32_t>(row_ids->Value(begin + i)));
         if (!fetched.has_value()) {
           // Propagate the failure instead of returning a doc with a
           // silently missing vector.
@@ -150,56 +156,76 @@ Result<Doc::Ptr> DocIterator::Next() {
     return tl::make_unexpected(impl_->error);
   }
 
-  // Materialize the next batch if the current one is exhausted, advancing
-  // across segments. Readers are opened lazily — at most one segment's
-  // reader is open at any time, and it is released as soon as that segment
-  // is done.
-  if (impl_->current_row >= impl_->batch_docs.size()) {
-    bool loaded = false;
-    while (impl_->current_segment_index < impl_->segments.size()) {
-      if (!impl_->current_reader) {
-        auto scalar_reader =
-            impl_->segments[impl_->current_segment_index]->scan(
-                impl_->scan_columns);
-        if (!scalar_reader) {
+  // Hand out the next doc, materializing a new window when the current one
+  // is exhausted — from the current batch while it has rows left, otherwise
+  // from the next batch, advancing across segments. Readers are opened
+  // lazily — at most one segment's reader is open at any time, and it is
+  // released as soon as that segment is done.
+  while (impl_->current_row >= impl_->batch_docs.size()) {
+    if (!impl_->current_batch ||
+        impl_->batch_offset >= impl_->current_batch->num_rows()) {
+      // Current batch fully materialized: load the next non-empty one.
+      impl_->current_batch.reset();
+      bool loaded = false;
+      while (impl_->current_segment_index < impl_->segments.size()) {
+        if (!impl_->current_reader) {
+          auto scalar_reader =
+              impl_->segments[impl_->current_segment_index]->scan(
+                  impl_->scan_columns);
+          if (!scalar_reader) {
+            return tl::make_unexpected(
+                Status::InternalError("Segment::scan failed during iteration"));
+          }
+          impl_->current_reader =
+              FilteringReader::Make(std::move(scalar_reader), impl_->filter);
+          auto rs = ResolveReaderColumns(impl_.get(),
+                                         *impl_->current_reader->schema());
+          if (!rs.ok()) {
+            return tl::make_unexpected(rs);
+          }
+        }
+        std::shared_ptr<arrow::RecordBatch> batch;
+        auto status = impl_->current_reader->ReadNext(&batch);
+        if (!status.ok()) {
           return tl::make_unexpected(
-              Status::InternalError("Segment::scan failed during iteration"));
+              Status::InternalError("ReadNext failed: ", status.ToString()));
         }
-        impl_->current_reader =
-            FilteringReader::Make(std::move(scalar_reader), impl_->filter);
-        auto rs =
-            ResolveReaderColumns(impl_.get(), *impl_->current_reader->schema());
-        if (!rs.ok()) {
-          return tl::make_unexpected(rs);
+        if (batch && batch->num_rows() > 0) {
+          impl_->current_batch = std::move(batch);
+          impl_->batch_offset = 0;
+          loaded = true;
+          break;
         }
-      }
-      std::shared_ptr<arrow::RecordBatch> batch;
-      auto status = impl_->current_reader->ReadNext(&batch);
-      if (!status.ok()) {
-        return tl::make_unexpected(
-            Status::InternalError("ReadNext failed: ", status.ToString()));
-      }
-      if (batch && batch->num_rows() > 0) {
-        auto ms = MaterializeBatch(impl_.get(), batch);
-        if (!ms.ok()) {
-          // Sticky failure: drop the partially filled batch and keep
-          // returning the error instead of handing out incomplete docs.
-          impl_->batch_docs.clear();
-          impl_->error = ms;
-          return tl::make_unexpected(ms);
+        if (!batch) {
+          // Reader signaled EOF: release it and move to the next segment.
+          impl_->current_reader.reset();
+          impl_->current_segment_index++;
         }
-        loaded = true;
-        break;
+        // A non-null empty batch is simply skipped on the next ReadNext.
       }
-      if (!batch) {
-        // Reader signaled EOF: release it and move to the next segment.
-        impl_->current_reader.reset();
-        impl_->current_segment_index++;
+      if (!loaded) {
+        return Doc::Ptr(nullptr);  // EOF: all segments consumed
       }
-      // A non-null empty batch is simply skipped on the next ReadNext.
     }
-    if (!loaded) {
-      return Doc::Ptr(nullptr);  // EOF: all segments consumed
+
+    // Materialize the next window (at most kMaxRecordBatchNumRows docs), so
+    // a huge batch — e.g. a whole Parquet row group — is never materialized
+    // in one go.
+    int64_t begin = impl_->batch_offset;
+    int64_t end = std::min(begin + kMaxRecordBatchNumRows,
+                           impl_->current_batch->num_rows());
+    auto ms = MaterializeWindow(impl_.get(), begin, end);
+    if (!ms.ok()) {
+      // Sticky failure: drop the partially filled window and keep
+      // returning the error instead of handing out incomplete docs.
+      impl_->batch_docs.clear();
+      impl_->error = ms;
+      return tl::make_unexpected(ms);
+    }
+    impl_->batch_offset = end;
+    if (end >= impl_->current_batch->num_rows()) {
+      // The window covered the batch tail: release the Arrow batch early.
+      impl_->current_batch.reset();
     }
     impl_->current_row = 0;
   }

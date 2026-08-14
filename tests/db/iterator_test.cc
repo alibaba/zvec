@@ -843,20 +843,22 @@ TEST_F(IteratorTest, Performance100k) {
   collection->Destroy();
 }
 
-// Multi-batch traversal with vectors on the Parquet forward store.
-TEST_F(IteratorTest, ParquetMultiBatchVectorAlignment) {
+// Windowed materialization on the Parquet forward store: one Parquet
+// ReadNext returns a whole row group (10000 rows here — far more than the
+// 4096-row materialization window), so this traversal exercises several
+// windows within a single Arrow batch.
+TEST_F(IteratorTest, ParquetLargeRowGroupWindowedMaterialization) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;
-  // Parquet forward store: the scan spans many batches, so per-batch
-  // materialization must keep vectors aligned with their rows throughout.
+  // Parquet forward store (mmap disabled selects the buffer-pool store).
   options.enable_mmap_ = false;
 
   auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  const int N = 10000;  // spans multiple 4096-row batches
+  const int N = 10000;  // single row group spanning multiple windows
   const int kBatch = 1000;
   for (int base = 0; base < N; base += kBatch) {
     std::vector<Doc> docs;
@@ -880,7 +882,7 @@ TEST_F(IteratorTest, ParquetMultiBatchVectorAlignment) {
     auto doc = r.value();
 
     // Vector values must stay aligned with the scalar id across every
-    // prefetch-window refill (window alignment is the failure mode here).
+    // window boundary (window misalignment is the failure mode here).
     auto id32 = doc->get<int32_t>("int32");
     ASSERT_TRUE(id32.has_value());
     uint64_t id = static_cast<uint64_t>(*id32);
