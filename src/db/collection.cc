@@ -2282,17 +2282,15 @@ Status CollectionImpl::Scan(const IteratorOptions &options,
                             CollectionSchema::Ptr &schema,
                             std::vector<std::string> &scan_columns,
                             IndexFilter::Ptr &filter) {
-  // The caller (CreateIterator) holds schema_handle_mtx_ (shared), which
-  // blocks schema changes and close/destroy (exclusive) while allowing
-  // concurrent Query/Fetch; the lock is then transferred into the iterator
-  // and held until Close(). Snapshot consistency does not depend on
-  // blocking Optimize: the segment list and the delete-store clone are
-  // taken atomically under write_mtx_ below.
+  // The caller (CreateIterator) holds schema_handle_mtx_ (shared) and
+  // transfers it into the iterator, so schema changes, Optimize and
+  // close/destroy are excluded for the iterator's whole lifetime. The
+  // snapshot below isolates what the lock does NOT block — concurrent
+  // writes and deletes — by fixing the segment list and cloning the
+  // delete store atomically under write_mtx_.
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
-  // Capture the schema under schema_handle_mtx_ so the iterator interprets
-  // batches with the same schema used to build the reader (avoids a race with
-  // a concurrent schema change between Scan() and CreateIterator()).
+  // The iterator interprets batches with the schema captured here.
   schema = schema_;
 
   // Validate options BEFORE sealing the writing segment, so invalid options
