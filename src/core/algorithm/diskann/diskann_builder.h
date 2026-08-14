@@ -58,6 +58,9 @@ class DiskAnnBuilder : public IndexBuilder {
  private:
   int train_quantized_data(IndexThreads::Pointer threads);
   int generate_quantized_data(IndexThreads::Pointer threads);
+
+  void encode_pq_range(const uint8_t *block_data, uint64_t block_start_id,
+                       uint64_t begin, uint64_t end);
   int build_internal(IndexThreads::Pointer threads);
   int prune_internal(IndexThreads::Pointer threads);
 

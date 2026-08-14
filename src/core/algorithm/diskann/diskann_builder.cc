@@ -27,6 +27,7 @@
 #include "algorithm/cluster/vector_mean.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
+#include "diskann_util.h"
 
 namespace zvec {
 namespace core {
@@ -384,7 +385,7 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
   return 0;
 }
 
-int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer /*threads*/) {
+int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   LOG_INFO("Starting PQ Generate: Query Memory Limit: %lf, Chunk Num: %u",
            memory_limit_, pq_chunk_num_);
 
@@ -405,10 +406,48 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer /*threads*/) {
     return IndexError_Runtime;
   }
 
+  const size_t elem_size = build_meta_.element_size();
+  const size_t thread_count =
+      threads ? std::max<size_t>(1, threads->count()) : 1;
+  constexpr size_t kEncodeBatchSize = 65536;
+  std::vector<uint8_t> block(kEncodeBatchSize * elem_size);
+
   size_t id = 0;
-  for (; iter->is_valid() && id < num_vecs; iter->next(), ++id) {
-    // The quantizer widens FP16 input internally — pass raw data directly.
-    quantizer_->quantize_data(iter->data(), codes.data() + id * pq_chunk_num_);
+  while (id < num_vecs) {
+    size_t cur = 0;
+    for (; cur < kEncodeBatchSize && id + cur < num_vecs && iter->is_valid();
+         iter->next(), ++cur) {
+      // The quantizer widens FP16 input internally — pass raw data directly.
+      std::memcpy(block.data() + cur * elem_size, iter->data(), elem_size);
+    }
+    if (cur == 0) {
+      break;
+    }
+
+    if (thread_count > 1) {
+      auto task_group = threads->make_group();
+      if (!task_group) {
+        LOG_ERROR("Failed to create task group");
+        return IndexError_Runtime;
+      }
+      size_t stripe = DiskAnnUtil::div_round_up(cur, thread_count);
+      for (size_t t = 0; t < thread_count; ++t) {
+        uint64_t begin = t * stripe;
+        uint64_t end = std::min<uint64_t>(begin + stripe, cur);
+        if (begin >= end) {
+          break;
+        }
+        task_group->submit(
+            ailego::Closure::New(this, &DiskAnnBuilder::encode_pq_range,
+                                 static_cast<const uint8_t *>(block.data()),
+                                 static_cast<uint64_t>(id), begin, end));
+      }
+      task_group->wait_finish();
+    } else {
+      encode_pq_range(block.data(), id, 0, cur);
+    }
+
+    id += cur;
   }
 
   if (id != num_vecs) {
@@ -420,6 +459,18 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer /*threads*/) {
   LOG_INFO("Generate Quantized Data Done, time: %zu ms", pq_time);
 
   return 0;
+}
+
+void DiskAnnBuilder::encode_pq_range(const uint8_t *block_data,
+                                     uint64_t block_start_id, uint64_t begin,
+                                     uint64_t end) {
+  const size_t elem_size = build_meta_.element_size();
+  auto &codes = entity_.block_compressed_data();
+  for (uint64_t i = begin; i < end; ++i) {
+    quantizer_->quantize_data(
+        block_data + i * elem_size,
+        codes.data() + (block_start_id + i) * pq_chunk_num_);
+  }
 }
 
 void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,

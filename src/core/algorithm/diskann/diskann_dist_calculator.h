@@ -168,9 +168,9 @@ class DistCalculator {
     data_quantizer_.reset();
 
     const char *name = nullptr;
-    if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
-      name = "Fp32Quantizer";
-    } else if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
+    // FP32 stays on the SIMD-optimized ailego metric: the turbo FP32
+    // kernels are scalar-only and much slower for graph build / rerank.
+    if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
       name = "Fp16Quantizer";
     }
     if (name != nullptr) {
