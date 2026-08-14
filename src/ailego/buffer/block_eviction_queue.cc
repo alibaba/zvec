@@ -248,12 +248,19 @@ bool BlockEvictionQueue::evict_block(BlockType &item, size_t &attempts,
 
 void BlockEvictionQueue::recycle() {
   BlockType item;
-  // Bound foreground work when CLOCK requeues hot pages.
-  const size_t max_attempts = kEvictQueueCapacity * kQueueCount + 16;
+  // A foreground page fault must not scan the whole global queue while its
+  // page remains in kLoadingRefCount. Try a small CLOCK sample and let the
+  // caller fall back or retry; background reclaim handles deep queue walks.
+  static constexpr size_t kForegroundReclaimAttempts = 20;
+  const size_t max_attempts = kForegroundReclaimAttempts;
   size_t attempts = 0;
   bool recovered = false;
   bool age_protected = true;
-  while (MemoryLimitPool::get_instance().is_full() && attempts < max_attempts) {
+  // Page allocations can hit their admission limit before the process-wide
+  // pool is full because part of the budget is reserved for external cache
+  // consumers. Stop immediately after enough room for one page is reclaimed.
+  while (MemoryLimitPool::get_instance().is_page_full() &&
+         attempts < max_attempts) {
     if (!evict_block(item, attempts, max_attempts, age_protected)) {
       if (attempts >= max_attempts) {
         break;
@@ -367,6 +374,24 @@ bool MemoryLimitPool::try_reserve_used(size_t bytes) {
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
   size_t used = used_size_.load(std::memory_order_relaxed);
   while (used <= capacity && bytes <= capacity - used) {
+    if (used_size_.compare_exchange_weak(used, used + bytes,
+                                         std::memory_order_relaxed,
+                                         std::memory_order_relaxed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MemoryLimitPool::try_reserve_page_used(size_t bytes) {
+  const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+  const size_t reserve = page_admission_reserve();
+  const size_t external =
+      external_used_size_.load(std::memory_order_relaxed);
+  const size_t remaining_reserve = reserve > external ? reserve - external : 0;
+  const size_t page_limit = capacity - remaining_reserve;
+  size_t used = used_size_.load(std::memory_order_relaxed);
+  while (used <= page_limit && bytes <= page_limit - used) {
     if (used_size_.compare_exchange_weak(used, used + bytes,
                                          std::memory_order_relaxed,
                                          std::memory_order_relaxed)) {
@@ -679,7 +704,10 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
                                          char *&buffer) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   buffer = nullptr;
-  if (buffer_size == 0 || !try_reserve_used(buffer_size)) {
+  const bool cacheable = is_cacheable_buffer_size(buffer_size);
+  if (buffer_size == 0 ||
+      !(cacheable ? try_reserve_page_used(buffer_size)
+                  : try_reserve_used(buffer_size))) {
     // Out of budget: wake the background evictor so the next attempt is
     // more likely to find a free buffer without inline eviction.
     high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
@@ -687,7 +715,6 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
     return false;
   }
 
-  const bool cacheable = is_cacheable_buffer_size(buffer_size);
   if (cacheable) {
     buffer = pop_free_buffer(pick_shard());
     if (buffer) {
@@ -861,13 +888,19 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   if (count == 0 || buffer_size == 0) return 0;
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+  const bool cacheable = is_cacheable_buffer_size(buffer_size);
+  const size_t reserve = cacheable ? page_admission_reserve() : 0;
+  const size_t external =
+      external_used_size_.load(std::memory_order_relaxed);
+  const size_t remaining_reserve = reserve > external ? reserve - external : 0;
+  const size_t admission_limit = capacity - remaining_reserve;
   size_t total_size = 0;
   size_t actual_count = count;
   size_t expected, desired;
   do {
     expected = used_size_.load(std::memory_order_relaxed);
-    if (expected >= capacity) return 0;
-    size_t avail = (capacity - expected) / buffer_size;
+    if (expected >= admission_limit) return 0;
+    size_t avail = (admission_limit - expected) / buffer_size;
     if (avail == 0) return 0;
     if (avail < actual_count) actual_count = avail;
     total_size = actual_count * buffer_size;
@@ -877,7 +910,6 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
 
   size_t acquired = 0;
   size_t s = pick_shard();
-  const bool cacheable = is_cacheable_buffer_size(buffer_size);
   if (cacheable) {
     while (acquired < actual_count) {
       out[acquired] = pop_free_buffer(s);

@@ -293,6 +293,40 @@ int HnswStreamerEntity::get_vector(
   return 0;
 }
 
+int HnswBufferPoolStreamerEntity::get_vector_for_prune(
+    const node_id_t *ids, uint32_t count,
+    std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
+  vec_blocks.resize(count);
+  if (count == 0) {
+    return 0;
+  }
+
+  // Unlike the search-time adaptive batch path, construction benefits from a
+  // batch even when every page is resident: each candidate is acquired only
+  // once and remains pinned through the entire prune.
+  static thread_local std::vector<IndexStorage::Segment::BorrowedRead>
+      batch_reads;
+  batch_reads.clear();
+  batch_reads.reserve(count);
+  const size_t read_size = vector_size();
+  for (uint32_t i = 0; i < count; ++i) {
+    auto loc = get_vector_chunk_loc(ids[i]);
+    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                       "invalid chunk offset");
+    batch_reads.emplace_back(node_chunks_[loc.first].get(), loc.second,
+                             read_size, &vec_blocks[i]);
+  }
+  if (ailego_unlikely(
+          !batch_reads.front().segment->read_borrowed_batch_immutable(
+              batch_reads.data(), batch_reads.size()))) {
+    LOG_ERROR("Batch read prune vectors failed, count=%u, read size=%zu",
+              count, read_size);
+    return IndexError_ReadData;
+  }
+  return 0;
+}
+
 key_t HnswStreamerEntity::get_key(node_id_t id) const {
   if (use_key_info_map_) {
     auto loc = get_key_chunk_loc(id);

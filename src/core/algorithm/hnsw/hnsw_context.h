@@ -299,6 +299,21 @@ class HnswContext : public IndexContext {
     return update_heap_;
   }
 
+  //! Reusable construction scratch.  Keeping this on the per-worker context
+  //! avoids function-local thread_local ownership and lets the algorithm pin
+  //! all candidates once for a full-neighbor diversity prune.
+  inline std::vector<node_id_t> &prune_ids() {
+    return prune_ids_;
+  }
+
+  inline std::vector<IndexStorage::MemoryBlock> &prune_blocks() {
+    return prune_blocks_;
+  }
+
+  inline std::vector<size_t> &prune_selected_indices() {
+    return prune_selected_indices_;
+  }
+
   inline LinearPool<dist_t> &pool() {
     return pool_;
   }
@@ -569,6 +584,9 @@ class HnswContext : public IndexContext {
   std::vector<IndexGroupDocumentList> group_results_{};
   TopkHeap topk_heap_{};
   TopkHeap update_heap_{};
+  std::vector<node_id_t> prune_ids_{};
+  std::vector<IndexStorage::MemoryBlock> prune_blocks_{};
+  std::vector<size_t> prune_selected_indices_{};
   std::vector<TopkHeap> level_topks_{};
   CandidateHeap candidates_{};
   VisitFilter visit_filter_{};

@@ -226,7 +226,7 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   inline size_t max_degree(level_t level) const {
-    return level == 0 ? neighbor_size_ : upper_neighbor_size_;
+    return neighbor_cnt(level);
   }
 
 
@@ -967,6 +967,10 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     return HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
         ids, count, vec_blocks);
   }
+
+  int get_vector_for_prune(
+      const node_id_t *ids, uint32_t count,
+      std::vector<IndexStorage::MemoryBlock> &vec_blocks) const;
 
   inline key_t get_key_typed(node_id_t id) const {
     return HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(id);

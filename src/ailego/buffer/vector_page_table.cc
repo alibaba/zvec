@@ -1713,7 +1713,10 @@ bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
     // Population releases its installation pin before this resolution pass.
     // Acquiring it here completes the original miss; it is not evidence of a
     // later reuse and must leave the page in probation.
-    pages[i] = acquire_buffer(page_ids[i], 50, /*record_reuse=*/false);
+    // A batch caller can roll back and use its direct-I/O fallback. Keep only
+    // one bounded foreground reclaim attempt here so a capacity miss does not
+    // leave the page in kLoadingRefCount while scanning the global queue.
+    pages[i] = acquire_buffer(page_ids[i], 1, /*record_reuse=*/false);
     if (!pages[i]) {
       for (size_t j = 0; j < count; ++j) {
         if (pages[j]) {
@@ -1789,11 +1792,23 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
     return false;
   }
 
-  char *page = static_cast<char *>(
-      ailego_aligned_malloc(kVectorPageSize, kVectorPageSize));
-  if (page == nullptr) {
+  struct BypassScratch {
+    ~BypassScratch() {
+      if (page != nullptr) {
+        ailego_free(page);
+      }
+    }
+    char *page{nullptr};
+  };
+  static thread_local BypassScratch scratch;
+  if (scratch.page == nullptr) {
+    scratch.page = static_cast<char *>(
+        ailego_aligned_malloc(kVectorPageSize, kVectorPageSize));
+  }
+  if (scratch.page == nullptr) {
     return false;
   }
+  char *page = scratch.page;
 
   size_t copied = 0;
   size_t io_requests = 0;
@@ -1819,8 +1834,6 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
     std::memcpy(buffer + copied, page + within_page, copy_size);
     copied += copy_size;
   }
-  ailego_free(page);
-
   if (ok) {
     record_bypass_read(length, io_requests);
   }

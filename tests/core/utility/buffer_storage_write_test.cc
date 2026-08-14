@@ -1158,6 +1158,122 @@ TEST_F(BufferStorageWriteTest, ImmutableBatchReadUsesWritableCache) {
   EXPECT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {
+  constexpr size_t kSegmentBytes = 68UL * 1024UL * 1024UL;
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("batch_pressure", kSegmentBytes));
+    auto segment = storage->get("batch_pressure");
+    ASSERT_TRUE(segment);
+    const char marker = 'Z';
+    ASSERT_EQ(1U, segment->write(kSegmentBytes - 1, &marker, 1));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto segment = storage->get("batch_pressure");
+  ASSERT_TRUE(segment);
+
+  const size_t page_size = ailego::kVectorPageSize;
+  const size_t first =
+      (page_size - segment->data_offset() % page_size) % page_size;
+  const size_t count = (segment->data_size() - first) / page_size;
+  ASSERT_GT(count * page_size, 64UL * 1024UL * 1024UL);
+
+  // Repeat the final (necessarily cold) page to verify fallback is deduplicated
+  // by page rather than issued once per vector occurrence.
+  constexpr size_t kDuplicateTailReads = 2;
+  std::vector<IndexStorage::MemoryBlock> blocks(count + kDuplicateTailReads);
+  std::vector<IndexStorage::Segment::BorrowedRead> reads;
+  reads.reserve(blocks.size());
+  for (size_t i = 0; i < count; ++i) {
+    reads.emplace_back(segment.get(), first + i * page_size, 1, &blocks[i]);
+  }
+  for (size_t i = 0; i < kDuplicateTailReads; ++i) {
+    reads.emplace_back(segment.get(), first + (count - 1) * page_size, 1,
+                       &blocks[count + i]);
+  }
+
+  auto pool = storage->vec_buffer_pool();
+  ASSERT_TRUE(pool);
+  const auto before = pool->stats();
+  ASSERT_TRUE(segment->read_borrowed_batch_immutable(reads.data(),
+                                                      reads.size()));
+  size_t cached_unique = 0;
+  size_t bypassed_unique = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const auto &block = blocks[i];
+    if (block.type_ == IndexStorage::MemoryBlock::MBT_BUFFERPOOL) {
+      ++cached_unique;
+    } else {
+      EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, block.type_);
+      ++bypassed_unique;
+    }
+    ASSERT_NE(nullptr, block.data());
+    EXPECT_EQ(0, *static_cast<const unsigned char *>(block.data()));
+  }
+  EXPECT_GT(cached_unique, 0U);
+  EXPECT_GT(bypassed_unique, 0U);
+  for (size_t i = 0; i < kDuplicateTailReads; ++i) {
+    EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[count + i].type_);
+    ASSERT_NE(nullptr, blocks[count + i].data());
+    EXPECT_EQ(0,
+              *static_cast<const unsigned char *>(blocks[count + i].data()));
+  }
+  const auto after = pool->stats();
+  EXPECT_EQ(bypassed_unique, after.bypass_reads - before.bypass_reads);
+  blocks.clear();
+  EXPECT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
+  constexpr size_t kSegmentBytes = 64UL * 1024UL * 1024UL;
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("batch_reserve", kSegmentBytes));
+    auto segment = storage->get("batch_reserve");
+    ASSERT_TRUE(segment);
+    const char marker = 'R';
+    ASSERT_EQ(1U, segment->write(kSegmentBytes - 1, &marker, 1));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto segment = storage->get("batch_reserve");
+  ASSERT_TRUE(segment);
+
+  const size_t page_size = ailego::kVectorPageSize;
+  const size_t first =
+      (page_size - segment->data_offset() % page_size) % page_size;
+  constexpr size_t kSharedReserveBytes = 4UL * 1024UL * 1024UL;
+  const size_t available_before =
+      ailego::MemoryLimitPool::get_instance().available();
+  ASSERT_GT(available_before, kSharedReserveBytes);
+  const size_t count =
+      (available_before - kSharedReserveBytes) / page_size + 1;
+  ASSERT_LT(first + count * page_size, segment->data_size());
+
+  std::vector<IndexStorage::MemoryBlock> blocks(count);
+  std::vector<IndexStorage::Segment::BorrowedRead> reads;
+  reads.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    reads.emplace_back(segment.get(), first + i * page_size, 1, &blocks[i]);
+  }
+
+  ASSERT_TRUE(segment->read_borrowed_batch_immutable(reads.data(),
+                                                      reads.size()));
+  EXPECT_GE(ailego::MemoryLimitPool::get_instance().available() + page_size,
+            kSharedReserveBytes);
+  blocks.clear();
+  EXPECT_EQ(0, storage->close());
+}
+
 // Repeated legacy pointer reads from a writable cached page must reuse the
 // pinned page. Retaining a separate 4K-aligned snapshot for every read grows
 // memory until close() and makes long Optimize workloads consume gigabytes.

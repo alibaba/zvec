@@ -371,18 +371,38 @@ class BufferStorage : public IndexStorage {
         size_t abs_offset{0};
         size_t first_page_index{0};
         size_t page_count{0};
+        bool copy_result{false};
         char *owned{nullptr};
+      };
+      struct PageUse {
+        size_t unique_index{0};
+        size_t state_index{0};
+        size_t source_offset{0};
+        size_t destination_offset{0};
+        size_t length{0};
       };
       struct BatchScratch {
         std::vector<BatchState> states;
         std::vector<ailego::block_id_t> page_ids;
+        std::vector<ailego::block_id_t> unique_page_ids;
         std::vector<char *> pages;
+        std::vector<PageUse> page_uses;
+        std::vector<ailego::block_id_t> admitted_ids;
+        std::vector<size_t> admitted_indices;
+        std::vector<char *> admitted_pages;
         std::vector<char> arena;  // reused cross-page scratch (arena mode)
+        std::vector<char> bypass_page;
       };
       static thread_local BatchScratch scratch;
 
       scratch.states.clear();
       scratch.page_ids.clear();
+      scratch.unique_page_ids.clear();
+      scratch.pages.clear();
+      scratch.page_uses.clear();
+      scratch.admitted_ids.clear();
+      scratch.admitted_indices.clear();
+      scratch.admitted_pages.clear();
       scratch.states.reserve(count);
       for (size_t i = 0; i < count; ++i) {
         if (reads[i].block != nullptr) {
@@ -399,8 +419,18 @@ class BufferStorage : public IndexStorage {
           state.owned = nullptr;
         }
       };
+      auto release_pages = [&]() {
+        for (size_t i = 0; i < scratch.pages.size(); ++i) {
+          if (scratch.pages[i] != nullptr) {
+            owner_->buffer_pool_handle_->release_one(
+                scratch.unique_page_ids[i]);
+            scratch.pages[i] = nullptr;
+          }
+        }
+      };
       auto fail = [&]() {
         cleanup_owned();
+        release_pages();
         for (size_t i = 0; i < count; ++i) {
           if (reads[i].block != nullptr) {
             reads[i].block->reset();
@@ -460,20 +490,129 @@ class BufferStorage : public IndexStorage {
         }
       }
 
-      // Cross-page values need an owned contiguous result, but their source
-      // pages still participate in the same batched AIO submission.
+      // Pin unique pages rather than one pin per vector occurrence. Besides
+      // removing duplicate work, this lets a pressured batch preserve all
+      // resident hits and fall back only for pages that really cannot be
+      // admitted. MemoryLimitPool itself enforces the shared non-page reserve;
+      // checking available bytes here used to turn the entire batch into
+      // per-vector bypass reads as soon as the cache reached that reserve.
+      scratch.unique_page_ids = scratch.page_ids;
+      std::sort(scratch.unique_page_ids.begin(),
+                scratch.unique_page_ids.end());
+      scratch.unique_page_ids.erase(
+          std::unique(scratch.unique_page_ids.begin(),
+                      scratch.unique_page_ids.end()),
+          scratch.unique_page_ids.end());
+      scratch.pages.assign(scratch.unique_page_ids.size(), nullptr);
+
+      // Take resident hits without I/O first, then admit only unique misses
+      // selected by the compact frequency policy. One-off cold pages bypass
+      // the cache, while repeated HNSW graph pages become resident without
+      // continuously replacing useful members of the working set.
+      for (size_t i = 0; i < scratch.unique_page_ids.size(); ++i) {
+        scratch.pages[i] = owner_->buffer_pool_->try_acquire_buffer(
+            scratch.unique_page_ids[i]);
+        if (scratch.pages[i] == nullptr) {
+          // Under pressure, a first-touch HNSW page is usually a one-off
+          // random candidate. Bypass it once; a repeated touch is admitted by
+          // the pool's compact frequency policy. This avoids replacing one
+          // useful resident page for every miss when the working set is much
+          // larger than the budget.
+          if (owner_->buffer_pool_->should_admit_page(
+                  scratch.unique_page_ids[i])) {
+            scratch.admitted_ids.push_back(scratch.unique_page_ids[i]);
+            scratch.admitted_indices.push_back(i);
+          }
+        }
+      }
+
+      // Bound each acquisition so an oversized diagnostic batch cannot hold
+      // the entire cache pinned. Linux retains batched AIO within each chunk;
+      // on macOS, failed capacity resolution stops after one chunk instead of
+      // rescanning the same pinned cache for every remaining page.
+      static constexpr size_t kAdmissionBatchPages = 64;
+      scratch.admitted_pages.resize(scratch.admitted_ids.size(), nullptr);
+      size_t admitted_begin = 0;
+      while (admitted_begin < scratch.admitted_ids.size()) {
+        const size_t admitted_count =
+            std::min(kAdmissionBatchPages,
+                     scratch.admitted_ids.size() - admitted_begin);
+        const bool acquired = owner_->buffer_pool_handle_->acquire_pages(
+            scratch.admitted_ids.data() + admitted_begin, admitted_count,
+            scratch.admitted_pages.data() + admitted_begin);
+        if (acquired) {
+          for (size_t j = 0; j < admitted_count; ++j) {
+            scratch.pages[scratch.admitted_indices[admitted_begin + j]] =
+                scratch.admitted_pages[admitted_begin + j];
+          }
+          admitted_begin += admitted_count;
+          continue;
+        }
+
+        // acquire_pages() rolls its pins back on failure, but it may have
+        // populated part of the chunk before capacity ran out. Re-pin those
+        // pages once so that useful work and concurrent single-flight loads
+        // are not discarded, then bypass the remaining cold pages.
+        for (size_t j = 0; j < admitted_count; ++j) {
+          const size_t admitted_index = admitted_begin + j;
+          const size_t unique_index =
+              scratch.admitted_indices[admitted_index];
+          scratch.pages[unique_index] =
+              owner_->buffer_pool_->try_acquire_buffer(
+                  scratch.admitted_ids[admitted_index]);
+        }
+        break;
+      }
+
+      // Close races with other query threads after admission and AIO. This is
+      // a hit-only probe; it never turns a bypass candidate into new I/O.
+      for (size_t i = 0; i < scratch.unique_page_ids.size(); ++i) {
+        if (scratch.pages[i] == nullptr) {
+          scratch.pages[i] = owner_->buffer_pool_->try_acquire_buffer(
+              scratch.unique_page_ids[i]);
+        }
+      }
+
+      auto unique_index_for = [&](ailego::block_id_t page_id) -> size_t {
+        auto it = std::lower_bound(scratch.unique_page_ids.begin(),
+                                   scratch.unique_page_ids.end(), page_id);
+        return static_cast<size_t>(it - scratch.unique_page_ids.begin());
+      };
+
+      // Cross-page values always need a contiguous copy. A single-page value
+      // only needs one when that page is on the bypass side of the hybrid
+      // batch; resident single-page values keep their normal zero-copy pin.
+      for (BatchState &state : scratch.states) {
+        state.copy_result = state.page_count > 1;
+        for (size_t j = 0; j < state.page_count && !state.copy_result; ++j) {
+          const size_t unique_index =
+              unique_index_for(scratch.page_ids[state.first_page_index + j]);
+          state.copy_result = scratch.pages[unique_index] == nullptr;
+        }
+      }
+
       if (cross_arena) {
-        // Reserve the whole batch's cross bytes once (no live pointers into the
-        // arena remain from the previous hop), then hand out bump slices. A
-        // batch over the cap falls back to malloc so the arena stays bounded.
+        // Reserve copied values once, then hand out bump slices. This includes
+        // single-page bypass values, so the direct-read page scratch can be
+        // immediately reused for the next unique miss.
         static constexpr size_t kArenaAlign = 64;
         size_t total = 0;
-        for (BatchState &state : scratch.states) {
-          if (state.page_count <= 1) {
+        for (const BatchState &state : scratch.states) {
+          if (!state.copy_result) {
             continue;
           }
-          total +=
-              (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+          const size_t length = state.request->length;
+          if (length > std::numeric_limits<size_t>::max() -
+                           (kArenaAlign - 1)) {
+            return fail();
+          }
+          const size_t aligned =
+              (length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+          if (aligned > kMaxArenaBytes - total) {
+            total = kMaxArenaBytes + 1;
+            break;
+          }
+          total += aligned;
         }
         batch_arena = total <= kMaxArenaBytes;
         if (batch_arena) {
@@ -482,18 +621,18 @@ class BufferStorage : public IndexStorage {
           }
           size_t off = 0;
           for (BatchState &state : scratch.states) {
-            if (state.page_count <= 1) {
+            if (!state.copy_result) {
               continue;
             }
             state.owned = scratch.arena.data() + off;
-            off +=
-                (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+            off += (state.request->length + kArenaAlign - 1) &
+                   ~(kArenaAlign - 1);
           }
         }
       }
       if (!batch_arena) {
         for (BatchState &state : scratch.states) {
-          if (state.page_count <= 1) {
+          if (!state.copy_result) {
             continue;
           }
           const size_t length = state.request->length;
@@ -509,11 +648,67 @@ class BufferStorage : public IndexStorage {
         }
       }
 
-      scratch.pages.assign(total_pages, nullptr);
-      if (total_pages != 0 &&
-          !owner_->buffer_pool_handle_->acquire_pages(
-              scratch.page_ids.data(), total_pages, scratch.pages.data())) {
-        return fail();
+      // Describe every copied fragment, sort by unique source page, and read
+      // each bypass page exactly once before scattering it to all vectors that
+      // overlap that page.
+      scratch.page_uses.reserve(total_pages);
+      for (size_t state_index = 0; state_index < scratch.states.size();
+           ++state_index) {
+        const BatchState &state = scratch.states[state_index];
+        if (!state.copy_result) {
+          continue;
+        }
+        size_t remaining = state.request->length;
+        size_t destination_offset = 0;
+        size_t source_offset = state.abs_offset % ailego::kVectorPageSize;
+        for (size_t j = 0; j < state.page_count; ++j) {
+          const size_t length =
+              std::min(remaining, ailego::kVectorPageSize - source_offset);
+          scratch.page_uses.push_back(PageUse{
+              unique_index_for(
+                  scratch.page_ids[state.first_page_index + j]),
+              state_index, source_offset, destination_offset, length});
+          destination_offset += length;
+          remaining -= length;
+          source_offset = 0;
+        }
+      }
+      std::sort(scratch.page_uses.begin(), scratch.page_uses.end(),
+                [](const PageUse &lhs, const PageUse &rhs) {
+                  return lhs.unique_index < rhs.unique_index;
+                });
+
+      if (scratch.bypass_page.size() < ailego::kVectorPageSize) {
+        scratch.bypass_page.resize(ailego::kVectorPageSize);
+      }
+      size_t use_begin = 0;
+      while (use_begin < scratch.page_uses.size()) {
+        const size_t unique_index =
+            scratch.page_uses[use_begin].unique_index;
+        const char *source = scratch.pages[unique_index];
+        if (source == nullptr) {
+          const size_t page_offset =
+              scratch.unique_page_ids[unique_index] *
+              ailego::kVectorPageSize;
+          const size_t read_length = std::min(
+              ailego::kVectorPageSize,
+              owner_->buffer_pool_->file_size() - page_offset);
+          if (!owner_->buffer_pool_handle_->read_range_bypass(
+                  page_offset, read_length, scratch.bypass_page.data())) {
+            return fail();
+          }
+          source = scratch.bypass_page.data();
+        }
+        size_t use_end = use_begin;
+        while (use_end < scratch.page_uses.size() &&
+               scratch.page_uses[use_end].unique_index == unique_index) {
+          const PageUse &use = scratch.page_uses[use_end];
+          BatchState &state = scratch.states[use.state_index];
+          std::memcpy(state.owned + use.destination_offset,
+                      source + use.source_offset, use.length);
+          ++use_end;
+        }
+        use_begin = use_end;
       }
 
       for (BatchState &state : scratch.states) {
@@ -521,31 +716,18 @@ class BufferStorage : public IndexStorage {
           state.request->block->reset();
           continue;
         }
-        const size_t first = state.first_page_index;
-        if (state.page_count == 1) {
+        if (!state.copy_result) {
+          const size_t unique_index = unique_index_for(
+              scratch.page_ids[state.first_page_index]);
           const size_t offset_in_page =
               state.abs_offset % ailego::kVectorPageSize;
+          owner_->buffer_pool_handle_->acquire_one(
+              scratch.unique_page_ids[unique_index]);
           state.request->block->reset(owner_->buffer_pool_handle_.get(),
-                                      scratch.page_ids[first],
-                                      scratch.pages[first] + offset_in_page);
-          // The MemoryBlock now owns this pin.
-          scratch.pages[first] = nullptr;
+                                      scratch.unique_page_ids[unique_index],
+                                      scratch.pages[unique_index] +
+                                          offset_in_page);
           continue;
-        }
-
-        size_t remaining = state.request->length;
-        size_t copied = 0;
-        size_t offset_in_page = state.abs_offset % ailego::kVectorPageSize;
-        for (size_t j = 0; j < state.page_count; ++j) {
-          const size_t chunk =
-              std::min(remaining, ailego::kVectorPageSize - offset_in_page);
-          std::memcpy(state.owned + copied,
-                      scratch.pages[first + j] + offset_in_page, chunk);
-          owner_->buffer_pool_handle_->release_one(scratch.page_ids[first + j]);
-          scratch.pages[first + j] = nullptr;
-          copied += chunk;
-          remaining -= chunk;
-          offset_in_page = 0;
         }
         *state.request->block =
             batch_arena
@@ -553,6 +735,7 @@ class BufferStorage : public IndexStorage {
                 : MemoryBlock::MakeOwned(state.owned, state.request->length);
         state.owned = nullptr;
       }
+      release_pages();
       return true;
     }
 
@@ -820,12 +1003,19 @@ class BufferStorage : public IndexStorage {
             owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
         return 0;
       }
-      const bool read_ok =
+      bool read_ok =
           force_bypass ? owner_->buffer_pool_handle_->read_range_bypass(
                              abs_offset, len, tmp)
           : immutable ? owner_->buffer_pool_handle_->read_range_immutable(
                             abs_offset, len, tmp)
                       : owner_->read_range(abs_offset, len, tmp);
+      if (!read_ok && immutable && !force_bypass) {
+        // A cross-page immutable read can lose a capacity race after choosing
+        // the cache path. The bytes are immutable, so retry directly instead
+        // of failing the HNSW expansion.
+        read_ok = owner_->buffer_pool_handle_->read_range_bypass(abs_offset,
+                                                                 len, tmp);
+      }
       if (!read_ok) {
         ailego_free(tmp);
         LOG_ERROR(

@@ -5,6 +5,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <algorithm/hnsw/hnsw_entity.h>
 #include <algorithm/hnsw/hnsw_params.h>
+#include <algorithm/hnsw/hnsw_streamer_entity.h>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -45,6 +46,20 @@ void HnswStreamerTest::SetUp(void) {
 
 void HnswStreamerTest::TearDown(void) {
   zvec::test_util::RemoveTestPath(dir_);
+}
+
+TEST_F(HnswStreamerTest, MaxDegreeIsNeighborCountNotSerializedBytes) {
+  IndexStreamer::Stats stats;
+  HnswBufferPoolStreamerEntity entity(stats);
+  entity.set_l0_neighbor_cnt(192);
+  entity.set_upper_neighbor_cnt(96);
+
+  EXPECT_EQ(192U, entity.max_degree(0));
+  EXPECT_EQ(96U, entity.max_degree(1));
+  EXPECT_EQ(sizeof(NeighborsHeader) + 192U * sizeof(node_id_t),
+            entity.neighbors_size());
+  EXPECT_EQ(sizeof(NeighborsHeader) + 96U * sizeof(node_id_t),
+            entity.upper_neighbors_size());
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
@@ -368,6 +383,80 @@ TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
   read_streamer->close();
   read_streamer.reset();
   cout << "Elapsed time: " << elapsed_time.milli_seconds() << " ms" << endl;
+}
+
+TEST_F(HnswStreamerTest, TestWideMConcurrentBuildBuffer) {
+  MemoryLimitPool::get_instance().init(512UL * 1024UL * 1024UL);
+  auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(nullptr, streamer);
+
+  Params params;
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 96U);
+  params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 96U);
+  params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 128U);
+  params.set(PARAM_HNSW_STREAMER_MAX_INDEX_SIZE, 128UL * 1024UL * 1024UL);
+  params.set(PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE, true);
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  Params storage_params;
+  ASSERT_EQ(0, storage->init(storage_params));
+  ASSERT_EQ(0,
+            storage->open(dir_ + "Test/WideMConcurrentBuildBuffer", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  constexpr size_t kThreadCount = 8;
+  constexpr size_t kVectorsPerThread = 1000;
+  auto add_vectors = [&streamer](size_t first) {
+    auto context = streamer->create_context();
+    IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dim);
+    NumericalVector<float> vector(dim);
+    size_t added = 0;
+    for (size_t i = 0; i < kVectorsPerThread; ++i) {
+      const size_t key = first + i;
+      for (size_t j = 0; j < dim; ++j) {
+        const uint32_t bits = static_cast<uint32_t>(
+            key * 2654435761ULL + j * 2246822519ULL);
+        vector[j] = static_cast<float>(bits) / 4294967295.0f;
+      }
+      added += streamer->add_impl(key, vector.data(), query_meta, context) == 0;
+    }
+    return added;
+  };
+
+  std::vector<std::future<size_t>> workers;
+  for (size_t thread = 0; thread < kThreadCount; ++thread) {
+    workers.emplace_back(std::async(std::launch::async, add_vectors,
+                                    thread * kVectorsPerThread));
+  }
+  for (auto &worker : workers) {
+    EXPECT_EQ(kVectorsPerThread, worker.get());
+  }
+
+  auto provider = streamer->create_provider();
+  ASSERT_NE(nullptr, provider);
+  EXPECT_EQ(kThreadCount * kVectorsPerThread, provider->count());
+
+  auto search_context = streamer->create_context();
+  search_context->set_topk(1);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dim);
+  NumericalVector<float> query(dim);
+  for (size_t key = 0; key < kThreadCount * kVectorsPerThread; key += 157) {
+    for (size_t j = 0; j < dim; ++j) {
+      const uint32_t bits =
+          static_cast<uint32_t>(key * 2654435761ULL + j * 2246822519ULL);
+      query[j] = static_cast<float>(bits) / 4294967295.0f;
+    }
+    ASSERT_EQ(0,
+              streamer->search_impl(query.data(), query_meta, search_context));
+    const auto &result = search_context->result();
+    ASSERT_EQ(1U, result.size());
+    EXPECT_EQ(key, result[0].key());
+  }
+
+  ASSERT_EQ(0, streamer->flush(0));
+  ASSERT_EQ(0, streamer->close());
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {

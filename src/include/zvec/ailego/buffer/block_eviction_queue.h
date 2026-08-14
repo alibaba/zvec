@@ -221,6 +221,24 @@ class MemoryLimitPool {
 
   bool is_full();
 
+  //! Whether another cache page would exceed the page-specific admission
+  //! limit. This can become true below the process-wide hard cap because page
+  //! storage preserves headroom for external cache consumers.
+  bool is_page_full() const {
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    const size_t used = used_size_.load(std::memory_order_relaxed);
+    if (capacity == 0) {
+      return used != 0;
+    }
+    const size_t reserve = page_admission_reserve();
+    const size_t external =
+        external_used_size_.load(std::memory_order_relaxed);
+    const size_t remaining_reserve =
+        reserve > external ? reserve - external : 0;
+    const size_t limit = capacity - remaining_reserve;
+    return used >= limit || limit - used < page_buffer_size();
+  }
+
   //! Whether page admission should protect the current resident set. Uses the
   //! background-reclaim low watermark so admission remains active after a
   //! reclaim pass, and clears once meaningful headroom returns.
@@ -245,6 +263,17 @@ class MemoryLimitPool {
     size_t used = used_size_.load(std::memory_order_relaxed);
     size_t capacity = pool_size_.load(std::memory_order_relaxed);
     return (used >= capacity) ? 0 : (capacity - used);
+  }
+
+  //! Headroom kept for shared non-page consumers (for example decoded
+  //! Parquet columns). Tiny test/application pools retain their historical
+  //! ability to use every page-sized byte.
+  size_t page_admission_reserve() const {
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    if (capacity < (256UL << 20)) {
+      return 0;
+    }
+    return std::min<size_t>(32UL << 20, capacity / 16);
   }
 
   size_t batch_acquire_buffers(size_t buffer_size, char **out, size_t count);
@@ -321,6 +350,7 @@ class MemoryLimitPool {
 
   void drain_free_list();
   bool try_reserve_used(size_t bytes);
+  bool try_reserve_page_used(size_t bytes);
   bool try_reserve_committed(size_t bytes);
   bool try_charge_fixed(size_t bytes, std::atomic<size_t> *counter);
   void release_fixed(size_t bytes, std::atomic<size_t> *counter);

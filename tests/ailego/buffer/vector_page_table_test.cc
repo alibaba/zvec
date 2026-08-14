@@ -827,6 +827,63 @@ TEST_F(BufferPoolTest, ExternalReservationSharesThePageBudget) {
   EXPECT_EQ(0u, memory_pool.external_used());
 }
 
+TEST_F(BufferPoolTest, PageAdmissionLeavesRoomForExternalCache) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  constexpr size_t kCapacity = 512UL * 1024UL * 1024UL;
+  ASSERT_EQ(0, memory_pool.init(kCapacity));
+  const size_t reserve = memory_pool.page_admission_reserve();
+  ASSERT_EQ(32UL * 1024UL * 1024UL, reserve);
+
+  ASSERT_TRUE(memory_pool.try_charge_metadata(kCapacity - reserve));
+  char *page = nullptr;
+  EXPECT_FALSE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+  EXPECT_EQ(nullptr, page);
+  EXPECT_TRUE(memory_pool.try_charge_external(reserve));
+
+  memory_pool.release_external(reserve);
+  memory_pool.release_metadata(kCapacity - reserve);
+  EXPECT_EQ(0u, memory_pool.used());
+}
+
+TEST_F(BufferPoolTest, ReadOnlyMissEvictsAtPageAdmissionLimit) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
+  ASSERT_EQ(0, memory_pool.init(kCapacity));
+  const size_t reserve = memory_pool.page_admission_reserve();
+  ASSERT_EQ(16UL * 1024UL * 1024UL, reserve);
+
+  std::string file = NewFile(/*num_pages=*/2);
+  const size_t pool_metadata =
+      VecBufferPool::metadata_bytes_for_page_count(/*page_count=*/2,
+                                                   /*writable=*/false);
+  ASSERT_LT(pool_metadata + kVectorPageSize, kCapacity - reserve);
+  const size_t charged_metadata =
+      kCapacity - reserve - pool_metadata - kVectorPageSize;
+  ASSERT_TRUE(memory_pool.try_charge_metadata(charged_metadata));
+
+  {
+    VecBufferPool pool(file, /*writable=*/false);
+    ASSERT_EQ(0, pool.init());
+
+    char *first = pool.acquire_buffer(/*page_id=*/0);
+    ASSERT_NE(nullptr, first);
+    ExpectPageContent(first, /*page_id=*/0);
+    pool.page_table_.release_block(/*block_id=*/0);
+
+    // The reserved headroom means the process-wide pool is not full, but the
+    // next page allocation has reached its page-specific admission limit.
+    EXPECT_FALSE(memory_pool.is_full());
+    char *second = pool.acquire_buffer(/*page_id=*/1, /*retry=*/50);
+    ASSERT_NE(nullptr, second);
+    ExpectPageContent(second, /*page_id=*/1);
+    EXPECT_GT(pool.stats().evict, 0u);
+    pool.page_table_.release_block(/*block_id=*/1);
+  }
+
+  memory_pool.release_metadata(charged_metadata);
+  EXPECT_EQ(0u, memory_pool.used());
+}
+
 TEST_F(BufferPoolTest, TinyBufferDoesNotPoisonThePageFreeList) {
   auto &memory_pool = MemoryLimitPool::get_instance();
   ASSERT_EQ(0, memory_pool.init(3 * kVectorPageSize + 123));
@@ -1202,6 +1259,16 @@ TEST_F(BufferPoolTest, ExternalCacheRejectsStaleItemAfterAddressReuse) {
   EXPECT_NE(stale_version, current_version);
   EXPECT_TRUE(second->is_dead_block(kOwnerKey, stale_version));
   second->~SizedExternalCache();
+}
+
+TEST_F(BufferPoolTest, ExternalCacheUsesExplicitHotEvictionPriority) {
+  InitPool(/*capacity_pages=*/2);
+  SizedExternalCache cache;
+  auto value = cache.acquire(kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(BlockEvictionQueue::kExplicitHotPriority,
+            cache.eviction_priority(/*owner_key=*/1));
+  cache.release(kVectorPageSize);
 }
 
 TEST_F(BufferPoolTest, ExternalReservationTrimsRetainedPageBuffers) {

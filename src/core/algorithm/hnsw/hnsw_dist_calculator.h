@@ -216,6 +216,10 @@ class HnswDistCalculator {
     return error_;
   }
 
+  inline void set_error() {
+    error_ = true;
+  }
+
   //! Get distances compute times
   inline uint32_t compare_cnt() const {
     return compare_cnt_;

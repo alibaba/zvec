@@ -254,7 +254,8 @@ class ExternalCache : public EvictableBlockOwner {
       // Do not call the failure callback while holding mutex_: reclaiming an
       // unqueued entry needs the exclusive side of the same mutex.
       lock.unlock();
-      if (!BlockEvictionQueue::get_instance().add_single_block(block, 0)) {
+      if (!BlockEvictionQueue::get_instance().add_single_block(
+              block, BlockEvictionQueue::kExplicitHotPriority)) {
         eviction_requeue_failed(block.owner_key, block.version);
       }
     }
@@ -274,6 +275,14 @@ class ExternalCache : public EvictableBlockOwner {
     const Entry &entry = iter->second;
     return entry.generation.load(std::memory_order_relaxed) != version ||
            !entry.in_evict_queue.load(std::memory_order_relaxed);
+  }
+
+  uint8_t eviction_priority(eviction_key_t /*owner_key*/) const override {
+    // Reloading and decoding an Arrow/Parquet column is far more expensive
+    // than a vector-page read. Keep published payloads behind both ordinary
+    // and protected pages; the global queue can still reclaim them when no
+    // lower-priority resident page remains.
+    return BlockEvictionQueue::kExplicitHotPriority;
   }
 
   bool evict_block(eviction_key_t owner_key) override {
@@ -309,7 +318,8 @@ class ExternalCache : public EvictableBlockOwner {
       block.owner = this;
       block.owner_key = entry.owner_key;
       block.version = entry.generation.load(std::memory_order_relaxed);
-      if (!BlockEvictionQueue::get_instance().add_single_block(block, 0)) {
+      if (!BlockEvictionQueue::get_instance().add_single_block(
+              block, BlockEvictionQueue::kExplicitHotPriority)) {
         entry.in_evict_queue.store(false, std::memory_order_relaxed);
       }
     } else {
