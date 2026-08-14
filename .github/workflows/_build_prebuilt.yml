@@ -16,10 +16,11 @@ jobs:
   build:
     name: Build (${{ matrix.os_name }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
-    # Linux builds run inside manylinux_2_28 containers (glibc 2.28) so that
-    # prebuilt .so files work on older distros (CentOS 8, Ubuntu 20.04, …).
-    # This mirrors the Python wheel build which uses cibuildwheel with the same
-    # manylinux_2_28 image — see [tool.cibuildwheel.linux] in pyproject.toml.
+    # Linux builds run inside containers so the prebuilt .so files work
+    # broadly: manylinux_2_28 (glibc 2.28) covers glibc distros as old as
+    # CentOS 8 / Ubuntu 20.04, and musllinux_1_2 (Alpine/musl) covers musl
+    # distros. This mirrors the Python wheel build which uses cibuildwheel
+    # with the same images — see [tool.cibuildwheel.linux] in pyproject.toml.
     container: ${{ matrix.container || null }}
     timeout-minutes: 180
     strategy:
@@ -44,6 +45,14 @@ jobs:
             arch: arm64
             ext: tar.gz
             container: 'quay.io/pypa/manylinux_2_28_aarch64:latest'
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            os_name: linux-musl
+            arch: amd64
+            ext: tar.gz
+            # Pinned musllinux image, kept in sync with 09-musllinux-build.yml
+            # and [tool.cibuildwheel.linux] in pyproject.toml.
+            container: 'quay.io/pypa/musllinux_1_2_x86_64:2026.03.01-1'
           - target: x86_64-pc-windows-msvc
             os: windows-2025
             os_name: windows
@@ -63,6 +72,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+
+      # The musllinux images are Alpine-based and the shared steps below run
+      # under bash; install it first in case the image does not ship it.
+      - name: Ensure bash (musl)
+        if: matrix.os_name == 'linux-musl'
+        run: command -v bash || apk add --no-cache bash
+        shell: sh
 
       # Skip actions/setup-python on Linux: it downloads a CPython built for
       # the host glibc (2.38), which won't run inside the manylinux_2_28
@@ -178,6 +194,111 @@ jobs:
           path: zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}
           if-no-files-found: error
           retention-days: 7
+
+  # musl/Alpine SDK for arm64. The musl x64 build lives in the matrix above,
+  # but arm64 needs its own job: GitHub runners cannot execute JavaScript
+  # actions (checkout, upload-artifact) inside Alpine containers on arm64, so
+  # instead of `container:` this job keeps the actions on the host and runs
+  # the build inside a long-lived container via docker exec — the same
+  # approach as build-and-test-arm64 in 09-musllinux-build.yml.
+  build-musl-arm64:
+    name: Build (linux-musl-arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+
+    env:
+      # Pinned to the same image as 09-musllinux-build.yml and
+      # [tool.cibuildwheel.linux] in pyproject.toml.
+      MUSL_IMAGE: quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1
+      MUSL_CONTAINER: zvec-musl-arm64-sdk
+      # Prepend the image-bundled CPython so the pip-installed cmake/ninja
+      # shadow the tools bundled in the image, which include an unsupported
+      # CMake 4.x — same trick as the other musllinux jobs.
+      MUSL_PATH: /opt/python/cp310-cp310/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Start musllinux container
+        run: |
+          docker run -d --name "$MUSL_CONTAINER" \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            -e PATH="$MUSL_PATH" \
+            "$MUSL_IMAGE" sleep infinity
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          docker exec "$MUSL_CONTAINER" python -m pip install --upgrade pip
+          docker exec "$MUSL_CONTAINER" python -m pip install \
+            cmake==3.30.0 \
+            ninja==1.11.1
+        shell: bash
+
+      - name: Configure CMake
+        run: |
+          docker exec "$MUSL_CONTAINER" cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/work/install \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DBUILD_ZVEC_AILEGO_SHARED=ON \
+            -DENABLE_WERROR=OFF
+        shell: bash
+
+      - name: Build and install SDK
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c \
+            'cmake --build build --target install --parallel "$(nproc)"'
+        shell: bash
+
+      - name: Dump third-party build logs on failure
+        if: failure()
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c '
+            find build -type f \( -name "*-configure-*.log" -o -name "*-build-*.log" -o -name "*-install-*.log" \) | while read -r f; do
+              echo "===== $f ====="
+              tail -80 "$f"
+            done
+          ' || true
+        shell: bash
+
+      - name: Stage package contents
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c '
+            mkdir -p /work/dist
+            cp -R /work/install/. /work/dist/.
+            # Ship shared libraries only (same policy as the matrix job).
+            rm -f /work/dist/lib/*.a
+          '
+        shell: bash
+
+      - name: Package SDK
+        run: |
+          tar czf zvec-sdk-linux-musl-arm64.tar.gz -C "$ZVEC_DIST_DIR" .
+          ls -lh zvec-sdk-linux-musl-arm64.tar.gz
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: zvec-sdk-linux-musl-arm64
+          path: zvec-sdk-linux-musl-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Tear down musllinux container
+        if: always()
+        run: docker rm -f "$MUSL_CONTAINER" || true
+        shell: bash
 
   # Cross-compile for Android (arm64-v8a) with the runner's preinstalled NDK.
   # Mirrors scripts/build_android.sh: build a host protoc first, then
