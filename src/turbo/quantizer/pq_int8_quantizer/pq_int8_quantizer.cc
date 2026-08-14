@@ -86,12 +86,6 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   // (deserialize() never restores it).
   auto mt = metric_from_name(meta_.metric_name());
 
-  // Plain (unquantized) kernels are registered under their own QuantizeType
-  // (kFp32 / kFp16) in the dispatch registry, keyed by the input data type.
-  QuantizeType plain_qt = (input_data_type_ == DataType::kFp16)
-                              ? QuantizeType::kFp16
-                              : QuantizeType::kFp32;
-
   // L2-only batch distance for encoding: the PQ codebook is trained in L2
   // space regardless of the search metric.  Data type matches input.
   l2_batch_fn_ =
@@ -805,12 +799,6 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   adc_fn_ = pq_k.asymmetric_distance;
   sdc_fn_ = pq_k.symmetric_distance;
   batch_adc_fn_ = pq_k.batch_asymmetric_distance;
-
-  // Plain (unquantized) kernels are registered under their own QuantizeType
-  // (kFp32 / kFp16), keyed by the restored input data type.
-  QuantizeType plain_qt = (input_data_type_ == DataType::kFp16)
-                              ? QuantizeType::kFp16
-                              : QuantizeType::kFp32;
 
   // L2-only batch distance for encoding (always L2 regardless of metric).
   l2_batch_fn_ =
