@@ -230,7 +230,8 @@ Status FieldSchema::validate() const {
         // DiskAnn uses synchronous pread().
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
-            "DiskAnn is available on Linux (x86_64/ARM64) and macOS (ARM64).");
+            "DiskAnn is not supported on this platform. It is available on "
+            "Linux (x86_64/ARM64) and macOS (ARM64).");
 #endif
       }
 
