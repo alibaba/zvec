@@ -151,9 +151,9 @@ int DiskAnnSearcherEntity::load_pq_segment() {
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
 
-  // The serialized quantizer blob follows the PQ meta in this segment; it is
-  // NOT parsed here.  The searcher/streamer reads it on demand via
-  // read_pq_quantizer_blob() and constructs the quantizer itself.
+  // The serialized quantizer meta buffer follows the PQ meta in this segment;
+  // it is NOT parsed here.  The searcher/streamer reads it on demand via
+  // read_pq_quantizer_meta_buffer() and constructs the quantizer itself.
 
   // 2. load pq codes (uint8[chunk_num] per vector)
   pq_data_segment_ = storage_->get(DiskAnnEntity::kDiskAnnPqDataSegmentId);
@@ -179,23 +179,25 @@ int DiskAnnSearcherEntity::load_pq_segment() {
   return 0;
 }
 
-int DiskAnnSearcherEntity::read_pq_quantizer_blob(std::string *blob) const {
-  if (!blob || !pq_meta_segment_) {
+int DiskAnnSearcherEntity::read_pq_quantizer_meta_buffer(
+    std::string *meta_buffer) const {
+  if (!meta_buffer || !pq_meta_segment_) {
     return IndexError_InvalidArgument;
   }
 
-  // The blob is stored right after the DiskAnnPqMeta header in the segment.
+  // The meta buffer is stored right after the DiskAnnPqMeta header in the
+  // segment.
   const void *data = nullptr;
-  size_t read_size = pq_meta_segment_->read(sizeof(DiskAnnPqMeta), &data,
-                                            pq_meta_.quantizer_blob_size);
-  if (read_size != pq_meta_.quantizer_blob_size) {
+  size_t read_size = pq_meta_segment_->read(
+      sizeof(DiskAnnPqMeta), &data, pq_meta_.quantizer_meta_buffer_size);
+  if (read_size != pq_meta_.quantizer_meta_buffer_size) {
     LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
               DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(pq_meta_.quantizer_blob_size), (size_t)read_size);
+              (size_t)(pq_meta_.quantizer_meta_buffer_size), (size_t)read_size);
     return IndexError_ReadData;
   }
 
-  blob->assign(reinterpret_cast<const char *>(data), read_size);
+  meta_buffer->assign(reinterpret_cast<const char *>(data), read_size);
   return 0;
 }
 

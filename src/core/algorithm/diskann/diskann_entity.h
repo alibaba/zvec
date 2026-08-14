@@ -94,7 +94,7 @@ struct DiskAnnMetaHeader {
 
 struct DiskAnnPqMeta {
  public:
-  uint64_t quantizer_blob_size{0};
+  uint64_t quantizer_meta_buffer_size{0};
   uint64_t chunk_num{0};
   uint8_t reserved[144];
 

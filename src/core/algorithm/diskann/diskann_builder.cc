@@ -369,8 +369,8 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
     return ret;
   }
 
-  std::string &blob = entity_.pq_quantizer_blob();
-  ret = quantizer_->serialize(&blob);
+  std::string &quantizer_meta_buffer = entity_.pq_quantizer_meta_buffer();
+  ret = quantizer_->serialize(&quantizer_meta_buffer);
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer serialize failed, ret=%d", ret);
     return ret;
@@ -379,7 +379,8 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
   size_t pq_time = timer.milli_seconds();
   LOG_INFO("Train Quantized Data Done, time: %zu ms", pq_time);
 
-  (*entity_.mutable_pq_meta()).quantizer_blob_size = blob.size();
+  (*entity_.mutable_pq_meta()).quantizer_meta_buffer_size =
+      quantizer_meta_buffer.size();
   (*entity_.mutable_pq_meta()).chunk_num = pq_chunk_num_;
 
   return 0;

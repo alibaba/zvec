@@ -186,20 +186,20 @@ int DiskAnnBuilderEntity::dump_pq_meta_segment(
 
   crc = ailego::Crc32c::Hash(&pq_meta_, sizeof(DiskAnnPqMeta), crc);
 
-  // write serialized quantizer blob
-  size_t size_blob =
-      dumper->write(pq_quantizer_blob_.data(), pq_meta_.quantizer_blob_size);
-  if (size_blob != pq_meta_.quantizer_blob_size) {
-    LOG_ERROR("Failed to dump quantizer blob, expect: %zu, actual: %zu",
-              (size_t)pq_meta_.quantizer_blob_size, size_blob);
+  // write serialized quantizer meta buffer
+  size_t size_meta_buffer = dumper->write(pq_quantizer_meta_buffer_.data(),
+                                          pq_meta_.quantizer_meta_buffer_size);
+  if (size_meta_buffer != pq_meta_.quantizer_meta_buffer_size) {
+    LOG_ERROR("Failed to dump quantizer meta buffer, expect: %zu, actual: %zu",
+              (size_t)pq_meta_.quantizer_meta_buffer_size, size_meta_buffer);
     return IndexError_WriteData;
   }
 
-  crc = ailego::Crc32c::Hash(pq_quantizer_blob_.data(),
-                             pq_meta_.quantizer_blob_size, crc);
+  crc = ailego::Crc32c::Hash(pq_quantizer_meta_buffer_.data(),
+                             pq_meta_.quantizer_meta_buffer_size, crc);
 
   // write size
-  size_t size_total = size_pq_meta + size_blob;
+  size_t size_total = size_pq_meta + size_meta_buffer;
 
   // write pad
   size_t padding_size = AlignSize(size_total) - size_total;

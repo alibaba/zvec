@@ -62,8 +62,8 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   int reserve_space(uint32_t docs);
 
-  std::string &pq_quantizer_blob() {
-    return pq_quantizer_blob_;
+  std::string &pq_quantizer_meta_buffer() {
+    return pq_quantizer_meta_buffer_;
   }
 
   std::vector<uint8_t> &block_compressed_data() {
@@ -89,7 +89,7 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   IndexMeta meta_;
 
-  std::string pq_quantizer_blob_{};
+  std::string pq_quantizer_meta_buffer_{};
   std::vector<uint8_t> block_compressed_data_;
 };
 

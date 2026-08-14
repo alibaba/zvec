@@ -43,10 +43,10 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   int load_key_mapping_segment();
   int load_entrypoint_segment();
 
-  //! Read the serialized PQ quantizer blob from the PQ meta segment.  The
-  //! quantizer itself is constructed by the searcher/streamer and handed to
-  //! the indexer; the entity only owns the persisted bytes.
-  int read_pq_quantizer_blob(std::string *blob) const;
+  //! Read the serialized PQ quantizer meta buffer from the PQ meta segment.
+  //! The quantizer itself is constructed by the searcher/streamer and handed
+  //! to the indexer; the entity only owns the persisted bytes.
+  int read_pq_quantizer_meta_buffer(std::string *meta_buffer) const;
 
   const uint8_t *pq_codes() const {
     return pq_codes_.data();

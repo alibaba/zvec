@@ -109,14 +109,15 @@ class DiskAnnUtil {
   }
 
   //! Resolve the quantizer implementation name from a serialized quantizer
-  //! blob (see turbo::QuantizerSerHeader).  Extend the mapping here when
+  //! meta buffer (see turbo::QuantizerSerHeader).  Extend the mapping here when
   //! DiskAnn supports a new quantize type.
-  static const char *quantizer_name_from_blob(const std::string &blob) {
-    if (blob.size() < sizeof(turbo::QuantizerSerHeader)) {
+  static const char *quantizer_name_from_meta_buffer(
+      const std::string &meta_buffer) {
+    if (meta_buffer.size() < sizeof(turbo::QuantizerSerHeader)) {
       return nullptr;
     }
     turbo::QuantizerSerHeader hdr;
-    std::memcpy(&hdr, blob.data(), sizeof(hdr));
+    std::memcpy(&hdr, meta_buffer.data(), sizeof(hdr));
     if (hdr.magic != turbo::kQuantizerMagic) {
       return nullptr;
     }
@@ -132,13 +133,14 @@ class DiskAnnUtil {
     }
   }
 
-  //! Construct and deserialize the quantizer persisted in `blob`, picking
-  //! the implementation from the blob header instead of a hardcoded type.
-  static turbo::Quantizer::Pointer create_quantizer_from_blob(
-      std::string &blob) {
-    const char *name = quantizer_name_from_blob(blob);
+  //! Construct and deserialize the quantizer persisted in `meta_buffer`,
+  //! picking the implementation from the meta buffer header instead of a
+  //! hardcoded type.
+  static turbo::Quantizer::Pointer create_quantizer_from_meta_buffer(
+      std::string &meta_buffer) {
+    const char *name = quantizer_name_from_meta_buffer(meta_buffer);
     if (name == nullptr) {
-      LOG_ERROR("Unsupported or corrupted quantizer blob");
+      LOG_ERROR("Unsupported or corrupted quantizer meta buffer");
       return turbo::Quantizer::Pointer();
     }
     auto quantizer = IndexFactory::CreateQuantizer(name);
@@ -146,7 +148,7 @@ class DiskAnnUtil {
       LOG_ERROR("Create quantizer %s failed", name);
       return turbo::Quantizer::Pointer();
     }
-    if (quantizer->deserialize(blob) != 0) {
+    if (quantizer->deserialize(meta_buffer) != 0) {
       LOG_ERROR("Quantizer %s deserialize failed", name);
       return turbo::Quantizer::Pointer();
     }
