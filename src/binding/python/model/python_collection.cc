@@ -332,6 +332,10 @@ void ZVecPyCollection::bind_dql_methods(
           },
           py::arg("output_fields") = py::none(),
           py::arg("include_vector") = true,
+          // The returned iterator holds the collection's schema lock, so
+          // the collection must outlive it (documented contract); keep it
+          // alive automatically in the binding too.
+          py::keep_alive<0, 1>(),
           "Create a document iterator to traverse all documents.")
       .def(
           "_debug_hnsw_storage_mode",

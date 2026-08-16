@@ -16,6 +16,7 @@
 // Shared by collection.cc and doc_iterator.cc
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -31,6 +32,21 @@
 
 namespace zvec {
 
+// RAII guard that decrements the collection's active-iterator count when
+// the iterator releases its snapshot.
+struct ActiveIteratorGuard {
+  std::shared_ptr<std::atomic<int>> count;
+
+  ActiveIteratorGuard() = default;
+  ActiveIteratorGuard(const ActiveIteratorGuard &) = delete;
+  ActiveIteratorGuard &operator=(const ActiveIteratorGuard &) = delete;
+  ~ActiveIteratorGuard() {
+    if (count) {
+      count->fetch_sub(1, std::memory_order_release);
+    }
+  }
+};
+
 struct DocIterator::Impl {
   // Declaration order controls destruction order (reverse of declaration).
   // schema_lock is declared FIRST so it is released last, after every other
@@ -40,10 +56,12 @@ struct DocIterator::Impl {
   //
   // The iterator holds the collection's schema lock (shared) for its whole
   // lifetime: schema changes (create/drop index, add/alter/drop column),
-  // Optimize, Flush and Close/Destroy take the exclusive lock with try_lock
-  // and are rejected while any iterator is open, so the snapshot below
-  // stays valid until Close(). The collection must outlive its iterators
-  // (the mutex behind schema_lock lives in the collection).
+  // Optimize, Flush and Close/Destroy are rejected while any iterator is
+  // open (active-iterator count + atomic try_lock, see
+  // try_lock_schema_exclusive), so the snapshot below stays valid until
+  // Close(). The collection must outlive its iterators (the mutex behind
+  // schema_lock lives in the collection).
+  ActiveIteratorGuard active_guard;
   std::shared_lock<std::shared_mutex> schema_lock;
 
   std::vector<Segment::Ptr> segments;  // keep Segment alive

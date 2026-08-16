@@ -31,9 +31,10 @@ class FilteringReader : public arrow::RecordBatchReader {
     return std::make_shared<FilteringReader>(std::move(inner_reader), filter);
   }
 
+  // The reader schema is stable for its whole lifetime: the constructor
+  // resolves and validates the delete-key column once instead of per batch.
   FilteringReader(std::shared_ptr<arrow::RecordBatchReader> inner_reader,
-                  const IndexFilter::Ptr &filter)
-      : inner_reader_(std::move(inner_reader)), filter_(filter) {}
+                  const IndexFilter::Ptr &filter);
 
   ~FilteringReader() override = default;
 
@@ -46,6 +47,8 @@ class FilteringReader : public arrow::RecordBatchReader {
  private:
   std::shared_ptr<arrow::RecordBatchReader> inner_reader_;
   IndexFilter::Ptr filter_;
+  int gdoc_col_{-1};
+  arrow::Status schema_error_ = arrow::Status::OK();
 };
 
 }  // namespace zvec

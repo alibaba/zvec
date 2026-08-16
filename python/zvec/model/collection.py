@@ -414,7 +414,7 @@ class Collection:
         The iterator holds the collection's schema lock (shared) until it is
         exhausted or closed: while any iterator is open, schema changes
         (create_index/drop_index/add_column/alter_column/drop_column),
-        optimize, flush and close raise an error. Concurrent writes and
+        optimize, flush, close and destroy raise an error. Concurrent writes and
         queries are not affected.
 
         Args:

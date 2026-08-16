@@ -13,12 +13,14 @@
 // limitations under the License.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -52,6 +54,18 @@
 #include "zvec/core/interface/index.h"
 
 namespace zvec {
+
+namespace {
+
+// Exclusive-lock retry budget for schema operations: transient readers
+// (queries/inserts) hold the shared lock only briefly, so retrying absorbs
+// them; a long-lived reader (open iterator) exhausts the budget and the
+// operation fails fast with PermissionDenied.
+constexpr std::chrono::milliseconds kExclusiveLockRetryBudget{30000};
+constexpr std::chrono::milliseconds kExclusiveLockRetryInterval{1};
+
+}  // namespace
+
 
 enum class WriteMode : uint8_t {
   UNDEFINED = 0,
@@ -235,21 +249,41 @@ class CollectionImpl : public Collection {
   // iterator holds it shared: a same-thread caller would deadlock waiting
   // for its own iterator, and "schema frozen during iteration" is the
   // documented contract.
-  //! Atomically detects readers and takes the exclusive schema lock.
-  //! An open iterator holds the shared lock until Close(), so blocking here
-  //! could wait indefinitely -- or deadlock when the iterator lives on the
-  //! calling thread; failing fast keeps the behavior deterministic.
+  //! Takes the exclusive schema lock, rejecting while an iterator is open.
+  //! Every acquisition attempt is an atomic try_lock (no check-then-lock
+  //! race), so nothing can hang:
+  //!  - an open iterator is detected via the active-iterator count and
+  //!    rejected immediately (it holds the shared lock until Close(), so
+  //!    waiting for it would stall forever -- or deadlock same-thread);
+  //!  - transient readers (queries, inserts) are absorbed by polling until
+  //!    they drain, matching the blocking-wait semantics these operations
+  //!    had before iterators existed;
+  //!  - the deadline caps the wait, so even an abnormal long-lived reader
+  //!    cannot stall the caller forever.
   Result<std::unique_lock<std::shared_mutex>> try_lock_schema_exclusive(
       const char *operation) {
-    std::unique_lock<std::shared_mutex> lock(schema_handle_mtx_,
-                                             std::try_to_lock);
-    if (!lock.owns_lock()) {
-      return tl::make_unexpected(Status::PermissionDenied(
-          operation,
-          " is rejected while the schema lock is held (e.g. by an open "
-          "iterator); close iterators and retry"));
+    const auto deadline =
+        std::chrono::steady_clock::now() + kExclusiveLockRetryBudget;
+    while (true) {
+      std::unique_lock<std::shared_mutex> lock(schema_handle_mtx_,
+                                               std::try_to_lock);
+      if (lock.owns_lock()) {
+        return lock;
+      }
+      if (active_iterators_->load(std::memory_order_acquire) > 0) {
+        return tl::make_unexpected(
+            Status::PermissionDenied(operation,
+                                     " is rejected while iterators are open; "
+                                     "close all iterators first"));
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return tl::make_unexpected(Status::PermissionDenied(
+            operation,
+            " timed out waiting for the schema lock; concurrent readers "
+            "are still active, retry later"));
+      }
+      std::this_thread::sleep_for(kExclusiveLockRetryInterval);
     }
-    return lock;
   }
 
   Status handle_upsert(Doc &doc);
@@ -280,6 +314,11 @@ class CollectionImpl : public Collection {
   CollectionOptions options_;
 
   mutable std::shared_mutex schema_handle_mtx_;
+  // Number of open iterators. Each iterator holds schema_handle_mtx_
+  // (shared) for its whole lifetime; exclusive operations reject
+  // immediately while this is non-zero (see try_lock_schema_exclusive).
+  std::shared_ptr<std::atomic<int>> active_iterators_{
+      std::make_shared<std::atomic<int>>(0)};
   mutable std::shared_mutex write_mtx_;
   // Serializes maintenance operations (Optimize, schema DDL, Close and
   // Destroy) without holding schema_handle_mtx_, so a maintenance
@@ -486,6 +525,11 @@ Result<CollectionStats> CollectionImpl::Stats() const {
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   auto segments = get_all_segments();
+
+  // Shared schema lock lets Stats run concurrently with writes; serialize
+  // against them here so doc_count() below never iterates a writing
+  // segment's doc_ids_ while it grows (lock order: schema -> write_mtx_).
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
 
   CollectionStats stats;
   auto vector_fields = schema_->vector_fields();
@@ -883,15 +927,12 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   // Phase 1: exclusively seal the current writing segment and snapshot
   // the persisted segment set.
   {
-    std::unique_lock schema_lock(schema_handle_mtx_, std::try_to_lock);
-    if (!schema_lock.owns_lock()) {
-      // A reader (e.g. an iterator created meanwhile) holds the schema
-      // lock: fail fast; already-built artifacts are left uncommitted and
-      // cleaned up by recovery.
-      return Status::PermissionDenied(
-          "Optimize is rejected while the schema lock is held (e.g. by an "
-          "open iterator); close iterators and retry");
+    auto seal_lock = try_lock_schema_exclusive("Optimize");
+    if (!seal_lock) {
+      // Nothing has been built yet, so there is nothing to clean up.
+      return seal_lock.error();
     }
+    auto schema_lock = std::move(seal_lock.value());
     std::lock_guard write_lock(write_mtx_);
 
     CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -971,15 +1012,15 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   // indexers — they all hold the shared schema lock — so in-place
   // reload_vector_index() is safe.
   {
-    std::unique_lock schema_lock(schema_handle_mtx_, std::try_to_lock);
-    if (!schema_lock.owns_lock()) {
-      // A reader (e.g. an iterator created meanwhile) holds the schema
-      // lock: fail fast; already-built artifacts are left uncommitted and
-      // cleaned up by recovery.
-      return Status::PermissionDenied(
-          "Optimize is rejected while the schema lock is held (e.g. by an "
-          "open iterator); close iterators and retry");
+    auto commit_lock = try_lock_schema_exclusive("Optimize");
+    if (!commit_lock) {
+      // Drop the uncommitted segment directories that were already moved
+      // to their final paths (recovery would not discover them).
+      opened_segments.clear();
+      cleanup_moved_dirs();
+      return commit_lock.error();
     }
+    auto schema_lock = std::move(commit_lock.value());
     std::lock_guard write_lock(write_mtx_);
 
     Version new_version = version_manager_->get_current_version();
@@ -2305,6 +2346,7 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::PrepareIterate(
   // writes and deletes -- by fixing the segment list and cloning the
   // delete store atomically under write_mtx_.
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   auto impl = std::make_unique<DocIterator::Impl>();
 
@@ -2364,6 +2406,8 @@ Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     return tl::make_unexpected(impl_result.error());
   }
   auto impl = std::move(impl_result.value());
+  active_iterators_->fetch_add(1, std::memory_order_acq_rel);
+  impl->active_guard.count = active_iterators_;
   impl->schema_lock = std::move(schema_lock);
 
   return std::make_shared<DocIterator>(std::move(impl));

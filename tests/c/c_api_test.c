@@ -6552,6 +6552,48 @@ void test_iterator_basic(void) {
   TEST_END();
 }
 
+// Exclusive operations return ZVEC_ERROR_PERMISSION_DENIED while an
+// iterator is open, and succeed again after the iterator is closed.
+void test_iterator_lock_rejection(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_lockrej";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  TEST_ASSERT(schema != NULL);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 10);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(iter, &doc);
+  TEST_ASSERT(err == ZVEC_OK && doc != NULL);
+  zvec_doc_destroy(doc);
+
+  err = zvec_collection_flush(collection);
+  TEST_ASSERT(err == ZVEC_ERROR_PERMISSION_DENIED);
+  err = zvec_collection_close(collection);
+  TEST_ASSERT(err == ZVEC_ERROR_PERMISSION_DENIED);
+
+  zvec_doc_iterator_close(iter);
+
+  err = zvec_collection_flush(collection);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
 // include_vector=false: dense vector field should be absent.
 void test_iterator_exclude_vector(void) {
   TEST_START();
@@ -6775,6 +6817,7 @@ int main(void) {
 
   // Document iterator tests
   test_iterator_basic();
+  test_iterator_lock_rejection();
   test_iterator_exclude_vector();
   test_iterator_output_fields();
   test_iterator_empty();

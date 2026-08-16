@@ -569,7 +569,7 @@ TEST_F(IteratorTest, ConcurrentInsertNotVisible) {
     }
     // No Flush() here: it is rejected while an iterator is open. The new
     // docs live in the writing segment; the fresh iterator below still sees
-    // them because Scan() seals the writing segment itself.
+    // them because CreateIterator seals the writing segment itself.
     if (!collection->Insert(more).has_value()) writer_failed = true;
   });
 
@@ -741,6 +741,55 @@ TEST_F(IteratorTest, CloseRejectedWhileIteratorOpen) {
 
   // Once every iterator is closed, the exclusive operations succeed again.
   EXPECT_TRUE(collection->Destroy().ok());
+}
+
+// CreateIterator on a closed collection must fail cleanly (no crash):
+// Close() resets the segment manager and delete store, so a missing
+// closed_ check would dereference null pointers.
+TEST_F(IteratorTest, CloseThenCreateIteratorRejected) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  std::vector<Doc> docs;
+  for (int i = 0; i < 10; i++)
+    docs.push_back(TestHelper::CreateDoc(i, *schema));
+  ASSERT_TRUE(collection->Insert(docs).has_value());
+  ASSERT_TRUE(collection->Close().ok());
+
+  auto iter_result = collection->CreateIterator();
+  EXPECT_FALSE(iter_result.has_value());
+}
+
+// Releasing the iterator (destructor, no explicit Close) must release the
+// schema lock just like Close() does.
+TEST_F(IteratorTest, IteratorResetReleasesLock) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  std::vector<Doc> docs;
+  for (int i = 0; i < 10; i++)
+    docs.push_back(TestHelper::CreateDoc(i, *schema));
+  ASSERT_TRUE(collection->Insert(docs).has_value());
+  collection->Flush();
+
+  {
+    auto iter = collection->CreateIterator().value();
+    ASSERT_TRUE(iter->Next().has_value());
+    EXPECT_FALSE(collection->Optimize().ok());  // rejected while alive
+  }  // iter destroyed here (no explicit Close)
+
+  EXPECT_TRUE(collection->Optimize().ok());  // lock released by destructor
+  collection->Destroy();
 }
 
 // Multiple iterators may be open at once; DDL stays rejected until the

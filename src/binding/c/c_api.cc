@@ -4848,8 +4848,14 @@ zvec_error_code_t zvec_collection_close(zvec_collection_t *collection) {
 
   ZVEC_TRY_RETURN_ERROR(
       "Exception occurred",
-      delete reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      return ZVEC_OK;)
+      auto *ptr = reinterpret_cast<std::shared_ptr<zvec::Collection> *>(
+          collection);
+      // Close() is rejected (PermissionDenied) while an iterator is open;
+      // surface that failure instead of silently dropping the handle and
+      // destroying a collection whose schema lock is still held.
+      auto status = (*ptr)->Close();
+      if (!status.ok()) { return status_to_error_code(status); }
+      delete ptr; return ZVEC_OK;)
 }
 
 zvec_error_code_t zvec_collection_destroy(zvec_collection_t *collection) {

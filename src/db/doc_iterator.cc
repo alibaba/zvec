@@ -173,8 +173,11 @@ Result<Doc::Ptr> DocIterator::Next() {
               impl_->segments[impl_->current_segment_index]->scan(
                   impl_->scan_columns);
           if (!scalar_reader) {
-            return tl::make_unexpected(
-                Status::InternalError("Segment::scan failed during iteration"));
+            // Sticky like materialization failures: a broken reader must
+            // not be retried on the next Next() call.
+            impl_->error =
+                Status::InternalError("Segment::scan failed during iteration");
+            return tl::make_unexpected(impl_->error);
           }
           impl_->current_reader =
               FilteringReader::Make(std::move(scalar_reader), impl_->filter);
@@ -187,8 +190,9 @@ Result<Doc::Ptr> DocIterator::Next() {
         std::shared_ptr<arrow::RecordBatch> batch;
         auto status = impl_->current_reader->ReadNext(&batch);
         if (!status.ok()) {
-          return tl::make_unexpected(
-              Status::InternalError("ReadNext failed: ", status.ToString()));
+          impl_->error =
+              Status::InternalError("ReadNext failed: ", status.ToString());
+          return tl::make_unexpected(impl_->error);
         }
         if (batch && batch->num_rows() > 0) {
           impl_->current_batch = std::move(batch);

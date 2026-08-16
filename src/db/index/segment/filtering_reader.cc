@@ -18,6 +18,20 @@
 
 namespace zvec {
 
+FilteringReader::FilteringReader(
+    std::shared_ptr<arrow::RecordBatchReader> inner_reader,
+    const IndexFilter::Ptr &filter)
+    : inner_reader_(std::move(inner_reader)), filter_(filter) {
+  const auto &s = *inner_reader_->schema();
+  gdoc_col_ = s.GetFieldIndex(GLOBAL_DOC_ID);
+  if (gdoc_col_ < 0 ||
+      s.field(gdoc_col_)->type()->id() != arrow::Type::UINT64) {
+    schema_error_ = arrow::Status::FromArgs(
+        arrow::StatusCode::ExecutionError,
+        "FilteringReader is missing the uint64 global doc id column");
+  }
+}
+
 arrow::Status FilteringReader::ReadNext(
     std::shared_ptr<arrow::RecordBatch> *batch) {
   while (true) {
@@ -31,21 +45,12 @@ arrow::Status FilteringReader::ReadNext(
       return arrow::Status::OK();
     }
 
-    // The _zvec_g_doc_id_ column is required for delete filtering.
-    int gdoc_col = (*batch)->schema()->GetFieldIndex(GLOBAL_DOC_ID);
-    if (gdoc_col < 0) {
-      return arrow::Status::FromArgs(
-          arrow::StatusCode::ExecutionError,
-          "FilteringReader batch is missing the global doc id column");
+    // Column index resolved and validated at construction.
+    if (!schema_error_.ok()) {
+      return schema_error_;
     }
-
-    const auto &col = (*batch)->column(gdoc_col);
-    if (col->type_id() != arrow::Type::UINT64) {
-      return arrow::Status::FromArgs(
-          arrow::StatusCode::ExecutionError,
-          "FilteringReader global doc id column is not a UInt64 array");
-    }
-    auto *gdoc_array = static_cast<const arrow::UInt64Array *>(col.get());
+    auto *gdoc_array = static_cast<const arrow::UInt64Array *>(
+        (*batch)->column(gdoc_col_).get());
 
     // Build filter mask: true = keep, false = skip (deleted)
     arrow::BooleanBuilder mask_builder;

@@ -135,10 +135,29 @@ def test_iter_docs_output_fields(iter_collection):
     iter_collection.insert(_make_docs(10))
     iter_collection.flush()
 
+    count = 0
     for doc in iter_collection.iter_docs(output_fields=["id"], include_vector=False):
         assert doc.field("id") is not None
         assert not doc.has_field("name")
         assert not doc.has_field("weight")
+        count += 1
+    assert count == 10
+
+
+def test_iter_docs_early_close_releases_lock(iter_collection):
+    """Closing the generator early releases the schema lock (finally path)."""
+    iter_collection.insert(_make_docs(10))
+    iter_collection.flush()
+
+    gen = iter_collection.iter_docs()
+    next(gen)  # consume one doc, iterator stays open
+    # Exclusive operations are rejected while the generator is alive.
+    with pytest.raises(Exception):
+        iter_collection.flush()
+
+    gen.close()  # triggers the generator's finally: iterator.close()
+    # The schema lock is released; exclusive operations succeed again.
+    iter_collection.flush()
 
 
 def test_iter_docs_empty(iter_collection):
