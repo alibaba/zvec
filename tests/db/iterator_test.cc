@@ -728,9 +728,7 @@ TEST_F(IteratorTest, CloseRejectedWhileIteratorOpen) {
   EXPECT_FALSE(collection->Close().ok());
   EXPECT_FALSE(collection->Destroy().ok());
 
-  // Dropping the caller's handle must not tear the collection down under
-  // the iterator: the iterator holds its own reference.
-  collection.reset();
+  // The iterator keeps working while the rejected operations return errors.
   int count = 0;
   while (true) {
     auto r = iter->Next();
@@ -741,11 +739,8 @@ TEST_F(IteratorTest, CloseRejectedWhileIteratorOpen) {
   EXPECT_EQ(count, N);
   iter->Close();
 
-  // Reopen and clean up: the collection was closed cleanly by its own
-  // destructor once the iterator released the last reference.
-  auto reopened = Collection::Open(iter_test_path, options);
-  ASSERT_TRUE(reopened.has_value());
-  reopened.value()->Destroy();
+  // Once every iterator is closed, the exclusive operations succeed again.
+  EXPECT_TRUE(collection->Destroy().ok());
 }
 
 // Multiple iterators may be open at once; DDL stays rejected until the

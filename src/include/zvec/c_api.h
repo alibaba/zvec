@@ -3862,9 +3862,9 @@ zvec_iterator_options_set_include_vector(zvec_iterator_options_t *options,
  * closed: while any iterator is open, schema changes (create/drop index,
  * add/alter/drop column), optimize, flush and destroy return an error.
  * Concurrent writes and queries are not affected.
- * zvec_collection_close() only releases the handle; the iterator keeps the
- * collection alive until it is closed. All iterators must be closed
- * (zvec_doc_iterator_close) before destroying the collection.
+ * The collection must outlive its iterators: close every iterator
+ * (zvec_doc_iterator_close) before calling zvec_collection_close() or
+ * destroying the collection.
  * @param collection Collection handle
  * @param options Iterator options (may be NULL to use defaults)
  * @param[out] out_iter Returned iterator handle (release with

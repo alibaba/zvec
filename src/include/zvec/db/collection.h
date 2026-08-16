@@ -121,6 +121,8 @@ class ZVEC_API Collection {
   // while any iterator is open, schema changes (CreateIndex/DropIndex/
   // AddColumn/AlterColumn/DropColumn), Optimize, Flush, Close and Destroy
   // return an error. Concurrent writes and queries are not affected.
+  // The collection must outlive its iterators: keep the Collection handle
+  // alive and close every iterator before releasing it.
   virtual Result<DocIterator::Ptr> CreateIterator(
       const IteratorOptions &options = {}) = 0;
 
