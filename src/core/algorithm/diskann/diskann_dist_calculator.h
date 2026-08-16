@@ -35,7 +35,9 @@ class DistCalculator {
         dim_(dim),
         compare_cnt_(0) {}
 
-  void update(const IndexMetric::Pointer &measure, uint32_t dim) {
+  void update(const DiskAnnEntity *entity, const IndexMetric::Pointer &measure,
+              uint32_t dim) {
+    entity_ = entity;
     distance_ = measure->distance();
     dim_ = dim;
   }

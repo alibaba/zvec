@@ -111,6 +111,12 @@ add_executable(external-vector-example core/external_vector_example.cc)
 target_link_libraries(external-vector-example PRIVATE zvec-core-lib)
 list(APPEND ZVEC_EXAMPLE_TARGETS external-vector-example)
 
+# This is also a link-integration check: DiskANN must work through the
+# all-in-one core library without linking core_knn_diskann separately.
+add_executable(diskann-core-example core/diskann_main.cc)
+target_link_libraries(diskann-core-example PRIVATE zvec-core-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS diskann-core-example)
+
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
     foreach(ZVEC_EXAMPLE_TARGET ${ZVEC_EXAMPLE_TARGETS})

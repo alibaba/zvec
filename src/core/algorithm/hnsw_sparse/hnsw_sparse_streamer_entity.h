@@ -172,8 +172,9 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   inline node_id_t get_id(key_t key) const {
     keys_map_lock_->lock_shared();
     auto it = keys_map_->find(key);
+    node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
     keys_map_lock_->unlock_shared();
-    return it == keys_map_->end() ? kInvalidNodeId : it->second;
+    return id;
   }
 
   void print_key_map() {

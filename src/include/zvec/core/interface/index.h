@@ -321,6 +321,10 @@ class ZVEC_CORE_API VamanaIndex : public Index {
  public:
   VamanaIndex() = default;
 
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter,
+            const MergeOptions &options = {}) override;
+
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 

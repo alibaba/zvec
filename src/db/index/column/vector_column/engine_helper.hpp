@@ -376,7 +376,7 @@ class ProximaEngineHelper {
             convert_to_engine_quantize_type(db_index_params->quantize_type());
         quantize_type.has_value()) {
       index_param_builder->WithQuantizerParam(
-          core_interface::QuantizerParam(quantize_type.value()));
+          core_interface::QuantizerParam::Create(quantize_type.value()));
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported quantize type"));
@@ -538,6 +538,8 @@ class ProximaEngineHelper {
             db_index_params->saturate_graph());
         index_param_builder->WithUseContiguousMemory(
             db_index_params->use_contiguous_memory());
+        index_param_builder->WithTwoPassBuild(
+            db_index_params->two_pass_build());
         // db_index_params->use_id_map() is intentionally ignored here:
         // db ensures id is consecutive (see _build_common_index_param), so
         // the engine-level use_id_map is forced to false in the common

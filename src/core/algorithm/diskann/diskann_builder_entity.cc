@@ -20,9 +20,33 @@
 namespace zvec {
 namespace core {
 
+void DiskAnnBuilderEntity::clear() {
+  max_degree_ = 0;
+  list_size_ = 0;
+  memory_limit_ = 0;
+  num_threads_ = 0;
+  max_build_degree_ = 0;
+  max_observed_degree_ = 0;
+  neighbor_size_ = 0;
+  mem_index_file_.clear();
+  index_path_prefix_.clear();
+  vectors_buffer_.clear();
+  keys_buffer_.clear();
+  neighbors_buffer_.clear();
+  entrypoints_.clear();
+  meta_.clear();
+  pq_full_pivot_data_.clear();
+  pq_centroid_.clear();
+  pq_chunk_offsets_.clear();
+  block_compressed_data_.clear();
+  meta_header_.clear();
+  pq_meta_.clear();
+}
+
 int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
                                uint32_t list_size, double memory_limit,
                                uint32_t build_threads) {
+  clear();
   meta_ = meta;
 
   max_degree_ = max_degree;

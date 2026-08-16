@@ -836,6 +836,11 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
+    quantizer_param (QuantizerParam): Optional quantizer configuration.
+        Default is ``QuantizerParam()``.
+    two_pass_build (bool): If True, build the initial graph with alpha=1.0,
+        then run one full-graph pass with the configured alpha. Default is
+        False.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -852,11 +857,11 @@ Examples:
                        int search_list_size, float alpha, bool saturate_graph,
                        bool use_contiguous_memory, bool use_id_map,
                        QuantizeType quantize_type,
-                       QuantizerParam quantizer_param) {
+                       QuantizerParam quantizer_param, bool two_pass_build) {
              return std::make_shared<VamanaIndexParams>(
                  metric_type, max_degree, search_list_size, alpha,
                  saturate_graph, use_contiguous_memory, use_id_map,
-                 quantize_type, quantizer_param);
+                 quantize_type, quantizer_param, two_pass_build);
            }),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
@@ -868,7 +873,8 @@ Examples:
            py::arg("use_contiguous_memory") = false,
            py::arg("use_id_map") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
-           py::arg("quantizer_param") = QuantizerParam())
+           py::arg("quantizer_param") = QuantizerParam(),
+           py::arg("two_pass_build") = false)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -890,6 +896,10 @@ Examples:
           "bool: Reserved flag for engine-level id remapping. Currently "
           "ignored by the engine because the db layer always supplies "
           "consecutive ids.")
+      .def_property_readonly(
+          "two_pass_build", &VamanaIndexParams::two_pass_build,
+          "bool: Whether to run the full-graph second Vamana construction "
+          "pass.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -902,6 +912,7 @@ Examples:
             dict["saturate_graph"] = self.saturate_graph();
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             dict["use_id_map"] = self.use_id_map();
+            dict["two_pass_build"] = self.two_pass_build();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
@@ -929,6 +940,8 @@ Examples:
                                                             : "false") +
                    ", \"use_id_map\":" +
                    std::string(self.use_id_map() ? "true" : "false") +
+                   ", \"two_pass_build\":" +
+                   std::string(self.two_pass_build() ? "true" : "false") +
                    ", \"quantize_type\":\"" +
                    quantize_type_to_string(self.quantize_type()) +
                    "\", \"quantizer_param\":{" + "\"enable_rotate\":" +
@@ -941,16 +954,19 @@ Examples:
                 self.metric_type(), self.max_degree(), self.search_list_size(),
                 self.alpha(), self.saturate_graph(),
                 self.use_contiguous_memory(), self.use_id_map(),
-                self.quantize_type(), self.quantizer_param().enable_rotate());
+                self.quantize_type(), self.quantizer_param().enable_rotate(),
+                self.two_pass_build());
           },
           [](py::tuple t) {
-            if (t.size() != 8 && t.size() != 9)
+            if (t.size() != 8 && t.size() != 9 && t.size() != 10)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             QuantizerParam qp(t.size() >= 9 ? t[8].cast<bool>() : false);
+            bool two_pass_build = t.size() == 10 ? t[9].cast<bool>() : false;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
-                t[6].cast<bool>(), t[7].cast<QuantizeType>(), qp);
+                t[6].cast<bool>(), t[7].cast<QuantizeType>(), qp,
+                two_pass_build);
           }));
 
   // FlatIndexParams

@@ -23,49 +23,45 @@
 #endif
 
 #include <unistd.h>
-#include <atomic>
+#include <map>
+#include <mutex>
+#include <thread>
 #include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
 namespace zvec {
 namespace core {
 
-#if (defined(__linux) || defined(__linux__))
-
-// IoBackend holds the per-thread I/O context for whichever async backend
-// was successfully initialised at setup time.  The priority is:
+// IoBackend holds the selected backend for each thread. On Linux it also owns
+// the resources required by the asynchronous backends. The priority is:
 //   1. io_uring  (raw kernel syscalls — zero dependency)
 //   2. libaio    (dlopen — soft dependency)
 //   3. pread     (always available — synchronous fallback)
 //
-// IOContext is a *pointer* to IoBackend, which preserves the existing
+// macOS uses a real context with type kPread so that the active backend can be
+// inspected and reported consistently instead of using an opaque placeholder.
+// IOContext is a pointer to IoBackend, which preserves the existing
 // sentinel conventions: nullptr means uninitialised and (IOContext)-1 is
 // the invalid-handle sentinel returned by get_ctx() for unregistered
 // threads.
 struct IoBackend {
-  enum Backend : uint8_t {
-    NONE = 0,      // synchronous pread
-    IO_URING = 1,  // io_uring via raw syscalls
-    LIBAIO = 2,    // libaio via dlopen
-  };
+  ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
-  Backend backend{NONE};
+#if (defined(__linux) || defined(__linux__))
   IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
+#endif
 };
 
 typedef IoBackend *IOContext;
 
-#else
-typedef uint32_t IOContext;
-#endif
-
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
 
-// Log the current DiskAnn I/O backend status (async vs. synchronous pread).
-// Probes the backend on first call.  No-op on non-Linux platforms.
+// Log the current DiskAnn I/O backend (io_uring, libaio, or pread). Probes the
+// backend on first call. No-op outside Linux and macOS.
 void log_diskann_io_backend();
 
 struct AlignedRead {
@@ -77,21 +73,24 @@ struct AlignedRead {
 
   AlignedRead(uint64_t offset, uint64_t len, void *buf)
       : offset(offset), len(len), buf(buf) {
+#if defined(__linux__) || defined(__linux)
+    // O_DIRECT requires 512-byte alignment on Linux.
     ailego_assert(static_cast<size_t>(offset) % 512 == 0);
     ailego_assert(static_cast<size_t>(len) % 512 == 0);
     ailego_assert(reinterpret_cast<size_t>(buf) % 512 == 0);
+#endif
   }
 };
 
-#if (defined(__linux) || defined(__linux__))
 struct PendingBatch {
+#if (defined(__linux) || defined(__linux__))
   std::vector<struct iocb> cbs;
   std::vector<struct iocb *> cb_ptrs;
+#endif
   uint32_t n_submitted{0};
   uint32_t n_reaped{0};
   bool used_pread{false};
 };
-#endif
 
 class AlignedFileReader {
  protected:
@@ -113,16 +112,16 @@ class AlignedFileReader {
   virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
                    bool async = false) = 0;
 
-#if (defined(__linux) || defined(__linux__))
   virtual int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
                      IOContext &ctx) = 0;
 
   virtual int get_completed(PendingBatch &batch, IOContext &ctx,
                             int min_completed,
                             std::vector<uint32_t> &completed_indices) = 0;
-#endif
 };
 
+// Reader implementation used on all supported platforms. Linux selects
+// io_uring, libaio, or pread. macOS ARM64 uses synchronous pread.
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
@@ -146,13 +145,11 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false);
 
-#if (defined(__linux) || defined(__linux__))
   int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
              IOContext &ctx);
 
   int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
                     std::vector<uint32_t> &completed_indices);
-#endif
 };
 
 }  // namespace core

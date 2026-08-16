@@ -152,6 +152,34 @@ void test_error_handling_functions(void) {
   TEST_END();
 }
 
+void test_io_backend_functions(void) {
+  TEST_START();
+
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_PREAD),
+                     "pread") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_LIBAIO),
+                     "libaio") == 0);
+  TEST_ASSERT(
+      strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
+             "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
+
+  zvec_io_backend_type_t current = zvec_get_io_backend_type();
+#if defined(__APPLE__) && defined(__MACH__)
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD);
+#else
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD ||
+              current == ZVEC_IO_BACKEND_TYPE_LIBAIO ||
+              current == ZVEC_IO_BACKEND_TYPE_IO_URING);
+#endif
+  const char *description = zvec_get_io_backend_description();
+  TEST_ASSERT(description != NULL);
+  TEST_ASSERT(strstr(description, zvec_get_io_backend_type_name(current)) !=
+              NULL);
+
+  TEST_END();
+}
+
 void test_zvec_config() {
   TEST_START();
 
@@ -5407,6 +5435,15 @@ void test_index_params_creation_functions(void) {
   TEST_ASSERT(saturate_graph == true);
   TEST_ASSERT(use_contiguous_memory == true);
 
+  // two_pass_build is independently extensible without changing the existing
+  // aggregate Vamana setter/getter ABI.
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              false);
+  verr = zvec_index_params_set_vamana_two_pass_build(vamana_params, true);
+  TEST_ASSERT(verr == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              true);
+
   // Set metric and quantize type
   zvec_index_params_set_metric_type(vamana_params, ZVEC_METRIC_TYPE_COSINE);
   TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
@@ -5416,6 +5453,13 @@ void test_index_params_creation_functions(void) {
   verr = zvec_index_params_set_vamana_params(hnsw_params, 64, 100, 1.2f, false,
                                              false);
   TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  verr = zvec_index_params_set_vamana_two_pass_build(hnsw_params, true);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(hnsw_params) ==
+              false);
+  verr = zvec_index_params_set_vamana_two_pass_build(NULL, true);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(NULL) == false);
 
   // Test DiskANN parameters using new API
   zvec_index_params_t *diskann_params =
@@ -6673,6 +6717,7 @@ int main(void) {
 
   test_version_functions();
   test_error_handling_functions();
+  test_io_backend_functions();
   test_zvec_config();
   test_zvec_initialize();
   test_zvec_string_functions();

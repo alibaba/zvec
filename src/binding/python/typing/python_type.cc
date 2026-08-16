@@ -143,9 +143,9 @@ Examples:
 
 void ZVecPyTyping::bind_io_backend_types(py::module_ &m) {
   py::enum_<ailego::IOBackendType>(m, "IOBackendType", R"pbdoc(
-Enumeration of supported I/O backend types for DiskAnn async disk reads.
+Enumeration of supported I/O backend types for DiskAnn disk reads.
 
-- PREAD: Synchronous pread() \u2014 no async I/O.
+- PREAD: Synchronous pread(); no async I/O.
 - LIBAIO: libaio loaded at runtime via dlopen().
 - IO_URING: io_uring via raw kernel syscalls (zero dependency).
 

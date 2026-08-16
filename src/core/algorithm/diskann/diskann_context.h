@@ -214,11 +214,31 @@ class DiskAnnContext : public IndexContext,
     for (auto &it : results_) {
       it.clear();
     }
+    for (auto &it : group_results_) {
+      it.clear();
+    }
 
     best_list_nodes_.clear();
     expanded_nodes_.clear();
     visit_filter_.clear();
+    group_topk_heaps_.clear();
     has_error_ = false;
+  }
+
+  //! Preserve query-time options when replacing an incompatible pooled
+  //! context. Search scratch space and previous results are intentionally not
+  //! copied.
+  void copy_query_options_from(const DiskAnnContext &rhs) {
+    copy_common_query_options_from(rhs);
+    topk_ = rhs.topk_;
+    topk_heap_.clear();
+    topk_heap_.limit(topk_);
+    group_num_ = rhs.group_num_;
+    group_topk_ = rhs.group_topk_;
+    group_topk_heaps_.clear();
+    list_size_ = rhs.list_size_;
+    fetch_vector_ = rhs.fetch_vector_;
+    debug_mode_ = rhs.debug_mode_;
   }
 
   SearchStats &query_stats() {
@@ -269,7 +289,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Get if group by search
-  inline bool group_by_search() {
+  inline bool group_by_search() const {
     return group_num_ > 0;
   }
 

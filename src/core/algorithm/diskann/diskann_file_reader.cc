@@ -20,15 +20,51 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <mutex>
+#include <new>
 #include <thread>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/ailego/logger/logger.h>
+#if defined(__APPLE__) || defined(__MACH__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #define MAX_EVENTS 1024
 
 namespace zvec {
 namespace core {
+
+// Ensures the I/O backend selection is logged exactly once per process,
+// regardless of which DiskAnn entry point triggers it first.
+static std::once_flag g_io_backend_log_once;
+
+static void log_diskann_io_backend(ailego::IOBackendType type) {
+#if (defined(__linux) || defined(__linux__) || defined(__APPLE__) || \
+     defined(__MACH__))
+  std::call_once(g_io_backend_log_once, [type]() {
+#if (defined(__linux) || defined(__linux__))
+    if (type == ailego::IOBackendType::kPread) {
+      LOG_WARN(
+          "DiskAnn: no async I/O backend available: io_uring is unavailable "
+          "and libaio could not be loaded. Enable io_uring or install libaio "
+          "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
+          "and retry. DiskAnn will use synchronous pread(); performance may "
+          "be degraded.");
+    } else {
+      LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
+               ailego::IOBackendTypeName(type));
+    }
+#else
+    LOG_INFO("DiskAnn: I/O backend '%s' — synchronous I/O enabled.",
+             ailego::IOBackendTypeName(type));
+#endif
+  });
+#else
+  (void)type;
+#endif
+}
 
 #if (defined(__linux) || defined(__linux__))
 typedef struct io_event io_event_t;
@@ -37,45 +73,31 @@ typedef struct iocb iocb_t;
 // Retry budget for draining in-flight io_uring requests when the kernel
 // keeps returning EAGAIN/EBUSY (100 us sleep per retry, ~1 s total).
 static constexpr size_t kIoUringDrainRetries = 10000;
-
-// Ensures the I/O backend selection is logged exactly once per process,
-// regardless of which entry point (setup_io_ctx or register_thread)
-// triggers it first.
-static std::once_flag g_io_backend_log_once;
 #endif
 
 void log_diskann_io_backend() {
-#if (defined(__linux) || defined(__linux__))
-  auto &backend = ailego::IOBackend::Instance();
-  if (backend.is_pread()) {
-    LOG_WARN(
-        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
-        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
-        "retry. DiskAnn will fall back to synchronous pread() — performance "
-        "will be degraded.");
-  } else {
-    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
-             backend.name());
-  }
-#endif
+  log_diskann_io_backend(ailego::IOBackend::Instance().available());
 }
 
 int setup_io_ctx(IOContext &ctx) {
+  auto selected = ailego::IOBackend::Instance().available();
+  ctx = new (std::nothrow) IoBackend();
+  if (ctx == nullptr) {
+    LOG_ERROR("Failed to allocate DiskAnn I/O context");
+    return IndexError_NoMemory;
+  }
+  ctx->type = selected;
+
 #if (defined(__linux) || defined(__linux__))
-  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
-  if (ailego::IOBackend::Instance().is_pread()) {
-    // No async backend available — leave ctx null so callers fall back to
-    // synchronous pread().
+  if (selected == ailego::IOBackendType::kPread) {
+    log_diskann_io_backend(ctx->type);
     return 0;
   }
-
-  ctx = new IoBackend();
-  ailego::IOBackendType selected = ailego::IOBackend::Instance().available();
 
   // Priority 1: io_uring (raw kernel syscalls — zero dependency).
   if (selected == ailego::IOBackendType::kIoUring &&
       ctx->ring.setup(MAX_EVENTS)) {
-    ctx->backend = IoBackend::IO_URING;
+    log_diskann_io_backend(ctx->type);
     return 0;
   }
 
@@ -85,7 +107,8 @@ int setup_io_ctx(IOContext &ctx) {
       LibAioLoader::Instance().is_available()) {
     int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx->aio_ctx);
     if (ret == 0) {
-      ctx->backend = IoBackend::LIBAIO;
+      ctx->type = ailego::IOBackendType::kLibAio;
+      log_diskann_io_backend(ctx->type);
       return 0;
     }
     LOG_WARN("io_setup failed; returned: %d, %s. falling back to pread", ret,
@@ -93,48 +116,69 @@ int setup_io_ctx(IOContext &ctx) {
   }
 
   // Priority 3: synchronous pread (always available).
-  ctx->backend = IoBackend::NONE;
-  return 0;
-#else
-  return 0;
+  ctx->type = ailego::IOBackendType::kPread;
 #endif
+  log_diskann_io_backend(ctx->type);
+  return 0;
 }
 
 int destroy_io_ctx(IOContext &ctx) {
-#if (defined(__linux) || defined(__linux__))
   if (ctx == nullptr) {
     return 0;
   }
 
-  if (ctx->backend == IoBackend::IO_URING) {
+#if (defined(__linux) || defined(__linux__))
+  if (ctx->type == ailego::IOBackendType::kIoUring) {
     ctx->ring.teardown();
-  } else if (ctx->backend == IoBackend::LIBAIO &&
+  } else if (ctx->type == ailego::IOBackendType::kLibAio &&
              LibAioLoader::Instance().is_available()) {
     LibAioLoader::Instance().io_destroy(ctx->aio_ctx);
   }
   // IoUringRing destructor also calls teardown() — idempotent and safe.
+#endif
 
   delete ctx;
   ctx = nullptr;
   return 0;
-#else
+}
+
+static int execute_one_pread(int fd, const AlignedRead &req) {
+  auto *buf = static_cast<uint8_t *>(req.buf);
+  uint64_t offset = req.offset;
+  uint64_t remaining = req.len;
+
+  while (remaining > 0) {
+    ssize_t bytes_read =
+        ::pread(fd, buf, static_cast<size_t>(remaining), offset);
+    if (bytes_read > 0) {
+      buf += bytes_read;
+      offset += static_cast<uint64_t>(bytes_read);
+      remaining -= static_cast<uint64_t>(bytes_read);
+      continue;
+    }
+    if (bytes_read == 0) {
+      LOG_ERROR("pread returned EOF; offset=%llu, remaining=%llu",
+                (unsigned long long)offset, (unsigned long long)remaining);
+      return IndexError_Runtime;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+
+    LOG_ERROR("pread failed; errno=%d, %s, offset=%llu, len=%llu", errno,
+              ::strerror(errno), (unsigned long long)offset,
+              (unsigned long long)remaining);
+    return IndexError_Runtime;
+  }
+
   return 0;
-#endif
 }
 
 static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
-  for (auto &req : read_reqs) {
-    ssize_t bytes_read = ::pread(fd, req.buf, req.len, req.offset);
-    if (bytes_read < 0) {
-      LOG_ERROR("pread failed; errno=%d, %s, offset=%lu, len=%lu", errno,
-                ::strerror(errno), (unsigned long)req.offset,
-                (unsigned long)req.len);
-      return IndexError_Runtime;
-    }
-    if ((size_t)bytes_read != req.len) {
-      LOG_ERROR("pread short read; got=%zd, expected=%lu", bytes_read,
-                (unsigned long)req.len);
-      return IndexError_Runtime;
+  for (const auto &req : read_reqs) {
+    int ret = execute_one_pread(fd, req);
+    if (ret != 0) {
+      return ret;
     }
   }
   return 0;
@@ -299,9 +343,8 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
   if (ctx == nullptr || ctx == (IOContext)-1) {
     return execute_io_pread(fd, read_reqs);
   }
-
   // Dispatch based on the active backend.
-  if (ctx->backend == IoBackend::IO_URING) {
+  if (ctx->type == ailego::IOBackendType::kIoUring) {
     int ret = ctx->ring.execute(fd, read_reqs);
     if (ret == 0) {
       return 0;
@@ -313,13 +356,15 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
     return execute_io_pread(fd, read_reqs);
   }
 
-  if (ctx->backend == IoBackend::LIBAIO) {
+  if (ctx->type == ailego::IOBackendType::kLibAio) {
     return execute_io_libaio(ctx->aio_ctx, fd, read_reqs, n_retries);
   }
 
   // NONE backend — synchronous pread.
   return execute_io_pread(fd, read_reqs);
 #else
+  (void)ctx;
+  (void)n_retries;
   return execute_io_pread(fd, read_reqs);
 #endif
 }
@@ -564,7 +609,6 @@ IOContext &LinuxAlignedFileReader::get_ctx() {
 }
 
 void LinuxAlignedFileReader::register_thread() {
-#if (defined(__linux) || defined(__linux__))
   auto thread_id = std::this_thread::get_id();
   std::unique_lock<std::mutex> lk(ctx_mut);
   if (ctx_map.find(thread_id) != ctx_map.end()) {
@@ -580,15 +624,13 @@ void LinuxAlignedFileReader::register_thread() {
     return;
   }
   if (ctx != nullptr) {
-    LOG_INFO("allocating ctx: %lu", (uint64_t)ctx);
+    LOG_INFO("allocating ctx: %p", static_cast<void *>(ctx));
   }
   ctx_map[thread_id] = ctx;
   lk.unlock();
-#endif
 }
 
 void LinuxAlignedFileReader::deregister_thread() {
-#if (defined(__linux) || defined(__linux__))
   auto thread_id = std::this_thread::get_id();
   IOContext ctx;
 
@@ -603,20 +645,17 @@ void LinuxAlignedFileReader::deregister_thread() {
     ctx_map.erase(it);
   }
 
-  // Teardown is a syscall; keep it outside the lock to avoid blocking others.
+  // Keep teardown outside the lock; async backends may block in syscalls.
   destroy_io_ctx(ctx);
   LOG_INFO("returned ctx from thread");
-#endif
 }
 
 void LinuxAlignedFileReader::deregister_all_threads() {
-#if (defined(__linux) || defined(__linux__))
   std::unique_lock<std::mutex> lk(ctx_mut);
   for (auto x = ctx_map.begin(); x != ctx_map.end(); x++) {
     destroy_io_ctx(x->second);
   }
   ctx_map.clear();
-#endif
 }
 
 void LinuxAlignedFileReader::open(const std::string &fname) {
@@ -644,6 +683,32 @@ void LinuxAlignedFileReader::open(const std::string &fname) {
     LOG_ERROR("Failed to open file: %s (errno=%d: %s)", fname.c_str(), errno,
               ::strerror(errno));
   }
+
+#if defined(__APPLE__) || defined(__MACH__)
+  // macOS has no O_DIRECT. F_NOCACHE is its closest per-file equivalent: it
+  // asks the kernel to minimize caching for I/O through this descriptor. This
+  // is advisory rather than a guarantee that every read reaches the device.
+  // Disable read-ahead as well because DiskAnn performs random reads.
+  //
+  // Do not mmap the entire index and call msync(MS_INVALIDATE) here. That does
+  // not provide a reliable global cache eviction guarantee and makes open time
+  // and virtual-address usage scale with the size of the index.
+  if (this->file_desc != -1) {
+    if (::fcntl(this->file_desc, F_NOCACHE, 1) == -1) {
+      LOG_WARN(
+          "fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
+          "the page cache",
+          fname.c_str(), errno, ::strerror(errno));
+    } else {
+      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s", fname.c_str());
+    }
+
+    if (::fcntl(this->file_desc, F_RDAHEAD, 0) == -1) {
+      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)",
+               fname.c_str(), errno, ::strerror(errno));
+    }
+  }
+#endif
 
   LOG_INFO("Opened file : %s", fname.c_str());
 }
@@ -693,7 +758,7 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   // If this context has no async I/O backend (null/sentinel context or
   // explicit pread backend), use synchronous pread.
   if (ctx == nullptr || ctx == (IOContext)-1 ||
-      ctx->backend == IoBackend::NONE) {
+      ctx->type == ailego::IOBackendType::kPread) {
     int pread_ret = execute_io_pread(this->file_desc, read_reqs);
     if (pread_ret != 0) {
       return pread_ret;
@@ -706,7 +771,7 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   // io_uring only offers a synchronous batched execute(): the reads are
   // already copied into the caller's buffers when it returns, so report the
   // batch as complete the same way the pread path does.
-  if (ctx->backend == IoBackend::IO_URING) {
+  if (ctx->type == ailego::IOBackendType::kIoUring) {
     int ring_ret = ctx->ring.execute(this->file_desc, read_reqs);
     if (ring_ret != 0) {
       // The kernel only ever writes into the ring-owned staging pool, so a
@@ -882,14 +947,11 @@ int LinuxAlignedFileReader::get_completed(
           "get_completed: read %u failed: res=%ld, res2=%ld, expected=%ld; "
           "retrying with pread",
           idx, (long)res, (long)res2, (long)expected);
-      ssize_t bytes_read =
-          ::pread(this->file_desc, batch.cbs[idx].u.c.buf,
-                  batch.cbs[idx].u.c.nbytes, batch.cbs[idx].u.c.offset);
-      if (bytes_read != (ssize_t)expected) {
-        LOG_ERROR(
-            "get_completed: pread retry for read %u failed; got=%zd, "
-            "expected=%ld, errno=%d, %s",
-            idx, bytes_read, (long)expected, errno, ::strerror(errno));
+      AlignedRead retry_read(static_cast<uint64_t>(batch.cbs[idx].u.c.offset),
+                             static_cast<uint64_t>(batch.cbs[idx].u.c.nbytes),
+                             batch.cbs[idx].u.c.buf);
+      if (execute_one_pread(this->file_desc, retry_read) != 0) {
+        LOG_ERROR("get_completed: pread retry for read %u failed", idx);
         batch.n_reaped += (uint32_t)ret;
         quiesce_batch(batch, ctx);
         return IndexError_Runtime;
@@ -901,8 +963,37 @@ int LinuxAlignedFileReader::get_completed(
   batch.n_reaped += (uint32_t)ret;
   return ret;
 }
-#endif
+#else
+int LinuxAlignedFileReader::submit(PendingBatch &batch,
+                                   std::vector<AlignedRead> &read_reqs,
+                                   IOContext &ctx) {
+  batch.n_submitted = 0;
+  batch.n_reaped = 0;
+  batch.used_pread = false;
 
+  int ret = read(read_reqs, ctx);
+  if (ret != 0) {
+    return ret;
+  }
+
+  // The portable fallback completes reads synchronously.
+  batch.used_pread = true;
+  batch.n_submitted = static_cast<uint32_t>(read_reqs.size());
+  return 0;
+}
+
+int LinuxAlignedFileReader::get_completed(
+    PendingBatch &batch, IOContext & /*ctx*/, int /*min_completed*/,
+    std::vector<uint32_t> &completed_indices) {
+  completed_indices.clear();
+
+  for (uint32_t i = batch.n_reaped; i < batch.n_submitted; ++i) {
+    completed_indices.push_back(i);
+  }
+  batch.n_reaped = batch.n_submitted;
+  return static_cast<int>(completed_indices.size());
+}
+#endif
 
 }  // namespace core
 }  // namespace zvec

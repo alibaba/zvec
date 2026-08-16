@@ -52,16 +52,19 @@ from .typing.enum import LogLevel, LogType
 from .zvec import create_and_open, init, open
 
 def io_backend_type() -> IOBackendType:
-    """Returns the current I/O backend type for DiskAnn async disk reads
-    as an IOBackendType enum (zvec.typing.IOBackendType).
-    IOBackendType.IO_URING if io_uring is available,
-    IOBackendType.LIBAIO if libaio is available,
-    IOBackendType.PREAD otherwise."""
+    """Returns the current I/O backend type for DiskAnn disk reads.
+
+    Linux selects IOBackendType.IO_URING, IOBackendType.LIBAIO, or
+    IOBackendType.PREAD in that order. macOS ARM64 uses IOBackendType.PREAD.
+    """
 
 def io_backend_description() -> str:
     """Returns a human-readable description of the current I/O backend.
-    When only pread is available, includes instructions for installing
-    libaio to enable async I/O."""
+
+    The description identifies io_uring, libaio, or pread. On Linux, the
+    pread description includes guidance for enabling io_uring or installing
+    libaio.
+    """
 
 def set_default_jieba_dict_dir(dir: str) -> None:
     """Register the process-wide default jieba dict directory."""

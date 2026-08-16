@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
 #include <numeric>
 #include <set>
 #include <string>
@@ -604,3 +605,145 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
     RunRejected(test_case);
   }
 }
+
+#if DISKANN_SUPPORTED
+TEST(DiskAnnInterfaceTest, PropagatesCommonQueryOptions) {
+  const std::string source_name = "test_diskann_query_options_source";
+  const std::string index_name = "test_diskann_query_options";
+  zvec::test_util::RemoveTestFiles(source_name + "*");
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto source_param = FlatIndexParamBuilder()
+                          .WithMetricType(MetricType::kL2sq)
+                          .WithDataType(DataType::DT_FP32)
+                          .WithDimension(kDimension)
+                          .WithIsSparse(false)
+                          .Build();
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  ASSERT_NE(source, nullptr);
+  ASSERT_EQ(
+      0, source->Open(source_name, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t key = 0; key < kNumDocs; ++key) {
+    std::vector<float> values(kDimension, static_cast<float>(key));
+    ASSERT_EQ(0, source->Add(VectorData{DenseVector{values.data()}}, key));
+  }
+  ASSERT_EQ(0, source->Train());
+
+  auto diskann_param = DiskAnnIndexParamBuilder()
+                           .WithMetricType(MetricType::kL2sq)
+                           .WithDataType(DataType::DT_FP32)
+                           .WithDimension(kDimension)
+                           .WithIsSparse(false)
+                           .WithMaxDegree(32)
+                           .WithListSize(kSearchTopk)
+                           .WithPqChunkNum(0)
+                           .Build();
+  auto index = IndexFactory::CreateAndInitIndex(*diskann_param);
+  ASSERT_NE(index, nullptr);
+  ASSERT_EQ(
+      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, index->Merge({source}, IndexFilter()));
+
+  std::vector<float> query_values(kDimension, 3.0f);
+  VectorData query{DenseVector{query_values.data()}};
+
+  auto filtered_query = std::make_shared<DiskAnnQueryParam>();
+  filtered_query->topk = 6;
+  filtered_query->list_size = kSearchTopk;
+  filtered_query->fetch_vector = true;
+  filtered_query->filter = std::make_shared<IndexFilter>();
+  filtered_query->filter->set([](uint64_t key) { return key == 3; });
+
+  SearchResult filtered_result;
+  ASSERT_EQ(0, index->Search(query, filtered_query, &filtered_result));
+  ASSERT_FALSE(filtered_result.doc_list_.empty());
+  for (const auto &doc : filtered_result.doc_list_) {
+    EXPECT_NE(3UL, doc.key());
+    ASSERT_EQ(kDimension * sizeof(float), doc.vector_string().size());
+    for (uint32_t i = 0; i < kDimension; ++i) {
+      float vector_value = 0.0f;
+      std::memcpy(&vector_value,
+                  doc.vector_string().data() + i * sizeof(vector_value),
+                  sizeof(vector_value));
+      EXPECT_FLOAT_EQ(static_cast<float>(doc.key()), vector_value);
+    }
+  }
+
+  auto radius_query = std::make_shared<DiskAnnQueryParam>();
+  radius_query->topk = kNumDocs;
+  radius_query->list_size = kSearchTopk;
+  radius_query->radius = 1.0f;
+
+  SearchResult radius_result;
+  ASSERT_EQ(0, index->Search(query, radius_query, &radius_result));
+  ASSERT_FALSE(radius_result.doc_list_.empty());
+  for (const auto &doc : radius_result.doc_list_) {
+    EXPECT_LE(doc.score(), radius_query->radius);
+  }
+
+  ASSERT_EQ(0, index->Close());
+  ASSERT_EQ(0, source->Close());
+
+  // The thread-local context pool is shared by all DiskAnn indexes. Reusing
+  // the prior L2 context for an InnerProduct index must copy the caller-facing
+  // radius and denormalize it with the new metric.
+  const std::string ip_source_name = "test_diskann_query_options_ip_source";
+  const std::string ip_index_name = "test_diskann_query_options_ip";
+  zvec::test_util::RemoveTestFiles(ip_source_name + "*");
+  zvec::test_util::RemoveTestFiles(ip_index_name + "*");
+
+  auto ip_source_param = FlatIndexParamBuilder()
+                             .WithMetricType(MetricType::kInnerProduct)
+                             .WithDataType(DataType::DT_FP32)
+                             .WithDimension(kDimension)
+                             .WithIsSparse(false)
+                             .Build();
+  auto ip_source = IndexFactory::CreateAndInitIndex(*ip_source_param);
+  ASSERT_NE(ip_source, nullptr);
+  ASSERT_EQ(0, ip_source->Open(ip_source_name,
+                               {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t key = 0; key < kNumDocs; ++key) {
+    std::vector<float> values(kDimension, static_cast<float>(key));
+    ASSERT_EQ(0, ip_source->Add(VectorData{DenseVector{values.data()}}, key));
+  }
+  ASSERT_EQ(0, ip_source->Train());
+
+  auto ip_diskann_param = DiskAnnIndexParamBuilder()
+                              .WithMetricType(MetricType::kInnerProduct)
+                              .WithDataType(DataType::DT_FP32)
+                              .WithDimension(kDimension)
+                              .WithIsSparse(false)
+                              .WithMaxDegree(32)
+                              .WithListSize(kNumDocs)
+                              .WithPqChunkNum(0)
+                              .Build();
+  auto ip_index = IndexFactory::CreateAndInitIndex(*ip_diskann_param);
+  ASSERT_NE(ip_index, nullptr);
+  ASSERT_EQ(0, ip_index->Open(ip_index_name,
+                              {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, ip_index->Merge({ip_source}, IndexFilter()));
+
+  std::vector<float> ip_query_values(kDimension, 1.0f);
+  VectorData ip_query{DenseVector{ip_query_values.data()}};
+  auto ip_radius_query = std::make_shared<DiskAnnQueryParam>();
+  ip_radius_query->topk = kNumDocs;
+  ip_radius_query->list_size = kNumDocs;
+  ip_radius_query->is_linear = true;
+  ip_radius_query->radius = static_cast<float>(kDimension * 8);
+
+  SearchResult ip_radius_result;
+  ASSERT_EQ(0, ip_index->Search(ip_query, ip_radius_query, &ip_radius_result));
+  ASSERT_EQ(kNumDocs - 8, ip_radius_result.doc_list_.size());
+  for (const auto &doc : ip_radius_result.doc_list_) {
+    EXPECT_GE(doc.key(), 8UL);
+    EXPECT_GE(doc.score(), ip_radius_query->radius);
+  }
+
+  ASSERT_EQ(0, ip_index->Close());
+  ASSERT_EQ(0, ip_source->Close());
+  zvec::test_util::RemoveTestFiles(source_name + "*");
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  zvec::test_util::RemoveTestFiles(ip_source_name + "*");
+  zvec::test_util::RemoveTestFiles(ip_index_name + "*");
+}
+#endif

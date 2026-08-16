@@ -17,11 +17,13 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <chrono>
+#include <cstring>
 #include <future>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_holder.h"
+#include "diskann_params.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -141,6 +143,56 @@ TEST_F(DiskAnnBuilderTest, SmallDatasetBuildTime) {
   EXPECT_LT(elapsed_ms, 5000)
       << "DiskAnn build with " << kSmallDocCnt << " vectors took " << elapsed_ms
       << " ms — likely a lost-wakeup regression in progress loops.";
+}
+
+TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCount) {
+  constexpr size_t kTestDim = 8;
+  constexpr size_t kDocCnt = 16;
+
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kTestDim);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(kTestDim);
+  for (size_t i = 0; i < kDocCnt; ++i) {
+    NumericalVector<float> vec(kTestDim, static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+  params.set(PARAM_DISKANN_BUILDER_MAX_DEGREE, 16);
+  params.set(PARAM_DISKANN_BUILDER_LIST_SIZE, 20);
+  params.set(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 4);
+  params.set(PARAM_DISKANN_BUILDER_THREAD_COUNT, 2);
+  // 40 total bytes gives a two-byte PQ code budget per vector. Before the
+  // fix this value was calculated and then discarded.
+  params.set(PARAM_DISKANN_BUILDER_MEMORY_LIMIT,
+             40.0 / (1024.0 * 1024.0 * 1024.0));
+
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+  ASSERT_EQ(0, builder->init(meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+
+  const string path = _dir + "/MemoryLimitCapsPqChunkCount";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->open(path, false));
+  auto pq_meta_segment = storage->get(DiskAnnEntity::kDiskAnnPqMetaSegmentId);
+  ASSERT_NE(pq_meta_segment, nullptr);
+  const void *data = nullptr;
+  ASSERT_EQ(sizeof(DiskAnnPqMeta),
+            pq_meta_segment->read(0, &data, sizeof(DiskAnnPqMeta)));
+  DiskAnnPqMeta pq_meta{};
+  std::memcpy(&pq_meta, data, sizeof(pq_meta));
+  EXPECT_EQ(2U, pq_meta.chunk_num);
 }
 
 TEST_F(DiskAnnBuilderTest, TestImplicitFactoryRegistration) {

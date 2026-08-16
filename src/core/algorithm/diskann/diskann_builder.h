@@ -102,7 +102,7 @@ class DiskAnnBuilder : public IndexBuilder {
   std::string codebook_prefix_{""};
   std::string index_path_prefix_{"./diskann"};
 
-  BUILD_STATE state_;
+  BUILD_STATE state_{BUILD_STATE_INIT};
   Stats stats_;
 
   int errcode_{0};

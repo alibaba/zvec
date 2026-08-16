@@ -70,6 +70,7 @@ message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
 
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/version.cmake)
 
 # iOS platform detection
 if(NOT ANDROID AND NOT IOS AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -138,14 +139,17 @@ else()
 endif()
 message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 
-# DiskAnn support (Linux x86_64 only; libaio loaded at runtime via dlopen)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
+# DiskAnn support:
+#   - Linux x86_64 and ARM64 with io_uring, libaio, or pread
+#   - macOS ARM64 (Apple Silicon) with synchronous pread
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" AND NOT ANDROID AND NOT IOS)
+    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled - only supported on Linux x86_64")
+  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 
@@ -166,8 +170,10 @@ if(BUILD_TOOLS)
     cc_directories(tools)
 endif()
 
-git_version(GIT_SRCS_VER ${PROJECT_ROOT_DIR})
-set(CPACK_PACKAGE_VERSION ${GIT_SRCS_VER})
+set(CPACK_PACKAGE_VERSION ${ZVEC_VERSION_NUMBER})
+set(CPACK_PACKAGE_VERSION_MAJOR ${ZVEC_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${ZVEC_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
 

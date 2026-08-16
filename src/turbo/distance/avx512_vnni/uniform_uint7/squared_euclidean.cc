@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AVX512-VNNI optimized squared Euclidean distance for uniform-quantized INT8.
+// AVX512-VNNI optimized squared Euclidean distance for uniform uint7 codes.
 //
 // Since all vectors share a single global scale/bias, the distance is simply:
 //   sum((a[i] - b[i])^2)
@@ -35,7 +35,7 @@
 // This file is compiled with per-file -march=avx512vnni (set in
 // CMakeLists.txt).
 
-#include "avx512_vnni/uniform_int8/squared_euclidean.h"
+#include "avx512_vnni/uniform_uint7/squared_euclidean.h"
 #include "zvec/ailego/internal/platform.h"
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
@@ -115,10 +115,10 @@ static ailego_force_inline void uniform_sq_l2_int8_batch_impl(
 }
 
 // ---------------------------------------------------------------------------
-// Public: single-vector squared Euclidean distance (int8, VNNI abs trick)
+// Public: single-vector squared Euclidean distance (uint7, VNNI abs trick)
 // ---------------------------------------------------------------------------
-void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
-                                             size_t dim, float *distance) {
+void uniform_squared_euclidean_uint7_distance(const void *a, const void *b,
+                                              size_t dim, float *distance) {
   const int8_t *lhs = reinterpret_cast<const int8_t *>(a);
   const int8_t *rhs = reinterpret_cast<const int8_t *>(b);
 
@@ -174,12 +174,12 @@ void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
 }
 
 // ---------------------------------------------------------------------------
-// Public: batch squared Euclidean distance (int8, no tail, no preprocessing)
+// Public: batch squared Euclidean distance (uint7, no tail, no preprocessing)
 // ---------------------------------------------------------------------------
-void uniform_squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                                   const void *query, size_t n,
-                                                   size_t dim,
-                                                   float *distances) {
+void uniform_squared_euclidean_uint7_batch_distance(const void *const *vectors,
+                                                    const void *query, size_t n,
+                                                    size_t dim,
+                                                    float *distances) {
   static constexpr size_t batch_size = 4;
   static constexpr size_t prefetch_step = 2;
 
@@ -198,8 +198,8 @@ void uniform_squared_euclidean_int8_batch_distance(const void *const *vectors,
   // both an extra `batch_size=1` template instantiation and the per-call
   // std::array setup that the batch_impl path requires.
   for (; i < n; ++i) {
-    uniform_squared_euclidean_int8_distance(vectors[i], query, dim,
-                                            distances + i);
+    uniform_squared_euclidean_uint7_distance(vectors[i], query, dim,
+                                             distances + i);
   }
 }
 
@@ -209,11 +209,12 @@ void uniform_squared_euclidean_int8_batch_distance(const void *const *vectors,
 
 namespace zvec::turbo::avx512_vnni {
 
-void uniform_squared_euclidean_int8_distance(const void * /*a*/,
-                                             const void * /*b*/, size_t /*dim*/,
-                                             float * /*distance*/) {}
+void uniform_squared_euclidean_uint7_distance(const void * /*a*/,
+                                              const void * /*b*/,
+                                              size_t /*dim*/,
+                                              float * /*distance*/) {}
 
-void uniform_squared_euclidean_int8_batch_distance(
+void uniform_squared_euclidean_uint7_batch_distance(
     const void *const * /*vectors*/, const void * /*query*/, size_t /*n*/,
     size_t /*dim*/, float * /*distances*/) {}
 

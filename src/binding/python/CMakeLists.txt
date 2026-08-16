@@ -77,11 +77,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_options(_zvec PRIVATE -static-libstdc++ -static-libgcc)
         message(STATUS "_zvec: statically linking libstdc++ and libgcc on musl")
     endif()
-    # DiskAnn is now statically linked into _zvec.so via --whole-archive, so
-    # no separate runtime .so is shipped in the wheel. libaio is still loaded
-    # at runtime via dlopen() (see libaio_loader.h); if it is missing, DiskAnn
-    # fails cleanly with an actionable error while other index types
-    # (HNSW/IVF/Flat/Vamana) remain fully functional.
+    # DiskAnn is statically linked into _zvec.so via --whole-archive, so no
+    # separate runtime .so is shipped in the wheel. On Linux it tries raw
+    # io_uring syscalls, then loads libaio at runtime via dlopen(), and finally
+    # falls back to synchronous pread. None of these paths requires a separate
+    # DiskAnn runtime library.
 elseif (APPLE)
     target_link_libraries(_zvec PRIVATE
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_static>

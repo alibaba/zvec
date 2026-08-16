@@ -86,11 +86,18 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
     return IndexError_InvalidArgument;
   }
 
-  DiskAnnUtil::alloc_aligned((void **)(&centroid_data_),
-                             entrypoints_.size() * aligned_dim_ * sizeof(float),
-                             32);
+  centroid_stride_ = DiskAnnUtil::round_up(meta_.element_size(), 32);
+  DiskAnnUtil::alloc_aligned(&centroid_data_,
+                             entrypoints_.size() * centroid_stride_, 32);
+  if (centroid_data_ == nullptr) {
+    LOG_ERROR("Failed to allocate entrypoint vector buffer");
+    return IndexError_NoMemory;
+  }
 
-  use_medroids_data_as_centroids();
+  ret = use_medroids_data_as_centroids();
+  if (ret != 0) {
+    return ret;
+  }
 
   return 0;
 }
@@ -98,26 +105,20 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 int DiskAnnIndexer::use_medroids_data_as_centroids() {
   LOG_INFO("Loading centroid data from medoid vector data");
 
-  std::vector<diskann_id_t> nodes_to_read;
-  std::vector<void *> medoid_bufs;
-  std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_bufs;
+  std::vector<void *> entrypoint_buffers(entrypoints_.size());
+  std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers(
+      entrypoints_.size(), std::make_pair(0U, nullptr));
+  auto *entrypoint_data = static_cast<uint8_t *>(centroid_data_);
+  for (size_t i = 0; i < entrypoints_.size(); ++i) {
+    entrypoint_buffers[i] = entrypoint_data + i * centroid_stride_;
+  }
 
-  std::vector<float> centroid_buffer;
-
-  size_t dim = meta_.dimension();
-  centroid_buffer.resize(dim);
-
-  nodes_to_read.push_back(medoid_);
-  medoid_bufs.push_back(&(centroid_buffer[0]));
-  neighbor_bufs.emplace_back(0, nullptr);
-
-  auto read_status = read_nodes(nodes_to_read, medoid_bufs, neighbor_bufs);
-
-  if (read_status[0] == true) {
-    for (uint32_t i = 0; i < dim; i++) centroid_data_[i] = centroid_buffer[i];
-  } else {
-    LOG_ERROR("Failed to read medoid");
-    return IndexError_Runtime;
+  auto read_status =
+      read_nodes(entrypoints_, entrypoint_buffers, neighbor_buffers);
+  if (std::find(read_status.begin(), read_status.end(), false) !=
+      read_status.end()) {
+    LOG_ERROR("Failed to read one or more entrypoint vectors");
+    return IndexError_ReadData;
   }
 
   return 0;
@@ -137,6 +138,9 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
     std::vector<std::pair<uint32_t, diskann_id_t *>> &neighbor_buffers) {
   std::vector<AlignedRead> read_reqs;
   std::vector<bool> retval(node_ids.size(), true);
+  if (node_ids.empty()) {
+    return retval;
+  }
 
   uint8_t *buf = nullptr;
   auto sector_num =
@@ -146,6 +150,11 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   DiskAnnUtil::alloc_aligned(
       (void **)&buf, node_ids.size() * sector_num * DiskAnnUtil::kSectorSize,
       DiskAnnUtil::kSectorSize);
+  if (buf == nullptr) {
+    LOG_ERROR("read_nodes: failed to allocate aligned read buffer");
+    std::fill(retval.begin(), retval.end(), false);
+    return retval;
+  }
 
   for (size_t i = 0; i < node_ids.size(); ++i) {
     auto node_id = node_ids[i];
@@ -202,6 +211,9 @@ int DiskAnnIndexer::load_cache_list(
   LOG_INFO("Loading the cache list into memory");
 
   size_t num_cached_nodes = node_list.size();
+  if (num_cached_nodes == 0) {
+    return 0;
+  }
 
   neighbor_cache_buffer_.resize(num_cached_nodes * (max_degree_ + 1), 0);
 
@@ -209,6 +221,11 @@ int DiskAnnIndexer::load_cache_list(
   DiskAnnUtil::alloc_aligned((void **)&coord_cache_buf_,
                              coord_cache_buf_len * meta_.unit_size(),
                              8 * meta_.unit_size());
+  if (coord_cache_buf_ == nullptr) {
+    LOG_ERROR("Failed to allocate coordinate cache buffer");
+    neighbor_cache_buffer_.clear();
+    return IndexError_NoMemory;
+  }
 
   memset(coord_cache_buf_, 0, coord_cache_buf_len * meta_.unit_size());
 
@@ -385,6 +402,21 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   auto &topk_heap = ctx->topk_heap();
 
   topk_heap.clear();
+  auto &group_topk_heaps = ctx->group_topk_heaps();
+  group_topk_heaps.clear();
+  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) {
+    if (ctx->group_by_search() && ctx->group_by().is_valid()) {
+      topk_heap.emplace(id, info);
+      std::string group_id = ctx->group_by()(get_key(id));
+      auto &group_topk_heap = group_topk_heaps[group_id];
+      if (group_topk_heap.empty()) {
+        group_topk_heap.limit(ctx->group_topk());
+      }
+      group_topk_heap.emplace(id, std::move(info));
+    } else {
+      topk_heap.emplace(id, std::move(info));
+    }
+  };
 
   IOContext &io_ctx = ctx->io_ctx();
   void *aligned_query_raw = ctx->query();
@@ -479,7 +511,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, node_fp_coords_copy);
 
-      topk_heap.emplace(
+      emplace_candidate(
           std::get<0>(cached_neighbor),
           VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords_copy)));
     }
@@ -494,7 +526,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
-      topk_heap.emplace(
+      emplace_candidate(
           frontier_neighbor.first,
           VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
 
@@ -520,6 +552,21 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   auto &topk_heap = ctx->topk_heap();
 
   topk_heap.clear();
+  auto &group_topk_heaps = ctx->group_topk_heaps();
+  group_topk_heaps.clear();
+  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) {
+    if (ctx->group_by_search() && ctx->group_by().is_valid()) {
+      topk_heap.emplace(id, info);
+      std::string group_id = ctx->group_by()(get_key(id));
+      auto &group_topk_heap = group_topk_heaps[group_id];
+      if (group_topk_heap.empty()) {
+        group_topk_heap.limit(ctx->group_topk());
+      }
+      group_topk_heap.emplace(id, std::move(info));
+    } else {
+      topk_heap.emplace(id, std::move(info));
+    }
+  };
 
   IOContext &io_ctx = ctx->io_ctx();
   void *aligned_query_raw = ctx->query();
@@ -557,6 +604,13 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
     while (frontier.size() < beam_width_) {
       if (!ctx->filter().is_valid() || !ctx->filter()(keys[idx])) {
         diskann_id_t id = get_id(keys[idx]);
+        if (id == kInvalidId) {
+          ++idx;
+          if (idx >= keys.size()) {
+            break;
+          }
+          continue;
+        }
 
         auto iter = neighbor_cache_.find(id);
         if (iter != neighbor_cache_.end()) {
@@ -616,7 +670,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, node_fp_coords_copy);
 
-      topk_heap.emplace(
+      emplace_candidate(
           std::get<0>(cached_neighbor),
           VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords_copy)));
     }
@@ -631,7 +685,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
-      topk_heap.emplace(
+      emplace_candidate(
           frontier_neighbor.first,
           VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
 
@@ -682,9 +736,9 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       cached_neighbors;
   cached_neighbors.reserve(2 * beam_width_);
 
-  auto iter = neighbor_cache_.find(id);
-  if (iter != neighbor_cache_.end()) {
-    void *node_fp_coords_copy = iter->second.second;
+  auto iter = coord_cache_.find(id);
+  if (iter != coord_cache_.end()) {
+    void *node_fp_coords_copy = iter->second;
 
     vector.resize(meta_.element_size());
     ::memcpy(&(vector[0]), node_fp_coords_copy, meta_.element_size());
@@ -709,8 +763,13 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
 
     io_timer.reset();
 
-    reader_->read(frontier_read_reqs, io_ctx);
+    int read_ret = reader_->read(frontier_read_reqs, io_ctx);
     stats.io_us += io_timer.micro_seconds();
+    if (read_ret != 0) {
+      LOG_ERROR("get_vector: reader_->read failed, ret=%d", read_ret);
+      ctx->set_error(true);
+      return IndexError_Runtime;
+    }
 
     uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
         node_per_sector_, max_node_size_, frontier_neighbor.second, id);
@@ -770,11 +829,12 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
 
   candidates.reserve(ctx->list_size());
 
-  diskann_id_t best_medoid = 0;
+  diskann_id_t best_medoid = entrypoints_.front();
   float best_dist = (std::numeric_limits<float>::max)();
   for (uint64_t cur_m = 0; cur_m < entrypoints_.size(); cur_m++) {
-    float cur_expanded_dist =
-        dc.dist(ctx->query(), centroid_data_ + aligned_dim_ * cur_m);
+    const void *entrypoint =
+        static_cast<const uint8_t *>(centroid_data_) + centroid_stride_ * cur_m;
+    float cur_expanded_dist = dc.dist(ctx->query(), entrypoint);
 
     if (cur_expanded_dist < best_dist) {
       best_medoid = entrypoints_[cur_m];
@@ -985,34 +1045,38 @@ int DiskAnnIndexer::cached_beam_search_in_mem(DiskAnnContext * /*ctx*/) {
   return IndexError_NotImplemented;
 }
 
-int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
+void DiskAnnIndexer::populate_group_topk_heaps(DiskAnnContext *ctx) {
+  auto &group_topk_heaps = ctx->group_topk_heaps();
+  group_topk_heaps.clear();
   if (!ctx->group_by().is_valid()) {
-    return 0;
+    return;
   }
 
-  std::function<std::string(diskann_id_t)> group_by = [&](diskann_id_t id) {
-    return ctx->group_by()(get_key(id));
-  };
-
-  // devide into groups
   auto &topk_heap = ctx->topk_heap();
-  auto &visit_filter = ctx->visit_filter();
-
-  std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
-
   for (uint32_t i = 0; i < topk_heap.size(); ++i) {
     diskann_id_t id = topk_heap[i].first;
-    auto info = topk_heap[i].second;
-
-    std::string group_id = group_by(id);
+    const auto &info = topk_heap[i].second;
+    std::string group_id = ctx->group_by()(get_key(id));
 
     auto &group_topk_heap = group_topk_heaps[group_id];
     if (group_topk_heap.empty()) {
       group_topk_heap.limit(ctx->group_topk());
     }
-
     group_topk_heap.emplace(id, info);
   }
+}
+
+int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
+  if (!ctx->group_by().is_valid()) {
+    ctx->group_topk_heaps().clear();
+    return 0;
+  }
+
+  // Divide the initial candidates into groups.
+  auto &topk_heap = ctx->topk_heap();
+  auto &visit_filter = ctx->visit_filter();
+  populate_group_topk_heaps(ctx);
+  auto &group_topk_heaps = ctx->group_topk_heaps();
 
   // stage 2, expand to reach group num as possible
   if (group_topk_heaps.size() < ctx->group_num()) {
@@ -1115,8 +1179,14 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         io_timer.reset();
 
-        reader_->read(frontier_read_reqs, io_ctx);  // synchronous IO linux
+        int read_ret = reader_->read(frontier_read_reqs, io_ctx);
         stats.io_us += io_timer.micro_seconds();
+        if (read_ret != 0) {
+          LOG_ERROR("cached_beam_search_by_group: reader_->read failed, ret=%d",
+                    read_ret);
+          ctx->set_error(true);
+          return IndexError_Runtime;
+        }
       }
 
       for (auto &cached_neighbor : cached_neighbors) {
@@ -1128,7 +1198,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         if (!ctx->filter().is_valid() ||
             !ctx->filter()(get_key(std::get<0>(cached_neighbor)))) {
-          std::string group_id = group_by(std::get<0>(cached_neighbor));
+          std::string group_id =
+              ctx->group_by()(get_key(std::get<0>(cached_neighbor)));
 
           auto &group_topk_heap = group_topk_heaps[group_id];
           if (group_topk_heap.empty()) {
@@ -1182,7 +1253,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         if (!ctx->filter().is_valid() ||
             !ctx->filter()(get_key(frontier_neighbor.first))) {
-          std::string group_id = group_by(frontier_neighbor.first);
+          std::string group_id =
+              ctx->group_by()(get_key(frontier_neighbor.first));
 
           auto &group_topk_heap = group_topk_heaps[group_id];
           if (group_topk_heap.empty()) {

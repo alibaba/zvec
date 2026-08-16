@@ -24,16 +24,27 @@ namespace core {
 DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
                                const IndexMetric::Pointer &measure,
                                const DiskAnnEntity::Pointer &entity)
-    : dc_(entity.get(), measure, meta.dimension()), entity_{entity} {}
+    : IndexContext(measure),
+      dc_(entity.get(), measure, meta.dimension()),
+      entity_{entity} {}
 
 int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
                          uint32_t pq_chunk_num, uint32_t element_size) {
+  if (!entity_ || element_size == 0) {
+    LOG_ERROR("Invalid DiskAnn context parameters");
+    return IndexError_InvalidArgument;
+  }
+
   type_ = type;
   element_size_ = element_size;
   pq_chunk_num_ = pq_chunk_num;
 
   DiskAnnUtil::alloc_aligned((void **)&query_, element_size_, 32);
   DiskAnnUtil::alloc_aligned((void **)&query_rotated_, element_size_, 32);
+  if (!query_ || !query_rotated_) {
+    LOG_ERROR("Failed to allocate DiskAnn query buffers");
+    return IndexError_NoMemory;
+  }
 
   int ret;
   switch (type) {
@@ -47,6 +58,11 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
       break;
 
     case kSearcherContext:
+      if (graph_degree == 0 || pq_chunk_num_ == 0) {
+        LOG_ERROR("Invalid DiskAnn search context dimensions");
+        return IndexError_InvalidArgument;
+      }
+
       ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(),
                                entity_->doc_cnt(), negative_probility_);
       if (ret != 0) {
@@ -54,17 +70,24 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
         return ret;
       }
 
-      DiskAnnUtil::alloc_aligned(
-          (void **)&pq_table_dist_buffer_,
-          PQTable::kPQCentroidNum * pq_chunk_num_ * sizeof(float), 256);
-      DiskAnnUtil::alloc_aligned((void **)&pq_coord_buffer_,
-                                 graph_degree * pq_chunk_num_ * sizeof(uint8_t),
+      DiskAnnUtil::alloc_aligned((void **)&pq_table_dist_buffer_,
+                                 static_cast<size_t>(PQTable::kPQCentroidNum) *
+                                     pq_chunk_num_ * sizeof(float),
                                  256);
+      DiskAnnUtil::alloc_aligned(
+          (void **)&pq_coord_buffer_,
+          static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
+          256);
       DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
       DiskAnnUtil::alloc_aligned(
           (void **)&sector_buffer_,
           DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,
           DiskAnnUtil::kSectorSize);
+      if (!pq_table_dist_buffer_ || !pq_coord_buffer_ || !coord_buffer_ ||
+          !sector_buffer_) {
+        LOG_ERROR("Failed to allocate DiskAnn search buffers");
+        return IndexError_NoMemory;
+      }
 
       ret = setup_io_ctx(io_ctx_);
       if (ret != 0) {
@@ -132,7 +155,8 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
   }
 
   entity_ = entity;
-  dc_.update(measure, meta.dimension());
+  update_index_metric(measure);
+  dc_.update(entity_.get(), measure, meta.dimension());
   magic_ = magic_num;
 
   return 0;

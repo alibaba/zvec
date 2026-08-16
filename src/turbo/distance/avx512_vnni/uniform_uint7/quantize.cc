@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AVX-512 quantization for the uniform-int8 quantizer.
+// AVX-512 quantization for the uniform-uint7 quantizer.
 //
 // Pipeline (16 floats per iteration):
 //   1. Load 16 fp32 values                                   (vmovups)
@@ -27,7 +27,7 @@
 //
 // Compiled with -march=avx512vnni (set per-file in src/turbo/CMakeLists.txt).
 
-#include "avx512_vnni/uniform_int8/quantize.h"
+#include "avx512_vnni/uniform_uint7/quantize.h"
 #include <algorithm>
 #include <cmath>
 
@@ -36,8 +36,8 @@
 
 namespace zvec::turbo::avx512_vnni {
 
-void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
-                           float bias, std::int8_t *out) {
+void uniform_uint7_quantize(const float *in, std::size_t dim, float scale,
+                            float bias, std::int8_t *out) {
   const __m512 vscale = _mm512_set1_ps(scale);
   const __m512 vbias = _mm512_set1_ps(bias);
   const __m512i vzero = _mm512_setzero_si512();
@@ -57,9 +57,10 @@ void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
     _mm_storeu_si128(reinterpret_cast<__m128i *>(out + i), packed);
   }
 
-  // Tail: scalar fallback (matches the scalar reference exactly).
+  // Tail: use the same rounding mode as _mm512_cvtps_epi32 so dimensions that
+  // are not multiples of 16 remain bit-exact with the vectorized prefix.
   for (; i < dim; ++i) {
-    float v = std::round(in[i] * scale + bias);
+    float v = std::nearbyint(in[i] * scale + bias);
     v = std::max(0.0f, std::min(127.0f, v));
     out[i] = static_cast<std::int8_t>(v);
   }
@@ -71,9 +72,9 @@ void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
 
 namespace zvec::turbo::avx512_vnni {
 
-void uniform_int8_quantize(const float * /*in*/, std::size_t /*dim*/,
-                           float /*scale*/, float /*bias*/,
-                           std::int8_t * /*out*/) {
+void uniform_uint7_quantize(const float * /*in*/, std::size_t /*dim*/,
+                            float /*scale*/, float /*bias*/,
+                            std::int8_t * /*out*/) {
   // Intentionally empty; turbo::get_uniform_quantize_func will return nullptr
   // on CPUs without AVX-512 support and the caller will use its scalar path.
 }

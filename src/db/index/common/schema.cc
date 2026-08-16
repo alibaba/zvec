@@ -218,19 +218,20 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
-        // DiskAnn requires Linux x86_64/i686/i386.  The CMake variable
+        // The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
         // single source of truth for platform eligibility — it is also used by
         // index_factory.cc to conditionally compile the DiskAnn index
         // registration.  Using the same macro here ensures that schema
         // validation and index registration agree on supported platforms.
         //
-        // libaio is loaded eagerly (via dlopen) inside DiskAnnBuilder::init()
-        // and DiskAnnStreamer::init(); if libaio is missing, DiskAnn falls
-        // back to synchronous pread() with degraded performance.
+        // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
+        // synchronous pread() if neither async backend is available. On macOS,
+        // DiskAnn uses synchronous pread().
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
-            "DiskAnn is not supported on this platform (Linux x86_64 only)");
+            "DiskAnn is not supported on this platform. It is available on "
+            "Linux (x86_64/ARM64) and macOS (ARM64).");
 #endif
       }
 

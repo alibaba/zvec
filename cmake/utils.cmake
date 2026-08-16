@@ -21,8 +21,25 @@ function(apply_patch_once patch_name target_dir patch_file)
     set(mark_file "${target_dir}/.${patch_name}_patched")
 
     if(EXISTS "${mark_file}")
-        #message(STATUS "Patch '${patch_name}' already applied to ${target_dir}, skipping.")
-        return()
+        # A submodule update restores tracked files but leaves this untracked
+        # marker behind. Verify the patch is still present before trusting the
+        # marker, otherwise a normal `git pull && git submodule update` can
+        # leave an unpatched source tree that fails later during compilation.
+        execute_process(
+            COMMAND git apply --reverse --check ${ARGN}
+                    --ignore-space-change --ignore-whitespace "${patch_file}"
+            WORKING_DIRECTORY "${target_dir}"
+            RESULT_VARIABLE reverse_check_result
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+        if(reverse_check_result EQUAL 0)
+            return()
+        endif()
+
+        message(STATUS
+            "Patch marker '${mark_file}' is stale; reapplying '${patch_name}'.")
+        file(REMOVE "${mark_file}")
     endif()
 
     if(NOT EXISTS "${patch_file}")

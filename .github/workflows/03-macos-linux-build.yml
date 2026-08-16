@@ -220,11 +220,11 @@ jobs:
           "
         shell: bash
 
-      - name: Run DiskAnn C++ Tests (w/ libaio)
-        if: matrix.platform == 'linux-x64'
+      - name: Run DiskAnn C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
           ctest -R diskann --output-on-failure --parallel $NPROC
+          "$GITHUB_WORKSPACE/examples/c++/build/diskann-core-example"
         shell: bash
 
       - name: Run DiskAnn Python Tests (w/ libaio)
@@ -258,14 +258,4 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/build"
           ctest -R diskann --output-on-failure --parallel $NPROC
-        shell: bash
-
-      # Verify installing libaio does not affect existing non-DiskAnn tests.
-      - name: Run HNSW Tests (w/ libaio)
-        if: matrix.platform == 'linux-x64'
-        run: |
-          cd "$GITHUB_WORKSPACE/build"
-          ctest -R hnsw --output-on-failure --parallel $NPROC
-          cd "$GITHUB_WORKSPACE"
-          python -m pytest python/tests/test_hnsw_contiguous_memory.py -v
         shell: bash

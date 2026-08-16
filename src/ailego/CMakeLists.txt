@@ -9,7 +9,6 @@ else()
     set(LIB_RT "")
 endif()
 
-git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 
 set(EXTRA_LIBS ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
@@ -136,5 +135,5 @@ cc_library(
     SRCS    ${ALL_SRCS}
     DEFS    ${ZVEC_AILEGO_DEFS}
     LIBS    ${EXTRA_LIBS}
-    VERSION "${GIT_SRCS_VER}"
+    VERSION "${ZVEC_VERSION_STRING}"
 )
