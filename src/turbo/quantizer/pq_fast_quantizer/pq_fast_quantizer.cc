@@ -70,9 +70,9 @@ void PqFastQuantizer::setup_functions() {
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
   } else {
-    batch_fn_ = get_batch_distance_func(
-        metric_from_name(meta_.metric_name()), input_data_type_,
-        input_quantize_type, CpuArchType::kAuto);
+    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
+                                        input_data_type_, input_quantize_type,
+                                        CpuArchType::kAuto);
   }
 
   // Inner-product batch distance for the precomputed residual tables.  The

@@ -111,8 +111,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
         mt, input_data_type_, input_quantize_type, CpuArchType::kAuto);
   }
 
-  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ || !ip_batch_fn_ ||
-      !batch_fn_) {
+  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ ||
+      !ip_batch_fn_ || !batch_fn_) {
     return kErrUnsupported;
   }
 
@@ -1022,13 +1022,13 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
                                 input_quantize_type, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
   } else {
-    batch_fn_ = get_batch_distance_func(
-        metric_from_name(meta_.metric_name()), input_data_type_,
-        input_quantize_type, CpuArchType::kAuto);
+    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
+                                        input_data_type_, input_quantize_type,
+                                        CpuArchType::kAuto);
   }
 
-  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ || !ip_batch_fn_ ||
-      !batch_fn_) {
+  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ ||
+      !ip_batch_fn_ || !batch_fn_) {
     return kErrUnsupported;
   }
 

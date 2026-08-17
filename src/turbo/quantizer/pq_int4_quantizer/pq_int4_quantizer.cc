@@ -1000,9 +1000,9 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
   } else {
-    batch_fn_ = get_batch_distance_func(
-        metric_from_name(meta_.metric_name()), input_data_type_,
-        input_quantize_type, CpuArchType::kAuto);
+    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
+                                        input_data_type_, input_quantize_type,
+                                        CpuArchType::kAuto);
   }
 
   // Set output meta: the quantized representation is INT4 codes with
