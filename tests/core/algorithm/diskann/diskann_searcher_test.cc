@@ -13,12 +13,9 @@
 // limitations under the License.
 
 #include "diskann_searcher.h"
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -56,9 +53,7 @@ void DiskAnnSearcherTest::SetUp(void) {
 }
 
 void DiskAnnSearcherTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", _dir.c_str());
-  system(cmdBuf);
+  std::filesystem::remove_all(_dir);
 }
 
 TEST_F(DiskAnnSearcherTest, TestGeneral) {
