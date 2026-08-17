@@ -690,6 +690,7 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   proxima_index_params_.insert("omega.min_vector_threshold",
                                param_.min_vector_threshold);
   proxima_index_params_.insert("omega.window_size", param_.window_size);
+  proxima_index_params_.insert("omega.k_train", param_.k_train);
 
   // OMEGA build/merge still happens through the streamer path. Keeping the
   // HNSW builder path untouched avoids changing merge semantics.

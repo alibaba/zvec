@@ -21,6 +21,7 @@ from benchmark_lib import (
     resolve_index_path,
     resolve_paths,
     run_concurrency_benchmark,
+    summarize_omega_prediction_profile,
     write_grouped_online_summaries,
     write_offline_summary,
 )
@@ -75,6 +76,15 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Root directory containing the raw dataset files",
+    )
+    parser.add_argument(
+        "--omega-profile-duration",
+        type=int,
+        default=5,
+        help=(
+            "Short diagnostic pass duration, in seconds, used to collect OMEGA "
+            "prediction profile metrics for the summary JSON"
+        ),
     )
     return parser.parse_args()
 
@@ -170,6 +180,7 @@ def run_omega(
     print_header("OMEGA Benchmark")
 
     omega_specific_args = omega_config.get("args", {})
+    omega_collection = None
     if not args.search_only:
         phase_message = (
             "\n[Phase 1] Retraining OMEGA model only (reusing existing index)..."
@@ -177,7 +188,7 @@ def run_omega(
             else "\n[Phase 1] Building OMEGA index + training model..."
         )
         emit(phase_message)
-        offline_metrics, _omega_collection = build_index(
+        offline_metrics, omega_collection = build_index(
             index_kind="OMEGA",
             index_path=omega_path,
             dataset_spec=dataset_spec,
@@ -215,6 +226,7 @@ def run_omega(
         omega_path=omega_path,
         common=common,
         target_recalls=target_recalls,
+        collection=omega_collection,
     )
 
 
@@ -227,6 +239,7 @@ def _run_omega_searches(
     omega_path: Path,
     common: dict[str, object],
     target_recalls: list[float],
+    collection: Any = None,
 ) -> list[BenchmarkResult]:
     results: list[BenchmarkResult] = []
     index_files = discover_index_files(omega_path)
@@ -242,6 +255,7 @@ def _run_omega_searches(
             common_args=common,
             target_recall=target_recall,
             dry_run=args.dry_run,
+            collection=collection,
         )
         benchmark = run_concurrency_benchmark(
             bench_bin=bench_bin,
@@ -253,6 +267,54 @@ def _run_omega_searches(
             dry_run=args.dry_run,
         )
         online = benchmark["summary"]
+        omega_prediction_profile = None
+        if online.get("retcode", 0) == 0 and not args.dry_run:
+            profile_thread_count = online.get("thread_count")
+            if profile_thread_count is not None:
+                profile_path = (
+                    omega_path
+                    / f"omega_prediction_profile_tr{int(target_recall * 10000)}.jsonl"
+                )
+                profile_path.unlink(missing_ok=True)
+                profile_common = dict(omega_common)
+                profile_common["num_concurrency"] = str(profile_thread_count)
+                profile_common["concurrency_duration"] = max(
+                    1, int(args.omega_profile_duration)
+                )
+                emit(
+                    "\n[Diagnostics] Collecting OMEGA prediction profile "
+                    f"({profile_common['concurrency_duration']}s, "
+                    f"threads={profile_thread_count})..."
+                )
+                profile_benchmark = run_concurrency_benchmark(
+                    bench_bin=bench_bin,
+                    index_files=index_files,
+                    dataset_artifacts=dataset_artifacts,
+                    dataset_spec=dataset_spec,
+                    common_args=profile_common,
+                    target_recall=target_recall,
+                    dry_run=args.dry_run,
+                    extra_env={
+                        "ZVEC_OMEGA_PROFILE_PREDICTION": "1",
+                        "ZVEC_OMEGA_PROFILE_OUTPUT": str(profile_path),
+                    },
+                )
+                profile_summary = profile_benchmark["summary"]
+                if profile_summary.get("retcode", 0) == 0:
+                    omega_prediction_profile = summarize_omega_prediction_profile(
+                        profile_path, profile_summary
+                    )
+                    if omega_prediction_profile is None:
+                        omega_prediction_profile = {
+                            "profile_path": str(profile_path),
+                            "error": "OMEGA prediction profile file was empty or missing",
+                        }
+                else:
+                    omega_prediction_profile = {
+                        "profile_path": str(profile_path),
+                        "error": "OMEGA prediction profile pass failed",
+                        "retcode": profile_summary.get("retcode"),
+                    }
         results.append(
             BenchmarkResult(
                 type="OMEGA",
@@ -267,6 +329,7 @@ def _run_omega_searches(
                 p95_latency_ms=online.get("p95_latency_ms"),
                 p99_latency_ms=online.get("p99_latency_ms"),
                 recall=recall,
+                omega_prediction_profile=omega_prediction_profile,
             )
         )
 

@@ -33,11 +33,29 @@ TEST(OmegaSearchContextTest, DefaultStateWithoutModelDoesNotEarlyStop) {
   EXPECT_EQ(comparisons, 0);
   EXPECT_EQ(collected_gt, 0);
   EXPECT_EQ(ctx.GetK(), 3);
+  EXPECT_EQ(ctx.GetKTrain(), 1);
   EXPECT_EQ(ctx.GetNextPredictionCmps(), 50);
   EXPECT_EQ(ctx.GetPredictionBatchMinInterval(), 10);
   EXPECT_FALSE(ctx.ShouldTrackTraversalWindow());
   EXPECT_FALSE(ctx.ShouldStopEarly());
   EXPECT_FALSE(ctx.EarlyStopHit());
+  auto prediction_stats = ctx.GetPredictionProfileStats();
+  EXPECT_EQ(prediction_stats.checks, 0U);
+  EXPECT_EQ(prediction_stats.model_calls, 0U);
+  EXPECT_EQ(prediction_stats.decision_time_ns, 0U);
+  EXPECT_EQ(prediction_stats.model_time_ns, 0U);
+}
+
+TEST(OmegaSearchContextTest, ExplicitKTrainIsClampedAndExposed) {
+  SearchContext ctx(nullptr, nullptr, 0.95f, 100, 5, 8);
+  EXPECT_EQ(ctx.GetKTrain(), 8);
+
+  SearchContext clamped_ctx(nullptr, nullptr, 0.95f, 100, 5, 0);
+  EXPECT_EQ(clamped_ctx.GetKTrain(), 1);
+
+  SearchContext training_clamped_ctx(nullptr, nullptr, 0.95f, 100, 5, 8);
+  training_clamped_ctx.EnableTrainingMode(1, std::vector<int>{11}, 0);
+  EXPECT_EQ(training_clamped_ctx.GetKTrain(), 1);
 }
 
 TEST(OmegaSearchContextTest, TrainingModeCollectsRecordsAndGtCmps) {

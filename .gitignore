@@ -25,7 +25,6 @@ compile_commands.json
 dist
 html
 *.lcov.info
-
 # Compiled extension modules must never live in the source package: they are
 # built by CMake and installed into the wheel. A stray copy left here gets
 # bundled verbatim by scikit-build's wheel.packages and breaks the wheel
@@ -33,36 +32,30 @@ html
 python/zvec/*.so
 python/zvec/*.dylib
 python/zvec/*.pyd
-
 # Dependencies
 /node_modules
-
 # Production
 /build
-
 # Generated files
 .docusaurus
 .cache-loader
-
 # Misc
 .DS_Store
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
-
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
 allure-*
-
 !build_android.sh
 !build_ios.sh
-
 # congfig
 doc/
 config/
 examples/python/
 examples/c_api/
 logs/
+/.harness/state.json
+/.harness/local/

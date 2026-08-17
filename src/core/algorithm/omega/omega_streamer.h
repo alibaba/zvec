@@ -66,6 +66,12 @@ class OmegaStreamer : public HnswStreamer {
 
  protected:
   /**
+   * @brief Override init to capture OMEGA-specific streamer parameters.
+   */
+  virtual int init(const IndexMeta &imeta,
+                   const ailego::Params &params) override;
+
+  /**
    * @brief Override search to use OMEGA adaptive search
    *
    * In training mode: collects features without early stopping
@@ -117,6 +123,7 @@ class OmegaStreamer : public HnswStreamer {
   mutable std::mutex model_mutex_;
   float target_recall_{0.95f};
   int window_size_{100};
+  int inference_k_train_{1};
 };
 
 }  // namespace core

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <random>
 #include <string>
@@ -30,6 +32,35 @@ namespace {
 constexpr uint32_t kDimension = 16;
 constexpr uint32_t kTrainQueryDocId = 77;
 const std::string kIndexPath = "OmegaIndexIntegrationTest/test.index";
+
+void SetEnvVar(const char *name, const std::string &value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
+}
+
+void UnsetEnvVar(const char *name) {
+#ifdef _WIN32
+  _putenv_s(name, "");
+#else
+  unsetenv(name);
+#endif
+}
+
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const char *name, std::string value) : name_(name) {
+    SetEnvVar(name_.c_str(), value);
+  }
+  ~ScopedEnvVar() {
+    UnsetEnvVar(name_.c_str());
+  }
+
+ private:
+  std::string name_;
+};
 
 BaseIndexParam::Pointer CreateOmegaIndexParam() {
   return OmegaIndexParamBuilder()
@@ -233,8 +264,24 @@ TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
 
   auto query = VectorData{DenseVector{dataset[kTrainQueryDocId].data()}};
   SearchResult result;
-  ASSERT_EQ(index->Search(query, query_param, &result), 0);
+  const std::string profile_path =
+      "OmegaIndexIntegrationTest/omega_prediction_profile.jsonl";
+  {
+    ScopedEnvVar profile_enabled("ZVEC_OMEGA_PROFILE_PREDICTION", "1");
+    ScopedEnvVar profile_output("ZVEC_OMEGA_PROFILE_OUTPUT", profile_path);
+    ASSERT_EQ(index->Search(query, query_param, &result), 0);
+  }
   ASSERT_EQ(result.doc_list_.size(), 5U);
+
+  ASSERT_TRUE(std::filesystem::exists(profile_path));
+  std::ifstream profile_file(profile_path);
+  std::string profile_line;
+  ASSERT_TRUE(static_cast<bool>(std::getline(profile_file, profile_line)));
+  EXPECT_NE(profile_line.find("\"model_calls\""), std::string::npos);
+  EXPECT_NE(profile_line.find("\"model_time_ns\""), std::string::npos);
+  EXPECT_NE(profile_line.find("\"decision_time_ns\""), std::string::npos);
+  EXPECT_NE(profile_line.find("\"saved_comparisons\""), std::string::npos);
+  EXPECT_NE(profile_line.find("\"baseline_comparisons\""), std::string::npos);
 
   ASSERT_EQ(index->Close(), 0);
 }

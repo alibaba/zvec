@@ -6,8 +6,7 @@
       "concurrency_duration": 30,
       "k": 100,
       "m": 64,
-      "ef_search": 300,
-      "quantize_type": "int8"
+      "ef_search": 100
     },
     "hnsw": {
       "path": "cohere_1m_hnsw",
@@ -18,12 +17,12 @@
       "path": "cohere_1m_omega",
       "db_label": "16c64g-v0.1-omega-m64-ef300",
       "target_recalls": [
-        0.92
+        0.95
       ],
       "args": {
         "min_vector_threshold": 100000,
         "num_training_queries": 4000,
-        "ef_training": 500,
+        "ef_training": 300,
         "window_size": 100,
         "ef_groundtruth": 1000
       }
@@ -36,8 +35,7 @@
       "concurrency_duration": 30,
       "k": 100,
       "m": 64,
-      "ef_search": 600,
-      "quantize_type": "int8"
+      "ef_search": 100
     },
     "hnsw": {
       "path": "cohere_10m_hnsw",

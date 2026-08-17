@@ -21,6 +21,11 @@ except ImportError:
     pl = None
 
 try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
     import zvec
 except ImportError:
     zvec = None
@@ -40,6 +45,7 @@ class BenchmarkResult:
     p90_latency_ms: float | None = None
     p95_latency_ms: float | None = None
     p99_latency_ms: float | None = None
+    omega_prediction_profile: dict[str, Any] | None = None
 
 
 KV_PATTERN = re.compile(r"([A-Za-z_]+)=([^\s,]+)")
@@ -179,6 +185,170 @@ def percentile_metric(
     return values[lower] * (1.0 - weight) + values[upper] * weight
 
 
+def _numeric_values(records: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for record in records:
+        value = record.get(key)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+def _sum_numeric(records: list[dict[str, Any]], key: str) -> float | None:
+    values = _numeric_values(records, key)
+    if not values:
+        return None
+    return sum(values)
+
+
+def _avg_numeric(records: list[dict[str, Any]], key: str) -> float | None:
+    values = _numeric_values(records, key)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _percentile_numeric(
+    records: list[dict[str, Any]], key: str, percentile: float
+) -> float | None:
+    values = sorted(_numeric_values(records, key))
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    rank = (len(values) - 1) * percentile / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(values) - 1)
+    if lower == upper:
+        return values[lower]
+    weight = rank - lower
+    return values[lower] * (1.0 - weight) + values[upper] * weight
+
+
+def read_omega_prediction_profile_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    records: list[dict[str, Any]] = []
+    with path.open() as f:
+        for lineno, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid OMEGA profile JSONL at {path}:{lineno}") from exc
+            if isinstance(record, dict):
+                records.append(record)
+    return records
+
+
+def summarize_omega_prediction_profile(
+    profile_path: Path, benchmark: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    records = read_omega_prediction_profile_records(profile_path)
+    if not records:
+        return None
+
+    query_count = len(records)
+    saved_values = _numeric_values(records, "saved_comparisons")
+    baseline_values = _numeric_values(records, "baseline_comparisons")
+    omega_values = _numeric_values(records, "omega_comparisons")
+
+    total_model_time_ns = _sum_numeric(records, "model_time_ns") or 0.0
+    total_decision_time_ns = _sum_numeric(records, "decision_time_ns") or 0.0
+    total_model_calls = _sum_numeric(records, "model_calls") or 0.0
+    total_prediction_checks = _sum_numeric(records, "prediction_checks") or 0.0
+
+    summary: dict[str, Any] = {
+        "profile_path": str(profile_path),
+        "profile_query_count": query_count,
+        "profile_thread_count": (benchmark or {}).get("thread_count"),
+        "profile_duration_s": (benchmark or {}).get("duration_s"),
+        "metric_scope": "per_query",
+        "saved_comparisons_definition": (
+            "baseline_comparisons - omega_comparisons, where baseline_comparisons "
+            "is collected by a profiling-only shadow HNSW run on the same query "
+            "with OMEGA early stop disabled"
+        ),
+        "model_calls_total": int(total_model_calls),
+        "prediction_checks_total": int(total_prediction_checks),
+        "model_time_ns_total": int(total_model_time_ns),
+        "decision_time_ns_total": int(total_decision_time_ns),
+        "model_calls_per_query": total_model_calls / query_count,
+        "prediction_checks_per_query": total_prediction_checks / query_count,
+        "model_time_us_per_query": total_model_time_ns / query_count / 1000.0,
+        "decision_time_us_per_query": total_decision_time_ns / query_count / 1000.0,
+        "model_time_us_per_call": (
+            total_model_time_ns / total_model_calls / 1000.0
+            if total_model_calls > 0
+            else None
+        ),
+        "decision_time_us_per_check": (
+            total_decision_time_ns / total_prediction_checks / 1000.0
+            if total_prediction_checks > 0
+            else None
+        ),
+        "omega_comparisons_per_query": _avg_numeric(records, "omega_comparisons"),
+        "omega_comparisons_p50": _percentile_numeric(records, "omega_comparisons", 50),
+        "omega_comparisons_p95": _percentile_numeric(records, "omega_comparisons", 95),
+        "early_stop_hit_count": sum(
+            1 for record in records if bool(record.get("early_stop_hit"))
+        ),
+        "early_stop_hit_ratio": sum(
+            1 for record in records if bool(record.get("early_stop_hit"))
+        )
+        / query_count,
+    }
+
+    if baseline_values:
+        summary.update(
+            {
+                "baseline_profile_query_count": len(baseline_values),
+                "baseline_comparisons_per_query": sum(baseline_values)
+                / len(baseline_values),
+                "saved_comparisons_per_query": (
+                    sum(saved_values) / len(saved_values) if saved_values else None
+                ),
+                "saved_comparisons_p50": _percentile_numeric(
+                    records, "saved_comparisons", 50
+                ),
+                "saved_comparisons_p95": _percentile_numeric(
+                    records, "saved_comparisons", 95
+                ),
+                "saved_comparisons_total": (
+                    int(sum(saved_values)) if saved_values else None
+                ),
+                "saved_comparisons_ratio": (
+                    sum(saved_values) / sum(baseline_values)
+                    if saved_values and sum(baseline_values) > 0
+                    else None
+                ),
+            }
+        )
+    else:
+        summary.update(
+            {
+                "baseline_profile_query_count": 0,
+                "baseline_comparisons_per_query": None,
+                "saved_comparisons_per_query": None,
+                "saved_comparisons_p50": None,
+                "saved_comparisons_p95": None,
+                "saved_comparisons_total": None,
+                "saved_comparisons_ratio": None,
+            }
+        )
+
+    if omega_values and baseline_values:
+        summary["comparison_count_delta_per_query"] = (
+            sum(omega_values) / len(omega_values)
+            - sum(baseline_values) / len(baseline_values)
+        )
+
+    return summary
+
+
 def parse_query_records(output: str, prefix: str) -> list[dict[str, Any]]:
     records = []
     for line in output.splitlines():
@@ -224,6 +394,25 @@ def write_online_summary(index_path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def online_result_payload(result: BenchmarkResult) -> dict[str, Any]:
+    payload = {
+        "type": result.type,
+        "target_recall": result.target_recall,
+        "path": result.path,
+        "load_duration_s": result.load_duration,
+        "qps": result.qps,
+        "avg_latency_ms": result.avg_latency_ms,
+        "p50_latency_ms": result.p50_latency_ms,
+        "p90_latency_ms": result.p90_latency_ms,
+        "p95_latency_ms": result.p95_latency_ms,
+        "p99_latency_ms": result.p99_latency_ms,
+        "recall": result.recall,
+    }
+    if result.omega_prediction_profile is not None:
+        payload["omega_prediction_profile"] = result.omega_prediction_profile
+    return payload
+
+
 def write_grouped_online_summaries(
     dataset: str, results: list[BenchmarkResult]
 ) -> list[Path]:
@@ -239,22 +428,7 @@ def write_grouped_online_summaries(
             {
                 "generated_at": datetime.now().isoformat(),
                 "dataset": dataset,
-                "results": [
-                    {
-                        "type": result.type,
-                        "target_recall": result.target_recall,
-                        "path": result.path,
-                        "load_duration_s": result.load_duration,
-                        "qps": result.qps,
-                        "avg_latency_ms": result.avg_latency_ms,
-                        "p50_latency_ms": result.p50_latency_ms,
-                        "p90_latency_ms": result.p90_latency_ms,
-                        "p95_latency_ms": result.p95_latency_ms,
-                        "p99_latency_ms": result.p99_latency_ms,
-                        "recall": result.recall,
-                    }
-                    for result in grouped_results
-                ],
+                "results": [online_result_payload(result) for result in grouped_results],
             },
         )
         written_paths.append(online_summary_path(index_path))
@@ -397,10 +571,22 @@ def resolve_dataset_spec(
     metric_type = str(
         config.get("metric_type", default.get("metric_type", "COSINE"))
     ).upper()
+    dataset_format = str(
+        config.get("format", config.get("dataset_format", default.get("format", "parquet")))
+    ).lower()
     remote_dirname = str(
         config.get("remote_dirname", default.get("remote_dirname", ""))
     )
     train_files = list(config.get("train_files", default.get("train_files", [])))
+    base_files = list(config.get("base_files", default.get("base_files", [])))
+    query_file = str(config.get("query_file", default.get("query_file", "")))
+    groundtruth_file = str(
+        config.get("groundtruth_file", default.get("groundtruth_file", ""))
+    )
+    query_count = config.get("query_count", default.get("query_count"))
+    recall_query_count = config.get(
+        "recall_query_count", default.get("recall_query_count")
+    )
     dataset_source = str(
         config.get("dataset_source", os.environ.get("ZVEC_DATASET_SOURCE", "S3"))
     )
@@ -420,12 +606,24 @@ def resolve_dataset_spec(
 
     dataset_dir = (dataset_root / dataset_dirname).resolve()
     return {
+        "format": dataset_format,
         "dataset_root": dataset_root,
         "dataset_dir": dataset_dir,
         "dimension": dimension,
         "metric_type": metric_type,
         "remote_dirname": remote_dirname,
         "train_files": train_files,
+        "base_files": base_files,
+        "query_file": query_file,
+        "groundtruth_file": groundtruth_file,
+        "query_count": query_count,
+        "recall_query_count": recall_query_count,
+        "vector_dtype": str(
+            config.get("vector_dtype", default.get("vector_dtype", "float32"))
+        ),
+        "insert_batch_size": int(
+            config.get("insert_batch_size", default.get("insert_batch_size", 1000))
+        ),
         "download_base_url": download_base_url.rstrip("/"),
     }
 
@@ -436,6 +634,14 @@ def _require_polars():
             "This script requires polars in the active Python environment."
         )
     return pl
+
+
+def _require_numpy():
+    if np is None:
+        raise RuntimeError(
+            "Big-ann binary datasets require numpy in the active Python environment."
+        )
+    return np
 
 
 def _require_zvec():
@@ -467,6 +673,21 @@ def _sorted_train_files(dataset_dir: Path) -> list[Path]:
 def _dataset_required_files(
     dataset_name: str, dataset_spec: dict[str, Any]
 ) -> list[str]:
+    if dataset_spec.get("format") == "bigann":
+        required = list(dataset_spec.get("base_files", []))
+        query_file = dataset_spec.get("query_file")
+        groundtruth_file = dataset_spec.get("groundtruth_file")
+        if query_file:
+            required.append(str(query_file))
+        if groundtruth_file:
+            required.append(str(groundtruth_file))
+        if not required or not dataset_spec.get("base_files"):
+            raise ValueError(
+                f"Big-ann dataset {dataset_name} must define base_files, "
+                "query_file, and groundtruth_file"
+            )
+        return required
+
     required = list(dataset_spec.get("train_files", []))
     if not required:
         raise ValueError(
@@ -528,6 +749,13 @@ def prepare_dataset_artifacts(
     benchmark_dir: Path,
     dry_run: bool = False,
 ) -> dict[str, Path]:
+    if dataset_spec.get("format") == "bigann":
+        return _prepare_bigann_dataset_artifacts(
+            dataset_name, dataset_spec, benchmark_dir, dry_run=dry_run
+        )
+    if dataset_spec.get("format", "parquet") != "parquet":
+        raise ValueError(f"Unsupported dataset format: {dataset_spec.get('format')}")
+
     dataset_dir = dataset_spec["dataset_dir"]
     query_parquet = dataset_dir / "test.parquet"
     gt_parquet = dataset_dir / "neighbors.parquet"
@@ -571,6 +799,176 @@ def prepare_dataset_artifacts(
         "groundtruth_txt": gt_txt,
         "train_files": train_files,
     }
+
+
+def _as_optional_positive_int(value: Any, name: str) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive when set")
+    return parsed
+
+
+def _numpy_dtype(dtype_name: str):
+    module = _require_numpy()
+    normalized = str(dtype_name).lower()
+    mapping = {
+        "float32": module.float32,
+        "f32": module.float32,
+        "uint8": module.uint8,
+        "u8": module.uint8,
+        "int8": module.int8,
+        "i8": module.int8,
+    }
+    if normalized not in mapping:
+        raise ValueError(f"Unsupported big-ann vector dtype: {dtype_name}")
+    return mapping[normalized]
+
+
+def _read_xbin_header(path: Path) -> tuple[int, int]:
+    module = _require_numpy()
+    header = module.fromfile(path, dtype=module.uint32, count=2)
+    if header.size != 2:
+        raise ValueError(f"Invalid xbin header: {path}")
+    return int(header[0]), int(header[1])
+
+
+def _xbin_mmap(path: Path, dtype_name: str, maxn: int | None = None):
+    module = _require_numpy()
+    dtype = _numpy_dtype(dtype_name)
+    n, d = _read_xbin_header(path)
+    if maxn is not None:
+        n = min(n, int(maxn))
+    return module.memmap(path, dtype=dtype, mode="r", offset=8, shape=(n, d))
+
+
+def _knn_ids_mmap(path: Path, maxn: int | None = None):
+    module = _require_numpy()
+    n, k = _read_xbin_header(path)
+    if maxn is not None:
+        n = min(n, int(maxn))
+    return module.memmap(path, dtype=module.int32, mode="r", offset=8, shape=(n, k))
+
+
+def _needs_refresh(output_path: Path, source_paths: list[Path]) -> bool:
+    if not output_path.exists():
+        return True
+    output_mtime = output_path.stat().st_mtime
+    return any(output_mtime < source_path.stat().st_mtime for source_path in source_paths)
+
+
+def _prepare_bigann_dataset_artifacts(
+    dataset_name: str,
+    dataset_spec: dict[str, Any],
+    benchmark_dir: Path,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    ensure_dataset_available(dataset_name, dataset_spec, dry_run)
+
+    dataset_dir = dataset_spec["dataset_dir"]
+    base_paths = [dataset_dir / name for name in dataset_spec["base_files"]]
+    query_path = dataset_dir / str(dataset_spec["query_file"])
+    gt_path = dataset_dir / str(dataset_spec["groundtruth_file"])
+    vector_dtype = str(dataset_spec.get("vector_dtype", "float32"))
+    dimension = int(dataset_spec["dimension"])
+
+    query_count = _as_optional_positive_int(dataset_spec.get("query_count"), "query_count")
+    recall_query_count = _as_optional_positive_int(
+        dataset_spec.get("recall_query_count"), "recall_query_count"
+    )
+
+    if dry_run:
+        resolved_query_count = query_count or 0
+        resolved_recall_query_count = recall_query_count or resolved_query_count
+    else:
+        if not dataset_dir.exists():
+            raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+        for base_path in base_paths:
+            if not base_path.exists():
+                raise FileNotFoundError(f"Missing big-ann base file: {base_path}")
+            _, base_dimension = _read_xbin_header(base_path)
+            if base_dimension != dimension:
+                raise ValueError(
+                    f"Big-ann base dimension mismatch for {base_path}: "
+                    f"expected {dimension}, got {base_dimension}"
+                )
+        if not query_path.exists():
+            raise FileNotFoundError(f"Missing big-ann query file: {query_path}")
+        if not gt_path.exists():
+            raise FileNotFoundError(f"Missing big-ann ground-truth file: {gt_path}")
+
+        query_n, query_dimension = _read_xbin_header(query_path)
+        gt_n, _gt_k = _read_xbin_header(gt_path)
+        if query_dimension != dimension:
+            raise ValueError(
+                f"Big-ann query dimension mismatch for {query_path}: "
+                f"expected {dimension}, got {query_dimension}"
+            )
+        resolved_query_count = min(query_n, gt_n)
+        if query_count is not None:
+            resolved_query_count = min(resolved_query_count, query_count)
+        resolved_recall_query_count = min(
+            resolved_query_count, recall_query_count or resolved_query_count
+        )
+
+    cache_dir = (benchmark_dir / "_dataset_cache" / dataset_name).resolve()
+    query_txt = cache_dir / f"query_{resolved_query_count}.txt"
+    gt_txt = cache_dir / f"groundtruth_{resolved_query_count}.txt"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if not dry_run:
+        if _needs_refresh(query_txt, [query_path]):
+            _write_bigann_query_text(
+                query_path,
+                query_txt,
+                vector_dtype=vector_dtype,
+                query_count=resolved_query_count,
+            )
+        if _needs_refresh(gt_txt, [gt_path]):
+            _write_bigann_groundtruth_text(
+                gt_path, gt_txt, query_count=resolved_query_count
+            )
+
+    return {
+        "format": "bigann",
+        "dataset_dir": dataset_dir,
+        "query_file": query_path,
+        "gt_file": gt_path,
+        "query_txt": query_txt,
+        "groundtruth_txt": gt_txt,
+        "train_files": base_paths,
+        "query_count": resolved_query_count,
+        "recall_query_count": resolved_recall_query_count,
+        "vector_dtype": vector_dtype,
+        "dimension": dimension,
+    }
+
+
+def _write_bigann_query_text(
+    query_path: Path,
+    output_path: Path,
+    *,
+    vector_dtype: str,
+    query_count: int,
+) -> None:
+    vectors = _xbin_mmap(query_path, vector_dtype, maxn=query_count)
+    with output_path.open("w") as f:
+        for query_id in range(query_count):
+            vector_text = " ".join(
+                str(round(float(value), 16)) for value in vectors[query_id]
+            )
+            f.write(f"{query_id};{vector_text};\n")
+
+
+def _write_bigann_groundtruth_text(
+    gt_path: Path, output_path: Path, *, query_count: int
+) -> None:
+    ids = _knn_ids_mmap(gt_path, maxn=query_count)
+    with output_path.open("w") as f:
+        for query_id in range(query_count):
+            neighbors = " ".join(str(int(value)) for value in ids[query_id])
+            f.write(f"{query_id};{neighbors}\n")
 
 
 def _write_query_text(query_parquet: Path, output_path: Path) -> None:
@@ -735,7 +1133,9 @@ def build_index(
             module.CollectionOption(read_only=False, enable_mmap=True),
         )
         insert_duration = _insert_training_data(
-            collection, dataset_artifacts["train_files"]
+            collection,
+            dataset_artifacts,
+            batch_size=int(dataset_spec.get("insert_batch_size", 1000)),
         )
 
     optimize_start = time.perf_counter()
@@ -778,11 +1178,21 @@ def build_index(
 
 
 def _insert_training_data(
-    collection, train_files: list[Path], batch_size: int = 1000
+    collection, dataset_artifacts: dict[str, Any], batch_size: int = 1000
 ) -> float:
+    if dataset_artifacts.get("format") == "bigann":
+        return _insert_bigann_training_data(
+            collection,
+            dataset_artifacts["train_files"],
+            vector_dtype=str(dataset_artifacts.get("vector_dtype", "float32")),
+            dimension=int(dataset_artifacts["dimension"]),
+            batch_size=batch_size,
+        )
+
     module = _initialized_zvec()
     polars = _require_polars()
     start = time.perf_counter()
+    train_files = dataset_artifacts["train_files"]
     for train_file in train_files:
         frame = polars.read_parquet(train_file)
         for offset in range(0, frame.height, batch_size):
@@ -801,6 +1211,40 @@ def _insert_training_data(
     return time.perf_counter() - start
 
 
+def _insert_bigann_training_data(
+    collection,
+    train_files: list[Path],
+    *,
+    vector_dtype: str,
+    dimension: int,
+    batch_size: int,
+) -> float:
+    module = _initialized_zvec()
+    start = time.perf_counter()
+    next_id = 0
+    for train_file in train_files:
+        vectors = _xbin_mmap(train_file, vector_dtype)
+        if vectors.shape[1] != dimension:
+            raise ValueError(
+                f"Big-ann base dimension mismatch for {train_file}: "
+                f"expected {dimension}, got {vectors.shape[1]}"
+            )
+        for offset in range(0, vectors.shape[0], batch_size):
+            end = min(offset + batch_size, vectors.shape[0])
+            batch_vectors = vectors[offset:end].tolist()
+            docs = [
+                module.Doc(
+                    id=str(next_id + offset + local_idx),
+                    fields={"id": next_id + offset + local_idx},
+                    vectors={"dense": vector},
+                )
+                for local_idx, vector in enumerate(batch_vectors)
+            ]
+            collection.insert(docs)
+        next_id += vectors.shape[0]
+    return time.perf_counter() - start
+
+
 def compute_recall_with_zvec(
     *,
     index_kind: str,
@@ -813,6 +1257,15 @@ def compute_recall_with_zvec(
 ) -> float | None:
     if dry_run:
         return None
+    if dataset_artifacts.get("format") == "bigann":
+        return _compute_bigann_recall_with_zvec(
+            index_kind=index_kind,
+            index_path=index_path,
+            dataset_artifacts=dataset_artifacts,
+            common_args=common_args,
+            target_recall=target_recall,
+            collection=collection,
+        )
 
     module = _initialized_zvec()
     polars = _require_polars()
@@ -866,6 +1319,72 @@ def compute_recall_with_zvec(
         pred = [int(doc.id) for doc in results[:topk]]
         recall_sum += len(set(pred) & set(gt)) / float(topk)
         query_count += 1
+
+    if should_close:
+        del collection
+    if query_count == 0:
+        return None
+    return recall_sum / query_count
+
+
+def _compute_bigann_recall_with_zvec(
+    *,
+    index_kind: str,
+    index_path: Path,
+    dataset_artifacts: dict[str, Any],
+    common_args: dict[str, Any],
+    target_recall: float | None,
+    collection: Any = None,
+) -> float | None:
+    module = _initialized_zvec()
+    query_count = min(
+        int(dataset_artifacts["query_count"]),
+        int(dataset_artifacts.get("recall_query_count") or dataset_artifacts["query_count"]),
+    )
+    query_vectors = _xbin_mmap(
+        dataset_artifacts["query_file"],
+        str(dataset_artifacts.get("vector_dtype", "float32")),
+        maxn=query_count,
+    )
+    gt_ids = _knn_ids_mmap(dataset_artifacts["gt_file"], maxn=query_count)
+
+    if collection is None:
+        option = module.CollectionOption(
+            read_only=(index_kind != "OMEGA"), enable_mmap=True
+        )
+        collection = module.open(str(index_path), option)
+        should_close = True
+    else:
+        should_close = False
+
+    use_refiner = bool(common_args.get("is_using_refiner", False))
+    if index_kind == "OMEGA":
+        query_param = module.OmegaQueryParam(
+            ef=int(common_args["ef_search"]),
+            target_recall=float(target_recall),
+            is_using_refiner=use_refiner,
+        )
+    else:
+        query_param = module.HnswQueryParam(
+            ef=int(common_args["ef_search"]),
+            is_using_refiner=use_refiner,
+        )
+
+    recall_sum = 0.0
+    topk = int(common_args["k"])
+    for query_id in range(query_count):
+        gt = [int(value) for value in gt_ids[query_id, :topk]]
+        results = collection.query(
+            vectors=module.VectorQuery(
+                field_name="dense",
+                vector=query_vectors[query_id].tolist(),
+                param=query_param,
+            ),
+            topk=topk,
+            output_fields=[],
+        )
+        pred = [int(doc.id) for doc in results[:topk]]
+        recall_sum += len(set(pred) & set(gt)) / float(topk)
 
     if should_close:
         del collection
@@ -1212,6 +1731,7 @@ def run_concurrency_benchmark(
     common_args: dict[str, Any],
     target_recall: float | None,
     dry_run: bool,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     ef_search = int(common_args["ef_search"])
     topk = int(common_args["k"])
@@ -1244,8 +1764,10 @@ def run_concurrency_benchmark(
             reference_index_path=index_files["reference"],
             target_recall=target_recall,
             dry_run=dry_run,
+            extra_env=extra_env,
         )
         summary["thread_count"] = thread_count
+        summary["duration_s"] = duration
         summary["retcode"] = ret
         if best_summary is None or (summary.get("qps") or 0.0) > (
             best_summary.get("qps") or 0.0

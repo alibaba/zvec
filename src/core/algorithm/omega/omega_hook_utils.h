@@ -31,6 +31,27 @@ inline bool DisableOmegaModelPrediction() {
   return std::string(value) != "0";
 }
 
+inline bool ProfileOmegaPrediction() {
+  const char *value = std::getenv("ZVEC_OMEGA_PROFILE_PREDICTION");
+  const char *output = std::getenv("ZVEC_OMEGA_PROFILE_OUTPUT");
+  if (output != nullptr && std::string(output) != "" &&
+      std::string(output) != "0") {
+    return true;
+  }
+  if (value == nullptr) {
+    return false;
+  }
+  return std::string(value) != "0";
+}
+
+inline std::string OmegaPredictionProfileOutputPath() {
+  const char *value = std::getenv("ZVEC_OMEGA_PROFILE_OUTPUT");
+  if (value == nullptr || std::string(value) == "0") {
+    return std::string();
+  }
+  return std::string(value);
+}
+
 struct OmegaHookState {
   struct PendingVisitBuffer {
     std::vector<omega::SearchContext::VisitCandidate> storage;
@@ -123,6 +144,13 @@ inline bool MaybeFlushOmegaPendingCandidates(OmegaHookState *state) {
     return false;
   }
   return FlushOmegaPendingCandidates(state, state->pending_candidates.count);
+}
+
+inline void FlushOmegaPendingCandidatesForStats(OmegaHookState *state) {
+  bool old_enable_early_stopping = state->enable_early_stopping;
+  state->enable_early_stopping = false;
+  FlushOmegaPendingCandidates(state, state->pending_candidates.count);
+  state->enable_early_stopping = old_enable_early_stopping;
 }
 
 inline void OnOmegaLevel0Entry(node_id_t id, dist_t dist,
