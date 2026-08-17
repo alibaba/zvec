@@ -15,8 +15,12 @@
 #include <cassert>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
+#include "avx2/pq_quantizer_fast/pq_distance.h"
+#include "avx2/pq_quantizer_int4/pq_distance.h"
 #include "avx2/pq_quantizer_int8/pq_distance.h"
 #include "avx2/rotate/fht/fht.h"
+#include "avx512/pq_quantizer_fast/pq_distance.h"
+#include "avx512/pq_quantizer_int4/pq_distance.h"
 #include "avx512/pq_quantizer_int8/pq_distance.h"
 #include "avx512/rotate/fht/fht.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
@@ -24,6 +28,8 @@
 #include "avx512_vnni/uniform_uint7/quantize.h"
 #include "avx512_vnni/uniform_uint7/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint8/squared_euclidean.h"
+#include "neon/pq_quantizer_fast/pq_distance.h"
+#include "neon/pq_quantizer_int4/pq_distance.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
 #include "neon/rotate/fht/fht.h"
 #include "scalar/fp16/cosine.h"
@@ -32,6 +38,8 @@
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+#include "scalar/pq_quantizer_fast/pq_distance.h"
+#include "scalar/pq_quantizer_int4/pq_distance.h"
 #include "scalar/pq_quantizer_int8/pq_distance.h"
 #include "scalar/record_quantized_int4/cosine.h"
 #include "scalar/record_quantized_int4/inner_product.h"
@@ -241,30 +249,83 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
   return nullptr;
 }
 
-CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
-                               CpuArchType cpu_arch_type) {
-  (void)data_type;
-  if (quantize_type == QuantizeType::kPQ) {
-    if (CpuSupports(CpuArchType::kAVX512) &&
-        IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
-      return {avx512::pq_adc_int8_distance_avx512,
-              avx512::pq_sdc_int8_distance_avx512,
-              avx512::pq_adc_int8_batch_distance_avx512};
-    }
-    if (CpuSupports(CpuArchType::kAVX2) &&
-        IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
-      return {avx2::pq_adc_int8_distance_avx2, avx2::pq_sdc_int8_distance_avx2,
-              avx2::pq_adc_int8_batch_distance_avx2};
-    }
-    if (CpuSupports(CpuArchType::kNEON) &&
-        IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
-      return {neon::pq_adc_int8_distance_neon, neon::pq_sdc_int8_distance_neon,
-              neon::pq_adc_int8_batch_distance_neon};
-    }
-    return {scalar::pq_adc_int8_distance, scalar::pq_sdc_int8_distance,
-            scalar::pq_adc_int8_batch_distance};
+PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
+                         CpuArchType cpu_arch_type) {
+  switch (quantize_type) {
+    case QuantizeType::kPQFast:
+      // FastScan is inherently 4-bit: a 16-entry LUT is what fits one SIMD
+      // lane.
+      if (data_type != DataType::kInt4) {
+        return {};
+      }
+      // Single-code ADC against the quantized LUT is scalar-only: the hot path
+      // is the packed 32-vector block scan below. No SDC / batch ADC kernels.
+      if (CpuSupports(CpuArchType::kAVX512) &&
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX512BW &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+        // _mm512_shuffle_epi8 needs AVX512BW on top of AVX512F.
+        return {scalar::pq_adc_u8, nullptr, nullptr,
+                avx512::pq_adc_fast_scan_avx512};
+      }
+      if (CpuSupports(CpuArchType::kAVX2) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+        return {scalar::pq_adc_u8, nullptr, nullptr,
+                avx2::pq_adc_fast_scan_avx2};
+      }
+      if (CpuSupports(CpuArchType::kNEON) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+        return {scalar::pq_adc_u8, nullptr, nullptr,
+                neon::pq_adc_fast_scan_neon};
+      }
+      return {scalar::pq_adc_u8, nullptr, nullptr, scalar::pq_adc_fast_scan};
+
+    case QuantizeType::kPQ:
+      if (data_type == DataType::kInt4) {
+        if (CpuSupports(CpuArchType::kAVX512) &&
+            IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+          return {avx512::pq_adc_int4_distance_avx512,
+                  avx512::pq_sdc_int4_distance_avx512,
+                  avx512::pq_adc_int4_batch_distance_avx512};
+        }
+        if (CpuSupports(CpuArchType::kAVX2) &&
+            IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+          return {avx2::pq_adc_int4_distance_avx2,
+                  avx2::pq_sdc_int4_distance_avx2,
+                  avx2::pq_adc_int4_batch_distance_avx2};
+        }
+        if (CpuSupports(CpuArchType::kNEON) &&
+            IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+          return {neon::pq_adc_int4_distance_neon,
+                  neon::pq_sdc_int4_distance_neon,
+                  neon::pq_adc_int4_batch_distance_neon};
+        }
+        return {scalar::pq_adc_int4_distance, scalar::pq_sdc_int4_distance,
+                scalar::pq_adc_int4_batch_distance};
+      }
+      if (CpuSupports(CpuArchType::kAVX512) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+        return {avx512::pq_adc_int8_distance_avx512,
+                avx512::pq_sdc_int8_distance_avx512,
+                avx512::pq_adc_int8_batch_distance_avx512};
+      }
+      if (CpuSupports(CpuArchType::kAVX2) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+        return {avx2::pq_adc_int8_distance_avx2,
+                avx2::pq_sdc_int8_distance_avx2,
+                avx2::pq_adc_int8_batch_distance_avx2};
+      }
+      if (CpuSupports(CpuArchType::kNEON) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+        return {neon::pq_adc_int8_distance_neon,
+                neon::pq_sdc_int8_distance_neon,
+                neon::pq_adc_int8_batch_distance_neon};
+      }
+      return {scalar::pq_adc_int8_distance, scalar::pq_sdc_int8_distance,
+              scalar::pq_adc_int8_batch_distance};
+
+    default:
+      return {};
   }
-  return {};
 }
 
 RotatorKernels get_rotator_kernels(RotateType rotate_type,

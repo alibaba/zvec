@@ -2853,6 +2853,8 @@ TEST(IndexInterface, QuantizerParamDefaultIsNull) {
 
   ASSERT_NE(nullptr, param);
   EXPECT_EQ(nullptr, param->quantizer_param);
+  EXPECT_EQ(QuantizerType::kNone, param->quantizer_type());
+  EXPECT_FALSE(param->enable_rotate());
 }
 
 TEST(IndexInterface, QuantizerParamPqFields) {
@@ -2864,7 +2866,7 @@ TEST(IndexInterface, QuantizerParamPqFields) {
 
   ASSERT_NE(nullptr, param);
   ASSERT_NE(nullptr, param->quantizer_param);
-  EXPECT_EQ(QuantizerType::kPQ, param->quantizer_param->type);
+  EXPECT_EQ(QuantizerType::kPQ, param->quantizer_type());
 
   // the builder must keep the concrete type instead of slicing it
   auto pq_param =
@@ -2879,7 +2881,7 @@ TEST(IndexInterface, QuantizerParamPqFields) {
                            .WithEnableRotate(true)
                            .Build();
   ASSERT_NE(nullptr, rotated_param->quantizer_param);
-  EXPECT_TRUE(rotated_param->quantizer_param->enable_rotate);
+  EXPECT_TRUE(rotated_param->enable_rotate());
   EXPECT_NE(nullptr, std::dynamic_pointer_cast<PqQuantizerParam>(
                          rotated_param->quantizer_param));
 }
@@ -2918,8 +2920,8 @@ TEST(IndexInterface, QuantizerParamLegacyJsonCompat) {
   auto param = IndexFactory::DeserializeIndexParamFromJson(json_str);
   ASSERT_NE(nullptr, param);
   ASSERT_NE(nullptr, param->quantizer_param);
-  EXPECT_EQ(QuantizerType::kInt8, param->quantizer_param->type);
-  EXPECT_TRUE(param->quantizer_param->enable_rotate);
+  EXPECT_EQ(QuantizerType::kInt8, param->quantizer_type());
+  EXPECT_TRUE(param->enable_rotate());
   EXPECT_EQ(nullptr, std::dynamic_pointer_cast<PqQuantizerParam>(
                          param->quantizer_param));
 }
