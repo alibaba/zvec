@@ -3,14 +3,15 @@ import logging
 import platform
 
 DISKANN_SUPPORTED = (
-    platform.system() == "Linux"
-    and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
-) or (
-    platform.system() == "Darwin"
-    and platform.machine() in ("aarch64", "arm64")
-) or (
-    platform.system() == "Windows"
-    and platform.machine() in ("x86_64", "AMD64", "i686", "i386")
+    (
+        platform.system() == "Linux"
+        and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
+    )
+    or (platform.system() == "Darwin" and platform.machine() in ("aarch64", "arm64"))
+    or (
+        platform.system() == "Windows"
+        and platform.machine() in ("x86_64", "AMD64", "i686", "i386")
+    )
 )
 
 from typing import Any, Generator
