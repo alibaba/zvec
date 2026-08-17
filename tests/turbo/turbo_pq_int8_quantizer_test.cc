@@ -404,7 +404,9 @@ TEST(PqInt8SimdConsistency, AdcDistance) {
       float neon_result = 0.0f;
       zvec::turbo::neon::pq_adc_int8_distance_neon(codes.data(), lut.data(),
                                                    num_sq, &neon_result);
-      EXPECT_NEAR(scalar_result, neon_result, 1e-5f)
+      // NEON accumulates via float32x4_t (different rounding order than the
+      // scalar sequential sum), so allow slightly more slack than x86.
+      EXPECT_NEAR(scalar_result, neon_result, 1e-4f)
           << "NEON ADC mismatch for M=" << num_sq;
     }
 #endif
@@ -459,7 +461,8 @@ TEST(PqInt8SimdConsistency, SdcDistance) {
       zvec::turbo::neon::pq_sdc_int8_distance_neon(
           codes_a.data(), codes_b.data(), dist_table.data(), num_sq,
           &neon_result);
-      EXPECT_NEAR(scalar_result, neon_result, 1e-5f)
+      // Slack for NEON float32x4_t accumulation order (see AdcDistance).
+      EXPECT_NEAR(scalar_result, neon_result, 1e-4f)
           << "NEON SDC mismatch for M=" << num_sq;
     }
 #endif
@@ -505,7 +508,8 @@ TEST(PqInt8SimdConsistency, AdcDistanceM1) {
     float neon_result = 0.0f;
     zvec::turbo::neon::pq_adc_int8_distance_neon(codes.data(), lut.data(),
                                                  num_sq, &neon_result);
-    EXPECT_NEAR(scalar_result, neon_result, 1e-5f);
+    // Slack for NEON float32x4_t accumulation order (see AdcDistance).
+    EXPECT_NEAR(scalar_result, neon_result, 1e-4f);
   }
 #endif
 }
@@ -580,7 +584,8 @@ TEST(PqInt8SimdConsistency, BatchAdcDistance) {
         zvec::turbo::neon::pq_adc_int8_batch_distance_neon(
             candidates.data(), lut.data(), num, num_sq, neon_result.data());
         for (size_t i = 0; i < num; ++i) {
-          EXPECT_NEAR(expected[i], neon_result[i], 1e-5f)
+          // Slack for NEON float32x4_t accumulation order (see AdcDistance).
+          EXPECT_NEAR(expected[i], neon_result[i], 1e-4f)
               << "NEON batch ADC mismatch for M=" << num_sq << " num=" << num
               << " i=" << i;
         }
