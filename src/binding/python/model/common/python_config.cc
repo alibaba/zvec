@@ -219,27 +219,28 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       []() -> std::string { return GlobalConfig::Instance().jieba_dict_dir(); },
       "Read the currently registered default jieba dict directory.");
 
-  // Returns the current I/O backend type for DiskAnn async disk reads.
-  // Pure introspection \u2014 no side effects, no install hints.
+  // Returns the selected DiskAnn I/O backend. Linux tries io_uring, then
+  // libaio, then pread; macOS ARM64 uses pread.
   m.def(
       "io_backend_type",
       []() -> ailego::IOBackendType {
         return ailego::current_io_backend_type();
       },
-      "Returns the current I/O backend type for DiskAnn async disk reads "
+      "Returns the current I/O backend type for DiskAnn disk reads "
       "as an IOBackendType enum (zvec.typing.IOBackendType). "
-      "IOBackendType.IO_URING if io_uring is available, "
-      "IOBackendType.LIBAIO if libaio is available, "
-      "IOBackendType.PREAD otherwise.");
+      "Linux selects IOBackendType.IO_URING, IOBackendType.LIBAIO, or "
+      "IOBackendType.PREAD in that order. macOS ARM64 uses "
+      "IOBackendType.PREAD.");
 
-  // Returns a human-readable description of the I/O backend, including
-  // installation guidance for libaio when only pread is available.
+  // Returns a human-readable description identifying io_uring, libaio, or
+  // pread, with asynchronous-backend guidance for Linux pread fallback.
   m.def(
       "io_backend_description",
       []() -> std::string { return ailego::current_io_backend_description(); },
       "Returns a human-readable description of the current I/O backend. "
-      "When only pread is available, includes instructions for installing "
-      "libaio to enable async I/O.");
+      "The description identifies io_uring, libaio, or pread. On Linux, the "
+      "pread description includes guidance for enabling io_uring or "
+      "installing libaio.");
 }
 
 

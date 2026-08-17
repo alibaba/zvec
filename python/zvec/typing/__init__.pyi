@@ -126,7 +126,7 @@ class DataType:
 class IOBackendType:
     """
 
-    Enumeration of supported I/O backend types for DiskAnn async disk reads.
+    Enumeration of supported I/O backend types for DiskAnn disk reads.
 
     - PREAD: Synchronous pread() — no async I/O.
     - LIBAIO: libaio loaded at runtime via dlopen().

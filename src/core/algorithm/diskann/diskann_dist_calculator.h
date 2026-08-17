@@ -40,7 +40,9 @@ class DistCalculator {
     bind_distance(meta, measure);
   }
 
-  void update(const IndexMeta &meta, const IndexMetric::Pointer &measure) {
+  void update(const DiskAnnEntity *entity, const IndexMeta &meta,
+              const IndexMetric::Pointer &measure) {
+    entity_ = entity;
     bind_distance(meta, measure);
     dim_ = meta.dimension();
   }

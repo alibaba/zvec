@@ -152,6 +152,34 @@ void test_error_handling_functions(void) {
   TEST_END();
 }
 
+void test_io_backend_functions(void) {
+  TEST_START();
+
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_PREAD),
+                     "pread") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_LIBAIO),
+                     "libaio") == 0);
+  TEST_ASSERT(
+      strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
+             "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
+
+  zvec_io_backend_type_t current = zvec_get_io_backend_type();
+#if defined(__APPLE__) && defined(__MACH__)
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD);
+#else
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD ||
+              current == ZVEC_IO_BACKEND_TYPE_LIBAIO ||
+              current == ZVEC_IO_BACKEND_TYPE_IO_URING);
+#endif
+  const char *description = zvec_get_io_backend_description();
+  TEST_ASSERT(description != NULL);
+  TEST_ASSERT(strstr(description, zvec_get_io_backend_type_name(current)) !=
+              NULL);
+
+  TEST_END();
+}
+
 void test_zvec_config() {
   TEST_START();
 
@@ -6485,6 +6513,7 @@ int main(void) {
 
   test_version_functions();
   test_error_handling_functions();
+  test_io_backend_functions();
   test_zvec_config();
   test_zvec_initialize();
   test_zvec_string_functions();

@@ -779,23 +779,23 @@ ZVEC_EXPORT const char *ZVEC_CALL zvec_get_default_jieba_dict_dir(void);
 // =============================================================================
 
 /**
- * @brief I/O backend type codes for DiskAnn async disk reads.
+ * @brief I/O backend type codes for DiskAnn disk reads.
  *
  * Defined as uint32_t constants for consistent binary representation
  * across C and C++ boundaries.
  */
 typedef uint32_t zvec_io_backend_type_t;
-#define ZVEC_IO_BACKEND_TYPE_PREAD \
-  0 /**< Synchronous pread() \u2014 no async I/O */
+#define ZVEC_IO_BACKEND_TYPE_PREAD 0 /**< Synchronous pread(); no async I/O */
 #define ZVEC_IO_BACKEND_TYPE_LIBAIO \
   1 /**< libaio loaded at runtime via dlopen() */
 #define ZVEC_IO_BACKEND_TYPE_IO_URING \
   2 /**< io_uring via raw kernel syscalls (zero dependency) */
 
 /**
- * @brief Get the current I/O backend type for DiskAnn async disk reads.
+ * @brief Get the current I/O backend type for DiskAnn disk reads.
  *
- * Pure introspection \u2014 no side effects, no install hints.
+ * Linux selects the first usable backend in this order: io_uring, libaio,
+ * then synchronous pread. macOS ARM64 uses synchronous pread.
  *
  * @return zvec_io_backend_type_t The loaded backend type
  *         (ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO,
@@ -816,7 +816,9 @@ zvec_get_io_backend_type_name(zvec_io_backend_type_t type);
 /**
  * @brief Get a human-readable description of the current I/O backend.
  *
- * When only pread is available, includes installation guidance for libaio.
+ * The description identifies io_uring, libaio, or pread. On Linux, the pread
+ * description also explains that io_uring and libaio were unavailable and
+ * provides guidance for enabling an asynchronous backend.
  *
  * @return Thread-local string valid until the next call on this thread.
  */

@@ -42,7 +42,11 @@ class DiskAnnUtil {
       *ptr = nullptr;
       return;
     }
-    *ptr = ::aligned_alloc(align, round_up(size, align));
+    // Unlike aligned_alloc(), posix_memalign() does not require size to be an
+    // integral multiple of alignment and is available on Linux and macOS.
+    if (::posix_memalign(ptr, align, size) != 0) {
+      *ptr = nullptr;
+    }
   }
 
   static inline void free_aligned(void *ptr) {

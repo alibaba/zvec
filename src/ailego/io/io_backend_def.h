@@ -25,6 +25,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <mutex>
 #include <ailego/io/libaio_loader.h>
 #include <zvec/ailego/io/io_backend.h>
 
@@ -50,8 +52,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   return "unknown";
 }
 
-// Returns a human-readable description for the given backend type.
-// When the backend is kPread, includes installation guidance for libaio.
+// Returns a human-readable description for the given backend type. On Linux,
+// the kPread description includes guidance for enabling io_uring or libaio.
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kIoUring:
@@ -60,19 +62,23 @@ inline const char *IOBackendDescription(IOBackendType type) {
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
     case IOBackendType::kPread:
-      return "No async I/O backend available. Install libaio (e.g. "
-             "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
-             "and retry. DiskAnn will fall back to synchronous pread() \u2014 "
-             "performance will be degraded.";
+#if defined(__linux) || defined(__linux__)
+      return "No async I/O backend available: io_uring is unavailable and "
+             "libaio could not be loaded. Enable io_uring or install libaio "
+             "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu "
+             "24.04+) and retry. DiskAnn will use synchronous pread(); "
+             "performance may be degraded.";
+#else
+      return "Synchronous pread() I/O backend.";
+#endif
   }
   return "Unknown I/O backend.";
 }
 
 // Singleton that probes and caches the I/O backend on first use.
 //
-// available() probes backends by priority (io_uring > libaio > pread)
-// exactly once and caches the result — including the pread-only outcome,
-// so systems without async I/O don't re-probe on every call.
+// available() probes the platform backends exactly once and caches the result,
+// including the pread-only outcome, so unavailable backends are not re-probed.
 // Use type() / name() to query the cached backend without probing.
 class IOBackend {
  public:
@@ -81,27 +87,22 @@ class IOBackend {
     return instance;
   }
 
-  // Returns the active backend, probing on the first call
-  // (io_uring > libaio > pread).  Idempotent — later calls return the
-  // cached result immediately, even when the outcome is kPread.
+  // Returns the active backend, probing on the first call. Linux prefers
+  // io_uring, then libaio, then pread; macOS ARM64 uses pread.
   IOBackendType available() {
-    if (probed_) {
-      return type_;
-    }
+    std::call_once(probe_once_, [this]() {
+      IOBackendType selected = IOBackendType::kPread;
 #if defined(__linux) || defined(__linux__)
-    if (io_uring_supported()) {
-      type_ = IOBackendType::kIoUring;
-    } else if (LibAioLoader::Instance().load() &&
-               LibAioLoader::Instance().is_available()) {
-      type_ = IOBackendType::kLibAio;
-    } else {
-      type_ = IOBackendType::kPread;
-    }
-#else
-    type_ = IOBackendType::kPread;
+      if (io_uring_supported()) {
+        selected = IOBackendType::kIoUring;
+      } else if (LibAioLoader::Instance().load() &&
+                 LibAioLoader::Instance().is_available()) {
+        selected = IOBackendType::kLibAio;
+      }
 #endif
-    probed_ = true;
-    return type_;
+      type_.store(selected, std::memory_order_release);
+    });
+    return type_.load(std::memory_order_acquire);
   }
 
   bool is_pread() {
@@ -118,17 +119,17 @@ class IOBackend {
 
   // Returns the cached backend type without triggering the probe.
   IOBackendType type() const {
-    return type_;
+    return type_.load(std::memory_order_acquire);
   }
 
   // Human-readable name for the selected backend.
   const char *name() const {
-    return IOBackendTypeName(type_);
+    return IOBackendTypeName(type());
   }
 
   // Human-readable description for the selected backend.
   const char *description() const {
-    return IOBackendDescription(type_);
+    return IOBackendDescription(type());
   }
 
  private:
@@ -154,11 +155,11 @@ class IOBackend {
   }
 #endif
 
-  // kPread doubles as the pre-probe default; probed_ marks whether the
-  // one-shot probe has run so that a pread-only outcome is cached too.
-  // (IOBackendType values are C ABI — no kNone sentinel is added there.)
-  IOBackendType type_{IOBackendType::kPread};
-  bool probed_{false};
+  // kPread doubles as the pre-probe default. call_once performs the probe once,
+  // while the atomic keeps cached reads lock-free, including type() calls that
+  // intentionally do not trigger probing.
+  std::once_flag probe_once_;
+  std::atomic<IOBackendType> type_{IOBackendType::kPread};
 };
 
 }  // namespace ailego

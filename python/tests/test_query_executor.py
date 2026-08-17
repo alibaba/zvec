@@ -33,6 +33,7 @@ from zvec import (
     VectorSchema,
     DataType,
     MetricType,
+    Fts,
     Query,
     VectorQuery,
 )
@@ -327,3 +328,16 @@ class TestQueryExecutor:
                 Query(field_name="test", id="doc1", vector=np.array([0.1])),
                 collection,
             )
+
+    def test_build_search_query_preserves_fts_text(self):
+        executor = QueryExecutor(CollectionSchema(name="test_collection"))
+        ctx = QueryContext(topk=5)
+
+        query = executor._build_search_query(
+            ctx,
+            Query(field_name="content", fts=Fts(match_string="\u00a0vector search  ")),
+            MagicMock(),
+        )
+
+        assert query.fts.match_string == "\u00a0vector search  "
+        assert query.fts.query_string == ""
