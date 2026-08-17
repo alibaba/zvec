@@ -123,6 +123,11 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> Query(const MultiQuery &query) const override;
 
+  Result<QuerySnapshot> QueryWithSchema(
+      const SearchQuery &query) const override;
+
+  Result<QuerySnapshot> QueryWithSchema(const MultiQuery &query) const override;
+
   Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const override;
 
@@ -135,6 +140,12 @@ class CollectionImpl : public Collection {
       const std::string &column_name) const override;
 
  private:
+  // Query bodies without locking; the caller must hold schema_handle_mtx_
+  // (at least shared) for the whole duration.
+  Result<DocPtrList> query_unsafe(const SearchQuery &query) const;
+
+  Result<DocPtrList> query_unsafe(const MultiQuery &query) const;
+
   void prepare_schema();
 
   Status close_unsafe();
@@ -1611,6 +1622,49 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
+  return query_unsafe(query);
+}
+
+Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  return query_unsafe(query);
+}
+
+Result<QuerySnapshot> CollectionImpl::QueryWithSchema(
+    const SearchQuery &query) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  auto docs = query_unsafe(query);
+  if (!docs) {
+    return tl::make_unexpected(docs.error());
+  }
+  // Snapshot the schema within the same critical section so it always matches
+  // the one used by query_unsafe, even under concurrent DDL.
+  return QuerySnapshot{std::move(*docs), *schema_};
+}
+
+Result<QuerySnapshot> CollectionImpl::QueryWithSchema(
+    const MultiQuery &query) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  auto docs = query_unsafe(query);
+  if (!docs) {
+    return tl::make_unexpected(docs.error());
+  }
+  // Snapshot the schema within the same critical section so it always matches
+  // the one used by query_unsafe, even under concurrent DDL.
+  return QuerySnapshot{std::move(*docs), *schema_};
+}
+
+Result<DocPtrList> CollectionImpl::query_unsafe(
+    const SearchQuery &query) const {
   // When field_name_ is set, use get_field to retrieve the schema uniformly.
   // validate checks that the field type matches the query type
   // (FTS query requires an FTS field, vector query requires a vector field).
@@ -1637,11 +1691,7 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   return sql_engine_->execute(schema_, std::move(sanitized_query), segments);
 }
 
-Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
-  std::shared_lock lock(schema_handle_mtx_);
-
-  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
-
+Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
   if (query.queries.size() < 2) {
     return tl::make_unexpected(Status::InvalidArgument(
         "Invalid query: MultiQuery requires at least 2 sub-queries, got ",

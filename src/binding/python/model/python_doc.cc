@@ -214,99 +214,105 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
       });
 
   // binding doc get field
-  doc.def(
-      "get_any",
-      [](Doc &self, const std::string &field,
-         const DataType &type) -> py::object {
-        switch (type) {
-          // base datatypes
-          case DataType::STRING:
-            return py::cast(self.get<std::string>(field));
-          case DataType::BOOL:
-            return py::cast(self.get<bool>(field));
-          case DataType::INT32:
-            return py::cast(self.get<int32_t>(field));
-          case DataType::UINT32:
-            return py::cast(self.get<uint32_t>(field));
-          case DataType::INT64:
-            return py::cast(self.get<int64_t>(field));
-          case DataType::UINT64:
-            return py::cast(self.get<uint64_t>(field));
-          case DataType::FLOAT:
-            return py::cast(self.get<float>(field));
-          case DataType::DOUBLE:
-            return py::cast(self.get<double>(field));
-
-          // array datatypes
-          case DataType::ARRAY_STRING:
-            return py::cast(self.get<std::vector<std::string>>(field));
-          case DataType::ARRAY_INT32:
-            return py::cast(self.get<std::vector<int32_t>>(field));
-          case DataType::ARRAY_INT64:
-            return py::cast(self.get<std::vector<int64_t>>(field));
-          case DataType::ARRAY_UINT32:
-            return py::cast(self.get<std::vector<uint32_t>>(field));
-          case DataType::ARRAY_UINT64:
-            return py::cast(self.get<std::vector<uint64_t>>(field));
-          case DataType::ARRAY_FLOAT:
-            return py::cast(self.get<std::vector<float>>(field));
-          case DataType::ARRAY_DOUBLE:
-            return py::cast(self.get<std::vector<double>>(field));
-          case DataType::ARRAY_BOOL:
-            return py::cast(self.get<std::vector<bool>>(field));
-
-          // vector datatypes
-          case DataType::VECTOR_INT8:
-            return py::cast(self.get<std::vector<int8_t>>(field));
-          case DataType::VECTOR_FP16: {
-            auto value = self.get<std::vector<ailego::Float16>>(field);
-            if (value.has_value()) {
-              std::vector<float> new_value;
-              new_value.reserve(value.value().size());
-              for (auto &item : value.value()) {
-                new_value.push_back(static_cast<float>(item));
-              }
-              return py::cast(new_value);
-            }
-            return py::none();
-          }
-          case DataType::VECTOR_FP32:
-            return py::cast(self.get<std::vector<float>>(field));
-          case DataType::VECTOR_FP64:
-            return py::cast(self.get<std::vector<double>>(field));
-          case DataType::SPARSE_VECTOR_FP16: {
-            auto vector = self.get<
-                std::pair<std::vector<uint32_t>, std::vector<ailego::Float16>>>(
-                field);
-            const auto &indices = vector->first;
-            const auto &values = vector->second;
-            py::dict d;
-            for (size_t i = 0; i < indices.size(); ++i) {
-              d[py::int_(indices[i])] =
-                  py::float_(static_cast<float>(values[i]));
-            }
-            return d;
-          }
-          case DataType::SPARSE_VECTOR_FP32: {
-            auto vector =
-                self.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
-                    field);
-            const auto &indices = vector->first;
-            const auto &values = vector->second;
-            py::dict d;
-            for (size_t i = 0; i < indices.size(); ++i) {
-              d[py::int_(indices[i])] = py::float_(values[i]);
-            }
-            return d;
-          }
-          default:
-            throw py::type_error("Unsupported type for field: " + field);
-        }
-      });
+  doc.def("get_any",
+          [](Doc &self, const std::string &field, const DataType &type)
+              -> py::object { return doc_value_to_py(self, field, type); });
   doc.def("get_all", &ZVecPyDoc::doc_to_tuple, py::arg("schema"),
           "Get all fields and vectors as a tuple: (id, score, fields, "
           "vectors). Vectors are zero-copy numpy arrays (dense: ndarray, "
           "sparse: (indices, values) tuple).");
+}
+
+py::object ZVecPyDoc::doc_value_to_py(Doc &self, const std::string &field,
+                                      DataType type) {
+  switch (type) {
+    // base datatypes
+    case DataType::STRING:
+      return py::cast(self.get<std::string>(field));
+    case DataType::BOOL:
+      return py::cast(self.get<bool>(field));
+    case DataType::INT32:
+      return py::cast(self.get<int32_t>(field));
+    case DataType::UINT32:
+      return py::cast(self.get<uint32_t>(field));
+    case DataType::INT64:
+      return py::cast(self.get<int64_t>(field));
+    case DataType::UINT64:
+      return py::cast(self.get<uint64_t>(field));
+    case DataType::FLOAT:
+      return py::cast(self.get<float>(field));
+    case DataType::DOUBLE:
+      return py::cast(self.get<double>(field));
+
+    // array datatypes
+    case DataType::ARRAY_STRING:
+      return py::cast(self.get<std::vector<std::string>>(field));
+    case DataType::ARRAY_INT32:
+      return py::cast(self.get<std::vector<int32_t>>(field));
+    case DataType::ARRAY_INT64:
+      return py::cast(self.get<std::vector<int64_t>>(field));
+    case DataType::ARRAY_UINT32:
+      return py::cast(self.get<std::vector<uint32_t>>(field));
+    case DataType::ARRAY_UINT64:
+      return py::cast(self.get<std::vector<uint64_t>>(field));
+    case DataType::ARRAY_FLOAT:
+      return py::cast(self.get<std::vector<float>>(field));
+    case DataType::ARRAY_DOUBLE:
+      return py::cast(self.get<std::vector<double>>(field));
+    case DataType::ARRAY_BOOL:
+      return py::cast(self.get<std::vector<bool>>(field));
+
+    // vector datatypes
+    case DataType::VECTOR_INT8:
+      return py::cast(self.get<std::vector<int8_t>>(field));
+    case DataType::VECTOR_FP16: {
+      auto value = self.get<std::vector<ailego::Float16>>(field);
+      if (value.has_value()) {
+        std::vector<float> new_value;
+        new_value.reserve(value.value().size());
+        for (auto &item : value.value()) {
+          new_value.push_back(static_cast<float>(item));
+        }
+        return py::cast(new_value);
+      }
+      return py::none();
+    }
+    case DataType::VECTOR_FP32:
+      return py::cast(self.get<std::vector<float>>(field));
+    case DataType::VECTOR_FP64:
+      return py::cast(self.get<std::vector<double>>(field));
+    case DataType::SPARSE_VECTOR_FP16: {
+      auto vector = self.get<
+          std::pair<std::vector<uint32_t>, std::vector<ailego::Float16>>>(
+          field);
+      if (!vector.has_value()) {
+        return py::none();
+      }
+      const auto &indices = vector->first;
+      const auto &values = vector->second;
+      py::dict d;
+      for (size_t i = 0; i < indices.size(); ++i) {
+        d[py::int_(indices[i])] = py::float_(static_cast<float>(values[i]));
+      }
+      return d;
+    }
+    case DataType::SPARSE_VECTOR_FP32: {
+      auto vector =
+          self.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(field);
+      if (!vector.has_value()) {
+        return py::none();
+      }
+      const auto &indices = vector->first;
+      const auto &values = vector->second;
+      py::dict d;
+      for (size_t i = 0; i < indices.size(); ++i) {
+        d[py::int_(indices[i])] = py::float_(values[i]);
+      }
+      return d;
+    }
+    default:
+      throw py::type_error("Unsupported type for field: " + field);
+  }
 }
 
 py::tuple ZVecPyDoc::doc_to_tuple(Doc &self, const CollectionSchema &schema) {
@@ -329,48 +335,8 @@ py::tuple ZVecPyDoc::doc_to_tuple(Doc &self, const CollectionSchema &schema) {
     }
 
     try {
-      auto val = [&]() -> py::object {
-        switch (field_meta->data_type()) {
-          // base datatypes
-          case DataType::STRING:
-            return py::str(self.get<std::string>(field).value());
-          case DataType::BOOL:
-            return py::cast(self.get<bool>(field));
-          case DataType::INT32:
-            return py::cast(self.get<int32_t>(field));
-          case DataType::UINT32:
-            return py::cast(self.get<uint32_t>(field));
-          case DataType::INT64:
-            return py::cast(self.get<int64_t>(field));
-          case DataType::UINT64:
-            return py::cast(self.get<uint64_t>(field));
-          case DataType::FLOAT:
-            return py::cast(self.get<float>(field));
-          case DataType::DOUBLE:
-            return py::cast(self.get<double>(field));
-
-          // array datatypes
-          case DataType::ARRAY_STRING:
-            return py::cast(self.get<std::vector<std::string>>(field));
-          case DataType::ARRAY_INT32:
-            return py::cast(self.get<std::vector<int32_t>>(field));
-          case DataType::ARRAY_INT64:
-            return py::cast(self.get<std::vector<int64_t>>(field));
-          case DataType::ARRAY_UINT32:
-            return py::cast(self.get<std::vector<uint32_t>>(field));
-          case DataType::ARRAY_UINT64:
-            return py::cast(self.get<std::vector<uint64_t>>(field));
-          case DataType::ARRAY_FLOAT:
-            return py::cast(self.get<std::vector<float>>(field));
-          case DataType::ARRAY_DOUBLE:
-            return py::cast(self.get<std::vector<double>>(field));
-          case DataType::ARRAY_BOOL:
-            return py::cast(self.get<std::vector<bool>>(field));
-          default:
-            throw py::type_error("Unsupported type for field: " + field);
-        }
-      }();
-      fields[py::str(field)] = val;
+      fields[py::str(field)] =
+          doc_value_to_py(self, field, field_meta->data_type());
     } catch (const std::exception &e) {
       fields[py::str(field)] = py::none();
     }
@@ -387,56 +353,7 @@ py::tuple ZVecPyDoc::doc_to_tuple(Doc &self, const CollectionSchema &schema) {
     if (!self.has_value(vec)) continue;
 
     try {
-      auto array = [&]() -> py::object {
-        switch (vec_meta->data_type()) {
-          case DataType::VECTOR_INT8:
-            return py::cast(self.get<std::vector<int8_t>>(vec));
-          case DataType::VECTOR_FP16: {
-            auto value = self.get<std::vector<ailego::Float16>>(vec);
-            if (value.has_value()) {
-              std::vector<float> new_value;
-              new_value.reserve(value.value().size());
-              for (auto &item : value.value()) {
-                new_value.push_back(static_cast<float>(item));
-              }
-              return py::cast(new_value);
-            }
-            return py::none();
-          }
-          case DataType::VECTOR_FP32:
-            return py::cast(self.get<std::vector<float>>(vec));
-          case DataType::VECTOR_FP64:
-            return py::cast(self.get<std::vector<double>>(vec));
-          case DataType::SPARSE_VECTOR_FP16: {
-            auto vector = self.get<
-                std::pair<std::vector<uint32_t>, std::vector<ailego::Float16>>>(
-                vec);
-            const auto &indices = vector->first;
-            const auto &values = vector->second;
-            py::dict d;
-            for (size_t i = 0; i < indices.size(); ++i) {
-              d[py::int_(indices[i])] =
-                  py::float_(static_cast<float>(values[i]));
-            }
-            return d;
-          }
-          case DataType::SPARSE_VECTOR_FP32: {
-            auto vector =
-                self.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
-                    vec);
-            const auto &indices = vector->first;
-            const auto &values = vector->second;
-            py::dict d;
-            for (size_t i = 0; i < indices.size(); ++i) {
-              d[py::int_(indices[i])] = py::float_(values[i]);
-            }
-            return d;
-          }
-          default:
-            throw py::type_error("Unsupported type for field: " + vec);
-        }
-      }();
-      vectors[py::str(vec)] = array;
+      vectors[py::str(vec)] = doc_value_to_py(self, vec, vec_meta->data_type());
     } catch (const std::exception &e) {
       vectors[py::str(vec)] = py::none();
     }

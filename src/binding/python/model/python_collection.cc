@@ -68,6 +68,15 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
   return T{};
 }
 
+template <typename T>
+T unwrap_expected(tl::expected<T, Status> &&exp) {
+  if (exp.has_value()) {
+    return std::move(exp).value();
+  }
+  throw_if_error(exp.error());
+  return T{};
+}
+
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
   py::class_<GroupResult>(m, "_GroupResult")
       .def_readonly("group_by_value", &GroupResult::group_by_value_)
@@ -278,20 +287,19 @@ void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
   // Query with the GIL released, then materialize all hits into
   // (id, score, fields, vectors) tuples in one crossing (see docs_to_tuples).
-  // The schema is taken from the collection itself, keeping the signature
-  // unchanged from the legacy per-doc binding.
+  // QueryWithSchema returns the docs and the schema snapshot atomically under
+  // one read lock, so concurrent DDL cannot desynchronize them, while the
+  // binding signature stays unchanged from the legacy per-doc binding.
   col.def(
          "Query",
          [](const Collection &self, const SearchQuery &query) {
-           Result<DocPtrList> result;
-           Result<CollectionSchema> schema_result;
+           Result<QuerySnapshot> result;
            {
              py::gil_scoped_release release;
-             result = self.Query(query);
-             schema_result = self.Schema();
+             result = self.QueryWithSchema(query);
            }
-           return docs_to_tuples(unwrap_expected(result),
-                                 unwrap_expected(schema_result));
+           auto snapshot = unwrap_expected(std::move(result));
+           return docs_to_tuples(snapshot.docs, snapshot.schema);
          },
          py::arg("query"),
          "Execute a query and return results as a list of "
@@ -300,15 +308,13 @@ void ZVecPyCollection::bind_dql_methods(
       .def(
           "Query",
           [](const Collection &self, const MultiQuery &query) {
-            Result<DocPtrList> result;
-            Result<CollectionSchema> schema_result;
+            Result<QuerySnapshot> result;
             {
               py::gil_scoped_release release;
-              result = self.Query(query);
-              schema_result = self.Schema();
+              result = self.QueryWithSchema(query);
             }
-            return docs_to_tuples(unwrap_expected(result),
-                                  unwrap_expected(schema_result));
+            auto snapshot = unwrap_expected(std::move(result));
+            return docs_to_tuples(snapshot.docs, snapshot.schema);
           },
           py::arg("query"),
           "Execute a multi query with re-ranking and return results as a "
