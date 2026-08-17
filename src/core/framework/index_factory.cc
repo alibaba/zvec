@@ -35,23 +35,6 @@ std::vector<std::string> IndexFactory::AllMetrics(void) {
   return ailego::Factory<IndexMetric>::Classes();
 }
 
-IndexLogger::Pointer IndexFactory::CreateLogger(const std::string &name) {
-  IndexLogger::Pointer obj =
-      ailego::Factory<IndexLogger>::MakeShared(name.c_str());
-  if (obj) {
-    obj->set_name(name);
-  }
-  return obj;
-}
-
-bool IndexFactory::HasLogger(const std::string &name) {
-  return ailego::Factory<IndexLogger>::Has(name.c_str());
-}
-
-std::vector<std::string> IndexFactory::AllLoggers(void) {
-  return ailego::Factory<IndexLogger>::Classes();
-}
-
 IndexDumper::Pointer IndexFactory::CreateDumper(const std::string &name) {
   IndexDumper::Pointer obj =
       ailego::Factory<IndexDumper>::MakeShared(name.c_str());

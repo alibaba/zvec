@@ -24,6 +24,7 @@ from zvec.model.param import (
     HnswRabitqIndexParam,
     InvertIndexParam,
     IVFIndexParam,
+    IvfRabitqIndexParam,
 )
 from zvec.typing import DataType
 
@@ -196,9 +197,9 @@ class VectorSchema:
         data_type (DataType): Vector data type (e.g., VECTOR_FP32, VECTOR_INT8).
         dimension (int, optional): Dimensionality of the vector. Must be > 0 for dense vectors;
          may be `None` for sparse vectors.
-        index_param (Union[HnswIndexParam, IVFIndexParam, FlatIndexParam], optional):
+        index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam], optional):
             Index configuration for this vector field. Defaults to
-            ``HnswIndexParam()``.
+            ``FlatIndexParam()``.
 
     Examples:
         >>> from zvec.typing import DataType
@@ -217,7 +218,13 @@ class VectorSchema:
         data_type: DataType,
         dimension: Optional[int] = 0,
         index_param: Optional[
-            Union[HnswIndexParam, HnswRabitqIndexParam, FlatIndexParam, IVFIndexParam]
+            Union[
+                HnswIndexParam,
+                HnswRabitqIndexParam,
+                IvfRabitqIndexParam,
+                FlatIndexParam,
+                IVFIndexParam,
+            ]
         ] = None,
     ):
         if name is None or not isinstance(name, str):
@@ -273,8 +280,14 @@ class VectorSchema:
     @property
     def index_param(
         self,
-    ) -> Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam]:
-        """Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam]: Index configuration for the vector."""
+    ) -> Union[
+        HnswIndexParam,
+        HnswRabitqIndexParam,
+        IvfRabitqIndexParam,
+        IVFIndexParam,
+        FlatIndexParam,
+    ]:
+        """Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam]: Index configuration for the vector."""
         return self._cpp_obj.index_param
 
     def __dict__(self) -> dict[str, Any]:

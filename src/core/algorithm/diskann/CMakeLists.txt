@@ -9,12 +9,14 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c)
 # wheel, so no separate runtime .so is needed. The shared variant is used by
 # C++ tools and tests that link against it directly.
 #
-# libaio is loaded at runtime via dlopen()/dlsym() (see libaio_loader.h), so
-# we do NOT link against -laio. The only system-level link dependency is
-# ${CMAKE_DL_LIBS} for dlopen/dlsym/dlclose.
+# io_uring uses raw Linux syscalls and has no liburing dependency. libaio is
+# loaded at runtime via dlopen()/dlsym() (see libaio_loader.h), so we do NOT
+# link against -laio. On Linux, ${CMAKE_DL_LIBS} provides the system-level
+# dependency for dlopen/dlsym/dlclose. macOS ARM64 uses pread and needs no
+# extra I/O backend library.
 set(CORE_KNN_DISKANN_LIBS core_framework core_knn_cluster)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$")
     list(APPEND CORE_KNN_DISKANN_LIBS ${CMAKE_DL_LIBS})
 endif()
 

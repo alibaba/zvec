@@ -18,7 +18,8 @@
 // This translation unit is the single place that bridges the dependency-free
 // public header to the internal IOBackend singleton, so that public headers
 // can expose current_io_backend_type() / current_io_backend_description()
-// without pulling in libaio_loader or io_backend_def.h.
+// without pulling in the io_uring/libaio implementation headers or
+// io_backend_def.h.
 
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>

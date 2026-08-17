@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #include "diskann_builder.h"
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <thread>
 #include <vector>
 #include <ailego/math/euclidean_distance_matrix.h>
@@ -32,6 +34,12 @@ namespace core {
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
 
+  if (state_ != BUILD_STATE_INIT) {
+    LOG_ERROR("Cleanup DiskAnnBuilder before reinitializing it");
+    return IndexError_NoReady;
+  }
+
+  cleanup();
   log_diskann_io_backend();
 
   params.get(PARAM_DISKANN_BUILDER_MAX_DEGREE, &max_degree_);
@@ -39,7 +47,7 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get(PARAM_DISKANN_BUILDER_THREAD_COUNT, &build_thread_count_);
 
   if (build_thread_count_ == 0) {
-    build_thread_count_ = std::thread::hardware_concurrency();
+    build_thread_count_ = std::max(1U, std::thread::hardware_concurrency());
   }
 
   if (build_thread_count_ > std::thread::hardware_concurrency()) {
@@ -62,7 +70,11 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
 
   if (params.has(PARAM_DISKANN_BUILDER_MEMORY_LIMIT)) {
     params.get(PARAM_DISKANN_BUILDER_MEMORY_LIMIT, &memory_limit_);
-    if (memory_limit_ <= 0) {
+    const double memory_limit_bytes = get_memory_in_bytes(memory_limit_);
+    if (!std::isfinite(memory_limit_) || memory_limit_ <= 0 ||
+        !std::isfinite(memory_limit_bytes) ||
+        memory_limit_bytes >
+            static_cast<double>(std::numeric_limits<size_t>::max())) {
       LOG_ERROR("Invalid memory limit: %lf", memory_limit_);
       return IndexError_InvalidArgument;
     }
@@ -88,9 +100,20 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     build_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
 
     if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+      if (meta.dimension() <= 1) {
+        LOG_ERROR("Invalid FP32 cosine dimension: %u", meta.dimension());
+        return IndexError_InvalidArgument;
+      }
       build_meta_.set_dimension(meta.dimension() - 1);
-    } else {
+    } else if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
+      if (meta.dimension() <= 2) {
+        LOG_ERROR("Invalid FP16 cosine dimension: %u", meta.dimension());
+        return IndexError_InvalidArgument;
+      }
       build_meta_.set_dimension(meta.dimension() - 2);
+    } else {
+      LOG_ERROR("Unsupported cosine data type: %u", meta.data_type());
+      return IndexError_Unsupported;
     }
   }
 
@@ -127,6 +150,30 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
 }
 
 int DiskAnnBuilder::cleanup(void) {
+  holder_.reset();
+  algo_.reset();
+  trainer_.reset();
+  metric_.reset();
+  entity_.clear();
+  raw_meta_.clear();
+  build_meta_.clear();
+  stats_.clear();
+  data_file_.clear();
+  max_degree_ = kDefaultMaxDegree;
+  list_size_ = kDefaultListSize;
+  memory_limit_ = 0.0;
+  memory_limit_set_ = false;
+  max_pq_chunk_num_ = kDefaultPqChunkNum;
+  pq_chunk_num_ = kDefaultPqChunkNum;
+  build_thread_count_ = 0;
+  max_train_sample_count_ = PQTable::kMaxTrainSampleCount;
+  train_sample_ratio_ = PQTable::kTrainSampleRatio;
+  universal_label_.clear();
+  codebook_prefix_.clear();
+  index_path_prefix_ = "./diskann";
+  errcode_ = 0;
+  error_ = false;
+  state_ = BUILD_STATE_INIT;
   return 0;
 }
 
@@ -221,30 +268,31 @@ int DiskAnnBuilder::calculate_pq_chunk_num() {
     return IndexError_InvalidLength;
   }
 
+  uint32_t requested_chunk_num = max_pq_chunk_num_;
+  if (requested_chunk_num == 0 || requested_chunk_num == kDefaultPqChunkNum) {
+    requested_chunk_num =
+        std::max(1U, static_cast<uint32_t>(build_meta_.dimension() / 2));
+    LOG_INFO(
+        "No Chunk Num input. Quantizing %u dimension data into %u dimension.",
+        build_meta_.dimension(), requested_chunk_num);
+  }
+
+  pq_chunk_num_ = requested_chunk_num;
   if (memory_limit_set_) {
-    size_t memory_limit_bytes = get_memory_in_bytes(memory_limit_);
-    size_t pq_chunk_num = std::floor(memory_limit_bytes / doc_cnt);
-    if (pq_chunk_num <= 0) {
+    size_t memory_limit_bytes =
+        static_cast<size_t>(get_memory_in_bytes(memory_limit_));
+    size_t budget_chunk_num = memory_limit_bytes / doc_cnt;
+    if (budget_chunk_num == 0) {
       LOG_ERROR("Insufficient memory limit for vec, memory: %zu, vec num: %zu",
                 memory_limit_bytes, doc_cnt);
       return IndexError_InvalidArgument;
     }
+    pq_chunk_num_ = std::min(pq_chunk_num_,
+                             static_cast<uint32_t>(std::min<size_t>(
+                                 budget_chunk_num, build_meta_.dimension())));
   }
 
-  pq_chunk_num_ =
-      pq_chunk_num_ < max_pq_chunk_num_ ? pq_chunk_num_ : max_pq_chunk_num_;
-
-  // A chunk num of 0 (public API default) or the internal sentinel means
-  // "auto": quantize into half the dimensions. Resolve it before the
-  // upper-bound check so the default never reaches the divide-by-chunk path.
-  if (pq_chunk_num_ == 0 || pq_chunk_num_ == kDefaultPqChunkNum) {
-    pq_chunk_num_ = build_meta_.dimension() / 2;
-    LOG_INFO(
-        "No Chunk Num input. Quantizing %u dimension data into %u dimension.",
-        build_meta_.dimension(), pq_chunk_num_);
-  }
-
-  if (pq_chunk_num_ > build_meta_.dimension()) {
+  if (pq_chunk_num_ == 0 || pq_chunk_num_ > build_meta_.dimension()) {
     LOG_ERROR("PQ Chunk Num is more than dimension, chunk num: %u, dim: %u",
               pq_chunk_num_, build_meta_.dimension());
     return IndexError_InvalidArgument;
@@ -393,13 +441,20 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   }
 
   DiskAnnContext::Pointer auto_ptr(ctx);
-  ctx->init(DiskAnnContext::kBuilderContext, max_degree_, pq_chunk_num_,
-            build_meta_.element_size());
+  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_,
+                      pq_chunk_num_, build_meta_.element_size());
+  if (ailego_unlikely(ret != 0)) {
+    if (!error_.exchange(true)) {
+      LOG_ERROR("Failed to initialize build context");
+      errcode_ = ret;
+    }
+    return;
+  }
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
     ctx->reset_query(entity_.get_vector(id));
-    int ret = algo_->add_node(id, ctx);
+    ret = algo_->add_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (!error_.exchange(true)) {
         LOG_ERROR("DiskAnn graph add node failed");
@@ -432,13 +487,20 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
   }
 
   DiskAnnContext::Pointer auto_ptr(ctx);
-  ctx->init(DiskAnnContext::kBuilderContext, max_degree_, pq_chunk_num_,
-            build_meta_.element_size());
+  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_,
+                      pq_chunk_num_, build_meta_.element_size());
+  if (ailego_unlikely(ret != 0)) {
+    if (!error_.exchange(true)) {
+      LOG_ERROR("Failed to initialize prune context");
+      errcode_ = ret;
+    }
+    return;
+  }
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
     ctx->reset_query(entity_.get_vector(id));
-    int ret = algo_->prune_node(id, ctx);
+    ret = algo_->prune_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (!error_.exchange(true)) {
         LOG_ERROR("DiskAnn graph add node failed");
@@ -473,6 +535,10 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
   if (state_ != BUILD_STATE_INITED) {
     LOG_ERROR("Init the builder before DiskAnnBuilder::train");
     return IndexError_NoReady;
+  }
+  if (!holder) {
+    LOG_ERROR("Invalid holder for DiskAnnBuilder::train");
+    return IndexError_InvalidArgument;
   }
 
   LOG_INFO("Begin DiskAnnBuilder::train");
@@ -529,6 +595,15 @@ int DiskAnnBuilder::do_norm(const void *data_ptr, std::string *norm_data) {
 
 int DiskAnnBuilder::build(IndexThreads::Pointer threads,
                           IndexHolder::Pointer holder) {
+  if (state_ != BUILD_STATE_TRAINED) {
+    LOG_ERROR("Train the builder before DiskAnnBuilder::build");
+    return IndexError_NoReady;
+  }
+  if (!holder) {
+    LOG_ERROR("Invalid holder for DiskAnnBuilder::build");
+    return IndexError_InvalidArgument;
+  }
+
   LOG_INFO("Start DiskAnnBuilder::build");
 
   auto start_time = ailego::Monotime::MilliSeconds();

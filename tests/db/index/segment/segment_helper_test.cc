@@ -638,6 +638,11 @@ class SegmentCompactReuseTest
         p->set_is_linear(true);
         return p;
       }
+      case IndexType::IVF_RABITQ: {
+        auto p = std::make_shared<zvec::IvfRabitqQueryParams>();
+        p->set_is_linear(true);
+        return p;
+      }
       case IndexType::FLAT:
       default:
         return std::make_shared<zvec::FlatQueryParams>();
@@ -761,7 +766,7 @@ INSTANTIATE_TEST_SUITE_P(Hnsw, SegmentCompactReuseTest,
 // The other 4 vector fields are hardcoded — dense_fp16/dense_int8/sparse_fp16
 // are always FlatIndexParams, and sparse_fp32 gets the
 //   cloned params only if supports_sparse is true (utils.cc:117-124), which
-//   excludes IVF and HNSW_RABITQ — so for IVF it also falls back to FLAT.
+//   excludes IVF, HNSW_RABITQ and IVF_RABITQ — so they fall back to FLAT.
 
 INSTANTIATE_TEST_SUITE_P(
     Ivf, SegmentCompactReuseTest,
@@ -776,6 +781,12 @@ INSTANTIATE_TEST_SUITE_P(HnswRabitq, SegmentCompactReuseTest,
                              std::make_shared<HnswRabitqIndexParams>(
                                  MetricType::IP, 7, 256, 16, 200, 0),
                              IndexType::HNSW_RABITQ}));
+
+INSTANTIATE_TEST_SUITE_P(
+    IvfRabitq, SegmentCompactReuseTest,
+    testing::Values(SegmentCompactReuseParam{
+        std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 32, 7, 0),
+        IndexType::IVF_RABITQ}));
 #endif
 
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {

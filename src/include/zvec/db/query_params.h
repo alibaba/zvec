@@ -171,6 +171,40 @@ class ZVEC_API HnswRabitqQueryParams : public QueryParams {
   int ef_;
 };
 
+class ZVEC_API IvfRabitqQueryParams : public QueryParams {
+ public:
+  IvfRabitqQueryParams(int nprobe = core_interface::kDefaultIvfRabitqNprobe,
+                       float radius = 0.0f, bool is_linear = false,
+                       bool is_using_refiner = false,
+                       float scale_factor = 10.0f)
+      : QueryParams(IndexType::IVF_RABITQ), nprobe_(nprobe) {
+    set_radius(radius);
+    set_is_linear(is_linear);
+    set_is_using_refiner(is_using_refiner);
+    set_scale_factor(scale_factor);
+  }
+
+  ~IvfRabitqQueryParams() override = default;
+
+  int nprobe() const {
+    return nprobe_;
+  }
+  void set_nprobe(int nprobe) {
+    nprobe_ = nprobe;
+  }
+
+  float scale_factor() const {
+    return scale_factor_;
+  }
+  void set_scale_factor(float scale_factor) {
+    scale_factor_ = scale_factor;
+  }
+
+ private:
+  int nprobe_;
+  float scale_factor_{10.0f};
+};
+
 class ZVEC_API FlatQueryParams : public QueryParams {
  public:
   FlatQueryParams(bool is_using_refiner = false, float scale_factor = 10)

@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <variant>
 #include <vector>
@@ -320,6 +321,10 @@ class ZVEC_CORE_API VamanaIndex : public Index {
  public:
   VamanaIndex() = default;
 
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter,
+            const MergeOptions &options = {}) override;
+
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
@@ -348,6 +353,35 @@ class ZVEC_CORE_API HNSWRabitqIndex : public Index {
 
  private:
   HNSWRabitqIndexParam param_{};
+};
+
+class ZVEC_CORE_API IVFRabitqIndex : public Index {
+ public:
+  IVFRabitqIndex() = default;
+
+ protected:
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
+
+  int Add(const VectorData &vector, uint32_t doc_id) override;
+  int Train() override;
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
+  int GenerateHolder();
+
+ private:
+  IVFRabitqIndexParam param_{};
+  std::mutex mutex_{};
+  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
+  core::IndexHolder::Pointer holder_{};
+  std::string file_path_;
 };
 
 class ZVEC_CORE_API DiskAnnIndex : public Index {

@@ -129,7 +129,9 @@ class ZVEC_AILEGO_API MMapFile {
 
   //! Close the memory mapping file
   void close(void) {
-    File::MemoryUnmap(region_, region_size_);
+    if (region_) {
+      File::MemoryUnmap(region_, region_size_);
+    }
     region_ = nullptr;
     region_size_ = 0;
     offset_ = 0;

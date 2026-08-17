@@ -202,7 +202,7 @@ class LloydCluster {
 
     if (spherical_) {
       for (size_t i = 0, n = centroids_.count(); i != n; ++i) {
-        float norm;
+        float norm = 0.0f;
         ContextType::Norm2(centroids_[i], centroids_.dimension(), &norm);
       }
     }
@@ -223,6 +223,11 @@ class LloydCluster {
   //! Retrieve the K value
   size_t k_value(void) const {
     return k_value_;
+  }
+
+  //! Retrieve spherical option
+  bool spherical(void) const {
+    return spherical_;
   }
 
   //! Retrieve context

@@ -45,6 +45,18 @@ TEST(QueryParamsTest, IVFQueryParams) {
   EXPECT_EQ(params.nprobe(), 75);
 }
 
+TEST(QueryParamsTest, IvfRabitqQueryParams) {
+  IvfRabitqQueryParams params;
+  EXPECT_EQ(params.type(), IndexType::IVF_RABITQ);
+  EXPECT_EQ(params.nprobe(), 10);
+  EXPECT_FLOAT_EQ(params.scale_factor(), 10.0f);
+
+  params.set_nprobe(75);
+  params.set_scale_factor(3.5f);
+  EXPECT_EQ(params.nprobe(), 75);
+  EXPECT_FLOAT_EQ(params.scale_factor(), 3.5f);
+}
+
 TEST(QueryParamsTest, Polymorphism) {
   // Test polymorphic behavior
   QueryParams::Ptr hnsw_ptr = std::make_shared<HnswQueryParams>(100);

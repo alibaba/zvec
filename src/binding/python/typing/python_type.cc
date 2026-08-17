@@ -98,6 +98,7 @@ Examples:
       .value("UNDEFINED", IndexType::UNDEFINED)
       .value("HNSW", IndexType::HNSW)
       .value("IVF", IndexType::IVF)
+      .value("IVF_RABITQ", IndexType::IVF_RABITQ)
       .value("FLAT", IndexType::FLAT)
       .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("DISKANN", IndexType::DISKANN)
@@ -142,10 +143,11 @@ Examples:
 
 void ZVecPyTyping::bind_io_backend_types(py::module_ &m) {
   py::enum_<ailego::IOBackendType>(m, "IOBackendType", R"pbdoc(
-Enumeration of supported I/O backend types for DiskAnn async disk reads.
+Enumeration of supported I/O backend types for DiskAnn disk reads.
 
-- PREAD: Synchronous pread() \u2014 no async I/O.
+- PREAD: Synchronous pread(); no async I/O.
 - LIBAIO: libaio loaded at runtime via dlopen().
+- IO_URING: io_uring via raw kernel syscalls (zero dependency).
 
 Examples:
     >>> from zvec.typing import IOBackendType
@@ -153,7 +155,8 @@ Examples:
     IOBackendType.LIBAIO
 )pbdoc")
       .value("PREAD", ailego::IOBackendType::kPread)
-      .value("LIBAIO", ailego::IOBackendType::kLibAio);
+      .value("LIBAIO", ailego::IOBackendType::kLibAio)
+      .value("IO_URING", ailego::IOBackendType::kIoUring);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

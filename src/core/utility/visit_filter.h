@@ -23,8 +23,8 @@
 #include <ailego/container/bloom_filter.h>
 #include <ailego/utility/bitset_helper.h>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_error.h>
-#include <zvec/core/framework/index_logger.h>
 
 namespace zvec {
 namespace core {
@@ -258,7 +258,7 @@ class VisitByteMap {
   VisitByteMap() = delete;
 
   inline static void set_visited(Context *c, id_t idx) {
-    if (ailego_unlikely(idx > c->h.maxDocCnt)) {
+    if (ailego_unlikely(idx >= c->h.maxDocCnt)) {
       c->h.maxDocCnt = idx + 1024;  // reserved
       c->buf.resize(c->h.maxDocCnt);
     }
@@ -271,7 +271,7 @@ class VisitByteMap {
   }
 
   inline static bool visited(Context *c, id_t idx) {
-    if (ailego_unlikely(idx > c->h.maxDocCnt)) {
+    if (ailego_unlikely(idx >= c->h.maxDocCnt)) {
       return false;
     }
     return c->buf[idx] == c->curNum;
