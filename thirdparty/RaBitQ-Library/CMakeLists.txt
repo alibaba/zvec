@@ -5,7 +5,7 @@ target_include_directories(
     rabitqlib SYSTEM INTERFACE "${RABITQ_SOURCE_DIR}/include"
   )
 
-if(RABITQ_SUPPORTED)
+if(RABITQ_SUPPORTED AND EXISTS "${RABITQ_SOURCE_DIR}/src/simd/dispatch.cpp")
   set(RABITQ_LUT_REUSE_PATCH
       "${CMAKE_CURRENT_SOURCE_DIR}/rabitq_lut_reuse.patch")
   apply_patch_once(
