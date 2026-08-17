@@ -167,6 +167,21 @@ jobs:
             rm -rf "${ZVEC_DIST_DIR:?}/bin"
           fi
 
+      - name: Smoke-test staged SDK
+        shell: bash
+        run: |
+          # Compile and run tiny C and C++ programs against the staged
+          # package (the exact tree that gets packaged next): verifies the
+          # include/lib layout and that the shipped libraries link and load.
+          SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
+          cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+          cmake --build "$SMOKE_BUILD" --parallel 2
+          # Windows loads the DLLs via PATH; Unix uses BUILD_RPATH.
+          export PATH="$ZVEC_DIST_DIR/lib:$PATH"
+          ctest --test-dir "$SMOKE_BUILD" --output-on-failure
+
       - name: Package SDK (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -273,6 +288,17 @@ jobs:
             cp -R /work/install/. /work/dist/.
             # Ship shared libraries only (same policy as the matrix job).
             rm -f /work/dist/lib/*.a
+          '
+        shell: bash
+
+      - name: Smoke-test staged SDK
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c '
+            cmake -S .github/cmake/sdk-smoke -B /work/smoke-build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DZVEC_SDK_DIR=/work/dist
+            cmake --build /work/smoke-build --parallel "$(nproc)"
+            ctest --test-dir /work/smoke-build --output-on-failure
           '
         shell: bash
 
@@ -399,6 +425,21 @@ jobs:
           cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
             "$ZVEC_DIST_DIR/lib/"
 
+      - name: Smoke-test staged SDK (link only)
+        shell: bash
+        run: |
+          # Cross-compile the smoke programs against the packaged libraries.
+          # They cannot run on the runner, but linking them validates the
+          # package layout and the symbols exported by the .so files.
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          cmake -S .github/cmake/sdk-smoke -B build_smoke -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ZVEC_ANDROID_ABI" \
+            -DANDROID_NATIVE_API_LEVEL="$ZVEC_ANDROID_API_LEVEL" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+          cmake --build build_smoke --parallel 2
+
       - name: Package SDK
         shell: bash
         run: |
@@ -506,6 +547,28 @@ jobs:
               -output "$ZVEC_DIST_DIR/${name}.xcframework"
           done
           find "$ZVEC_DIST_DIR" -maxdepth 2 | sort
+
+      - name: Verify XCFramework contents
+        shell: bash
+        run: |
+          # Every XCFramework must carry both slices, and headers must live
+          # at include/zvec/ (guards against a nested include/include/).
+          for fw in libzvec libzvec_core libzvec_ailego libzvec_c_api; do
+            for slice in ios-arm64 ios-arm64-simulator; do
+              if [ ! -d "$ZVEC_DIST_DIR/${fw}.xcframework/${slice}" ]; then
+                echo "missing slice: ${fw}.xcframework/${slice}"
+                exit 1
+              fi
+            done
+          done
+          if [ ! -f "$ZVEC_DIST_DIR/include/zvec/c_api.h" ]; then
+            echo "missing include/zvec/c_api.h"
+            exit 1
+          fi
+          ls "$ZVEC_DIST_DIR"/include/zvec/db/*.h > /dev/null || {
+            echo "missing C++ headers under include/zvec/db/"
+            exit 1
+          }
 
       - name: Package SDK
         shell: bash
