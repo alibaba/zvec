@@ -13,7 +13,8 @@
 // limitations under the License.
 
 //! Micro benchmarks for the query paths affected by the size-optimization
-//! work (third-party -Os, slimmed Arrow compute, trimmed RocksDB features):
+//! work (third-party -Os for non-hot libraries, slimmed Arrow compute,
+//! trimmed RocksDB features):
 //!
 //!   - forward filter   : column scan + expression evaluation (Arrow compute)
 //!   - inverted search  : term/range/boolean filters through inverted indexes

@@ -32,11 +32,9 @@ set(ARROW_CMAKE_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 if(NOT ARROW_CMAKE_BUILD_TYPE)
     set(ARROW_CMAKE_BUILD_TYPE Release)
 endif()
-# Use MinSizeRel (-Os) for Arrow to reduce binary size while keeping
-# zvec's own code at -O3 for performance.
-if(ARROW_CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(ARROW_CMAKE_BUILD_TYPE MinSizeRel)
-endif()
+# Keep Arrow on the Release configuration: benchmarks showed that building
+# its compute kernels with -Os slows filter evaluation by ~8-10% while the
+# size saving is kept by the slim compute kernel set and gc-sections.
 
 # Pass -ffunction-sections -fdata-sections to Arrow so the linker can
 # perform fine-grained dead code elimination on Arrow objects.
@@ -146,10 +144,6 @@ elseif (MSVC)
         "-DCMAKE_CXX_FLAGS=${_ARROW_CRT_FLAG}"
         -DARROW_USE_STATIC_CRT=${ZVEC_USE_STATIC_CRT}
         "-DCMAKE_MSVC_RUNTIME_LIBRARY=${_ARROW_MSVC_RUNTIME}"
-        # Favor small code (/O1, /Ob1) over speed (/O2) for the Release config
-        # to match the MinSizeRel size optimization used on other platforms.
-        "-DCMAKE_C_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG"
-        "-DCMAKE_CXX_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG"
     )
         ExternalProject_Add(
                 ARROW.BUILD PREFIX arrow
