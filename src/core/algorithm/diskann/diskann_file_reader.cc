@@ -1097,12 +1097,12 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
     return;
   }
 
-  file_handle_ = ::CreateFileW(
-      wide_fname.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
-      nullptr, OPEN_EXISTING,
-      FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED |
-          FILE_FLAG_RANDOM_ACCESS,
-      nullptr);
+  file_handle_ =
+      ::CreateFileW(wide_fname.c_str(), GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
+                        FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
+                    nullptr);
   if (file_handle_ == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to open file: %s (error=%lu)", fname.c_str(),
               ::GetLastError());
@@ -1173,8 +1173,8 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 
     for (uint64_t j = 0; j < issued_count; ++j) {
       DWORD bytes_transferred = 0;
-      BOOL completed = ::GetOverlappedResult(
-          file_handle_, &ctx->reqs[j], &bytes_transferred, TRUE);
+      BOOL completed = ::GetOverlappedResult(file_handle_, &ctx->reqs[j],
+                                             &bytes_transferred, TRUE);
       if (!completed) {
         LOG_ERROR("GetOverlappedResult failed for read %lu (error=%lu)",
                   static_cast<unsigned long>(j), ::GetLastError());

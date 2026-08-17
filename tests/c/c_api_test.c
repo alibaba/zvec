@@ -160,12 +160,11 @@ void test_io_backend_functions(void) {
   TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_LIBAIO),
                      "libaio") == 0);
   TEST_ASSERT(
-       strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
-              "io_uring") == 0);
-  TEST_ASSERT(
-      strcmp(zvec_get_io_backend_type_name(
-                 ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED),
-             "windows_overlapped") == 0);
+      strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
+             "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED),
+                     "windows_overlapped") == 0);
   TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
 
   zvec_io_backend_type_t current = zvec_get_io_backend_type();

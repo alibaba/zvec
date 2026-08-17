@@ -75,12 +75,12 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
                                      pq_chunk_num_ * sizeof(float),
                                  256);
       DiskAnnUtil::alloc_aligned(
-           (void **)&pq_coord_buffer_,
-           static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
-           256);
-       DiskAnnUtil::alloc_aligned(
-           (void **)&coord_buffer_,
-           disk_element_size > 0 ? disk_element_size : element_size_, 256);
+          (void **)&pq_coord_buffer_,
+          static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
+          256);
+      DiskAnnUtil::alloc_aligned(
+          (void **)&coord_buffer_,
+          disk_element_size > 0 ? disk_element_size : element_size_, 256);
       DiskAnnUtil::alloc_aligned(
           (void **)&sector_buffer_,
           DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,
