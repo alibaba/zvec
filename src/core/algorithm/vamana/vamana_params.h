@@ -76,6 +76,8 @@ static const std::string PARAM_VAMANA_STREAMER_SATURATE_GRAPH(
     "proxima.vamana.streamer.saturate_graph");
 static const std::string PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY(
     "proxima.vamana.streamer.use_contiguous_memory");
+static const std::string PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE(
+    "proxima.vamana.streamer.two_pass_build_enable");
 
 }  // namespace core
 }  // namespace zvec

@@ -14,31 +14,11 @@
 
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/version.cmake)
 include(GNUInstallDirs)
 
-# Retrieve version from git repository and generate version header
-git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
-
-# Debug: print version variables
-message(STATUS "ZVEC_VERSION: ${ZVEC_VERSION}")
-
-# Parse version string to extract major.minor.patch
-# Format: vX.Y.Z-commit-hash or vX.Y.Z
-if(ZVEC_VERSION MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
-    set(ZVEC_VERSION_MAJOR "${CMAKE_MATCH_1}")
-    set(ZVEC_VERSION_MINOR "${CMAKE_MATCH_2}")
-    set(ZVEC_VERSION_PATCH "${CMAKE_MATCH_3}")
-    set(ZVEC_VERSION_STRING "${ZVEC_VERSION}")
-else()
-    # Default version if parsing fails
-    set(ZVEC_VERSION_MAJOR 0)
-    set(ZVEC_VERSION_MINOR 2)
-    set(ZVEC_VERSION_PATCH 1)
-    set(ZVEC_VERSION_STRING "${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH}")
-endif()
-
-message(STATUS "Parsed version: ${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH} (${ZVEC_VERSION_STRING})")
-
+# Version is resolved once in cmake/version.cmake and shared by the whole
+# build; here it is only baked into the generated C API headers.
 # Configure version header file
 configure_file(
     ${PROJECT_SOURCE_DIR}/src/include/zvec/version.h.in

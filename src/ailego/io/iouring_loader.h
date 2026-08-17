@@ -12,44 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Raw-syscall wrapper for Linux io_uring.
+// Raw-syscall wrapper for Linux io_uring: queue lifecycle via
+// io_uring_setup/io_uring_enter + mmap, with zero dependency on liburing.
 //
-// This class implements the io_uring submission/completion queue lifecycle
-// using *only* kernel syscalls (io_uring_setup, io_uring_enter) and mmap.
-// There is zero dependency on liburing or liburing-dev: no build-time header,
-// no runtime .so, and no dlopen.  This mirrors the project's existing
-// zero-dependency philosophy established by the libaio dlopen approach, but
-// goes one step further — io_uring is a pure kernel ABI accessed via syscall.
+// setup() returns false when the kernel lacks the io_uring features we
+// need (pre-5.6, missing IORING_OP_READ, or disabled), letting callers
+// fall back to libaio or pread.
 //
-// Runtime detection is automatic: if the kernel does not support io_uring
-// (pre-5.1 or io_uring disabled), io_uring_setup() returns -ENOSYS and
-// setup() returns false, allowing callers to fall back to libaio or pread.
-//
-// The ring is **not** thread-safe.  Each thread that performs I/O must have
-// its own IoUringRing instance (managed through IoBackend / IOContext).
+// Not thread-safe: each I/O thread must own its IoUringRing instance.
 
 #pragma once
 
 #if defined(__linux) || defined(__linux__)
 
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
-#include <cstring>
+#include <cstdlib>
 #include <vector>
 #include <ailego/io/iouring_def.h>
-#include <zvec/core/framework/index_logger.h>
 
 namespace zvec {
 namespace core {
 
-// Forward declaration — AlignedRead is defined in diskann_file_reader.h
-// after this header is included.  The forward declaration is sufficient
-// because IoUringRing::execute takes it by reference.
+// AlignedRead lives in diskann_file_reader.h; a forward declaration
+// suffices since execute() takes it by reference.
 struct AlignedRead;
 
-// Maximum number of SQEs we submit in a single io_uring_enter() call.
+// Max SQEs submitted per io_uring_enter() call.
 static constexpr uint32_t kIoUringMaxBatch = 128;
+
+// Staging slot alignment — keeps O_DIRECT reads legal.
+static constexpr size_t kIoUringStagingAlign = 4096;
 
 class IoUringRing {
  public:
@@ -61,169 +54,42 @@ class IoUringRing {
   IoUringRing(const IoUringRing &) = delete;
   IoUringRing &operator=(const IoUringRing &) = delete;
 
-  // Create an io_uring with the given number of entries.
-  // Returns true on success, false if the kernel does not support io_uring
-  // or setup failed for any reason.
-  bool setup(uint32_t entries) {
-    struct io_uring_params params;
-    std::memset(&params, 0, sizeof(params));
+  // Create an io_uring with `entries` queue slots.  Returns false if the
+  // kernel lacks io_uring or setup failed.  In iouring_loader.cc.
+  bool setup(uint32_t entries);
 
-    // io_uring_setup is a raw syscall — returns fd (>=0) or -1 with errno.
-    ring_fd_ = static_cast<int>(
-        syscall(__NR_io_uring_setup, static_cast<int>(entries), &params));
-    if (ring_fd_ < 0) {
-      // ENOSYS = kernel doesn't support io_uring.
-      // EPERM  = io_uring disabled via sysctl.
-      // EINVAL = invalid parameters.
-      if (errno != ENOSYS) {
-        LOG_WARN("io_uring_setup failed; errno=%d, %s", errno,
-                 ::strerror(errno));
-      }
-      return false;
-    }
+  // munmap all regions, close the ring fd, free staging.  Closing the fd
+  // only *starts* asynchronous cancellation of in-flight requests, so call
+  // this only when the ring is quiesced — or after abandon_staging().
+  // In iouring_loader.cc.
+  void teardown();
 
-    sq_entries_ = params.sq_entries;
-    cq_entries_ = params.cq_entries;
+  // Grow the ring-owned staging pool to at least `bytes`.  Only safe while
+  // the ring is quiesced (the old pool is freed here).  In iouring_loader.cc.
+  bool ensure_staging(size_t bytes);
 
-    // --- mmap the three shared regions ---
-
-    // 1. SQ ring (includes head, tail, mask, entries, flags, dropped, array).
-    size_t sq_ring_sz = static_cast<size_t>(params.sq_off.array) +
-                        sq_entries_ * sizeof(uint32_t);
-    sq_ring_ptr_ = ::mmap(nullptr, sq_ring_sz, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, ring_fd_, IORING_OFF_SQ_RING);
-    if (sq_ring_ptr_ == MAP_FAILED) {
-      LOG_ERROR("mmap SQ ring failed: %s", ::strerror(errno));
-      sq_ring_ptr_ = nullptr;
-      teardown();
-      return false;
-    }
-
-    // 2. SQE array.
-    size_t sqes_sz = sq_entries_ * sizeof(struct io_uring_sqe);
-    sqes_ptr_ = reinterpret_cast<struct io_uring_sqe *>(
-        ::mmap(nullptr, sqes_sz, PROT_READ | PROT_WRITE, MAP_SHARED, ring_fd_,
-               IORING_OFF_SQES));
-    if (sqes_ptr_ == MAP_FAILED) {
-      LOG_ERROR("mmap SQEs failed: %s", ::strerror(errno));
-      sqes_ptr_ = nullptr;
-      teardown();
-      return false;
-    }
-
-    // 3. CQ ring (includes head, tail, mask, entries, overflow, cqes[]).
-    size_t cq_ring_sz = static_cast<size_t>(params.cq_off.cqes) +
-                        cq_entries_ * sizeof(struct io_uring_cqe);
-    cq_ring_ptr_ = ::mmap(nullptr, cq_ring_sz, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, ring_fd_, IORING_OFF_CQ_RING);
-    if (cq_ring_ptr_ == MAP_FAILED) {
-      LOG_ERROR("mmap CQ ring failed: %s", ::strerror(errno));
-      cq_ring_ptr_ = nullptr;
-      teardown();
-      return false;
-    }
-
-    // --- Set up typed pointers into the mmap'd regions ---
-
-    // SQ ring fields.
-    sq_head_ = reinterpret_cast<unsigned *>(static_cast<char *>(sq_ring_ptr_) +
-                                            params.sq_off.head);
-    sq_tail_ = reinterpret_cast<unsigned *>(static_cast<char *>(sq_ring_ptr_) +
-                                            params.sq_off.tail);
-    sq_ring_mask_ = reinterpret_cast<unsigned *>(
-        static_cast<char *>(sq_ring_ptr_) + params.sq_off.ring_mask);
-    sq_ring_entries_ = reinterpret_cast<unsigned *>(
-        static_cast<char *>(sq_ring_ptr_) + params.sq_off.ring_entries);
-    sq_flags_ = reinterpret_cast<unsigned *>(static_cast<char *>(sq_ring_ptr_) +
-                                             params.sq_off.flags);
-    sq_dropped_ = reinterpret_cast<unsigned *>(
-        static_cast<char *>(sq_ring_ptr_) + params.sq_off.dropped);
-    sq_array_ = reinterpret_cast<unsigned *>(static_cast<char *>(sq_ring_ptr_) +
-                                             params.sq_off.array);
-
-    // CQ ring fields.
-    cq_head_ = reinterpret_cast<unsigned *>(static_cast<char *>(cq_ring_ptr_) +
-                                            params.cq_off.head);
-    cq_tail_ = reinterpret_cast<unsigned *>(static_cast<char *>(cq_ring_ptr_) +
-                                            params.cq_off.tail);
-    cq_ring_mask_ = reinterpret_cast<unsigned *>(
-        static_cast<char *>(cq_ring_ptr_) + params.cq_off.ring_mask);
-    cq_ring_entries_ = reinterpret_cast<unsigned *>(
-        static_cast<char *>(cq_ring_ptr_) + params.cq_off.ring_entries);
-    cq_overflow_ = reinterpret_cast<unsigned *>(
-        static_cast<char *>(cq_ring_ptr_) + params.cq_off.overflow);
-    cqes_ = reinterpret_cast<struct io_uring_cqe *>(
-        static_cast<char *>(cq_ring_ptr_) + params.cq_off.cqes);
-
-    // SQE array.
-    sqes_ = sqes_ptr_;
-
-    // Initialize the SQ array to identity mapping so that logical index ==
-    // physical SQE index.  This is the simplest and most common configuration.
-    for (uint32_t i = 0; i < sq_entries_; i++) {
-      sq_array_[i] = i;
-    }
-
-    return true;
-  }
-
-  // Tear down the ring: munmap all regions and close the ring fd.
-  void teardown() {
-    if (sq_ring_ptr_ && sq_ring_ptr_ != MAP_FAILED) {
-      // We don't track the exact mmap size; munmap with a large enough size
-      // is safe because the kernel only unmaps what was actually mapped.
-      // However, to be correct we use the page-aligned size.
-      size_t sz = static_cast<size_t>(sq_entries_) * sizeof(uint32_t) + 4096;
-      ::munmap(sq_ring_ptr_, sz);
-    }
-    if (sqes_ptr_ && sqes_ptr_ != MAP_FAILED) {
-      size_t sz =
-          static_cast<size_t>(sq_entries_) * sizeof(struct io_uring_sqe);
-      ::munmap(sqes_ptr_, sz);
-    }
-    if (cq_ring_ptr_ && cq_ring_ptr_ != MAP_FAILED) {
-      size_t sz =
-          static_cast<size_t>(cq_entries_) * sizeof(struct io_uring_cqe) + 4096;
-      ::munmap(cq_ring_ptr_, sz);
-    }
-
-    sq_ring_ptr_ = nullptr;
-    sqes_ptr_ = nullptr;
-    cq_ring_ptr_ = nullptr;
-    sqes_ = nullptr;
-    cqes_ = nullptr;
-    sq_head_ = sq_tail_ = sq_ring_mask_ = sq_ring_entries_ = nullptr;
-    sq_flags_ = sq_dropped_ = sq_array_ = nullptr;
-    cq_head_ = cq_tail_ = cq_ring_mask_ = cq_ring_entries_ = nullptr;
-    cq_overflow_ = nullptr;
-
-    if (ring_fd_ >= 0) {
-      ::close(ring_fd_);
-      ring_fd_ = -1;
-    }
-
-    sq_entries_ = 0;
-    cq_entries_ = 0;
+  // Deliberately leak the staging pool when in-flight requests cannot be
+  // drained: the kernel may keep writing into it after the fd is closed.
+  // Caller buffers are never handed to the kernel and remain safe.
+  void abandon_staging() {
+    staging_ = nullptr;
+    staging_size_ = 0;
   }
 
   bool is_valid() const {
     return ring_fd_ >= 0;
   }
 
-  // Execute a batch of aligned read requests via io_uring.
-  //
-  // Implemented in diskann_file_reader.cc to avoid a circular dependency:
-  // AlignedRead is defined in diskann_file_reader.h *after* this header is
-  // included, so the method body cannot be inline here.
-  //
-  // On success returns 0.  On failure returns -1; the caller should fall
-  // back to pread.
+  // Execute a batch of aligned reads via io_uring.  Returns 0 on success,
+  // -1 on failure — the caller may always fall back to pread, since the
+  // kernel only writes into the staging pool.  In diskann_file_reader.cc
+  // (AlignedRead is defined there).
   int execute(int fd, std::vector<AlignedRead> &read_reqs);
 
  private:
   int ring_fd_{-1};
 
-  // mmap'd region base pointers (needed for munmap).
+  // mmap'd region bases (needed for munmap).
   void *sq_ring_ptr_{nullptr};
   struct io_uring_sqe *sqes_ptr_{nullptr};
   void *cq_ring_ptr_{nullptr};
@@ -245,10 +111,14 @@ class IoUringRing {
   unsigned *cq_overflow_{nullptr};
   struct io_uring_cqe *cqes_{nullptr};
 
-  // SQE array pointer.
   struct io_uring_sqe *sqes_{nullptr};
 
-  // Ring capacities.
+  // Ring-owned staging pool: the kernel reads into it and execute() copies
+  // verified completions out, decoupling caller buffer lifetime from async
+  // io_uring teardown (see abandon_staging()).
+  char *staging_{nullptr};
+  size_t staging_size_{0};
+
   unsigned sq_entries_{0};
   unsigned cq_entries_{0};
 };

@@ -13,7 +13,6 @@
 // limitations under the License.
 #pragma once
 
-#include <execinfo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

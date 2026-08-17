@@ -34,6 +34,7 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
  public:
   const DiskAnnEntity::Pointer clone() const override;
 
+  void clear();
   int load(const IndexMeta &meta, IndexStorage::Pointer storage);
   int load_pq_segment();
   int load_header_segment();

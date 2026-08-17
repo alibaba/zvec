@@ -779,25 +779,26 @@ ZVEC_EXPORT const char *ZVEC_CALL zvec_get_default_jieba_dict_dir(void);
 // =============================================================================
 
 /**
- * @brief I/O backend type codes for DiskAnn async disk reads.
+ * @brief I/O backend type codes for DiskAnn disk reads.
  *
  * Defined as uint32_t constants for consistent binary representation
  * across C and C++ boundaries.
  */
 typedef uint32_t zvec_io_backend_type_t;
-#define ZVEC_IO_BACKEND_TYPE_PREAD \
-  0 /**< Synchronous pread() \u2014 no async I/O */
+#define ZVEC_IO_BACKEND_TYPE_PREAD 0 /**< Synchronous pread(); no async I/O */
 #define ZVEC_IO_BACKEND_TYPE_LIBAIO \
   1 /**< libaio loaded at runtime via dlopen() */
 #define ZVEC_IO_BACKEND_TYPE_IO_URING \
-  2 /**< io_uring accessed through the Linux kernel ABI */
+  2 /**< io_uring via raw Linux kernel syscalls (zero dependency) */
 #define ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED \
   3 /**< Windows overlapped I/O with per-request events */
 
 /**
- * @brief Get the current I/O backend type for DiskAnn async disk reads.
+ * @brief Get the current I/O backend type for DiskAnn disk reads.
  *
- * Pure introspection \u2014 no side effects, no install hints.
+ * Linux selects the first usable backend in this order: io_uring, libaio,
+ * then synchronous pread. macOS ARM64 uses synchronous pread. Windows uses
+ * overlapped I/O with per-request events.
  *
  * @return zvec_io_backend_type_t The loaded backend type
  *         ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO,
@@ -819,6 +820,11 @@ zvec_get_io_backend_type_name(zvec_io_backend_type_t type);
 
 /**
  * @brief Get a human-readable description of the current I/O backend.
+ *
+ * The description identifies io_uring, libaio, or pread. On Linux, the pread
+ * description also explains that io_uring and libaio were unavailable and
+ * provides guidance for enabling an asynchronous backend. Windows reports its
+ * overlapped-I/O backend.
  *
  * @return Thread-local string valid until the next call on this thread.
  */
@@ -879,6 +885,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_HNSW_RABITQ 4
 #define ZVEC_INDEX_TYPE_DISKANN 5
 #define ZVEC_INDEX_TYPE_VAMANA 6
+#define ZVEC_INDEX_TYPE_IVF_RABITQ 7
 #define ZVEC_INDEX_TYPE_INVERT 10
 #define ZVEC_INDEX_TYPE_FTS 11
 
@@ -908,6 +915,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_FP16 1
 #define ZVEC_QUANTIZE_TYPE_INT8 2
 #define ZVEC_QUANTIZE_TYPE_INT4 3
+#define ZVEC_QUANTIZE_TYPE_RABITQ 4
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -1095,6 +1103,24 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_vamana_params(
     bool *out_use_contiguous_memory);
 
 /**
+ * @brief Enable or disable Vamana two-pass graph construction
+ * @param params Index parameters (must be VAMANA type)
+ * @param two_pass_build Whether to run the full-graph second construction pass
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_vamana_two_pass_build(zvec_index_params_t *params,
+                                            bool two_pass_build);
+
+/**
+ * @brief Get whether Vamana two-pass graph construction is enabled
+ * @param params Index parameters (must be VAMANA type)
+ * @return true if two-pass construction is enabled, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_index_params_get_vamana_two_pass_build(const zvec_index_params_t *params);
+
+/**
  * @brief Set DiskANN specific parameters
  * @param params Index parameters (must be DiskANN type)
  * @param max_degree Graph connectivity (max degree of Vamana graph)
@@ -1152,6 +1178,29 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_ivf_params(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_params(
     const zvec_index_params_t *params, int *out_n_list, int *out_n_iters,
     bool *out_use_soar);
+
+/**
+ * @brief Set IVF RaBitQ specific parameters
+ * @param params Index parameters (must be IVF_RABITQ type)
+ * @param nlist Number of cluster centers
+ * @param total_bits Total bits for RaBitQ quantization
+ * @param sample_count Sample count for training, 0 means use all vectors
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_ivf_rabitq_params(
+    zvec_index_params_t *params, int nlist, int total_bits, int sample_count);
+
+/**
+ * @brief Get IVF RaBitQ parameters (all at once)
+ * @param params Index parameters (must be IVF_RABITQ type)
+ * @param out_nlist Output parameter for nlist
+ * @param out_total_bits Output parameter for total_bits
+ * @param out_sample_count Output parameter for sample_count
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_rabitq_params(
+    const zvec_index_params_t *params, int *out_nlist, int *out_total_bits,
+    int *out_sample_count);
 
 /**
  * @brief Get invert index parameters (all at once)
@@ -1252,6 +1301,16 @@ typedef struct zvec_hnsw_query_params_t zvec_hnsw_query_params_t;
  * destroy it.
  */
 typedef struct zvec_ivf_query_params_t zvec_ivf_query_params_t;
+
+/**
+ * @brief IVF RaBitQ query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::IvfRabitqQueryParams* (raw pointer).
+ * Created by zvec_query_params_ivf_rabitq_create() and destroyed by
+ * zvec_query_params_ivf_rabitq_destroy(). Caller owns the pointer and must
+ * explicitly destroy it.
+ */
+typedef struct zvec_ivf_rabitq_query_params_t zvec_ivf_rabitq_query_params_t;
 
 /**
  * @brief Flat query parameters handle (opaque pointer)
@@ -1550,6 +1609,118 @@ zvec_query_params_ivf_set_is_using_refiner(zvec_ivf_query_params_t *params,
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_ivf_get_is_using_refiner(
     const zvec_ivf_query_params_t *params);
+
+// -----------------------------------------------------------------------------
+// zvec_ivf_rabitq_query_params_t (IVF RaBitQ Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create IVF RaBitQ query parameters
+ * @param nprobe Number of clusters to probe (default: 10)
+ * @param radius Search radius (default: 0.0)
+ * @param is_linear Whether linear search (default: false)
+ * @param is_using_refiner Whether using refiner (default: false)
+ * @return zvec_ivf_rabitq_query_params_t* Pointer to the newly created IVF
+ * RaBitQ query parameters
+ */
+ZVEC_EXPORT zvec_ivf_rabitq_query_params_t *ZVEC_CALL
+zvec_query_params_ivf_rabitq_create(int nprobe, float radius, bool is_linear,
+                                    bool is_using_refiner);
+
+/**
+ * @brief Destroy IVF RaBitQ query parameters
+ * @param params IVF RaBitQ query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_ivf_rabitq_destroy(zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set number of probe clusters
+ * @param params IVF RaBitQ query parameters pointer
+ * @param nprobe Number of probe clusters
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_ivf_rabitq_set_nprobe(
+    zvec_ivf_rabitq_query_params_t *params, int nprobe);
+
+/**
+ * @brief Get number of probe clusters
+ * @param params IVF RaBitQ query parameters pointer
+ * @return int Number of probe clusters
+ */
+ZVEC_EXPORT int ZVEC_CALL zvec_query_params_ivf_rabitq_get_nprobe(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set candidate expansion factor used by the refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @param scale_factor Candidate expansion factor
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_ivf_rabitq_set_scale_factor(
+    zvec_ivf_rabitq_query_params_t *params, float scale_factor);
+
+/**
+ * @brief Get candidate expansion factor used by the refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @return float Candidate expansion factor
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_ivf_rabitq_get_scale_factor(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set search radius
+ * @param params IVF RaBitQ query parameters pointer
+ * @param radius Search radius
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_ivf_rabitq_set_radius(
+    zvec_ivf_rabitq_query_params_t *params, float radius);
+
+/**
+ * @brief Get search radius
+ * @param params IVF RaBitQ query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_ivf_rabitq_get_radius(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set linear search mode
+ * @param params IVF RaBitQ query parameters pointer
+ * @param is_linear Whether linear search
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_ivf_rabitq_set_is_linear(
+    zvec_ivf_rabitq_query_params_t *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode
+ * @param params IVF RaBitQ query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_ivf_rabitq_get_is_linear(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set whether to use refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_ivf_rabitq_set_is_using_refiner(
+    zvec_ivf_rabitq_query_params_t *params, bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_ivf_rabitq_get_is_using_refiner(
+    const zvec_ivf_rabitq_query_params_t *params);
 
 // -----------------------------------------------------------------------------
 // zvec_flat_query_params_t (Flat Query Parameters)
@@ -2028,6 +2199,16 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_ivf_params(
     zvec_vector_query_t *query, zvec_ivf_query_params_t *ivf_params);
 
 /**
+ * @brief Set IVF RaBitQ query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param ivf_rabitq_params IVF RaBitQ query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_ivf_rabitq_params(
+    zvec_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params);
+
+/**
  * @brief Set Flat query parameters (takes ownership)
  * @param query Vector query pointer
  * @param flat_params Flat query parameters pointer
@@ -2326,6 +2507,17 @@ zvec_group_by_vector_query_set_ivf_params(zvec_group_by_vector_query_t *query,
                                           zvec_ivf_query_params_t *ivf_params);
 
 /**
+ * @brief Set IVF RaBitQ query parameters (takes ownership)
+ * @param query Group by vector query pointer
+ * @param ivf_rabitq_params IVF RaBitQ query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_group_by_vector_query_set_ivf_rabitq_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params);
+
+/**
  * @brief Set Flat query parameters (takes ownership)
  * @param query Group by vector query pointer
  * @param flat_params Flat query parameters pointer
@@ -2598,6 +2790,15 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_hnsw_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_params(
     zvec_sub_query_t *query, zvec_ivf_query_params_t *ivf_params);
+
+/**
+ * @brief Set IVF RaBitQ query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param ivf_rabitq_params IVF RaBitQ query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_rabitq_params(
+    zvec_sub_query_t *query, zvec_ivf_rabitq_query_params_t *ivf_rabitq_params);
 
 /**
  * @brief Set Flat query parameters (takes ownership)

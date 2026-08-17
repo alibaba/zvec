@@ -38,6 +38,13 @@ class IndexStreamer : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
+  //! Bind a provider which supplies the original vectors to build the
+  //! index from. Default implementation reports not implemented.
+  virtual int set_provider(IndexProvider::Pointer /*provider*/,
+                           const IndexMeta & /*provider_meta*/) {
+    return IndexError_NotImplemented;
+  }
+
   //! Open a index from storage
   virtual int open(IndexStorage::Pointer stg) = 0;
 

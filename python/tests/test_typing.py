@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-import sys
+import platform
 
 import pytest
 import zvec
@@ -111,6 +111,7 @@ def test_data_type_has_member(member):
         "HNSW_RABITQ",
         "DISKANN",
         "VAMANA",
+        "IVF_RABITQ",
         "INVERT",
         "FTS",
     ],
@@ -126,13 +127,19 @@ def test_io_backend_type_has_member(member):
     assert member in IOBackendType.__members__
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific backend")
-def test_windows_io_backend_type():
-    assert zvec.io_backend_type() == IOBackendType.WINDOWS_OVERLAPPED
-    assert "overlapped" in zvec.io_backend_description().lower()
+def test_current_io_backend_type():
+    backend = zvec.io_backend_type()
+    assert isinstance(backend, IOBackendType)
+    assert zvec.io_backend_description()
+    if platform.system() == "Windows":
+        assert backend == IOBackendType.WINDOWS_OVERLAPPED
+        assert "overlapped" in zvec.io_backend_description().lower()
+    elif platform.system() == "Darwin":
+        assert backend == IOBackendType.PREAD
+        assert "pread" in zvec.io_backend_description().lower()
 
 
-@pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "UNDEFINED"])
+@pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "RABITQ", "UNDEFINED"])
 def test_quantize_type_has_member(member):
     assert member in QuantizeType.__members__
 

@@ -18,7 +18,7 @@
 // It defines the IOBackendType enum and the convenience helpers
 // current_io_backend_type() / current_io_backend_description() so that
 // public headers can reference IOBackendType without pulling in the
-// internal IOBackend singleton or libaio_loader.
+// internal IOBackend singleton or io_uring/libaio implementation headers.
 
 #pragma once
 
@@ -28,20 +28,27 @@
 namespace zvec {
 namespace ailego {
 
-// Supported I/O backend types.
+// Supported DiskAnn I/O backend types.
+//
+// Numeric values are part of the C ABI (see zvec_io_backend_type_t in c_api.h):
+//   kPread = 0, kLibAio = 1, kIoUring = 2, kWindowsOverlapped = 3.
 enum class IOBackendType {
-  kPread = 0,              // Synchronous pread() — no async I/O
+  kPread = 0,              // Synchronous pread(); no async I/O
   kLibAio = 1,             // libaio loaded at runtime via dlopen()
-  kIoUring = 2,            // io_uring accessed through the Linux kernel ABI
+  kIoUring = 2,            // io_uring via raw kernel syscalls
   kWindowsOverlapped = 3,  // Windows overlapped I/O with per-request events
 };
 
 // Returns the currently active I/O backend type.
-// On Linux, triggers selection in priority order: io_uring > libaio > pread.
-// On Windows, returns kWindowsOverlapped.
+// Triggers backend selection on first call. Linux tries io_uring, then libaio,
+// and finally synchronous pread. macOS ARM64 uses synchronous pread. Windows
+// uses overlapped I/O with per-request events.
 IOBackendType current_io_backend_type();
 
 // Returns a human-readable description of the currently active I/O backend.
+// The description identifies io_uring, libaio, or pread. On Linux, the pread
+// description also explains that io_uring and libaio were unavailable and
+// provides guidance for enabling an asynchronous backend.
 std::string current_io_backend_description();
 
 }  // namespace ailego

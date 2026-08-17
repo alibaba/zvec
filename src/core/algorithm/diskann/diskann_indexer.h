@@ -66,6 +66,7 @@ class DiskAnnIndexer {
 
  protected:
   int use_medroids_data_as_centroids();
+  void populate_group_topk_heaps(DiskAnnContext *ctx);
 
  private:
   DiskAnnSearcherEntity *entity_;
@@ -82,7 +83,8 @@ class DiskAnnIndexer {
   uint64_t index_segment_offset_{0};
   uint64_t sector_num_per_node_{0};
 
-  float *centroid_data_{nullptr};
+  void *centroid_data_{nullptr};
+  size_t centroid_stride_{0};
 
   diskann_id_t medoid_;
   std::vector<diskann_id_t> entrypoints_;

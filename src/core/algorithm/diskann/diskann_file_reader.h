@@ -18,8 +18,8 @@
 #include <fcntl.h>
 
 #if (defined(__linux) || defined(__linux__))
-#include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper
-#include <ailego/io/libaio_loader.h>   // dlopen-based libaio wrapper
+#include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
+#include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #elif defined(_WIN32) || defined(_WIN64)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -27,54 +27,53 @@
 #include <Windows.h>
 #endif
 
-#include <atomic>
+#if !defined(_WIN32) && !defined(_WIN64)
+#include <unistd.h>
+#endif
+#include <map>
+#include <mutex>
+#include <thread>
 #include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
 namespace zvec {
 namespace core {
 
-#if (defined(__linux) || defined(__linux__))
-
-// IoBackend holds the per-thread I/O context for whichever async backend
-// was successfully initialised at setup time.  The priority is:
+// IoBackend holds the selected backend for each thread. On Linux it also owns
+// the resources required by the asynchronous backends. The priority is:
 //   1. io_uring  (raw kernel syscalls — zero dependency)
 //   2. libaio    (dlopen — soft dependency)
 //   3. pread     (always available — synchronous fallback)
 //
-// IOContext is a *pointer* to IoBackend, which preserves the existing
+// macOS uses a real context with type kPread so that the active backend can be
+// inspected and reported consistently instead of using an opaque placeholder.
+// Windows stores per-thread OVERLAPPED requests and events in the same context
+// abstraction.
+// IOContext is a pointer to IoBackend, which preserves the existing
 // sentinel conventions: nullptr means uninitialised and (IOContext)-1 is
 // the invalid-handle sentinel returned by get_ctx() for unregistered
 // threads.
 struct IoBackend {
-  enum Backend : uint8_t {
-    NONE = 0,      // synchronous pread
-    IO_URING = 1,  // io_uring via raw syscalls
-    LIBAIO = 2,    // libaio via dlopen
-  };
+  ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
-  Backend backend{NONE};
+#if (defined(__linux) || defined(__linux__))
   IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
+#elif defined(_WIN32) || defined(_WIN64)
+  std::vector<OVERLAPPED> reqs;
+  std::vector<HANDLE> events;
+#endif
 };
 
 typedef IoBackend *IOContext;
 
-#elif defined(_WIN32) || defined(_WIN64)
-struct IOContext {
-  std::vector<OVERLAPPED> reqs;
-  std::vector<HANDLE> events;
-};
-#else
-typedef uint32_t IOContext;
-#endif
-
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
 
-// Log the current DiskAnn I/O backend status (async vs. synchronous pread).
-// Probes the backend on first call.  No-op on non-Linux platforms.
+// Log the current DiskAnn I/O backend (io_uring, libaio, or pread). Probes the
+// backend on first call. No-op outside Linux and macOS.
 void log_diskann_io_backend();
 
 struct AlignedRead {
@@ -86,10 +85,23 @@ struct AlignedRead {
 
   AlignedRead(uint64_t offset, uint64_t len, void *buf)
       : offset(offset), len(len), buf(buf) {
+#if defined(__linux__) || defined(__linux)
+    // O_DIRECT requires 512-byte alignment on Linux.
     ailego_assert(static_cast<size_t>(offset) % 512 == 0);
     ailego_assert(static_cast<size_t>(len) % 512 == 0);
     ailego_assert(reinterpret_cast<size_t>(buf) % 512 == 0);
+#endif
   }
+};
+
+struct PendingBatch {
+#if (defined(__linux) || defined(__linux__))
+  std::vector<struct iocb> cbs;
+  std::vector<struct iocb *> cb_ptrs;
+#endif
+  uint32_t n_submitted{0};
+  uint32_t n_reaped{0};
+  bool used_pread{false};
 };
 
 class AlignedFileReader {
@@ -111,9 +123,18 @@ class AlignedFileReader {
 
   virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
                    bool async = false) = 0;
+
+  virtual int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+                     IOContext &ctx) = 0;
+
+  virtual int get_completed(PendingBatch &batch, IOContext &ctx,
+                            int min_completed,
+                            std::vector<uint32_t> &completed_indices) = 0;
 };
 
-#if (defined(__linux) || defined(__linux__))
+// POSIX reader implementation. Linux selects io_uring, libaio, or pread;
+// macOS ARM64 uses synchronous pread.
+#if !defined(_WIN32) && !defined(_WIN64)
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
@@ -136,35 +157,43 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false);
+
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx);
+
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices);
 };
-#elif defined(_WIN32) || defined(_WIN64)
+#else
 class WindowsAlignedFileReader : public AlignedFileReader {
  private:
-  HANDLE file_handle_ = INVALID_HANDLE_VALUE;
+  HANDLE file_handle_{INVALID_HANDLE_VALUE};
+  IOContext bad_ctx{reinterpret_cast<IOContext>(-1)};
 
  public:
   WindowsAlignedFileReader();
-  ~WindowsAlignedFileReader();
+  ~WindowsAlignedFileReader() override;
 
- public:
-  IOContext &get_ctx();
-
-  void register_thread();
-  void deregister_thread();
-  void deregister_all_threads();
-  void open(const std::string &fname);
-  void close();
+  IOContext &get_ctx() override;
+  void register_thread() override;
+  void deregister_thread() override;
+  void deregister_all_threads() override;
+  void open(const std::string &fname) override;
+  void close() override;
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-           bool async = false);
+           bool async = false) override;
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override;
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override;
 };
 #endif
 
-// Platform-agnostic reader typedef
-#if (defined(__linux) || defined(__linux__))
-typedef LinuxAlignedFileReader PlatformAlignedFileReader;
-#elif defined(_WIN32) || defined(_WIN64)
-typedef WindowsAlignedFileReader PlatformAlignedFileReader;
+#if defined(_WIN32) || defined(_WIN64)
+using PlatformAlignedFileReader = WindowsAlignedFileReader;
+#else
+using PlatformAlignedFileReader = LinuxAlignedFileReader;
 #endif
 
 }  // namespace core

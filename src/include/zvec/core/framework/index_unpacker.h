@@ -15,10 +15,10 @@
 #pragma once
 
 #include <map>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_format.h>
-#include <zvec/core/framework/index_logger.h>
 
 namespace zvec {
 namespace core {

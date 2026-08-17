@@ -112,12 +112,12 @@ CollectionSchema::Ptr TestHelper::CreateNormalSchema(
       "dense_int8", DataType::VECTOR_INT8, 128, false,
       std::make_shared<FlatIndexParams>(MetricType::IP)));
 
-  // IVF, HNSW_RABITQ and DISKANN do not support sparse vectors, always use
-  // Flat for sparse fields in those cases.
+  // IVF, RabitQ and DISKANN do not support sparse vectors, always use Flat for
+  // sparse fields in those cases.
   auto supports_sparse = [](const IndexParams::Ptr &params) {
     auto type = params->type();
     return type != IndexType::IVF && type != IndexType::HNSW_RABITQ &&
-           type != IndexType::DISKANN;
+           type != IndexType::IVF_RABITQ && type != IndexType::DISKANN;
   };
 
   IndexParams::Ptr sparse_index_params;

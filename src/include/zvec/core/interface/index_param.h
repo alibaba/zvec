@@ -73,6 +73,7 @@ enum class IndexType {
   kHNSWRabitq,
   kDiskAnn,
   kVamana,
+  kIVFRabitq,
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -94,7 +95,14 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
-  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
+  // Global uniform quantization with a shared scale/bias and 128 code values
+  // in [0, 127]. It can be slightly faster than kUniformUint8, but loses more
+  // precision and may lower the recall ceiling. Prefer kUniformUint8 by
+  // default; use this only after validating that recall is sufficient and
+  // when pursuing maximum performance.
+  kUniformUint7 = 8,
+  // Global uniform quantization with the full uint8 code range [0, 255].
+  kUniformUint8 = 9,
 };
 
 struct ZVEC_CORE_API SerializableBase {
@@ -119,23 +127,49 @@ struct ZVEC_CORE_API SerializableBase {
       const ailego::JsonObject &json_obj) = 0;
 };
 
-// TODO: maybe a base class for quantizer?
+//! Common quantizer params shared by all quantizer types
 struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
+  using Pointer = std::shared_ptr<QuantizerParam>;
+
   QuantizerType type = QuantizerType::kNone;
-  int num_subquantizers = 8;  // M
-  int num_bits = 8;           // bits per subquantizer
   bool enable_rotate =
       false;  // rotate vectors before quantization to reduce error
 
   // Constructors
-  // QuantizerParam() = default;
-  QuantizerParam(QuantizerType t = QuantizerType::kNone, int subquantizers = 8,
-                 int bits = 8, bool rotate = false)
-      : type(t),
-        num_subquantizers(subquantizers),
-        num_bits(bits),
-        enable_rotate(rotate) {}
+  QuantizerParam(QuantizerType t = QuantizerType::kNone, bool rotate = false)
+      : type(t), enable_rotate(rotate) {}
+  virtual ~QuantizerParam() = default;
 
+  //! Duplicate the param object, keeping the concrete type
+  virtual Pointer Clone() const {
+    return std::make_shared<QuantizerParam>(*this);
+  }
+
+  //! Create the param object matching the quantizer type
+  static Pointer Create(QuantizerType t);
+
+ protected:
+  friend class BaseIndexParam;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+};
+
+//! Product-Quantization specific params
+struct PqQuantizerParam : public QuantizerParam {
+  int num_chunk = 8;  // M: number of chunks
+  int num_bits = 8;   // bits per chunk
+
+  // Constructors
+  PqQuantizerParam(int chunks = 8, int bits = 8, bool rotate = false)
+      : QuantizerParam(QuantizerType::kPQ, rotate),
+        num_chunk(chunks),
+        num_bits(bits) {}
+
+  QuantizerParam::Pointer Clone() const override {
+    return std::make_shared<PqQuantizerParam>(*this);
+  }
 
  protected:
   friend class BaseIndexParam;
@@ -306,7 +340,8 @@ class ZVEC_CORE_API BaseIndexParam : public SerializableBase {
 
   // pipeline
   PreprocessorParam preprocess_param;
-  QuantizerParam quantizer_param;
+  //! nullptr means no quantizer is configured (equivalent to kNone)
+  QuantizerParam::Pointer quantizer_param{nullptr};
 
   BaseIndexQueryParam::Pointer default_query_param = nullptr;
   // virtual std::shared_ptr<BaseIndexQueryParam> GetDefaultQueryParam() const
@@ -368,6 +403,11 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
 
+  // Optional provider of the original vectors used to build the graph,
+  // with their meta. Runtime only, not serialized.
+  core::IndexProvider::Pointer provider = nullptr;
+  core::IndexMeta provider_meta{};
+
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}
 
@@ -395,6 +435,7 @@ struct ZVEC_CORE_API VamanaIndexParam : public BaseIndexParam {
   int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
   bool saturate_graph = kDefaultVamanaSaturateGraph;
   bool use_contiguous_memory = false;
+  bool two_pass_build = false;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 
@@ -455,6 +496,46 @@ struct ZVEC_CORE_API HNSWRabitqIndexParam : public BaseIndexParam {
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
   ailego::JsonObject SerializeToJsonObject(
       bool omit_empty_value = false) const override;
+};
+
+struct ZVEC_CORE_API IVFRabitqIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<IVFRabitqIndexParam>;
+
+  // IVF parameters
+  int nlist = kDefaultIvfRabitqNlist;
+
+  // Rabitq parameters
+  int total_bits = kDefaultRabitqTotalBits;
+  int sample_count = 0;
+
+  IVFRabitqIndexParam();
+  explicit IVFRabitqIndexParam(int nlist);
+  IVFRabitqIndexParam(MetricType metric, int dim, int nlist);
+  IVFRabitqIndexParam(const IVFRabitqIndexParam &);
+  IVFRabitqIndexParam(IVFRabitqIndexParam &&);
+  IVFRabitqIndexParam &operator=(const IVFRabitqIndexParam &);
+  IVFRabitqIndexParam &operator=(IVFRabitqIndexParam &&);
+  ~IVFRabitqIndexParam() override;
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<IVFRabitqQueryParam>;
+
+  IVFRabitqQueryParam();
+  IVFRabitqQueryParam(const IVFRabitqQueryParam &);
+  IVFRabitqQueryParam(IVFRabitqQueryParam &&) noexcept;
+  IVFRabitqQueryParam &operator=(const IVFRabitqQueryParam &);
+  IVFRabitqQueryParam &operator=(IVFRabitqQueryParam &&) noexcept;
+  ~IVFRabitqQueryParam() override;
+
+  uint32_t nprobe = kDefaultIvfRabitqNprobe;
+
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
 struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {

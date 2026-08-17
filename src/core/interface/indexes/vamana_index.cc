@@ -16,8 +16,30 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #include "algorithm/vamana/vamana_params.h"
+#include "algorithm/vamana/vamana_streamer.h"
 
 namespace zvec::core_interface {
+
+int VamanaIndex::Merge(const std::vector<Index::Pointer> &indexes,
+                       const IndexFilter &filter, const MergeOptions &options) {
+  int ret = Index::Merge(indexes, filter, options);
+  if (ret != 0 || indexes.empty() || !param_.two_pass_build) {
+    return ret;
+  }
+
+  auto vamana_streamer =
+      std::dynamic_pointer_cast<core::VamanaStreamer>(streamer_);
+  if (ailego_unlikely(!vamana_streamer)) {
+    LOG_ERROR("Failed to access Vamana streamer for two-pass build");
+    return core::IndexError_Runtime;
+  }
+  ret = vamana_streamer->finalize_build();
+  if (ret != 0) {
+    LOG_ERROR("Failed to finalize Vamana two-pass build, err: %s",
+              core::IndexError::What(ret));
+  }
+  return ret;
+}
 
 int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const VamanaIndexParam &>(param);
@@ -45,6 +67,8 @@ int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                             param_.use_id_map);
   proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY,
                             param_.use_contiguous_memory);
+  proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
+                            param_.two_pass_build);
 
   streamer_ = core::IndexFactory::CreateStreamer("VamanaStreamer");
 
@@ -86,8 +110,10 @@ int VamanaIndex::_prepare_for_search(
 
   context->set_topk(vamana_search_param->topk);
   context->set_fetch_vector(vamana_search_param->fetch_vector);
-  if (vamana_search_param->filter) {
+  if (vamana_search_param->filter && vamana_search_param->filter->is_valid()) {
     context->set_filter(std::move(*vamana_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (vamana_search_param->radius > 0.0f) {
     context->set_threshold(vamana_search_param->radius);

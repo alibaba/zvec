@@ -9,7 +9,6 @@ else()
     set(LIB_RT "")
 endif()
 
-git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 
 set(EXTRA_LIBS ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
@@ -126,9 +125,15 @@ if(WIN32 AND
     )
 endif()
 
+set(ZVEC_AILEGO_DEFS)
+if(ZVEC_ON_MUSL)
+    list(APPEND ZVEC_AILEGO_DEFS ZVEC_ON_MUSL)
+endif()
+
 cc_library(
     NAME zvec_ailego STATIC STRICT PACKED ${ZVEC_AILEGO_LIBRARY_OPTIONS}
     SRCS    ${ALL_SRCS}
+    DEFS    ${ZVEC_AILEGO_DEFS}
     LIBS    ${EXTRA_LIBS}
-    VERSION "${GIT_SRCS_VER}"
+    VERSION "${ZVEC_VERSION_STRING}"
 )

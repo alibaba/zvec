@@ -17,6 +17,24 @@
 namespace zvec {
 namespace core {
 
+void DiskAnnSearcherEntity::clear() {
+  storage_.reset();
+  meta_segment_.reset();
+  pq_meta_segment_.reset();
+  pq_data_segment_.reset();
+  vector_segment_.reset();
+  key_segment_.reset();
+  key_mapping_segment_.reset();
+  entrypoint_segment_.reset();
+  pq_table_.reset();
+  key_buffer_.clear();
+  key_mapping_buffer_.clear();
+  entrypoints_.clear();
+  meta_.clear();
+  meta_header_ = {};
+  pq_meta_ = {};
+}
+
 const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
   auto meta_segment = meta_segment_->clone();
   if (ailego_unlikely(!meta_segment)) {
@@ -150,6 +168,12 @@ int DiskAnnSearcherEntity::load_pq_segment() {
 
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
+  if (pq_meta_.chunk_num == 0 || meta_header_.doc_cnt == 0 ||
+      pq_meta_.full_pivot_data_size == 0 || pq_meta_.centroid_data_size == 0 ||
+      pq_meta_.chunk_num > meta_.dimension()) {
+    LOG_ERROR("Invalid empty DiskAnn PQ metadata");
+    return IndexError_InvalidFormat;
+  }
 
   // 2. read full pivot data
   std::vector<uint8_t> full_pivot_data;
@@ -222,9 +246,7 @@ int DiskAnnSearcherEntity::load_pq_segment() {
 
   pq_table_ = std::make_shared<PQTable>(meta_, pq_meta_.chunk_num);
 
-  pq_table_->init(full_pivot_data, centroid, chunk_offsets, pq_data);
-
-  return 0;
+  return pq_table_->init(full_pivot_data, centroid, chunk_offsets, pq_data);
 }
 
 int DiskAnnSearcherEntity::load_header_segment() {
@@ -398,8 +420,8 @@ const void *DiskAnnSearcherEntity::get_vector(diskann_id_t id) const {
   const void *vec;
   if (ailego_unlikely(vector_segment_->read(total_offset, &vec, read_size) !=
                       read_size)) {
-    LOG_ERROR("Read vector from segment failed, id: %u, offset: %lu", id,
-              total_offset);
+    LOG_ERROR("Read vector from segment failed, id: %u, offset: %llu", id,
+              (unsigned long long)total_offset);
     return nullptr;
   }
 

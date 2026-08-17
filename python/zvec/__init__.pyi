@@ -29,6 +29,8 @@ from .model.param import (
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
+    IvfRabitqIndexParam,
+    IvfRabitqQueryParam,
     OptimizeOption,
     QuantizerParam,
     VamanaIndexParam,
@@ -50,13 +52,20 @@ from .typing.enum import LogLevel, LogType
 from .zvec import create_and_open, init, open
 
 def io_backend_type() -> IOBackendType:
-    """Returns the current I/O backend type for DiskAnn async disk reads
-    as an IOBackendType enum (zvec.typing.IOBackendType).
-    Linux selects IO_URING, LIBAIO, then PREAD; Windows uses
-    WINDOWS_OVERLAPPED."""
+    """Returns the current I/O backend type for DiskAnn disk reads.
+
+    Linux selects IOBackendType.IO_URING, IOBackendType.LIBAIO, or
+    IOBackendType.PREAD in that order. macOS ARM64 uses IOBackendType.PREAD.
+    Windows uses IOBackendType.WINDOWS_OVERLAPPED.
+    """
 
 def io_backend_description() -> str:
-    """Returns a platform-specific description of the current I/O backend."""
+    """Returns a human-readable description of the current I/O backend.
+
+    The description identifies io_uring, libaio, or pread. On Linux, the
+    pread description includes guidance for enabling io_uring or installing
+    libaio. Windows reports its overlapped-I/O backend.
+    """
 
 def set_default_jieba_dict_dir(dir: str) -> None:
     """Register the process-wide default jieba dict directory."""
@@ -93,6 +102,8 @@ __all__: list = [
     "IndexOption",
     "IndexType",
     "InvertIndexParam",
+    "IvfRabitqIndexParam",
+    "IvfRabitqQueryParam",
     "LogLevel",
     "LogType",
     "MetricType",
@@ -139,6 +150,7 @@ class _Collection:
         arg2: schema._FieldSchema,
         arg3: param.AlterColumnOption,
     ) -> None: ...
+    def Close(self) -> None: ...
     def CreateIndex(
         self, arg0: str, arg1: param.IndexParam, arg2: param.IndexOption
     ) -> None: ...
