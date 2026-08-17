@@ -7,6 +7,23 @@ cc_directory(flat_sparse)
 cc_directory(ivf)
 cc_directory(hnsw)
 cc_directory(hnsw_sparse)
+if(ZVEC_ENABLE_OMEGA)
+  cc_directory(omega)
+else()
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/omega_stub.cc
+    "// Stub implementation for disabled OMEGA support\n"
+    "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
+  )
+
+  cc_library(
+      NAME core_knn_omega
+      STATIC SHARED STRICT ALWAYS_LINK
+      SRCS ${CMAKE_CURRENT_BINARY_DIR}/omega_stub.cc
+      LIBS core_framework
+      INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+      VERSION "${PROXIMA_ZVEC_VERSION}"
+    )
+endif()
 cc_directory(vamana)
 
 if(DISKANN_SUPPORTED)

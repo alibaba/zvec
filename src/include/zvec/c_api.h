@@ -880,6 +880,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_DISKANN 5
 #define ZVEC_INDEX_TYPE_VAMANA 6
 #define ZVEC_INDEX_TYPE_IVF_RABITQ 7
+#define ZVEC_INDEX_TYPE_OMEGA 8
 #define ZVEC_INDEX_TYPE_INVERT 10
 #define ZVEC_INDEX_TYPE_FTS 11
 
@@ -1064,6 +1065,22 @@ zvec_index_params_get_hnsw_m(const zvec_index_params_t *params);
  */
 ZVEC_EXPORT int ZVEC_CALL
 zvec_index_params_get_hnsw_ef_construction(const zvec_index_params_t *params);
+
+/**
+ * @brief Set OMEGA training-specific parameters
+ * @param params Index parameters (must be OMEGA type)
+ * @param min_vector_threshold Minimum vector count required to trigger training
+ * @param num_training_queries Number of held-out queries used for training
+ * @param ef_training ef value used during training searches
+ * @param ef_groundtruth ef value used for ground-truth generation
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_omega_training_params(zvec_index_params_t *params,
+                                            uint32_t min_vector_threshold,
+                                            size_t num_training_queries,
+                                            int ef_training,
+                                            int ef_groundtruth);
 
 /**
  * @brief Set Vamana specific parameters
@@ -1287,6 +1304,16 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_fts_params(
 typedef struct zvec_hnsw_query_params_t zvec_hnsw_query_params_t;
 
 /**
+ * @brief OMEGA query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::OmegaQueryParams* (raw pointer).
+ * Created by zvec_query_params_omega_create() and destroyed by
+ * zvec_query_params_omega_destroy(). Caller owns the pointer and must
+ * explicitly destroy it.
+ */
+typedef struct zvec_omega_query_params_t zvec_omega_query_params_t;
+
+/**
  * @brief IVF query parameters handle (opaque pointer)
  *
  * Internally maps to zvec::IVFQueryParams* (raw pointer).
@@ -1495,6 +1522,118 @@ zvec_query_params_hnsw_set_is_using_refiner(zvec_hnsw_query_params_t *params,
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_hnsw_get_is_using_refiner(
     const zvec_hnsw_query_params_t *params);
+
+// -----------------------------------------------------------------------------
+// zvec_omega_query_params_t (OMEGA Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create OMEGA query parameters
+ * @param ef Exploration factor during search
+ * @param target_recall Target recall used by OMEGA early stopping
+ * @param radius Search radius
+ * @param is_linear Whether linear search
+ * @param is_using_refiner Whether using refiner
+ * @return zvec_omega_query_params_t* Pointer to the newly created OMEGA query
+ * parameters
+ */
+ZVEC_EXPORT zvec_omega_query_params_t *ZVEC_CALL
+zvec_query_params_omega_create(int ef, float target_recall, float radius,
+                               bool is_linear, bool is_using_refiner);
+
+/**
+ * @brief Destroy OMEGA query parameters
+ * @param params OMEGA query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_omega_destroy(zvec_omega_query_params_t *params);
+
+/**
+ * @brief Set exploration factor
+ * @param params OMEGA query parameters pointer
+ * @param ef Exploration factor
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_omega_set_ef(zvec_omega_query_params_t *params, int ef);
+
+/**
+ * @brief Get exploration factor
+ * @param params OMEGA query parameters pointer
+ * @return int Exploration factor
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_query_params_omega_get_ef(const zvec_omega_query_params_t *params);
+
+/**
+ * @brief Set target recall
+ * @param params OMEGA query parameters pointer
+ * @param target_recall Target recall
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_omega_set_target_recall(zvec_omega_query_params_t *params,
+                                          float target_recall);
+
+/**
+ * @brief Get target recall
+ * @param params OMEGA query parameters pointer
+ * @return float Target recall
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_omega_get_target_recall(
+    const zvec_omega_query_params_t *params);
+
+/**
+ * @brief Set search radius
+ * @param params OMEGA query parameters pointer
+ * @param radius Search radius
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_omega_set_radius(
+    zvec_omega_query_params_t *params, float radius);
+
+/**
+ * @brief Get search radius
+ * @param params OMEGA query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_omega_get_radius(const zvec_omega_query_params_t *params);
+
+/**
+ * @brief Set linear search mode
+ * @param params OMEGA query parameters pointer
+ * @param is_linear Whether linear search
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_omega_set_is_linear(
+    zvec_omega_query_params_t *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode
+ * @param params OMEGA query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_query_params_omega_get_is_linear(const zvec_omega_query_params_t *params);
+
+/**
+ * @brief Set whether to use refiner
+ * @param params OMEGA query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_omega_set_is_using_refiner(zvec_omega_query_params_t *params,
+                                             bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner
+ * @param params OMEGA query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_omega_get_is_using_refiner(
+    const zvec_omega_query_params_t *params);
 
 // -----------------------------------------------------------------------------
 // zvec_ivf_query_params_t (IVF Query Parameters)
@@ -2182,6 +2321,15 @@ zvec_vector_query_set_query_params(zvec_vector_query_t *query, void *params);
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_hnsw_params(
     zvec_vector_query_t *query, zvec_hnsw_query_params_t *hnsw_params);
+
+/**
+ * @brief Set OMEGA query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param omega_params OMEGA query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_omega_params(
+    zvec_vector_query_t *query, zvec_omega_query_params_t *omega_params);
 
 /**
  * @brief Set IVF query parameters (takes ownership)

@@ -18,6 +18,7 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
+#include "mixed_reducer/mixed_streamer_reducer.h"
 #include "utility/utility_params.h"
 
 namespace zvec::core_interface {
@@ -317,6 +318,9 @@ int Index::Init(const BaseIndexParam &param) {
 
 
 int Index::Open(const std::string &file_path, StorageOptions storage_options) {
+  // Store the file path for later use (e.g., in Merge for dump/reload)
+  file_path_ = file_path;
+
   ailego::Params storage_params;
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
@@ -372,6 +376,8 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
+
+
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
@@ -553,7 +559,7 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
-  if (!is_trained_ && this->Train() != 0) {
+  if (!is_trained_ && !is_training_ && this->Train() != 0) {
     LOG_ERROR("Failed to train index");
     return core::IndexError_Runtime;
   }
@@ -878,8 +884,13 @@ int Index::_dense_search(const VectorData &vector_data,
     }
   }
 
+  _collect_training_artifacts(context.get(), result);
+
   return 0;
 }
+
+void Index::_collect_training_artifacts(core::IndexContext * /*context*/,
+                                        SearchResult * /*result*/) {}
 
 
 int Index::_sparse_search(const VectorData &vector_data,
@@ -1043,6 +1054,15 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
+
+
+  // Set storage and file path for dump/reload operations
+  auto *mixed_reducer =
+      dynamic_cast<core::MixedStreamerReducer *>(reducer.get());
+  if (mixed_reducer != nullptr) {
+    mixed_reducer->set_storage(storage_, file_path_);
+  }
+
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
                                              reformer_,
                                              input_vector_meta_) != 0) {
@@ -1062,6 +1082,16 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
+
+  // Generic training support: Check if this index supports training capability
+  // The actual training orchestration happens at the db layer (Segment level)
+  auto *training_capable = this->GetTrainingCapability();
+  if (training_capable != nullptr) {
+    LOG_INFO(
+        "Index merge completed for trainable index, training can now be "
+        "performed");
+  }
+
   return 0;
 }
 

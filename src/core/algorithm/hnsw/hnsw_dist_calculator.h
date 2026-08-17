@@ -41,7 +41,8 @@ class HnswDistCalculator {
         batch_distance_(metric->batch_distance()),
         query_(nullptr),
         dim_(dim),
-        compare_cnt_(0) {}
+        compare_cnt_(0),
+        pairwise_dist_cnt_(0) {}
 
   //! Constructor
   HnswDistCalculator(const HnswEntity *entity,
@@ -52,7 +53,8 @@ class HnswDistCalculator {
         batch_distance_(metric->batch_distance()),
         query_(query),
         dim_(dim),
-        compare_cnt_(0) {}
+        compare_cnt_(0),
+        pairwise_dist_cnt_(0) {}
 
   //! Constructor
   HnswDistCalculator(const HnswEntity *entity,
@@ -62,7 +64,8 @@ class HnswDistCalculator {
         batch_distance_(metric->batch_distance()),
         query_(nullptr),
         dim_(0),
-        compare_cnt_(0) {}
+        compare_cnt_(0),
+        pairwise_dist_cnt_(0) {}
 
   void update(const HnswEntity *entity, const IndexMetric::Pointer &metric) {
     entity_ = entity;
@@ -114,6 +117,7 @@ class HnswDistCalculator {
   //! Returns distance between query and vec.
   inline dist_t dist(const void *vec) {
     compare_cnt_++;
+    pairwise_dist_cnt_++;
 
     return dist(vec, query_);
   }
@@ -141,6 +145,7 @@ class HnswDistCalculator {
   //! Return dist node lhs between node rhs
   inline dist_t dist(node_id_t lhs, node_id_t rhs) {
     compare_cnt_++;
+    pairwise_dist_cnt_++;
 
 
     IndexStorage::MemoryBlock vec_block_feat;
@@ -183,12 +188,14 @@ class HnswDistCalculator {
 
   void batch_dist(const void **vecs, size_t num, dist_t *distances) {
     compare_cnt_++;
+    pairwise_dist_cnt_ += num;
 
     batch_distance_(vecs, query_, num, dim_, distances);
   }
 
   inline dist_t batch_dist(node_id_t id) {
     compare_cnt_++;
+    pairwise_dist_cnt_++;
 
     IndexStorage::MemoryBlock vec_block;
     int ret = get_vector(id, vec_block);
@@ -211,11 +218,13 @@ class HnswDistCalculator {
 
   inline void clear() {
     compare_cnt_ = 0;
+    pairwise_dist_cnt_ = 0;
     error_ = false;
   }
 
   inline void clear_compare_cnt() {
     compare_cnt_ = 0;
+    pairwise_dist_cnt_ = 0;
   }
 
   inline bool error() const {
@@ -225,6 +234,10 @@ class HnswDistCalculator {
   //! Get distances compute times
   inline uint32_t compare_cnt() const {
     return compare_cnt_;
+  }
+
+  inline uint64_t pairwise_dist_cnt() const {
+    return pairwise_dist_cnt_;
   }
 
   inline uint32_t dimension() const {
@@ -281,7 +294,8 @@ class HnswDistCalculator {
   const void *query_;
   uint32_t dim_;
 
-  uint32_t compare_cnt_;  // record distance compute times
+  uint32_t compare_cnt_;        // record distance compute times
+  uint64_t pairwise_dist_cnt_;  // record actual pairwise distance work
   // uint32_t compare_cnt_batch_;  // record batch distance compute time
   bool error_{false};
 

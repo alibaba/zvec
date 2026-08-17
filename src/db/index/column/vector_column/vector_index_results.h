@@ -90,13 +90,6 @@ class VectorIndexResults : public IndexResults {
   friend class VectorIterator;
 
  public:
-  // VectorIndexResults(core::IndexDocumentList &&doc_list)
-  //     : docs_(std::move(doc_list)) {}
-  //
-  // VectorIndexResults(core::IndexDocumentList &&doc_list,
-  //                    std::vector<std::string> &&reverted_vector_list)
-  //     : docs_(std::move(doc_list)),
-  //       reverted_vector_list_(std::move(reverted_vector_list)) {}
   VectorIndexResults(bool is_sparse, core::IndexDocumentList &&doc_list,
                      std::vector<std::string> &&reverted_vector_list,
                      std::vector<std::string> &&reverted_sparse_values_list)

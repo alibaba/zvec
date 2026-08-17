@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <variant>
@@ -20,6 +22,8 @@
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/training.h>
+#include <zvec/core/interface/training_session.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
@@ -89,6 +93,23 @@ class VectorColumnIndexer {
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
+ public:
+  // OMEGA Training Mode Support
+  /**
+   * @brief Check if the underlying index supports training capability.
+   *
+   * @return Pointer to ITrainingCapable interface if supported, nullptr
+   * otherwise
+   */
+  core_interface::ITrainingCapable *GetTrainingCapability() const;
+
+  core_interface::ITrainingSession::Pointer CreateTrainingSession() const;
+
+  void SetTrainingSession(
+      const core_interface::ITrainingSession::Pointer &session);
+
+  void ClearTrainingSession();
+
   core::IndexProvider::Pointer create_index_provider() const {
     return index->create_index_provider();
   }
@@ -96,6 +117,10 @@ class VectorColumnIndexer {
  public:
   std::string index_file_path() const {
     return index_file_path_;
+  }
+
+  core_interface::Index::Pointer core_index() const {
+    return index;
   }
 
   const FieldSchema &field_schema() const {
@@ -107,6 +132,18 @@ class VectorColumnIndexer {
       return -1;
     }
     return index->GetDocCount();
+  }
+
+  MetricType metric_type() const {
+    auto index_params = field_schema_.index_params();
+    if (index_params) {
+      auto vector_params =
+          std::dynamic_pointer_cast<VectorIndexParams>(index_params);
+      if (vector_params) {
+        return vector_params->metric_type();
+      }
+    }
+    return MetricType::IP;  // default
   }
 
   //! Debug-only accessor for the underlying core_interface Index.
@@ -138,6 +175,9 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
+
+  mutable std::mutex training_mutex_;
+  core_interface::ITrainingSession::Pointer training_session_;
 };
 
 

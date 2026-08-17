@@ -505,7 +505,7 @@ if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
       "$<$<CXX_COMPILER_ID:Clang>:-Wall;-Wextra;-Wshadow>"
       "$<$<CXX_COMPILER_ID:AppleClang>:-Wall;-Wextra;-Wshadow>"
       "$<$<CXX_COMPILER_ID:GNU>:-Wall;-Wextra;-Wshadow-local;-Wno-misleading-indentation>"
-      "$<$<CXX_COMPILER_ID:MSVC>:/W4>"
+      "$<$<CXX_COMPILER_ID:MSVC>:/W4;/utf-8>"
       ${BAZEL_CC_WERROR_FLAGS}
       ${BAZEL_CC_ASAN_COMPILE_FLAGS}
       ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
@@ -516,7 +516,7 @@ else()
       "$<$<CXX_COMPILER_ID:Clang>:-Wall;-Wextra;-Wshadow>"
       "$<$<CXX_COMPILER_ID:AppleClang>:-Wall;-Wextra;-Wshadow>"
       "$<$<CXX_COMPILER_ID:GNU>:-Wall;-Wextra;-Wshadow;-Wno-misleading-indentation>"
-      "$<$<CXX_COMPILER_ID:MSVC>:/W4>"
+      "$<$<CXX_COMPILER_ID:MSVC>:/W4;/utf-8>"
       ${BAZEL_CC_WERROR_FLAGS}
       ${BAZEL_CC_ASAN_COMPILE_FLAGS}
       ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
@@ -537,7 +537,7 @@ set(
     "$<$<CXX_COMPILER_ID:Clang>:-Wall>"
     "$<$<CXX_COMPILER_ID:AppleClang>:-Wall>"
     "$<$<CXX_COMPILER_ID:GNU>:-Wall>"
-    "$<$<CXX_COMPILER_ID:MSVC>:/W3>"
+    "$<$<CXX_COMPILER_ID:MSVC>:/W3;/utf-8>"
     ${BAZEL_CC_ASAN_COMPILE_FLAGS}
     ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
   )

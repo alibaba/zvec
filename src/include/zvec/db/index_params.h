@@ -55,7 +55,8 @@ class ZVEC_API IndexParams {
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
-           type_ == IndexType::IVF_RABITQ || type_ == IndexType::DISKANN ||
+           type_ == IndexType::IVF_RABITQ || type_ == IndexType::OMEGA ||
+           type_ == IndexType::DISKANN ||
            type_ == IndexType::VAMANA;
   }
 
@@ -663,6 +664,150 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   int max_degree_;
   int list_size_;
   int pq_chunk_num_;
+};
+
+/*
+ * Vector: Omega index params
+ */
+class OmegaIndexParams : public VectorIndexParams {
+ public:
+  OmegaIndexParams(
+      MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
+      int ef_construction = core_interface::kDefaultHnswEfConstruction,
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      uint32_t min_vector_threshold = 100000,
+      size_t num_training_queries = 1000, int ef_training = 1000,
+      int window_size = 100, int ef_groundtruth = 0,
+      int k_train =
+          1)  // 0 means use brute force, >0 means use HNSW with this ef
+      : VectorIndexParams(IndexType::OMEGA, metric_type, quantize_type),
+        m_(m),
+        ef_construction_(ef_construction),
+        min_vector_threshold_(min_vector_threshold),
+        num_training_queries_(num_training_queries),
+        ef_training_(ef_training),
+        window_size_(window_size),
+        ef_groundtruth_(ef_groundtruth),
+        k_train_(k_train) {}
+
+  using OPtr = std::shared_ptr<OmegaIndexParams>;
+
+ public:
+  Ptr clone() const override {
+    return std::make_shared<OmegaIndexParams>(
+        metric_type_, m_, ef_construction_, quantize_type_,
+        min_vector_threshold_, num_training_queries_, ef_training_,
+        window_size_, ef_groundtruth_, k_train_);
+  }
+
+  std::string to_string() const override {
+    auto base_str = vector_index_params_to_string("OmegaIndexParams",
+                                                  metric_type_, quantize_type_);
+    std::ostringstream oss;
+    oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
+        << ",min_vector_threshold:" << min_vector_threshold_
+        << ",num_training_queries:" << num_training_queries_
+        << ",ef_training:" << ef_training_ << ",window_size:" << window_size_
+        << ",ef_groundtruth:" << ef_groundtruth_ << ",k_train:" << k_train_
+        << "}";
+    return oss.str();
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    return type() == other.type() &&
+           metric_type() ==
+               static_cast<const OmegaIndexParams &>(other).metric_type() &&
+           m_ == static_cast<const OmegaIndexParams &>(other).m_ &&
+           ef_construction_ ==
+               static_cast<const OmegaIndexParams &>(other).ef_construction_ &&
+           min_vector_threshold_ == static_cast<const OmegaIndexParams &>(other)
+                                        .min_vector_threshold_ &&
+           num_training_queries_ == static_cast<const OmegaIndexParams &>(other)
+                                        .num_training_queries_ &&
+           ef_training_ ==
+               static_cast<const OmegaIndexParams &>(other).ef_training_ &&
+           window_size_ ==
+               static_cast<const OmegaIndexParams &>(other).window_size_ &&
+           ef_groundtruth_ ==
+               static_cast<const OmegaIndexParams &>(other).ef_groundtruth_ &&
+           k_train_ == static_cast<const OmegaIndexParams &>(other).k_train_ &&
+           quantize_type() ==
+               static_cast<const OmegaIndexParams &>(other).quantize_type();
+  }
+
+  void set_m(int m) {
+    m_ = m;
+  }
+
+  int m() const {
+    return m_;
+  }
+
+  void set_ef_construction(int ef_construction) {
+    ef_construction_ = ef_construction;
+  }
+
+  int ef_construction() const {
+    return ef_construction_;
+  }
+
+  void set_min_vector_threshold(uint32_t min_vector_threshold) {
+    min_vector_threshold_ = min_vector_threshold;
+  }
+
+  uint32_t min_vector_threshold() const {
+    return min_vector_threshold_;
+  }
+
+  void set_num_training_queries(size_t num_training_queries) {
+    num_training_queries_ = num_training_queries;
+  }
+
+  size_t num_training_queries() const {
+    return num_training_queries_;
+  }
+
+  void set_ef_training(int ef_training) {
+    ef_training_ = ef_training;
+  }
+
+  int ef_training() const {
+    return ef_training_;
+  }
+
+  void set_window_size(int window_size) {
+    window_size_ = window_size;
+  }
+
+  int window_size() const {
+    return window_size_;
+  }
+
+  void set_ef_groundtruth(int ef_groundtruth) {
+    ef_groundtruth_ = ef_groundtruth;
+  }
+
+  int ef_groundtruth() const {
+    return ef_groundtruth_;
+  }
+
+  void set_k_train(int k_train) {
+    k_train_ = k_train;
+  }
+
+  int k_train() const {
+    return k_train_;
+  }
+
+ private:
+  int m_;
+  int ef_construction_;
+  uint32_t min_vector_threshold_;
+  size_t num_training_queries_;
+  int ef_training_;
+  int window_size_;
+  int ef_groundtruth_;  // 0 = brute force, >0 = use HNSW with this ef
+  int k_train_;
 };
 
 /*

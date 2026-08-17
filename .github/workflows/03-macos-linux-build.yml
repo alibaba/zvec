@@ -138,6 +138,9 @@ jobs:
       - name: Run C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
+          # Unset LD_LIBRARY_PATH to avoid conflicts with system libraries
+          # that might interfere with the test execution environment
+          unset LD_LIBRARY_PATH
           cmake --build . --target unittest --parallel $NPROC
         shell: bash
 
@@ -158,6 +161,7 @@ jobs:
           ./db-example
           ./core-example
           ./ailego-example
+          ./omega-example
         shell: bash
 
       - name: Run C Examples

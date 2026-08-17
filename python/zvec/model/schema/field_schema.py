@@ -24,6 +24,7 @@ from zvec.model.param import (
     HnswRabitqIndexParam,
     InvertIndexParam,
     IVFIndexParam,
+    OmegaIndexParam,
     IvfRabitqIndexParam,
 )
 from zvec.typing import DataType
@@ -197,18 +198,30 @@ class VectorSchema:
         data_type (DataType): Vector data type (e.g., VECTOR_FP32, VECTOR_INT8).
         dimension (int, optional): Dimensionality of the vector. Must be > 0 for dense vectors;
          may be `None` for sparse vectors.
-        index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam], optional):
+        index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam], optional):
             Index configuration for this vector field. Defaults to
             ``FlatIndexParam()``.
 
     Examples:
-        >>> from zvec.typing import DataType
-        >>> from zvec.model.param import HnswIndexParam
-        >>> emb_field = VectorSchema(
+        >>> from zvec.typing import DataType, MetricType
+        >>> from zvec.model.param import HnswIndexParam, OmegaIndexParam
+        >>> # HNSW index
+        >>> hnsw_field = VectorSchema(
         ...     name="embedding",
         ...     data_type=DataType.VECTOR_FP32,
         ...     dimension=128,
         ...     index_param=HnswIndexParam(ef_construction=200, m=16)
+        ... )
+        >>> # OMEGA index (adaptive graph-based index with automatic training)
+        >>> omega_field = VectorSchema(
+        ...     name="embedding",
+        ...     data_type=DataType.VECTOR_FP32,
+        ...     dimension=128,
+        ...     index_param=OmegaIndexParam(
+        ...         metric_type=MetricType.COSINE,
+        ...         m=16,
+        ...         ef_construction=200
+        ...     )
         ... )
     """
 
@@ -224,6 +237,7 @@ class VectorSchema:
                 IvfRabitqIndexParam,
                 FlatIndexParam,
                 IVFIndexParam,
+                OmegaIndexParam,
             ]
         ] = None,
     ):
@@ -286,8 +300,9 @@ class VectorSchema:
         IvfRabitqIndexParam,
         IVFIndexParam,
         FlatIndexParam,
+        OmegaIndexParam,
     ]:
-        """Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam]: Index configuration for the vector."""
+        """Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]: Index configuration for the vector."""
         return self._cpp_obj.index_param
 
     def __dict__(self) -> dict[str, Any]:

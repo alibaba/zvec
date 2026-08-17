@@ -354,9 +354,6 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  const uint32_t prefetch_lines =
-      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
-
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
     // Dispatched to dual_heap_greedy_search (plain batch_dist).
@@ -382,6 +379,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
       const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
       const uint32_t ef_v = ctx->ef();
+      const uint32_t prefetch_lines =
+          ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
       const bool avx2_ok =
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
       auto &topk_heap = ctx->topk_heap();

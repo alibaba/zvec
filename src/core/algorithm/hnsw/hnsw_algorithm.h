@@ -26,6 +26,27 @@
 namespace zvec {
 namespace core {
 
+// SearchHooks is the integration seam used by OMEGA. Callbacks are invoked
+// from the level-0 search loop in this order:
+// 1. on_level0_entry once after the initial level-0 entry point is accepted
+// 2. on_hop once per popped candidate expansion
+// 3. on_visit_candidate once per candidate comparison at level 0
+//
+// inserted_to_topk is computed by the HNSW loop before callbacks fire and
+// tells the callback whether the candidate improved the current result heap.
+//
+// Returning true from on_visit_candidate requests early termination of the
+// level-0 search. This is currently used by OMEGA adaptive stopping.
+//
+struct SearchHooks {
+  void *user_data{nullptr};
+  void (*on_level0_entry)(node_id_t id, dist_t dist, bool inserted_to_topk,
+                          void *user_data){nullptr};
+  void (*on_hop)(void *user_data){nullptr};
+  bool (*on_visit_candidate)(node_id_t id, dist_t dist, bool inserted_to_topk,
+                             void *user_data){nullptr};
+};
+
 //! Non-template base class for HnswAlgorithm
 class HnswAlgorithmBase {
  public:
@@ -36,6 +57,11 @@ class HnswAlgorithmBase {
   virtual int cleanup() = 0;
   virtual int add_node(node_id_t id, level_t level, HnswContext *ctx) = 0;
   virtual int search(HnswContext *ctx) const = 0;
+  virtual int fast_search(HnswContext *ctx) const = 0;
+  virtual int search_with_hooks(HnswContext *ctx, const SearchHooks *hooks,
+                                bool *stopped_early = nullptr) const = 0;
+  virtual int fast_search_with_hooks(HnswContext *ctx, const SearchHooks *hooks,
+                                     bool *stopped_early = nullptr) const = 0;
   virtual int init() = 0;
   virtual uint32_t get_random_level() const = 0;
 };
@@ -70,6 +96,18 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! return 0 on success, or errCode in failure. results saved in ctx
   int search(HnswContext *ctx) const override;
 
+  //! do knn search in graph without lock
+  //! return 0 on success, or errCode in failure. results saved in ctx
+  int fast_search(HnswContext *ctx) const override;
+
+  //! do knn search in graph with optional callbacks inserted on the hot path
+  int search_with_hooks(HnswContext *ctx, const SearchHooks *hooks,
+                        bool *stopped_early = nullptr) const override;
+
+  //! do knn search in graph without lock with optional callbacks
+  int fast_search_with_hooks(HnswContext *ctx, const SearchHooks *hooks,
+                             bool *stopped_early = nullptr) const override;
+
   //! Initiate HnswAlgorithm
   int init() override {
     level_probas_.clear();
@@ -103,6 +141,9 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
+  int search_internal(HnswContext *ctx, bool use_lock, const SearchHooks *hooks,
+                      bool *stopped_early) const;
+
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
                           HnswContext *ctx) const;
@@ -117,8 +158,10 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! (CandidateHeap + TopkHeap) for add_node, filtered search, upper levels,
   //! and BufferPool fallback.
   //! Note: entry_point and dist will be updated to current level nearest node.
-  void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx, bool use_pool) const;
+  //! Returns true if early stopped by hooks, false otherwise.
+  bool search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
+                        TopkHeap &topk, HnswContext *ctx, bool use_pool,
+                        const SearchHooks *hooks = nullptr) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,

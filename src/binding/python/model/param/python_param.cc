@@ -18,6 +18,7 @@
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/query.h>
+#include <zvec/db/query_params.h>
 #include "python_doc.h"
 
 namespace zvec {
@@ -32,6 +33,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "IVF";
     case IndexType::HNSW:
       return "HNSW";
+    case IndexType::OMEGA:
+      return "OMEGA";
     case IndexType::HNSW_RABITQ:
       return "HNSW_RABITQ";
     case IndexType::IVF_RABITQ:
@@ -1167,41 +1170,103 @@ Args:
                 t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp);
           }));
 
+  // OmegaIndexParams
+  py::class_<OmegaIndexParams, VectorIndexParams,
+             std::shared_ptr<OmegaIndexParams>>
+      omega_params(m, "OmegaIndexParam", R"pbdoc(
+Parameters for configuring an OMEGA index.
+)pbdoc");
+  omega_params
+      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int,
+                    int, int, int>(),
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
+           py::arg("ef_construction") =
+               core_interface::kDefaultHnswEfConstruction,
+           py::arg("quantize_type") = QuantizeType::UNDEFINED,
+           py::arg("min_vector_threshold") = 100000,
+           py::arg("num_training_queries") = 1000,
+           py::arg("ef_training") = 1000, py::arg("window_size") = 100,
+           py::arg("ef_groundtruth") = 0, py::arg("k_train") = 1)
+      .def_property_readonly("m", &OmegaIndexParams::m)
+      .def_property_readonly("ef_construction",
+                             &OmegaIndexParams::ef_construction)
+      .def_property_readonly("min_vector_threshold",
+                             &OmegaIndexParams::min_vector_threshold)
+      .def_property_readonly("num_training_queries",
+                             &OmegaIndexParams::num_training_queries)
+      .def_property_readonly("ef_training", &OmegaIndexParams::ef_training)
+      .def_property_readonly("window_size", &OmegaIndexParams::window_size)
+      .def_property_readonly("ef_groundtruth",
+                             &OmegaIndexParams::ef_groundtruth)
+      .def_property_readonly("k_train", &OmegaIndexParams::k_train)
+      .def("to_dict",
+           [](const OmegaIndexParams &self) -> py::dict {
+             py::dict dict;
+             dict["type"] = index_type_to_string(self.type());
+             dict["metric_type"] = metric_type_to_string(self.metric_type());
+             dict["m"] = self.m();
+             dict["ef_construction"] = self.ef_construction();
+             dict["min_vector_threshold"] = self.min_vector_threshold();
+             dict["num_training_queries"] = self.num_training_queries();
+             dict["ef_training"] = self.ef_training();
+             dict["window_size"] = self.window_size();
+             dict["ef_groundtruth"] = self.ef_groundtruth();
+             dict["k_train"] = self.k_train();
+             dict["quantize_type"] =
+                 quantize_type_to_string(self.quantize_type());
+             return dict;
+           })
+      .def("__repr__",
+           [](const OmegaIndexParams &self) -> std::string {
+             return "{"
+                    "\"metric_type\":" +
+                    metric_type_to_string(self.metric_type()) +
+                    ", \"m\":" + std::to_string(self.m()) +
+                    ", \"ef_construction\":" +
+                    std::to_string(self.ef_construction()) +
+                    ", \"min_vector_threshold\":" +
+                    std::to_string(self.min_vector_threshold()) +
+                    ", \"num_training_queries\":" +
+                    std::to_string(self.num_training_queries()) +
+                    ", \"ef_training\":" + std::to_string(self.ef_training()) +
+                    ", \"window_size\":" + std::to_string(self.window_size()) +
+                    ", \"ef_groundtruth\":" +
+                    std::to_string(self.ef_groundtruth()) +
+                    ", \"k_train\":" + std::to_string(self.k_train()) +
+                    ", \"quantize_type\":" +
+                    quantize_type_to_string(self.quantize_type()) + "}";
+           })
+      .def(py::pickle(
+          [](const OmegaIndexParams &self) {
+            return py::make_tuple(
+                self.metric_type(), self.m(), self.ef_construction(),
+                self.quantize_type(), self.min_vector_threshold(),
+                self.num_training_queries(), self.ef_training(),
+                self.window_size(), self.ef_groundtruth(), self.k_train());
+          },
+          [](py::tuple t) {
+            if (t.size() == 10) {
+              return std::make_shared<OmegaIndexParams>(
+                  t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                  t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
+                  t[5].cast<size_t>(), t[6].cast<int>(), t[7].cast<int>(),
+                  t[8].cast<int>(), t[9].cast<int>());
+            }
+            if (t.size() != 9)
+              throw std::runtime_error("Invalid state for OmegaIndexParams");
+            return std::make_shared<OmegaIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
+                t[5].cast<size_t>(), t[6].cast<int>(), t[7].cast<int>(),
+                t[8].cast<int>(), 1);
+          }));
+
   // DiskAnnIndexParams
   py::class_<DiskAnnIndexParams, VectorIndexParams,
              std::shared_ptr<DiskAnnIndexParams>>
       diskann_params(m, "DiskAnnIndexParam", R"pbdoc(
-Parameters for configuring an DiskAnn index.
-
-DiskAnn stores compressed vector in memory and high-definition vector on disk. At query time,
-only compressed vector will be loaded into memory. By this way, search memory at runtime is diminished. 
-
-Attributes:
-    metric_type (MetricType): Distance metric used for similarity computation.
-        Default is ``MetricType.IP`` (inner product).
-    max_degree (int): Maximum out-degree of each node in the Vamana graph.
-        Larger values improve recall at the cost of build time and index size.
-        Clamped to the range [1, 100]. Default is 100.
-    list_size (int): Candidate list size used during graph construction.
-        Larger values improve graph quality and recall at the cost of build time.
-        Clamped to the range [10, 100]. Default is 50.
-    pq_chunk_num (int): Number of PQ chunks used for product-quantizing the
-        in-memory compressed vectors. ``0`` means auto-pick based on dimension.
-        Clamped to the range [1, 1024]. Default is 0.
-    quantize_type (QuantizeType): Optional quantization type for vector
-        compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``.
-
-Examples:
-    >>> from zvec.typing import MetricType, QuantizeType
-    >>> params = DiskAnnIndexParam(
-    ...     metric_type=MetricType.COSINE,
-    ...     max_degree=100,
-    ...     list_size=50,
-    ...     pq_chunk_num=8,
-    ...     quantize_type=QuantizeType.FP16
-    ... )
-    >>> print(params.max_degree)
-    100
+Parameters for configuring a DiskAnn index.
 )pbdoc");
   diskann_params
       .def(py::init([](MetricType metric_type, int max_degree, int list_size,
@@ -1448,6 +1513,85 @@ Args:
             if (t.size() >= 6) {
               obj->set_prefetch_lines(t[5].cast<uint32_t>());
             }
+            return obj;
+          }));
+
+  // binding omega query params
+  py::class_<OmegaQueryParams, HnswQueryParams,
+             std::shared_ptr<OmegaQueryParams>>
+      omega_query_params(m, "OmegaQueryParam", R"pbdoc(
+Query parameters for OMEGA index with adaptive early stopping.
+
+OMEGA extends HNSW with machine learning-based early stopping that can
+dynamically adjust search effort to meet a target recall.
+
+Attributes:
+    type (IndexType): Always ``IndexType.OMEGA``.
+    ef (int): Size of the dynamic candidate list during search.
+        Larger values improve recall but slow down search.
+        Default is 300.
+    target_recall (float): Target recall for OMEGA early stopping.
+        OMEGA will stop searching when predicted recall meets this target.
+        Valid range: 0.0 to 1.0. Default is 0.95.
+    radius (float): Search radius for range queries. Default is 0.0.
+    is_linear (bool): Force linear search. Default is False.
+    is_using_refiner (bool): Whether to use refiner for the query. Default is False.
+
+Examples:
+    >>> params = OmegaQueryParam(ef=300, target_recall=0.98)
+    >>> print(params.target_recall)
+    0.98
+)pbdoc");
+  omega_query_params
+      .def(py::init<int, float, float, bool, bool>(),
+           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
+           py::arg("target_recall") = 0.95f, py::arg("radius") = 0.0f,
+           py::arg("is_linear") = false, py::arg("is_using_refiner") = false,
+           R"pbdoc(
+Constructs an OmegaQueryParam instance.
+
+Args:
+    ef (int, optional): Search-time candidate list size.
+        Higher values improve accuracy. Defaults to 300.
+    target_recall (float, optional): Target recall for early stopping.
+        Valid range: 0.0 to 1.0. Defaults to 0.95.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+)pbdoc")
+      .def_property_readonly(
+          "target_recall",
+          [](const OmegaQueryParams &self) -> float {
+            return self.target_recall();
+          },
+          "float: Target recall for OMEGA early stopping (0.0 to 1.0).")
+      .def("__repr__",
+           [](const OmegaQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":" +
+                    index_type_to_string(self.type()) +
+                    ", \"ef\":" + std::to_string(self.ef()) +
+                    ", \"target_recall\":" +
+                    std::to_string(self.target_recall()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) + "}";
+           })
+      .def(py::pickle(
+          [](const OmegaQueryParams &self) {
+            return py::make_tuple(self.ef(), self.target_recall(),
+                                  self.radius(), self.is_linear(),
+                                  self.is_using_refiner());
+          },
+          [](py::tuple t) {
+            if (t.size() != 5)
+              throw std::runtime_error("Invalid state for OmegaQueryParams");
+            auto obj = std::make_shared<OmegaQueryParams>(t[0].cast<int>(),
+                                                          t[1].cast<float>());
+            obj->set_radius(t[2].cast<float>());
+            obj->set_is_linear(t[3].cast<bool>());
+            obj->set_is_using_refiner(t[4].cast<bool>());
             return obj;
           }));
 
@@ -2046,7 +2190,12 @@ Examples:
     >>> print(opt.concurrency)
     2
 )pbdoc")
-      .def(py::init<int>(), py::arg("concurrency") = 0,
+      .def(py::init([](int concurrency) {
+             OptimizeOptions obj{};
+             obj.concurrency_ = concurrency;
+             return obj;
+           }),
+           py::arg("concurrency") = 0,
            R"pbdoc(
 Constructs an OptimizeOption instance.
 

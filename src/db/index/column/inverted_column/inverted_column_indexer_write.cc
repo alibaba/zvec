@@ -390,7 +390,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   }
   if (num_range_slot_created >= term_count) {
     LOG_DEBUG(
-        "Drop range index in %s, range_slot_count[%ld] vs term_count[%ld].",
+        "Drop range index in %s, range_slot_count[%zu] vs term_count[%zu].",
         ID().c_str(), num_range_slot_created, term_count);
     if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
       LOG_ERROR("Failed to drop range index");

@@ -92,7 +92,7 @@ int dump_rabitq_centroids(
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }

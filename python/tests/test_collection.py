@@ -19,6 +19,7 @@ import pytest
 import zvec
 from zvec import (
     Collection,
+    CollectionSchema,
     CollectionOption,
     DataType,
     Doc,
@@ -39,6 +40,7 @@ from zvec.extension.multi_vector_reranker import (
     RrfReRanker,
     WeightedReRanker,
 )
+
 
 # ==================== Common ====================
 
@@ -1013,6 +1015,18 @@ class TestCollectionQuery:
         )
         assert len(result) == 10
 
+    def test_collection_query_multi_vector_with_same_field(
+        self, collection_with_multiple_docs: Collection, multiple_docs
+    ):
+        with pytest.raises(ValueError):
+            collection_with_multiple_docs.query(
+                [
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                ]
+            )
+
+    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_by_dense_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):

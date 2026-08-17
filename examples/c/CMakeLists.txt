@@ -31,6 +31,12 @@ set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
 set(ZVEC_GENERATED_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/src/generated)
 set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
 
+if(ANDROID)
+    option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" OFF)
+else()
+    option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" ON)
+endif()
+
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_GENERATED_INCLUDE_DIR})
 link_directories(${ZVEC_LIB_DIR})
@@ -42,6 +48,12 @@ endif()
 
 # Find required packages
 find_package(Threads REQUIRED)
+find_package(OpenMP QUIET)
+
+set(zvec_openmp_deps)
+if(OpenMP_FOUND AND NOT ANDROID)
+    list(APPEND zvec_openmp_deps OpenMP::OpenMP_CXX)
+endif()
 
 # Create INTERFACE target for zvec_c_api (fat shared library)
 # No whole-archive flags needed — all symbols are already resolved in the .so/.dylib
@@ -93,6 +105,12 @@ target_link_libraries(c_api_optimized_example PRIVATE
     zvec-c-api
 )
 
+if(ZVEC_ENABLE_OMEGA)
+    add_executable(c_api_omega_example omega_example.c)
+    target_link_libraries(c_api_omega_example PRIVATE
+        zvec-c-api
+    )
+endif()
 # DiskANN example
 add_executable(c_api_diskann_example diskann_example.c)
 target_link_libraries(c_api_diskann_example PRIVATE
@@ -119,6 +137,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND (ANDROID OR (CMAKE_SYSTEM_NAME STREQU
     add_custom_command(TARGET c_api_optimized_example POST_BUILD
         COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_optimized_example>"
         COMMENT "Stripping symbols from c_api_optimized_example")
+    if(ZVEC_ENABLE_OMEGA)
+        add_custom_command(TARGET c_api_omega_example POST_BUILD
+            COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_omega_example>"
+            COMMENT "Stripping symbols from c_api_omega_example")
+    endif()
     add_custom_command(TARGET c_api_diskann_example POST_BUILD
         COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_diskann_example>"
         COMMENT "Stripping symbols from c_api_diskann_example")
@@ -134,4 +157,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
                  c_api_index_example c_api_field_schema_example c_api_optimized_example
                  c_api_diskann_example
                  PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    if(ZVEC_ENABLE_OMEGA)
+        set_property(TARGET c_api_omega_example
+                     PROPERTY COMPILE_FLAGS "-Os")
+        set_property(TARGET c_api_omega_example
+                     PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
 endif()

@@ -1,0 +1,60 @@
+{
+  "cohere_1m": {
+    "common": {
+      "case_type": "Performance768D1M",
+      "num_concurrency": "12,14,16,18,20",
+      "concurrency_duration": 30,
+      "k": 100,
+      "m": 64,
+      "ef_search": 100
+    },
+    "hnsw": {
+      "path": "cohere_1m_hnsw",
+      "db_label": "16c64g-v0.1-hnsw-m64-ef300",
+      "args": {}
+    },
+    "omega": {
+      "path": "cohere_1m_omega",
+      "db_label": "16c64g-v0.1-omega-m64-ef300",
+      "target_recalls": [
+        0.95
+      ],
+      "args": {
+        "min_vector_threshold": 100000,
+        "num_training_queries": 4000,
+        "ef_training": 300,
+        "window_size": 100,
+        "ef_groundtruth": 1000
+      }
+    }
+  },
+  "cohere_10m": {
+    "common": {
+      "case_type": "Performance768D10M",
+      "num_concurrency": "12,14,16,18,20",
+      "concurrency_duration": 30,
+      "k": 100,
+      "m": 64,
+      "ef_search": 100
+    },
+    "hnsw": {
+      "path": "cohere_10m_hnsw",
+      "db_label": "16c64g-v0.1-hnsw-m64-ef300",
+      "args": {}
+    },
+    "omega": {
+      "path": "cohere_10m_omega",
+      "db_label": "16c64g-v0.1-omega-m64-ef300",
+      "target_recalls": [
+        0.92
+      ],
+      "args": {
+        "min_vector_threshold": 100000,
+        "num_training_queries": 4000,
+        "ef_training": 1000,
+        "window_size": 100,
+        "ef_groundtruth": 2000
+      }
+    }
+  }
+}

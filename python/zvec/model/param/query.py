@@ -23,6 +23,7 @@ from . import (
     HnswQueryParam,
     HnswRabitqQueryParam,
     IVFQueryParam,
+    OmegaQueryParam,
     IvfRabitqQueryParam,
 )
 
@@ -50,7 +51,9 @@ class Query:
     """Represents a search query for a specific field in a collection.
 
     A `Query` can be constructed for either vector search or full-text search,
-    but not both simultaneously.
+    but not both simultaneously. Vector queries can use either a document ID
+    or an explicit vector, with optional index-specific parameters such as HNSW
+    `ef`, IVF `nprobe`, or OMEGA `target_recall`.
 
     For vector search, provide `id` or `vector` (and optionally `param`).
     For FTS, provide `fts`.
@@ -59,7 +62,7 @@ class Query:
         field_name (str): Name of the field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
-        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, IvfRabitqQueryParam, FtsQueryParam]], optional):
+        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, IvfRabitqQueryParam, OmegaQueryParam, FtsQueryParam]], optional):
             Index-specific query parameters. Default is None.
         fts (Optional[Fts], optional): Full-text search parameters. Default is None.
 
@@ -73,8 +76,14 @@ class Query:
         ...     vector=[0.1, 0.2, 0.3],
         ...     param=HnswQueryParam(ef=300)
         ... )
+        >>> # Query with OMEGA params and target recall
+        >>> q3 = zvec.VectorQuery(
+        ...     field_name="embedding",
+        ...     vector=[0.1, 0.2, 0.3],
+        ...     param=OmegaQueryParam(ef=300, target_recall=0.98)
+        ... )
         >>> # FTS query
-        >>> q3 = zvec.Query(
+        >>> q4 = zvec.Query(
         ...     field_name="content",
         ...     fts=Fts(match_string="machine learning")
         ... )
@@ -94,6 +103,7 @@ class Query:
             HnswQueryParam,
             HnswRabitqQueryParam,
             IVFQueryParam,
+            OmegaQueryParam,
             IvfRabitqQueryParam,
             FtsQueryParam,
         ]

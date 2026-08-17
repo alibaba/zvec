@@ -1356,6 +1356,18 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                   zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
                   zvec::QuantizeType::UNDEFINED);
           break;
+        case ZVEC_INDEX_TYPE_HNSW_RABITQ:
+          cpp_params =
+              new zvec::HnswRabitqIndexParams(zvec::MetricType::L2);
+          break;
+        case ZVEC_INDEX_TYPE_OMEGA:
+          cpp_params =
+              new zvec::OmegaIndexParams(
+                  zvec::MetricType::L2,  // metric_type
+                  zvec::core_interface::kDefaultHnswNeighborCnt,  // m
+                  zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
+                  zvec::QuantizeType::UNDEFINED);
+          break;
         case ZVEC_INDEX_TYPE_IVF:
           cpp_params =
               new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
@@ -1381,20 +1393,14 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                   false,  // use_id_map
                   zvec::QuantizeType::UNDEFINED);
           break;
+        case ZVEC_INDEX_TYPE_DISKANN:
+          cpp_params = new zvec::DiskAnnIndexParams(zvec::MetricType::L2);
+          break;
         case ZVEC_INDEX_TYPE_FLAT:
         default:
           cpp_params =
               new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
                                         zvec::QuantizeType::UNDEFINED);
-          break;
-        case ZVEC_INDEX_TYPE_DISKANN:
-          cpp_params =
-              new zvec::DiskAnnIndexParams(
-                  zvec::MetricType::L2,   // metric_type
-                  100,                     // max_degree (default)
-                  50,                      // list_size (default)
-                  0,                       // pq_chunk_num (default)
-                  zvec::QuantizeType::UNDEFINED);
           break;
       }
 
@@ -1594,15 +1600,21 @@ zvec_error_code_t zvec_index_params_set_hnsw_params(zvec_index_params_t *params,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
-  auto *hnsw_params = dynamic_cast<zvec::HnswIndexParams *>(cpp_params);
-  if (!hnsw_params) {
+  if (auto *hnsw_params = dynamic_cast<zvec::HnswIndexParams *>(cpp_params)) {
+    hnsw_params->set_m(m);
+    hnsw_params->set_ef_construction(ef_construction);
+    return ZVEC_OK;
+  }
+  if (auto *omega_params = dynamic_cast<zvec::OmegaIndexParams *>(cpp_params)) {
+    omega_params->set_m(m);
+    omega_params->set_ef_construction(ef_construction);
+    return ZVEC_OK;
+  }
+  {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not HNSW index type");
+                   "Invalid params or not HNSW/OMEGA index type");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  hnsw_params->set_m(m);
-  hnsw_params->set_ef_construction(ef_construction);
-  return ZVEC_OK;
 }
 
 /**
@@ -1617,13 +1629,19 @@ int zvec_index_params_get_hnsw_m(const zvec_index_params_t *params) {
     return 0;
   }
   auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  auto *hnsw_params = dynamic_cast<const zvec::HnswIndexParams *>(cpp_params);
-  if (!hnsw_params) {
+  if (auto *hnsw_params =
+          dynamic_cast<const zvec::HnswIndexParams *>(cpp_params)) {
+    return hnsw_params->m();
+  }
+  if (auto *omega_params =
+          dynamic_cast<const zvec::OmegaIndexParams *>(cpp_params)) {
+    return omega_params->m();
+  }
+  {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not HNSW index type");
+                   "Invalid params or not HNSW/OMEGA index type");
     return 0;
   }
-  return hnsw_params->m();
 }
 
 /**
@@ -1638,13 +1656,51 @@ int zvec_index_params_get_hnsw_ef_construction(const zvec_index_params_t *params
     return 0;
   }
   auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  auto *hnsw_params = dynamic_cast<const zvec::HnswIndexParams *>(cpp_params);
-  if (!hnsw_params) {
+  if (auto *hnsw_params =
+          dynamic_cast<const zvec::HnswIndexParams *>(cpp_params)) {
+    return hnsw_params->ef_construction();
+  }
+  if (auto *omega_params =
+          dynamic_cast<const zvec::OmegaIndexParams *>(cpp_params)) {
+    return omega_params->ef_construction();
+  }
+  {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not HNSW index type");
+                   "Invalid params or not HNSW/OMEGA index type");
     return 0;
   }
-  return hnsw_params->ef_construction();
+}
+
+/**
+ * @brief Set OMEGA training-specific parameters
+ * @param params Index parameters (must be OMEGA type)
+ * @param min_vector_threshold Minimum vector count required to trigger training
+ * @param num_training_queries Number of held-out queries used for training
+ * @param ef_training ef value used during training searches
+ * @param ef_groundtruth ef value used for ground-truth generation
+ * @return ZVEC_OK on success, error code on failure
+ */
+zvec_error_code_t zvec_index_params_set_omega_training_params(
+    zvec_index_params_t *params, uint32_t min_vector_threshold,
+    size_t num_training_queries, int ef_training, int ef_groundtruth) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not OMEGA index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  if (auto *omega_params = dynamic_cast<zvec::OmegaIndexParams *>(cpp_params)) {
+    omega_params->set_min_vector_threshold(min_vector_threshold);
+    omega_params->set_num_training_queries(num_training_queries);
+    omega_params->set_ef_training(ef_training);
+    omega_params->set_ef_groundtruth(ef_groundtruth);
+    return ZVEC_OK;
+  }
+
+  SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                 "Invalid params or not OMEGA index type");
+  return ZVEC_ERROR_INVALID_ARGUMENT;
 }
 
 zvec_error_code_t zvec_index_params_set_vamana_params(
@@ -2919,6 +2975,8 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "VAMANA";
     case ZVEC_INDEX_TYPE_IVF_RABITQ:
       return "IVF_RABITQ";
+    case ZVEC_INDEX_TYPE_OMEGA:
+      return "OMEGA";
     case ZVEC_INDEX_TYPE_INVERT:
       return "INVERT";
     case ZVEC_INDEX_TYPE_FTS:
@@ -4996,6 +5054,113 @@ zvec_hnsw_query_params_t *zvec_query_params_hnsw_create(int ef, float radius,
   return nullptr;
 }
 
+zvec_omega_query_params_t *zvec_query_params_omega_create(int ef,
+                                                     float target_recall,
+                                                     float radius,
+                                                     bool is_linear,
+                                                     bool is_using_refiner) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create OmegaQueryParams",
+      auto *params = new zvec::OmegaQueryParams(ef, target_recall, radius,
+                                                is_linear, is_using_refiner);
+      return reinterpret_cast<zvec_omega_query_params_t *>(params);)
+
+  return nullptr;
+}
+
+void zvec_query_params_omega_destroy(zvec_omega_query_params_t *params) {
+  if (params) {
+    delete reinterpret_cast<zvec::OmegaQueryParams *>(params);
+  }
+}
+
+zvec_error_code_t zvec_query_params_omega_set_ef(zvec_omega_query_params_t *params,
+                                             int ef) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::OmegaQueryParams *>(params);
+  ptr->set_ef(ef);
+  return ZVEC_OK;
+}
+
+int zvec_query_params_omega_get_ef(const zvec_omega_query_params_t *params) {
+  if (!params) return 0;
+  auto *ptr = reinterpret_cast<const zvec::OmegaQueryParams *>(params);
+  return ptr->ef();
+}
+
+zvec_error_code_t zvec_query_params_omega_set_target_recall(
+    zvec_omega_query_params_t *params, float target_recall) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::OmegaQueryParams *>(params);
+  ptr->set_target_recall(target_recall);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_omega_get_target_recall(
+    const zvec_omega_query_params_t *params) {
+  if (!params) return 0.0f;
+  auto *ptr = reinterpret_cast<const zvec::OmegaQueryParams *>(params);
+  return ptr->target_recall();
+}
+
+zvec_error_code_t zvec_query_params_omega_set_radius(zvec_omega_query_params_t *params,
+                                                 float radius) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::OmegaQueryParams *>(params);
+  ptr->set_radius(radius);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_omega_get_radius(const zvec_omega_query_params_t *params) {
+  if (!params) return 0.0f;
+  auto *ptr = reinterpret_cast<const zvec::OmegaQueryParams *>(params);
+  return ptr->radius();
+}
+
+zvec_error_code_t zvec_query_params_omega_set_is_linear(
+    zvec_omega_query_params_t *params, bool is_linear) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::OmegaQueryParams *>(params);
+  ptr->set_is_linear(is_linear);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_omega_get_is_linear(const zvec_omega_query_params_t *params) {
+  if (!params) return false;
+  auto *ptr = reinterpret_cast<const zvec::OmegaQueryParams *>(params);
+  return ptr->is_linear();
+}
+
+zvec_error_code_t zvec_query_params_omega_set_is_using_refiner(
+    zvec_omega_query_params_t *params, bool is_using_refiner) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::OmegaQueryParams *>(params);
+  ptr->set_is_using_refiner(is_using_refiner);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_omega_get_is_using_refiner(
+    const zvec_omega_query_params_t *params) {
+  if (!params) return false;
+  auto *ptr = reinterpret_cast<const zvec::OmegaQueryParams *>(params);
+  return ptr->is_using_refiner();
+}
+
 void zvec_query_params_hnsw_destroy(zvec_hnsw_query_params_t *params) {
   if (params) {
     delete reinterpret_cast<zvec::HnswQueryParams *>(params);
@@ -5846,6 +6011,20 @@ zvec_error_code_t zvec_vector_query_set_hnsw_params(
   // Transfer ownership via shared_ptr (polymorphic conversion)
   query_ptr->target_.query_params_.reset(params_ptr);
 
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_vector_query_set_omega_params(
+    zvec_vector_query_t *query, zvec_omega_query_params_t *omega_params) {
+  if (!query || !omega_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or OMEGA params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  auto *params_ptr = reinterpret_cast<zvec::OmegaQueryParams *>(omega_params);
+  query_ptr->target_.query_params_.reset(params_ptr);
   return ZVEC_OK;
 }
 

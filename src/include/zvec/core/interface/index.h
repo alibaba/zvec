@@ -32,6 +32,9 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/training.h>
+#include <zvec/core/interface/training_capable.h>
+#include <zvec/core/interface/training_session.h>
 #include <zvec/core/interface/vector_source.h>
 #include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
@@ -101,6 +104,14 @@ struct SearchResult {
   // use string to manage memory
   std::vector<std::string> reverted_vector_list_{};
   std::vector<std::string> reverted_sparse_values_list_{};
+  // Training records collected during search (for OMEGA training mode)
+  std::vector<TrainingRecord> training_records_{};
+  // GT cmps data: cmps value when each GT rank was found (for OMEGA training)
+  // gt_cmps_per_rank_[rank] = cmps when GT[rank] first entered topk (-1 if not
+  // found)
+  std::vector<int> gt_cmps_per_rank_{};
+  int total_cmps_{0};          // Total comparisons in this search
+  int training_query_id_{-1};  // Query ID for this search (-1 if not training)
   // Grouped reverted values, aligned with group_doc_list_.
   std::vector<std::vector<std::string>> group_reverted_vector_list_{};
   std::vector<std::vector<std::string>> group_reverted_sparse_values_list_{};
@@ -136,6 +147,21 @@ class ZVEC_CORE_API Index {
   virtual int Search(const VectorData &query,
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
+
+  // Capability Pattern: Query optional capabilities
+  /**
+   * @brief Get training capability interface if supported.
+   *
+   * This method allows indexes to optionally provide training functionality
+   * without polluting the base Index class. Follows the Capability Pattern.
+   *
+   * @return Pointer to ITrainingCapable interface if supported, nullptr
+   * otherwise
+   *
+   */
+  virtual class ITrainingCapable *GetTrainingCapability() {
+    return nullptr;  // Default: capability not supported
+  }
 
   virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
                             const core::VectorSource &src);
@@ -185,6 +211,8 @@ class ZVEC_CORE_API Index {
       core::IndexContext::Pointer &context) = 0;
   virtual int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param);
+  virtual void _collect_training_artifacts(core::IndexContext *context,
+                                           SearchResult *result);
 
   //! Helper: set group_by on context from the query param (common for all
   //! index types). Call this before set_topk() when topk depends on group
@@ -212,6 +240,7 @@ class ZVEC_CORE_API Index {
 
  protected:
   bool is_trained_{false};
+  bool is_training_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
@@ -227,6 +256,7 @@ class ZVEC_CORE_API Index {
 
   size_t context_index_;
   core::IndexStorage::Pointer storage_{};
+  std::string file_path_;  // Storage file path
 
   bool is_open_{false};
   bool is_sparse_{false};
@@ -282,7 +312,6 @@ class ZVEC_CORE_API IVFIndex : public Index {
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   core::IndexHolder::Pointer holder_{};
-  std::string file_path_;
 };
 
 
@@ -413,7 +442,45 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   core::IndexHolder::Pointer holder_{};
-  std::string file_path_;
 };
+
+//! OMEGA Index - HNSW with learned early stopping
+/**
+ * OmegaIndex is a specialized HNSW index that supports training mode for
+ * collecting features to train the OMEGA early stopping model.
+ *
+ * It implements the ITrainingCapable interface to provide training
+ * functionality without modifying the generic HNSWIndex class.
+ */
+class OmegaIndex : public HNSWIndex, public ITrainingCapable {
+ public:
+  OmegaIndex() = default;
+
+  // Override GetTrainingCapability to return this
+  ITrainingCapable *GetTrainingCapability() override {
+    return this;
+  }
+
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
+  int Train() override;
+  ITrainingSession::Pointer CreateTrainingSession() override;
+  void _collect_training_artifacts(core::IndexContext *context,
+                                   SearchResult *result) override;
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<OmegaIndexParam>(param_);
+  }
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+
+ private:
+  OmegaIndexParam param_{};
+};
+
 
 }  // namespace zvec::core_interface

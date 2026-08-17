@@ -1,6 +1,25 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
+# RaBitQ headers require AVX2 or AVX512 at compile time. Keep the core and
+# standalone RaBitQ targets consistent when zvec_core glob-collects these
+# sources as well.
+if(RABITQ_SUPPORTED AND NOT ANDROID AND NOT IOS AND AUTO_DETECT_ARCH AND
+   HOST_ARCH MATCHES "^(x86|x64)$")
+  setup_compiler_march_for_x86(
+      _RABITQ_MARCH_SSE _RABITQ_MARCH_AVX2 _RABITQ_MARCH_AVX512
+      _RABITQ_MARCH_AVX512FP16)
+  if(_RABITQ_MARCH_AVX2)
+    file(GLOB _RABITQ_SOURCES
+         ${CMAKE_CURRENT_SOURCE_DIR}/algorithm/hnsw_rabitq/*.cc
+         ${CMAKE_CURRENT_SOURCE_DIR}/algorithm/ivf_rabitq/*.cc)
+    set_source_files_properties(
+        ${_RABITQ_SOURCES}
+        PROPERTIES
+        COMPILE_FLAGS "${_RABITQ_MARCH_AVX2}")
+  endif()
+endif()
+
 # utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
 # host toolchain supports it, compile this source with an AVX2-capable
 # -march so AVX2 codegen is emitted. zvec_core glob-collects this source
@@ -35,6 +54,11 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 # Remove algorithm/hnsw_rabitq implementation files if not supported.
 # interface/indexes/hnsw_rabitq_index.cc is kept because it provides the vtable
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
+if(NOT ZVEC_ENABLE_OMEGA)
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/omega/.*")
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/omega_.*")
+endif()
+
 if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/ivf_rabitq/.*")
@@ -50,6 +74,9 @@ set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
 # The DiskAnn runtime loader uses dlopen/dlsym, so link libdl on Linux.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
+endif()
+if(ZVEC_ENABLE_OMEGA)
+  list(APPEND ZVEC_CORE_LIBS omega)
 endif()
 
 set(ZVEC_CORE_LIBRARY_OPTIONS)
@@ -69,3 +96,11 @@ cc_library(
     INCS . ${PROJECT_ROOT_DIR}/src/core
     VERSION "${ZVEC_VERSION_STRING}"
 )
+
+if(ZVEC_ENABLE_OMEGA AND TARGET zvec_core)
+  target_compile_options(zvec_core PRIVATE
+      "$<$<CXX_COMPILER_ID:Clang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:AppleClang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:GNU>:-Wno-unknown-pragmas>"
+    )
+endif()

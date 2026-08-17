@@ -180,6 +180,34 @@ class ProximaEngineHelper {
         return std::move(hnsw_query_param);
       }
 
+      case IndexType::OMEGA: {
+        auto omega_query_param_result =
+            _build_common_query_param<core_interface::OmegaQueryParam>(
+                query_params);
+        if (!omega_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              omega_query_param_result.error().message()));
+        }
+        auto &omega_query_param = omega_query_param_result.value();
+        if (query_params.query_params) {
+          if (auto *db_omega_query_params =
+                  dynamic_cast<const OmegaQueryParams *>(
+                      query_params.query_params.get())) {
+            omega_query_param->ef_search = db_omega_query_params->ef();
+            omega_query_param->target_recall =
+                db_omega_query_params->target_recall();
+            omega_query_param->training_query_id =
+                db_omega_query_params->training_query_id();
+            omega_query_param->prefetch_offset =
+                db_omega_query_params->prefetch_offset();
+            omega_query_param->prefetch_lines =
+                db_omega_query_params->prefetch_lines();
+          }
+        }
+        return std::move(omega_query_param);
+      }
+
       case IndexType::HNSW_RABITQ: {
         auto hnsw_query_param_result =
             _build_common_query_param<core_interface::HNSWRabitqQueryParam>(
@@ -427,6 +455,35 @@ class ProximaEngineHelper {
         index_param_builder->WithUseContiguousMemory(
             db_index_params->use_contiguous_memory());
 
+        return index_param_builder->Build();
+      }
+
+      case IndexType::OMEGA: {
+        auto index_param_builder_result =
+            _build_common_index_param<OmegaIndexParams,
+                                      core_interface::OmegaIndexParamBuilder>(
+                field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const OmegaIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithM(db_index_params->m());
+        index_param_builder->WithEFConstruction(
+            db_index_params->ef_construction());
+        index_param_builder->WithMinVectorThreshold(
+            db_index_params->min_vector_threshold());
+        index_param_builder->WithNumTrainingQueries(
+            db_index_params->num_training_queries());
+        index_param_builder->WithEFTraining(db_index_params->ef_training());
+        index_param_builder->WithWindowSize(db_index_params->window_size());
+        index_param_builder->WithEFGroundTruth(
+            db_index_params->ef_groundtruth());
+        index_param_builder->WithKTrain(db_index_params->k_train());
         return index_param_builder->Build();
       }
 

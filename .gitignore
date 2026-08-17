@@ -66,3 +66,5 @@ config/
 examples/python/
 examples/c_api/
 logs/
+/.harness/state.json
+/.harness/local/

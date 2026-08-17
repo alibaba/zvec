@@ -104,7 +104,8 @@ Examples:
       .value("DISKANN", IndexType::DISKANN)
       .value("VAMANA", IndexType::VAMANA)
       .value("INVERT", IndexType::INVERT)
-      .value("FTS", IndexType::FTS);
+      .value("FTS", IndexType::FTS)
+      .value("OMEGA", IndexType::OMEGA);
 }
 
 void ZVecPyTyping::bind_metric_types(pybind11::module_ &m) {

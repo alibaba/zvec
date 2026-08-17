@@ -256,6 +256,35 @@ ailego::JsonObject HNSWIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
+ailego::JsonObject OmegaIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = HNSWIndexParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set(
+      "index_type",
+      ailego::JsonValue(magic_enum::enum_name(IndexType::kOMEGA).data()));
+  if (!omit_empty_value || min_vector_threshold != 100000) {
+    json_obj.set("min_vector_threshold",
+                 ailego::JsonValue(min_vector_threshold));
+  }
+  if (!omit_empty_value || num_training_queries != 1000) {
+    json_obj.set("num_training_queries",
+                 ailego::JsonValue(static_cast<int64_t>(num_training_queries)));
+  }
+  if (!omit_empty_value || ef_training != 1000) {
+    json_obj.set("ef_training", ailego::JsonValue(ef_training));
+  }
+  if (!omit_empty_value || window_size != 100) {
+    json_obj.set("window_size", ailego::JsonValue(window_size));
+  }
+  if (!omit_empty_value || ef_groundtruth != 0) {
+    json_obj.set("ef_groundtruth", ailego::JsonValue(ef_groundtruth));
+  }
+  if (!omit_empty_value || k_train != 1) {
+    json_obj.set("k_train", ailego::JsonValue(k_train));
+  }
+  return json_obj;
+}
+
 bool BaseIndexParam::DeserializeFromJsonObject(
     const ailego::JsonObject &json_obj) {
   DESERIALIZE_ENUM_FIELD(json_obj, index_type, IndexType);
@@ -322,6 +351,29 @@ bool HNSWIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, m);
   DESERIALIZE_VALUE_FIELD(json_obj, ef_construction);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+
+  return true;
+}
+
+bool OmegaIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kOMEGA) {
+    LOG_ERROR("index_type is not kOMEGA");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, m);
+  DESERIALIZE_VALUE_FIELD(json_obj, ef_construction);
+  DESERIALIZE_VALUE_FIELD(json_obj, min_vector_threshold);
+  DESERIALIZE_VALUE_FIELD(json_obj, num_training_queries);
+  DESERIALIZE_VALUE_FIELD(json_obj, ef_training);
+  DESERIALIZE_VALUE_FIELD(json_obj, window_size);
+  DESERIALIZE_VALUE_FIELD(json_obj, ef_groundtruth);
+  DESERIALIZE_VALUE_FIELD(json_obj, k_train);
 
   return true;
 }

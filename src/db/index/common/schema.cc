@@ -51,7 +51,8 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 
 std::unordered_set<IndexType> support_dense_vector_index = {
     IndexType::FLAT,  IndexType::HNSW,       IndexType::HNSW_RABITQ,
-    IndexType::IVF,   IndexType::IVF_RABITQ, IndexType::DISKANN,
+    IndexType::IVF,   IndexType::IVF_RABITQ, IndexType::OMEGA,
+    IndexType::DISKANN,
     IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
@@ -234,6 +235,14 @@ Status FieldSchema::validate() const {
             "Linux (x86_64/ARM64) and macOS (ARM64).");
 #endif
       }
+
+#if !ZVEC_ENABLE_OMEGA
+      if (index_params_->type() == IndexType::OMEGA) {
+        return Status::NotSupported(
+            "OMEGA index is not available in this build "
+            "(ZVEC_ENABLE_OMEGA=OFF)");
+      }
+#endif
 
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {

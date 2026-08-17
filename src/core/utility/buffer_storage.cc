@@ -804,6 +804,11 @@ class BufferStorage : public IndexStorage {
     return chain_headers_.front()->magic;
   }
 
+  //! Retrieve file path of storage
+  std::string file_path(void) const override {
+    return file_name_;
+  }
+
  protected:
   //! Initialize index version segment (writes content into an IndexMapping).
   //! Only intended to be called from init_index() while `mapping` is still

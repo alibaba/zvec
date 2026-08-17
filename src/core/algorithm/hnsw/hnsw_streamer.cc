@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_streamer.h"
+#include <atomic>
+#include <cstdlib>
 #include <iostream>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "utility/sparse_utility.h"
+#include "utility/steady_clock_timer.h"
 #include "hnsw_algorithm.h"
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
@@ -25,12 +28,67 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+bool ShouldLogHnswQueryStats(uint64_t query_seq) {
+  static const bool enabled = []() {
+    const char *value = std::getenv("ZVEC_HNSW_LOG_QUERY_STATS");
+    if (value == nullptr) {
+      return false;
+    }
+    return std::string(value) != "0";
+  }();
+  if (!enabled) {
+    return false;
+  }
+
+  static const uint64_t limit = []() -> uint64_t {
+    const char *value = std::getenv("ZVEC_HNSW_LOG_QUERY_LIMIT");
+    if (value == nullptr || *value == '\0') {
+      return std::numeric_limits<uint64_t>::max();
+    }
+    char *end = nullptr;
+    unsigned long long parsed = std::strtoull(value, &end, 10);
+    if (end == value) {
+      return std::numeric_limits<uint64_t>::max();
+    }
+    return static_cast<uint64_t>(parsed);
+  }();
+
+  return query_seq < limit;
+}
+
+bool UseEmptyHnswHooks() {
+  const char *value = std::getenv("ZVEC_HNSW_ENABLE_EMPTY_HOOKS");
+  if (value == nullptr) {
+    return false;
+  }
+  return std::string(value) != "0";
+}
+
+std::atomic<uint64_t> &HnswQueryStatsSequence() {
+  static std::atomic<uint64_t> sequence{0};
+  return sequence;
+}
+
+}  // namespace
+
 HnswStreamer::HnswStreamer() = default;
 
 HnswStreamer::~HnswStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
+}
+
+int HnswStreamer::FastSearch(HnswContext *ctx) const {
+  return alg_->fast_search(ctx);
+}
+
+int HnswStreamer::FastSearchWithHooks(HnswContext *ctx,
+                                      const SearchHooks *hooks,
+                                      bool *stopped_early) const {
+  return alg_->fast_search_with_hooks(ctx, hooks, stopped_early);
 }
 
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
@@ -762,12 +820,37 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  const bool use_empty_hooks = UseEmptyHnswHooks();
+  SearchHooks empty_hooks;
   for (size_t q = 0; q < count; ++q) {
+    auto query_start = SteadyClockTimer::Now();
     ctx->reset_query(query, meta_);
-    ret = alg_->search(ctx);
+    auto query_search_start = SteadyClockTimer::Now();
+    if (use_empty_hooks) {
+      bool stopped_early = false;
+      ret = alg_->search_with_hooks(ctx, &empty_hooks, &stopped_early);
+    } else {
+      ret = alg_->search(ctx);
+    }
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
+    }
+    auto query_search_end = SteadyClockTimer::Now();
+    auto query_search_time_ns =
+        SteadyClockTimer::ElapsedNs(query_search_start, query_search_end);
+    auto query_latency_ns =
+        SteadyClockTimer::ElapsedNs(query_start, SteadyClockTimer::Now());
+    uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
+    if (ShouldLogHnswQueryStats(query_seq)) {
+      LOG_INFO(
+          "HNSW query stats: query_seq=%llu hook_mode=%s cmps=%zu "
+          "pairwise_dist_cnt=%llu pure_search_ms=%.3f latency_ms=%.3f",
+          static_cast<unsigned long long>(query_seq),
+          use_empty_hooks ? "empty" : "none", ctx->get_scan_num(),
+          static_cast<unsigned long long>(ctx->get_pairwise_dist_num()),
+          static_cast<double>(query_search_time_ns) / 1e6,
+          static_cast<double>(query_latency_ns) / 1e6);
     }
     ctx->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
@@ -872,6 +955,7 @@ int HnswStreamer::search_bf_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
+      auto query_start = SteadyClockTimer::Now();
       ctx->reset_query(query, meta_);
       topk.clear();
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
@@ -883,6 +967,17 @@ int HnswStreamer::search_bf_impl(
           dist_t dist = ctx->dist_calculator().batch_dist(id);
           topk.emplace(id, dist);
         }
+      }
+      auto query_latency_ns =
+          SteadyClockTimer::ElapsedNs(query_start, SteadyClockTimer::Now());
+      uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
+      if (ShouldLogHnswQueryStats(query_seq)) {
+        LOG_INFO(
+            "HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%llu "
+            "latency_ms=%.3f",
+            static_cast<unsigned long long>(query_seq), ctx->get_scan_num(),
+            static_cast<unsigned long long>(ctx->get_pairwise_dist_num()),
+            static_cast<double>(query_latency_ns) / 1e6);
       }
       ctx->topk_to_result(q);
       query = static_cast<const char *>(query) + qmeta.element_size();

@@ -71,25 +71,64 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 
 template <typename EntityType>
 int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
-  spin_lock_.lock();
-  auto maxLevel = entity_.cur_max_level();
-  auto entry_point = entity_.entry_point();
-  spin_lock_.unlock();
+  return search_internal(ctx, true, nullptr, nullptr);
+}
 
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::fast_search(HnswContext *ctx) const {
+  return search_internal(ctx, false, nullptr, nullptr);
+}
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::search_with_hooks(HnswContext *ctx,
+                                                 const SearchHooks *hooks,
+                                                 bool *stopped_early) const {
+  return search_internal(ctx, true, hooks, stopped_early);
+}
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::fast_search_with_hooks(
+    HnswContext *ctx, const SearchHooks *hooks, bool *stopped_early) const {
+  return search_internal(ctx, false, hooks, stopped_early);
+}
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::search_internal(HnswContext *ctx, bool use_lock,
+                                               const SearchHooks *hooks,
+                                               bool *stopped_early) const {
+  auto load_entry_point = [&]() {
+    if (use_lock) {
+      spin_lock_.lock();
+      auto max_level = entity_.cur_max_level();
+      auto entry_point = entity_.entry_point();
+      spin_lock_.unlock();
+      return std::make_pair(max_level, entry_point);
+    }
+    return std::make_pair(entity_.cur_max_level(), entity_.entry_point());
+  };
+
+  auto [max_level, entry_point] = load_entry_point();
   if (ailego_unlikely(entry_point == kInvalidNodeId)) {
+    if (stopped_early != nullptr) {
+      *stopped_early = false;
+    }
     return 0;
   }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
-  for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
+  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx, /*use_pool=*/true);
+  bool did_stop_early = search_neighbors(0, &entry_point, &dist, topk_heap, ctx,
+                                         /*use_pool=*/true, hooks);
+  if (stopped_early != nullptr) {
+    *stopped_early = did_stop_early;
+  }
 
-  if (ctx->group_by_search()) {
+  if (!did_stop_early && ctx->group_by_search()) {
     expand_neighbors_by_group(topk_heap, ctx);
   }
 
@@ -278,10 +317,11 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
 // Also updates entry_point/dist for next-level continuation.
 // ============================================================================
 template <typename EntityType, typename MemBlockType, typename FilterFn>
-void dual_heap_search_neighbors(const EntityType &entity, level_t level,
+bool dual_heap_search_neighbors(const EntityType &entity, level_t level,
                                 node_id_t *entry_point, dist_t *dist,
                                 TopkHeap &topk, HnswContext *ctx,
-                                HnswDistCalculator &dc, FilterFn &&filter) {
+                                HnswDistCalculator &dc, FilterFn &&filter,
+                                const SearchHooks *hooks) {
   const uint32_t prefetch_offset = ctx->po();
   const uint32_t prefetch_lines =
       ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
@@ -302,15 +342,33 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
 
+  const uint32_t result_topk_limit = ctx->topk();
+  const bool track_hook_result_topk = hooks != nullptr &&
+                                      hooks->on_visit_candidate != nullptr &&
+                                      result_topk_limit > 0;
+  TopkHeap hook_result_topk(result_topk_limit > 0 ? result_topk_limit : 1U);
+
   candidates.clear();
   visit.clear();
   visit.set_visited(*entry_point);
-  if (!filter(*entry_point)) {
+  bool entry_inserted_to_topk = !filter(*entry_point);
+  if (entry_inserted_to_topk) {
     topk.emplace(*entry_point, *dist);
+    if (track_hook_result_topk) {
+      hook_result_topk.emplace(*entry_point, *dist);
+    }
   }
 
   candidates.emplace(*entry_point, *dist);
+  if (hooks != nullptr && hooks->on_level0_entry != nullptr) {
+    hooks->on_level0_entry(*entry_point, *dist, entry_inserted_to_topk,
+                           hooks->user_data);
+  }
   while (!candidates.empty() && !ctx->reach_scan_limit()) {
+    if (hooks != nullptr && hooks->on_hop != nullptr) {
+      hooks->on_hop(hooks->user_data);
+    }
+
     auto top = candidates.begin();
     node_id_t main_node = top->first;
     dist_t main_dist = top->second;
@@ -389,8 +447,11 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
       dist_t cur_dist = dists[i];
+      bool should_consider_candidate =
+          (!topk.full()) || cur_dist < topk[0].second;
+      bool inserted_to_topk = false;
 
-      if ((!topk.full()) || cur_dist < topk[0].second) {
+      if (should_consider_candidate) {
         candidates.emplace(node, cur_dist);
         // update entry_point for next level scan
         if (cur_dist < *dist) {
@@ -399,10 +460,27 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
         }
         if (!filter(node)) {
           topk.emplace(node, cur_dist);
+          if (track_hook_result_topk) {
+            inserted_to_topk = !hook_result_topk.full() ||
+                               cur_dist < hook_result_topk[0].second;
+            if (inserted_to_topk) {
+              hook_result_topk.emplace(node, cur_dist);
+            }
+          }
         }
       }
-    }
-  }
+
+      if (hooks != nullptr && hooks->on_visit_candidate != nullptr) {
+        bool should_stop = hooks->on_visit_candidate(
+            node, cur_dist, inserted_to_topk, hooks->user_data);
+        if (should_stop) {
+          return true;
+        }
+      }
+    }  // end for
+  }  // while
+
+  return false;
 }
 
 // ============================================================================
@@ -414,30 +492,28 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 //     BufferPool       →  dual_heap_search_neighbors (fallback)
 // ============================================================================
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
-                                                 node_id_t *entry_point,
-                                                 dist_t *dist, TopkHeap &topk,
-                                                 HnswContext *ctx,
-                                                 bool use_pool) const {
+bool HnswAlgorithm<EntityType>::search_neighbors(
+    level_t level, node_id_t *entry_point, dist_t *dist, TopkHeap &topk,
+    HnswContext *ctx, bool use_pool, const SearchHooks *hooks) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
-  if (!use_pool || ctx->filter().is_valid() || level != 0) {
+  if (hooks != nullptr || !use_pool || ctx->filter().is_valid() || level != 0) {
     // Dual-heap path: add_node, filtered search, or upper-level scan.
     auto run_with_filter = [&](auto &&filter) {
-      dual_heap_search_neighbors<EntityType, MemBlockType>(
+      return dual_heap_search_neighbors<EntityType, MemBlockType>(
           entity, level, entry_point, dist, topk, ctx, dc,
-          std::forward<decltype(filter)>(filter));
+          std::forward<decltype(filter)>(filter), hooks);
     };
 
     if (ctx->filter().is_valid()) {
       auto filter = [&](node_id_t id) {
         return ctx->filter()(entity.get_key_typed(id));
       };
-      run_with_filter(filter);
+      return run_with_filter(filter);
     } else {
       auto filter = [](node_id_t) { return false; };
-      run_with_filter(filter);
+      return run_with_filter(filter);
     }
   } else {
     // Pool-based path for level-0 unfiltered search.
@@ -468,10 +544,11 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
     } else {
       // BufferPool entities: fallback to dual-heap path.
       auto filter = [](node_id_t) { return false; };
-      dual_heap_search_neighbors<EntityType, MemBlockType>(
-          entity, level, entry_point, dist, topk, ctx, dc, filter);
+      return dual_heap_search_neighbors<EntityType, MemBlockType>(
+          entity, level, entry_point, dist, topk, ctx, dc, filter, hooks);
     }
   }
+  return false;
 }
 
 template <typename EntityType>

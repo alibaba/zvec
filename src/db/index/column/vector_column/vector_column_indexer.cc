@@ -43,6 +43,7 @@ Status VectorColumnIndexer::CreateProximaIndex(
   }
   auto &index_param = index_param_result.value();
 
+  // Use IndexFactory for all index types (including OMEGA)
   index = core_interface::IndexFactory::CreateAndInitIndex(*index_param);
   if (index == nullptr) {
     return Status::InternalError("Failed to create index");
@@ -130,6 +131,7 @@ Status VectorColumnIndexer::Merge(
                    {merge_options.write_concurrency, merge_options.pool})) {
     return Status::InternalError("Failed to merge index");
   }
+
   return Status::OK();
 }
 
@@ -198,6 +200,30 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
         Status::InternalError("Failed to search vector"));
   }
 
+  core_interface::ITrainingSession::Pointer training_session;
+  {
+    std::lock_guard<std::mutex> lock(training_mutex_);
+    training_session = training_session_;
+  }
+
+  if (training_session != nullptr) {
+    LOG_INFO(
+        "VectorColumnIndexer training search: query_id=%d records=%zu "
+        "gt_cmps=%zu total_cmps=%d",
+        search_result.training_query_id_,
+        search_result.training_records_.size(),
+        search_result.gt_cmps_per_rank_.size(), search_result.total_cmps_);
+  }
+
+  if (training_session != nullptr) {
+    core_interface::QueryTrainingArtifacts artifacts;
+    artifacts.records = std::move(search_result.training_records_);
+    artifacts.gt_cmps_per_rank = std::move(search_result.gt_cmps_per_rank_);
+    artifacts.total_cmps = search_result.total_cmps_;
+    artifacts.training_query_id = search_result.training_query_id_;
+    training_session->CollectQueryArtifacts(std::move(artifacts));
+  }
+
   // Return grouped results when group_by is active
   if (!search_result.group_doc_list_.empty()) {
     auto result = std::make_shared<GroupVectorIndexResults>(
@@ -212,6 +238,35 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
       std::move(search_result.reverted_vector_list_),
       std::move(search_result.reverted_sparse_values_list_));
   return result;
+}
+
+core_interface::ITrainingCapable *VectorColumnIndexer::GetTrainingCapability()
+    const {
+  if (index != nullptr) {
+    return index->GetTrainingCapability();
+  }
+  return nullptr;
+}
+
+core_interface::ITrainingSession::Pointer
+VectorColumnIndexer::CreateTrainingSession() const {
+  if (index != nullptr) {
+    if (auto *training_capable = index->GetTrainingCapability()) {
+      return training_capable->CreateTrainingSession();
+    }
+  }
+  return nullptr;
+}
+
+void VectorColumnIndexer::SetTrainingSession(
+    const core_interface::ITrainingSession::Pointer &session) {
+  std::lock_guard<std::mutex> lock(training_mutex_);
+  training_session_ = session;
+}
+
+void VectorColumnIndexer::ClearTrainingSession() {
+  std::lock_guard<std::mutex> lock(training_mutex_);
+  training_session_.reset();
 }
 
 }  // namespace zvec

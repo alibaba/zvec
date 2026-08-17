@@ -107,9 +107,11 @@ class HnswContext : public IndexContext {
     char buf[4096];
     size_t size = snprintf(
         buf, sizeof(buf),
-        "scan_cnt=%zu,get_vector_cnt=%u,get_neighbors_cnt=%u,dup_node=%u",
-        get_scan_num(), stats_get_vector_cnt_, stats_get_neighbors_cnt_,
-        stats_visit_dup_cnt_);
+        "scan_cnt=%llu,pairwise_dist_cnt=%llu,get_vector_cnt=%u,get_"
+        "neighbors_cnt=%u,dup_node=%u",
+        static_cast<unsigned long long>(get_scan_num()),
+        static_cast<unsigned long long>(get_pairwise_dist_num()),
+        stats_get_vector_cnt_, stats_get_neighbors_cnt_, stats_visit_dup_cnt_);
     return std::string(buf, size);
   }
 
@@ -469,6 +471,10 @@ class HnswContext : public IndexContext {
 
   inline size_t get_scan_num() const {
     return dc_.compare_cnt();
+  }
+
+  inline uint64_t get_pairwise_dist_num() const {
+    return dc_.pairwise_dist_cnt();
   }
 
   inline uint64_t reach_scan_limit() const {

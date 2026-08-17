@@ -136,6 +136,37 @@ proto::IVFIndexParams ProtoConverter::ToPb(const IVFIndexParams *params) {
   return params_pb;
 }
 
+// OmegaIndexParams
+OmegaIndexParams::OPtr ProtoConverter::FromPb(
+    const proto::OmegaIndexParams &params_pb) {
+  auto params = std::make_shared<OmegaIndexParams>(
+      MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
+      params_pb.ef_construction(),
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
+      params_pb.min_vector_threshold(), params_pb.num_training_queries(),
+      params_pb.ef_training(), params_pb.window_size(),
+      params_pb.ef_groundtruth(), params_pb.k_train());
+
+  return params;
+}
+
+proto::OmegaIndexParams ProtoConverter::ToPb(const OmegaIndexParams *params) {
+  proto::OmegaIndexParams params_pb;
+  params_pb.mutable_base()->set_metric_type(
+      MetricTypeCodeBook::Get(params->metric_type()));
+  params_pb.mutable_base()->set_quantize_type(
+      QuantizeTypeCodeBook::Get(params->quantize_type()));
+  params_pb.set_ef_construction(params->ef_construction());
+  params_pb.set_m(params->m());
+  params_pb.set_min_vector_threshold(params->min_vector_threshold());
+  params_pb.set_num_training_queries(params->num_training_queries());
+  params_pb.set_ef_training(params->ef_training());
+  params_pb.set_window_size(params->window_size());
+  params_pb.set_ef_groundtruth(params->ef_groundtruth());
+  params_pb.set_k_train(params->k_train());
+  return params_pb;
+}
+
 // VamanaIndexParams
 VamanaIndexParams::OPtr ProtoConverter::FromPb(
     const proto::VamanaIndexParams &params_pb) {
@@ -297,6 +328,8 @@ IndexParams::Ptr ProtoConverter::FromPb(const proto::IndexParams &params_pb) {
     return ProtoConverter::FromPb(params_pb.ivf());
   } else if (params_pb.has_flat()) {
     return ProtoConverter::FromPb(params_pb.flat());
+  } else if (params_pb.has_omega()) {
+    return ProtoConverter::FromPb(params_pb.omega());
   } else if (params_pb.has_hnsw_rabitq()) {
     return ProtoConverter::FromPb(params_pb.hnsw_rabitq());
   } else if (params_pb.has_ivf_rabitq()) {
@@ -358,6 +391,13 @@ proto::IndexParams ProtoConverter::ToPb(const IndexParams *params) {
       auto flat_params = dynamic_cast<const FlatIndexParams *>(params);
       if (flat_params) {
         params_pb.mutable_flat()->CopyFrom(ProtoConverter::ToPb(flat_params));
+      }
+      break;
+    }
+    case IndexType::OMEGA: {
+      auto omega_params = dynamic_cast<const OmegaIndexParams *>(params);
+      if (omega_params) {
+        params_pb.mutable_omega()->CopyFrom(ProtoConverter::ToPb(omega_params));
       }
       break;
     }

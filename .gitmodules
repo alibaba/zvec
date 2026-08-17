@@ -39,6 +39,9 @@
 	path = thirdparty/magic_enum/magic_enum-0.9.7
 	url = https://github.com/Neargye/magic_enum.git
 	ignore = dirty
+[submodule "thirdparty/omega/OMEGALib"]
+	path = thirdparty/omega/OMEGALib
+	url = https://github.com/driPyf/OMEGALib.git
 [submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
 	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
 	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git

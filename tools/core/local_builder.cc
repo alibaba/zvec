@@ -275,7 +275,7 @@ bool dump_meta_segment(const IndexDumper::Pointer &dumper,
                        size_t size, size_t &writes) {
   size_t len = dumper->write(data, size);
   if (len != size) {
-    LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
+    LOG_ERROR("Dump segment %s data failed, expect: %zu, actual: %zu",
               segment_id.c_str(), size, len);
     return false;
   }
@@ -284,7 +284,7 @@ bool dump_meta_segment(const IndexDumper::Pointer &dumper,
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return false;
     }
   }

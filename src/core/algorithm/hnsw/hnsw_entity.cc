@@ -37,7 +37,7 @@ int HnswEntity::CalcAndAddPadding(const IndexDumper::Pointer &dumper,
 
   std::string padding(*padding_size, '\0');
   if (dumper->write(padding.data(), *padding_size) != *padding_size) {
-    LOG_ERROR("Append padding failed, size %lu", *padding_size);
+    LOG_ERROR("Append padding failed, size %zu", *padding_size);
     return IndexError_WriteData;
   }
   return 0;
@@ -48,7 +48,7 @@ int64_t HnswEntity::dump_segment(const IndexDumper::Pointer &dumper,
                                  const void *data, size_t size) const {
   size_t len = dumper->write(data, size);
   if (len != size) {
-    LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
+    LOG_ERROR("Dump segment %s data failed, expect: %zu, actual: %zu",
               segment_id.c_str(), size, len);
     return IndexError_WriteData;
   }
@@ -57,7 +57,7 @@ int64_t HnswEntity::dump_segment(const IndexDumper::Pointer &dumper,
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }
@@ -256,7 +256,7 @@ int64_t HnswEntity::dump_graph_neighbors(
       data = mapping.data();
     }
     if (dumper->write(data, size) != size) {
-      LOG_ERROR("Dump graph neighbor id=%u failed, size %lu", id, size);
+      LOG_ERROR("Dump graph neighbor id=%u failed, size %zu", id, size);
       return IndexError_WriteData;
     }
     crc = ailego::Crc32c::Hash(data, size, crc);
@@ -329,7 +329,7 @@ int64_t HnswEntity::dump_upper_neighbors(
         }
       }
       if (dumper->write(buffer.data(), buffer_bytes) != buffer_bytes) {
-        LOG_ERROR("Dump graph neighbor id=%u failed, size %lu", id,
+        LOG_ERROR("Dump graph neighbor id=%u failed, size %zu", id,
                   buffer_bytes);
         return IndexError_WriteData;
       }

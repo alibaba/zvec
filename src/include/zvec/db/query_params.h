@@ -73,7 +73,16 @@ class ZVEC_API HnswQueryParams : public QueryParams {
       bool is_linear = false, bool is_using_refiner = false,
       uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
       uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
-      : QueryParams(IndexType::HNSW),
+      : HnswQueryParams(IndexType::HNSW, ef, radius, is_linear,
+                        is_using_refiner, prefetch_offset, prefetch_lines) {}
+
+  ~HnswQueryParams() override = default;
+
+ protected:
+  HnswQueryParams(IndexType type, int ef, float radius, bool is_linear,
+                  bool is_using_refiner, uint32_t prefetch_offset,
+                  uint32_t prefetch_lines)
+      : QueryParams(type),
         ef_(ef),
         prefetch_offset_(prefetch_offset),
         prefetch_lines_(prefetch_lines) {
@@ -82,8 +91,7 @@ class ZVEC_API HnswQueryParams : public QueryParams {
     set_is_using_refiner(is_using_refiner);
   }
 
-  ~HnswQueryParams() override = default;
-
+ public:
   int ef() const {
     return ef_;
   }
@@ -112,6 +120,42 @@ class ZVEC_API HnswQueryParams : public QueryParams {
   int ef_;
   uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
   uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
+};
+
+class ZVEC_API OmegaQueryParams : public HnswQueryParams {
+ public:
+  OmegaQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
+                   float target_recall = 0.95f, float radius = 0.0f,
+                   bool is_linear = false, bool is_using_refiner = false)
+      : HnswQueryParams(IndexType::OMEGA, ef, radius, is_linear,
+                        is_using_refiner,
+                        core_interface::kDefaultPrefetchOffset,
+                        core_interface::kDefaultPrefetchLines),
+        target_recall_(target_recall) {}
+
+  virtual ~OmegaQueryParams() = default;
+
+  float target_recall() const {
+    return target_recall_;
+  }
+
+  void set_target_recall(float target_recall) {
+    target_recall_ = target_recall;
+  }
+
+  // Training query ID for parallel OMEGA training searches.
+  // -1 means not set (use global current_query_id from indexer).
+  int training_query_id() const {
+    return training_query_id_;
+  }
+
+  void set_training_query_id(int query_id) {
+    training_query_id_ = query_id;
+  }
+
+ private:
+  float target_recall_;
+  int training_query_id_{-1};
 };
 
 class ZVEC_API IVFQueryParams : public QueryParams {

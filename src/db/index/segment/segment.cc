@@ -14,6 +14,7 @@
 
 #include "segment.h"
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1530,11 +1531,13 @@ CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
   auto m_iter = memory_vector_indexers_.find(field_name);
   if (m_iter != memory_vector_indexers_.end()) {
     indexers.push_back(m_iter->second);
+  } else {
   }
 
   auto field = collection_schema_->get_field(field_name);
   auto vector_index_params =
       std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
+
   MetricType metric_type = vector_index_params->metric_type();
   auto blocks = get_persist_block_metas(BlockType::VECTOR_INDEX, field_name);
 
@@ -1649,6 +1652,11 @@ Status SegmentImpl::create_all_vector_index(
   new_segment_meta->set_indexed_vector_fields(vector_field_names);
   *segment_meta = new_segment_meta;
 
+  // Note: OMEGA training is now performed in merge_vector_indexer() immediately
+  // after the index is built via Merge(). This is the recommended approach per
+  // Alibaba expert advice - train right after reduce() completes when data is
+  // still in memory.
+
   return Status::OK();
 }
 
@@ -1662,8 +1670,10 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
 
   auto s = vector_indexer->Open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
+
   std::vector<VectorColumnIndexer::Ptr> to_merge_indexers =
       vector_indexers_[column];
+
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
@@ -1674,8 +1684,18 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   }
   s = vector_indexer->Merge(to_merge_indexers, filter_, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  s = vector_indexer->Flush();
-  CHECK_RETURN_STATUS_EXPECTED(s);
+
+  if (vector_indexer->GetTrainingCapability() != nullptr) {
+    LOG_INFO("Delegating OMEGA training to core index for field '%s'",
+             column.c_str());
+    if (vector_indexer->core_index()->Train() != 0) {
+      return tl::make_unexpected(
+          Status::InternalError("Failed to train OMEGA model in core"));
+    }
+  } else {
+    s = vector_indexer->Flush();
+    CHECK_RETURN_STATUS_EXPECTED(s);
+  }
 
   return vector_indexer;
 }
@@ -2562,7 +2582,7 @@ TablePtr SegmentImpl::fetch_normal(
     }
   }
 
-  // Phase 2: Execute batched fetch per block
+  // Execute batched fetches per block.
   for (const auto &[block_index, col_to_rows] : block_request_map) {
     std::vector<std::string> fetch_columns;
     std::vector<int> fetch_block_rows;
@@ -2622,7 +2642,7 @@ TablePtr SegmentImpl::fetch_normal(
     }
   }
 
-  // Phase 3: Construct result arrays
+  // Construct the output arrays.
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
   bool has_segment_row_id_column = false;
@@ -4114,6 +4134,7 @@ Status SegmentImpl::load_vector_index_blocks() {
 
       auto vector_index_params = std::dynamic_pointer_cast<VectorIndexParams>(
           new_field_params.index_params());
+
       if (block.type_ == BlockType::VECTOR_INDEX) {
         if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED ||
             !segment_meta_->vector_indexed(column)) {
@@ -4128,6 +4149,7 @@ Status SegmentImpl::load_vector_index_blocks() {
               vector_index_params->quantizer_param()));
         }
       }
+
 
       std::string index_path;
       if (block.type_ == BlockType::VECTOR_INDEX) {

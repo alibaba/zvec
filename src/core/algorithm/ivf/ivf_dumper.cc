@@ -378,7 +378,7 @@ int IVFDumper::dump_padding(size_t data_size, size_t *padding_size) const {
 
   std::string padding(*padding_size, '\0');
   if (dumper_->write(padding.data(), *padding_size) != *padding_size) {
-    LOG_ERROR("Append padding failed, size %lu", *padding_size);
+    LOG_ERROR("Append padding failed, size %zu", *padding_size);
     return IndexError_WriteData;
   }
 

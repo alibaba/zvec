@@ -27,6 +27,8 @@ __all__: list[str] = [
     "IndexOption",
     "IndexParam",
     "InvertIndexParam",
+    "OmegaIndexParam",
+    "OmegaQueryParam",
     "IvfRabitqIndexParam",
     "IvfRabitqQueryParam",
     "OptimizeOption",
@@ -1187,6 +1189,182 @@ class InvertIndexParam(IndexParam):
         bool: Whether range optimization is enabled for this inverted index.
         """
 
+class OmegaIndexParam(VectorIndexParam):
+    """
+
+    Parameters for configuring an OMEGA index.
+
+    OMEGA is an advanced graph-based index that can fall back to HNSW when omega
+    functionality is disabled. This class encapsulates its construction hyperparameters.
+
+    Attributes:
+        metric_type (MetricType): Distance metric used for similarity computation.
+            Default is ``MetricType.IP`` (inner product).
+        m (int): Number of bi-directional links created for every new element
+            during construction. Higher values improve accuracy but increase
+            memory usage and construction time. Default is 100.
+        ef_construction (int): Size of the dynamic candidate list for nearest
+            neighbors during index construction. Larger values yield better
+            graph quality at the cost of slower build time. Default is 500.
+        quantize_type (QuantizeType): Optional quantization type for vector
+            compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+            disable quantization.
+
+    Examples:
+        >>> from zvec.typing import MetricType, QuantizeType
+        >>> params = OmegaIndexParam(
+        ...     metric_type=MetricType.COSINE,
+        ...     m=16,
+        ...     ef_construction=200,
+        ...     quantize_type=QuantizeType.INT8
+        ... )
+        >>> print(params)
+        {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8'}
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        m: typing.SupportsInt = 100,
+        ef_construction: typing.SupportsInt = 500,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        min_vector_threshold: typing.SupportsInt = 100000,
+        num_training_queries: typing.SupportsInt = 1000,
+        ef_training: typing.SupportsInt = 1000,
+        window_size: typing.SupportsInt = 100,
+        ef_groundtruth: typing.SupportsInt = 0,
+        k_train: typing.SupportsInt = 1,
+    ) -> None:
+        """
+        Constructs an OmegaIndexParam instance.
+
+        Args:
+            metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
+            m (int, optional): Number of bi-directional links. Defaults to 100.
+            ef_construction (int, optional): Candidate list size during construction.
+                Defaults to 500.
+            quantize_type (QuantizeType, optional): Vector quantization type.
+                Defaults to QuantizeType.UNDEFINED.
+            min_vector_threshold (int, optional): Minimum doc count required to
+                enable OMEGA training.
+            num_training_queries (int, optional): Number of sampled queries for training.
+            ef_training (int, optional): Search ef used when collecting training records.
+            window_size (int, optional): Traversal window size.
+            ef_groundtruth (int, optional): ef used to compute training ground truth.
+            k_train (int, optional): Number of top GT results required for a
+                positive training label.
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def ef_construction(self) -> int:
+        """
+        int: Candidate list size during index construction.
+        """
+
+    @property
+    def m(self) -> int:
+        """
+        int: Maximum number of neighbors per node in upper layers.
+        """
+
+    @property
+    def min_vector_threshold(self) -> int:
+        """
+        int: Minimum vectors required to enable OMEGA optimization.
+        """
+
+    @property
+    def num_training_queries(self) -> int:
+        """
+        int: Number of sampled queries used for OMEGA training.
+        """
+
+    @property
+    def ef_training(self) -> int:
+        """
+        int: Search ef used when collecting training records.
+        """
+
+    @property
+    def window_size(self) -> int:
+        """
+        int: Traversal window size used by OMEGA.
+        """
+
+    @property
+    def ef_groundtruth(self) -> int:
+        """
+        int: ef used for ground truth computation (0 means brute force).
+        """
+
+    @property
+    def k_train(self) -> int:
+        """
+        int: Number of top GT results required for a positive training label.
+        """
+
+class OmegaQueryParam(HnswQueryParam):
+    """
+
+    Query parameters for OMEGA index with adaptive early stopping.
+
+    OMEGA extends HNSW with machine learning-based early stopping that can
+    dynamically adjust search effort to meet a target recall.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.OMEGA``.
+        ef (int): Size of the dynamic candidate list during search.
+            Larger values improve recall but slow down search.
+            Default is 300.
+        target_recall (float): Target recall for OMEGA early stopping.
+            OMEGA will stop searching when predicted recall meets this target.
+            Valid range: 0.0 to 1.0. Default is 0.95.
+        radius (float): Search radius for range queries. Default is 0.0.
+        is_linear (bool): Force linear search. Default is False.
+        is_using_refiner (bool): Whether to use refiner for the query. Default is False.
+
+    Examples:
+        >>> params = OmegaQueryParam(ef=300, target_recall=0.98)
+        >>> print(params.target_recall)
+        0.98
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        ef: typing.SupportsInt = 300,
+        target_recall: typing.SupportsFloat = 0.95,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+    ) -> None:
+        """
+        Constructs an OmegaQueryParam instance.
+
+        Args:
+            ef (int, optional): Search-time candidate list size.
+                Higher values improve accuracy. Defaults to 300.
+            target_recall (float, optional): Target recall for early stopping.
+                Valid range: 0.0 to 1.0. Defaults to 0.95.
+            radius (float, optional): Search radius for range queries. Default is 0.0.
+            is_linear (bool, optional): Force linear search. Default is False.
+            is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+        """
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def target_recall(self) -> float:
+        """
+        float: Target recall for OMEGA early stopping (0.0 to 1.0).
+        """
+
 class OptimizeOption:
     """
 
@@ -1204,7 +1382,10 @@ class OptimizeOption:
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, concurrency: typing.SupportsInt = 0) -> None:
+    def __init__(
+        self,
+        concurrency: typing.SupportsInt = 0,
+    ) -> None:
         """
         Constructs an OptimizeOption instance.
 
