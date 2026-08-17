@@ -28,7 +28,8 @@ enum class IndexType : uint32_t {
   HNSW_RABITQ = 4,
   DISKANN = 5,
   VAMANA = 6,
-  OMEGA = 7,
+  IVF_RABITQ = 7,
+  OMEGA = 8,
   INVERT = 10,
   FTS = 11,
 };

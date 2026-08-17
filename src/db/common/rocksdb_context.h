@@ -120,6 +120,11 @@ struct RocksdbContext {
   size_t count();
 
 
+  bool read_only() const {
+    return read_only_;
+  }
+
+
   // Create a Rocksdb instance from Args
   Status create(Args args);
 

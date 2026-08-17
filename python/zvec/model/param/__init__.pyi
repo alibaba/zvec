@@ -13,6 +13,8 @@ __all__: list[str] = [
     "AddColumnOption",
     "AlterColumnOption",
     "CollectionOption",
+    "DiskAnnIndexParam",
+    "DiskAnnQueryParam",
     "FlatIndexParam",
     "FtsIndexParam",
     "FtsQueryParam",
@@ -27,6 +29,8 @@ __all__: list[str] = [
     "InvertIndexParam",
     "OmegaIndexParam",
     "OmegaQueryParam",
+    "IvfRabitqIndexParam",
+    "IvfRabitqQueryParam",
     "OptimizeOption",
     "QuantizerParam",
     "QueryParam",
@@ -134,6 +138,124 @@ class CollectionOption:
     def enable_mmap(self) -> bool: ...
     @property
     def read_only(self) -> bool: ...
+
+class DiskAnnIndexParam(VectorIndexParam):
+    """
+
+    Parameters for configuring a DiskAnn index.
+
+    DiskAnn stores compressed vector in memory and high-definition vector on disk. At query time,
+    only compressed vector will be loaded into memory. By this way, search memory at runtime is diminished.
+
+    Attributes:
+        metric_type (MetricType): Distance metric used for similarity computation.
+            Default is ``MetricType.IP`` (inner product).
+        max_degree (int): Maximum out-degree of each node in the Vamana graph.
+            Larger values improve recall at the cost of build time and index size.
+            Clamped to the range [1, 100]. Default is 100.
+        list_size (int): Candidate list size used during graph construction.
+            Larger values improve graph quality and recall at the cost of build time.
+            Clamped to the range [10, 100]. Default is 50.
+        pq_chunk_num (int): Number of PQ chunks used for product-quantizing the
+            in-memory compressed vectors. ``0`` means auto-pick based on dimension.
+            Clamped to the range [1, 1024]. Default is 0.
+        quantize_type (QuantizeType): Optional quantization type for vector
+            compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``.
+
+    Examples:
+        >>> from zvec.typing import MetricType, QuantizeType
+        >>> params = DiskAnnIndexParam(
+        ...     metric_type=MetricType.COSINE,
+        ...     max_degree=100,
+        ...     list_size=50,
+        ...     pq_chunk_num=8,
+        ...     quantize_type=QuantizeType.FP16
+        ... )
+        >>> print(params.max_degree)
+        100
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        max_degree: typing.SupportsInt = 100,
+        list_size: typing.SupportsInt = 50,
+        pq_chunk_num: typing.SupportsInt = 0,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        quantizer_param: QuantizerParam = ...,
+    ) -> None:
+        """
+
+        Constructs a DiskAnnIndexParam instance.
+
+        Args:
+            metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
+            max_degree (int, optional): Maximum out-degree of each node in the Vamana
+                graph. Clamped to [1, 100]. Defaults to 100.
+            list_size (int, optional): Candidate list size used during graph
+                construction. Clamped to [10, 100]. Defaults to 50.
+            pq_chunk_num (int, optional): Number of PQ chunks for product
+                quantization. ``0`` means auto-pick based on dimension.
+                Clamped to [1, 1024]. Defaults to 0.
+            quantize_type (QuantizeType, optional): Vector quantization type.
+                Defaults to QuantizeType.UNDEFINED.
+            quantizer_param (QuantizerParam, optional): Quantizer configuration.
+                Defaults to QuantizerParam().
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def max_degree(self) -> int:
+        """int: Maximum out-degree of each node in the Vamana graph."""
+
+    @property
+    def list_size(self) -> int:
+        """int: Candidate list size used during graph construction."""
+
+    @property
+    def pq_chunk_num(self) -> int:
+        """int: Number of PQ chunks for product quantization."""
+
+class DiskAnnQueryParam(QueryParam):
+    """
+
+    Query parameters for DiskAnn index.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.DISKANN``.
+        list_size (int): Beam-search candidate list size used at query time.
+            Higher values improve recall but increase latency. Default is 300.
+
+    Examples:
+        >>> params = DiskAnnQueryParam(list_size=20)
+        >>> print(params.list_size)
+        20
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(self, list_size: typing.SupportsInt = 300) -> None:
+        """
+
+        Constructs a DiskAnnQueryParam instance.
+
+        Args:
+            list_size (int, optional): Beam-search candidate list size during
+                graph search. Higher values improve recall at the cost of latency.
+                Defaults to 300.
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def list_size(self) -> int:
+        """int: Beam-search candidate list size during DiskAnn query."""
 
 class FlatIndexParam(VectorIndexParam):
     """
@@ -469,6 +591,72 @@ class HnswRabitqQueryParam(QueryParam):
         int: Size of the dynamic candidate list during HNSW search.
         """
 
+class IvfRabitqIndexParam(VectorIndexParam):
+    """
+    Parameters for configuring an IVF index with RaBitQ quantization.
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        nlist: typing.SupportsInt = 1024,
+        total_bits: typing.SupportsInt = 7,
+        sample_count: typing.SupportsInt = 0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def nlist(self) -> int:
+        """
+        int: Number of IVF cluster centers.
+        """
+
+    @property
+    def total_bits(self) -> int:
+        """
+        int: Total bits for RaBitQ quantization.
+        """
+
+    @property
+    def sample_count(self) -> int:
+        """
+        int: Sample count for RaBitQ training.
+        """
+
+class IvfRabitqQueryParam(QueryParam):
+    """
+    Query parameters for IVF RaBitQ index.
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        nprobe: typing.SupportsInt = 10,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def nprobe(self) -> int:
+        """
+        int: Number of inverted lists to search during IVF RaBitQ query.
+        """
+
+    @property
+    def scale_factor(self) -> float:
+        """
+        float: Candidate expansion factor used by the refiner.
+        """
+
 class IVFIndexParam(VectorIndexParam):
     """
 
@@ -606,6 +794,8 @@ class VamanaIndexParam(VectorIndexParam):
         use_contiguous_memory (bool): Allocate contiguous memory arena. Default is False.
         use_id_map (bool): Reserved flag for id remapping. Default is False.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
+        quantizer_param (QuantizerParam): Optional quantizer configuration.
+        two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is False.
 
     Examples:
         >>> params = VamanaIndexParam(metric_type=MetricType.COSINE, max_degree=64)
@@ -622,6 +812,8 @@ class VamanaIndexParam(VectorIndexParam):
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        quantizer_param: QuantizerParam = ...,
+        two_pass_build: bool = False,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -649,6 +841,10 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def use_id_map(self) -> bool:
         """bool: Reserved flag for engine-level id remapping."""
+
+    @property
+    def two_pass_build(self) -> bool:
+        """bool: Whether full-graph two-pass Vamana construction is enabled."""
 
 class VamanaQueryParam(QueryParam):
     """
@@ -716,13 +912,41 @@ class FtsIndexParam(IndexParam):
 
     Attributes:
         type (IndexType): Always ``IndexType.FTS``.
-        tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
-            "whitespace").
+        tokenizer_name (str): Name of the tokenizer (one of "standard", "ngram",
+            "jieba", "whitespace").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
-            Supported filters are "lowercase" and "ascii_folding". Default is
-            ["lowercase"].
-        extra_params (str): Additional parameters passed to the tokenizer.
+            Supported filters are "lowercase", "ascii_folding", and "stemmer".
+            Default is ["lowercase"].
+        extra_params (str): Additional tokenizer/filter parameters as an empty
+            string or JSON object string. Supported keys are grouped by component:
+            Tokenizers:
+                standard:
+                    - "max_token_length" (positive integer).
+                ngram:
+                    - "ngram_min" (positive integer, default 2).
+                    - "ngram_max" (positive integer, default 2).
+                    - "token_chars" (array of "letter", "digit",
+                      "whitespace", "punctuation", "symbol"; default [] keeps
+                      all valid UTF-8 characters). custom_token_chars is not
+                      supported.
+                jieba:
+                    - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+                      hmm_model.utf8).
+                    - "user_dict_path" (user dictionary path).
+                    - "cut_mode" ("search", "mix", "full", or "hmm"; default
+                      "search").
+                whitespace:
+                    - no extra_params.
+            Filters:
+                lowercase:
+                    - no extra_params.
+                ascii_folding:
+                    - no extra_params.
+                stemmer:
+                    - "stemmer_lang" (Snowball language/algorithm; default
+                      "english"), for example {"stemmer_lang":"porter"} for ES
+                      behaviour.
             Default is "".
 
     Examples:
@@ -746,8 +970,36 @@ class FtsIndexParam(IndexParam):
         Args:
             tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
             filters (list[str], optional): Token filter names. Supports
-                "lowercase" and "ascii_folding". Defaults to ["lowercase"].
-            extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+                "lowercase", "ascii_folding", and "stemmer". Defaults to
+                ["lowercase"].
+            extra_params (str, optional): Extra tokenizer/filter parameters as an
+                empty string or JSON object string. Supported keys:
+                Tokenizers:
+                    standard:
+                        - "max_token_length" (positive integer).
+                    ngram:
+                        - "ngram_min" (positive integer, default 2).
+                        - "ngram_max" (positive integer, default 2).
+                        - "token_chars" (array of "letter", "digit",
+                          "whitespace", "punctuation", "symbol"; default []
+                          keeps all valid UTF-8 characters). custom_token_chars
+                          is not supported.
+                    jieba:
+                        - "jieba_dict_dir".
+                        - "user_dict_path".
+                        - "cut_mode" ("search", "mix", "full", or "hmm";
+                          default "search").
+                    whitespace:
+                        - no extra_params.
+                Filters:
+                    lowercase:
+                        - no extra_params.
+                    ascii_folding:
+                        - no extra_params.
+                    stemmer:
+                        - "stemmer_lang" (Snowball language/algorithm; default
+                          "english").
+                Defaults to "".
         """
 
     def __repr__(self) -> str: ...
@@ -1328,7 +1580,13 @@ class _SearchQuery:
     def __getstate__(self) -> tuple: ...
     def __init__(self) -> None: ...
     def __setstate__(self, arg0: tuple) -> None: ...
-    def set_vector(self, arg0: ..., arg1: typing.Any) -> None: ...
+    def set_vector(self, field_schema: typing.Any, obj: typing.Any) -> None:
+        """
+        Set the query vector.
+
+        Dense vector source data must not be modified until the query finishes.
+        """
+
     @property
     def output_fields(self) -> list[str] | None: ...
     @output_fields.setter

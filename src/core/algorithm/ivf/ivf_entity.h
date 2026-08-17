@@ -69,7 +69,7 @@ class IVFEntity {
 
   //! Retrieve the primary keys by local id in heap
   int retrieve_keys(IndexDocumentHeap *heap) const {
-    for (auto &it : (*heap)) {
+    for (auto &it : heap->mutable_container()) {
       uint64_t key = this->get_key(it.index());
       if (key == kInvalidKey) {
         return IndexError_ReadData;
@@ -233,7 +233,7 @@ class IVFEntity {
       return this->convert_to_normalize_value(scale);
     }
 
-    return norm_value_;
+    return 1.0f;
   }
 
   //! Check whether the feature segment exist

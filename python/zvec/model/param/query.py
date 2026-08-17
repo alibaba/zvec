@@ -24,6 +24,7 @@ from . import (
     HnswRabitqQueryParam,
     IVFQueryParam,
     OmegaQueryParam,
+    IvfRabitqQueryParam,
 )
 
 __all__ = ["Fts", "Query", "VectorQuery"]
@@ -61,7 +62,7 @@ class Query:
         field_name (str): Name of the field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
-        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, OmegaQueryParam, FtsQueryParam]], optional):
+        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, IvfRabitqQueryParam, OmegaQueryParam, FtsQueryParam]], optional):
             Index-specific query parameters. Default is None.
         fts (Optional[Fts], optional): Full-text search parameters. Default is None.
 
@@ -103,6 +104,7 @@ class Query:
             HnswRabitqQueryParam,
             IVFQueryParam,
             OmegaQueryParam,
+            IvfRabitqQueryParam,
             FtsQueryParam,
         ]
     ] = None
@@ -131,19 +133,39 @@ class Query:
             bool: True if `fts` is set with a query_string or match_string.
         """
         if self.fts is not None:
-            return bool(self.fts.query_string) or bool(self.fts.match_string)
+            return bool(self._fts_query_string()) or bool(self._fts_match_string())
         return False
 
+    def _fts_query_string(self) -> str:
+        return self._fts_string(
+            "query_string", self.fts.query_string if self.fts else None
+        )
+
+    def _fts_match_string(self) -> str:
+        return self._fts_string(
+            "match_string", self.fts.match_string if self.fts else None
+        )
+
+    @staticmethod
+    def _fts_string(name: str, value: Optional[str]) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError(f"Fts {name} must be a string")
+        return value if value.strip() else ""
+
     def _validate(self) -> None:
-        if self.field_name is None:
-            raise ValueError("Field name cannot be empty")
+        if not isinstance(self.field_name, str) or not self.field_name.strip():
+            raise ValueError("Field name must be a non-empty string")
         if self.has_id() and self.has_vector():
             raise ValueError("Cannot provide both id and vector")
         if self.has_fts() and (self.has_vector() or self.has_id()):
             raise ValueError(
                 "Cannot combine fts with vector search fields (id/vector) in a single Query"
             )
-        if self.fts is not None and self.fts.query_string and self.fts.match_string:
+        if self.fts is not None and not self.has_fts():
+            raise ValueError("Fts requires a non-empty query_string or match_string")
+        if self._fts_query_string() and self._fts_match_string():
             raise ValueError(
                 "Cannot provide both query_string and match_string in Fts; "
                 "they are mutually exclusive"

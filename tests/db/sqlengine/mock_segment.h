@@ -382,6 +382,10 @@ class MockSegment : public Segment {
     return 0;
   }
 
+  bool has_record() override {
+    return false;
+  }
+
   Status add_column(FieldSchema::Ptr column_schema,
                     const std::string &expression,
                     const AddColumnOptions &options) override {

@@ -34,13 +34,18 @@ else()
   # Empty stub library for unsupported platforms
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/diskann_stub.cc
     "// Stub implementation for unsupported platforms\n"
-    "// DiskAnn only supports Linux x86_64\n"
+    "// DiskAnn supports Linux (x86_64/ARM64) and macOS ARM64\n"
     "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
   )
 
   if(MSVC)
     # MSVC: STATIC-only stub to avoid creating an empty DLL with no exports
-    # (MSVC linker fails to produce an import library when there are zero exports)
+    # (MSVC linker fails to produce an import library when there are zero exports).
+    # cc_library with STATIC-only creates target "core_knn_diskann" but NOT the
+    # "core_knn_diskann_static" variant (that only happens with STATIC+SHARED).
+    # The Python binding references core_knn_diskann_static on all platforms, so
+    # create an ALIAS so the same target name works under MSVC as well.
+    # ($<TARGET_FILE:> supports ALIAS targets since CMake 3.18.)
     cc_library(
         NAME core_knn_diskann
         STATIC STRICT ALWAYS_LINK
@@ -49,6 +54,7 @@ else()
         INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
         VERSION "${PROXIMA_ZVEC_VERSION}"
       )
+    add_library(core_knn_diskann_static ALIAS core_knn_diskann)
   else()
     cc_library(
         NAME core_knn_diskann
@@ -64,6 +70,7 @@ endif()
 if(RABITQ_SUPPORTED)
   message(STATUS "BUILD RABITQ")
   cc_directory(hnsw_rabitq)
+  cc_directory(ivf_rabitq)
 else()
   message(STATUS "NOT BUILD RABITQ")
   # Empty stub library for unsupported platforms
@@ -81,4 +88,33 @@ else()
       INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
       VERSION "${PROXIMA_ZVEC_VERSION}"
     )
+
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+    "// Stub implementation for unsupported platforms\n"
+    "// IVF RaBitQ only supports Linux x86_64\n"
+    "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
+  )
+
+  if(MSVC)
+    # MSVC cannot create an import library for an empty DLL. Keep the
+    # cross-platform static target name expected by the Python binding.
+    cc_library(
+        NAME core_knn_ivf_rabitq
+        STATIC STRICT ALWAYS_LINK
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+        LIBS core_framework
+        INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+        VERSION "${PROXIMA_ZVEC_VERSION}"
+      )
+    add_library(core_knn_ivf_rabitq_static ALIAS core_knn_ivf_rabitq)
+  else()
+    cc_library(
+        NAME core_knn_ivf_rabitq
+        STATIC SHARED STRICT ALWAYS_LINK
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+        LIBS core_framework
+        INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+        VERSION "${PROXIMA_ZVEC_VERSION}"
+      )
+  endif()
 endif()

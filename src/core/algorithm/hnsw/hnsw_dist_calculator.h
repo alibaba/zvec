@@ -14,6 +14,7 @@
 #pragma once
 
 #include <zvec/core/framework/index_meta.h>
+#include <zvec/core/framework/index_provider.h>
 #include "hnsw_entity.h"
 
 namespace zvec {
@@ -87,6 +88,11 @@ class HnswDistCalculator {
     batch_distance_ = batch_distance;
   }
 
+  //! Update the dimension used by distance computation
+  inline void set_dim(uint32_t dim) {
+    dim_ = dim;
+  }
+
   //! Reset query vector data
   inline void reset_query(const void *query) {
     error_ = false;
@@ -120,7 +126,7 @@ class HnswDistCalculator {
   inline dist_t dist(node_id_t id) {
     compare_cnt_++;
     IndexStorage::MemoryBlock vec_block;
-    int ret = entity_->get_vector(id, vec_block);
+    int ret = get_vector(id, vec_block);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
@@ -143,7 +149,7 @@ class HnswDistCalculator {
 
 
     IndexStorage::MemoryBlock vec_block_feat;
-    int ret = entity_->get_vector(lhs, vec_block_feat);
+    int ret = get_vector(lhs, vec_block_feat);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", lhs);
       error_ = true;
@@ -152,7 +158,7 @@ class HnswDistCalculator {
     const void *feat = vec_block_feat.data();
 
     IndexStorage::MemoryBlock vec_block_query;
-    ret = entity_->get_vector(rhs, vec_block_query);
+    ret = get_vector(rhs, vec_block_query);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", rhs);
       error_ = true;
@@ -192,7 +198,7 @@ class HnswDistCalculator {
     pairwise_dist_cnt_++;
 
     IndexStorage::MemoryBlock vec_block;
-    int ret = entity_->get_vector(id, vec_block);
+    int ret = get_vector(id, vec_block);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
@@ -238,6 +244,43 @@ class HnswDistCalculator {
     return dim_;
   }
 
+  //! Bind a provider which supplies the original vectors, so vector
+  //! fetches by node id go through it instead of the entity
+  void set_provider(IndexProvider::Pointer provider) {
+    provider_ = std::move(provider);
+  }
+
+  inline bool has_provider() const {
+    return provider_ != nullptr;
+  }
+
+  //! Get a vector by node id, from the provider when set
+  int get_vector(node_id_t id, IndexStorage::MemoryBlock &block) const {
+    if (provider_) {
+      key_t key = entity_->get_key(id);
+      if (ailego_unlikely(key == kInvalidKey)) {
+        return IndexError_NoExist;
+      }
+      return provider_->get_vector(key, block);
+    }
+    return entity_->get_vector(id, block);
+  }
+
+  //! Batch get vectors by node ids
+  int get_vector(const node_id_t *ids, uint32_t count,
+                 std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
+    vec_blocks.reserve(vec_blocks.size() + count);
+    for (uint32_t i = 0; i < count; ++i) {
+      IndexStorage::MemoryBlock block;
+      int ret = get_vector(ids[i], block);
+      if (ailego_unlikely(ret != 0)) {
+        return ret;
+      }
+      vec_blocks.push_back(std::move(block));
+    }
+    return 0;
+  }
+
  private:
   HnswDistCalculator(const HnswDistCalculator &) = delete;
   HnswDistCalculator &operator=(const HnswDistCalculator &) = delete;
@@ -255,6 +298,9 @@ class HnswDistCalculator {
   uint64_t pairwise_dist_cnt_;  // record actual pairwise distance work
   // uint32_t compare_cnt_batch_;  // record batch distance compute time
   bool error_{false};
+
+  // get original vector, used to build graph
+  IndexProvider::Pointer provider_{};
 };
 
 }  // namespace core

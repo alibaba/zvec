@@ -166,7 +166,7 @@ void VamanaContext::fill_random_to_topk_full() {
     node_id_t random_id = rng() % doc_cnt;
     if (entity_->get_key(random_id) != kInvalidKey) {
       dist_t random_dist = dc_.dist(random_id);
-      topk_heap_.emplace_back(random_id, random_dist);
+      topk_heap_.emplace(random_id, random_dist);
     }
     ++attempts;
   }

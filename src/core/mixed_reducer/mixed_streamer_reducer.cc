@@ -12,16 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "mixed_streamer_reducer.h"
-#include <algorithm>
 #include <ailego/pattern/defer.h>
 #include <utility/sparse_utility.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
-#include <zvec/core/framework/index_logger.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec {
@@ -142,10 +141,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   ailego::ElapsedTime timer;
 
 
-  // PK rewrite is assigned by the producer before enqueueing; consumers can
-  // still feed the target streamer in parallel.
-  const size_t add_thread_count = num_of_add_threads_;
-  std::vector<int> add_results(add_thread_count, -1);
+  std::vector<int> add_results(num_of_add_threads_, -1);
   auto add_group = thread_pool_->make_group();
 
   std::vector<int> read_results(streamers_.size(), -1);
@@ -165,7 +161,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   }
 
   if (is_sparse_) {
-    for (size_t i = 0; i < add_thread_count; i++) {
+    for (size_t i = 0; i < num_of_add_threads_; i++) {
       add_group->submit(ailego::Closure::New(
           this, &MixedStreamerReducer::add_sparse_vec, &add_results[i]));
     }
@@ -178,7 +174,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
     sparse_mt_list_.done();
   } else {
-    for (size_t i = 0; i < add_thread_count; i++) {
+    for (size_t i = 0; i < num_of_add_threads_; i++) {
       add_group->submit(ailego::Closure::New(
           this, &MixedStreamerReducer::add_vec, &add_results[i]));
       // add_vec(&add_results[i]);
@@ -210,67 +206,12 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
   stats_.set_reduced_costtime(timer.seconds());
   state_ = STATE_REDUCE;
-
-
   if (target_builder_ != nullptr) {
-    IndexBuild();
-
-    // Best-effort persistence hook for builder-backed indexes. Some newer
-    // flows want the built graph persisted immediately after reduce(), but
-    // legacy paths such as IVF already perform their own dump/reopen later in
-    // the merge flow. Missing storage context must not break those existing
-    // paths.
-
-    if (target_storage_ == nullptr) {
-      LOG_WARN("target_storage_ is null, skip dump/reload hook");
-      LOG_INFO("End brute force reduce. cost time: [%zu]s",
-               (size_t)timer.seconds());
-      return 0;
-    }
-
-    if (target_file_path_.empty()) {
-      LOG_WARN("target_file_path_ is empty, skip dump/reload hook");
-      LOG_INFO("End brute force reduce. cost time: [%zu]s",
-               (size_t)timer.seconds());
-      return 0;
-    }
-
-
-    // Create a FileDumper that writes to the file
-    auto dumper = IndexFactory::CreateDumper("FileDumper");
-    if (dumper == nullptr) {
-      LOG_ERROR("Failed to create dumper");
-      return IndexError_Runtime;
-    }
-
-    // Initialize the dumper with the file path
-    int ret = dumper->create(target_file_path_);
+    int ret = IndexBuild();
     if (ret != 0) {
-      LOG_ERROR("Failed to create dumper at path=%s, ret=%d",
-                target_file_path_.c_str(), ret);
+      LOG_ERROR("Failed to build target index, ret=%d", ret);
       return ret;
     }
-
-    // Dump the builder's entity to the file
-    ret = target_builder_->dump(dumper);
-    if (ret != 0) {
-      LOG_ERROR("Failed to dump builder, ret=%d", ret);
-      return ret;
-    }
-
-    // Close the dumper to flush data
-    ret = dumper->close();
-    if (ret != 0) {
-      LOG_ERROR("Failed to close dumper, ret=%d", ret);
-      return ret;
-    }
-
-
-    // NOTE: We cannot safely reload the streamer here (close/open causes
-    // crashes). The streamer will properly load data when the collection is
-    // reopened. For now, auto-training will need to handle the case where
-    // streamer doc_count=0.
-  } else {
   }
 
   LOG_INFO("End brute force reduce. cost time: [%zu]s",
@@ -320,7 +261,6 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 
   IndexProvider::Pointer provider = streamer->create_provider();
   IndexProvider::Iterator::Pointer iterator = provider->create_iterator();
-  std::vector<std::pair<uint32_t, std::vector<uint8_t>>> pending_items;
 
   while (iterator->is_valid()) {
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
@@ -349,18 +289,13 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       memcpy(bytes.data(), iterator->data(), bytes.size());
     }
 
-    pending_items.emplace_back(iterator->key() + id_offset, std::move(bytes));
-    iterator->next();
-  }
-
-  std::sort(
-      pending_items.begin(), pending_items.end(),
-      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
-  for (auto &item : pending_items) {
-    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(item.second)))) {
-      LOG_ERROR("Produce vector to queue failed. key[%u]", item.first);
+    // TODO: use id instead of key
+    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(bytes)))) {
+      LOG_ERROR("Produce vector to queue failed. key[%lu]",
+                (size_t)iterator->key());
       return IndexError_Runtime;
     }
+    iterator->next();
   }
   return 0;
 }
@@ -527,7 +462,6 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
       streamer->create_sparse_provider();
   IndexStreamer::SparseProvider::Iterator::Pointer iterator =
       provider->create_iterator();
-  std::vector<SparseVectorItem> pending_items;
 
   while (iterator->is_valid()) {
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
@@ -567,24 +501,15 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
     memcpy(sparse_indices.data(), iterator->sparse_indices(),
            sparse_indices.size() * sizeof(uint32_t));
 
-    pending_items.emplace_back(iterator->key() + id_offset,
-                               std::move(sparse_indices),
-                               std::move(sparse_values));
-    iterator->next();
-  }
-
-  std::sort(pending_items.begin(), pending_items.end(),
-            [](const SparseVectorItem &lhs, const SparseVectorItem &rhs) {
-              return lhs.pkey_ < rhs.pkey_;
-            });
-  for (auto &item : pending_items) {
-    if (!sparse_mt_list_.produce(
-            SparseVectorItem((*next_id)++, std::move(item.sparse_indices_),
-                             std::move(item.sparse_values_)))) {
+    // TODO: use id instead of key
+    if (!sparse_mt_list_.produce(SparseVectorItem((*next_id)++,
+                                                  std::move(sparse_indices),
+                                                  std::move(sparse_values)))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
-                static_cast<size_t>(item.pkey_));
+                (size_t)iterator->key());
       return IndexError_Runtime;
     }
+    iterator->next();
   }
   return 0;
 }
@@ -657,12 +582,16 @@ int MixedStreamerReducer::IndexBuild() {
                                             target_holder);
     target_holder = target_builder_converter_->result();
   }
-
-  target_builder_->train(target_holder);
-
-  target_builder_->build(target_holder);
-
-
+  int ret = target_builder_->train(target_holder);
+  if (ret != 0) {
+    LOG_ERROR("Failed to train target builder, ret=%d", ret);
+    return ret;
+  }
+  ret = target_builder_->build(target_holder);
+  if (ret != 0) {
+    LOG_ERROR("Failed to build target index, ret=%d", ret);
+    return ret;
+  }
   return 0;
 }
 

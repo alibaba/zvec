@@ -39,8 +39,16 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
     endif()
 endif()
 
+set(ZVEC_DB_LIBRARY_OPTIONS)
+if(WIN32 AND BUILD_ZVEC_SHARED)
+  list(APPEND ZVEC_DB_LIBRARY_OPTIONS
+    OBJECTS
+    EXPORT_DEF ZVEC_DB_BUILD_SHARED
+  )
+endif()
+
 cc_library(
-  NAME zvec STATIC STRICT SRCS_NO_GLOB PACKED
+  NAME zvec STATIC STRICT SRCS_NO_GLOB PACKED ${ZVEC_DB_LIBRARY_OPTIONS}
   SRCS ${ALL_DB_SRCS} ${CMAKE_CURRENT_BINARY_DIR}/proto/zvec.pb.cc
   INCS ${ZVEC_DB_INCS}
   PUBINCS ${PROJECT_ROOT_DIR}/src/include
@@ -54,6 +62,7 @@ cc_library(
     libprotobuf
     FastPFOR
     cppjieba
+    snowball
     Arrow::arrow_static
     Arrow::parquet_static
     Arrow::arrow_compute

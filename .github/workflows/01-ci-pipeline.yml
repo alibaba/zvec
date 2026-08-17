@@ -24,6 +24,7 @@ on:
   merge_group:
   pull_request:
     branches: [ "main" ]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: *paths-ignore
   workflow_dispatch:
 
@@ -114,3 +115,9 @@ jobs:
     name: Build & Test (iOS)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/06-ios-build.yml
+
+  build-and-test-musllinux:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Test (musllinux)
+    needs: [lint, clang-tidy]
+    uses: ./.github/workflows/09-musllinux-build.yml

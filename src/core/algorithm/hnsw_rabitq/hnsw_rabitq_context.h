@@ -49,8 +49,8 @@ class HnswRabitqContext : public IndexContext {
  public:
   //! Set topk of search result
   void set_topk(uint32_t val) override {
-    topk_ = val;
-    topk_heap_.limit(std::max(val, ef_));
+    topk_ = group_by_search() ? group_topk_ * group_num_ : val;
+    topk_heap_.limit(std::max(topk_, ef_));
   }
 
   //! Retrieve search result
@@ -77,6 +77,14 @@ class HnswRabitqContext : public IndexContext {
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
   }
 
   uint32_t magic(void) const override {
@@ -462,12 +470,9 @@ class HnswRabitqContext : public IndexContext {
   void set_group_params(uint32_t group_num, uint32_t group_topk) override {
     group_num_ = group_num;
     group_topk_ = group_topk;
-
-    topk_ = group_topk_ * group_num_;
-
-    topk_heap_.limit(std::max(topk_, ef_));
-
     group_topk_heaps_.clear();
+
+    set_topk(group_topk_ * group_num_);
   }
 
   void set_provider(IndexProvider::Pointer provider) {

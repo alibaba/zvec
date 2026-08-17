@@ -698,11 +698,11 @@ Status SegmentHelper::ReduceVectorIndex(
           concurrency, &vector_indexer);
       CHECK_RETURN_STATUS(s);
 
-      // The training step (for RABITQ) and the subsequent quantize merge both
-      // rely on the raw provider held by the flat indexer, so its Close() is
-      // deferred until after the quantize indexer is written.
+      // HNSW_RABITQ training relies on the raw provider held by the flat
+      // indexer, so its Close() is deferred until after the quantize indexer
+      // is written.
       core::IndexProvider::Pointer raw_vector_provider;
-      if (vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+      if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
         raw_vector_provider = vector_indexer->create_index_provider();
       }
 
@@ -759,8 +759,8 @@ namespace {
 
 // Only the first indexer's file is reused as the merge base; the remaining
 // indexers are merged in via Merge(). Reuse is restricted to streaming
-// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ
-// fall back to the full-rebuild merge.
+// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ,
+// IVF_RABITQ fall back to the full-rebuild merge.
 bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                           const FieldSchema &output_field,
                           const IndexFilter::Ptr &filter) {
@@ -797,7 +797,7 @@ Status SegmentHelper::MergeWithOptionalReuse(
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
     merge_options.write_concurrency =
-        GlobalConfig::Instance().optimize_thread_count();
+        static_cast<uint32_t>(merge_options.pool->count());
   } else {
     merge_options.write_concurrency = concurrency;
   }
@@ -871,6 +871,11 @@ Status SegmentHelper::PrepareQuantizeField(
   return Status::NotSupported(
       "RabitQ is not supported on this platform (Linux x86_64 only)");
 #else
+  if (vector_index_params->type() == IndexType::IVF_RABITQ) {
+    *out_field = field_clone;
+    return Status::OK();
+  }
+
   if (raw_vector_provider == nullptr) {
     return Status::InvalidArgument(
         "raw_vector_provider is required for RABITQ training");

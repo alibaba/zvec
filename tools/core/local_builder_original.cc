@@ -24,9 +24,9 @@
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #endif
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_logger.h"
 #include "zvec/core/framework/index_plugin.h"
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
@@ -169,6 +169,53 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
 #endif
 }
 
+//! Handle the general [BuildFromOriginal] option: bind a provider of the
+//! original vectors so the graph is built from them
+IndexHolder::Pointer convert_holder(const std::string &name,
+                                    const ailego::Params &params,
+                                    VecsIndexHolder::Pointer &in_holder,
+                                    IndexMeta &index_meta);
+
+int setup_build_from_original(const string &builder_class,
+                              const IndexStreamer::Pointer &streamer,
+                              const IndexHolder::Pointer &build_holder,
+                              const IndexMeta &input_meta) {
+  IndexProvider::Pointer provider;
+  IndexMeta provider_meta = input_meta;
+
+  if (input_meta.metric_name() == "Cosine") {
+    // normalize the original vectors so they match the cosine metric space;
+    // note this materializes a full fp32 copy of the dataset in memory
+    VecsIndexHolder::Pointer vecs_holder =
+        std::dynamic_pointer_cast<VecsIndexHolder>(build_holder);
+    if (!vecs_holder) {
+      cerr << "Failed to cast build holder to VecsIndexHolder" << endl;
+      return -1;
+    }
+    IndexHolder::Pointer cv_holder = convert_holder(
+        "CosineFp32Converter", ailego::Params(), vecs_holder, provider_meta);
+    if (!cv_holder) {
+      cerr << "Failed to convert holder for BuildFromOriginal" << endl;
+      return -1;
+    }
+    provider = convert_holder_to_provider(cv_holder);
+  } else {
+    provider = std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  }
+
+  if (!provider) {
+    cerr << "Failed to create provider for BuildFromOriginal" << endl;
+    return -1;
+  }
+  if (!streamer || streamer->set_provider(provider, provider_meta) != 0) {
+    cerr << "[BuildFromOriginal] is not supported by builder class "
+         << builder_class << endl;
+    return -1;
+  }
+  cout << "Build " << builder_class << " graph from original vectors" << endl;
+  return 0;
+}
+
 bool check_config(YAML::Node &config_root) {
   auto common = config_root["BuilderCommon"];
   if (!common) {
@@ -283,6 +330,7 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
                                 uint32_t thread_count) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -437,6 +485,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
                          uint32_t thread_count, RetrievalMode retrieval_mode) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -1107,6 +1156,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     }
   }
 
+  if (config_common["BuildFromOriginal"] &&
+      config_common["BuildFromOriginal"].as<bool>()) {
+    if (setup_build_from_original(builder_class, streamer, build_holder,
+                                  input_meta) != 0) {
+      return -1;
+    }
+  }
+
   // BUILD
   holder = build_holder;
   signal(SIGINT, stop);
@@ -1217,11 +1274,11 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_root["BuilderCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> LOG_LEVEL = {{"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+                                {"info", zvec::ailego::Logger::LEVEL_INFO},
+                                {"warn", zvec::ailego::Logger::LEVEL_WARN},
+                                {"error", zvec::ailego::Logger::LEVEL_ERROR},
+                                {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
 
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
@@ -1229,7 +1286,6 @@ int main(int argc, char *argv[]) {
 
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
   if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
     zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
   }
 

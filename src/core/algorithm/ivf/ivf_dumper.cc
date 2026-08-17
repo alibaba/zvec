@@ -56,7 +56,7 @@ int IVFDumper::dump_inverted_block(uint32_t inverted_list_id,
     std::copy(keys, keys + vector_count, std::back_inserter(keys_));
     ++inverted_lists_meta_[cur_list_id_].block_count;
     ++header_.block_count;
-    header_.inverted_body_size += size;
+    header_.inverted_body_size += size + pd_size;
   } else {
     size_t step_size = meta_.element_size();
     if (column_major) {

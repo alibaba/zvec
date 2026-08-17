@@ -16,7 +16,7 @@
 
 #include <string>
 #include <utility/sparse_utility.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_meta.h>
 #include "flat_sparse_streamer_entity.h"
 

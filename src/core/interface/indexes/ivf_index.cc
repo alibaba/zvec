@@ -214,10 +214,17 @@ int IVFIndex::_prepare_for_search(
   const auto &ivf_search_param =
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
+  if (search_param->group_by_param && search_param->group_by_param->group_by) {
+    LOG_ERROR("group_by search is not supported for IVF index");
+    return core::IndexError_Unsupported;
+  }
+
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
-  if (ivf_search_param->filter) {
+  if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
     context->set_filter(std::move(*ivf_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (ivf_search_param->radius > 0.0f) {
     context->set_threshold(ivf_search_param->radius);

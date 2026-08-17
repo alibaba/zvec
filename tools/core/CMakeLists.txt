@@ -14,6 +14,7 @@ set(ZVEC_TOOL_CORE_INTERFACE_LIBS
     core_knn_vamana
     core_knn_cluster
     core_knn_ivf
+    core_knn_ivf_rabitq
     core_knn_diskann
     core_interface
 )

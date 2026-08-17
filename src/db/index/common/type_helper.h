@@ -46,6 +46,8 @@ struct IndexTypeCodeBook {
         return IndexType::HNSW;
       case proto::IT_HNSW_RABITQ:
         return IndexType::HNSW_RABITQ;
+      case proto::IT_IVF_RABITQ:
+        return IndexType::IVF_RABITQ;
       case proto::IT_FLAT:
         return IndexType::FLAT;
       case proto::IT_IVF:
@@ -73,6 +75,8 @@ struct IndexTypeCodeBook {
         return proto::IT_HNSW;
       case IndexType::HNSW_RABITQ:
         return proto::IT_HNSW_RABITQ;
+      case IndexType::IVF_RABITQ:
+        return proto::IT_IVF_RABITQ;
       case IndexType::FLAT:
         return proto::IT_FLAT;
       case IndexType::IVF:
@@ -100,6 +104,8 @@ struct IndexTypeCodeBook {
         return "HNSW";
       case IndexType::HNSW_RABITQ:
         return "HNSW_RABITQ";
+      case IndexType::IVF_RABITQ:
+        return "IVF_RABITQ";
       case IndexType::FLAT:
         return "FLAT";
       case IndexType::IVF:

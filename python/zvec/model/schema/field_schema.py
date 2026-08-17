@@ -25,6 +25,7 @@ from zvec.model.param import (
     InvertIndexParam,
     IVFIndexParam,
     OmegaIndexParam,
+    IvfRabitqIndexParam,
 )
 from zvec.typing import DataType
 
@@ -197,7 +198,7 @@ class VectorSchema:
         data_type (DataType): Vector data type (e.g., VECTOR_FP32, VECTOR_INT8).
         dimension (int, optional): Dimensionality of the vector. Must be > 0 for dense vectors;
          may be `None` for sparse vectors.
-        index_param (Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam], optional):
+        index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam], optional):
             Index configuration for this vector field. Defaults to
             ``FlatIndexParam()``.
 
@@ -233,6 +234,7 @@ class VectorSchema:
             Union[
                 HnswIndexParam,
                 HnswRabitqIndexParam,
+                IvfRabitqIndexParam,
                 FlatIndexParam,
                 IVFIndexParam,
                 OmegaIndexParam,
@@ -295,11 +297,12 @@ class VectorSchema:
     ) -> Union[
         HnswIndexParam,
         HnswRabitqIndexParam,
+        IvfRabitqIndexParam,
         IVFIndexParam,
         FlatIndexParam,
         OmegaIndexParam,
     ]:
-        """Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]: Index configuration for the vector."""
+        """Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]: Index configuration for the vector."""
         return self._cpp_obj.index_param
 
     def __dict__(self) -> dict[str, Any]:

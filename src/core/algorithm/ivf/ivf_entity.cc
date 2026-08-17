@@ -343,7 +343,7 @@ void IVFEntity::IVFReformerWrapper::normalize(size_t qidx,
       ailego_assert_with(qidx < scales_.size(), "invalid index");
       {
         auto reciprocal = 1.0f / scales_[qidx];
-        for (auto &it : *heap) {
+        for (auto &it : heap->mutable_container()) {
           *it.mutable_score() *= reciprocal;
         }
       }
@@ -351,7 +351,7 @@ void IVFEntity::IVFReformerWrapper::normalize(size_t qidx,
 
     case kReformerTpInt8:
     case kReformerTpInt4:
-      for (auto &it : *heap) {
+      for (auto &it : heap->mutable_container()) {
         *it.mutable_score() *= reciprocal_;
       }
       break;
@@ -375,7 +375,7 @@ void IVFEntity::IVFReformerWrapper::normalize(size_t qidx, const void *query,
       ailego_assert_with(qidx < scales_.size(), "invalid index");
       {
         auto reciprocal = 1.0f / scales_[qidx];
-        for (auto &it : *heap) {
+        for (auto &it : heap->mutable_container()) {
           *it.mutable_score() *= reciprocal;
         }
       }
@@ -383,13 +383,13 @@ void IVFEntity::IVFReformerWrapper::normalize(size_t qidx, const void *query,
 
     case kReformerTpInt8:
     case kReformerTpInt4:
-      for (auto &it : *heap) {
+      for (auto &it : heap->mutable_container()) {
         *it.mutable_score() *= reciprocal_;
       }
       break;
 
     case kReformerTpDefault:
-      reformer_->normalize(query, qmeta, *heap);
+      reformer_->normalize(query, qmeta, heap->mutable_container());
       break;
 
     default:
@@ -644,7 +644,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       ailego_assert_with(block_vecs < sizeof(keeps) * 8, "bits overflow");
       for (size_t k = 0; k < vecs_count; ++k) {
         if (!filter(block_keys[k])) {
-          keeps |= (1 << k);
+          keeps |= (1ULL << k);
         } else {
           ++(*context_stats->mutable_filtered_count());
         }
@@ -661,7 +661,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
       uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
       for (size_t k = 0; k < vecs_count; ++k) {
-        if (keeps & (1 << k)) {
+        if (keeps & (1ULL << k)) {
           if (block_keys[k] != kInvalidKey) {
             heap->emplace(block_keys[k], distances[k] * norm_val, id_off + k);
           }

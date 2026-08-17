@@ -77,11 +77,19 @@ void EqualOrRewriteRule::rewrite_impl(bool is_or, QueryNode::Ptr query_node) {
   }
   if (query_node->type() == QueryNode::QueryNodeType::LOGIC_EXPR) {
     bool is_cur_or = query_node->op() == QueryNodeOp::Q_OR;
+    // A non-OR logic node separates OR chains: its children must not share
+    // merge state, and that state must not leak back to an outer OR.
     if (!is_cur_or) {
       cur_ = nullptr;
     }
     rewrite_impl(is_cur_or, query_node->left());
+    if (!is_cur_or) {
+      cur_ = nullptr;
+    }
     rewrite_impl(is_cur_or, query_node->right());
+    if (!is_cur_or) {
+      cur_ = nullptr;
+    }
     return;
   }
   if (!is_or) {

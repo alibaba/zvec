@@ -18,6 +18,7 @@ endif()
 
 if(RABITQ_SUPPORTED)
   cc_directories(hnsw_rabitq)
+  cc_directories(ivf_rabitq)
 endif()
 if(ZVEC_ENABLE_OMEGA)
 cc_directories(omega)

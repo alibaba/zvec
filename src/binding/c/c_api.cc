@@ -29,6 +29,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <ailego/io/io_backend_def.h>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
@@ -760,6 +762,25 @@ const char *zvec_get_default_jieba_dict_dir(void) {
 }
 
 // =============================================================================
+// I/O Backend Introspection
+// =============================================================================
+
+zvec_io_backend_type_t zvec_get_io_backend_type(void) {
+  auto type = zvec::ailego::current_io_backend_type();
+  return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));
+}
+
+const char *zvec_get_io_backend_type_name(zvec_io_backend_type_t type) {
+  auto cpp_type = static_cast<zvec::ailego::IOBackendType>(type);
+  return zvec::ailego::IOBackendTypeName(cpp_type);
+}
+
+const char *zvec_get_io_backend_description(void) {
+  auto type = zvec::ailego::current_io_backend_type();
+  return zvec::ailego::IOBackendDescription(type);
+}
+
+// =============================================================================
 // Error handling interface implementation
 // =============================================================================
 
@@ -1355,6 +1376,11 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                                        false,                // use_soar (default)
                                        zvec::QuantizeType::UNDEFINED);
           break;
+        case ZVEC_INDEX_TYPE_IVF_RABITQ:
+          cpp_params = new zvec::IvfRabitqIndexParams(
+              zvec::MetricType::L2, zvec::core_interface::kDefaultIvfRabitqNlist,
+              zvec::core_interface::kDefaultRabitqTotalBits, 0);
+          break;
         case ZVEC_INDEX_TYPE_VAMANA:
           cpp_params =
               new zvec::VamanaIndexParams(
@@ -1380,6 +1406,15 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
           cpp_params =
               new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
                                         zvec::QuantizeType::UNDEFINED);
+          break;
+        case ZVEC_INDEX_TYPE_DISKANN:
+          cpp_params =
+              new zvec::DiskAnnIndexParams(
+                  zvec::MetricType::L2,   // metric_type
+                  100,                     // max_degree (default)
+                  50,                      // list_size (default)
+                  0,                       // pq_chunk_num (default)
+                  zvec::QuantizeType::UNDEFINED);
           break;
       }
 
@@ -1731,6 +1766,140 @@ zvec_error_code_t zvec_index_params_get_vamana_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_index_params_set_vamana_two_pass_build(
+    zvec_index_params_t *params, bool two_pass_build) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *vamana_params = dynamic_cast<zvec::VamanaIndexParams *>(cpp_params);
+  if (!vamana_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  vamana_params->set_two_pass_build(two_pass_build);
+  return ZVEC_OK;
+}
+
+bool zvec_index_params_get_vamana_two_pass_build(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return false;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *vamana_params =
+      dynamic_cast<const zvec::VamanaIndexParams *>(cpp_params);
+  if (!vamana_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return false;
+  }
+  return vamana_params->two_pass_build();
+}
+
+/**
+ * @brief Set DiskANN-specific parameters
+ * @param params Index parameters (must be DiskANN type)
+ * @param max_degree Graph connectivity (max degree of Vamana graph)
+ * @param list_size Build-time list size
+ * @param pq_chunk_num PQ chunk count
+ * @return ZVEC_OK on success, error code on failure
+ */
+zvec_error_code_t zvec_index_params_set_diskann_params(
+    zvec_index_params_t *params, int max_degree, int list_size,
+    int pq_chunk_num) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *diskann_params = dynamic_cast<zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  diskann_params->set_max_degree(max_degree);
+  diskann_params->set_list_size(list_size);
+  diskann_params->set_pq_chunk_num(pq_chunk_num);
+  return ZVEC_OK;
+}
+
+/**
+ * @brief Get DiskANN max_degree parameter
+ * @param params Index parameters (must be DiskANN type)
+ * @return max_degree parameter value, or 0 on error
+ */
+int zvec_index_params_get_diskann_max_degree(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *diskann_params =
+      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  return diskann_params->max_degree();
+}
+
+/**
+ * @brief Get DiskANN list_size parameter
+ * @param params Index parameters (must be DiskANN type)
+ * @return list_size parameter value, or 0 on error
+ */
+int zvec_index_params_get_diskann_list_size(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *diskann_params =
+      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  return diskann_params->list_size();
+}
+
+/**
+ * @brief Get DiskANN pq_chunk_num parameter
+ * @param params Index parameters (must be DiskANN type)
+ * @return pq_chunk_num parameter value, or 0 on error
+ */
+int zvec_index_params_get_diskann_pq_chunk_num(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *diskann_params =
+      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  return diskann_params->pq_chunk_num();
+}
+
 /**
  * @brief Set IVF-specific parameters
  * @param params Index parameters (must be IVF type)
@@ -1787,6 +1956,55 @@ zvec_error_code_t zvec_index_params_get_ivf_params(const zvec_index_params_t *pa
   if (out_n_list) *out_n_list = ivf_params->n_list();
   if (out_n_iters) *out_n_iters = ivf_params->n_iters();
   if (out_use_soar) *out_use_soar = ivf_params->use_soar();
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_set_ivf_rabitq_params(
+    zvec_index_params_t *params, int nlist, int total_bits, int sample_count) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *ivf_rabitq_params =
+      dynamic_cast<zvec::IvfRabitqIndexParams *>(cpp_params);
+  if (!ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  ivf_rabitq_params->set_nlist(nlist);
+  ivf_rabitq_params->set_total_bits(total_bits);
+  ivf_rabitq_params->set_sample_count(sample_count);
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_ivf_rabitq_params(
+    const zvec_index_params_t *params, int *out_nlist, int *out_total_bits,
+    int *out_sample_count) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *ivf_rabitq_params =
+      dynamic_cast<const zvec::IvfRabitqIndexParams *>(cpp_params);
+  if (!ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_nlist) {
+    *out_nlist = ivf_rabitq_params->nlist();
+  }
+  if (out_total_bits) {
+    *out_total_bits = ivf_rabitq_params->total_bits();
+  }
+  if (out_sample_count) {
+    *out_sample_count = ivf_rabitq_params->sample_count();
+  }
   return ZVEC_OK;
 }
 
@@ -2765,12 +2983,14 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "FLAT";
     case ZVEC_INDEX_TYPE_HNSW_RABITQ:
       return "HNSW_RABITQ";
-    case ZVEC_INDEX_TYPE_VAMANA:
-      return "VAMANA";
-    case ZVEC_INDEX_TYPE_OMEGA:
-      return "OMEGA";
     case ZVEC_INDEX_TYPE_DISKANN:
       return "DISKANN";
+    case ZVEC_INDEX_TYPE_VAMANA:
+      return "VAMANA";
+    case ZVEC_INDEX_TYPE_IVF_RABITQ:
+      return "IVF_RABITQ";
+    case ZVEC_INDEX_TYPE_OMEGA:
+      return "OMEGA";
     case ZVEC_INDEX_TYPE_INVERT:
       return "INVERT";
     case ZVEC_INDEX_TYPE_FTS:
@@ -4827,6 +5047,7 @@ void zvec_collection_stats_destroy(zvec_collection_stats_t *stats) {
 // Users should create type-specific query params:
 // - HnswQueryParams via zvec_query_params_hnsw_create()
 // - IVFQueryParams via zvec_query_params_ivf_create()
+// - IvfRabitqQueryParams via zvec_query_params_ivf_rabitq_create()
 // - FlatQueryParams via zvec_query_params_flat_create()
 //
 // Each type-specific instance has its own destroy function.
@@ -5034,6 +5255,100 @@ bool zvec_query_params_hnsw_get_is_using_refiner(
 }
 
 // =============================================================================
+// DiskAnnQueryParams implementation - wrapper around zvec::DiskAnnQueryParams
+// =============================================================================
+
+zvec_diskann_query_params_t *zvec_query_params_diskann_create(int list_size) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create DiskAnnQueryParams",
+      auto *params = new zvec::DiskAnnQueryParams(list_size);
+      return reinterpret_cast<zvec_diskann_query_params_t *>(params);)
+  return nullptr;
+}
+
+void zvec_query_params_diskann_destroy(zvec_diskann_query_params_t *params) {
+  if (params) {
+    delete reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  }
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_list_size(
+    zvec_diskann_query_params_t *params, int list_size) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_list_size(list_size);
+  return ZVEC_OK;
+}
+
+int zvec_query_params_diskann_get_list_size(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return 300;  // DiskAnnQueryParams default
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->list_size();
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_radius(
+    zvec_diskann_query_params_t *params, float radius) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_radius(radius);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_diskann_get_radius(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return 0.0f;
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->radius();
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_is_linear(
+    zvec_diskann_query_params_t *params, bool is_linear) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_is_linear(is_linear);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_diskann_get_is_linear(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return false;
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->is_linear();
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_is_using_refiner(
+    zvec_diskann_query_params_t *params, bool is_using_refiner) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_is_using_refiner(is_using_refiner);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_diskann_get_is_using_refiner(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return false;
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->is_using_refiner();
+}
+
+// =============================================================================
 // IVFQueryParams implementation - wrapper around zvec::IVFQueryParams
 // =============================================================================
 
@@ -5141,6 +5456,132 @@ bool zvec_query_params_ivf_get_is_using_refiner(
     const zvec_ivf_query_params_t *params) {
   if (!params) return false;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
+  return ptr->is_using_refiner();
+}
+
+// =============================================================================
+// IvfRabitqQueryParams implementation - wrapper around zvec::IvfRabitqQueryParams
+// =============================================================================
+
+zvec_ivf_rabitq_query_params_t *zvec_query_params_ivf_rabitq_create(
+    int nprobe, float radius, bool is_linear, bool is_using_refiner) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create IvfRabitqQueryParams",
+      auto *params = new zvec::IvfRabitqQueryParams(
+          nprobe, radius, is_linear, is_using_refiner);
+      return reinterpret_cast<zvec_ivf_rabitq_query_params_t *>(params);)
+  return nullptr;
+}
+
+void zvec_query_params_ivf_rabitq_destroy(
+    zvec_ivf_rabitq_query_params_t *params) {
+  if (params) {
+    delete reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  }
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_nprobe(
+    zvec_ivf_rabitq_query_params_t *params, int nprobe) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_nprobe(nprobe);
+  return ZVEC_OK;
+}
+
+int zvec_query_params_ivf_rabitq_get_nprobe(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return zvec::core_interface::kDefaultIvfRabitqNprobe;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->nprobe();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_scale_factor(
+    zvec_ivf_rabitq_query_params_t *params, float scale_factor) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_scale_factor(scale_factor);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_ivf_rabitq_get_scale_factor(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return 10.0f;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->scale_factor();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_radius(
+    zvec_ivf_rabitq_query_params_t *params, float radius) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_radius(radius);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_ivf_rabitq_get_radius(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return 0.0f;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->radius();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_is_linear(
+    zvec_ivf_rabitq_query_params_t *params, bool is_linear) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_is_linear(is_linear);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_ivf_rabitq_get_is_linear(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return false;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->is_linear();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_is_using_refiner(
+    zvec_ivf_rabitq_query_params_t *params, bool is_using_refiner) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_is_using_refiner(is_using_refiner);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_ivf_rabitq_get_is_using_refiner(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return false;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->is_using_refiner();
 }
 
@@ -5341,6 +5782,8 @@ zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  // Copies into VectorClause (not VectorViewClause) because the C API does
+  // not require `data` to stay alive after this call returns.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -5615,6 +6058,24 @@ zvec_error_code_t zvec_vector_query_set_ivf_params(zvec_vector_query_t *query,
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_vector_query_set_ivf_rabitq_params(
+    zvec_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params) {
+  if (!query || !ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or IVF_RABITQ params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::IvfRabitqQueryParams *>(ivf_rabitq_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_vector_query_set_flat_params(
     zvec_vector_query_t *query, zvec_flat_query_params_t *flat_params) {
   if (!query || !flat_params) {
@@ -5658,6 +6119,23 @@ zvec_error_code_t zvec_vector_query_set_vamana_params(
   auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   auto *params_ptr =
       reinterpret_cast<zvec::VamanaQueryParams *>(vamana_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_vector_query_set_diskann_params(
+    zvec_vector_query_t *query, zvec_diskann_query_params_t *diskann_params) {
+  if (!query || !diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or DiskANN params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::DiskAnnQueryParams *>(diskann_params);
 
   query_ptr->target_.query_params_.reset(params_ptr);
 
@@ -5748,7 +6226,7 @@ zvec_group_by_vector_query_t *zvec_group_by_vector_query_create(void) {
   ZVEC_TRY_RETURN_NULL(
       "Failed to create GroupByVectorQuery",
       auto *query = new zvec::GroupByVectorQuery();
-      query->group_count_ = 2; query->group_topk_ = 3;
+      query->group_count_ = 2; query->topk_per_group_ = 3;
       return reinterpret_cast<zvec_group_by_vector_query_t *>(query);)
   return nullptr;
 }
@@ -5818,23 +6296,23 @@ uint32_t zvec_group_by_vector_query_get_group_count(
   return ptr->group_count_;
 }
 
-zvec_error_code_t zvec_group_by_vector_query_set_group_topk(
-    zvec_group_by_vector_query_t *query, uint32_t topk) {
+zvec_error_code_t zvec_group_by_vector_query_set_topk_per_group(
+    zvec_group_by_vector_query_t *query, uint32_t topk_per_group) {
   if (!query) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "GroupByVectorQuery pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
-  ptr->group_topk_ = topk;
+  ptr->topk_per_group_ = topk_per_group;
   return ZVEC_OK;
 }
 
-uint32_t zvec_group_by_vector_query_get_group_topk(
+uint32_t zvec_group_by_vector_query_get_topk_per_group(
     const zvec_group_by_vector_query_t *query) {
   if (!query) return 3;
   auto *ptr = reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-  return ptr->group_topk_;
+  return ptr->topk_per_group_;
 }
 
 zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
@@ -5845,6 +6323,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -5985,6 +6464,24 @@ zvec_error_code_t zvec_group_by_vector_query_set_ivf_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_group_by_vector_query_set_ivf_rabitq_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params) {
+  if (!query || !ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or IVF_RABITQ params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::IvfRabitqQueryParams *>(ivf_rabitq_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_group_by_vector_query_set_flat_params(
     zvec_group_by_vector_query_t *query, zvec_flat_query_params_t *flat_params) {
   if (!query || !flat_params) {
@@ -6013,6 +6510,24 @@ zvec_error_code_t zvec_group_by_vector_query_set_vamana_params(
   auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   auto *params_ptr =
       reinterpret_cast<zvec::VamanaQueryParams *>(vamana_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_group_by_vector_query_set_diskann_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_diskann_query_params_t *diskann_params) {
+  if (!query || !diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or DiskANN params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::DiskAnnQueryParams *>(diskann_params);
 
   query_ptr->target_.query_params_.reset(params_ptr);
 
@@ -6266,6 +6781,7 @@ zvec_error_code_t zvec_sub_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   auto &payload = std::get<zvec::VectorClause>(ptr->target_.clause_);
   payload.query_vector_.assign(static_cast<const char *>(data), size);
   return ZVEC_OK;
@@ -6348,6 +6864,21 @@ zvec_error_code_t zvec_sub_query_set_ivf_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_sub_query_set_ivf_rabitq_params(
+    zvec_sub_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params) {
+  if (!query || !ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Sub-vector query or IVF_RABITQ params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::IvfRabitqQueryParams *>(ivf_rabitq_params);
+  ptr->target_.query_params_.reset(params_ptr);
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_sub_query_set_flat_params(
     zvec_sub_query_t *query, zvec_flat_query_params_t *flat_params) {
   if (!query || !flat_params) {
@@ -6384,6 +6915,20 @@ zvec_error_code_t zvec_sub_query_set_fts_params(
   }
   auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::FtsQueryParams *>(fts_params);
+  ptr->target_.query_params_.reset(params_ptr);
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_sub_query_set_diskann_params(
+    zvec_sub_query_t *query, zvec_diskann_query_params_t *diskann_params) {
+  if (!query || !diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Sub-vector query or DiskANN params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::DiskAnnQueryParams *>(diskann_params);
   ptr->target_.query_params_.reset(params_ptr);
   return ZVEC_OK;
 }

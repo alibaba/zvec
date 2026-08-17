@@ -48,6 +48,10 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
+  py::class_<GroupResult>(m, "_GroupResult")
+      .def_readonly("group_by_value", &GroupResult::group_by_value_)
+      .def_readonly("docs", &GroupResult::docs_);
+
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
   bind_ddl_methods(collection);
@@ -118,15 +122,24 @@ void ZVecPyCollection::bind_ddl_methods(
       });
 
   // bind collection ddl methods
-  col.def("Destroy",
+  col.def("Close",
           [](Collection &self) {
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.Destroy();
+              status = self.Close();
             }
             throw_if_error(status);
           })
+      .def("Destroy",
+           [](Collection &self) {
+             Status status;
+             {
+               py::gil_scoped_release release;
+               status = self.Destroy();
+             }
+             throw_if_error(status);
+           })
       .def("Flush", [](Collection &self) {
         Status status;
         {
@@ -281,7 +294,6 @@ void ZVecPyCollection::bind_dql_methods(
                py::gil_scoped_release release;
                result = self.GroupByQuery(query);
              }
-             // return GroupResults
              return unwrap_expected(result);
            })
       .def(

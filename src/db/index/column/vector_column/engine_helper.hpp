@@ -120,6 +120,16 @@ class ProximaEngineHelper {
             std::make_shared<core_interface::RefinerParam>(rp);
       }
     }
+    if (db_query_params.group_by) {
+      engine_query_param->group_by_param =
+          std::make_shared<core_interface::GroupByParam>();
+      engine_query_param->group_by_param->group_topk =
+          db_query_params.group_by->group_topk;
+      engine_query_param->group_by_param->group_count =
+          db_query_params.group_by->group_count;
+      engine_query_param->group_by_param->group_by =
+          db_query_params.group_by->group_by;
+    }
 
     return engine_query_param;
   }
@@ -233,6 +243,25 @@ class ProximaEngineHelper {
           ivf_query_param->nprobe = db_ivf_query_params->nprobe();
         }
         return std::move(ivf_query_param);
+      }
+
+      case IndexType::IVF_RABITQ: {
+        auto ivf_rabitq_query_param_result =
+            _build_common_query_param<core_interface::IVFRabitqQueryParam>(
+                query_params);
+        if (!ivf_rabitq_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              ivf_rabitq_query_param_result.error().message()));
+        }
+        auto &ivf_rabitq_query_param = ivf_rabitq_query_param_result.value();
+        if (query_params.query_params) {
+          auto db_ivf_rabitq_query_params =
+              dynamic_cast<const IvfRabitqQueryParams *>(
+                  query_params.query_params.get());
+          ivf_rabitq_query_param->nprobe = db_ivf_rabitq_query_params->nprobe();
+        }
+        return std::move(ivf_rabitq_query_param);
       }
 
       case IndexType::DISKANN: {
@@ -375,7 +404,7 @@ class ProximaEngineHelper {
             convert_to_engine_quantize_type(db_index_params->quantize_type());
         quantize_type.has_value()) {
       index_param_builder->WithQuantizerParam(
-          core_interface::QuantizerParam(quantize_type.value()));
+          core_interface::QuantizerParam::Create(quantize_type.value()));
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported quantize type"));
@@ -503,6 +532,26 @@ class ProximaEngineHelper {
         return index_param_builder->Build();
       }
 
+      case IndexType::IVF_RABITQ: {
+        auto index_param_builder_result = _build_common_index_param<
+            IvfRabitqIndexParams, core_interface::IVFRabitqIndexParamBuilder>(
+            field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const IvfRabitqIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithNlist(db_index_params->nlist());
+        index_param_builder->WithTotalBits(db_index_params->total_bits());
+        index_param_builder->WithSampleCount(db_index_params->sample_count());
+
+        return index_param_builder->Build();
+      }
+
       case IndexType::DISKANN: {
         auto index_param_builder_result =
             _build_common_index_param<DiskAnnIndexParams,
@@ -546,6 +595,8 @@ class ProximaEngineHelper {
             db_index_params->saturate_graph());
         index_param_builder->WithUseContiguousMemory(
             db_index_params->use_contiguous_memory());
+        index_param_builder->WithTwoPassBuild(
+            db_index_params->two_pass_build());
         // db_index_params->use_id_map() is intentionally ignored here:
         // db ensures id is consecutive (see _build_common_index_param), so
         // the engine-level use_id_map is forced to false in the common

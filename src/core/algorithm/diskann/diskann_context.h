@@ -68,33 +68,40 @@ class DiskAnnContext : public IndexContext,
                      const DiskAnnEntity::Pointer &entity, uint32_t magic_num);
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
   //! Retrieve result object for output
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(
-      size_t idx) const override {
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
+  uint32_t magic(void) const override {
     return magic_;
   }
 
@@ -103,17 +110,17 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Set mode of debug
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const override {
+  bool debug_mode(void) const override {
     return debug_mode_;
   }
 
   //! Retrieve string of debug
-  virtual std::string debug_string(void) const override {
+  std::string debug_string(void) const override {
     return std::string("");
   }
 
@@ -207,11 +214,31 @@ class DiskAnnContext : public IndexContext,
     for (auto &it : results_) {
       it.clear();
     }
+    for (auto &it : group_results_) {
+      it.clear();
+    }
 
     best_list_nodes_.clear();
     expanded_nodes_.clear();
     visit_filter_.clear();
+    group_topk_heaps_.clear();
     has_error_ = false;
+  }
+
+  //! Preserve query-time options when replacing an incompatible pooled
+  //! context. Search scratch space and previous results are intentionally not
+  //! copied.
+  void copy_query_options_from(const DiskAnnContext &rhs) {
+    copy_common_query_options_from(rhs);
+    topk_ = rhs.topk_;
+    topk_heap_.clear();
+    topk_heap_.limit(topk_);
+    group_num_ = rhs.group_num_;
+    group_topk_ = rhs.group_topk_;
+    group_topk_heaps_.clear();
+    list_size_ = rhs.list_size_;
+    fetch_vector_ = rhs.fetch_vector_;
+    debug_mode_ = rhs.debug_mode_;
   }
 
   SearchStats &query_stats() {
@@ -262,7 +289,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Get if group by search
-  inline bool group_by_search() {
+  inline bool group_by_search() const {
     return group_num_ > 0;
   }
 

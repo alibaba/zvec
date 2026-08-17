@@ -19,6 +19,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/utility/file_helper.h>
 
 #if defined(_MSC_VER)
 #ifndef NOMINMAX
@@ -277,7 +278,8 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   writable_ = writable;
 #if defined(_MSC_VER)
   int flags = writable_ ? (O_RDWR | _O_BINARY) : (O_RDONLY | _O_BINARY);
-  fd_ = _open(filename.c_str(), flags, 0644);
+  const std::wstring wide_filename = FileHelper::Utf8ToWide(filename);
+  fd_ = wide_filename.empty() ? -1 : _wopen(wide_filename.c_str(), flags, 0644);
 #else
   int flags = writable_ ? O_RDWR : O_RDONLY;
   fd_ = ::open(filename.c_str(), flags, 0644);

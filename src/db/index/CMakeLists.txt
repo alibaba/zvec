@@ -46,6 +46,7 @@ set(ZVEC_INDEX_LIBS
          Arrow::arrow_compute
          Arrow::arrow_dataset
          cppjieba
+         snowball
          FastPFOR
          utf8proc)
 if(ZVEC_ENABLE_OMEGA)

@@ -49,8 +49,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT DEFINED HOST_BUILD_DIR)
     set(HOST_BUILD_DIR "build")
 endif()
-
 get_filename_component(ZVEC_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+
 set(ZVEC_INCLUDE_DIR ${ZVEC_ROOT_DIR}/src/include)
 set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
 
@@ -179,6 +179,11 @@ if(ZVEC_ENABLE_OMEGA)
     target_link_libraries(omega-example PRIVATE zvec-lib)
     list(APPEND ZVEC_EXAMPLE_TARGETS omega-example)
 endif()
+# This is also a link-integration check: DiskANN must work through the
+# all-in-one core library without linking core_knn_diskann separately.
+add_executable(diskann-core-example core/diskann_main.cc)
+target_link_libraries(diskann-core-example PRIVATE zvec-core-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS diskann-core-example)
 
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)

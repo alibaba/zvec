@@ -121,7 +121,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   auto first_query_info = build_query_info(
       collection, query,
       std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
-                                group_by_query.group_topk_,
+                                group_by_query.topk_per_group_,
                                 group_by_query.group_count_));
   if (!first_query_info) {
     return tl::make_unexpected(first_query_info.error());
@@ -144,7 +144,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
     auto query_info = build_query_info(
         collection, query,
         std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
-                                  group_by_query.group_topk_,
+                                  group_by_query.topk_per_group_,
                                   group_by_query.group_count_));
     if (!query_info) {
       return tl::make_unexpected(query_info.error());

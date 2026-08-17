@@ -35,7 +35,15 @@ class DiskAnnUtil {
   }
 
   static inline void alloc_aligned(void **ptr, size_t size, size_t align) {
-    *ptr = ::aligned_alloc(align, size);
+    if (size == 0) {
+      *ptr = nullptr;
+      return;
+    }
+    // Unlike aligned_alloc(), posix_memalign() does not require size to be an
+    // integral multiple of alignment and is available on Linux and macOS.
+    if (::posix_memalign(ptr, align, size) != 0) {
+      *ptr = nullptr;
+    }
   }
 
   static inline void free_aligned(void *ptr) {

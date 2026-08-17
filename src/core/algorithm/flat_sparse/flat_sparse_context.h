@@ -101,7 +101,11 @@ class FlatSparseContext : public IndexContext {
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(size_t idx) {
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
     return &group_results_[idx];
   }
 

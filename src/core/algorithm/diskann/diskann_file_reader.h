@@ -18,26 +18,51 @@
 #include <fcntl.h>
 
 #if (defined(__linux) || defined(__linux__))
-#include <libaio.h>
+#include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
+#include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #endif
 
 #include <unistd.h>
-#include <atomic>
+#include <map>
+#include <mutex>
+#include <thread>
 #include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
 namespace zvec {
 namespace core {
 
+// IoBackend holds the selected backend for each thread. On Linux it also owns
+// the resources required by the asynchronous backends. The priority is:
+//   1. io_uring  (raw kernel syscalls — zero dependency)
+//   2. libaio    (dlopen — soft dependency)
+//   3. pread     (always available — synchronous fallback)
+//
+// macOS uses a real context with type kPread so that the active backend can be
+// inspected and reported consistently instead of using an opaque placeholder.
+// IOContext is a pointer to IoBackend, which preserves the existing
+// sentinel conventions: nullptr means uninitialised and (IOContext)-1 is
+// the invalid-handle sentinel returned by get_ctx() for unregistered
+// threads.
+struct IoBackend {
+  ailego::IOBackendType type{ailego::IOBackendType::kPread};
+
 #if (defined(__linux) || defined(__linux__))
-typedef io_context_t IOContext;
-#else
-typedef uint32_t IOContext;
+  IoUringRing ring{};
+  io_context_t aio_ctx{nullptr};
 #endif
+};
+
+typedef IoBackend *IOContext;
 
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
+
+// Log the current DiskAnn I/O backend (io_uring, libaio, or pread). Probes the
+// backend on first call. No-op outside Linux and macOS.
+void log_diskann_io_backend();
 
 struct AlignedRead {
   uint64_t offset;
@@ -48,10 +73,23 @@ struct AlignedRead {
 
   AlignedRead(uint64_t offset, uint64_t len, void *buf)
       : offset(offset), len(len), buf(buf) {
+#if defined(__linux__) || defined(__linux)
+    // O_DIRECT requires 512-byte alignment on Linux.
     ailego_assert(static_cast<size_t>(offset) % 512 == 0);
     ailego_assert(static_cast<size_t>(len) % 512 == 0);
     ailego_assert(reinterpret_cast<size_t>(buf) % 512 == 0);
+#endif
   }
+};
+
+struct PendingBatch {
+#if (defined(__linux) || defined(__linux__))
+  std::vector<struct iocb> cbs;
+  std::vector<struct iocb *> cb_ptrs;
+#endif
+  uint32_t n_submitted{0};
+  uint32_t n_reaped{0};
+  bool used_pread{false};
 };
 
 class AlignedFileReader {
@@ -73,8 +111,17 @@ class AlignedFileReader {
 
   virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
                    bool async = false) = 0;
+
+  virtual int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+                     IOContext &ctx) = 0;
+
+  virtual int get_completed(PendingBatch &batch, IOContext &ctx,
+                            int min_completed,
+                            std::vector<uint32_t> &completed_indices) = 0;
 };
 
+// Reader implementation used on all supported platforms. Linux selects
+// io_uring, libaio, or pread. macOS ARM64 uses synchronous pread.
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
@@ -97,6 +144,12 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false);
+
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx);
+
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices);
 };
 
 }  // namespace core

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from ..common import VectorType
@@ -21,6 +22,7 @@ from ..common import VectorType
 __all__ = [
     "Doc",
     "DocList",
+    "GroupResult",
 ]
 
 
@@ -70,7 +72,7 @@ class Doc:
     ):
         self.id = id
         self.score = score
-        self.vectors = vectors or {}
+        self.vectors = _normalize_vectors(vectors)
         self.fields = fields or {}
 
     def has_field(self, name: str) -> bool:
@@ -165,14 +167,35 @@ class Doc:
 
         vectors = data_tuple[3]
         if vectors is not None:
-            obj.vectors = {
-                name: (vec.tolist() if hasattr(vec, "tolist") else vec)
-                for name, vec in vectors.items()
-            }
+            obj.vectors = _normalize_vectors(vectors)
         else:
             obj.vectors = {}
         return obj
 
 
+def _normalize_vectors(
+    vectors: Optional[dict[str, VectorType]],
+) -> dict[str, VectorType]:
+    if vectors is None:
+        return {}
+    return {
+        name: (vec.tolist() if hasattr(vec, "tolist") else vec)
+        for name, vec in vectors.items()
+    }
+
+
 #: Type alias for query results: a list of documents returned by a single query route.
 DocList = list[Doc]
+
+
+@dataclass(frozen=True)
+class GroupResult:
+    """A group value and its matching documents.
+
+    Attributes:
+        group_by_value (str): String representation of the grouped scalar field value.
+        docs (list[Doc]): Matching documents in similarity order.
+    """
+
+    group_by_value: str
+    docs: list[Doc]
