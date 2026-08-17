@@ -69,7 +69,7 @@ class IVFEntity {
 
   //! Retrieve the primary keys by local id in heap
   int retrieve_keys(IndexDocumentHeap *heap) const {
-    for (auto &it : (*heap)) {
+    for (auto &it : heap->mutable_container()) {
       uint64_t key = this->get_key(it.index());
       if (key == kInvalidKey) {
         return IndexError_ReadData;

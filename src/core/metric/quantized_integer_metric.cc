@@ -98,7 +98,7 @@ class QuantizedIntegerMetric : public IndexMetric {
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
           auto turbo_ret = turbo::get_distance_func(
               turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-              turbo::QuantizeType::kDefault);
+              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
           if (turbo_ret && m == 1 && n == 1) {
             return turbo_ret;
           }
@@ -139,7 +139,7 @@ class QuantizedIntegerMetric : public IndexMetric {
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
           auto turbo_ret = turbo::get_distance_func(
               turbo::MetricType::kCosine, turbo::DataType::kInt8,
-              turbo::QuantizeType::kDefault);
+              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
           if (turbo_ret) {
             return turbo_ret;
           }
@@ -160,7 +160,7 @@ class QuantizedIntegerMetric : public IndexMetric {
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
           auto turbo_ret = turbo::get_batch_distance_func(
               turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-              turbo::QuantizeType::kDefault);
+              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
           if (turbo_ret) {
             return turbo_ret;
           }
@@ -215,7 +215,7 @@ class QuantizedIntegerMetric : public IndexMetric {
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
           auto turbo_ret = turbo::get_batch_distance_func(
               turbo::MetricType::kCosine, turbo::DataType::kInt8,
-              turbo::QuantizeType::kDefault);
+              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
           if (turbo_ret) {
             return turbo_ret;
           }
@@ -300,7 +300,7 @@ class QuantizedIntegerMetric : public IndexMetric {
         meta_.data_type() == IndexMeta::DataType::DT_INT8) {
       auto turbo_ret = turbo::get_query_preprocess_func(
           turbo::MetricType::kCosine, turbo::DataType::kInt8,
-          turbo::QuantizeType::kDefault);
+          turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
       if (turbo_ret) {
         return turbo_ret;
       }
@@ -310,7 +310,7 @@ class QuantizedIntegerMetric : public IndexMetric {
                meta_.data_type() == IndexMeta::DataType::DT_INT8) {
       auto turbo_ret = turbo::get_query_preprocess_func(
           turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-          turbo::QuantizeType::kDefault);
+          turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
       if (turbo_ret) {
         return turbo_ret;
       }

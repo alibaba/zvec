@@ -16,13 +16,14 @@
 
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Memory Mapping File
  */
-class MMapFile {
+class ZVEC_AILEGO_API MMapFile {
  public:
   //! Constructor
   MMapFile(void)
@@ -128,7 +129,9 @@ class MMapFile {
 
   //! Close the memory mapping file
   void close(void) {
-    File::MemoryUnmap(region_, region_size_);
+    if (region_) {
+      File::MemoryUnmap(region_, region_size_);
+    }
     region_ = nullptr;
     region_size_ = 0;
     offset_ = 0;

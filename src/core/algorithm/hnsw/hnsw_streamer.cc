@@ -187,6 +187,9 @@ int HnswStreamer::cleanup(void) {
   meta_.clear();
   metric_.reset();
   stats_.clear();
+  provider_.reset();
+  provider_meta_.clear();
+  provider_metric_.reset();
   if (entity_) {
     entity_->cleanup();
   }
@@ -345,6 +348,41 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
       metric_->query_metric()->batch_distance()) {
     search_distance_ = metric_->query_metric()->distance();
     search_batch_distance_ = metric_->query_metric()->batch_distance();
+  }
+
+  //! Create a dedicated build metric when the provider meta differs from
+  //! the index meta in layout or metric, so build distances run in the
+  //! original vector space
+  if (provider_) {
+    const bool layout_differs =
+        provider_meta_.data_type() != meta_.data_type() ||
+        provider_meta_.dimension() != meta_.dimension() ||
+        provider_meta_.element_size() != meta_.element_size();
+    const bool use_index_metric = provider_meta_.metric_name().empty();
+    if (layout_differs || !use_index_metric) {
+      const std::string &metric_name =
+          use_index_metric ? meta_.metric_name() : provider_meta_.metric_name();
+      const ailego::Params &metric_params =
+          use_index_metric ? meta_.metric_params()
+                           : provider_meta_.metric_params();
+      provider_metric_ = IndexFactory::CreateMetric(metric_name);
+      if (!provider_metric_) {
+        LOG_ERROR("Failed to create provider metric %s", metric_name.c_str());
+        return IndexError_NoExist;
+      }
+      ret = provider_metric_->init(provider_meta_, metric_params);
+      if (ret != 0) {
+        LOG_ERROR("Failed to init provider metric, ret=%d", ret);
+        return ret;
+      }
+      if (!provider_metric_->distance() ||
+          !provider_metric_->batch_distance()) {
+        LOG_ERROR("Invalid provider metric distance");
+        return IndexError_InvalidArgument;
+      }
+      add_distance_ = provider_metric_->distance();
+      add_batch_distance_ = provider_metric_->batch_distance();
+    }
   }
 
   // Create algorithm based on entity storage mode
@@ -539,9 +577,24 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
+  ctx->bind_dist_space(add_distance_, add_batch_distance_, provider_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+
+  //! use the original vector from provider as the build query, fetched
+  //! before mutating the entity so a missing vector cannot leave an
+  //! orphan node in the index; a node added with id is keyed by id
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    ret = provider_->get_vector(id, original_query_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Failed to get original vector from provider, id=%u", id);
+      (*stats_.mutable_discarded_count())++;
+      return ret;
+    }
+    ctx->reset_query_raw(original_query_block.data(), provider_meta_);
+  } else {
+    ctx->reset_query(query, meta_);
+  }
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -619,9 +672,23 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
+  ctx->bind_dist_space(add_distance_, add_batch_distance_, provider_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+
+  //! use the original vector from provider as the build query
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    ret = provider_->get_vector(pkey, original_query_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Failed to get original vector from provider, key=%llu",
+                static_cast<unsigned long long>(pkey));
+      (*stats_.mutable_discarded_count())++;
+      return ret;
+    }
+    ctx->reset_query_raw(original_query_block.data(), provider_meta_);
+  } else {
+    ctx->reset_query(query, meta_);
+  }
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -691,11 +758,12 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   for (size_t q = 0; q < count; ++q) {
-    ctx->reset_query(query);
+    ctx->reset_query(query, meta_);
     ret = alg_->search(ctx);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
@@ -761,7 +829,8 @@ int HnswStreamer::search_bf_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -775,7 +844,7 @@ int HnswStreamer::search_bf_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       ctx->group_topk_heaps().clear();
 
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
@@ -792,7 +861,7 @@ int HnswStreamer::search_bf_impl(
           if (topk_heap.empty()) {
             topk_heap.limit(ctx->group_topk());
           }
-          topk_heap.emplace_back(id, dist);
+          topk_heap.emplace(id, dist);
         }
       }
       ctx->topk_to_result(q);
@@ -803,7 +872,7 @@ int HnswStreamer::search_bf_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       topk.clear();
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
         if (entity_->get_key(id) == kInvalidKey) {
@@ -855,7 +924,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -869,7 +939,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       ctx->group_topk_heaps().clear();
 
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
@@ -884,7 +954,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
             if (topk_heap.empty()) {
               topk_heap.limit(ctx->group_topk());
             }
-            topk_heap.emplace_back(id, dist);
+            topk_heap.emplace(id, dist);
           }
         }
       }
@@ -896,7 +966,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       topk.clear();
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         key_t pk = p_keys[q][idx];

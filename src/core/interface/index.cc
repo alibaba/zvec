@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
@@ -51,6 +52,37 @@ bool Index::init_context() {
 core::IndexContext::Pointer &Index::acquire_context() {
   init_context();
   return _context_list[context_index_];
+}
+
+int Index::Train() {
+  is_trained_ = true;
+  return 0;
+}
+
+BaseIndexParam::Pointer Index::GetParam() const {
+  return std::make_shared<BaseIndexParam>(param_);
+}
+
+bool Index::IsTrained() const {
+  return is_trained_;
+}
+
+uint32_t Index::GetDocCount() const {
+  if (streamer_ == nullptr) {
+    return -1;
+  }
+  if (is_sparse_) {
+    return streamer_->create_sparse_provider()->count();
+  }
+  return streamer_->create_provider()->count();
+}
+
+core::IndexStreamer::Pointer Index::index_searcher() {
+  return streamer_;
+}
+
+core::IndexProvider::Pointer Index::create_index_provider() const {
+  return streamer_->create_provider();
 }
 
 int Index::ParseMetricName(const BaseIndexParam &param) {
@@ -180,8 +212,11 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
-        case QuantizerType::kUniformInt8:
-          converter_name = "UniformInt8StreamingConverter";
+        case QuantizerType::kUniformUint7:
+          converter_name = "UniformUint7Converter";
+          break;
+        case QuantizerType::kUniformUint8:
+          converter_name = "UniformUint8Converter";
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
@@ -258,7 +293,11 @@ int Index::Init(const BaseIndexParam &param) {
     return core::IndexError_Runtime;
   }
 
-  if (CreateAndInitConverterReformer(param.quantizer_param, param) != 0) {
+  // an absent quantizer param behaves the same as a kNone one
+  const auto quantizer_param = param.quantizer_param
+                                   ? param.quantizer_param
+                                   : std::make_shared<QuantizerParam>();
+  if (CreateAndInitConverterReformer(*quantizer_param, param) != 0) {
     LOG_ERROR("Failed to create and init converter");
     return core::IndexError_Runtime;
   }
@@ -338,11 +377,10 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // If a converter exists but reformer was not created during Init()
-  // (converters like UniformInt8 whose reformer params are only available
-  // after train()), create it now from the persisted meta that the streamer
-  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
-  // is nullptr by design — skip this block entirely.
+  // If a converter exists but reformer was not created during Init() because
+  // its params are only available after training, create it now from the
+  // persisted meta loaded by the streamer. When there is no converter
+  // (QuantizerType::kNone), reformer_ is nullptr by design.
   if (converter_ != nullptr && reformer_ == nullptr) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {
@@ -526,10 +564,11 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  if (_prepare_for_search(vector_data, search_param, context) != 0) {
+  int prepare_ret = _prepare_for_search(vector_data, search_param, context);
+  if (prepare_ret != 0) {
     LOG_ERROR("Failed to prepare for search");
     context->reset();
-    return core::IndexError_Runtime;
+    return prepare_ret;
   }
 
   if (is_sparse_) {
@@ -982,19 +1021,24 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
   }
   // must declare here to ensure its lifespan can cover reducer->reduce()
   std::unique_ptr<ailego::ThreadPool> local_thread_pool = nullptr;
+  uint32_t effective_write_concurrency = options.write_concurrency;
   if (options.pool != nullptr) {
     reducer->set_thread_pool(options.pool);
+    effective_write_concurrency =
+        std::min<uint32_t>(effective_write_concurrency, options.pool->count());
   } else {
     local_thread_pool =
-        std::make_unique<ailego::ThreadPool>(options.write_concurrency);
+        std::make_unique<ailego::ThreadPool>(options.write_concurrency, false);
     reducer->set_thread_pool(local_thread_pool.get());
+    effective_write_concurrency =
+        static_cast<uint32_t>(local_thread_pool->count());
   }
 
   ailego::Params reducer_params;
   reducer_params.set(core::PARAM_MIXED_STREAMER_REDUCER_ENABLE_PK_REWRITE,
                      true);
   reducer_params.set(core::PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS,
-                     options.write_concurrency);
+                     effective_write_concurrency);
   if (reducer->init(reducer_params) != 0) {
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;

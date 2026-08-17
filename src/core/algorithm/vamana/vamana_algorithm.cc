@@ -79,6 +79,42 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
 }
 
 // ============================================================================
+// refine_graph: Full-graph Vamana second pass.
+//
+// Standard two-pass construction first builds the graph with alpha=1.0. Once
+// every point is visible, this pass searches from the final entry point,
+// combines the search result with each node's existing outgoing edges, and
+// applies RobustPrune with the configured target alpha.
+// ============================================================================
+template <typename EntityType>
+int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {
+  if (ctx == nullptr) return IndexError_InvalidArgument;
+  int ret = entity_.ensure_dist_storage();
+  if (ailego_unlikely(ret != 0)) {
+    return ret;
+  }
+
+  const uint32_t n = entity_.doc_cnt();
+  if (n <= 1 || entity_.entry_point() == kInvalidNodeId) {
+    return 0;
+  }
+
+  ctx->check_need_adjuct_ctx(n);
+  for (node_id_t id = 0; id < n; ++id) {
+    if (entity_.get_key(id) == kInvalidKey) continue;
+    if (entity_.get_vector(id) == nullptr) continue;
+    ret = refine_node(id, alpha, ctx);
+    if (ailego_unlikely(ret != 0)) {
+      return ret;
+    }
+    if (ailego_unlikely(ctx->error())) {
+      return IndexError_Runtime;
+    }
+  }
+  return 0;
+}
+
+// ============================================================================
 // search: Greedy search for approximate nearest neighbors.
 // ============================================================================
 template <typename EntityType>
@@ -370,6 +406,83 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                                         entry_point, filter);
     }
   }
+}
+
+template <typename EntityType>
+int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
+                                             VamanaContext *ctx) {
+  const void *query_vec = entity_.get_vector(id);
+  if (ailego_unlikely(query_vec == nullptr)) {
+    return IndexError_ReadData;
+  }
+
+  node_id_t entry_point = entity_.entry_point();
+  if (entry_point == id) {
+    entry_point = kInvalidNodeId;
+    const uint32_t n = entity_.doc_cnt();
+    for (node_id_t candidate = 0; candidate < n; ++candidate) {
+      if (candidate == id) continue;
+      if (entity_.get_key(candidate) == kInvalidKey) continue;
+      if (entity_.get_vector(candidate) == nullptr) continue;
+      entry_point = candidate;
+      break;
+    }
+    if (entry_point == kInvalidNodeId) {
+      return 0;
+    }
+  }
+
+  ctx->clear();
+  ctx->topk_heap().clear();
+  ctx->topk_heap().limit(entity_.search_list_size());
+  ctx->dist_calculator().clear_compare_cnt();
+  ctx->reset_query(query_vec);
+
+  greedy_search(entry_point, ctx, /*use_pool=*/false);
+
+  const TopkHeap &search_candidates = ctx->topk_heap();
+  const Neighbors current_neighbors = entity_.get_neighbors(id);
+
+  // Unlike add_node(), the node being refined is already visible in the
+  // graph, so GreedySearch can return `id` itself with distance zero. Remove
+  // it before RobustPrune: although RobustPrune also skips self-loops, leaving
+  // it here would consume one of the max_occlusion_size candidate slots.
+  TopkHeap &candidates = ctx->update_heap();
+  candidates.clear();
+  candidates.limit(search_candidates.size() + current_neighbors.size() + 1);
+
+  // GreedySearch's VisitFilter is a superset of the bounded top-k heap. Its
+  // search lifetime ends here, so rebuild it from the retained candidates and
+  // reuse it as membership while merging the node's existing outgoing edges.
+  VisitFilter &candidate_membership = ctx->visit_filter();
+  candidate_membership.clear();
+  for (const auto &candidate : search_candidates) {
+    if (candidate.first == id) continue;
+    candidates.emplace(candidate);
+    candidate_membership.set_visited(candidate.first);
+  }
+
+  const dist_t *cached_dists = entity_.get_neighbor_dists(id);
+  for (uint32_t i = 0; i < current_neighbors.size(); ++i) {
+    node_id_t neighbor = current_neighbors[i];
+    if (neighbor == id || candidate_membership.visited(neighbor)) continue;
+    const void *neighbor_vec = entity_.get_vector(neighbor);
+    if (neighbor_vec == nullptr) continue;
+    dist_t dist = cached_dists
+                      ? cached_dists[i]
+                      : ctx->dist_calculator().dist(query_vec, neighbor_vec);
+    candidates.emplace(neighbor, dist);
+    candidate_membership.set_visited(neighbor);
+  }
+
+  robust_prune(id, candidates, alpha, entity_.max_degree(), ctx);
+  auto pruned_neighbors = ctx->prune_result();
+
+  entity_.update_neighbors(id, pruned_neighbors);
+  entity_.update_neighbor_dists(id, pruned_neighbors);
+  update_neighbors_and_reverse_links(id, pruned_neighbors, ctx);
+
+  return 0;
 }
 
 // ============================================================================

@@ -122,15 +122,24 @@ void ZVecPyCollection::bind_ddl_methods(
       });
 
   // bind collection ddl methods
-  col.def("Destroy",
+  col.def("Close",
           [](Collection &self) {
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.Destroy();
+              status = self.Close();
             }
             throw_if_error(status);
           })
+      .def("Destroy",
+           [](Collection &self) {
+             Status status;
+             {
+               py::gil_scoped_release release;
+               status = self.Destroy();
+             }
+             throw_if_error(status);
+           })
       .def("Flush", [](Collection &self) {
         Status status;
         {

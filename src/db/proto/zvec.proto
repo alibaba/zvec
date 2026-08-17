@@ -62,6 +62,8 @@ enum IndexType {
   IT_VAMANA = 5;
   // Proxima DiskAnn Index
   IT_DISKANN = 6;
+  // Proxima IVF RABITQ Index
+  IT_IVF_RABITQ = 7;
   // Invert Index
   IT_INVERT = 10;
   // Full-Text Search Index
@@ -121,6 +123,13 @@ message HnswRabitqIndexParams {
   int32 sample_count = 6;
 }
 
+message IvfRabitqIndexParams {
+  BaseIndexParams base = 1;
+  int32 nlist = 2;
+  int32 total_bits = 3;
+  int32 sample_count = 4;
+}
+
 message FlatIndexParams {
   BaseIndexParams base = 1;
 }
@@ -150,6 +159,8 @@ message VamanaIndexParams {
   // throughput at the cost of peak memory usage. Defaults to false.
   bool use_contiguous_memory = 6;
   bool use_id_map = 7;
+  // Run the standard alpha=1.0 pass followed by a full-graph pass at alpha.
+  bool two_pass_build = 8;
 }
 
 message FtsIndexParams {
@@ -168,6 +179,7 @@ message IndexParams {
     VamanaIndexParams vamana = 6;
     FtsIndexParams fts = 7;
     DiskAnnIndexParams diskann = 8;
+    IvfRabitqIndexParams ivf_rabitq = 9;
   };
 };
 

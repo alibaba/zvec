@@ -12,33 +12,64 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 
-#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <pthread.h>
 
-static inline void BindThreads(std::vector<std::thread> &pool) {
-  uint32_t hc = std::thread::hardware_concurrency();
-  if (hc > 1) {
-    cpu_set_t mask;
+static inline bool GetAllowedCpuMask(cpu_set_t *mask) {
+  CPU_ZERO(mask);
+  const int error = pthread_getaffinity_np(pthread_self(), sizeof(*mask), mask);
+  if (error != 0) {
+    LOG_WARN("Failed to get thread affinity mask, error[%d]", error);
+    return false;
+  }
+  return true;
+}
 
-    for (size_t i = 0u; i < pool.size(); ++i) {
-      CPU_ZERO(&mask);
-      CPU_SET(i % hc, &mask);
-      pthread_setaffinity_np(pool[i].native_handle(), sizeof(mask), &mask);
+static inline void BindThreads(std::vector<std::thread> &pool) {
+  cpu_set_t allowed_mask;
+  if (!GetAllowedCpuMask(&allowed_mask)) {
+    return;
+  }
+
+  std::vector<int> allowed_cpus;
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (CPU_ISSET(cpu, &allowed_mask)) {
+      allowed_cpus.push_back(cpu);
+    }
+  }
+  if (allowed_cpus.empty()) {
+    LOG_WARN("Cannot bind thread pool: affinity mask has no allowed CPUs");
+    return;
+  }
+
+  cpu_set_t target_mask;
+  for (size_t i = 0u; i < pool.size(); ++i) {
+    CPU_ZERO(&target_mask);
+    CPU_SET(allowed_cpus[i % allowed_cpus.size()], &target_mask);
+    const int error = pthread_setaffinity_np(pool[i].native_handle(),
+                                             sizeof(target_mask), &target_mask);
+    if (error != 0) {
+      LOG_WARN("Failed to bind thread pool worker[%zu], error[%d]", i, error);
     }
   }
 }
 
 static inline void UnbindThreads(std::vector<std::thread> &pool) {
-  cpu_set_t mask;
-  CPU_ZERO(&mask);
-
-  for (size_t i = 0u; i < CPU_SETSIZE; ++i) {
-    CPU_SET(i, &mask);
+  cpu_set_t allowed_mask;
+  if (!GetAllowedCpuMask(&allowed_mask)) {
+    return;
   }
+
   for (size_t i = 0u; i < pool.size(); ++i) {
-    pthread_setaffinity_np(pool[i].native_handle(), sizeof(mask), &mask);
+    const int error = pthread_setaffinity_np(
+        pool[i].native_handle(), sizeof(allowed_mask), &allowed_mask);
+    if (error != 0) {
+      LOG_WARN("Failed to unbind thread pool worker[%zu], error[%d]", i, error);
+    }
   }
 }
 #else
@@ -49,12 +80,44 @@ static inline void UnbindThreads(std::vector<std::thread> &) {}
 namespace zvec {
 namespace ailego {
 
+namespace {
+
+uint32_t SafeWorkerCount() noexcept {
+  return std::max(std::thread::hardware_concurrency(), 1u);
+}
+
+}  // namespace
+
+ThreadPool::ThreadPool() : ThreadPool(SafeWorkerCount(), false) {}
+
 ThreadPool::ThreadPool(uint32_t size, bool binding) {
-  for (uint32_t i = 0u; i < size; ++i) {
-    pool_.emplace_back(&ThreadPool::worker, this);
+  const uint32_t max_size = SafeWorkerCount();
+  const uint32_t safe_size = std::min(std::max(size, 1u), max_size);
+  if (safe_size != size) {
+    LOG_WARN(
+        "ThreadPool worker count[%u] is outside supported range[1, %u], "
+        "clamped to %u",
+        size, max_size, safe_size);
   }
-  if (binding) {
-    this->bind();
+
+  try {
+    // Avoid vector reallocations after workers have started. If thread creation
+    // still fails, stop and join the workers already created before rethrowing.
+    pool_.reserve(safe_size);
+    for (uint32_t i = 0u; i < safe_size; ++i) {
+      pool_.emplace_back(&ThreadPool::worker, this);
+    }
+    if (binding) {
+      this->bind();
+    }
+  } catch (...) {
+    this->stop();
+    for (auto &worker : pool_) {
+      if (worker.joinable()) {
+        worker.join();
+      }
+    }
+    throw;
   }
 }
 

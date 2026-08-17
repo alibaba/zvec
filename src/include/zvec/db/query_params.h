@@ -17,13 +17,14 @@
 #include <string>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/type.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
 /*
  * Query Index params
  */
-class QueryParams {
+class ZVEC_API QueryParams {
  public:
   using Ptr = std::shared_ptr<QueryParams>;
 
@@ -65,7 +66,7 @@ class QueryParams {
   bool is_using_refiner_{false};
 };
 
-class HnswQueryParams : public QueryParams {
+class ZVEC_API HnswQueryParams : public QueryParams {
  public:
   HnswQueryParams(
       int ef = core_interface::kDefaultHnswEfSearch, float radius = 0.0f,
@@ -113,7 +114,7 @@ class HnswQueryParams : public QueryParams {
   uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
 };
 
-class IVFQueryParams : public QueryParams {
+class ZVEC_API IVFQueryParams : public QueryParams {
  public:
   IVFQueryParams(int nprobe = 10, bool is_using_refiner = false,
                  float scale_factor = 10)
@@ -145,7 +146,7 @@ class IVFQueryParams : public QueryParams {
   float scale_factor_{10};
 };
 
-class HnswRabitqQueryParams : public QueryParams {
+class ZVEC_API HnswRabitqQueryParams : public QueryParams {
  public:
   HnswRabitqQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
                         float radius = 0.0f, bool is_linear = false,
@@ -170,7 +171,41 @@ class HnswRabitqQueryParams : public QueryParams {
   int ef_;
 };
 
-class FlatQueryParams : public QueryParams {
+class ZVEC_API IvfRabitqQueryParams : public QueryParams {
+ public:
+  IvfRabitqQueryParams(int nprobe = core_interface::kDefaultIvfRabitqNprobe,
+                       float radius = 0.0f, bool is_linear = false,
+                       bool is_using_refiner = false,
+                       float scale_factor = 10.0f)
+      : QueryParams(IndexType::IVF_RABITQ), nprobe_(nprobe) {
+    set_radius(radius);
+    set_is_linear(is_linear);
+    set_is_using_refiner(is_using_refiner);
+    set_scale_factor(scale_factor);
+  }
+
+  ~IvfRabitqQueryParams() override = default;
+
+  int nprobe() const {
+    return nprobe_;
+  }
+  void set_nprobe(int nprobe) {
+    nprobe_ = nprobe;
+  }
+
+  float scale_factor() const {
+    return scale_factor_;
+  }
+  void set_scale_factor(float scale_factor) {
+    scale_factor_ = scale_factor;
+  }
+
+ private:
+  int nprobe_;
+  float scale_factor_{10.0f};
+};
+
+class ZVEC_API FlatQueryParams : public QueryParams {
  public:
   FlatQueryParams(bool is_using_refiner = false, float scale_factor = 10)
       : QueryParams(IndexType::FLAT) {
@@ -192,7 +227,7 @@ class FlatQueryParams : public QueryParams {
   float scale_factor_{10};
 };
 
-class DiskAnnQueryParams : public QueryParams {
+class ZVEC_API DiskAnnQueryParams : public QueryParams {
  public:
   DiskAnnQueryParams(int list_size = 300) : QueryParams(IndexType::DISKANN) {
     set_list_size(list_size);
@@ -214,7 +249,7 @@ class DiskAnnQueryParams : public QueryParams {
   int list_size_;
 };
 
-class VamanaQueryParams : public QueryParams {
+class ZVEC_API VamanaQueryParams : public QueryParams {
  public:
   VamanaQueryParams(
       int ef_search = core_interface::kDefaultVamanaEfSearch,
@@ -263,7 +298,7 @@ class VamanaQueryParams : public QueryParams {
   uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
 };
 
-class FtsQueryParams : public QueryParams {
+class ZVEC_API FtsQueryParams : public QueryParams {
  public:
   using Ptr = std::shared_ptr<FtsQueryParams>;
 

@@ -59,7 +59,13 @@ class BaseIndexParamBuilder {  //  : public
   }
   ActualIndexParamBuilderType &WithQuantizerParam(
       const QuantizerParam &quantizer_param) {
-    param->quantizer_param = quantizer_param;
+    param->quantizer_param = quantizer_param.Clone();
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+  ActualIndexParamBuilderType &WithQuantizerParam(
+      const QuantizerParam::Pointer &quantizer_param) {
+    param->quantizer_param =
+        quantizer_param ? quantizer_param->Clone() : nullptr;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   // ActualIndexParamBuilderType &WithRefinerParam(
@@ -88,7 +94,12 @@ class BaseIndexParamBuilder {  //  : public
   }
 
   ActualIndexParamBuilderType &WithEnableRotate(bool enable_rotate) {
-    param->quantizer_param.enable_rotate = enable_rotate;
+    // copy-on-write: never mutate a param object shared with others
+    auto quantizer_param = param->quantizer_param
+                               ? param->quantizer_param->Clone()
+                               : std::make_shared<QuantizerParam>();
+    quantizer_param->enable_rotate = enable_rotate;
+    param->quantizer_param = std::move(quantizer_param);
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
@@ -158,6 +169,12 @@ class HNSWIndexParamBuilder
     param->use_contiguous_memory = use_contiguous_memory;
     return *this;
   }
+  HNSWIndexParamBuilder &WithProvider(core::IndexProvider::Pointer provider,
+                                      const core::IndexMeta &provider_meta) {
+    param->provider = std::move(provider);
+    param->provider_meta = provider_meta;
+    return *this;
+  }
 
   std::shared_ptr<HNSWIndexParam> Build() override {
     return param;
@@ -200,6 +217,28 @@ class HNSWRabitqIndexParamBuilder
     return *this;
   }
   std::shared_ptr<HNSWRabitqIndexParam> Build() override {
+    return param;
+  }
+};
+
+class IVFRabitqIndexParamBuilder
+    : public BaseIndexParamBuilder<IVFRabitqIndexParamBuilder,
+                                   IVFRabitqIndexParam> {
+ public:
+  IVFRabitqIndexParamBuilder() = default;
+  IVFRabitqIndexParamBuilder &WithNlist(int nlist) {
+    param->nlist = nlist;
+    return *this;
+  }
+  IVFRabitqIndexParamBuilder &WithTotalBits(int total_bits) {
+    param->total_bits = total_bits;
+    return *this;
+  }
+  IVFRabitqIndexParamBuilder &WithSampleCount(int sample_count) {
+    param->sample_count = sample_count;
+    return *this;
+  }
+  std::shared_ptr<IVFRabitqIndexParam> Build() override {
     return param;
   }
 };
@@ -252,6 +291,10 @@ class VamanaIndexParamBuilder
   }
   VamanaIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
     param->use_contiguous_memory = use_contiguous_memory;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithTwoPassBuild(bool two_pass_build) {
+    param->two_pass_build = two_pass_build;
     return *this;
   }
 

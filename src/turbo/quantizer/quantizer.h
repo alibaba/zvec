@@ -28,26 +28,6 @@ namespace turbo {
 
 using namespace zvec::core;
 
-//! Error code literals mirroring core::IndexError::Code integer values.
-//!
-//! Turbo quantizer sources use these directly instead of the
-//! `IndexError_NotImplemented` / `IndexError_Unsupported` const objects
-//! because MSVC's WINDOWS_EXPORT_ALL_SYMBOLS does not export const data
-//! with constructors from zvec_shared.dll.  zvec_turbo is a static library
-//! linked with /WHOLEARCHIVE, so referencing those unexported symbols across
-//! the DLL boundary triggers LNK2019 on Windows.
-//!
-//! IndexError::Code stores -val in its constructor, so NotImplemented(11)
-//! yields -11 and Unsupported(12) yields -12.
-constexpr int kErrNotImplemented = -11;
-constexpr int kErrUnsupported = -12;
-
-//! Magic number ('QTZR') stamped at the start of a serialized quantizer blob.
-constexpr uint32_t kQuantizerMagic = 0x52545A51u;
-
-//! Current quantizer serialization format version.
-constexpr uint16_t kQuantizerSerVersion = 1;
-
 //! Self-describing, fixed-size header that prefixes every serialized quantizer.
 //! The type-specific payload (scalar params, codebook, rotation matrix, ...)
 //! follows immediately after this header.
@@ -58,7 +38,9 @@ struct QuantizerSerHeader {
   uint32_t dim;           // original dim (sanity check)
   uint32_t metric;        // MetricType  (sanity check)
   uint32_t payload_size;  // bytes following the header
-  uint32_t reserved;      // 0, for future use / alignment
+  uint16_t data_type;     // DataType of the stored codes: distinguishes e.g.
+                          // int8 vs int4 PQ blobs sharing quant_type == kPQ
+  uint16_t reserved;      // 0, for future use / alignment
 };
 static_assert(sizeof(QuantizerSerHeader) == 24,
               "QuantizerSerHeader must be 24 bytes");
@@ -67,7 +49,6 @@ class Quantizer {
  public:
   typedef std::shared_ptr<Quantizer> Pointer;
 
-  Quantizer() {}
   virtual ~Quantizer() {}
 
   //! Initialize quantizer with index metadata and parameters
@@ -168,6 +149,9 @@ class Quantizer {
   }
 
  protected:
+  //! Subclasses must declare which QuantizeType they implement.
+  explicit Quantizer(QuantizeType type) : type_(type) {}
+
   //! Map a metric name (e.g. "SquaredEuclidean", "Cosine",
   //! "InnerProduct", "MipsSquaredEuclidean") to its MetricType.
   static MetricType metric_from_name(const std::string &name) {
@@ -186,7 +170,7 @@ class Quantizer {
     return MetricType::kUnknown;
   }
 
-  QuantizeType type_{QuantizeType::kDefault};
+  QuantizeType type_;
   uint32_t extra_meta_size_{0};
 };
 

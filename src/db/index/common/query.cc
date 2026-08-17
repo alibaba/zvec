@@ -178,6 +178,18 @@ Status QueryTarget::validate(const FieldSchema *schema,
         IndexTypeCodeBook::AsString(schema->index_type()), " but got ",
         IndexTypeCodeBook::AsString(query_params->type()));
   }
+  if (query_params && query_params->type() == IndexType::IVF_RABITQ) {
+    auto ivf_rabitq_params =
+        std::dynamic_pointer_cast<IvfRabitqQueryParams>(query_params);
+    if (!ivf_rabitq_params) {
+      return Status::InvalidArgument(
+          "Invalid query: IVF_RABITQ index requires IvfRabitqQueryParams");
+    }
+    if (ivf_rabitq_params->nprobe() <= 0) {
+      return Status::InvalidArgument(
+          "Invalid query: IVF_RABITQ nprobe must be greater than 0");
+    }
+  }
   return Status::OK();
 }
 

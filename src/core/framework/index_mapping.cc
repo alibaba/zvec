@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #include <zvec/ailego/io/mmap_file.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
-#include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_mapping.h>
 #include "ailego/utility/memory_helper.h"
 

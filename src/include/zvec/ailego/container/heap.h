@@ -27,8 +27,70 @@ namespace ailego {
  */
 template <typename T, typename TCompare = std::less<T>,
           typename TBase = std::vector<T>>
-class Heap : public TBase {
+class Heap : private TBase {
  public:
+  //! Remove all elements
+  void clear(void) {
+    TBase::clear();
+  }
+
+  //! Retrieve the begin iterator
+  auto begin(void) const {
+    return TBase::begin();
+  }
+
+  //! Retrieve the end iterator
+  auto end(void) const {
+    return TBase::end();
+  }
+
+  //! Retrieve the front element
+  const T &front(void) const {
+    return TBase::front();
+  }
+
+  //! Retrieve the back element
+  const T &back(void) const {
+    return TBase::back();
+  }
+
+  //! Retrieve the element at the specified position
+  const T &operator[](size_t pos) const {
+    return TBase::operator[](pos);
+  }
+
+  //! Retrieve the mutable element at the specified position
+  T &mutable_at(size_t pos) {
+    return TBase::operator[](pos);
+  }
+
+  //! Expose the underlying container for read-only APIs
+  const TBase &container(void) const {
+    return *this;
+  }
+
+  //! Expose the underlying container for intentional mutable interop
+  TBase &mutable_container(void) {
+    return *this;
+  }
+
+  //! Shrink after in-place pruning without exposing vector::resize growth
+  void truncate(size_t size) {
+    if (size < TBase::size()) {
+      TBase::resize(size);
+    }
+  }
+
+  //! Retrieve the number of elements
+  size_t size(void) const {
+    return TBase::size();
+  }
+
+  //! Check whether the heap is empty
+  bool empty(void) const {
+    return TBase::empty();
+  }
+
   //! Constructor
   Heap(void)
       : TBase(), limit_(std::numeric_limits<size_t>::max()), compare_() {}

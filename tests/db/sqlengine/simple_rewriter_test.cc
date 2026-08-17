@@ -379,6 +379,21 @@ TEST_F(EqOrRewriteTest, PrePostEqAnd) {
             "(loc!=3(FORWARD))");
 }
 
+TEST_F(EqOrRewriteTest, EqOrGroupsSeparatedByAnd) {
+  auto info = parse("(age = 10 or age = 20) and (age = 30 or age = 40)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age in (10, 20)(FORWARD)) and (age in (30, 40)(FORWARD))");
+}
+
+TEST_F(EqOrRewriteTest, EqOrMustNotCrossAndSubtreeBoundary) {
+  auto info = parse("((age = 10 or age = 20) and gender = 1) or age = 30");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "((age in (10, 20)(FORWARD)(OR_A)) and "
+            "(gender=1(FORWARD)(OR_A))) or (age=30(FORWARD)(OR_A))");
+}
+
 TEST_F(EqOrRewriteTest, UserCases1) {
   auto info = parse(
       "(agent_id=20) and state=1 and (fid=107 "

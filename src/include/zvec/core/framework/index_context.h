@@ -233,23 +233,66 @@ class IndexContext {
 
   //! Set threshold for RNN
   void set_threshold(float val) {
-    if (index_metric_ && index_metric_->support_normalize()) {
-      index_metric_->denormalize(&val);
-    }
-
-    threshold_ = val;
+    raw_threshold_ = val;
+    threshold_set_ = true;
+    apply_threshold();
   }
 
-  //! Retrieve value of threshold for RNN
+  //! Retrieve threshold in the caller-facing metric space.
+  float raw_threshold(void) const {
+    return raw_threshold_;
+  }
+
+  //! Retrieve whether an RNN threshold was explicitly configured.
+  bool threshold_set(void) const {
+    return threshold_set_;
+  }
+
+  //! Retrieve the internal threshold used by the search implementation.
   float threshold(void) const {
     return threshold_;
   }
 
   //! Reset value of threshold for RNN
   void reset_threshold(void) {
+    raw_threshold_ = std::numeric_limits<float>::max();
     threshold_ = std::numeric_limits<float>::max();
+    threshold_set_ = false;
   }
 
+ protected:
+  //! Replace the metric associated with this context and recompute any
+  //! configured threshold in the new metric's internal distance space.
+  void update_index_metric(IndexMetric::Pointer index_metric) {
+    index_metric_ = std::move(index_metric);
+    if (threshold_set_) {
+      apply_threshold();
+    }
+  }
+
+  //! Copy common per-query options. Thresholds are copied in caller-facing
+  //! metric space so a pooled context can safely move between indexes that use
+  //! different internal score normalization.
+  void copy_common_query_options_from(const IndexContext &rhs) {
+    filter_ = rhs.filter_;
+    group_by_ = rhs.group_by_;
+    if (rhs.threshold_set_) {
+      set_threshold(rhs.raw_threshold_);
+    } else {
+      reset_threshold();
+    }
+  }
+
+ private:
+  void apply_threshold() {
+    float val = raw_threshold_;
+    if (index_metric_ && index_metric_->support_normalize()) {
+      index_metric_->denormalize(&val);
+    }
+    threshold_ = val;
+  }
+
+ public:
   //! Generate a global magic number
   static uint32_t GenerateMagic(void);
 
@@ -262,8 +305,9 @@ class IndexContext {
   //! Members
   IndexFilter filter_{};
   IndexGroupBy group_by_{};
+  float raw_threshold_{std::numeric_limits<float>::max()};
   float threshold_{std::numeric_limits<float>::max()};
-
+  bool threshold_set_{false};
 
   Profiler profiler_{};
 

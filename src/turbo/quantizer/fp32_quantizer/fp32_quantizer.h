@@ -27,9 +27,7 @@ using namespace zvec::core;
 
 class Fp32Quantizer : public Quantizer {
  public:
-  Fp32Quantizer() {
-    type_ = QuantizeType::kFp32;
-  }
+  Fp32Quantizer() : Quantizer(QuantizeType::kFp32) {}
 
   virtual ~Fp32Quantizer() {}
 

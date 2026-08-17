@@ -14,8 +14,8 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <random>
 #include <ailego/container/vector_array.h>
 #include <ailego/math/euclidean_distance_matrix.h>
@@ -47,6 +47,8 @@ class Kmc2CentroidsGenerator {
 
   //! constexpr variables
   constexpr static size_t BatchCount = OwnerType::BatchCount;
+  constexpr static bool NeedsSphericalWeight =
+      ContextType::NeedsSphericalKmc2Weight;
 
   //! Generate centroids
   void operator()(OwnerType *owner, ThreadPoolType &pool) const {
@@ -98,6 +100,7 @@ class Kmc2CentroidsGenerator {
 
     ContainerType benches(cache.dimension());
     std::vector<float> scores;
+    std::vector<float> centroid_norms;
 
     // Sample first center uniformly
     RandomSelectBenches(cache, matrix, 1, centroids);
@@ -107,12 +110,14 @@ class Kmc2CentroidsGenerator {
 
     for (size_t i = 1, k = owner->k_value(); i < k; ++i) {
       RandomSelectBenches(cache, matrix, chain_length_, &benches);
+      UpdateCentroidNorms(owner, &centroid_norms);
 
       // Update bench scores
       scores.resize(benches.count());
       for (size_t j = 0; j != scores.size(); ++j) {
         group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateBenchScores,
-                                   centroids, benches[j], &scores[j]));
+                                   owner, benches[j], centroid_norms.data(),
+                                   &scores[j]));
       }
       group->wait_finish();
 
@@ -165,26 +170,25 @@ class Kmc2CentroidsGenerator {
     group->wait_finish();
 
     // Update probabilities
-    double p_sum = std::accumulate(probs.begin(), probs.end(), 0.0);
-    for (auto it = probs.begin(); it != probs.end(); ++it) {
-      *it = static_cast<float>((*it / p_sum + 1.0 / probs.size()) * 0.5);
-    }
+    NormalizeProbabilities(&probs);
 
     std::mt19937 mt((std::random_device())());
     std::uniform_real_distribution<float> dist(0.0, 1.0);
     ContainerType benches(cache.dimension());
     std::vector<float> scores;
     std::vector<float> bench_probs;
+    std::vector<float> centroid_norms;
 
     for (size_t i = 1; i < owner->k_value(); ++i) {
       RandomSelectBenches(cache, matrix, chain_length_, probs, &benches,
                           &bench_probs);
+      UpdateCentroidNorms(owner, &centroid_norms);
 
       // Update bench scores
       scores.resize(benches.count());
       for (size_t j = 0; j != scores.size(); ++j) {
         group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateBenchScores,
-                                   owner->mutable_centroids(), benches[j],
+                                   owner, benches[j], centroid_norms.data(),
                                    &scores[j]));
       }
       group->wait_finish();
@@ -214,11 +218,32 @@ class Kmc2CentroidsGenerator {
                                  size_t last, float *out) {
     const auto &matrix = owner->feature_matrix();
     const auto *bench = owner->centroids().data();
+    ContainerType rows(matrix.dimension());
+    float bench_norm = 0.0f;
+
+    if constexpr (NeedsSphericalWeight) {
+      if (owner->spherical()) {
+        rows.resize(BatchCount);
+        bench_norm = ContextType::Kmc2Norm(bench, matrix.dimension());
+      }
+    }
 
     for (size_t i = first * BatchCount; i != last * BatchCount;
          i += BatchCount) {
       ContextType::template BatchDistance<1>(matrix[i], bench,
                                              matrix.dimension(), &out[i]);
+      if constexpr (NeedsSphericalWeight) {
+        if (owner->spherical()) {
+          ContextType::MatrixReverseTranspose(matrix[i], matrix.dimension(),
+                                              rows.data());
+          for (size_t j = 0; j < BatchCount; ++j) {
+            float feature_norm =
+                ContextType::Kmc2Norm(rows[j], matrix.dimension());
+            out[i + j] =
+                ContextType::Kmc2Weight(out[i + j], bench_norm, feature_norm);
+          }
+        }
+      }
     }
   }
 
@@ -226,27 +251,90 @@ class Kmc2CentroidsGenerator {
   static void UpdateCacheScores(const OwnerType *owner, float *out) {
     const auto &cache = owner->feature_cache();
     const auto *bench = owner->centroids().data();
+    float bench_norm = 0.0f;
+
+    if constexpr (NeedsSphericalWeight) {
+      if (owner->spherical()) {
+        bench_norm = ContextType::Kmc2Norm(bench, cache.dimension());
+      }
+    }
 
     for (size_t i = 0, n = cache.count(); i != n; ++i) {
       ContextType::Distance(bench, cache[i], cache.dimension(), &out[i]);
+      if constexpr (NeedsSphericalWeight) {
+        if (owner->spherical()) {
+          float feature_norm =
+              ContextType::Kmc2Norm(cache[i], cache.dimension());
+          out[i] = ContextType::Kmc2Weight(out[i], bench_norm, feature_norm);
+        }
+      }
+    }
+  }
+
+  //! Update centroid norms for spherical K-MC2 weights
+  static void UpdateCentroidNorms(const OwnerType *owner,
+                                  std::vector<float> *out) {
+    out->clear();
+    if constexpr (NeedsSphericalWeight) {
+      if (owner->spherical()) {
+        const auto &centroids = owner->centroids();
+        out->resize(centroids.count());
+        for (size_t i = 0; i < centroids.count(); ++i) {
+          (*out)[i] =
+              ContextType::Kmc2Norm(centroids[i], centroids.dimension());
+        }
+      }
     }
   }
 
   //! Update bench score
-  static void UpdateBenchScores(const ContainerType *benches,
-                                const StoreType *feat, float *out) {
+  static void UpdateBenchScores(const OwnerType *owner, const StoreType *feat,
+                                const float *centroid_norms, float *out) {
+    const auto &benches = owner->centroids();
     float min_score = std::numeric_limits<float>::max();
+    float feature_norm = 0.0f;
 
-    for (size_t i = 0, c = benches->count(); i != c; ++i) {
+    if constexpr (NeedsSphericalWeight) {
+      if (owner->spherical()) {
+        feature_norm = ContextType::Kmc2Norm(feat, benches.dimension());
+      }
+    }
+
+    for (size_t i = 0, c = benches.count(); i != c; ++i) {
       float new_score;
-      ContextType::Distance(benches->at(i), feat, benches->dimension(),
+      ContextType::Distance(benches.at(i), feat, benches.dimension(),
                             &new_score);
+      if constexpr (NeedsSphericalWeight) {
+        if (owner->spherical()) {
+          new_score = ContextType::Kmc2Weight(new_score, centroid_norms[i],
+                                              feature_norm);
+        }
+      }
 
       if (new_score < min_score) {
         min_score = new_score;
       }
     }
     *out = min_score;
+  }
+
+  //! Normalize AFK-MC2 sampling probabilities
+  static void NormalizeProbabilities(std::vector<float> *probs) {
+    double p_sum = 0.0;
+    bool valid = true;
+    for (float prob : *probs) {
+      p_sum += prob;
+      valid = valid && prob >= 0.0f && std::isfinite(prob);
+    }
+
+    const double uniform_prob = 1.0 / probs->size();
+    if (valid && p_sum > 0.0 && std::isfinite(p_sum)) {
+      for (auto &prob : *probs) {
+        prob = static_cast<float>((prob / p_sum + uniform_prob) * 0.5);
+      }
+    } else {
+      std::fill(probs->begin(), probs->end(), static_cast<float>(uniform_prob));
+    }
   }
 
   //! Select k benches randomly
@@ -328,6 +416,7 @@ class NumericalKmeansContext {
  public:
   //! constexpr variables
   constexpr static size_t BatchCount = BATCH_COUNT;
+  constexpr static bool NeedsSphericalKmc2Weight = false;
 
   //! Type of values
   using ValueType = typename std::remove_cv<T>::type;
@@ -492,16 +581,15 @@ class NumericalKmeansContext {
     MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2, dst);
   }
 
-  //! Compute Norm2
-  template <typename ValueType, typename = typename std::enable_if<
-                                    IsFloatingPoint<ValueType>::value>::type>
+  //! Normalize with L2 norm for floating-point values, otherwise do nothing
   static void Norm2(ValueType *data, size_t dim, float *norm) {
-    Normalizer<ValueType>::L2(data, dim, norm);
-  }
-
-  //! Compute Norm2, for non-float do nothing
-  static void Norm2(ValueType * /*data*/, size_t /*dim*/, float *norm) {
-    *norm = 0.0f;
+    if constexpr (IsFloatingPoint<ValueType>::value) {
+      Normalizer<ValueType>::L2(data, dim, norm);
+    } else {
+      (void)data;
+      (void)dim;
+      *norm = 0.0f;
+    }
   }
 
  private:
@@ -516,6 +604,7 @@ class NibbleKmeansContext {
  public:
   //! constexpr variables
   constexpr static size_t BatchCount = BATCH_COUNT;
+  constexpr static bool NeedsSphericalKmc2Weight = false;
 
   //! Type of values
   using ValueType = typename std::remove_cv<T>::type;
@@ -680,6 +769,8 @@ class NumericalInnerProductKmeansContext {
  public:
   //! constexpr variables
   constexpr static size_t BatchCount = BATCH_COUNT;
+  constexpr static bool NeedsSphericalKmc2Weight =
+      IsFloatingPoint<typename std::remove_cv<T>::type>::value;
 
   //! Type of values
   using ValueType = typename std::remove_cv<T>::type;
@@ -815,6 +906,26 @@ class NumericalInnerProductKmeansContext {
     MinusInnerProductMatrix<ValueType, 1, 1>::Compute(m, q, dim, out);
   }
 
+  //! Compute the L2 norm used by spherical K-MC2 initialization
+  static float Kmc2Norm(const ValueType *vec, size_t dim) {
+    float score;
+    Distance(vec, vec, dim, &score);
+    return std::sqrt(std::max(-score, 0.0f));
+  }
+
+  //! Convert -dot to a non-negative spherical K-MC2 sampling weight
+  static float Kmc2Weight(float score, float centroid_norm,
+                          float feature_norm) {
+    // Spherical centroids are unit vectors during Lloyd iterations. K-MC2
+    // benches are raw input vectors, so account for their norm here. This is
+    // ||x|| - dot(x, c / ||c||), which reduces to cosine distance when both
+    // vectors are normalized.
+    if (centroid_norm == 0.0f) {
+      return feature_norm;
+    }
+    return std::max(feature_norm + score / centroid_norm, 0.0f);
+  }
+
   //! Transpose a matrix
   template <typename U>
   static auto MatrixTranspose(const U *src, size_t dim, T *dst) ->
@@ -843,16 +954,15 @@ class NumericalInnerProductKmeansContext {
     MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2, dst);
   }
 
-  //! Compute Norm2
-  template <typename ValueType, typename = typename std::enable_if<
-                                    IsFloatingPoint<ValueType>::value>::type>
+  //! Normalize with L2 norm for floating-point values, otherwise do nothing
   static void Norm2(ValueType *data, size_t dim, float *norm) {
-    Normalizer<ValueType>::L2(data, dim, norm);
-  }
-
-  //! Compute Norm2, for non-float do nothing
-  static void Norm2(ValueType * /*data*/, size_t /*dim*/, float *norm) {
-    *norm = 0.0f;
+    if constexpr (IsFloatingPoint<ValueType>::value) {
+      Normalizer<ValueType>::L2(data, dim, norm);
+    } else {
+      (void)data;
+      (void)dim;
+      *norm = 0.0f;
+    }
   }
 
  private:
@@ -867,6 +977,7 @@ class NibbleInnerProductKmeansContext {
  public:
   //! constexpr variables
   constexpr static size_t BatchCount = BATCH_COUNT;
+  constexpr static bool NeedsSphericalKmc2Weight = false;
 
   //! Type of values
   using ValueType = typename std::remove_cv<T>::type;

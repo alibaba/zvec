@@ -139,6 +139,8 @@ class DiskAnnSearcher : public IndexSearcher {
   //! To share ctx across streamer/searcher, we need to update the context for
   //! current streamer/searcher
   int update_context(DiskAnnContext *ctx) const;
+  int ensure_compatible_context(ContextPointer &context,
+                                DiskAnnContext *&ctx) const;
 
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };

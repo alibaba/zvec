@@ -16,10 +16,75 @@
 #include <mutex>
 #include <string>
 #include <zvec/core/interface/index.h>
+#if DISKANN_SUPPORTED
 #include "algorithm/diskann/diskann_params.h"
 #include "holder_builder.h"
+#endif
 
 namespace zvec::core_interface {
+
+#if !DISKANN_SUPPORTED
+
+int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+  (void)param;
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Open(const std::string &file_path,
+                       StorageOptions storage_options) {
+  (void)file_path;
+  (void)storage_options;
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::GenerateHolder() {
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Add(const VectorData &vector, uint32_t doc_id) {
+  (void)vector;
+  (void)doc_id;
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Train() {
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
+                               VectorDataBuffer *vector_data_buffer) {
+  (void)doc_id;
+  (void)vector_data_buffer;
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::_prepare_for_search(
+    const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context) {
+  (void)query;
+  (void)search_param;
+  (void)context;
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
+                        const IndexFilter &filter,
+                        const MergeOptions &options) {
+  (void)indexes;
+  (void)filter;
+  (void)options;
+  LOG_ERROR("DiskAnn is not supported on this platform");
+  return core::IndexError_Unsupported;
+}
+
+#else
 
 int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (is_sparse_) {
@@ -226,6 +291,17 @@ int DiskAnnIndex::_prepare_for_search(
   }
 
   context->set_topk(diskann_search_param->topk);
+  context->set_fetch_vector(diskann_search_param->fetch_vector);
+  if (diskann_search_param->filter) {
+    context->set_filter(*diskann_search_param->filter);
+  } else {
+    context->reset_filter();
+  }
+  if (diskann_search_param->radius > 0.0f) {
+    context->set_threshold(diskann_search_param->radius);
+  } else {
+    context->reset_threshold();
+  }
 
   // Propagate the query-time beam-search list size into the context. Must be
   // at least topk to keep enough candidates for a correct result.
@@ -270,5 +346,7 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
   is_trained_ = true;
   return 0;
 }
+
+#endif  // DISKANN_SUPPORTED
 
 }  // namespace zvec::core_interface

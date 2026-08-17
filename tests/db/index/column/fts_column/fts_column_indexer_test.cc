@@ -61,7 +61,7 @@ static zvec::fts::TokenizerPipelinePtr make_whitespace_pipeline() {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "whitespace";
   params.filters = {"lowercase"};
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 // Helper: parse a query string and call search() on a reader/indexer.
@@ -797,7 +797,7 @@ TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerFailsWithoutDictDir) {
   bad_params.tokenizer_name = "jieba";
   bad_params.extra_params = "";
   auto pipeline = TokenizerFactory::create(bad_params);
-  EXPECT_EQ(pipeline, nullptr);
+  EXPECT_FALSE(pipeline.has_value());
 }
 
 // Insert a Chinese sentence and verify that total_docs and total_tokens are
@@ -915,7 +915,7 @@ static zvec::fts::TokenizerPipelinePtr make_jieba_pipeline_for_test() {
   params.filters = {"lowercase"};
   params.extra_params =
       std::string(R"({"jieba_dict_dir":")") + kJiebaDictDir + R"("})";
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 // Phrase queries on a jieba-indexed doc must hit when the query goes through
@@ -1841,7 +1841,7 @@ static zvec::fts::TokenizerPipelinePtr make_stemmer_pipeline() {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "standard";
   params.filters = {"lowercase", "stemmer"};
-  return zvec::fts::TokenizerFactory::create(params);
+  return zvec::fts::TokenizerFactory::create(params).value();
 }
 
 class FtsStemmerIndexerTest : public FtsColumnIndexerTest {
