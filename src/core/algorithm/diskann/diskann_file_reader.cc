@@ -14,7 +14,6 @@
 
 #include "diskann_file_reader.h"
 #include <algorithm>
-#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -1136,6 +1135,20 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 
   constexpr uint64_t kSectorLen = 4096;
   const size_t n_reqs = read_reqs.size();
+  for (size_t i = 0; i < n_reqs; ++i) {
+    const AlignedRead &req = read_reqs[i];
+    if (req.buf == nullptr ||
+        reinterpret_cast<uintptr_t>(req.buf) % kSectorLen != 0 ||
+        req.offset % kSectorLen != 0 || req.len % kSectorLen != 0) {
+      LOG_ERROR(
+          "Invalid unbuffered read request %zu: buffer=%p, offset=%llu, "
+          "len=%llu; all values must be aligned to %llu bytes",
+          i, req.buf, static_cast<unsigned long long>(req.offset),
+          static_cast<unsigned long long>(req.len),
+          static_cast<unsigned long long>(kSectorLen));
+      return IndexError_InvalidArgument;
+    }
+  }
   const uint64_t n_batches =
       DiskAnnUtil::div_round_up(n_reqs, static_cast<size_t>(MAX_IO_DEPTH));
 
@@ -1156,9 +1169,6 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     for (uint64_t j = 0; j < batch_size; ++j) {
       AlignedRead &req = read_reqs[batch_start + j];
       OVERLAPPED &request = ctx->reqs[j];
-      assert(reinterpret_cast<uintptr_t>(req.buf) % kSectorLen == 0);
-      assert(req.offset % kSectorLen == 0);
-      assert(req.len % kSectorLen == 0);
 
       request.Offset = static_cast<DWORD>(req.offset & 0xffffffffULL);
       request.OffsetHigh = static_cast<DWORD>(req.offset >> 32);
