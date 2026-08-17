@@ -88,6 +88,7 @@ constexpr uint32_t kAlpha = 4;
 constexpr uint32_t kSaturateGraph = 5;
 constexpr uint32_t kUseContiguousMemory = 6;
 constexpr uint32_t kUseIdMap = 7;
+constexpr uint32_t kTwoPassBuild = 8;
 }  // namespace f_vamana
 namespace f_fts {
 constexpr uint32_t kTokenizerName = 1;
@@ -470,6 +471,7 @@ void EncodeVamana(const VamanaIndexParams *params, std::string *out) {
   w.PutBool(f_vamana::kSaturateGraph, params->saturate_graph());
   w.PutBool(f_vamana::kUseContiguousMemory, params->use_contiguous_memory());
   w.PutBool(f_vamana::kUseIdMap, params->use_id_map());
+  w.PutBool(f_vamana::kTwoPassBuild, params->two_pass_build());
 }
 
 VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
@@ -480,6 +482,7 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   bool saturate_graph = false;
   bool use_contiguous_memory = false;
   bool use_id_map = false;
+  bool two_pass_build = false;
   Reader r(buf);
   while (r.Next()) {
     switch (r.field()) {
@@ -504,6 +507,9 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
       case f_vamana::kUseIdMap:
         use_id_map = r.bool_value();
         break;
+      case f_vamana::kTwoPassBuild:
+        two_pass_build = r.bool_value();
+        break;
       default:
         break;
     }
@@ -511,7 +517,7 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   return std::make_shared<VamanaIndexParams>(
       base.metric_type, max_degree, search_list_size, alpha, saturate_graph,
       use_contiguous_memory, use_id_map, base.quantize_type,
-      QuantizerParam(base.enable_rotate));
+      QuantizerParam(base.enable_rotate), two_pass_build);
 }
 
 void EncodeInvert(const InvertIndexParams *params, std::string *out) {

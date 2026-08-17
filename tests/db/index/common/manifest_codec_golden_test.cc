@@ -987,6 +987,40 @@ TEST(ManifestCodecGolden, IvfRabitqIndexParams) {
   EXPECT_EQ(*decoded, params);
 }
 
+TEST(ManifestCodecGolden, VamanaTwoPassBuild) {
+  // two_pass_build (proto field 8) was added after the golden bytes were
+  // archived, so it has no legacy byte fixture: manifests written before it
+  // existed must decode to the default (false), and the flag must round trip.
+  VamanaIndexParams disabled(MetricType::L2, 48, 160, 1.4f);
+  VamanaIndexParams enabled(MetricType::L2, 48, 160, 1.4f, false, false, false,
+                            QuantizeType::UNDEFINED, QuantizerParam(), true);
+
+  std::string encoded_disabled;
+  ManifestCodec::EncodeIndexParams(&disabled, &encoded_disabled);
+  std::string encoded_enabled;
+  ManifestCodec::EncodeIndexParams(&enabled, &encoded_enabled);
+  // A default-valued bool is not serialized, so only one encoding carries it.
+  EXPECT_NE(encoded_disabled, encoded_enabled);
+
+  const auto decoded_disabled =
+      ManifestCodec::DecodeIndexParams(encoded_disabled);
+  ASSERT_NE(decoded_disabled, nullptr);
+  ASSERT_EQ(decoded_disabled->type(), IndexType::VAMANA);
+  EXPECT_FALSE(dynamic_cast<const VamanaIndexParams *>(decoded_disabled.get())
+                   ->two_pass_build());
+  EXPECT_EQ(*decoded_disabled, disabled);
+
+  const auto decoded_enabled =
+      ManifestCodec::DecodeIndexParams(encoded_enabled);
+  ASSERT_NE(decoded_enabled, nullptr);
+  ASSERT_EQ(decoded_enabled->type(), IndexType::VAMANA);
+  const auto *vamana =
+      dynamic_cast<const VamanaIndexParams *>(decoded_enabled.get());
+  ASSERT_NE(vamana, nullptr);
+  EXPECT_TRUE(vamana->two_pass_build());
+  EXPECT_EQ(*decoded_enabled, enabled);
+}
+
 TEST(ManifestCodecGolden, IndexParamsLastBranchWins) {
   // protobuf oneof semantics: when several branches appear on the wire the
   // last one wins.
