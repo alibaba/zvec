@@ -327,7 +327,6 @@ void ZVecPyCollection::bind_dql_methods(
               py::gil_scoped_release release;
               result = self.CreateIterator(options);
             }
-            // return DocIterator::Ptr -> _DocIterator
             return unwrap_expected(result);
           },
           py::arg("output_fields") = py::none(),

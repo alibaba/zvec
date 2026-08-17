@@ -7592,8 +7592,7 @@ zvec_error_code_t zvec_collection_create_iterator(
   ZVEC_TRY_RETURN_ERROR(
       "Exception in zvec_collection_create_iterator",
       // CreateIterator is non-const: on writable collections it seals the
-      // writing segment into the snapshot; read-only collections are scanned
-      // without any write. Hence use a non-const handle.
+      // writing segment into the snapshot.
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
@@ -7611,7 +7610,6 @@ zvec_error_code_t zvec_collection_create_iterator(
         return code;
       }
 
-      // Wrap the shared_ptr<DocIterator> like other handles.
       *out_iter = reinterpret_cast<zvec_doc_iterator_t *>(
           new std::shared_ptr<zvec::DocIterator>(std::move(result.value())));
       return ZVEC_OK;)

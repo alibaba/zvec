@@ -32,8 +32,8 @@
 
 namespace zvec {
 
-// RAII guard that decrements the collection's active-iterator count when
-// the iterator releases its snapshot.
+// RAII guard that decrements the collection's active-iterator count when the
+// iterator releases its snapshot.
 struct ActiveIteratorGuard {
   std::shared_ptr<std::atomic<int>> count;
 
@@ -49,46 +49,37 @@ struct ActiveIteratorGuard {
 
 struct DocIterator::Impl {
   // Declaration order controls destruction order (reverse of declaration):
-  // schema_lock is declared FIRST so it is released last, and
-  // current_reader LAST so Arrow file handles are released before
-  // Segment::cleanup() deletes files from disk (important on Windows).
-  // The collection must outlive the iterator (it owns schema_lock's mutex).
+  // schema_lock is declared FIRST so it is released last, and current_reader
+  // LAST so Arrow file handles are released before the kept-alive segments
+  // are destroyed (important on Windows). The collection must outlive the
+  // iterator (it owns schema_lock's mutex).
   ActiveIteratorGuard active_guard;
   std::shared_lock<std::shared_mutex> schema_lock;
 
   std::vector<Segment::Ptr> segments;  // keep Segment alive
   DeleteStore::Ptr delete_store;       // keep delete bitmap alive
   CollectionSchema::Ptr schema;
-  // Columns to scan and the delete filter, kept so readers can be opened
-  // lazily (one segment at a time) instead of all upfront.
-  std::vector<std::string> scan_columns;
+  // Kept so segment readers can be opened lazily, one segment at a time.
+  std::vector<std::string> iterator_columns;
   IndexFilter::Ptr filter;
-  // Index of the segment currently being read.
   size_t current_segment_index{0};
-  bool include_vector{false};  // whether to fetch vector fields
-  // Column indices resolved once per segment reader (the reader schema is
-  // stable across its batches), so materialization skips per-batch lookups.
+  bool include_vector{false};
+  // Column indices resolved once per segment reader by ResolveReaderColumns.
   int uid_col{-1};
   int gdoc_col{-1};
   int row_id_col{-1};
   std::vector<std::pair<const FieldSchema *, int>> forward_cols;
-  // Arrow batch currently being materialized. Memory/IPC stores emit small
-  // batches, but a Parquet scan returns a whole row group per ReadNext (up
-  // to ~1M rows), so docs are materialized from it in bounded windows.
+  // Batch currently being materialized. A Parquet scan returns a whole row
+  // group per ReadNext (up to ~1M rows), so docs are materialized from it in
+  // bounded windows of at most kMaxRecordBatchNumRows rows.
   std::shared_ptr<arrow::RecordBatch> current_batch;
-  // First row of the next materialization window within current_batch.
-  int64_t batch_offset{0};
-  // Docs of the current window, materialized column by column; Next() hands
-  // them out one at a time. Peak doc memory stays bounded by one window
-  // (at most kMaxRecordBatchNumRows rows), regardless of the batch size the
-  // underlying store produces.
+  int64_t batch_offset{0};  // first row of the next window in current_batch
   std::vector<Doc::Ptr> batch_docs;
   size_t current_row{0};
-  // First materialization failure; sticky so a caller that ignores the
-  // error cannot keep iterating over a partially filled batch.
+  // First failure; sticky so a caller ignoring it cannot keep iterating over
+  // a partially filled window.
   Status error{Status::OK()};
-  // Reader for the current segment only (opened lazily, released when the
-  // segment is exhausted, so at most one reader is open at any time).
+  // Reader for the current segment only (opened lazily, at most one open).
   RecordBatchReaderPtr current_reader;
 };
 

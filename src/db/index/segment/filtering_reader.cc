@@ -65,12 +65,10 @@ arrow::Status FilteringReader::ReadNext(
       mask_builder.UnsafeAppend(!is_deleted);
     }
 
-    // No rows filtered → return batch as-is
     if (!has_filtered) {
       return arrow::Status::OK();
     }
 
-    // Apply filter
     std::shared_ptr<arrow::Array> mask_array;
     ARROW_RETURN_NOT_OK(mask_builder.Finish(&mask_array));
 
@@ -81,7 +79,7 @@ arrow::Status FilteringReader::ReadNext(
 
     *batch = result.record_batch();
 
-    // If all rows filtered out, continue to next batch
+    // All rows filtered out: continue to the next batch.
     if ((*batch)->num_rows() == 0) {
       continue;
     }

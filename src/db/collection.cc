@@ -185,7 +185,7 @@ class CollectionImpl : public Collection {
 
   // Columns for Segment::scan: system columns (+ LOCAL_ROW_ID when vectors
   // are needed) plus the requested forward fields (all when nullopt).
-  Result<std::vector<std::string>> build_scan_columns(
+  Result<std::vector<std::string>> build_iterator_columns(
       const IteratorOptions &options) const;
 
   // Builds the iterator state (schema snapshot, sealed segment list, cloned
@@ -2274,28 +2274,25 @@ std::vector<Segment::Ptr> CollectionImpl::get_all_persist_segments() const {
   return segment_manager_->get_segments();
 }
 
-Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
+Result<std::vector<std::string>> CollectionImpl::build_iterator_columns(
     const IteratorOptions &options) const {
   std::vector<std::string> columns;
   columns.push_back(GLOBAL_DOC_ID);
   columns.push_back(USER_ID);
   if (options.include_vector_) {
-    // Segment-local row id, used by DocIterator to fetch vectors from the
-    // vector indexer (robust against non-contiguous g_doc_ids in compacted
-    // segments, unlike g_doc_id - min_doc_id arithmetic).
+    // Segment-local row id used to fetch vectors from the indexer (robust
+    // against non-contiguous g_doc_ids in compacted segments).
     columns.push_back(LOCAL_ROW_ID);
   }
 
   const auto &output_fields = options.output_fields_;
   if (!output_fields.has_value()) {
-    // nullopt = all forward fields
     for (const auto &field : schema_->forward_fields()) {
       columns.push_back(field->name());
     }
   } else {
-    // Only requested forward fields — reject unknown, non-scalar, and
-    // duplicate names so callers get an error instead of a silently dropped
-    // field.
+    // Reject unknown, non-scalar and duplicate names so callers get an error
+    // instead of a silently dropped field.
     const auto &requested = *output_fields;
     std::unordered_set<std::string> seen;
     for (const auto &name : requested) {
@@ -2317,41 +2314,36 @@ Result<std::vector<std::string>> CollectionImpl::build_scan_columns(
 
 Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::PrepareIterate(
     const IteratorOptions &options) {
-  // The caller (CreateIterator) holds schema_handle_mtx_ (shared) and
-  // transfers it into the iterator, so schema changes, Optimize and
-  // close/destroy are excluded for the iterator's whole lifetime. The
-  // snapshot below isolates what the lock does NOT block -- concurrent
-  // writes and deletes -- by fixing the segment list and cloning the
-  // delete store atomically under write_mtx_.
+  // The caller (CreateIterator) holds schema_handle_mtx_ (shared) for the
+  // iterator's whole lifetime; the snapshot below additionally isolates what
+  // the lock does NOT block — concurrent writes and deletes — by fixing the
+  // segment list and cloning the delete store atomically under write_mtx_.
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   auto impl = std::make_unique<DocIterator::Impl>();
-
-  // The iterator interprets batches with the schema captured here.
   impl->schema = schema_;
   impl->include_vector = options.include_vector_;
 
-  // Validate options BEFORE sealing the writing segment, so invalid options
-  // fail fast without leaving a sealed-segment side effect behind.
-  auto scan_columns_result = build_scan_columns(options);
-  if (!scan_columns_result) {
-    return tl::make_unexpected(scan_columns_result.error());
+  // Validate before sealing the writing segment so invalid options fail fast
+  // without leaving a sealed-segment side effect.
+  auto columns = build_iterator_columns(options);
+  if (!columns) {
+    return tl::make_unexpected(columns.error());
   }
-  impl->scan_columns = std::move(scan_columns_result.value());
+  impl->iterator_columns = std::move(columns.value());
 
   {
-    // write_mtx_ blocks concurrent writes while taking the snapshot
     std::lock_guard<std::shared_mutex> write_lock(write_mtx_);
 
     if (options_.read_only_) {
-      // Read-only: flushing is not allowed, so read the writing segment
-      // directly (SegmentImpl::scan() also reads the in-memory writing block;
-      // no concurrent writes exist, so the snapshot is stable and complete).
+      // No flushing on read-only collections; include the writing segment
+      // (SegmentImpl::scan reads its in-memory block), which is stable since
+      // no concurrent writes exist.
       impl->segments = get_all_segments();
     } else {
-      // Writable: seal the writing segment so concurrent writes cannot
-      // mutate the snapshot. has_record() also covers delete-only segments.
+      // Seal the writing segment so concurrent writes cannot mutate the
+      // snapshot; has_record() also covers delete-only segments.
       if (writing_segment_->has_record()) {
         auto s = switch_to_new_segment_for_writing();
         CHECK_RETURN_STATUS_EXPECTED(s);
@@ -2363,17 +2355,13 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::PrepareIterate(
   }
 
   impl->filter = impl->delete_store->make_filter();
-
-  // Readers are opened lazily by DocIterator, one segment at a time.
   return impl;
 }
 
 Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     const IteratorOptions &options) {
-  // The iterator holds the schema lock (shared) from creation until Close(),
-  // so the snapshot stays valid for its whole lifetime (exclusive operations
-  // are rejected meanwhile, see try_lock_schema_exclusive). The collection
-  // must outlive its iterators: the mutex behind the lock lives in it.
+  // Held until Close() so the snapshot stays valid for the iterator's whole
+  // lifetime. The collection must outlive its iterators.
   std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
 
   auto impl_result = PrepareIterate(options);
