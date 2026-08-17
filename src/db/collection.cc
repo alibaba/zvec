@@ -57,11 +57,7 @@ namespace zvec {
 
 namespace {
 
-// Exclusive-lock retry budget for schema operations: transient readers
-// (queries/inserts) hold the shared lock only briefly, so retrying absorbs
-// them; a long-lived reader (open iterator) exhausts the budget and the
-// operation fails fast with PermissionDenied.
-constexpr std::chrono::milliseconds kExclusiveLockRetryBudget{30000};
+// Polling interval for try_lock_schema_exclusive.
 constexpr std::chrono::milliseconds kExclusiveLockRetryInterval{1};
 
 }  // namespace
@@ -245,25 +241,13 @@ class CollectionImpl : public Collection {
   Status execute_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
 
  private:
-  // Operations that need the exclusive schema lock must fail fast while any
-  // iterator holds it shared: a same-thread caller would deadlock waiting
-  // for its own iterator, and "schema frozen during iteration" is the
-  // documented contract.
-  //! Takes the exclusive schema lock, rejecting while an iterator is open.
-  //! Every acquisition attempt is an atomic try_lock (no check-then-lock
-  //! race), so nothing can hang:
-  //!  - an open iterator is detected via the active-iterator count and
-  //!    rejected immediately (it holds the shared lock until Close(), so
-  //!    waiting for it would stall forever -- or deadlock same-thread);
-  //!  - transient readers (queries, inserts) are absorbed by polling until
-  //!    they drain, matching the blocking-wait semantics these operations
-  //!    had before iterators existed;
-  //!  - the deadline caps the wait, so even an abnormal long-lived reader
-  //!    cannot stall the caller forever.
+  //! Takes the exclusive schema lock without ever blocking on an iterator:
+  //! every attempt is an atomic try_lock, and an open iterator (which holds
+  //! the shared lock until Close()) is rejected immediately via the
+  //! active-iterator count; transient readers (queries, inserts) are
+  //! waited out by polling until they drain.
   Result<std::unique_lock<std::shared_mutex>> try_lock_schema_exclusive(
       const char *operation) {
-    const auto deadline =
-        std::chrono::steady_clock::now() + kExclusiveLockRetryBudget;
     while (true) {
       std::unique_lock<std::shared_mutex> lock(schema_handle_mtx_,
                                                std::try_to_lock);
@@ -275,12 +259,6 @@ class CollectionImpl : public Collection {
             Status::PermissionDenied(operation,
                                      " is rejected while iterators are open; "
                                      "close all iterators first"));
-      }
-      if (std::chrono::steady_clock::now() >= deadline) {
-        return tl::make_unexpected(Status::PermissionDenied(
-            operation,
-            " timed out waiting for the schema lock; concurrent readers "
-            "are still active, retry later"));
       }
       std::this_thread::sleep_for(kExclusiveLockRetryInterval);
     }
@@ -2392,13 +2370,10 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::PrepareIterate(
 
 Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     const IteratorOptions &options) {
-  // The iterator holds the schema lock (shared) from creation until Close():
-  // schema changes (create/drop index, add/alter/drop column), Optimize,
-  // Flush and Close/Destroy take the exclusive lock with try_lock and fail
-  // fast while any reader is active (see try_lock_schema_exclusive), so the
-  // snapshot stays valid for the iterator's whole lifetime. The collection
-  // must outlive its iterators: dropping the last collection reference with
-  // an iterator still open is undefined behavior.
+  // The iterator holds the schema lock (shared) from creation until Close(),
+  // so the snapshot stays valid for its whole lifetime (exclusive operations
+  // are rejected meanwhile, see try_lock_schema_exclusive). The collection
+  // must outlive its iterators: the mutex behind the lock lives in it.
   std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
 
   auto impl_result = PrepareIterate(options);

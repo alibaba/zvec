@@ -64,10 +64,9 @@ Status ResolveReaderColumns(DocIterator::Impl *impl,
 // Materialize rows [begin, end) of impl->current_batch into impl->batch_docs,
 // column by column: the shared column-level converter dispatches the field
 // type and checks null_count() once per column, and each vector field is
-// fetched in one pass. The window — not the batch — is what bounds doc
-// materialization: memory/IPC stores emit small batches, but a Parquet scan
-// returns a whole row group per ReadNext (up to ~1M rows), far more than
-// should ever be materialized at once.
+// fetched in one pass. The window bounds doc materialization because a
+// Parquet scan returns a whole row group per ReadNext (up to ~1M rows), far
+// more than should ever be materialized at once.
 Status MaterializeWindow(DocIterator::Impl *impl, int64_t begin, int64_t end) {
   const auto &batch = *impl->current_batch;
   int64_t num_rows = end - begin;

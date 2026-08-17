@@ -48,19 +48,11 @@ struct ActiveIteratorGuard {
 };
 
 struct DocIterator::Impl {
-  // Declaration order controls destruction order (reverse of declaration).
-  // schema_lock is declared FIRST so it is released last, after every other
-  // resource that reads under it. current_reader must be declared LAST so
-  // Arrow file handles are released before Segment::cleanup() deletes files
-  // from disk (important on Windows).
-  //
-  // The iterator holds the collection's schema lock (shared) for its whole
-  // lifetime: schema changes (create/drop index, add/alter/drop column),
-  // Optimize, Flush and Close/Destroy are rejected while any iterator is
-  // open (active-iterator count + atomic try_lock, see
-  // try_lock_schema_exclusive), so the snapshot below stays valid until
-  // Close(). The collection must outlive its iterators (the mutex behind
-  // schema_lock lives in the collection).
+  // Declaration order controls destruction order (reverse of declaration):
+  // schema_lock is declared FIRST so it is released last, and
+  // current_reader LAST so Arrow file handles are released before
+  // Segment::cleanup() deletes files from disk (important on Windows).
+  // The collection must outlive the iterator (it owns schema_lock's mutex).
   ActiveIteratorGuard active_guard;
   std::shared_lock<std::shared_mutex> schema_lock;
 
