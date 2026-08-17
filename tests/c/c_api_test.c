@@ -6552,7 +6552,7 @@ void test_iterator_basic(void) {
   TEST_END();
 }
 
-// Exclusive operations return ZVEC_ERROR_PERMISSION_DENIED while an
+// Exclusive operations return ZVEC_ERROR_FAILED_PRECONDITION while an
 // iterator is open, and succeed again after the iterator is closed.
 void test_iterator_lock_rejection(void) {
   TEST_START();
@@ -6579,9 +6579,9 @@ void test_iterator_lock_rejection(void) {
   zvec_doc_destroy(doc);
 
   err = zvec_collection_flush(collection);
-  TEST_ASSERT(err == ZVEC_ERROR_PERMISSION_DENIED);
+  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
   err = zvec_collection_close(collection);
-  TEST_ASSERT(err == ZVEC_ERROR_PERMISSION_DENIED);
+  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
 
   zvec_doc_iterator_close(iter);
 

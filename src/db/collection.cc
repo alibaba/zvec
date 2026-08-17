@@ -55,13 +55,6 @@
 
 namespace zvec {
 
-namespace {
-
-// Polling interval for try_lock_schema_exclusive.
-constexpr std::chrono::milliseconds kExclusiveLockRetryInterval{1};
-
-}  // namespace
-
 
 enum class WriteMode : uint8_t {
   UNDEFINED = 0,
@@ -192,7 +185,7 @@ class CollectionImpl : public Collection {
   // delete store, scan columns and delete filter) into a DocIterator::Impl.
   // The caller (CreateIterator) holds the shared schema lock and transfers
   // it into the returned Impl.
-  Result<std::unique_ptr<DocIterator::Impl>> PrepareIterate(
+  Result<std::unique_ptr<DocIterator::Impl>> prepare_iterate(
       const IteratorOptions &options);
 
   std::vector<Segment::Ptr> get_all_segments() const;
@@ -241,28 +234,22 @@ class CollectionImpl : public Collection {
   Status execute_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
 
  private:
-  //! Takes the exclusive schema lock without ever blocking on an iterator:
-  //! every attempt is an atomic try_lock, and an open iterator (which holds
-  //! the shared lock until Close()) is rejected immediately via the
-  //! active-iterator count; transient readers (queries, inserts) are
-  //! waited out by polling until they drain.
-  Result<std::unique_lock<std::shared_mutex>> try_lock_schema_exclusive(
-      const char *operation) {
-    while (true) {
-      std::unique_lock<std::shared_mutex> lock(schema_handle_mtx_,
-                                               std::try_to_lock);
-      if (lock.owns_lock()) {
-        return lock;
-      }
-      if (active_iterators_->load(std::memory_order_acquire) > 0) {
-        return tl::make_unexpected(
-            Status::PermissionDenied(operation,
-                                     " is rejected while iterators are open; "
-                                     "close all iterators first"));
-      }
-      std::this_thread::sleep_for(kExclusiveLockRetryInterval);
+  //! Rejects while iterators are open. Must be called holding
+  //! schema_handle_mtx_ exclusively: the count only changes under the
+  //! lock, so the check is race-free.
+  Status check_no_active_iterators_locked(const char *operation) const {
+    if (active_iterators_ > 0) {
+      return Status::FailedPrecondition(
+          operation,
+          " is not allowed while iterators are open; "
+          "close all iterators first");
     }
+    return Status::OK();
   }
+
+  // Decrements active_iterators_ under the exclusive schema lock; called
+  // by DocIterator on Close/destruction via Impl::release_slot.
+  void decrement_active_iterators();
 
   Status handle_upsert(Doc &doc);
 
@@ -292,11 +279,9 @@ class CollectionImpl : public Collection {
   CollectionOptions options_;
 
   mutable std::shared_mutex schema_handle_mtx_;
-  // Number of open iterators. Each iterator holds schema_handle_mtx_
-  // (shared) for its whole lifetime; exclusive operations reject
-  // immediately while this is non-zero (see try_lock_schema_exclusive).
-  std::shared_ptr<std::atomic<int>> active_iterators_{
-      std::make_shared<std::atomic<int>>(0)};
+  // Number of open iterators, guarded by schema_handle_mtx_. Exclusive
+  // operations take the exclusive lock and reject while this is non-zero.
+  int active_iterators_{0};
   mutable std::shared_mutex write_mtx_;
   // Serializes maintenance operations (Optimize, schema DDL, Close and
   // Destroy) without holding schema_handle_mtx_, so a maintenance
@@ -398,11 +383,8 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
 Status CollectionImpl::Close() {
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("Close");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("Close"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
@@ -443,11 +425,8 @@ Status CollectionImpl::Destroy() {
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("Destroy");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("Destroy"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -468,11 +447,8 @@ Status CollectionImpl::Flush() {
   // Only flushes the writing segment's WAL (no schema/segment-structure
   // change), so it needs neither maintenance_mtx_ nor exclusion from a
   // running Optimize.
-  auto lock_result = try_lock_schema_exclusive("Flush");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("Flush"));
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
@@ -495,19 +471,17 @@ Result<std::string> CollectionImpl::Path() const {
 }
 
 Result<CollectionStats> CollectionImpl::Stats() const {
-  // Read-only: the shared lock keeps it compatible with open iterators
-  // (which hold the schema lock shared for their whole lifetime).
   std::shared_lock<std::shared_mutex> lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  auto segments = get_all_segments();
-
-  // Shared schema lock lets Stats run concurrently with writes; serialize
-  // against them here so doc_count() below never iterates a writing
-  // segment's doc_ids_ while it grows (lock order: schema -> write_mtx_).
+  // Shared write_mtx_ before reading the segment list: get_all_segments()
+  // reads writing_segment_ and doc_count() below iterates doc_ids_, both
+  // of which Insert mutates under the exclusive write_mtx_.
   std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+
+  auto segments = get_all_segments();
 
   CollectionStats stats;
   auto vector_fields = schema_->vector_fields();
@@ -568,11 +542,8 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("CreateIndex");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("CreateIndex"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -763,11 +734,8 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("DropIndex");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("DropIndex"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -905,12 +873,9 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   // Phase 1: exclusively seal the current writing segment and snapshot
   // the persisted segment set.
   {
-    auto seal_lock = try_lock_schema_exclusive("Optimize");
-    if (!seal_lock) {
-      // Nothing has been built yet, so there is nothing to clean up.
-      return seal_lock.error();
-    }
-    auto schema_lock = std::move(seal_lock.value());
+    std::unique_lock schema_lock(schema_handle_mtx_);
+    // Nothing has been built yet, so failing fast leaves nothing to clean.
+    CHECK_RETURN_STATUS(check_no_active_iterators_locked("Optimize"));
     std::lock_guard write_lock(write_mtx_);
 
     CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
@@ -990,15 +955,14 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   // indexers — they all hold the shared schema lock — so in-place
   // reload_vector_index() is safe.
   {
-    auto commit_lock = try_lock_schema_exclusive("Optimize");
-    if (!commit_lock) {
-      // Drop the uncommitted segment directories that were already moved
-      // to their final paths (recovery would not discover them).
-      opened_segments.clear();
-      cleanup_moved_dirs();
-      return commit_lock.error();
+    // The index artifacts are already built, so discard is not an option:
+    // wait for open iterators to close instead of failing.
+    std::unique_lock schema_lock(schema_handle_mtx_);
+    while (active_iterators_ > 0) {
+      schema_lock.unlock();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      schema_lock.lock();
     }
-    auto schema_lock = std::move(commit_lock.value());
     std::lock_guard write_lock(write_mtx_);
 
     Version new_version = version_manager_->get_current_version();
@@ -1294,11 +1258,8 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("AddColumn");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("AddColumn"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -1373,11 +1334,8 @@ Status CollectionImpl::DropColumn(const std::string &column_name) {
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("DropColumn");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("DropColumn"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -1454,11 +1412,8 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
-  auto lock_result = try_lock_schema_exclusive("AlterColumn");
-  if (!lock_result) {
-    return lock_result.error();
-  }
-  auto lock = std::move(lock_result.value());
+  std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators_locked("AlterColumn"));
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -2312,7 +2267,7 @@ Result<std::vector<std::string>> CollectionImpl::build_iterator_columns(
   return columns;
 }
 
-Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::PrepareIterate(
+Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
     const IteratorOptions &options) {
   // The caller (CreateIterator) holds schema_handle_mtx_ (shared) for the
   // iterator's whole lifetime; the snapshot below additionally isolates what
@@ -2360,20 +2315,24 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::PrepareIterate(
 
 Result<DocIterator::Ptr> CollectionImpl::CreateIterator(
     const IteratorOptions &options) {
-  // Held until Close() so the snapshot stays valid for the iterator's whole
-  // lifetime. The collection must outlive its iterators.
-  std::shared_lock<std::shared_mutex> schema_lock(schema_handle_mtx_);
+  // Exclusive so the counter increment is serialized with the exclusive
+  // operations that read it. The collection must outlive its iterators.
+  std::unique_lock schema_lock(schema_handle_mtx_);
 
-  auto impl_result = PrepareIterate(options);
+  auto impl_result = prepare_iterate(options);
   if (!impl_result) {
     return tl::make_unexpected(impl_result.error());
   }
   auto impl = std::move(impl_result.value());
-  active_iterators_->fetch_add(1, std::memory_order_acq_rel);
-  impl->active_guard.count = active_iterators_;
-  impl->schema_lock = std::move(schema_lock);
+  ++active_iterators_;
+  impl->release_slot = [this] { decrement_active_iterators(); };
 
   return std::make_shared<DocIterator>(std::move(impl));
+}
+
+void CollectionImpl::decrement_active_iterators() {
+  std::unique_lock lock(schema_handle_mtx_);
+  --active_iterators_;
 }
 
 }  // namespace zvec

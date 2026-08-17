@@ -117,10 +117,10 @@ class ZVEC_API Collection {
   // On writable collections this seals the current writing segment; read-only
   // collections are scanned without any write.
   //
-  // The iterator holds the collection's schema lock (shared) until Close():
-  // while any iterator is open, schema changes (CreateIndex/DropIndex/
-  // AddColumn/AlterColumn/DropColumn), Optimize, Flush, Close and Destroy
-  // return an error. Concurrent writes and queries are not affected.
+  // While any iterator is open, schema changes (CreateIndex/DropIndex/
+  // AddColumn/AlterColumn/DropColumn), Flush, Close and Destroy return an
+  // error, and Optimize waits for the iterators to close. Concurrent writes
+  // and queries are not affected.
   // The collection must outlive its iterators: keep the Collection handle
   // alive and close every iterator before releasing it.
   virtual Result<DocIterator::Ptr> CreateIterator(

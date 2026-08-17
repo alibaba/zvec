@@ -129,9 +129,17 @@ DocIterator::~DocIterator() {
 }
 
 void DocIterator::Close() {
-  // Member declaration order guarantees safe teardown: current_reader is
-  // declared last, so Arrow file handles are released before the kept-alive
-  // segments are destroyed.
+  if (!impl_) {
+    return;
+  }
+  // Release the active-iterator slot first (takes the collection's
+  // exclusive schema lock), then tear down resources. Member declaration
+  // order guarantees safe teardown of the rest: current_reader is declared
+  // last, so Arrow file handles are released before the kept-alive segments
+  // are destroyed.
+  if (impl_->release_slot) {
+    impl_->release_slot();
+  }
   impl_.reset();
 }
 

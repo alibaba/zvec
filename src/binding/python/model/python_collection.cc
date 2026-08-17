@@ -369,7 +369,10 @@ void ZVecPyCollection::bind_iterator(py::module_ &m) {
              }
              return doc;
            })
-      .def("close", [](DocIterator &self) { self.Close(); });
+      .def("close", [](DocIterator &self) {
+        py::gil_scoped_release release;
+        self.Close();
+      });
 }
 
 }  // namespace zvec

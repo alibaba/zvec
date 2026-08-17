@@ -3858,10 +3858,10 @@ zvec_iterator_options_set_include_vector(zvec_iterator_options_t *options,
  * Takes an isolated snapshot at call time. On a writable collection this
  * seals the current writing segment (each call may produce a new small
  * segment); read-only collections are scanned without any write.
- * The iterator holds the collection's schema lock (shared) until it is
- * closed: while any iterator is open, schema changes (create/drop index,
- * add/alter/drop column), optimize, flush and destroy return an error.
- * Concurrent writes and queries are not affected.
+ * While any iterator is open, schema changes (create/drop index,
+ * add/alter/drop column), flush, close and destroy return an error, and
+ * optimize waits for the iterators to close. Concurrent writes and
+ * queries are not affected.
  * The collection must outlive its iterators: close every iterator
  * (zvec_doc_iterator_close) before calling zvec_collection_close() or
  * destroying the collection.

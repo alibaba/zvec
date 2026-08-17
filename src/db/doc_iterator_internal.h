@@ -16,9 +16,8 @@
 // Shared by collection.cc and doc_iterator.cc
 #pragma once
 
-#include <atomic>
+#include <functional>
 #include <memory>
-#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,29 +31,15 @@
 
 namespace zvec {
 
-// RAII guard that decrements the collection's active-iterator count when the
-// iterator releases its snapshot.
-struct ActiveIteratorGuard {
-  std::shared_ptr<std::atomic<int>> count;
-
-  ActiveIteratorGuard() = default;
-  ActiveIteratorGuard(const ActiveIteratorGuard &) = delete;
-  ActiveIteratorGuard &operator=(const ActiveIteratorGuard &) = delete;
-  ~ActiveIteratorGuard() {
-    if (count) {
-      count->fetch_sub(1, std::memory_order_release);
-    }
-  }
-};
-
 struct DocIterator::Impl {
   // Declaration order controls destruction order (reverse of declaration):
-  // schema_lock is declared FIRST so it is released last, and current_reader
-  // LAST so Arrow file handles are released before the kept-alive segments
-  // are destroyed (important on Windows). The collection must outlive the
-  // iterator (it owns schema_lock's mutex).
-  ActiveIteratorGuard active_guard;
-  std::shared_lock<std::shared_mutex> schema_lock;
+  // current_reader is declared LAST so Arrow file handles are released
+  // before the kept-alive segments are destroyed (important on Windows).
+  // The collection must outlive the iterator (release_slot refers to it).
+
+  // Decrements the collection's active-iterator count on Close; injected by
+  // CollectionImpl::CreateIterator.
+  std::function<void()> release_slot;
 
   std::vector<Segment::Ptr> segments;  // keep Segment alive
   DeleteStore::Ptr delete_store;       // keep delete bitmap alive
