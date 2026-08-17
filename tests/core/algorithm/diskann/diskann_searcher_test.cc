@@ -278,7 +278,9 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   // I/O failures from the indexer must be propagated by the streamer instead
   // of being converted into a successful search with incomplete results.
-  ASSERT_EQ(0, ::truncate(path.c_str(), 0));
+  std::error_code truncate_error;
+  std::filesystem::resize_file(path, 0, truncate_error);
+  ASSERT_FALSE(truncate_error) << truncate_error.message();
   EXPECT_NE(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
 
   // Closing/unloading releases the index and makes all query entry points
@@ -863,7 +865,9 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   }
   ASSERT_EQ(0, cached_searcher->unload());
 
-  ASSERT_EQ(0, ::truncate(path.c_str(), 0));
+  std::error_code truncate_error;
+  std::filesystem::resize_file(path, 0, truncate_error);
+  ASSERT_FALSE(truncate_error) << truncate_error.message();
   std::string vector_after_truncate;
   EXPECT_EQ(IndexError_Runtime,
             searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,

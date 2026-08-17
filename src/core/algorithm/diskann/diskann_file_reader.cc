@@ -1099,7 +1099,8 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
 
   file_handle_ =
       ::CreateFileW(wide_fname.c_str(), GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING,
                     FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
                         FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
                     nullptr);
