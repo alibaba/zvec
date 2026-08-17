@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <variant>
@@ -224,7 +225,7 @@ class ZVEC_CORE_API Index {
   core::IndexConverter::Pointer converter_{};  // for build()
   core::IndexMetric::Pointer metric_{};        // to do normalization
 
-  size_t context_index_;
+  size_t context_index_{std::numeric_limits<size_t>::max()};
   core::IndexStorage::Pointer storage_{};
 
   bool is_open_{false};
@@ -255,6 +256,9 @@ class ZVEC_CORE_API FlatIndex : public Index {
 class ZVEC_CORE_API IVFIndex : public Index {
  public:
   IVFIndex() = default;
+
+  //! Retrieve the active storage backend for debug/testing usage.
+  std::string storage_mode() const;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;

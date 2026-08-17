@@ -640,6 +640,11 @@ class ZVEC_AILEGO_API VecBufferPool {
   char *acquire_buffer(block_id_t page_id, int retry = 0,
                        bool record_reuse = true);
 
+  //! Pin scattered pages only when every page is already resident. Rolls back
+  //! all pins on the first miss and never triggers I/O or cache admission.
+  bool try_acquire_resident_pages(const block_id_t *page_ids, size_t count,
+                                  char **pages);
+
   //! Pin scattered pages; roll back all pins on failure.
   bool acquire_pages(const block_id_t *page_ids, size_t count, char **pages);
 
@@ -846,6 +851,9 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
   typedef std::shared_ptr<VecBufferPoolHandle> Pointer;
 
   char *get_single_page(size_t file_offset, size_t len, size_t &out_page_id);
+
+  bool try_acquire_resident_pages(const block_id_t *page_ids, size_t count,
+                                  char **pages);
 
   bool acquire_pages(const block_id_t *page_ids, size_t count, char **pages);
 

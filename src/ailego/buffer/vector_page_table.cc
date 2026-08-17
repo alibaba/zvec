@@ -1674,6 +1674,28 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
   }
 }
 
+bool VecBufferPool::try_acquire_resident_pages(const block_id_t *page_ids,
+                                               size_t count, char **pages) {
+  if (count == 0) return true;
+  if (!page_ids || !pages) return false;
+
+  std::fill_n(pages, count, nullptr);
+  for (size_t i = 0; i < count; ++i) {
+    if (page_ids[i] >= page_table_.entry_num()) {
+      release_pages(page_ids, i);
+      std::fill_n(pages, i, nullptr);
+      return false;
+    }
+    pages[i] = try_acquire_buffer(page_ids[i]);
+    if (!pages[i]) {
+      release_pages(page_ids, i);
+      std::fill_n(pages, i, nullptr);
+      return false;
+    }
+  }
+  return true;
+}
+
 bool VecBufferPool::acquire_pages(const block_id_t *page_ids, size_t count,
                                   char **pages) {
   if (count == 0) return true;
@@ -2096,6 +2118,11 @@ bool VecBufferPoolHandle::acquire_pages(const block_id_t *page_ids,
   return pool_.acquire_pages(page_ids, count, pages);
 }
 
+bool VecBufferPoolHandle::try_acquire_resident_pages(
+    const block_id_t *page_ids, size_t count, char **pages) {
+  return pool_.try_acquire_resident_pages(page_ids, count, pages);
+}
+
 void VecBufferPoolHandle::release_pages(const block_id_t *page_ids,
                                         size_t count) {
   pool_.release_pages(page_ids, count);
@@ -2162,8 +2189,20 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
 
     if (run_pages <= 3) {
       for (size_t j = 0; j < run_pages; ++j) {
-        page = pool_.acquire_buffer(static_cast<block_id_t>(run_start + j), 50);
         block_id_t pid = static_cast<block_id_t>(run_start + j);
+        // Once a sparse resident set breaks a cold range into short holes,
+        // apply the same frequency admission policy as the bulk path. Without
+        // this check, one- to three-page first touches continuously evict the
+        // useful working set even though long first-touch runs are bypassed.
+        const bool use_admission =
+            MemoryLimitPool::get_instance().page_admission_reserve() != 0;
+        const bool admit = !use_admission || pool_.should_admit_page(pid);
+        if (admit) {
+          page = pool_.acquire_buffer(pid, 50);
+        } else {
+          pool_.miss_count_.fetch_add(1, std::memory_order_relaxed);
+          page = nullptr;
+        }
         size_t page_start = pid * kVectorPageSize;
         size_t intra_offset =
             (pid == first_page) ? (file_offset - page_start) : 0;
@@ -2232,8 +2271,12 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
       remaining -= chunk;
 
       size_t page_end_in_buf = (j + 1) * kVectorPageSize;
+      // Large sequential reads (for example IVF posting-list scans) must not
+      // populate every cold page once the shared cache is under pressure.
+      // Reuse the same compact frequency admission policy as batched random
+      // reads so first-touch scan pages bypass while repeated pages can enter.
       if (page_end_in_buf <= actually_read &&
-          !pool_.page_table_.is_loaded(pid)) {
+          !pool_.page_table_.is_loaded(pid) && pool_.should_admit_page(pid)) {
         char *page_buf = nullptr;
         bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
             kVectorPageSize, page_buf);

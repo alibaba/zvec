@@ -48,17 +48,15 @@ IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider(void) const {
       return nullptr;
     }
 
-    const uint32_t *mapping = nullptr;
-    if (mapping_segment->read(0, reinterpret_cast<const void **>(&mapping),
-                              mapping_segment->data_size()) !=
+    mapping_.resize(mapping_count);
+    if (mapping_segment->fetch(0, mapping_.data(),
+                               mapping_segment->data_size()) !=
         mapping_segment->data_size()) {
       LOG_ERROR("Failed to read data (%zu bytes) from mapping segment",
                 mapping_segment->data_size());
+      mapping_.clear();
       return nullptr;
     }
-    mapping_.clear();
-    mapping_.reserve(mapping_count);
-    std::copy(mapping, mapping + mapping_count, std::back_inserter(mapping_));
   }
   return IndexProvider::Pointer(new (std::nothrow)
                                     FlatSearcherProvider<BATCH_SIZE>(this));
@@ -139,13 +137,14 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     return IndexError_Mismatch;
   }
 
-  if (keys_segment->read(0, reinterpret_cast<const void **>(&keys_),
-                         keys_segment->data_size()) !=
+  keys_block_.reset();
+  if (keys_segment->read(0, keys_block_, keys_segment->data_size()) !=
       keys_segment->data_size()) {
     LOG_ERROR("Failed to read data (%zu bytes) from keys segment",
               keys_segment->data_size());
     return IndexError_ReadData;
   }
+  keys_ = static_cast<const uint64_t *>(keys_block_.data());
 
   for (size_t i = 0; i < keys_count; i++) {
     key_id_mapping_[keys_[i]] = i;

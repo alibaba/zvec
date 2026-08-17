@@ -74,8 +74,8 @@ class IVFIndexProvider : public IndexProvider {
    public:
     SortedIterator(const IVFEntity::Pointer &entity) : entity_(entity) {
       count_ = entity_->vector_count();
-      mapping_ = entity_->get_key_order_mapping();
-      if (!mapping_) {
+      use_mapping_ = entity_->has_key_order_mapping();
+      if (!use_mapping_) {
         // Fallback: compute sorting if mapping segment is unavailable
         fallback_.resize(count_);
         std::iota(fallback_.begin(), fallback_.end(), size_t(0));
@@ -89,17 +89,19 @@ class IVFIndexProvider : public IndexProvider {
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
     const void *data(void) const override {
-      return entity_->get_vector(current_local_id());
+      size_t local_id = current_local_id();
+      return local_id < count_ ? entity_->get_vector(local_id) : nullptr;
     }
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
-      return pos_ < count_;
+      return pos_ < count_ && (!use_mapping_ || ensure_mapping_chunk());
     }
 
     //! Retrieve primary key
     uint64_t key(void) const override {
-      return entity_->get_key(current_local_id());
+      size_t local_id = current_local_id();
+      return local_id < count_ ? entity_->get_key(local_id) : kInvalidKey;
     }
 
     //! Next iterator
@@ -108,14 +110,46 @@ class IVFIndexProvider : public IndexProvider {
     }
 
    private:
+    bool ensure_mapping_chunk() const {
+      if (mapping_error_) {
+        return false;
+      }
+      if (pos_ >= mapping_chunk_begin_ &&
+          pos_ - mapping_chunk_begin_ < mapping_chunk_.size()) {
+        return true;
+      }
+      mapping_chunk_begin_ = pos_;
+      const size_t chunk_count =
+          std::min(kMappingChunkEntries, count_ - mapping_chunk_begin_);
+      mapping_chunk_.resize(chunk_count);
+      if (entity_->get_key_order_mapping(mapping_chunk_begin_,
+                                         mapping_chunk_.data(),
+                                         chunk_count) != chunk_count) {
+        mapping_chunk_.clear();
+        mapping_error_ = true;
+        return false;
+      }
+      return true;
+    }
+
     size_t current_local_id() const {
-      return mapping_ ? static_cast<size_t>(mapping_[pos_]) : fallback_[pos_];
+      if (!use_mapping_) {
+        return fallback_[pos_];
+      }
+      if (!ensure_mapping_chunk()) {
+        return count_;
+      }
+      return static_cast<size_t>(mapping_chunk_[pos_ - mapping_chunk_begin_]);
     }
 
     //! Members
+    static constexpr size_t kMappingChunkEntries = 4096;
     IVFEntity::Pointer entity_;
-    const uint32_t *mapping_{nullptr};  // points into mapping_ segment data
-    std::vector<size_t> fallback_;      // used only if mapping_ unavailable
+    bool use_mapping_{false};
+    mutable bool mapping_error_{false};
+    mutable std::vector<uint32_t> mapping_chunk_;
+    mutable size_t mapping_chunk_begin_{0};
+    std::vector<size_t> fallback_;  // used only if mapping_ unavailable
     size_t count_{0};
     size_t pos_{0};
   };

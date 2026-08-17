@@ -17,6 +17,7 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/io/file.h>
@@ -342,6 +343,52 @@ class IndexStorage : public IndexModule {
       kHigh = 2,
     };
 
+    //! One contiguous portion of a scatter read.
+    struct ReadSpan {
+      const uint8_t *data{nullptr};
+      size_t size{0};
+    };
+
+    //! A bounded-lifetime scatter read. Page-backed implementations may
+    //! return independently pinned spans; contiguous backends use fallback.
+    struct ScatterBlock {
+      ScatterBlock() = default;
+      ScatterBlock(const ScatterBlock &) = delete;
+      ScatterBlock &operator=(const ScatterBlock &) = delete;
+      ScatterBlock(ScatterBlock &&) = default;
+      ScatterBlock &operator=(ScatterBlock &&) = default;
+
+      std::vector<ReadSpan> spans{};
+      std::shared_ptr<void> lease{};
+      MemoryBlock fallback{};
+      size_t size{0};
+
+      void reset() {
+        spans.clear();
+        lease.reset();
+        fallback.reset();
+        size = 0;
+      }
+
+      void reset_contiguous(MemoryBlock block, size_t length) {
+        reset();
+        fallback = std::move(block);
+        size = length;
+        if (length != 0) {
+          spans.push_back(
+              {static_cast<const uint8_t *>(fallback.data()), length});
+        }
+      }
+
+      void reset_scattered(std::vector<ReadSpan> read_spans,
+                           std::shared_ptr<void> read_lease, size_t length) {
+        reset();
+        spans = std::move(read_spans);
+        lease = std::move(read_lease);
+        size = length;
+      }
+    };
+
     //! One bounded-lifetime read in a batch. Requests may reference different
     //! segments owned by the same storage so backends can merge their page
     //! misses into one I/O submission.
@@ -536,6 +583,19 @@ class IndexStorage : public IndexModule {
         }
       }
       return true;
+    }
+
+    //! Read a logical range as one or more stable spans. The returned pointers
+    //! remain valid until ScatterBlock::reset() or destruction. The default
+    //! preserves compatibility by returning one contiguous MemoryBlock.
+    virtual size_t read_scatter(size_t offset, ScatterBlock &data, size_t len) {
+      data.reset();
+      MemoryBlock block;
+      const size_t read_size = read(offset, block, len);
+      if (read_size != 0) {
+        data.reset_contiguous(std::move(block), read_size);
+      }
+      return read_size;
     }
   };
 

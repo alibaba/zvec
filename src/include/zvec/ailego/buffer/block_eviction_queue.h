@@ -247,6 +247,13 @@ class MemoryLimitPool {
     if (capacity == 0) {
       return false;
     }
+    // Page admission can reach its reserved-headroom limit before the shared
+    // pool reaches the general low watermark. Admission control must already
+    // be active at that point, otherwise foreground misses churn the resident
+    // set while is_full() still reports false.
+    if (page_admission_reserve() != 0 && is_page_full()) {
+      return true;
+    }
     const size_t used = used_size_.load(std::memory_order_relaxed);
     if (used >= capacity || capacity - used < page_buffer_size()) {
       return true;

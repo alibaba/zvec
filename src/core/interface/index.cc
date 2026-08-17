@@ -440,6 +440,14 @@ int Index::Close() {
     LOG_ERROR("Failed to cleanup streamer");
     return core::IndexError_Runtime;
   }
+  // Contexts are cached per index type in thread-local storage. IVF contexts
+  // own cloned storage segments, so leaving the current thread's context in
+  // the cache after Close would keep the buffer pool (and its metadata/pages)
+  // alive until another IVF search or thread exit.
+  if (context_index_ < _context_list.size()) {
+    _context_list[context_index_].reset();
+    context_index_ = std::numeric_limits<size_t>::max();
+  }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");
     return core::IndexError_Runtime;

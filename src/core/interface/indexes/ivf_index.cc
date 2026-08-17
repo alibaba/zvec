@@ -20,6 +20,10 @@
 
 namespace zvec::core_interface {
 
+std::string IVFIndex::storage_mode() const {
+  return storage_ ? storage_->name() : std::string();
+}
+
 int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("IVF Index not support sparse vector");
@@ -83,21 +87,19 @@ int IVFIndex::Open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      // NOTE: IVF index is dumped via FileDumper (plain binary file), which is
-      // not compatible with BufferStorage's IndexFormat layout (header/footer
-      // chain). Until IVF gains a BufferStorage-aware dump path, fall back to
-      // MMapFileReadStorage so the freshly-dumped file can be reopened.
-      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+      // IVF is immutable after training and FileDumper already emits the
+      // IndexFormat consumed by BufferReadStorage. Keep construction on the
+      // FileDumper path and use the bounded page cache after dump/reopen.
+      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR(
-            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
+        LOG_ERROR("Failed to create BufferReadStorage for IVF");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
         LOG_ERROR(
-            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
-            "path: %s, err: %s",
+            "Failed to init BufferReadStorage for IVF, path: %s, "
+            "err: %s",
             file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }

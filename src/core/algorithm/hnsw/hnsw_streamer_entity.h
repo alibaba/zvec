@@ -1207,6 +1207,14 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
     return 0;
   }
 
+  //! Borrowed reads must also use the external source. Inheriting the mmap
+  //! implementation would interpret the graph node prefix as vector data
+  //! because external-vector entities intentionally have vector_size()==0.
+  int get_vector_borrowed(const node_id_t id,
+                          IndexStorage::MemoryBlock &block) const override {
+    return get_vector(id, block);
+  }
+
   int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override {

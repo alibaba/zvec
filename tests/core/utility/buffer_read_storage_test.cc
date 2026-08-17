@@ -103,6 +103,49 @@ TEST_F(BufferReadStorageTest, SequentialPreservesExistingWarmupBehavior) {
   EXPECT_EQ(payload_, actual);
 }
 
+TEST_F(BufferReadStorageTest, ResidentScatterReadReturnsPinnedPageSpans) {
+  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL);
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->open(file_path_, false));
+  auto segment = storage->get("payload");
+  ASSERT_NE(segment, nullptr);
+
+  const size_t offset = ailego::kVectorPageSize / 2;
+  const size_t length = 2 * ailego::kVectorPageSize;
+  IndexStorage::Segment::ScatterBlock block;
+  ASSERT_EQ(length, segment->read_scatter(offset, block, length));
+  EXPECT_GT(block.spans.size(), 1u);
+  EXPECT_EQ(length, block.size);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_UNKNOWN, block.fallback.type_);
+  ASSERT_NE(nullptr, block.lease);
+
+  std::string actual;
+  actual.reserve(length);
+  for (const auto &span : block.spans) {
+    actual.append(reinterpret_cast<const char *>(span.data), span.size);
+  }
+  ASSERT_EQ(length, actual.size());
+  EXPECT_EQ(0, std::memcmp(payload_.data() + offset, actual.data(), length));
+}
+
+TEST_F(BufferReadStorageTest, ColdScatterReadKeepsContiguousFallback) {
+  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->open(file_path_, false));
+  auto segment = storage->get("payload");
+  ASSERT_NE(segment, nullptr);
+
+  const size_t length = 2 * ailego::kVectorPageSize;
+  IndexStorage::Segment::ScatterBlock block;
+  ASSERT_EQ(length, segment->read_scatter(0, block, length));
+  ASSERT_EQ(1u, block.spans.size());
+  EXPECT_EQ(length, block.spans[0].size);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH,
+            block.fallback.type_);
+  EXPECT_EQ(nullptr, block.lease);
+  EXPECT_EQ(0, std::memcmp(payload_.data(), block.spans[0].data, length));
+}
+
 TEST_F(BufferReadStorageTest, RejectsUnknownWarmupMode) {
   auto storage = IndexFactory::CreateStorage("BufferReadStorage");
   ASSERT_NE(storage, nullptr);

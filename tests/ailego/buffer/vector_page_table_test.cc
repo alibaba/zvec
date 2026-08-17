@@ -281,6 +281,71 @@ TEST_F(BufferPoolTest, AdmissionControlRejectsFirstColdMissAfterPressure) {
   EXPECT_EQ(stats.admission_admitted, 1u);
 }
 
+TEST_F(BufferPoolTest, BulkReadDoesNotAdmitFirstTouchScanUnderPressure) {
+  constexpr size_t kFilePages = 5;
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/kFilePages);
+  std::string file = NewFile(kFilePages);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+
+  // Hold the only cache page so the four-page range takes the bulk cold-read
+  // path while the pool is under pressure.
+  char *pinned = pool.acquire_buffer(/*block_id=*/0, 10);
+  ASSERT_NE(nullptr, pinned);
+
+  std::vector<char> data(4 * kVectorPageSize);
+  ASSERT_TRUE(handle.read_range(kVectorPageSize, data.size(), data.data()));
+  for (size_t page = 1; page < kFilePages; ++page) {
+    ExpectPageContent(data.data() + (page - 1) * kVectorPageSize, page);
+    EXPECT_FALSE(pool.is_page_resident(page));
+  }
+
+  const auto stats = pool.stats();
+  EXPECT_EQ(4u, stats.admission_rejected);
+  pool.page_table_.release_block(/*block_id=*/0);
+}
+
+TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
+  constexpr size_t kFilePages = 3;
+  constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  ASSERT_EQ(0, memory_pool.init(kCapacity));
+  std::string file = NewFile(kFilePages);
+
+  size_t charged_metadata = 0;
+  {
+    VecBufferPool pool(file, /*writable=*/false);
+    ASSERT_EQ(pool.init(), 0);
+    auto handle = pool.get_handle();
+
+    const size_t reserve = memory_pool.page_admission_reserve();
+    ASSERT_EQ(16UL * 1024UL * 1024UL, reserve);
+    ASSERT_LT(memory_pool.used() + kVectorPageSize, kCapacity - reserve);
+    charged_metadata =
+        kCapacity - reserve - memory_pool.used() - kVectorPageSize;
+    ASSERT_TRUE(memory_pool.try_charge_metadata(charged_metadata));
+
+    char *hot = pool.acquire_buffer(/*block_id=*/0, 10);
+    ASSERT_NE(nullptr, hot);
+    pool.page_table_.release_block(/*block_id=*/0);
+
+    std::vector<char> data(2 * kVectorPageSize);
+    ASSERT_TRUE(handle.read_range(kVectorPageSize, data.size(), data.data()));
+    ExpectPageContent(data.data(), /*page=*/1);
+    ExpectPageContent(data.data() + kVectorPageSize, /*page=*/2);
+
+    EXPECT_TRUE(pool.is_page_resident(0));
+    EXPECT_FALSE(pool.is_page_resident(1));
+    EXPECT_FALSE(pool.is_page_resident(2));
+    const auto stats = pool.stats();
+    EXPECT_EQ(2u, stats.admission_rejected);
+    EXPECT_EQ(2u, stats.bypass_reads);
+  }
+  memory_pool.release_metadata(charged_metadata);
+}
+
 TEST_F(BufferPoolTest, BypassRecheckRecognizesResidencyActivity) {
   InitVecPool(/*capacity_pages=*/2, /*file_pages=*/2);
   std::string file = NewFile(/*num_pages=*/2);
@@ -873,6 +938,7 @@ TEST_F(BufferPoolTest, ReadOnlyMissEvictsAtPageAdmissionLimit) {
     // The reserved headroom means the process-wide pool is not full, but the
     // next page allocation has reached its page-specific admission limit.
     EXPECT_FALSE(memory_pool.is_full());
+    EXPECT_TRUE(memory_pool.under_cache_pressure());
     char *second = pool.acquire_buffer(/*page_id=*/1, /*retry=*/50);
     ASSERT_NE(nullptr, second);
     ExpectPageContent(second, /*page_id=*/1);

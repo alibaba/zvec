@@ -58,6 +58,27 @@ bool ResolveContainerOffset(size_t file_size, int64_t configured_offset,
   return true;
 }
 
+class BufferPageLease {
+ public:
+  BufferPageLease(
+      std::shared_ptr<ailego::VecBufferPoolHandle> handle,
+      const std::vector<ailego::block_id_t> &page_ids)
+      : handle_(std::move(handle)), page_ids_(page_ids) {}
+
+  BufferPageLease(const BufferPageLease &) = delete;
+  BufferPageLease &operator=(const BufferPageLease &) = delete;
+
+  ~BufferPageLease() {
+    if (handle_ && !page_ids_.empty()) {
+      handle_->release_pages(page_ids_.data(), page_ids_.size());
+    }
+  }
+
+ private:
+  std::shared_ptr<ailego::VecBufferPoolHandle> handle_{};
+  std::vector<ailego::block_id_t> page_ids_{};
+};
+
 }  // namespace
 
 /*! Buffer Read Storage (backed by VecBufferPool)
@@ -91,9 +112,13 @@ class BufferReadStorage : public IndexStorage {
           handle_(rhs.handle_),
           cache_enabled_(rhs.cache_enabled_) {}
 
-    //! Destructor
+    //! Destructor. Release scratch eagerly on long-lived worker threads, but
+    //! do not touch the registry after it has entered TLS teardown (an Index
+    //! context may outlive the registry because of TLS destruction order).
     ~Segment(void) override {
-      release_thread_scratch();
+      if (thread_scratch_registry_alive()) {
+        release_thread_scratch();
+      }
     }
 
     //! Retrieve size of data
@@ -205,6 +230,67 @@ class BufferReadStorage : public IndexStorage {
                                /*borrow_handle=*/true);
     }
 
+    //! Return independently pinned resident pages without copying. Cold or
+    //! partially resident ranges retain the existing contiguous fallback so
+    //! cache admission and bypass behavior remain unchanged.
+    size_t read_scatter(size_t offset, ScatterBlock &data,
+                        size_t len) override {
+      data.reset();
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        return 0;
+      }
+      if (!cache_enabled_) {
+        return IndexStorage::Segment::read_scatter(offset, data, len);
+      }
+
+      const size_t abs_offset = data_offset_ + offset;
+      const size_t first_page = abs_offset / ailego::kVectorPageSize;
+      const size_t last_page =
+          (abs_offset + len - 1) / ailego::kVectorPageSize;
+      const size_t page_count = last_page - first_page + 1;
+      std::vector<ailego::block_id_t> page_ids(page_count);
+      std::vector<char *> pages(page_count, nullptr);
+      for (size_t i = 0; i < page_count; ++i) {
+        page_ids[i] = static_cast<ailego::block_id_t>(first_page + i);
+      }
+      if (!handle_->try_acquire_resident_pages(page_ids.data(), page_count,
+                                               pages.data())) {
+        return IndexStorage::Segment::read_scatter(offset, data, len);
+      }
+
+      bool pins_owned_by_lease = false;
+      try {
+        std::vector<ReadSpan> spans;
+        spans.reserve(page_count);
+        const size_t range_end = abs_offset + len;
+        for (size_t i = 0; i < page_count; ++i) {
+          const size_t page_begin = (first_page + i) * ailego::kVectorPageSize;
+          const size_t span_begin = std::max(abs_offset, page_begin);
+          const size_t span_end =
+              std::min(range_end, page_begin + ailego::kVectorPageSize);
+          spans.push_back(
+              {reinterpret_cast<const uint8_t *>(pages[i]) +
+                   (span_begin - page_begin),
+               span_end - span_begin});
+        }
+        auto lease =
+            std::make_shared<BufferPageLease>(handle_, page_ids);
+        pins_owned_by_lease = true;
+        data.reset_scattered(std::move(spans), std::move(lease), len);
+        return len;
+      } catch (const std::bad_alloc &) {
+        if (!pins_owned_by_lease) {
+          handle_->release_pages(page_ids.data(), page_ids.size());
+        }
+        LOG_ERROR(
+            "BufferReadStorage::Segment::read_scatter allocation failed, "
+            "abs_offset=%zu, len=%zu, pages=%zu",
+            abs_offset, len, page_count);
+        return 0;
+      }
+    }
+
     //! Read scattered data (stable until this thread's next pointer read)
     bool read(SegmentData *iovec, size_t count) override {
       ailego_false_if_false(iovec != nullptr && count != 0);
@@ -295,7 +381,22 @@ class BufferReadStorage : public IndexStorage {
       bool page_pinned{false};
     };
 
+    static bool &thread_scratch_registry_alive() {
+      // bool has a trivial destructor, so it remains safe to inspect while
+      // non-trivial thread_local objects are being torn down.
+      static thread_local bool alive = false;
+      return alive;
+    }
+
     struct ThreadScratchRegistry {
+      ThreadScratchRegistry() {
+        thread_scratch_registry_alive() = true;
+      }
+
+      ~ThreadScratchRegistry() {
+        thread_scratch_registry_alive() = false;
+      }
+
       std::unordered_map<const uint8_t *, ThreadScratch> scratches;
       const uint8_t *last_key{nullptr};
       ThreadScratch *last_scratch{nullptr};

@@ -1,0 +1,22 @@
+BuilderCommon:
+  BuilderClass: IVFBuilder
+  BuildFile: /Users/ali.yzf/cohere_train_vector_1m.new.centaur.vecs
+  NeedTrain: true
+  TrainFile: /Users/ali.yzf/cohere_train_vector_1m.new.centaur.vecs
+  DumpPath: /Users/ali.yzf/zvec/benchmarks/ivf_buffer_pool/cohere_1m_ivf_fp32_1024.index
+  MetricName: Cosine
+  MajorOrder: row
+  ThreadCount: 8
+  RetrievalMode: dense
+  LogLevel: info
+
+BuilderParams:
+  proxima.ivf.builder.centroid_count: "32*32"
+  proxima.ivf.builder.cluster_class: "OptKmeansCluster*OptKmeansCluster"
+  proxima.ivf.builder.thread_count: !!int 8
+  proxima.ivf.builder.train_sample_count: !!int 100000
+  proxima.ivf.builder.block_vector_count: !!int 32
+  proxima.ivf.builder.cluster_params_in_level_1:
+    zvec.optkmeans.cluster.max_iterations: !!int 10
+  proxima.ivf.builder.cluster_params_in_level_2:
+    zvec.optkmeans.cluster.max_iterations: !!int 10
