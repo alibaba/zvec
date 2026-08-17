@@ -70,11 +70,11 @@ enum class IndexType {
   kFlat,
   kIVF,  // it's actual a two-layer index
   kHNSW,
-  kOMEGA,  // HNSW with learned early stopping
   kHNSWRabitq,
   kDiskAnn,
   kVamana,
   kIVFRabitq,
+  kOMEGA,  // HNSW with learned early stopping
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };

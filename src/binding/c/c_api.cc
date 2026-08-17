@@ -1394,27 +1394,13 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                   zvec::QuantizeType::UNDEFINED);
           break;
         case ZVEC_INDEX_TYPE_DISKANN:
-          cpp_params = new zvec::DiskAnnIndexParams(
-              zvec::MetricType::L2,
-              zvec::core_interface::kDefaultDiskAnnMaxDegree,
-              zvec::core_interface::kDefaultDiskAnnListSize,
-              zvec::core_interface::kDefaultDiskAnnPqChunkNum,
-              zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::DiskAnnIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_FLAT:
         default:
           cpp_params =
               new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
                                         zvec::QuantizeType::UNDEFINED);
-          break;
-        case ZVEC_INDEX_TYPE_DISKANN:
-          cpp_params =
-              new zvec::DiskAnnIndexParams(
-                  zvec::MetricType::L2,   // metric_type
-                  100,                     // max_degree (default)
-                  50,                      // list_size (default)
-                  0,                       // pq_chunk_num (default)
-                  zvec::QuantizeType::UNDEFINED);
           break;
       }
 

@@ -18,7 +18,7 @@
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -436,11 +436,10 @@ int OmegaStreamer::omega_search_impl(const void *query,
 
   // Initialize context for search
   hnsw_ctx->clear();
-  hnsw_ctx->update_dist_caculator_distance(search_distance_,
-                                           search_batch_distance_);
+  hnsw_ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
   hnsw_ctx->resize_results(count);
   hnsw_ctx->check_need_adjuct_ctx(entity_->doc_cnt());
-  hnsw_ctx->reset_query(query);
+  hnsw_ctx->reset_query(query, meta_);
   OmegaHookSetup hook_setup = CreateOmegaHookSetup(
       omega_search_ctx, enable_early_stopping, training_mode_enabled_);
   bool early_stop_hit = false;
@@ -496,7 +495,7 @@ int OmegaStreamer::omega_search_impl(const void *query,
   if (!profile_output_path.empty() && !training_mode_enabled_ &&
       !hnsw_ctx->group_by_search()) {
     TopkHeap omega_topk_heap = hnsw_ctx->topk_heap();
-    hnsw_ctx->reset_query(query);
+    hnsw_ctx->reset_query(query, meta_);
     hnsw_ctx->topk_heap().clear();
     bool baseline_stopped_early = false;
     ret = alg_->search_with_hooks(hnsw_ctx, nullptr, &baseline_stopped_early);

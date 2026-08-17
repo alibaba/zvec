@@ -12,6 +12,7 @@ cc_library(
     SRCS *.cc
     LIBS core_framework rabitqlib core_knn_cluster core_knn_hnsw_rabitq
     INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+    CXXFLAGS "${_RABITQ_MARCH_AVX2}"
     LDFLAGS "${CORE_KNN_IVF_RABITQ_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )

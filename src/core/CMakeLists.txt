@@ -1,6 +1,25 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
+# RaBitQ headers require AVX2 or AVX512 at compile time. Keep the core and
+# standalone RaBitQ targets consistent when zvec_core glob-collects these
+# sources as well.
+if(RABITQ_SUPPORTED AND NOT ANDROID AND NOT IOS AND AUTO_DETECT_ARCH AND
+   HOST_ARCH MATCHES "^(x86|x64)$")
+  setup_compiler_march_for_x86(
+      _RABITQ_MARCH_SSE _RABITQ_MARCH_AVX2 _RABITQ_MARCH_AVX512
+      _RABITQ_MARCH_AVX512FP16)
+  if(_RABITQ_MARCH_AVX2)
+    file(GLOB _RABITQ_SOURCES
+         ${CMAKE_CURRENT_SOURCE_DIR}/algorithm/hnsw_rabitq/*.cc
+         ${CMAKE_CURRENT_SOURCE_DIR}/algorithm/ivf_rabitq/*.cc)
+    set_source_files_properties(
+        ${_RABITQ_SOURCES}
+        PROPERTIES
+        COMPILE_FLAGS "${_RABITQ_MARCH_AVX2}")
+  endif()
+endif()
+
 # utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
 # host toolchain supports it, compile this source with an AVX2-capable
 # -march so AVX2 codegen is emitted. zvec_core glob-collects this source

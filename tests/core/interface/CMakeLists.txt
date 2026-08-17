@@ -20,6 +20,7 @@ set(ZVEC_TEST_CORE_INTERFACE_LIBS
     core_knn_hnsw_sparse
     core_knn_ivf
     core_knn_hnsw_rabitq
+    core_knn_diskann
     core_knn_vamana
 )
 if(ZVEC_ENABLE_OMEGA)
