@@ -19,10 +19,13 @@ if(NOT _smoke_cpp_headers)
   message(FATAL_ERROR "SDK package is missing C++ headers under include/zvec/db/")
 endif()
 
+# CMAKE_FIND_ROOT_PATH_BOTH keeps the explicit PATHS usable when
+# cross-compiling (the NDK toolchain re-roots find_library searches).
 find_library(ZVEC_SDK_C_API_LIBRARY
   NAMES zvec_c_api
   PATHS "${ZVEC_SDK_DIR}/lib"
   NO_DEFAULT_PATH
+  CMAKE_FIND_ROOT_PATH_BOTH
   REQUIRED)
 # The all-in-one library installs as libzvec.so / libzvec.dylib on Unix and
 # as zvec.dll + zvec_shared.lib on Windows.
@@ -30,6 +33,7 @@ find_library(ZVEC_SDK_LIBRARY
   NAMES zvec_shared zvec
   PATHS "${ZVEC_SDK_DIR}/lib"
   NO_DEFAULT_PATH
+  CMAKE_FIND_ROOT_PATH_BOTH
   REQUIRED)
 
 add_executable(c_smoke smoke.c)
