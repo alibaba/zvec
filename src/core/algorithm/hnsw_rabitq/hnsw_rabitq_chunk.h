@@ -15,15 +15,14 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
 #include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/string_helper.h>
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_error.h"
-#include "zvec/core/framework/index_logger.h"
 #include "zvec/core/framework/index_storage.h"
 #include "zvec/core/framework/index_streamer.h"
 
@@ -36,7 +35,7 @@ class HnswRabitqChunkBroker {
  public:
   typedef std::shared_ptr<HnswRabitqChunkBroker> Pointer;
 
-  enum CHUNK_TYPE {
+  enum CHUNK_TYPE {  // NOLINT(readability-identifier-naming): on-disk chunk tag
     CHUNK_TYPE_HEADER = 1,
     CHUNK_TYPE_META = 2,
     CHUNK_TYPE_NODE = 3,
@@ -53,7 +52,7 @@ class HnswRabitqChunkBroker {
   int open(IndexStorage::Pointer stg, size_t max_index_size, size_t chunk_size,
            bool check_crc);
 
-  int close(void);
+  int close();
 
   int flush(uint64_t checkpoint);
 
@@ -73,11 +72,11 @@ class HnswRabitqChunkBroker {
     return chunk_meta_.chunk_cnts[type];
   }
 
-  inline bool dirty(void) const {
+  inline bool dirty() const {
     return dirty_;
   }
 
-  inline void mark_dirty(void) {
+  inline void mark_dirty() {
     if (!dirty_) {
       dirty_ = true;
       chunk_meta_.revision_id += 1;
@@ -85,16 +84,16 @@ class HnswRabitqChunkBroker {
     }
   }
 
-  const IndexStorage::Pointer storage(void) const {
+  const IndexStorage::Pointer storage() const {
     return stg_;
   }
 
- private:
   HnswRabitqChunkBroker(const HnswRabitqChunkBroker &) = delete;
   HnswRabitqChunkBroker &operator=(const HnswRabitqChunkBroker &) = delete;
 
+ private:
   struct HnswChunkMeta {
-    HnswChunkMeta(void) {
+    HnswChunkMeta() {
       memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));
     }
     void clear() {

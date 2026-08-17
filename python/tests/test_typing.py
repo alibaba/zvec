@@ -13,10 +13,14 @@
 # limitations under the License.
 from __future__ import annotations
 
+import platform
+
 import pytest
+import zvec
 from zvec import (
     DataType,
     IndexType,
+    IOBackendType,
     MetricType,
     QuantizeType,
     Status,
@@ -32,8 +36,14 @@ from zvec import (
     [
         (DataType.FLOAT, "FLOAT"),
         (IndexType.HNSW, "HNSW"),
+        (IOBackendType.PREAD, "PREAD"),
+        (IOBackendType.IO_URING, "IO_URING"),
+        (IOBackendType.WINDOWS_OVERLAPPED, "WINDOWS_OVERLAPPED"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
+        (QuantizeType.UNIFORM_UINT7, "UNIFORM_UINT7"),
+        (QuantizeType.UNIFORM_UINT8, "UNIFORM_UINT8"),
+        (QuantizeType.UNIFORM_UINT4, "UNIFORM_UINT4"),
         (StatusCode.OK, "OK"),
     ],
 )
@@ -46,8 +56,14 @@ def test_enum_names(member, name):
     [
         (DataType.FLOAT, 8),
         (IndexType.HNSW, 1),
+        (IOBackendType.PREAD, 0),
+        (IOBackendType.IO_URING, 2),
+        (IOBackendType.WINDOWS_OVERLAPPED, 3),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
+        (QuantizeType.UNIFORM_UINT7, 5),
+        (QuantizeType.UNIFORM_UINT8, 6),
+        (QuantizeType.UNIFORM_UINT4, 7),
         (StatusCode.OK, 0),
     ],
 )
@@ -75,6 +91,7 @@ def test_metric_type_has_member(member):
         "VECTOR_FP32",
         "VECTOR_FP64",
         "VECTOR_INT8",
+        "VECTOR_UINT8",
         "SPARSE_VECTOR_FP32",
         "SPARSE_VECTOR_FP16",
         "ARRAY_STRING",
@@ -91,12 +108,57 @@ def test_data_type_has_member(member):
     assert member in DataType.__members__
 
 
-@pytest.mark.parametrize("member", ["HNSW", "IVF", "FLAT", "INVERT"])
+@pytest.mark.parametrize(
+    "member",
+    [
+        "UNDEFINED",
+        "HNSW",
+        "IVF",
+        "FLAT",
+        "HNSW_RABITQ",
+        "DISKANN",
+        "VAMANA",
+        "IVF_RABITQ",
+        "INVERT",
+        "FTS",
+    ],
+)
 def test_index_type_has_member(member):
     assert member in IndexType.__members__
 
 
-@pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "UNDEFINED"])
+@pytest.mark.parametrize(
+    "member", ["PREAD", "LIBAIO", "IO_URING", "WINDOWS_OVERLAPPED"]
+)
+def test_io_backend_type_has_member(member):
+    assert member in IOBackendType.__members__
+
+
+def test_current_io_backend_type():
+    backend = zvec.io_backend_type()
+    assert isinstance(backend, IOBackendType)
+    assert zvec.io_backend_description()
+    if platform.system() == "Windows":
+        assert backend == IOBackendType.WINDOWS_OVERLAPPED
+        assert "overlapped" in zvec.io_backend_description().lower()
+    elif platform.system() == "Darwin":
+        assert backend == IOBackendType.PREAD
+        assert "pread" in zvec.io_backend_description().lower()
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "FP16",
+        "INT8",
+        "INT4",
+        "RABITQ",
+        "UNIFORM_UINT7",
+        "UNIFORM_UINT8",
+        "UNIFORM_UINT4",
+        "UNDEFINED",
+    ],
+)
 def test_quantize_type_has_member(member):
     assert member in QuantizeType.__members__
 

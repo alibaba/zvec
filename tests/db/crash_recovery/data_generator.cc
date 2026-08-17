@@ -182,17 +182,17 @@ int main(int argc, char **argv) {
 
     zvec::Result<zvec::WriteResults> results;
     if (config.operation == "insert") {
-      results = collection->Insert(docs);
+      results = collection->insert(docs);
     } else if (config.operation == "upsert") {
-      results = collection->Upsert(docs);
+      results = collection->upsert(docs);
     } else if (config.operation == "update") {
-      results = collection->Update(docs);
+      results = collection->update(docs);
     } else if (config.operation == "delete") {
       std::vector<std::string> pks{};
       for (const auto &doc : docs) {
         pks.emplace_back(doc.pk());
       }
-      results = collection->Delete(pks);
+      results = collection->delete_(pks);
     }
     if (!results) {
       LOG_ERROR("Failed to perform operation[%s], reason: %s",
@@ -244,7 +244,7 @@ int main(int argc, char **argv) {
   // crash during process teardown.  Use _exit() to skip them.
   // Flush + close the collection to persist all buffered data (WAL, memtable),
   // then sync() to ensure kernel buffers are written to disk before _exit().
-  collection->Flush();
+  collection->flush();
   collection.reset();
   sync();
   std::cout.flush();

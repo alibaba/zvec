@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 
 namespace zvec {
@@ -30,25 +31,8 @@ bool IndexFactory::HasMetric(const std::string &name) {
   return ailego::Factory<IndexMetric>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllMetrics(void) {
+std::vector<std::string> IndexFactory::AllMetrics() {
   return ailego::Factory<IndexMetric>::Classes();
-}
-
-IndexLogger::Pointer IndexFactory::CreateLogger(const std::string &name) {
-  IndexLogger::Pointer obj =
-      ailego::Factory<IndexLogger>::MakeShared(name.c_str());
-  if (obj) {
-    obj->set_name(name);
-  }
-  return obj;
-}
-
-bool IndexFactory::HasLogger(const std::string &name) {
-  return ailego::Factory<IndexLogger>::Has(name.c_str());
-}
-
-std::vector<std::string> IndexFactory::AllLoggers(void) {
-  return ailego::Factory<IndexLogger>::Classes();
 }
 
 IndexDumper::Pointer IndexFactory::CreateDumper(const std::string &name) {
@@ -64,7 +48,7 @@ bool IndexFactory::HasDumper(const std::string &name) {
   return ailego::Factory<IndexDumper>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllDumpers(void) {
+std::vector<std::string> IndexFactory::AllDumpers() {
   return ailego::Factory<IndexDumper>::Classes();
 }
 
@@ -81,7 +65,7 @@ bool IndexFactory::HasStorage(const std::string &name) {
   return ailego::Factory<IndexStorage>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllStorages(void) {
+std::vector<std::string> IndexFactory::AllStorages() {
   return ailego::Factory<IndexStorage>::Classes();
 }
 
@@ -98,7 +82,7 @@ bool IndexFactory::HasConverter(const std::string &name) {
   return ailego::Factory<IndexConverter>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllConverters(void) {
+std::vector<std::string> IndexFactory::AllConverters() {
   return ailego::Factory<IndexConverter>::Classes();
 }
 
@@ -115,7 +99,7 @@ bool IndexFactory::HasReformer(const std::string &name) {
   return ailego::Factory<IndexReformer>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllReformers(void) {
+std::vector<std::string> IndexFactory::AllReformers() {
   return ailego::Factory<IndexReformer>::Classes();
 }
 
@@ -132,7 +116,7 @@ bool IndexFactory::HasTrainer(const std::string &name) {
   return ailego::Factory<IndexTrainer>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllTrainers(void) {
+std::vector<std::string> IndexFactory::AllTrainers() {
   return ailego::Factory<IndexTrainer>::Classes();
 }
 
@@ -149,7 +133,7 @@ bool IndexFactory::HasBuilder(const std::string &name) {
   return ailego::Factory<IndexBuilder>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllBuilders(void) {
+std::vector<std::string> IndexFactory::AllBuilders() {
   return ailego::Factory<IndexBuilder>::Classes();
 }
 
@@ -166,7 +150,7 @@ bool IndexFactory::HasSearcher(const std::string &name) {
   return ailego::Factory<IndexSearcher>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllSearchers(void) {
+std::vector<std::string> IndexFactory::AllSearchers() {
   return ailego::Factory<IndexSearcher>::Classes();
 }
 
@@ -183,7 +167,7 @@ bool IndexFactory::HasStreamer(const std::string &name) {
   return ailego::Factory<IndexStreamer>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllStreamers(void) {
+std::vector<std::string> IndexFactory::AllStreamers() {
   return ailego::Factory<IndexStreamer>::Classes();
 }
 
@@ -200,7 +184,7 @@ bool IndexFactory::HasReducer(const std::string &name) {
   return ailego::Factory<IndexReducer>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllReducers(void) {
+std::vector<std::string> IndexFactory::AllReducers() {
   return ailego::Factory<IndexReducer>::Classes();
 }
 
@@ -218,7 +202,7 @@ bool IndexFactory::HasCluster(const std::string &name) {
   return ailego::Factory<IndexCluster>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllClusters(void) {
+std::vector<std::string> IndexFactory::AllClusters() {
   return ailego::Factory<IndexCluster>::Classes();
 }
 
@@ -236,7 +220,7 @@ bool IndexFactory::HasStreamerReducer(const std::string &name) {
   return ailego::Factory<IndexStreamerReducer>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllStreamerReducers(void) {
+std::vector<std::string> IndexFactory::AllStreamerReducers() {
   return ailego::Factory<IndexStreamerReducer>::Classes();
 }
 
@@ -253,8 +237,21 @@ bool IndexFactory::HasRefiner(const std::string &name) {
   return ailego::Factory<IndexRefiner>::Has(name.c_str());
 }
 
-std::vector<std::string> IndexFactory::AllRefiners(void) {
+std::vector<std::string> IndexFactory::AllRefiners() {
   return ailego::Factory<IndexRefiner>::Classes();
+}
+
+std::shared_ptr<turbo::Quantizer> IndexFactory::CreateQuantizer(
+    const std::string &name) {
+  return ailego::Factory<zvec::turbo::Quantizer>::MakeShared(name.c_str());
+}
+
+bool IndexFactory::HasQuantizer(const std::string &name) {
+  return ailego::Factory<turbo::Quantizer>::Has(name.c_str());
+}
+
+std::vector<std::string> IndexFactory::AllQuantizers() {
+  return ailego::Factory<turbo::Quantizer>::Classes();
 }
 
 }  // namespace core

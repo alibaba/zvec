@@ -8,6 +8,7 @@ import typing
 
 __all__: list[str] = [
     "DataType",
+    "IOBackendType",
     "IndexType",
     "MetricType",
     "QuantizeType",
@@ -103,9 +104,63 @@ class DataType:
     VECTOR_FP32: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP32: 23>
     VECTOR_FP64: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP64: 24>
     VECTOR_INT8: typing.ClassVar[DataType]  # value = <DataType.VECTOR_INT8: 26>
+    VECTOR_UINT8: typing.ClassVar[DataType]  # value = <DataType.VECTOR_UINT8: 28>
     __members__: typing.ClassVar[
         dict[str, DataType]
-    ]  # value = {'STRING': <DataType.STRING: 2>, 'BOOL': <DataType.BOOL: 3>, 'INT32': <DataType.INT32: 4>, 'INT64': <DataType.INT64: 5>, 'FLOAT': <DataType.FLOAT: 8>, 'DOUBLE': <DataType.DOUBLE: 9>, 'UINT32': <DataType.UINT32: 6>, 'UINT64': <DataType.UINT64: 7>, 'VECTOR_FP16': <DataType.VECTOR_FP16: 22>, 'VECTOR_FP32': <DataType.VECTOR_FP32: 23>, 'VECTOR_FP64': <DataType.VECTOR_FP64: 24>, 'VECTOR_INT8': <DataType.VECTOR_INT8: 26>, 'SPARSE_VECTOR_FP32': <DataType.SPARSE_VECTOR_FP32: 31>, 'SPARSE_VECTOR_FP16': <DataType.SPARSE_VECTOR_FP16: 30>, 'ARRAY_STRING': <DataType.ARRAY_STRING: 41>, 'ARRAY_INT32': <DataType.ARRAY_INT32: 43>, 'ARRAY_INT64': <DataType.ARRAY_INT64: 44>, 'ARRAY_FLOAT': <DataType.ARRAY_FLOAT: 47>, 'ARRAY_DOUBLE': <DataType.ARRAY_DOUBLE: 48>, 'ARRAY_BOOL': <DataType.ARRAY_BOOL: 42>, 'ARRAY_UINT32': <DataType.ARRAY_UINT32: 45>, 'ARRAY_UINT64': <DataType.ARRAY_UINT64: 46>}
+    ]  # value = {'STRING': <DataType.STRING: 2>, 'BOOL': <DataType.BOOL: 3>, 'INT32': <DataType.INT32: 4>, 'INT64': <DataType.INT64: 5>, 'FLOAT': <DataType.FLOAT: 8>, 'DOUBLE': <DataType.DOUBLE: 9>, 'UINT32': <DataType.UINT32: 6>, 'UINT64': <DataType.UINT64: 7>, 'VECTOR_FP16': <DataType.VECTOR_FP16: 22>, 'VECTOR_FP32': <DataType.VECTOR_FP32: 23>, 'VECTOR_FP64': <DataType.VECTOR_FP64: 24>, 'VECTOR_INT8': <DataType.VECTOR_INT8: 26>, 'VECTOR_UINT8': <DataType.VECTOR_UINT8: 28>, 'SPARSE_VECTOR_FP32': <DataType.SPARSE_VECTOR_FP32: 31>, 'SPARSE_VECTOR_FP16': <DataType.SPARSE_VECTOR_FP16: 30>, 'ARRAY_STRING': <DataType.ARRAY_STRING: 41>, 'ARRAY_INT32': <DataType.ARRAY_INT32: 43>, 'ARRAY_INT64': <DataType.ARRAY_INT64: 44>, 'ARRAY_FLOAT': <DataType.ARRAY_FLOAT: 47>, 'ARRAY_DOUBLE': <DataType.ARRAY_DOUBLE: 48>, 'ARRAY_BOOL': <DataType.ARRAY_BOOL: 42>, 'ARRAY_UINT32': <DataType.ARRAY_UINT32: 45>, 'ARRAY_UINT64': <DataType.ARRAY_UINT64: 46>}
+
+    def __eq__(self, other: typing.Any) -> bool: ...
+    def __getstate__(self) -> int: ...
+    def __hash__(self) -> int: ...
+    def __index__(self) -> int: ...
+    def __init__(self, value: typing.SupportsInt) -> None: ...
+    def __int__(self) -> int: ...
+    def __ne__(self, other: typing.Any) -> bool: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, state: typing.SupportsInt) -> None: ...
+    def __str__(self) -> str: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
+
+class IOBackendType:
+    """
+
+    Enumeration of supported I/O backend types for DiskAnn disk reads.
+
+    - PREAD: Synchronous pread() — no async I/O.
+    - LIBAIO: libaio loaded at runtime via dlopen().
+    - IO_URING: io_uring via raw kernel syscalls (zero dependency).
+    - WINDOWS_OVERLAPPED: Windows unbuffered overlapped I/O using per-context
+      I/O completion ports.
+
+    Examples:
+        >>> from zvec.typing import IOBackendType
+        >>> print(IOBackendType.LIBAIO)
+        IOBackendType.LIBAIO
+
+
+    Members:
+
+      PREAD
+
+      LIBAIO
+
+      IO_URING
+
+      WINDOWS_OVERLAPPED
+    """
+
+    PREAD: typing.ClassVar[IOBackendType]  # value = <IOBackendType.PREAD: 0>
+    LIBAIO: typing.ClassVar[IOBackendType]  # value = <IOBackendType.LIBAIO: 1>
+    IO_URING: typing.ClassVar[IOBackendType]  # value = <IOBackendType.IO_URING: 2>
+    WINDOWS_OVERLAPPED: typing.ClassVar[
+        IOBackendType
+    ]  # value = <IOBackendType.WINDOWS_OVERLAPPED: 3>
+    __members__: typing.ClassVar[
+        dict[str, IOBackendType]
+    ]  # value includes PREAD, LIBAIO, IO_URING, and WINDOWS_OVERLAPPED
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
@@ -141,19 +196,34 @@ class IndexType:
 
       IVF
 
+      IVF_RABITQ
+
       FLAT
 
+      HNSW_RABITQ
+
+      DISKANN
+
+      VAMANA
+
       INVERT
+
+      FTS
     """
 
-    FLAT: typing.ClassVar[IndexType]  # value = <IndexType.FLAT: 4>
+    DISKANN: typing.ClassVar[IndexType]  # value = <IndexType.DISKANN: 5>
+    FLAT: typing.ClassVar[IndexType]  # value = <IndexType.FLAT: 3>
+    FTS: typing.ClassVar[IndexType]  # value = <IndexType.FTS: 11>
     HNSW: typing.ClassVar[IndexType]  # value = <IndexType.HNSW: 1>
+    HNSW_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.HNSW_RABITQ: 4>
     INVERT: typing.ClassVar[IndexType]  # value = <IndexType.INVERT: 10>
-    IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 3>
+    IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 2>
+    IVF_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.IVF_RABITQ: 7>
     UNDEFINED: typing.ClassVar[IndexType]  # value = <IndexType.UNDEFINED: 0>
+    VAMANA: typing.ClassVar[IndexType]  # value = <IndexType.VAMANA: 6>
     __members__: typing.ClassVar[
         dict[str, IndexType]
-    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 3>, 'FLAT': <IndexType.FLAT: 4>, 'INVERT': <IndexType.INVERT: 10>}
+    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 2>, 'IVF_RABITQ': <IndexType.IVF_RABITQ: 7>, 'FLAT': <IndexType.FLAT: 3>, 'HNSW_RABITQ': <IndexType.HNSW_RABITQ: 4>, 'DISKANN': <IndexType.DISKANN: 5>, 'VAMANA': <IndexType.VAMANA: 6>, 'INVERT': <IndexType.INVERT: 10>, 'FTS': <IndexType.FTS: 11>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
@@ -236,15 +306,33 @@ class QuantizeType:
       INT8
 
       INT4
+
+      RABITQ
+
+      UNIFORM_UINT7
+
+      UNIFORM_UINT8
+
+      UNIFORM_UINT4
     """
 
     FP16: typing.ClassVar[QuantizeType]  # value = <QuantizeType.FP16: 1>
     INT4: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT4: 3>
     INT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT8: 2>
+    RABITQ: typing.ClassVar[QuantizeType]  # value = <QuantizeType.RABITQ: 4>
+    UNIFORM_UINT7: typing.ClassVar[
+        QuantizeType
+    ]  # value = <QuantizeType.UNIFORM_UINT7: 5>
+    UNIFORM_UINT8: typing.ClassVar[
+        QuantizeType
+    ]  # value = <QuantizeType.UNIFORM_UINT8: 6>
+    UNIFORM_UINT4: typing.ClassVar[
+        QuantizeType
+    ]  # value = <QuantizeType.UNIFORM_UINT4: 7>
     UNDEFINED: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNDEFINED: 0>
     __members__: typing.ClassVar[
         dict[str, QuantizeType]
-    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>}
+    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>, 'RABITQ': <QuantizeType.RABITQ: 4>, 'UNIFORM_UINT7': <QuantizeType.UNIFORM_UINT7: 5>, 'UNIFORM_UINT8': <QuantizeType.UNIFORM_UINT8: 6>, 'UNIFORM_UINT4': <QuantizeType.UNIFORM_UINT4: 7>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...

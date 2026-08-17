@@ -21,19 +21,29 @@
 #include <arrow/status.h>
 #include <arrow/table.h>
 #include <parquet/arrow/reader.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/utility/file_helper.h>
 
 namespace zvec {
 
 ParquetBufferID::ParquetBufferID(const std::string &filename, int column,
                                  int row_group)
     : filename(filename), column(column), row_group(row_group) {
+  const auto path = ailego::FileHelper::PathFromUtf8(filename);
+#if defined(_WIN32) || defined(_WIN64)
+  struct _stat64 file_stat;
+  if (!path.empty() && _wstat64(path.c_str(), &file_stat) == 0) {
+#else
   struct stat file_stat;
   if (stat(filename.c_str(), &file_stat) == 0) {
+#endif
     file_id = file_stat.st_ino;
-    std::filesystem::path p(filename);
-    auto ftime = std::filesystem::last_write_time(p);
-    mtime = static_cast<std::uint64_t>(ftime.time_since_epoch().count());
+  }
+
+  std::error_code ec;
+  const auto ftime = std::filesystem::last_write_time(path, ec);
+  if (!ec) {
+    mtime = static_cast<int64_t>(ftime.time_since_epoch().count());
   }
 }
 

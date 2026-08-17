@@ -12,16 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "algorithm/flat/flat_streamer.h"
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <future>
+#include <memory>
+#include <random>
 #include <string>
+#include <thread>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/encoding/json/mod_json.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "algorithm/flat/flat_streamer_context.h"
 #include "algorithm/flat/flat_utility.h"
 #include "tests/test_util.h"
 
@@ -36,10 +47,92 @@ using namespace std;
 
 constexpr size_t static dim = 16;
 
+namespace zvec {
+namespace {
+
+// Exercise the generic Flat contract with multi-byte query preprocessing and
+// with a metric that supplies only a pair-distance function.
+template <bool HasBatch>
+class FlatQueryCopyTestMetric : public IndexMetric {
+ public:
+  int init(const IndexMeta &meta, const Params &params) override {
+    metric_ = IndexFactory::CreateMetric("SquaredEuclidean");
+    return metric_->init(meta, params);
+  }
+  int cleanup() override {
+    return metric_->cleanup();
+  }
+  bool is_matched(const IndexMeta &meta) const override {
+    return metric_->is_matched(meta);
+  }
+  bool is_matched(const IndexMeta &meta,
+                  const IndexQueryMeta &query_meta) const override {
+    return metric_->is_matched(meta, query_meta);
+  }
+  MatrixDistance distance() const override {
+    return metric_->distance();
+  }
+  MatrixDistance distance_matrix(size_t m, size_t n) const override {
+    return metric_->distance_matrix(m, n);
+  }
+  const Params &params() const override {
+    return metric_->params();
+  }
+  Pointer query_metric() const override {
+    return nullptr;
+  }
+  MatrixBatchDistance batch_distance() const override {
+    if constexpr (!HasBatch) return nullptr;
+    return [](const void **rows, const void *query, size_t count,
+              size_t dimension, float *distances, const void **) {
+      const auto *prepared_query = static_cast<const float *>(query);
+      for (size_t i = 0; i < count; ++i) {
+        const auto *row = static_cast<const float *>(rows[i]);
+        double sum = 0;
+        for (size_t d = 0; d < dimension; ++d) {
+          const double delta = row[d] - prepared_query[d] * 0.5;
+          sum += delta * delta;
+        }
+        distances[i] = static_cast<float>(sum);
+      }
+    };
+  }
+  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
+    return [](void *query, size_t dimension) {
+      auto *values = static_cast<float *>(query);
+      for (size_t d = 0; d < dimension; ++d) values[d] *= 2.0f;
+    };
+  }
+
+ private:
+  Pointer metric_;
+};
+
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(FlatPreprocessedQueryTest,
+                                    FlatQueryCopyTestMetric<true>);
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(FlatScalarOnlyTest,
+                                    FlatQueryCopyTestMetric<false>);
+
+}  // namespace
+}  // namespace zvec
+
+std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
+  std::string record(dimension + sizeof(uint32_t), '\0');
+  uint32_t sum_squared = 0;
+  for (size_t d = 0; d < dimension; ++d) {
+    const uint8_t code =
+        static_cast<uint8_t>((seed * 73U + d * 29U + d * seed * 3U) & 0xffU);
+    record[d] = static_cast<char>(static_cast<int>(code) - 128);
+    sum_squared += static_cast<uint32_t>(code) * code;
+  }
+  std::memcpy(record.data() + dimension, &sum_squared, sizeof(sum_squared));
+  return record;
+}
+
 class FlatStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 
@@ -50,7 +143,7 @@ class FlatStreamerTest : public testing::Test {
 std::string FlatStreamerTest::dir_("flat_streamer_test_dir/");
 std::shared_ptr<IndexMeta> FlatStreamerTest::index_meta_ptr_;
 
-void FlatStreamerTest::SetUp(void) {
+void FlatStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (std::nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
@@ -58,7 +151,7 @@ void FlatStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void FlatStreamerTest::TearDown(void) {
+void FlatStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
@@ -93,8 +186,483 @@ TEST_F(FlatStreamerTest, TestAddVector) {
     }
   }
 
+  std::vector<uint64_t> keys{3, 127, 999};
+  std::vector<IndexStorage::MemoryBlock> blocks;
+  ASSERT_EQ(0, provider->get_vectors(
+                   keys.data(), static_cast<uint32_t>(keys.size()), blocks));
+  ASSERT_EQ(keys.size(), blocks.size());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    const float *data = static_cast<const float *>(blocks[i].data());
+    ASSERT_NE(nullptr, data);
+    for (size_t j = 0; j < dim; ++j) {
+      ASSERT_FLOAT_EQ(data[j], keys[i]);
+    }
+  }
+
   streamer->flush(0UL);
   streamer.reset();
+}
+
+TEST_F(FlatStreamerTest,
+       CandidateResultTransfersHeapBufferWithoutChangingOrder) {
+  IndexMeta meta(IndexMeta::DT_FP32, 4);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_TRUE(streamer);
+  ASSERT_EQ(0, streamer->init(meta, Params()));
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "candidate_result_buffer.index", true));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto context = streamer->create_context();
+  auto *flat = dynamic_cast<FlatStreamerContext<32> *>(context.get());
+  ASSERT_NE(nullptr, flat);
+  for (uint32_t topk : {0U, 1U, 3U, 4U}) {
+    for (float threshold : {1.0f, 100.0f}) {
+      SCOPED_TRACE(topk);
+      SCOPED_TRACE(threshold);
+      flat->set_topk(topk);
+      flat->set_threshold(threshold);
+      auto fill_heap = [&]() {
+        flat->reset_results(1);
+        auto *heap = flat->result_heap();
+        heap->emplace(100, 3.0f);
+        heap->emplace(103, 1.0f);
+        heap->emplace(101, 1.0f);
+        heap->emplace(102, 2.0f);
+      };
+      fill_heap();
+      flat->topk_to_result(0);
+      const auto expected = flat->result();
+      fill_heap();
+      const auto *buffer = flat->result_heap()->container().data();
+      flat->take_topk_result(0);
+      EXPECT_EQ(buffer, flat->result().data());
+      EXPECT_TRUE(flat->result_heap()->empty());
+      ASSERT_EQ(expected.size(), flat->result().size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].key(), flat->result()[i].key());
+        EXPECT_FLOAT_EQ(expected[i].score(), flat->result()[i].score());
+        EXPECT_EQ(expected[i].index(), flat->result()[i].index());
+        EXPECT_EQ(nullptr, flat->result()[i].vector());
+      }
+    }
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(FlatStreamerTest, CandidateSearchKeepsMetricBatchAndReusesScratch) {
+  constexpr uint32_t kCount = 65;
+  const std::pair<IndexMeta::DataType, std::string> cases[] = {
+      {IndexMeta::DT_FP16, "SquaredEuclidean"},
+      {IndexMeta::DT_UINT8, "SquaredEuclidean"},
+      {IndexMeta::DT_FP32, "SquaredEuclidean"},
+      {IndexMeta::DT_INT8, "SquaredEuclidean"},
+      {IndexMeta::DT_INT8, "UniformUint7"},
+      {IndexMeta::DT_FP32, "Euclidean"},
+      {IndexMeta::DT_FP32, "InnerProduct"},
+      {IndexMeta::DT_FP32, "FlatPreprocessedQueryTest"},
+      {IndexMeta::DT_FP32, "FlatScalarOnlyTest"}};
+  for (const auto &[type, metric_name] : cases) {
+    for (uint32_t dimension : {128U, 960U}) {
+      SCOPED_TRACE(type);
+      SCOPED_TRACE(metric_name);
+      SCOPED_TRACE(dimension);
+      IndexMeta meta(type, dimension);
+      Params metric_params;
+      if (metric_name == "UniformUint7") {
+        metric_params.set("proxima.uniform_uint7.metric.origin_metric_name",
+                          std::string("SquaredEuclidean"));
+      }
+      meta.set_metric(metric_name, 0, metric_params);
+      IndexQueryMeta qmeta(type, dimension);
+      const std::string path = dir_ + "candidate_" + metric_name + "_" +
+                               std::to_string(type) + "_" +
+                               std::to_string(dimension);
+      Params params;
+      params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_TRUE(storage);
+      ASSERT_EQ(0, storage->init(Params()));
+      ASSERT_EQ(0, storage->open(path, true));
+      auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+      ASSERT_TRUE(streamer);
+      ASSERT_EQ(0, streamer->init(meta, params));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto context = streamer->create_context();
+      for (uint32_t id = 0; id < kCount; ++id) {
+        std::vector<uint16_t> fp16(dimension, FloatHelper::ToFP16(float(id)));
+        std::vector<uint8_t> uint8(dimension, static_cast<uint8_t>(id));
+        std::vector<float> fp32(dimension, float(id));
+        const void *vector = uint8.data();
+        if (type == IndexMeta::DT_FP16) vector = fp16.data();
+        if (type == IndexMeta::DT_FP32) vector = fp32.data();
+        ASSERT_EQ(0, streamer->add_with_id_impl(id, vector, qmeta, context));
+      }
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, streamer->open(storage));
+      auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+      ASSERT_NE(nullptr, flat);
+      const auto *entity =
+          dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+      ASSERT_NE(nullptr, entity);
+      ASSERT_TRUE(entity->is_contiguous());
+      context = streamer->create_context();
+      context->set_topk(kCount);
+      auto *flat_context =
+          dynamic_cast<FlatStreamerContext<32> *>(context.get());
+      ASSERT_NE(nullptr, flat_context);
+      const bool inner_product = metric_name == "InnerProduct";
+      const bool query_copy_test = metric_name == "FlatPreprocessedQueryTest" ||
+                                   metric_name == "FlatScalarOnlyTest";
+      // Zero bytes also encode zero for the FP16 and integer cases.
+      const float query_value =
+          inner_product ? 1.0f : (query_copy_test ? 0.25f : 0.0f);
+      const std::vector<float> query(dimension, query_value);
+      for (bool filtered : {false, true}) {
+        SCOPED_TRACE(filtered);
+        context->set_filter(
+            [filtered](uint64_t key) { return filtered && key == 7; });
+        for (uint32_t count : {0,  1,  2,  3,  4,  7,  8,  9,  10, 11, 12, 13,
+                               16, 19, 20, 21, 31, 32, 33, 40, 65, 12, 0}) {
+          SCOPED_TRACE(count);
+          std::vector<std::vector<uint64_t>> keys(1);
+          // Descending candidates exercise ordering as well as batch tails.
+          for (uint32_t id = count; id > 0; --id) keys[0].push_back(id - 1);
+          keys[0].push_back(999);  // Missing keys must not enter the batch.
+          ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                          qmeta, 1, context));
+          const auto batch_result = context->result();
+          ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                          qmeta, context));
+          ASSERT_EQ(batch_result.size(), context->result().size());
+          for (size_t i = 0; i < batch_result.size(); ++i) {
+            EXPECT_EQ(batch_result[i].key(), context->result()[i].key());
+            EXPECT_FLOAT_EQ(batch_result[i].score(),
+                            context->result()[i].score());
+          }
+          EXPECT_EQ(std::vector<float>(dimension, query_value), query);
+          if (query_copy_test) {
+            EXPECT_EQ(qmeta.element_size(),
+                      flat_context->search_scratch()->query_buffer.size());
+          }
+          const size_t valid_count = count - (filtered && count > 7 ? 1 : 0);
+          ASSERT_EQ(valid_count, context->result().size());
+          if (valid_count) {
+            // A 40/65-row refine must reach the kernel as one candidate set,
+            // not be split into 32-row storage batches and a final remainder.
+            EXPECT_EQ(valid_count,
+                      flat_context->search_scratch()->distances.size());
+          }
+          size_t pos = 0;
+          for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t id = inner_product ? count - i - 1 : i;
+            if (filtered && id == 7) continue;
+            EXPECT_EQ(id, context->result()[pos].key());
+            float expected = float(dimension * id * id);
+            if (metric_name == "Euclidean") expected = std::sqrt(expected);
+            if (inner_product) expected = -float(dimension * id);
+            if (query_copy_test) {
+              const float delta = float(id) - query_value;
+              expected = float(dimension) * delta * delta;
+            }
+            EXPECT_FLOAT_EQ(expected, context->result()[pos].score());
+            ++pos;
+          }
+        }
+      }
+
+      // Batched queries must not retain the previous query's heap entries.
+      const std::vector<std::vector<uint64_t>> batch_keys{{0, 1}, {3, 4}};
+      std::vector<IndexDocumentList> expected_batch;
+      for (const auto &key_set : batch_keys) {
+        ASSERT_EQ(0,
+                  streamer->search_bf_by_p_keys_impl(
+                      query.data(), std::vector<std::vector<uint64_t>>{key_set},
+                      qmeta, context));
+        expected_batch.push_back(context->result());
+      }
+      std::string batch_query(reinterpret_cast<const char *>(query.data()),
+                              qmeta.element_size());
+      batch_query += batch_query;
+      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
+                       batch_query.data(), batch_keys, qmeta, 2, context));
+      for (size_t q = 0; q < batch_keys.size(); ++q) {
+        ASSERT_EQ(expected_batch[q].size(), context->result(q).size());
+        for (size_t i = 0; i < expected_batch[q].size(); ++i) {
+          EXPECT_EQ(expected_batch[q][i].key(), context->result(q)[i].key());
+          EXPECT_FLOAT_EQ(expected_batch[q][i].score(),
+                          context->result(q)[i].score());
+        }
+      }
+
+      // The entity's explicit batch limit remains independent of the
+      // streamer's whole-candidate policy; full scans also remain bounded.
+      std::vector<uint64_t> keys;
+      for (uint64_t id = 0; id < 13; ++id) keys.push_back(id);
+      FlatSearchScratch scratch;
+      IndexDocumentHeap heap(kCount);
+      ASSERT_EQ(0, entity->search_by_p_keys(query.data(), keys, IndexFilter(),
+                                            &heap, &scratch, 5));
+      EXPECT_EQ(keys.size(), heap.size());
+      EXPECT_EQ(3U, scratch.distances.size());
+      uint32_t scan_count = 0;
+      IndexContext::Stats stats;
+      heap.clear();
+      ASSERT_EQ(0, entity->search(query.data(), IndexFilter(), &scan_count,
+                                  &heap, &stats, &scratch, 32));
+      EXPECT_EQ(kCount, scan_count);
+      EXPECT_EQ(kCount, heap.size());
+      EXPECT_EQ(1U, scratch.distances.size());
+      ASSERT_EQ(0, streamer->close());
+    }
+  }
+}
+
+TEST_F(FlatStreamerTest, TestContiguousCandidateSearchAndInsertFallback) {
+  const std::string path = dir_ + "Test/ContiguousEntity";
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < 64; ++id) {
+      NumericalVector<float> vec(dim);
+      for (size_t d = 0; d < dim; ++d) {
+        vec[d] = static_cast<float>(id);
+      }
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vec.data(), qmeta, context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  auto *contiguous_entity =
+      dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+  ASSERT_NE(nullptr, contiguous_entity);
+  ASSERT_TRUE(contiguous_entity->is_contiguous());
+
+  auto context = streamer->create_context();
+  context->set_topk(2);
+  NumericalVector<float> query(dim);
+  for (size_t d = 0; d < dim; ++d) {
+    query[d] = 17.0F;
+  }
+  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  std::vector<std::vector<uint64_t>> keys{{5, 17, 31}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys, qmeta, 1,
+                                                  context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  IndexStorage::MemoryBlock contiguous_block;
+  ASSERT_EQ(0, streamer->get_vector_by_id(17, contiguous_block));
+  ASSERT_NE(nullptr, contiguous_block.data());
+  EXPECT_FLOAT_EQ(17.0F,
+                  static_cast<const float *>(contiguous_block.data())[0]);
+
+  NumericalVector<float> appended(dim);
+  for (size_t d = 0; d < dim; ++d) {
+    appended[d] = 64.0F;
+  }
+
+  std::promise<void> search_started;
+  std::promise<void> resume_search;
+  auto resume_search_future = resume_search.get_future().share();
+  std::atomic_bool search_paused{false};
+  context->set_filter([&](uint64_t) {
+    if (!search_paused.exchange(true)) {
+      search_started.set_value();
+      resume_search_future.wait();
+    }
+    return false;
+  });
+  auto search_future = std::async(std::launch::async, [&]() {
+    return streamer->search_bf_impl(query.data(), qmeta, 1, context);
+  });
+  search_started.get_future().wait();
+
+  auto add_context = streamer->create_context();
+  int add_ret =
+      streamer->add_with_id_impl(64, appended.data(), qmeta, add_context);
+  resume_search.set_value();
+  EXPECT_EQ(0, add_ret);
+  ASSERT_EQ(0, search_future.get());
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+  context->reset_filter();
+
+  EXPECT_FALSE(contiguous_entity->is_contiguous());
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(0, streamer->get_vector_by_id(64, block));
+  ASSERT_NE(nullptr, block.data());
+  EXPECT_FLOAT_EQ(64.0F, static_cast<const float *>(block.data())[0]);
+
+  ASSERT_EQ(0, streamer->search_bf_impl(appended.data(), qmeta, 1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(64, context->result()[0].key());
+
+  NumericalVector<float> updated(dim);
+  for (size_t d = 0; d < dim; ++d) {
+    updated[d] = 80.0F;
+  }
+  ASSERT_EQ(0, streamer->add_with_id_impl(17, updated.data(), qmeta, context));
+  keys = {{17, 64}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(updated.data(), keys, qmeta,
+                                                  1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  keys = {{17, 64}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(appended.data(), keys, qmeta,
+                                                  1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(64, context->result()[0].key());
+
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(FlatStreamerTest, TestContiguousUniformUint8ExtraValues) {
+  constexpr size_t kOriginalDimension = 128;
+  constexpr size_t kEncodedDimension = kOriginalDimension + sizeof(uint32_t);
+  constexpr size_t kCount = 65;
+  const std::string path = dir_ + "Test/ContiguousUniformUint8";
+
+  Params metric_params;
+  metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(meta, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < kCount; ++id) {
+      const auto record = EncodeUniformUint8Record(kOriginalDimension, id);
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, record.data(), query_meta,
+                                              context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  auto *contiguous_entity =
+      dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+  ASSERT_NE(nullptr, contiguous_entity);
+  ASSERT_TRUE(contiguous_entity->is_contiguous());
+
+  constexpr uint32_t kProbe = 37;
+  const auto query = EncodeUniformUint8Record(kOriginalDimension, kProbe);
+  auto context = streamer->create_context();
+  context->set_topk(1);
+  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), query_meta, 1, context));
+  ASSERT_EQ(1U, context->result().size());
+  EXPECT_EQ(kProbe, context->result()[0].key());
+  EXPECT_FLOAT_EQ(0.0F, context->result()[0].score());
+
+  // Whole-candidate batching must preserve the metric's query preprocessing
+  // and per-row norm pointers, not only work for native FP16/UINT8 rows.
+  auto metric = IndexFactory::CreateMetric("UniformUint8");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(meta, metric_params));
+  const auto pair_distance = metric->distance();
+  ASSERT_TRUE(pair_distance);
+  auto *flat_context = dynamic_cast<FlatStreamerContext<32> *>(context.get());
+  ASSERT_NE(nullptr, flat_context);
+  context->set_topk(kCount);
+  const auto original_query = query;
+  for (bool filtered : {false, true}) {
+    context->set_filter(
+        [filtered](uint64_t key) { return filtered && key == 7; });
+    for (uint32_t count : {0, 1, 2, 3, 4, 11, 12, 13, 31, 32, 33, 40, 65}) {
+      SCOPED_TRACE(filtered);
+      SCOPED_TRACE(count);
+      std::vector<std::vector<uint64_t>> keys(1);
+      IndexDocumentHeap expected(kCount);
+      for (uint32_t id = count; id > 0; --id) {
+        const uint64_t key = id - 1;
+        keys[0].push_back(key);
+        if (filtered && key == 7) continue;
+        const auto record = EncodeUniformUint8Record(kOriginalDimension, key);
+        float distance = 0;
+        pair_distance(record.data(), query.data(), kEncodedDimension,
+                      &distance);
+        expected.emplace(key, distance);
+      }
+      keys[0].push_back(999);
+      expected.sort();
+      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                      query_meta, 1, context));
+      EXPECT_EQ(original_query, query);
+      ASSERT_EQ(expected.size(), context->result().size());
+      if (!expected.empty()) {
+        EXPECT_EQ(expected.size(),
+                  flat_context->search_scratch()->distances.size());
+      }
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].key(), context->result()[i].key());
+        EXPECT_FLOAT_EQ(expected[i].score(), context->result()[i].score());
+      }
+    }
+  }
+
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearch) {
@@ -201,8 +769,8 @@ TEST_F(FlatStreamerTest, TestAddAndSearch) {
       vec[j] = i + 0.1f;
     }
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
-    auto &knnResult = ctx->result();
-    ASSERT_EQ(std::min(i + 1, topk), knnResult.size());
+    auto &knn_result = ctx->result();
+    ASSERT_EQ(std::min(i + 1, topk), knn_result.size());
   }
 }
 
@@ -247,15 +815,15 @@ TEST_F(FlatStreamerTest, TestAddAndSearcherSearch) {
   ASSERT_EQ(0, searcher->init(Params()));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
 
-  auto linearCtx = searcher->create_context();
-  linearCtx->set_topk(topk);
+  auto linear_ctx = searcher->create_context();
+  linear_ctx->set_topk(topk);
   for (size_t i = 0; i < cnt; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, linearCtx));
-    auto &knnResult = linearCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, linear_ctx));
+    auto &knn_result = linear_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
   }
 }
 
@@ -289,57 +857,57 @@ TEST_F(FlatStreamerTest, TestLinearSearchRandomData) {
     streamer->add_impl(i + cnt, vec.data(), qmeta, ctx);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 100;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   cnt = 500;
   for (size_t i = 0; i < cnt; i += 1) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     }
     auto t1 = Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t2 = Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t3 = Realtime::MicroSeconds();
-    knnTotalTime += t3 - t2;
-    linearTotalTime += t2 - t1;
+    knn_total_time += t3 - t2;
+    linear_total_time += t2 - t1;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
 
-    topk1Hits += linearResult[0].key() == knnResult[0].key();
+    topk1_hits += linear_result[0].key() == knn_result[0].key();
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / cnt;
 #if 1
   printf(
       "knnTotalTime=%zu linearTotalTime=%zu totalHits=%d totalCnts=%d "
       "R@%zd=%f R@1=%f\n",
-      (size_t)knnTotalTime, (size_t)linearTotalTime, totalHits, totalCnts, topk,
-      recall, topk1Recall);
+      (size_t)knn_total_time, (size_t)linear_total_time, total_hits, total_cnts,
+      topk, recall, topk1_recall);
 #endif
   EXPECT_GT(recall, 0.50f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 }
 
 TEST_F(FlatStreamerTest, TestOpenClose) {
@@ -362,8 +930,8 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, storage2->init(stg_params));
   ASSERT_EQ(0, storage2->open(dir_ + "TestOpenAndClose2", true));
   ASSERT_EQ(0, streamer->init(meta, params));
-  auto checkIter = [](size_t base, size_t total,
-                      IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t base, size_t total,
+                       IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -381,9 +949,9 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
     ASSERT_EQ(cnt, total);
   };
 
-  size_t testCnt = 200;
+  size_t test_cnt = 200;
   IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
-  for (size_t i = 0; i < testCnt; i += 2) {
+  for (size_t i = 0; i < test_cnt; i += 2) {
     float v1 = (float)i;
     ASSERT_EQ(0, streamer->open(storage1));
     auto ctx = streamer->create_context();
@@ -393,7 +961,7 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
       vec1[d] = v1;
     }
     ASSERT_EQ(0, streamer->add_impl(i, vec1.data(), qmeta, ctx));
-    checkIter(0, i / 2 + 1, streamer);
+    check_iter(0, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
 
@@ -406,7 +974,7 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
     ctx = streamer->create_context();
     ASSERT_TRUE(!!ctx);
     ASSERT_EQ(0, streamer->add_impl(i + 1, vec2.data(), qmeta, ctx));
-    checkIter(1, i / 2 + 1, streamer);
+    check_iter(1, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
   }
@@ -423,8 +991,8 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, streamer2->init(meta, params));
   ASSERT_EQ(0, streamer2->open(storage2));
 
-  checkIter(0, testCnt / 2, streamer1);
-  checkIter(1, testCnt / 2, streamer2);
+  check_iter(0, test_cnt / 2, streamer1);
+  check_iter(1, test_cnt / 2, streamer2);
 }
 
 TEST_F(FlatStreamerTest, TestNoInit) {
@@ -451,7 +1019,7 @@ TEST_F(FlatStreamerTest, TestForceFlush) {
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto checkIter = [](size_t total, IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t total, IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -477,7 +1045,7 @@ TEST_F(FlatStreamerTest, TestForceFlush) {
       vec[j] = i;
     }
     streamer->add_impl(i, vec.data(), qmeta, ctx);
-    checkIter(i + 1, streamer);
+    check_iter(i + 1, streamer);
   }
 
   streamer->flush(0UL);
@@ -489,7 +1057,7 @@ TEST_F(FlatStreamerTest, TestForceFlush) {
   ASSERT_EQ(0, storage->init(stg_params));
   ASSERT_EQ(0, storage->open(dir_ + "TestForceFlush", true));
   ASSERT_EQ(0, streamer->open(storage));
-  checkIter(cnt, streamer);
+  check_iter(cnt, streamer);
 
   // check getVector
   auto provider = streamer->create_provider();
@@ -519,23 +1087,23 @@ TEST_F(FlatStreamerTest, TestMultiThread) {
   ASSERT_EQ(0, storage->open(dir_ + "TessKnnMultiThread", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
-    size_t succAdd = 0;
+    size_t succ_add = 0;
     auto ctx = streamer->create_context();
-    for (size_t i = 0; i < addCnt; i++) {
+    for (size_t i = 0; i < add_cnt; i++) {
       for (size_t j = 0; j < dim; ++j) {
-        vec[j] = (float)i + baseKey;
+        vec[j] = (float)i + base_key;
       }
-      succAdd += !streamer->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, vec.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
-  auto t2 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t3 = std::async(std::launch::async, addVector, 2000, 1000);
-  auto t1 = std::async(std::launch::async, addVector, 0, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t3 = std::async(std::launch::async, add_vector, 2000, 1000);
+  auto t1 = std::async(std::launch::async, add_vector, 0, 1000);
   ASSERT_EQ(1000U, t1.get());
   ASSERT_EQ(1000U, t2.get());
   ASSERT_EQ(1000U, t3.get());
@@ -566,26 +1134,26 @@ TEST_F(FlatStreamerTest, TestMultiThread) {
   // ====== multi thread search
   size_t topk = 100;
   size_t cnt = 3000;
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     NumericalVector<float> vec(dim);
-    auto linearCtx = streamer->create_context();
-    auto linearByPkeysCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto linear_by_pkeys_ctx = streamer->create_context();
     auto ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
-    linearCtx->set_topk(topk);
-    linearByPkeysCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    linear_by_pkeys_ctx->set_topk(topk);
     ctx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i += 1) {
       for (size_t j = 0; j < dim; ++j) {
         vec[j] = i + 0.1f;
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
-      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
-      auto &r2 = linearCtx->result();
+      auto &r2 = linear_ctx->result();
       ASSERT_EQ(topk, r2.size());
       ASSERT_EQ(i, r2[0].key());
 #if 0
@@ -595,21 +1163,21 @@ TEST_F(FlatStreamerTest, TestMultiThread) {
                    r1[2].key, r1[3].key, r1[4].key);
 #endif
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
           if (r2[j].key() == r1[k].key()) {
-            totalHits++;
+            total_hits++;
             break;
           }
         }
       }
     }
     // printf("%f\n", totalHits * 1.0f / totalCnts);
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
-  auto s3 = std::async(std::launch::async, knnSearch);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
+  auto s3 = std::async(std::launch::async, knn_search);
   s1.wait();
   s2.wait();
   s3.wait();
@@ -632,45 +1200,45 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
   ASSERT_EQ(0, storage->open(dir_ + "TessKnnConcurrentAddAndSearch", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
     auto ctx = streamer->create_context();
-    size_t succAdd = 0;
-    for (size_t i = 0; i < addCnt; i++) {
+    size_t succ_add = 0;
+    for (size_t i = 0; i < add_cnt; i++) {
       for (size_t j = 0; j < dim; ++j) {
-        vec[j] = (float)i + baseKey;
+        vec[j] = (float)i + base_key;
       }
-      succAdd += !streamer->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, vec.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
 
   // ====== multi thread search
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     size_t topk = 100;
     size_t cnt = 3000;
     NumericalVector<float> vec(dim);
-    auto linearCtx = streamer->create_context();
-    auto linearByPKeysCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto linear_by_p_keys_ctx = streamer->create_context();
     auto ctx = streamer->create_context();
-    linearCtx->set_topk(topk);
-    linearByPKeysCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    linear_by_p_keys_ctx->set_topk(topk);
     ctx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
     for (size_t i = 0; i < cnt; i += 1) {
       for (size_t j = 0; j < dim; ++j) {
         vec[j] = i + 0.1f;
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
-      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
-      auto &r2 = linearCtx->result();
+      auto &r2 = linear_ctx->result();
       ASSERT_EQ(topk, r2.size());
 #if 0
       printf("linear: %zd => %zd %zd %zd %zd %zd\n", i, r2[0].key,
@@ -679,24 +1247,24 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
               r1[2].key, r1[3].key, r1[4].key);
 #endif
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
           if (r2[j].key() == r1[k].key()) {
-            totalHits++;
+            total_hits++;
             break;
           }
         }
       }
     }
     //        printf("%f\n", totalHits * 1.0f / totalCnts);
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto t0 = std::async(std::launch::async, addVector, 0, 1000);
+  auto t0 = std::async(std::launch::async, add_vector, 0, 1000);
   ASSERT_EQ(1000, t0.get());
-  auto t1 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t2 = std::async(std::launch::async, addVector, 2000, 1000);
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
+  auto t1 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 2000, 1000);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
   ASSERT_EQ(1000, t1.get());
   ASSERT_EQ(1000, t2.get());
   s1.wait();
@@ -722,6 +1290,86 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
   ASSERT_EQ(3000, total);
   ASSERT_EQ(0, min);
   ASSERT_EQ(2999, max);
+}
+
+TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
+  MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = IndexFactory::CreateStorage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(dir_ + storage_name, true));
+
+    IndexStreamer::Stats stats;
+    FlatStreamerEntity entity(stats);
+    *entity.mutable_meta() = *index_meta_ptr_;
+    entity.set_block_vector_count(32);
+    entity.set_linear_list_count(1);
+    // Force repeated cache reallocations with a small dataset.
+    entity.set_segment_size(MemoryHelper::PageSize());
+    ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+    std::vector<float> vec(dim, 0.0f);
+    ASSERT_EQ(0, entity.add(0, vec.data(), vec.size() * sizeof(float)));
+
+    std::atomic<uint32_t> published{0};
+    std::atomic<unsigned> ready{0};
+    std::atomic<bool> start{false};
+    std::atomic<bool> done{false};
+    std::vector<std::future<bool>> readers;
+    for (unsigned reader = 0; reader < 3; ++reader) {
+      readers.push_back(std::async(std::launch::async, [&]() {
+        ready.fetch_add(1);
+        while (!start.load()) std::this_thread::yield();
+        unsigned rounds = 0;
+        do {
+          const uint32_t newest = published.load();
+          // Read an old segment and a newly published one during growth.
+          for (uint32_t key : {0U, newest}) {
+            IndexStorage::MemoryBlock block;
+            if (entity.get_vector_by_key(key, block) != 0 || !block.data()) {
+              return false;
+            }
+            const auto *data = static_cast<const float *>(block.data());
+            for (size_t d = 0; d < dim; ++d) {
+              if (data[d] != static_cast<float>(key)) return false;
+            }
+          }
+          ++rounds;
+        } while (!done.load() || rounds < 64);
+        return true;
+      }));
+    }
+    while (ready.load() != readers.size()) std::this_thread::yield();
+    start.store(true);
+    constexpr uint32_t count = 4096;
+    for (uint32_t key = 1; key < count; ++key) {
+      std::fill(vec.begin(), vec.end(), static_cast<float>(key));
+      const int ret = entity.add(key, vec.data(), vec.size() * sizeof(float));
+      EXPECT_EQ(0, ret);
+      if (ret != 0) break;
+      published.store(key);
+    }
+    done.store(true);
+    for (auto &reader : readers) EXPECT_TRUE(reader.get());
+    ASSERT_EQ(count - 1, published.load());
+    ASSERT_TRUE(
+        storage->has(StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, 8)));
+
+    // Verify that each allocated block kept the correct segment ID.
+    for (uint32_t key = 0; key < count; ++key) {
+      IndexStorage::MemoryBlock block;
+      ASSERT_EQ(0, entity.get_vector_by_key(key, block));
+      ASSERT_NE(nullptr, block.data());
+      const auto *data = static_cast<const float *>(block.data());
+      for (size_t d = 0; d < dim; ++d) {
+        ASSERT_FLOAT_EQ(static_cast<float>(key), data[d]);
+      }
+    }
+    ASSERT_EQ(0, entity.flush(0));
+    ASSERT_EQ(0, entity.close());
+    ASSERT_EQ(0, storage->close());
+  }
 }
 
 TEST_F(FlatStreamerTest, TestFilter) {
@@ -765,13 +1413,13 @@ TEST_F(FlatStreamerTest, TestFilter) {
   ASSERT_EQ(101, results[1].key());
   ASSERT_EQ(99, results[2].key());
 
-  auto filterFunc = [](uint64_t key) {
+  auto filter_func = [](uint64_t key) {
     if (key == 100UL || key == 101UL) {
       return true;
     }
     return false;
   };
-  ctx->set_filter(filterFunc);
+  ctx->set_filter(filter_func);
 
   // after set filter
   ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
@@ -826,10 +1474,10 @@ TEST_F(FlatStreamerTest, TestMaxIndexSize) {
   }
 
   NumericalVector<float> vec(dim);
-  size_t writeCnt1 = 10000;
+  size_t write_cnt1 = 10000;
   IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
   auto ctx = streamer->create_context();
-  for (size_t i = 0; i < writeCnt1; i++) {
+  for (size_t i = 0; i < write_cnt1; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i;
     }
@@ -841,7 +1489,7 @@ TEST_F(FlatStreamerTest, TestMaxIndexSize) {
   size_t increment1 = rss1 - rss0;
   // data + key + block_header
   size_t expect_size =
-      writeCnt1 * 128 * 4 + writeCnt1 * 8 + writeCnt1 * 28 / 32;
+      write_cnt1 * 128 * 4 + write_cnt1 * 8 + write_cnt1 * 28 / 32;
   LOG_INFO("increment1: %zu, expect_size: %zu", increment1, expect_size);
 
   ASSERT_GT(expect_size, increment1 * 0.75f);
@@ -852,43 +1500,99 @@ TEST_F(FlatStreamerTest, TestMaxIndexSize) {
 }
 
 TEST_F(FlatStreamerTest, TestCleanUp) {
-  IndexStreamer::Pointer streamer =
-      IndexFactory::CreateStreamer("FlatStreamer");
-  ASSERT_TRUE(streamer != nullptr);
+  for (bool use_quantizer : {false, true}) {
+    SCOPED_TRACE(use_quantizer);
+    const std::string suffix = use_quantizer ? "turbo" : "legacy";
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
 
-  auto storage1 = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_NE(nullptr, storage1);
-  Params stg_params;
-  ASSERT_EQ(0, storage1->init(stg_params));
-  ASSERT_EQ(0, storage1->open(dir_ + "TessKnnCluenUp1", true));
-  Params params;
-  constexpr size_t static dim1 = 32;
-  IndexMeta meta1(IndexMeta::DataType::DT_FP32, dim1);
-  meta1.set_metric("SquaredEuclidean", 0, Params());
-  NumericalVector<float> vec1(dim1);
-  ASSERT_EQ(0, streamer->init(meta1, params));
-  ASSERT_EQ(0, streamer->open(storage1));
-  IndexQueryMeta qmeta1(IndexMeta::DT_FP32, dim1);
-  auto ctx1 = streamer->create_context();
-  ASSERT_EQ(0, streamer->add_impl(1, vec1.data(), qmeta1, ctx1));
-  ASSERT_EQ(0, streamer->close());
-  ASSERT_EQ(0, streamer->cleanup());
+    auto storage1 = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage1);
+    ASSERT_EQ(0, storage1->init(Params()));
+    ASSERT_EQ(0, storage1->open(dir_ + "cleanup1_" + suffix, true));
+    constexpr size_t dim1 = 32;
+    IndexMeta meta1(IndexMeta::DT_FP32, dim1);
+    meta1.set_metric(use_quantizer ? "InnerProduct" : "SquaredEuclidean", 0,
+                     Params());
+    std::vector<float> vec1(dim1, 1.0f);
+    IndexQueryMeta qmeta1(IndexMeta::DT_FP32, dim1);
+    std::string encoded;
+    const void *data1 = vec1.data();
+    std::weak_ptr<zvec::turbo::Quantizer> weak_quantizer;
+    if (use_quantizer) {
+      auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+      ASSERT_NE(nullptr, quantizer);
+      ASSERT_EQ(0, quantizer->init(meta1, Params()));
+      IndexQueryMeta input_meta(IndexMeta::DT_FP32, dim1);
+      ASSERT_EQ(
+          0, quantizer->quantize(vec1.data(), input_meta, &encoded, &qmeta1));
+      data1 = encoded.data();
+      meta1 = quantizer->meta();
+      meta1.set_quantizer("Fp16Quantizer", 0, Params());
+      ASSERT_EQ(0, streamer->init(meta1, Params(), quantizer));
+      weak_quantizer = quantizer;
+    } else {
+      ASSERT_EQ(0, streamer->init(meta1, Params()));
+    }
+    ASSERT_EQ(0, streamer->open(storage1));
+    auto ctx1 = streamer->create_context();
+    ASSERT_NE(nullptr, ctx1);
+    ctx1->set_topk(1);
+    ctx1->set_threshold(16.0f);
+    ASSERT_EQ(0, streamer->add_impl(1, data1, qmeta1, ctx1));
 
-  auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_NE(nullptr, storage2);
-  ASSERT_EQ(0, storage2->init(stg_params));
-  ASSERT_EQ(0, storage2->open(dir_ + "TessKnnCluenUp2", true));
-  constexpr size_t static dim2 = 64;
-  IndexMeta meta2(IndexMeta::DataType::DT_FP32, dim2);
-  meta2.set_metric("SquaredEuclidean", 0, Params());
-  NumericalVector<float> vec2(dim2);
-  ASSERT_EQ(0, streamer->init(meta2, params));
-  ASSERT_EQ(0, streamer->open(storage2));
-  IndexQueryMeta qmeta2(IndexMeta::DT_FP32, dim2);
-  auto ctx2 = streamer->create_context();
-  ASSERT_EQ(0, streamer->add_impl(2, vec2.data(), qmeta2, ctx2));
-  ASSERT_EQ(0, streamer->close());
-  ASSERT_EQ(0, streamer->cleanup());
+    // close/open keeps the encoding and the existing records usable.
+    ASSERT_EQ(0, streamer->close());
+    EXPECT_EQ(IndexError_NoReady, streamer->search_impl(data1, qmeta1, ctx1));
+    ASSERT_EQ(0, streamer->open(storage1));
+    if (use_quantizer) EXPECT_FALSE(weak_quantizer.expired());
+    ASSERT_EQ(0, streamer->search_impl(data1, qmeta1, ctx1));
+    ASSERT_EQ(1u, ctx1->result().size());
+    EXPECT_EQ(1u, ctx1->result()[0].key());
+    EXPECT_FLOAT_EQ(use_quantizer ? -32.0f : 0.0f, ctx1->result()[0].score());
+    EXPECT_FLOAT_EQ(use_quantizer ? -16.0f : 16.0f, ctx1->threshold());
+
+    // Cover cleanup both after close and while the streamer is still open.
+    if (!use_quantizer) ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, streamer->cleanup());
+    // The test no longer owns the quantizer; neither the streamer nor its
+    // closed entity should keep it alive after cleanup.
+    EXPECT_TRUE(weak_quantizer.expired());
+    EXPECT_EQ(!use_quantizer, ctx1->threshold_is_valid());
+    EXPECT_EQ(IndexError_NoReady, streamer->search_impl(data1, qmeta1, ctx1));
+
+    auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage2);
+    ASSERT_EQ(0, storage2->init(Params()));
+    ASSERT_EQ(0, storage2->open(dir_ + "cleanup2_" + suffix, true));
+    constexpr size_t dim2 = 64;
+    IndexMeta meta2(IndexMeta::DT_FP32, dim2);
+    meta2.set_metric("SquaredEuclidean", 0, Params());
+    std::vector<float> vec2(dim2, 0.0f), query2(dim2, 0.0f);
+    // The old 32-dimensional quantizer would miss this component entirely.
+    vec2.back() = 4.0f;
+    ASSERT_EQ(0, streamer->init(meta2, Params()));
+    ASSERT_EQ(0, streamer->open(storage2));
+    IndexQueryMeta qmeta2(IndexMeta::DT_FP32, dim2);
+    auto ctx2 = streamer->create_context();
+    ASSERT_NE(nullptr, ctx2);
+    ctx2->set_topk(1);
+    ASSERT_EQ(0, streamer->add_impl(2, vec2.data(), qmeta2, ctx2));
+    ASSERT_EQ(0, streamer->search_impl(query2.data(), qmeta2, ctx2));
+    ASSERT_EQ(1u, ctx2->result().size());
+    EXPECT_EQ(2u, ctx2->result()[0].key());
+    EXPECT_FLOAT_EQ(16.0f, ctx2->result()[0].score());
+    // An old context can be rebound even after its quantizer expired. Its raw
+    // radius is retained but is now interpreted by the legacy L2 metric.
+    ASSERT_EQ(0, streamer->search_impl(query2.data(), qmeta2, ctx1));
+    EXPECT_TRUE(ctx1->threshold_is_valid());
+    EXPECT_FLOAT_EQ(16.0f, ctx1->raw_threshold());
+    EXPECT_FLOAT_EQ(16.0f, ctx1->threshold());
+    ASSERT_EQ(1u, ctx1->result().size());
+    EXPECT_EQ(2u, ctx1->result()[0].key());
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, streamer->cleanup());
+  }
 }
 
 TEST_F(FlatStreamerTest, TestBloomFilter) {
@@ -953,7 +1657,7 @@ TEST_F(FlatStreamerTest, TestGroup) {
   size_t group_topk = 20;
   uint64_t total_time = 0;
 
-  auto groupbyFunc = [](uint64_t key) {
+  auto groupby_func = [](uint64_t key) {
     uint32_t group_id = key / 10 % 10;
 
     // std::cout << "key: " << key << ", group id: " << group_id << std::endl;
@@ -964,7 +1668,7 @@ TEST_F(FlatStreamerTest, TestGroup) {
   size_t group_num = 5;
 
   ctx->set_group_params(group_num, group_topk);
-  ctx->set_group_by(groupbyFunc);
+  ctx->set_group_by(groupby_func);
 
   size_t query_value = doc_cnt / 2;
   for (size_t j = 0; j < dim; ++j) {
@@ -995,7 +1699,7 @@ TEST_F(FlatStreamerTest, TestGroup) {
   }
 
   // do linear search by p_keys test
-  auto groupbyFuncLinear = [](uint64_t key) {
+  auto groupby_func_linear = [](uint64_t key) {
     uint32_t group_id = key % 10;
 
     return std::string("g_") + std::to_string(group_id);
@@ -1004,7 +1708,7 @@ TEST_F(FlatStreamerTest, TestGroup) {
   auto linear_pk_ctx = streamer->create_context();
 
   linear_pk_ctx->set_group_params(group_num, group_topk);
-  linear_pk_ctx->set_group_by(groupbyFuncLinear);
+  linear_pk_ctx->set_group_by(groupby_func_linear);
 
   std::vector<std::vector<uint64_t>> p_keys;
   p_keys.resize(1);
@@ -1045,8 +1749,8 @@ TEST_F(FlatStreamerTest, TestAddAndSearchWithID) {
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
   auto ctx = streamer->create_context();
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
 
   size_t cnt = 20000U;
@@ -1066,51 +1770,51 @@ TEST_F(FlatStreamerTest, TestAddAndSearchWithID) {
   }
   // streamer->print_debug_info();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   for (size_t i = 0; i < cnt; i += 100) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
     auto t1 = Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t2 = Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t3 = Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / cnt;
 #if 1
   printf(
       "knnTotalTime=%zu linearTotalTime=%zu totalHits=%d totalCnts=%d "
       "R@%zd=%f R@1=%f\n",
-      (size_t)knnTotalTime, (size_t)linearTotalTime, totalHits, totalCnts, topk,
-      recall, topk1Recall);
+      (size_t)knn_total_time, (size_t)linear_total_time, total_hits, total_cnts,
+      topk, recall, topk1_recall);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 }
 
 TEST_F(FlatStreamerTest, TestAddAndSearchWithID2) {
@@ -1158,47 +1862,47 @@ TEST_F(FlatStreamerTest, TestAddAndSearchWithID2) {
   ASSERT_EQ(0, read_storage->open(dir_ + "TestGroup.index", true));
   ASSERT_EQ(0, read_streamer->init(*index_meta_ptr_, read_params));
   ASSERT_EQ(0, read_streamer->open(read_storage));
-  auto linearCtx = read_streamer->create_context();
-  auto knnCtx = read_streamer->create_context();
+  auto linear_ctx = read_streamer->create_context();
+  auto knn_ctx = read_streamer->create_context();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   for (size_t i = 0; i < cnt; i += 100) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
     auto t1 = Realtime::MicroSeconds();
-    ASSERT_EQ(0, read_streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, read_streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t2 = Realtime::MicroSeconds();
-    ASSERT_EQ(0, read_streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, read_streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t3 = Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / cnt;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / cnt;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
            "R@%zd=%f R@1=%f cost=%f\n",
@@ -1206,7 +1910,7 @@ TEST_F(FlatStreamerTest, TestAddAndSearchWithID2) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 }
 
 // Test Flat + INT8 quantization + rotation end-to-end
@@ -1283,10 +1987,10 @@ TEST_F(FlatStreamerTest, TestInt8WithRotate) {
   ASSERT_EQ(0, reformer2->load(storage2));
 
   // Search: verify results are non-empty
-  auto knnCtx = streamer2->create_context();
-  knnCtx->set_topk(kTopk);
-  auto linearCtx = streamer2->create_context();
-  linearCtx->set_topk(kTopk);
+  auto knn_ctx = streamer2->create_context();
+  knn_ctx->set_topk(kTopk);
+  auto linear_ctx = streamer2->create_context();
+  linear_ctx->set_topk(kTopk);
 
   NumericalVector<float> query(kTestDim);
   for (size_t j = 0; j < kTestDim; ++j) query[j] = dist(gen);
@@ -1295,12 +1999,222 @@ TEST_F(FlatStreamerTest, TestInt8WithRotate) {
   IndexQueryMeta new_qmeta;
   ASSERT_EQ(0,
             reformer2->transform(query.data(), qmeta, &new_query, &new_qmeta));
-  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knnCtx));
+  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knn_ctx));
   ASSERT_EQ(0,
-            streamer2->search_bf_impl(new_query.data(), new_qmeta, linearCtx));
+            streamer2->search_bf_impl(new_query.data(), new_qmeta, linear_ctx));
 
-  EXPECT_EQ(kTopk, knnCtx->result().size());
-  EXPECT_EQ(kTopk, linearCtx->result().size());
+  EXPECT_EQ(kTopk, knn_ctx->result().size());
+  EXPECT_EQ(kTopk, linear_ctx->result().size());
+}
+
+// The streamer computes distances with the turbo quantizer.
+TEST_F(FlatStreamerTest, TestTurboQuantizerAddAndSearch) {
+  const size_t raw_dim = 24;
+  const size_t doc_count = 500;
+  const uint32_t topk = 10;
+
+  std::mt19937 gen(2026);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  std::vector<std::vector<float>> data(doc_count);
+  for (auto &vec : data) {
+    vec.resize(raw_dim);
+    for (auto &v : vec) {
+      v = dist(gen);
+    }
+  }
+
+  IndexMeta raw_meta;
+  raw_meta.set_meta(IndexMeta::DataType::DT_FP32, raw_dim);
+  raw_meta.set_metric("Cosine", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  ASSERT_NE(nullptr, quantizer);
+  ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+
+  IndexMeta meta = quantizer->meta();
+  meta.set_quantizer("Fp32Quantizer", 0, Params());
+
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  Params params;
+  ASSERT_EQ(0, streamer->init(meta, params, quantizer));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "Test/TurboQuantizer", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(!!context);
+  context->set_topk(topk);
+
+  // Quantized record layout meta (identical to the query layout for FP32)
+  IndexQueryMeta record_qmeta;
+  {
+    std::string tmp;
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    ASSERT_EQ(
+        0, quantizer->quantize(data[0].data(), raw_qmeta, &tmp, &record_qmeta));
+  }
+
+  // Add quantized datapoints, keep the codes for the reference distances
+  size_t code_bytes = quantizer->quantized_datapoint_vector_length();
+  ASSERT_EQ(code_bytes, meta.element_size());
+  std::vector<std::string> codes(doc_count);
+  for (size_t i = 0; i < doc_count; ++i) {
+    codes[i].resize(code_bytes);
+    quantizer->quantize_data(data[i].data(), &codes[i][0]);
+    ASSERT_EQ(0, streamer->add_impl(i, codes[i].data(), record_qmeta, context));
+  }
+
+  std::vector<std::vector<float>> queries(5);
+  for (auto &query : queries) {
+    query.resize(raw_dim);
+    for (auto &v : query) {
+      v = dist(gen);
+    }
+  }
+  for (const auto &query : queries) {
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    std::string quantized;
+    IndexQueryMeta turbo_qmeta;
+    ASSERT_EQ(0, quantizer->quantize(query.data(), raw_qmeta, &quantized,
+                                     &turbo_qmeta));
+    ASSERT_EQ(0, streamer->search_impl(quantized.data(), turbo_qmeta, context));
+
+    // Reference topk with the quantizer scalar distance
+    std::vector<std::pair<float, uint64_t>> ref(doc_count);
+    for (size_t i = 0; i < doc_count; ++i) {
+      ref[i] = {
+          quantizer->calc_distance_dp_query(codes[i].data(), quantized.data()),
+          i};
+    }
+    std::partial_sort(ref.begin(), ref.begin() + topk, ref.end());
+
+    auto &actual = context->result();
+    ASSERT_EQ(topk, actual.size());
+    for (size_t i = 0; i < topk; ++i) {
+      EXPECT_EQ(ref[i].second, actual[i].key());
+      EXPECT_NEAR(ref[i].first, actual[i].score(),
+                  1e-4f * std::fabs(ref[i].first) + 1e-5f);
+    }
+  }
+
+  // Filtered search goes through the scalar quantizer path
+  {
+    context->set_filter([](uint64_t key) { return (key % 2 == 0); });
+    const auto &query = queries[0];
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    std::string quantized;
+    IndexQueryMeta turbo_qmeta;
+    ASSERT_EQ(0, quantizer->quantize(query.data(), raw_qmeta, &quantized,
+                                     &turbo_qmeta));
+    ASSERT_EQ(0, streamer->search_impl(quantized.data(), turbo_qmeta, context));
+
+    std::vector<std::pair<float, uint64_t>> ref;
+    for (size_t i = 1; i < doc_count; i += 2) {
+      ref.emplace_back(
+          quantizer->calc_distance_dp_query(codes[i].data(), quantized.data()),
+          i);
+    }
+    std::partial_sort(ref.begin(), ref.begin() + topk, ref.end());
+
+    auto &actual = context->result();
+    ASSERT_EQ(topk, actual.size());
+    for (size_t i = 0; i < topk; ++i) {
+      EXPECT_EQ(1UL, actual[i].key() % 2);
+      EXPECT_EQ(ref[i].second, actual[i].key());
+      EXPECT_NEAR(ref[i].first, actual[i].score(),
+                  1e-4f * std::fabs(ref[i].first) + 1e-5f);
+    }
+  }
+
+  streamer->flush(0UL);
+  streamer.reset();
+}
+
+// A streamer without the quantizer must refuse to open storage written by a
+// quantizer-backed streamer when the stored meta and the opening meta differ
+// only in quantizer_name (all other compared fields identical). Without the
+// quantizer_name check in load_linear_meta this open would succeed and
+// silently compute wrong distances over the affine-encoded records.
+TEST_F(FlatStreamerTest, TestQuantizerNameGuardOnOpen) {
+  const size_t raw_dim = 24;
+  const size_t doc_count = 32;
+  const std::string path = dir_ + "Test/QuantizerNameGuard";
+
+  std::mt19937 gen(2026);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  std::vector<std::vector<float>> data(doc_count);
+  for (auto &vec : data) {
+    vec.resize(raw_dim);
+    for (auto &v : vec) {
+      v = dist(gen);
+    }
+  }
+
+  IndexMeta raw_meta;
+  raw_meta.set_meta(IndexMeta::DataType::DT_FP32, raw_dim);
+  raw_meta.set_metric("SquaredEuclidean", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+  ASSERT_NE(nullptr, quantizer);
+  ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+  const size_t extra_meta_size = quantizer->meta().extra_meta_size();
+  ASSERT_LT(0U, extra_meta_size);
+
+  // quantizer-backed streamer writes the storage
+  IndexMeta quant_meta = quantizer->meta();
+  quant_meta.set_quantizer("Int8Quantizer", 0, Params());
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(quant_meta, Params(), quantizer));
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  {
+    auto context = streamer->create_context();
+    ASSERT_TRUE(!!context);
+    context->set_topk(1);
+    std::string code;
+    IndexQueryMeta qmeta;
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    ASSERT_EQ(0, quantizer->quantize(data[0].data(), raw_qmeta, &code, &qmeta));
+    for (size_t i = 0; i < doc_count; ++i) {
+      code.resize(quantizer->quantized_datapoint_vector_length());
+      quantizer->quantize_data(data[i].data(), &code[0]);
+      ASSERT_EQ(0, streamer->add_impl(i, code.data(), qmeta, context));
+    }
+    streamer->flush(0UL);
+  }
+  streamer.reset();
+
+  // plain meta matching every previously compared field: same data type,
+  // dimension, element size and metric name - only the quantizer name
+  // differs. The open must be rejected.
+  IndexMeta plain_meta;
+  plain_meta.set_meta(IndexMeta::DataType::DT_INT8, raw_dim);
+  plain_meta.set_extra_meta_size(extra_meta_size);
+  plain_meta.set_metric("SquaredEuclidean", 0, Params());
+  ASSERT_EQ(quant_meta.data_type(), plain_meta.data_type());
+  ASSERT_EQ(quant_meta.dimension(), plain_meta.dimension());
+  ASSERT_EQ(quant_meta.element_size(), plain_meta.element_size());
+  ASSERT_EQ(quant_meta.metric_name(), plain_meta.metric_name());
+  ASSERT_STRNE(quant_meta.quantizer_name().c_str(),
+               plain_meta.quantizer_name().c_str());
+
+  auto plain_streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, plain_streamer);
+  ASSERT_EQ(0, plain_streamer->init(plain_meta, Params()));
+  auto plain_storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, plain_storage);
+  ASSERT_EQ(0, plain_storage->init(Params()));
+  ASSERT_EQ(0, plain_storage->open(path, false));
+  EXPECT_NE(0, plain_streamer->open(plain_storage));
+  plain_streamer.reset();
 }
 
 #if defined(__GNUC__) || defined(__GNUG__)

@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 #include "segment.h"
@@ -27,6 +28,7 @@ class SegmentManager {
 
  public:
   uint32_t segment_count() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return segments_map_.size();
   }
 
@@ -50,6 +52,10 @@ class SegmentManager {
   Status drop_column(const std::string &column_name);
 
  private:
+  // protects segments_map_ against concurrent readers (e.g. queries
+  // collecting segments) while segments are added/removed by writes,
+  // optimize or DDL operations
+  mutable std::shared_mutex mutex_;
   std::unordered_map<SegmentID, Segment::Ptr> segments_map_;
 };
 }  // namespace zvec

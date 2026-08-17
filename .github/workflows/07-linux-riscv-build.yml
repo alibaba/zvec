@@ -1,8 +1,9 @@
-name: Nightly Linux RISC-V Build
+name: Weekly Linux RISC-V Build
 
 on:
   schedule:
-    - cron: '0 16 * * *'
+    # Saturday 00:00 UTC+8 (Friday 16:00 UTC)
+    - cron: '0 16 * * 5'
 
   workflow_dispatch:
 

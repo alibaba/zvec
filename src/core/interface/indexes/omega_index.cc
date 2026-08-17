@@ -253,7 +253,7 @@ bool DecodeDenseVectorBuffer(const OmegaIndexParam &param,
 bool FetchDenseVector(const OmegaIndexParam &param, Index *index,
                       uint32_t doc_id, std::vector<float> *values) {
   VectorDataBuffer vector_data_buffer;
-  if (index->Fetch(doc_id, &vector_data_buffer) != 0) {
+  if (index->fetch(doc_id, &vector_data_buffer) != 0) {
     LOG_WARN("Failed to fetch vector %u for OMEGA training", doc_id);
     return false;
   }
@@ -312,7 +312,7 @@ std::vector<std::vector<uint64_t>> ComputeGroundTruthBruteForce(
   }
 
   bool loaded_ok = false;
-  const uint32_t doc_count = index->GetDocCount();
+  const uint32_t doc_count = index->get_doc_count();
   const auto base_vectors =
       LoadBaseVectors(param, index, doc_count, num_threads, &loaded_ok);
   if (!loaded_ok) {
@@ -401,7 +401,7 @@ std::vector<std::vector<uint64_t>> ComputeGroundTruthByHnsw(
                                .with_training_query_id(-1)
                                .with_target_recall(1.0f)
                                .build();
-        if (index->Search(query, query_param, &result) != 0) {
+        if (index->search(query, query_param, &result) != 0) {
           continue;
         }
 
@@ -518,7 +518,7 @@ bool CollectTrainingData(
                   .with_training_query_id(static_cast<int>(q))
                   .with_target_recall(0.95f)
                   .build();
-          if (index->Search(query, query_param, &search_result) != 0) {
+          if (index->search(query, query_param, &search_result) != 0) {
             LOG_WARN("OMEGA training search failed for query %zu", q);
             continue;
           }
@@ -553,7 +553,7 @@ bool CollectTrainingData(
 bool SampleHeldOutQueries(const OmegaIndexParam &param, Index *index,
                           std::vector<std::vector<float>> *training_queries,
                           std::vector<uint64_t> *query_doc_ids) {
-  const uint32_t doc_count = index->GetDocCount();
+  const uint32_t doc_count = index->get_doc_count();
   if (doc_count == 0) {
     LOG_WARN("OMEGA training skipped because index is empty");
     return false;
@@ -659,15 +659,15 @@ bool TrainModel(const OmegaTrainingArtifacts &artifacts,
 // specific runtime behavior to OmegaStreamer. It is responsible
 // for creating the correct streamer and injecting OMEGA query params into the
 // search context. It does not own the adaptive-search algorithm itself.
-int OmegaIndex::Open(const std::string &file_path,
+int OmegaIndex::open(const std::string &file_path,
                      StorageOptions storage_options) {
-  int ret = Index::Open(file_path, storage_options);
+  int ret = Index::open(file_path, storage_options);
   if (ret != 0) {
     return ret;
   }
 
   // If the OmegaStreamer loaded the model successfully during open,
-  // mark the index as trained so Search() won't attempt to re-train.
+  // mark the index as trained so search() won't attempt to re-train.
   auto *omega_streamer = dynamic_cast<core::OmegaStreamer *>(streamer_.get());
   if (omega_streamer != nullptr && omega_streamer->is_model_loaded()) {
     is_trained_ = true;
@@ -676,12 +676,12 @@ int OmegaIndex::Open(const std::string &file_path,
   return 0;
 }
 
-int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int OmegaIndex::create_and_init_streamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const OmegaIndexParam &>(param);
 
   // Reuse HNSWIndex setup so the HNSW-compatible on-disk/index metadata is
   // initialized consistently before swapping in the OMEGA-aware streamer.
-  int ret = HNSWIndex::CreateAndInitStreamer(param);
+  int ret = HNSWIndex::create_and_init_streamer(param);
   if (ret != core::IndexError_Success) {
     return ret;
   }
@@ -714,7 +714,7 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   return core::IndexError_Success;
 }
 
-int OmegaIndex::Train() {
+int OmegaIndex::train() {
   if (!is_open_) {
     LOG_ERROR("Index must be open before OMEGA training");
     return core::IndexError_Runtime;
@@ -732,7 +732,7 @@ int OmegaIndex::Train() {
     return core::IndexError_Runtime;
   }
 
-  const uint32_t doc_count = GetDocCount();
+  const uint32_t doc_count = get_doc_count();
   if (doc_count == 0) {
     is_trained_ = true;
     return 0;
@@ -749,7 +749,7 @@ int OmegaIndex::Train() {
     LOG_INFO(
         "Skipping OMEGA model training: doc_count=%u < min_vector_threshold=%u",
         doc_count, param_.min_vector_threshold);
-    if (Flush() != 0) {
+    if (flush() != 0) {
       return core::IndexError_Runtime;
     }
     is_trained_ = true;
@@ -792,7 +792,7 @@ int OmegaIndex::Train() {
           .string(),
       timing_stats);
 
-  if (Flush() != 0) {
+  if (flush() != 0) {
     return core::IndexError_Runtime;
   }
 

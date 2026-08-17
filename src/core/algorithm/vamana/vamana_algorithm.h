@@ -41,6 +41,9 @@ class VamanaAlgorithmBase {
   // Greedy search: find approximate nearest neighbors.
   virtual int search(VamanaContext *ctx) const = 0;
 
+  // Revisit every node after the initial alpha=1.0 graph pass.
+  virtual int refine_graph(VamanaContext *ctx, float alpha) = 0;
+
   virtual int init() = 0;
 };
 
@@ -73,21 +76,27 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // Insert node `id` into the graph. Its vector must already be in the entity.
   int add_node(node_id_t id, VamanaContext *ctx) override;
 
-  // Greedy search from entry point. Results are stored in ctx->topk_heap().
+  // Greedy search from entry point. Results remain in ctx->search_heap().
   int search(VamanaContext *ctx) const override;
+
+  // Full-graph second construction pass.
+  int refine_graph(VamanaContext *ctx, float alpha) override;
 
  private:
   // GreedySearch: starting from entry_point, greedily expand the closest
   // unvisited candidate until the search list is exhausted or scan limit
   // is reached. Results accumulate in topk_heap.
-  void greedy_search(node_id_t entry_point, VamanaContext *ctx,
-                     bool use_pool) const;
+  int greedy_search(node_id_t entry_point, VamanaContext *ctx,
+                    bool use_pool) const;
 
   // RobustPrune: given a candidate set (topk_heap), select up to max_degree
   // diverse neighbors using alpha-based distance comparison.
   // Result is stored in ctx->prune_result().
   void robust_prune(node_id_t id, TopkHeap &candidates, float alpha,
                     uint32_t max_degree, VamanaContext *ctx) const;
+
+  // Refine one node during a full-graph construction pass.
+  int refine_node(node_id_t id, float alpha, VamanaContext *ctx);
 
   // Update node's neighbors and handle reverse links.
   void update_neighbors_and_reverse_links(
@@ -100,10 +109,11 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   void reverse_update_neighbor(node_id_t id, node_id_t neighbor_id, dist_t dist,
                                VamanaContext *ctx);
 
- private:
+ public:
   VamanaAlgorithm(const VamanaAlgorithm &) = delete;
   VamanaAlgorithm &operator=(const VamanaAlgorithm &) = delete;
 
+ private:
   static constexpr uint32_t kLockCnt{1U << 8};
   static constexpr uint32_t kLockMask{kLockCnt - 1U};
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from zvec._zvec import _Doc
 
+from ._validation import explain_utf8_conversion_error, format_name_for_error
 from .doc import Doc
 from .schema import CollectionSchema
 
@@ -24,14 +25,18 @@ def convert_to_cpp_doc(doc: Doc, collection_schema: CollectionSchema) -> _Doc:
     _doc = _Doc()
 
     # set pk
-    _doc.set_pk(doc.id)
+    try:
+        _doc.set_pk(doc.id)
+    except TypeError:
+        explain_utf8_conversion_error(doc.id, "Invalid doc: id")
+        raise
 
     # set scalar fields
     for k, v in doc.fields.items():
         field_schema = collection_schema.field(k)
         if not field_schema:
             raise ValueError(
-                f"schema validate failed: {k} not found in collection schema"
+                f"Invalid schema: {format_name_for_error(k)} not found in collection schema"
             )
         _doc.set_any(k, field_schema._get_object(), v)
 
@@ -40,7 +45,7 @@ def convert_to_cpp_doc(doc: Doc, collection_schema: CollectionSchema) -> _Doc:
         vector_schema = collection_schema.vector(k)
         if not vector_schema:
             raise ValueError(
-                f"schema validate failed: {k} not found in collection schema"
+                f"Invalid schema: {format_name_for_error(k)} not found in collection schema"
             )
         _doc.set_any(k, vector_schema._get_object(), v)
     return _doc

@@ -44,7 +44,7 @@ MemForwardStore::MemForwardStore(
   cache_.reserve(128);
 }
 
-Status MemForwardStore::Open() {
+Status MemForwardStore::open() {
   arrow::FieldVector fields;
   auto status = ConvertCollectionSchemaToArrowFields(schema_, &fields);
   if (!status.ok()) {
@@ -54,10 +54,14 @@ Status MemForwardStore::Open() {
   physic_schema_ = arrow::schema(fields);
   // Initialize file writer
   writer_ = ChunkedFileWriter::Open(path_, physic_schema_, format_);
+  if (!writer_) {
+    return Status::InternalError("failed to open forward store writer at [",
+                                 path_, "]");
+  }
   return Status::OK();
 }
 
-RecordBatchBuilderPtr MemForwardStore::createBuilder() {
+RecordBatchBuilderPtr MemForwardStore::create_builder() {
   auto result = arrow::RecordBatchBuilder::Make(physic_schema_,
                                                 arrow::default_memory_pool());
   if (!result.ok()) {
@@ -89,27 +93,33 @@ bool MemForwardStore::validate(const std::vector<std::string> &columns) const {
 
 // Notice: This function just convert the docs to arrow::ArrayBuilder, not clean
 // the cache_.
-arrow::Status MemForwardStore::convertToBuilder(
+arrow::Status MemForwardStore::append_doc_to_builder(
+    const Doc &doc, RecordBatchBuilderPtr &rb_builder) {
+  auto &fields = physic_schema_->fields();
+
+  // global doc_id
+  auto gid_builder =
+      dynamic_cast<arrow::UInt64Builder *>(rb_builder->GetField(0));
+  ARROW_RETURN_NOT_OK(gid_builder->Append(doc.doc_id()));
+
+  // user id(pk)
+  auto uid_builder =
+      dynamic_cast<arrow::StringBuilder *>(rb_builder->GetField(1));
+  ARROW_RETURN_NOT_OK(uid_builder->Append(doc.pk_ref()));
+
+  // other fields
+  for (size_t idx = 2; idx < fields.size(); ++idx) {
+    auto field = fields[idx];
+    auto builder = rb_builder->GetField(idx);
+    ARROW_RETURN_NOT_OK(AppendFieldValueToBuilder(doc, field, builder));
+  }
+  return arrow::Status::OK();
+}
+
+arrow::Status MemForwardStore::convert_to_builder(
     RecordBatchBuilderPtr &rb_builder) {
   for (const auto &doc : cache_) {
-    auto &fields = physic_schema_->fields();
-
-    // global doc_id
-    auto gid_builder =
-        dynamic_cast<arrow::UInt64Builder *>(rb_builder->GetField(0));
-    ARROW_RETURN_NOT_OK(gid_builder->Append(doc.doc_id()));
-
-    // user id(pk)
-    auto uid_builder =
-        dynamic_cast<arrow::StringBuilder *>(rb_builder->GetField(1));
-    ARROW_RETURN_NOT_OK(uid_builder->Append(doc.pk()));
-
-    // other fields
-    for (size_t idx = 2; idx < fields.size(); ++idx) {
-      auto field = fields[idx];
-      auto builder = rb_builder->GetField(idx);
-      ARROW_RETURN_NOT_OK(AppendFieldValueToBuilder(doc, field, builder));
-    }
+    ARROW_RETURN_NOT_OK(append_doc_to_builder(doc, rb_builder));
   }
   return arrow::Status::OK();
 }
@@ -124,8 +134,8 @@ Status MemForwardStore::insert(const Doc &doc) {
     return Status::OK();
   }
   // Flush cache when it reaches max size
-  auto rb_builder = createBuilder();
-  auto status = convertToBuilder(rb_builder);
+  auto rb_builder = create_builder();
+  auto status = convert_to_builder(rb_builder);
   if (!status.ok()) {
     return Status::InternalError("convertToBuilder error: ", status.ToString());
   }
@@ -144,32 +154,78 @@ Status MemForwardStore::insert(const Doc &doc) {
   return Status::OK();
 }
 
-arrow::Result<RecordBatchPtr> MemForwardStore::convertToRecordBatch() {
-  auto rb_builder = createBuilder();
-  ARROW_RETURN_NOT_OK(convertToBuilder(rb_builder));
+arrow::Result<RecordBatchPtr> MemForwardStore::convert_to_record_batch() {
+  auto rb_builder = create_builder();
+  ARROW_RETURN_NOT_OK(convert_to_builder(rb_builder));
   ARROW_ASSIGN_OR_RAISE(auto batch, rb_builder->Flush(false));
   return batch;
 }
 
-arrow::Result<TablePtr> MemForwardStore::convertToTable(
-    const std::vector<std::string> &columns, const std::vector<int> &indices) {
-  std::shared_ptr<arrow::RecordBatch> batch;
-  ARROW_ASSIGN_OR_RAISE(batch, convertToRecordBatch());
-  std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches = batches_;
-  if (batch->num_rows() > 0) {
-    all_batches.push_back(batch);
+bool MemForwardStore::locate_single_source(const std::vector<int> &indices,
+                                           RecordBatchPtr *source,
+                                           std::vector<int> *local_rows) {
+  if (indices.empty()) {
+    return false;
+  }
+  for (int idx : indices) {
+    if (idx < 0) {
+      return false;
+    }
   }
 
-  if (all_batches.empty()) {
-    return arrow::Table::MakeEmpty(physic_schema_, nullptr);
+  // Row ids run over batches_ in order and then over the not-yet-batched
+  // cache_, matching the order the full-store path below builds.
+  int64_t base = 0;
+  for (const auto &batch : batches_) {
+    if (indices[0] < base + batch->num_rows()) {
+      for (int idx : indices) {
+        if (idx < base || idx >= base + batch->num_rows()) {
+          return false;  // spans more than this batch
+        }
+      }
+      local_rows->clear();
+      for (int idx : indices) {
+        local_rows->push_back(static_cast<int>(idx - base));
+      }
+      *source = batch;
+      return true;
+    }
+    base += batch->num_rows();
   }
 
-  // Combine all batches into a single table
-  std::shared_ptr<arrow::Table> combined_table;
-  ARROW_ASSIGN_OR_RAISE(combined_table,
-                        arrow::Table::FromRecordBatches(all_batches));
+  for (int idx : indices) {
+    if (idx < base || static_cast<size_t>(idx - base) >= cache_.size()) {
+      return false;
+    }
+  }
+  // Build a batch out of just the requested cache rows.
+  auto rb_builder = create_builder();
+  if (rb_builder == nullptr) {
+    return false;
+  }
+  for (int idx : indices) {
+    if (!append_doc_to_builder(cache_[static_cast<size_t>(idx - base)],
+                               rb_builder)
+             .ok()) {
+      return false;
+    }
+  }
+  auto result = rb_builder->Flush(false);
+  if (!result.ok()) {
+    return false;
+  }
+  *source = result.ValueOrDie();
+  local_rows->clear();
+  for (size_t i = 0; i < indices.size(); ++i) {
+    local_rows->push_back(static_cast<int>(i));
+  }
+  return true;
+}
 
-  std::shared_ptr<arrow::Table> filtered_table = combined_table;
+arrow::Result<TablePtr> MemForwardStore::apply_row_and_column_selection(
+    const TablePtr &table, const std::vector<int> &indices,
+    const std::vector<std::string> &columns) {
+  std::shared_ptr<arrow::Table> filtered_table = table;
   if (!indices.empty()) {
     // Filter rows by indices if provided
     std::shared_ptr<arrow::Array> index_array;
@@ -177,7 +233,7 @@ arrow::Result<TablePtr> MemForwardStore::convertToTable(
     ARROW_RETURN_NOT_OK(builder.AppendValues(indices));
     ARROW_RETURN_NOT_OK(builder.Finish(&index_array));
 
-    arrow::Datum input_datum(combined_table);
+    arrow::Datum input_datum(table);
     arrow::Datum index_datum(index_array);
 
     arrow::compute::ExecContext ctx;
@@ -209,14 +265,53 @@ arrow::Result<TablePtr> MemForwardStore::convertToTable(
   return selected_table;
 }
 
+arrow::Result<TablePtr> MemForwardStore::convert_to_table(
+    const std::vector<std::string> &columns, const std::vector<int> &indices) {
+  // Fast path: when every requested row sits in one source, only that source is
+  // materialised, so point fetches do not grow with the store's size.
+  RecordBatchPtr single_source;
+  std::vector<int> single_rows;
+  if (locate_single_source(indices, &single_source, &single_rows)) {
+    ARROW_ASSIGN_OR_RAISE(auto single_table, arrow::Table::FromRecordBatches(
+                                                 {std::move(single_source)}));
+    return apply_row_and_column_selection(single_table, single_rows, columns);
+  }
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  ARROW_ASSIGN_OR_RAISE(batch, convert_to_record_batch());
+  std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches = batches_;
+  if (batch->num_rows() > 0) {
+    all_batches.push_back(batch);
+  }
+
+  if (all_batches.empty()) {
+    return arrow::Table::MakeEmpty(physic_schema_, nullptr);
+  }
+
+  // Combine all batches into a single table
+  std::shared_ptr<arrow::Table> combined_table;
+  ARROW_ASSIGN_OR_RAISE(combined_table,
+                        arrow::Table::FromRecordBatches(all_batches));
+
+  return apply_row_and_column_selection(combined_table, indices, columns);
+}
+
 Status MemForwardStore::flush() {
   std::lock_guard lock(cache_mtx_);
+  return flush_locked();
+}
 
+Status MemForwardStore::flush_locked() {
   if (cache_.empty() && batches_.empty()) {
     return Status::OK();
   }
 
-  auto result = convertToRecordBatch();
+  if (!writer_) {
+    return Status::InternalError(
+        "forward store writer not open, cannot flush [", path_, "]");
+  }
+
+  auto result = convert_to_record_batch();
   if (!result.ok()) {
     return Status::InternalError("failed to convert cache to RecordBatch: ",
                                  result.status().ToString());
@@ -280,7 +375,7 @@ Status MemForwardStore::flush() {
         batch_to_write = result.ValueOrDie();
       }
 
-      auto status = writer_->Write(*batch_to_write);
+      auto status = writer_->write(*batch_to_write);
       if (!status.ok()) {
         return Status::InternalError("failed to write RecordBatch to file: ",
                                      status.ToString());
@@ -303,11 +398,13 @@ Status MemForwardStore::flush() {
 }
 
 Status MemForwardStore::close() {
+  // Exclusive: flush_locked() and the clears below rewrite cache_/batches_.
+  std::lock_guard lock(cache_mtx_);
   if (!cache_.empty() || !batches_.empty()) {
-    flush();
+    flush_locked();
   }
   if (writer_) {
-    auto status = writer_->Close();
+    auto status = writer_->close();
     if (!status.ok()) {
       LOG_WARN("failed to close writer: %s", status.ToString().c_str());
     }
@@ -319,9 +416,9 @@ Status MemForwardStore::close() {
 }
 
 TablePtr MemForwardStore::get_table() {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
   std::shared_ptr<arrow::RecordBatch> batch =
-      convertToRecordBatch().ValueOrDie();
+      convert_to_record_batch().ValueOrDie();
   std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches = batches_;
   if (batch->num_rows() > 0) {
     all_batches.push_back(batch);
@@ -336,7 +433,7 @@ TablePtr MemForwardStore::get_table() {
 
 TablePtr MemForwardStore::fetch(const std::vector<std::string> &columns,
                                 const std::vector<int> &indices) {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
 
   if (!validate(columns)) {
     return nullptr;
@@ -365,7 +462,7 @@ TablePtr MemForwardStore::fetch(const std::vector<std::string> &columns,
     }
   }
 
-  auto result = convertToTable(data_columns, indices);
+  auto result = convert_to_table(data_columns, indices);
   if (!result.ok()) {
     LOG_ERROR("failed to convert to table: %s",
               result.status().ToString().c_str());
@@ -425,13 +522,13 @@ TablePtr MemForwardStore::fetch(const std::vector<std::string> &columns,
 
 ExecBatchPtr MemForwardStore::fetch(const std::vector<std::string> &columns,
                                     int index) {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
 
   if (!validate(columns)) {
     return nullptr;
   }
 
-  auto result = convertToTable(columns, std::vector<int>{index});
+  auto result = convert_to_table(columns, std::vector<int>{index});
   if (!result.ok()) {
     LOG_ERROR("failed to convert to table: %s",
               result.status().ToString().c_str());
@@ -454,18 +551,18 @@ ExecBatchPtr MemForwardStore::fetch(const std::vector<std::string> &columns,
     scalars.emplace_back(std::move(scalar_result.ValueOrDie()));
   }
 
-  return std::make_shared<arrow::ExecBatch>(std::move(scalars), 1);
+  return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
 }
 
 RecordBatchReaderPtr MemForwardStore::scan(
     const std::vector<std::string> &columns) {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
 
   if (!validate(columns)) {
     return nullptr;
   }
 
-  auto result = convertToTable(columns, {});
+  auto result = convert_to_table(columns, {});
   if (!result.ok()) {
     LOG_ERROR("failed to convert to table: %s",
               result.status().ToString().c_str());

@@ -25,7 +25,7 @@ namespace core {
 class IndexPlugin {
  public:
   //! Constructor
-  IndexPlugin(void) : handle_(nullptr) {}
+  IndexPlugin() : handle_(nullptr) {}
 
   //! Constructor
   IndexPlugin(IndexPlugin &&plugin) : handle_(plugin.handle_) {
@@ -38,15 +38,15 @@ class IndexPlugin {
   }
 
   //! Destructor
-  ~IndexPlugin(void) {}
+  ~IndexPlugin() = default;
 
   //! Test if the plugin is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (!!handle_);
   }
 
   //! Retrieve the handle
-  void *handle(void) const {
+  void *handle() const {
     return handle_;
   }
 
@@ -57,13 +57,13 @@ class IndexPlugin {
   bool load(const std::string &path, std::string *err);
 
   //! Unload plugin
-  void unload(void);
+  void unload();
 
- private:
   //! Disable them
   IndexPlugin(const IndexPlugin &) = delete;
   IndexPlugin &operator=(const IndexPlugin &) = delete;
 
+ private:
   //! Members
   void *handle_;
 };
@@ -73,14 +73,14 @@ class IndexPlugin {
 class IndexPluginBroker {
  public:
   //! Constructor
-  IndexPluginBroker(void) : plugins_() {}
+  IndexPluginBroker() : plugins_() {}
 
   //! Constructor
   IndexPluginBroker(IndexPluginBroker &&broker)
       : plugins_(std::move(broker.plugins_)) {}
 
   //! Destructor
-  ~IndexPluginBroker(void) {}
+  ~IndexPluginBroker() = default;
 
   //! Emplace a plugin
   bool emplace(IndexPlugin &&plugin);
@@ -100,15 +100,15 @@ class IndexPluginBroker {
   }
 
   //! Retrieve count of plugins in broker
-  size_t count(void) const {
+  size_t count() const {
     return plugins_.size();
   }
 
- private:
   //! Disable them
   IndexPluginBroker(const IndexPluginBroker &) = delete;
   IndexPluginBroker &operator=(const IndexPluginBroker &) = delete;
 
+ private:
   //! Members
   std::vector<IndexPlugin> plugins_;
 };

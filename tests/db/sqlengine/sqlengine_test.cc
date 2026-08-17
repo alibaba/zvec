@@ -146,7 +146,7 @@ TEST_F(SqlEngineTest, GroupBy) {
   GroupByVectorQuery query;
   query.group_by_field_name_ = "name";
   query.group_count_ = 3;
-  query.group_topk_ = 2;
+  query.topk_per_group_ = 2;
   query.output_fields_ = {"id", "name", "score"};
   query.filter_ = "id > 3 and score < 0.1";
   if (const char *env_var = std::getenv("FILTER"); env_var != nullptr) {

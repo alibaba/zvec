@@ -14,6 +14,8 @@
 
 #include <memory>
 #include <string>
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_helper.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
@@ -22,6 +24,113 @@
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
 
 namespace zvec::core_interface {
+
+namespace {
+
+const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
+                                      const HNSWIndexParam &hnsw_param) {
+  // Turbo quantizers currently consume FP32 inputs and own dense, in-index
+  // vector storage. External-vector HNSW is also supported: its source stays
+  // in the FP32 input layout and the streamer quantizes source vectors only
+  // for distance calculation.
+  if (hnsw_param.is_sparse || hnsw_param.data_type != DataType::DT_FP32 ||
+      hnsw_param.metric_type == MetricType::kMIPSL2sq) {
+    return nullptr;
+  }
+
+  // An original-vector provider is a separate build space. Turbo can keep
+  // that path in FP32 as long as the provider exposes plain FP32 vectors and
+  // uses a metric supported by Fp32Quantizer. Other provider layouts retain
+  // the legacy metric pipeline.
+  if (hnsw_param.provider) {
+    const auto &provider_meta = hnsw_param.provider_meta;
+    const auto &provider_metric = provider_meta.metric_name();
+    const bool supported_provider_metric =
+        provider_metric.empty() || provider_metric == "SquaredEuclidean" ||
+        provider_metric == "Cosine" || provider_metric == "InnerProduct";
+    if (provider_meta.data_type() != core::IndexMeta::DT_FP32 ||
+        provider_meta.dimension() !=
+            static_cast<uint32_t>(hnsw_param.dimension) ||
+        provider_meta.element_size() !=
+            static_cast<size_t>(hnsw_param.dimension) * sizeof(float) ||
+        !supported_provider_metric) {
+      return nullptr;
+    }
+  }
+
+  // Rotation is still implemented by the legacy integer converters.
+  if (quantizer_param.enable_rotate) {
+    return nullptr;
+  }
+
+  switch (quantizer_param.type) {
+    case QuantizerType::kNone:
+      return "Fp32Quantizer";
+    case QuantizerType::kFP16:
+      return "Fp16Quantizer";
+    case QuantizerType::kInt8:
+      return "Int8Quantizer";
+    case QuantizerType::kInt4:
+      return "Int4Quantizer";
+    default:
+      return nullptr;
+  }
+}
+
+}  // namespace
+
+int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
+  if (!turbo_quantizer_ || options.create_new) {
+    return 0;
+  }
+  core::IndexMeta persisted_meta;
+  if (core::IndexHelper::DeserializeFromStorage(storage_.get(),
+                                                &persisted_meta) != 0 ||
+      !persisted_meta.quantizer_name().empty()) {
+    return 0;
+  }
+  // Reuse normal initialization for old indexes, without selecting Turbo again.
+  turbo_quantizer_.reset();
+  streamer_.reset();
+  converter_.reset();
+  reformer_.reset();
+  metric_.reset();
+  proxima_index_meta_.clear();
+  use_legacy_pipeline_ = true;
+  return Index::init(param_);
+}
+
+int HNSWIndex::create_and_init_converter_reformer(
+    const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
+  const auto &hnsw_param = dynamic_cast<const HNSWIndexParam &>(index_param);
+  const char *quantizer_name =
+      use_legacy_pipeline_
+          ? nullptr
+          : ResolveTurboQuantizerName(quantizer_param, hnsw_param);
+  if (quantizer_name != nullptr) {
+    turbo_quantizer_ = core::IndexFactory::CreateQuantizer(quantizer_name);
+    if (!turbo_quantizer_) {
+      LOG_ERROR("Failed to create turbo quantizer %s", quantizer_name);
+      return core::IndexError_Runtime;
+    }
+    if (turbo_quantizer_->init(proxima_index_meta_, ailego::Params{}) != 0) {
+      LOG_ERROR("Failed to init turbo quantizer %s", quantizer_name);
+      turbo_quantizer_.reset();
+      return core::IndexError_Runtime;
+    }
+
+    proxima_index_meta_ = turbo_quantizer_->meta();
+    proxima_index_meta_.set_quantizer(quantizer_name, 0, ailego::Params{});
+    streamer_vector_meta_.set_meta(
+        proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+        static_cast<uint32_t>(turbo_quantizer_->type()),
+        proxima_index_meta_.extra_meta_size());
+    streamer_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
+    return core::IndexError_Success;
+  }
+  return Index::create_and_init_converter_reformer(quantizer_param,
+                                                   index_param);
+}
 
 std::string HNSWIndex::storage_mode() const {
   if (!streamer_) {
@@ -45,9 +154,9 @@ std::string HNSWIndex::storage_mode() const {
   return "";
 }
 
-int HNSWIndex::AddWithSource(const VectorData &vector_data,
-                             const uint32_t doc_id,
-                             const core::VectorSource &src) {
+int HNSWIndex::add_with_source(const VectorData &vector_data,
+                               const uint32_t doc_id,
+                               const core::VectorSource &src) {
   auto &context = acquire_context();
   if (!context) {
     LOG_ERROR("Failed to acquire context for AddWithSource");
@@ -55,11 +164,15 @@ int HNSWIndex::AddWithSource(const VectorData &vector_data,
   }
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
+    if (std::holds_alternative<DenseVector>(vector_data.vector)) {
+      ctx->set_external_build_query(
+          std::get<DenseVector>(vector_data.vector).data);
+    }
   }
-  return Index::Add(vector_data, doc_id);
+  return Index::add(vector_data, doc_id);
 }
 
-int HNSWIndex::SearchWithSource(
+int HNSWIndex::search_with_source(
     const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
     const core::VectorSource &src, SearchResult *result) {
   auto &context = acquire_context();
@@ -70,10 +183,10 @@ int HNSWIndex::SearchWithSource(
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
   }
-  return Index::Search(query, search_param, result);
+  return Index::search(query, search_param, result);
 }
 
-int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const HNSWIndexParam &>(param);
 
   // valid
@@ -81,6 +194,11 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_.m = std::max(5, std::min(1024, param_.m));
 
   if (is_sparse_) {
+    // the original vector provider is only supported by the dense streamer
+    if (ailego_unlikely(param_.provider != nullptr)) {
+      LOG_ERROR("Provider is not supported by sparse HNSW index");
+      return core::IndexError_Unsupported;
+    }
     proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION,
                               param_.ef_construction);
     proxima_index_params_.set(
@@ -115,14 +233,25 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
                               param_.use_external_vector);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
+    // build graph from the original vectors of provider when it is set
+    if (param_.provider && streamer_) {
+      int ret = streamer_->set_provider(param_.provider, param_.provider_meta);
+      if (ailego_unlikely(ret != 0)) {
+        LOG_ERROR("Failed to set provider to streamer, ret=%d", ret);
+        return ret;
+      }
+    }
   }
 
   if (ailego_unlikely(!streamer_)) {
     LOG_ERROR("Failed to create streamer");
     return core::IndexError_Runtime;
   }
-  if (ailego_unlikely(
-          streamer_->init(proxima_index_meta_, proxima_index_params_) != 0)) {
+  int ret = turbo_quantizer_ != nullptr && !is_sparse_
+                ? streamer_->init(proxima_index_meta_, proxima_index_params_,
+                                  turbo_quantizer_)
+                : streamer_->init(proxima_index_meta_, proxima_index_params_);
+  if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Failed to init streamer");
     return core::IndexError_Runtime;
   }
@@ -149,13 +278,23 @@ int HNSWIndex::_prepare_for_search(
     return core::IndexError_Runtime;
   }
 
+  // Set group state first so set_topk() derives the effective candidate count.
+  _set_group_by_on_context(search_param, context);
+
   context->set_topk(hnsw_search_param->topk);
   context->set_fetch_vector(hnsw_search_param->fetch_vector);
-  if (hnsw_search_param->filter) {
+  if (hnsw_search_param->filter && hnsw_search_param->filter->is_valid()) {
     context->set_filter(std::move(*hnsw_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (hnsw_search_param->radius > 0.0f) {
-    context->set_threshold(hnsw_search_param->radius);
+    float threshold = hnsw_search_param->radius;
+    if (turbo_quantizer_ != nullptr &&
+        turbo_quantizer_->support_score_normalization()) {
+      turbo_quantizer_->denormalize_score(&threshold);
+    }
+    context->set_threshold(threshold);
   }
   ailego::Params params;
   const int real_search_ef =
@@ -169,17 +308,19 @@ int HNSWIndex::_prepare_for_search(
       std::min(256u, hnsw_search_param->prefetch_lines);
   params.set(core::PARAM_HNSW_STREAMER_PL, real_search_pl);
   context->update(params);
+
   return 0;
 }
 
 int HNSWIndex::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
+  if (search_param->refiner_param->scale_factor_ != 0) {
+    return Index::_get_coarse_search_topk(search_param);
+  }
+
   const auto &hnsw_search_param =
       std::dynamic_pointer_cast<HNSWQueryParam>(search_param);
-
-  // scale_factor doesn't take effect for hnsw.
-  auto ret = std::max(search_param->topk, hnsw_search_param->ef_search);
-  return ret;
+  return std::max(search_param->topk, hnsw_search_param->ef_search);
 }
 
 }  // namespace zvec::core_interface

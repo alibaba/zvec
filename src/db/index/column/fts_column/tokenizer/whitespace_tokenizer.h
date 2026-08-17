@@ -25,8 +25,8 @@ namespace zvec::fts {
 class WhitespaceTokenizer : public Tokenizer {
  public:
   // WhitespaceTokenizer requires no configuration; always succeeds.
-  bool init(const ailego::JsonObject & /*config*/) override {
-    return true;
+  Status init(const ailego::JsonObject & /*config*/) override {
+    return Status::OK();
   }
 
   std::vector<Token> tokenize(const std::string &text) const override;

@@ -28,7 +28,7 @@ TEST(OmegaQueryParamTest, ClonePreservesOmegaFields) {
   param.training_query_id = 7;
   param.target_recall = 0.91f;
 
-  auto cloned_base = param.Clone();
+  auto cloned_base = param.clone();
   auto cloned = std::dynamic_pointer_cast<OmegaQueryParam>(cloned_base);
   ASSERT_NE(cloned, nullptr);
   EXPECT_EQ(cloned->topk, 20U);

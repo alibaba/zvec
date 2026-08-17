@@ -28,19 +28,19 @@ class IndexDumper : public IndexModule {
   typedef std::shared_ptr<IndexDumper> Pointer;
 
   //! Destructor
-  ~IndexDumper(void) override {}
+  ~IndexDumper() override = default;
 
   //! Initialize dumper
   virtual int init(const ailego::Params &params) = 0;
 
   //! Cleanup dumper
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Create a file for dumping
   virtual int create(const std::string &path) = 0;
 
   //! Close file
-  virtual int close(void) = 0;
+  virtual int close() = 0;
 
   //! Append a segment meta into table
   virtual int append(const std::string &id, size_t data_size,
@@ -50,10 +50,10 @@ class IndexDumper : public IndexModule {
   virtual size_t write(const void *data, size_t len) = 0;
 
   //! Retrieve magic number of index
-  virtual uint32_t magic(void) const = 0;
+  virtual uint32_t magic() const = 0;
 
   //! Retrieve size
-  virtual size_t size(void) const {
+  virtual size_t size() const {
     return 0;
   }
 };
@@ -70,7 +70,7 @@ class IndexSegmentDumper : public IndexDumper {
       : segment_id_(std::move(segid)), dumper_(std::move(dumper)) {}
 
   //! Destructor
-  ~IndexSegmentDumper(void) override {
+  ~IndexSegmentDumper() override {
     this->close_index();
   }
 
@@ -80,7 +80,7 @@ class IndexSegmentDumper : public IndexDumper {
   }
 
   //! Cleanup dumper
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -101,7 +101,7 @@ class IndexSegmentDumper : public IndexDumper {
   }
 
   //! Close file
-  int close(void) override {
+  int close() override {
     return this->close_index();
   }
 
@@ -125,7 +125,7 @@ class IndexSegmentDumper : public IndexDumper {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return packer_.magic();
   }
 
@@ -138,7 +138,7 @@ class IndexSegmentDumper : public IndexDumper {
   }
 
   //! Close index file
-  int close_index(void) {
+  int close_index() {
     if (dumped_size_ == 0) {
       return 0;
     }

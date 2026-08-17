@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <random>
+#include <type_traits>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -144,9 +145,14 @@ TEST(Heap, Make) {
   EXPECT_TRUE(raw_data.empty());
   EXPECT_EQ(heap1.front(), *std::max_element(heap.begin(), heap.end()));
 
-  raw_data = std::move(heap);
-  EXPECT_FALSE(raw_data.empty());
-  EXPECT_TRUE(heap.empty());
+  std::vector<float> heap_data(heap.begin(), heap.end());
+  EXPECT_FALSE(heap_data.empty());
+  EXPECT_FALSE(heap.empty());
+}
+
+TEST(Heap, BaseMutationIsPrivate) {
+  EXPECT_FALSE((
+      std::is_convertible<ailego::Heap<float> *, std::vector<float> *>::value));
 }
 
 TEST(Heap, Sort) {
@@ -176,7 +182,7 @@ TEST(Heap, Sort) {
 }
 
 struct HeapValue {
-  HeapValue(void) : score(0.0f) {
+  HeapValue() : score(0.0f) {
     std::cout << "HeapValue(void)" << std::endl;
   }
 
@@ -242,7 +248,7 @@ class HeapVector {
   typedef TAllocator allocator_type;
 
   //! Constructor
-  HeapVector(void) : begin_(nullptr), end_(nullptr), capacity_(0u), alloc_() {}
+  HeapVector() : begin_(nullptr), end_(nullptr), capacity_(0u), alloc_() {}
 
   //! Constructor
   HeapVector(const HeapVector &rhs)
@@ -268,7 +274,7 @@ class HeapVector {
   }
 
   //! Destructor
-  ~HeapVector(void) {
+  ~HeapVector() {
     if (capacity_) {
       for (value_type *iter = begin_; iter != end_; ++iter) {
         iter->~value_type();
@@ -309,7 +315,7 @@ class HeapVector {
   }
 
   //! Clear the vector
-  void clear(void) {
+  void clear() {
     for (value_type *iter = begin_; iter != end_; ++iter) {
       iter->~value_type();
     }
@@ -317,57 +323,57 @@ class HeapVector {
   }
 
   //! Retrieve the begin iterator
-  value_type *begin(void) {
+  value_type *begin() {
     return begin_;
   }
 
   //! Retrieve the begin iterator
-  const value_type *begin(void) const {
+  const value_type *begin() const {
     return begin_;
   }
 
   //! Retrieve the end iterator
-  value_type *end(void) {
+  value_type *end() {
     return end_;
   }
 
   //! Retrieve the end iterator
-  const value_type *end(void) const {
+  const value_type *end() const {
     return end_;
   }
 
   //! Retrieve the front element
-  value_type &front(void) {
+  value_type &front() {
     return *begin_;
   }
 
   //! Retrieve the front element
-  const value_type &front(void) const {
+  const value_type &front() const {
     return *begin_;
   }
 
   //! Retrieve the back element
-  value_type &back(void) {
+  value_type &back() {
     return *(end_ - 1);
   }
 
   //! Retrieve the back element
-  const value_type &back(void) const {
+  const value_type &back() const {
     return *(end_ - 1);
   }
 
   //! Retrieve count of elements in vector
-  size_type size(void) const {
+  size_type size() const {
     return (end_ - begin_);
   }
 
   //! Retrieve capacity of vector
-  size_type capacity(void) const {
+  size_type capacity() const {
     return capacity_;
   }
 
   //! Check whether the heap is empty
-  bool empty(void) const {
+  bool empty() const {
     return (begin_ == end_);
   }
 
@@ -398,7 +404,7 @@ class HeapVector {
     *(end_++) = std::move(val);
   }
 
-  void pop_back(void) {
+  void pop_back() {
     (--end_)->~value_type();
   }
 

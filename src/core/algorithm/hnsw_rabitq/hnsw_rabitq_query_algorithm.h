@@ -107,7 +107,7 @@ class HnswRabitqQueryAlgorithm {
   void get_bin_est(const void *vector, EstimateRecord &res,
                    HnswRabitqQueryEntity &entity) const;
 
- private:
+ public:
   HnswRabitqQueryAlgorithm(const HnswRabitqQueryAlgorithm &) = delete;
   HnswRabitqQueryAlgorithm &operator=(const HnswRabitqQueryAlgorithm &) =
       delete;

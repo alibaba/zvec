@@ -34,7 +34,7 @@ bool IndexPlugin::load(const std::string &path, std::string *err) {
   return !!handle_;
 }
 
-void IndexPlugin::unload(void) {
+void IndexPlugin::unload() {
   if (handle_) {
     ailego::DLHelper::Unload(handle_);
     handle_ = nullptr;

@@ -28,7 +28,8 @@ enum class IndexType : uint32_t {
   HNSW_RABITQ = 4,
   DISKANN = 5,
   VAMANA = 6,
-  OMEGA = 7,
+  IVF_RABITQ = 7,
+  OMEGA = 8,
   INVERT = 10,
   FTS = 11,
 };
@@ -57,6 +58,9 @@ enum class DataType : uint32_t {
   VECTOR_INT4 = 25,
   VECTOR_INT8 = 26,
   VECTOR_INT16 = 27,
+  // Unsigned 8-bit physical vector storage. This is currently exposed for
+  // Flat reference indexes; it is not an affine quantization format.
+  VECTOR_UINT8 = 28,
 
   SPARSE_VECTOR_FP16 = 30,
   SPARSE_VECTOR_FP32 = 31,
@@ -78,6 +82,9 @@ enum class QuantizeType : uint32_t {
   INT8 = 2,
   INT4 = 3,
   RABITQ = 4,
+  UNIFORM_UINT7 = 5,
+  UNIFORM_UINT8 = 6,
+  UNIFORM_UINT4 = 7,
 };
 
 enum class MetricType : uint32_t {

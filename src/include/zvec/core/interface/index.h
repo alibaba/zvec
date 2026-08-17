@@ -15,7 +15,9 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <variant>
 #include <vector>
@@ -35,12 +37,16 @@
 #include <zvec/core/interface/training_capable.h>
 #include <zvec/core/interface/training_session.h>
 #include <zvec/core/interface/vector_source.h>
-#include <zvec/db/status.h>
+#include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
+
+namespace zvec::turbo {
+class Quantizer;
+}  // namespace zvec::turbo
 
 namespace zvec::core_interface {
 
-class IndexFactory;
+class ZVEC_CORE_API IndexFactory;
 
 struct DenseVector {
   const void *data;
@@ -99,6 +105,7 @@ struct VectorDataBuffer {
 
 struct SearchResult {
   core::IndexDocumentList doc_list_;
+  core::IndexGroupDocumentList group_doc_list_;
   // use string to manage memory
   std::vector<std::string> reverted_vector_list_{};
   std::vector<std::string> reverted_sparse_values_list_{};
@@ -110,39 +117,39 @@ struct SearchResult {
   std::vector<int> gt_cmps_per_rank_{};
   int total_cmps_{0};          // Total comparisons in this search
   int training_query_id_{-1};  // Query ID for this search (-1 if not training)
+  // Grouped reverted values, aligned with group_doc_list_.
+  std::vector<std::vector<std::string>> group_reverted_vector_list_{};
+  std::vector<std::vector<std::string>> group_reverted_sparse_values_list_{};
 };
 
-class Index {
+class ZVEC_CORE_API Index {
  public:
   typedef std::shared_ptr<Index> Pointer;
   virtual ~Index() = default;
 
-  // static Index::Pointer Create(const BaseIndexParam &param); //IndexFactory
-  virtual int Open(const std::string &file_path,
+  // static Index::Pointer Create(const BaseIndexParam &param); // IndexFactory
+  virtual int open(const std::string &file_path,
                    StorageOptions storage_options);
-  int Close();
-  int Flush();
-  // virtual int Serialize(const std::string &file_path);
-  // virtual int Deserialize(const std::string &file_path);
+  int close();
+  int flush();
+  // virtual int serialize(const std::string &file_path);
+  // virtual int deserialize(const std::string &file_path);
 
   // // TODO: use holder
-  // virtual int Build() = 0;
-  virtual int Train() {
-    is_trained_ = true;
-    return 0;
-  }
+  // virtual int build() = 0;
+  virtual int train();
 
-  // virtual int Dump(const std::string &file_path) = 0;
-  virtual int Merge(const std::vector<Index::Pointer> &indexes,
+  // virtual int dump(const std::string &file_path) = 0;
+  virtual int merge(const std::vector<Index::Pointer> &indexes,
                     const IndexFilter &filter,
                     const MergeOptions &options = {});
   // TODO: static reduce
 
-  virtual int Add(const VectorData &vector, uint32_t doc_id);
+  virtual int add(const VectorData &vector, uint32_t doc_id);
 
-  virtual int Fetch(const uint32_t doc_id,
+  virtual int fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
-  virtual int Search(const VectorData &query,
+  virtual int search(const VectorData &query,
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
@@ -161,43 +168,30 @@ class Index {
     return nullptr;  // Default: capability not supported
   }
 
-  virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
-                            const core::VectorSource &src);
-  virtual int SearchWithSource(const VectorData &query,
-                               const BaseIndexQueryParam::Pointer &search_param,
-                               const core::VectorSource &src,
-                               SearchResult *result);
+  virtual int add_with_source(const VectorData &vector, uint32_t doc_id,
+                              const core::VectorSource &src);
+  virtual int search_with_source(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      const core::VectorSource &src, SearchResult *result);
 
-  virtual BaseIndexParam::Pointer GetParam() const {
-    return std::make_shared<BaseIndexParam>(param_);
-  }
+  virtual BaseIndexParam::Pointer get_param() const;
 
-  virtual bool IsTrained() const {
-    return is_trained_;
-  }
+  virtual bool is_trained() const;
 
-  bool IsDirty() const;
+  bool is_dirty() const;
 
-  uint32_t GetDocCount() const {
-    if (streamer_ == nullptr) {
-      return -1;
-    }
-    if (is_sparse_) {
-      return streamer_->create_sparse_provider()->count();
-    } else {
-      return streamer_->create_provider()->count();
-    }
-  }
+  uint32_t get_doc_count() const;
 
-  core::IndexStreamer::Pointer index_searcher() {
-    return streamer_;
-  }
+  core::IndexStreamer::Pointer index_searcher();
 
-  core::IndexProvider::Pointer create_index_provider() const {
-    return streamer_->create_provider();
-  }
+  core::IndexProvider::Pointer create_index_provider() const;
 
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
+
+  static bool is_group_by_unsupported_index(IndexType index_type) {
+    return index_type == IndexType::kIVF || index_type == IndexType::kDiskAnn ||
+           index_type == IndexType::kVamana;
+  }
 
  protected:
   int _sparse_fetch(const uint32_t doc_id,
@@ -216,6 +210,23 @@ class Index {
   int _dense_search(const VectorData &query,
                     const BaseIndexQueryParam::Pointer &search_param,
                     SearchResult *result, core::IndexContext::Pointer &context);
+  int _prepare_dense_query(const VectorData &query, std::string *query_storage,
+                           const void **prepared_query,
+                           core::IndexQueryMeta *prepared_meta);
+  int _execute_dense_search(const void *query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            core::IndexContext::Pointer &context,
+                            std::vector<uint64_t> *candidate_keys = nullptr);
+  int _collect_dense_result(const VectorData &query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context);
+  int _refine_dense_candidates(const VectorData &query,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               const std::vector<std::vector<uint64_t>> &keys,
+                               SearchResult *result);
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) = 0;
@@ -224,25 +235,36 @@ class Index {
   virtual void _collect_training_artifacts(core::IndexContext *context,
                                            SearchResult *result);
 
+  //! Helper: set group_by on context from the query param (common for all
+  //! index types). Call this before set_topk() when topk depends on group
+  //! state.
+  static void _set_group_by_on_context(
+      const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context);
+
  protected:
   friend class IndexFactory;
   Index() = default;
-  int Init(const BaseIndexParam &param);
+  int init(const BaseIndexParam &param);
 
 
  protected:
-  int ParseMetricName(const BaseIndexParam &param);
-  int CreateAndInitMetric(const BaseIndexParam &param);
-  int CreateAndInitConverterReformer(const QuantizerParam &param,
-                                     const BaseIndexParam &index_param);
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) = 0;
+  int parse_metric_name(const BaseIndexParam &param);
+  int create_and_init_metric(const BaseIndexParam &param);
+  virtual int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param);
+  int init_converter_reformer(const std::string &converter_name,
+                              const ailego::Params &converter_params = {});
+  virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
+
+  //! Adjust the pipeline after storage opens, before the streamer reads it.
+  virtual int prepare_streamer_open(const StorageOptions & /*options*/) {
+    return 0;
+  }
 
  protected:
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
-  void release_context() {
-    // context_list_[get_context_index()]->reset();
-  }
 
  protected:
   bool is_trained_{false};
@@ -258,9 +280,12 @@ class Index {
   core::IndexStreamer::Pointer streamer_{};
   core::IndexReformer::Pointer reformer_{};
   core::IndexConverter::Pointer converter_{};  // for build()
-  core::IndexMetric::Pointer metric_{};        // to do normalization
+  core::IndexMetric::Pointer metric_{};        // legacy distance/score path
+  // Quantizes records and queries and computes distances through turbo SIMD
+  // kernels. When set, converter_/reformer_/metric_ stay null.
+  std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
-  size_t context_index_;
+  size_t context_index_{std::numeric_limits<size_t>::max()};
   core::IndexStorage::Pointer storage_{};
   std::string file_path_;  // Storage file path
 
@@ -271,49 +296,78 @@ class Index {
 };
 
 
-class FlatIndex : public Index {
+class ZVEC_CORE_API FlatIndex : public Index {
  public:
   FlatIndex() = default;
   // FlatIndex(const FlatIndexParam &param) : param_(param) {}
   // FlatIndex(FlatIndexParam &&param) : param(std::move(param)) {}
 
+  //! Open the index. A persisted legacy layout (created before the turbo
+  //! quantizers, i.e. no quantizer attachment in the stored meta) falls
+  //! back to the converter/reformer pipeline for compatibility. Turbo indexes
+  //! restore their persisted encoding options for queries and inserts.
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
+
+  int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
 
  private:
+  //! Initialize the selected quantizer and synchronize encoding metadata.
+  int create_and_init_turbo_quantizer(const std::string &name,
+                                      const ailego::Params &params);
+
+  //! Rebuild the legacy converter/reformer/metric/streamer pipeline,
+  //! dropping the turbo quantizer.
+  int fallback_to_legacy_pipeline();
+
+  //! Create the legacy converter/reformer for combinations the turbo
+  //! quantizers cannot express (including the flat storage_data_type
+  //! converters).
+  int create_and_init_legacy_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param);
+
   FlatIndexParam param_{};
 };
 
-class IVFIndex : public Index {
+class ZVEC_CORE_API IVFIndex : public Index {
  public:
   IVFIndex() = default;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
 
-  int Add(const VectorData &vector, uint32_t doc_id) override;
+  int add(const VectorData &vector, uint32_t doc_id) override;
 
-  int Train() override;
+  int train() override;
 
-  int Open(const std::string &file_path,
+  int open(const std::string &file_path,
            StorageOptions storage_options) override;
 
   int _dense_fetch(const uint32_t doc_id,
                    VectorDataBuffer *vector_data_buffer) override;
-  int Merge(const std::vector<Index::Pointer> &indexes,
+  int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
-  int GenerateHolder();
+  int generate_holder();
 
  private:
+  enum class BuildStage { kCollecting, kTrained, kBuilt, kDumped };
+
+  int reset_builder();
+  int dump_and_open();
+
+  BuildStage build_stage_{BuildStage::kCollecting};
   IVFIndexParam param_{};
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
@@ -321,7 +375,7 @@ class IVFIndex : public Index {
 };
 
 
-class HNSWIndex : public Index {
+class ZVEC_CORE_API HNSWIndex : public Index {
  public:
   HNSWIndex() = default;
 
@@ -332,15 +386,18 @@ class HNSWIndex : public Index {
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
 
-  int AddWithSource(const VectorData &vector, uint32_t doc_id,
-                    const core::VectorSource &src) override;
-  int SearchWithSource(const VectorData &query,
-                       const BaseIndexQueryParam::Pointer &search_param,
-                       const core::VectorSource &src,
-                       SearchResult *result) override;
+  int add_with_source(const VectorData &vector, uint32_t doc_id,
+                      const core::VectorSource &src) override;
+  int search_with_source(const VectorData &query,
+                         const BaseIndexQueryParam::Pointer &search_param,
+                         const core::VectorSource &src,
+                         SearchResult *result) override;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
+
+  int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -349,15 +406,22 @@ class HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
+  int prepare_streamer_open(const StorageOptions &options) override;
+
   HNSWIndexParam param_{};
+  bool use_legacy_pipeline_{false};
 };
 
-class VamanaIndex : public Index {
+class ZVEC_CORE_API VamanaIndex : public Index {
  public:
   VamanaIndex() = default;
 
+  int merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter,
+            const MergeOptions &options = {}) override;
+
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -369,12 +433,12 @@ class VamanaIndex : public Index {
   VamanaIndexParam param_{};
 };
 
-class HNSWRabitqIndex : public Index {
+class ZVEC_CORE_API HNSWRabitqIndex : public Index {
  public:
   HNSWRabitqIndex() = default;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -386,31 +450,64 @@ class HNSWRabitqIndex : public Index {
   HNSWRabitqIndexParam param_{};
 };
 
-class DiskAnnIndex : public Index {
+class ZVEC_CORE_API IVFRabitqIndex : public Index {
+ public:
+  IVFRabitqIndex() = default;
+
+ protected:
+  int create_and_init_streamer(const BaseIndexParam &param) override;
+
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
+
+  int add(const VectorData &vector, uint32_t doc_id) override;
+  int train() override;
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
+  int generate_holder();
+
+ private:
+  IVFRabitqIndexParam param_{};
+  std::mutex mutex_{};
+  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
+  core::IndexHolder::Pointer holder_{};
+  std::string file_path_;
+};
+
+class ZVEC_CORE_API DiskAnnIndex : public Index {
  public:
   DiskAnnIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
-  int Add(const VectorData &vector, uint32_t doc_id) override;
+  int add(const VectorData &vector, uint32_t doc_id) override;
 
-  int Train() override;
+  int train() override;
 
-  int Open(const std::string &file_path,
+  int open(const std::string &file_path,
            StorageOptions storage_options) override;
 
   int _dense_fetch(const uint32_t doc_id,
                    VectorDataBuffer *vector_data_buffer) override;
-  int Merge(const std::vector<Index::Pointer> &indexes,
+  int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
-  int GenerateHolder();
+  int generate_holder();
 
  private:
+  enum class BuildStage { kCollecting, kTrained, kBuilt, kDumped };
+  int reset_builder();
+  int dump_and_open();
+  BuildStage build_stage_{BuildStage::kCollecting};
   DiskAnnIndexParam param_{};
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
@@ -434,18 +531,18 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
     return this;
   }
 
-  int Open(const std::string &file_path,
+  int open(const std::string &file_path,
            StorageOptions storage_options) override;
-  int Train() override;
+  int train() override;
   ITrainingSession::Pointer CreateTrainingSession() override;
   void _collect_training_artifacts(core::IndexContext *context,
                                    SearchResult *result) override;
-  BaseIndexParam::Pointer GetParam() const override {
+  BaseIndexParam::Pointer get_param() const override {
     return std::make_shared<OmegaIndexParam>(param_);
   }
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  virtual int create_and_init_streamer(const BaseIndexParam &param) override;
 
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,

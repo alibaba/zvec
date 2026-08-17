@@ -10,9 +10,12 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License.#pragma once
+// limitations under the License.
+
+#pragma once
 
 #include <pybind11/pybind11.h>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
 
@@ -32,6 +35,7 @@ class ZVecPyTyping {
   static void bind_index_types(py::module_ &m);
   static void bind_metric_types(py::module_ &m);
   static void bind_quantize_types(py::module_ &m);
+  static void bind_io_backend_types(py::module_ &m);
   static void bind_status(py::module_ &m);
 };
 

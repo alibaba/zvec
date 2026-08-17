@@ -174,16 +174,19 @@ int64_t HnswEntity::dump_vectors(
 
   std::vector<char> padding(padding_size);
   memset(padding.data(), 0, sizeof(char) * padding_size);
-  const void *data = nullptr;
   uint32_t crc = 0U;
   size_t vecs_size = 0UL;
 
   //! dump vectors
   for (node_id_t id = 0; id < doc_cnt(); ++id) {
-    data = get_vector(reorder_mapping.empty() ? id : reorder_mapping[id]);
-    if (ailego_unlikely(!data)) {
+    IndexStorage::MemoryBlock data_block;
+    if (ailego_unlikely(get_vector_borrowed(
+                            reorder_mapping.empty() ? id : reorder_mapping[id],
+                            data_block) != 0 ||
+                        !data_block.data())) {
       return IndexError_ReadData;
     }
+    const void *data = data_block.data();
     size_t len = dumper->write(data, vector_size());
     if (len != vector_size()) {
       LOG_ERROR("Dump vectors failed, write=%zu expect=%zu", len,

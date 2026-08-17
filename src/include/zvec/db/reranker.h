@@ -19,6 +19,7 @@
 #include <zvec/db/doc.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace reranker {
@@ -66,10 +67,10 @@ using RerankParams = std::variant<RrfParams, WeightedParams, CallbackParams>;
 /// normalization)
 /// @param topn     Maximum number of results to return
 /// @return         Re-ranked document list (length <= topn)
-Result<DocPtrList> rerank(const RerankParams &params,
-                          const std::vector<DocPtrList> &results,
-                          const std::vector<FieldSchema::Ptr> &fields,
-                          int topn);
+ZVEC_API Result<DocPtrList> rerank(const RerankParams &params,
+                                   const std::vector<DocPtrList> &results,
+                                   const std::vector<FieldSchema::Ptr> &fields,
+                                   int topn);
 
 }  // namespace reranker
 }  // namespace zvec

@@ -15,8 +15,8 @@
 #include "rabitq_utils.h"
 #include <string>
 #include <zvec/ailego/hash/crc32c.h>
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_error.h"
-#include "zvec/core/framework/index_logger.h"
 
 namespace zvec {
 namespace core {

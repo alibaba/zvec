@@ -57,20 +57,20 @@ class VectorColumnIndexer {
   virtual ~VectorColumnIndexer() = default;
 
  public:
-  Status Open(const vector_column_params::ReadOptions &read_options);
+  Status open(const vector_column_params::ReadOptions &read_options);
 
-  Status Flush();
+  Status flush();
 
-  // Close will call Flush()
-  Status Close();
+  // Close will call flush()
+  Status close();
 
-  // Destroy will call Close() and remove index file
-  Status Destroy();
+  // Destroy will call close() and remove index file
+  Status destroy();
 
 
   // If HNSWIndexer.merge([FlatIndexer1, FlatIndexer2])
   // then the merged indexer is a HNSWIndexer
-  Status Merge(const std::vector<VectorColumnIndexer::Ptr> &indexers,
+  Status merge(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                const IndexFilter::Ptr &filter = nullptr,
                const vector_column_params::MergeOptions &merge_options = {});
   // TODO: should we use this function? or a Reducer?
@@ -78,18 +78,18 @@ class VectorColumnIndexer {
 
 
   //! Insert vector
-  Status Insert(const vector_column_params::VectorData &vector_data,
+  Status insert(const vector_column_params::VectorData &vector_data,
                 uint32_t doc_id);
   // TODO: batch insert
 
-  virtual Result<IndexResults::Ptr> Search(
+  virtual Result<IndexResults::Ptr> search(
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params);
   // Result<std::vector<IndexResults::Ptr>> BatchSearch(
   //     const VectorDataset &vector_data,
   //     const  vector_column_params::QueryParams &query_params);
 
-  Result<vector_column_params::VectorDataBuffer> Fetch(uint32_t doc_id) const;
+  Result<vector_column_params::VectorDataBuffer> fetch(uint32_t doc_id) const;
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
@@ -131,7 +131,7 @@ class VectorColumnIndexer {
     if (index == nullptr) {
       return -1;
     }
-    return index->GetDocCount();
+    return index->get_doc_count();
   }
 
   MetricType metric_type() const {
@@ -162,7 +162,7 @@ class VectorColumnIndexer {
 
   // proxima or other engine index param like VSAGE
   // build proxima index
-  Status CreateProximaIndex(
+  Status create_proxima_index(
       const vector_column_params::ReadOptions &read_options);
 
  protected:

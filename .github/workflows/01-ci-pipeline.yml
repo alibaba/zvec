@@ -15,7 +15,6 @@ on:
       - '.github/workflows/issue-auto-assign.yml'
       - '.github/workflows/build_wheel.yml'
       - '.github/workflows/build_test_wheel.yml'
-      - '.github/workflows/_build_wheel_job.yml'
       - '.github/workflows/continuous_bench.yml'
       - '.github/workflows/nightly_coverage.yml'
       - '.github/workflows/07-linux-riscv-build.yml'
@@ -24,6 +23,7 @@ on:
   merge_group:
   pull_request:
     branches: [ "main" ]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: *paths-ignore
   workflow_dispatch:
 
@@ -70,6 +70,25 @@ jobs:
       platform: macos-arm64
       os: macos-26
 
+  build-and-test-macos-x64:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Test (macos-x64)
+    needs: [lint, clang-tidy]
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: macos-x64
+      os: macos-15-intel
+
+  build-and-test-wheel-macos-x64:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Test Wheel (macos-x64)
+    needs: [lint, clang-tidy]
+    uses: ./.github/workflows/_build_wheel_job.yml
+    with:
+      runner: macos-15-intel
+      build_identifier: cp311-macosx_x86_64
+      publish: false
+
   build-and-test-linux-arm64:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (linux-arm64)
@@ -114,3 +133,9 @@ jobs:
     name: Build & Test (iOS)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/06-ios-build.yml
+
+  build-and-test-musllinux:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Test (musllinux)
+    needs: [lint, clang-tidy]
+    uses: ./.github/workflows/09-musllinux-build.yml

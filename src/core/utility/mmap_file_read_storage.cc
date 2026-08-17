@@ -46,29 +46,29 @@ class MMapFileReadStorage : public IndexStorage {
           file_ptr_(file_ptr) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment() override = default;
 
     //! Retrieve size of data
-    size_t data_size(void) const override {
+    size_t data_size() const override {
       return data_size_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return data_crc_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return padding_size_;
     }
 
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return region_size_;
     }
 
     //! Retrieve offset of data
-    size_t data_offset(void) const override {
+    size_t data_offset() const override {
       return data_offset_;
     }
 
@@ -129,12 +129,12 @@ class MMapFileReadStorage : public IndexStorage {
     }
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return shared_from_this();
     }
 
     //! Stable base data pointer — valid for the lifetime of the mmap.
-    const uint8_t *base_data(void) const override {
+    const uint8_t *base_data() const override {
       return data_ptr_;
     }
 
@@ -149,7 +149,7 @@ class MMapFileReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~MMapFileReadStorage(void) override {}
+  ~MMapFileReadStorage() override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {
@@ -163,7 +163,7 @@ class MMapFileReadStorage : public IndexStorage {
     return 0;
   }
 
-  int flush(void) override {
+  int flush() override {
     return 0;
   }
 
@@ -175,17 +175,18 @@ class MMapFileReadStorage : public IndexStorage {
     return;
   }
 
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return 0;
   }
 
   //! Cleanup container
-  int cleanup(void) override {
+  int cleanup() override {
     return this->close();
   }
 
   //! Load a index file into container
   int open(const std::string &path, bool) override {
+    file_path_ = path;
     file_ptr_ = std::make_shared<ailego::MMapFile>();
     if (!file_ptr_) {
       LOG_ERROR("Failed to create mmap file object, %s",
@@ -236,8 +237,10 @@ class MMapFileReadStorage : public IndexStorage {
     return 0;
   }
 
-  int close(void) override {
-    file_ptr_->close();
+  int close() override {
+    if (file_ptr_) {
+      file_ptr_->close();
+    }
     file_ptr_ = nullptr;
     segments_.clear();
     return 0;
@@ -256,8 +259,8 @@ class MMapFileReadStorage : public IndexStorage {
         file_ptr_, index_offset_, it->second);
   }
 
-  std::map<std::string, IndexStorage::Segment::Pointer> get_all(
-      void) const override {
+  std::map<std::string, IndexStorage::Segment::Pointer> get_all()
+      const override {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     if (file_ptr_) {
       for (const auto &it : segments_) {
@@ -274,8 +277,12 @@ class MMapFileReadStorage : public IndexStorage {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
+  }
+
+  std::string file_path() const override {
+    return file_path_;
   }
 
  private:
@@ -287,6 +294,7 @@ class MMapFileReadStorage : public IndexStorage {
   int64_t footer_offset_{0};
   size_t index_offset_{0};
   uint32_t magic_{0};
+  std::string file_path_;
   std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
   std::shared_ptr<ailego::MMapFile> file_ptr_{nullptr};
 };

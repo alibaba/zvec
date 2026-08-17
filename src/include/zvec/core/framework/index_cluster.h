@@ -37,7 +37,7 @@ struct IndexCluster : public IndexModule {
   class Centroid {
    public:
     //! Constructor
-    Centroid(void)
+    Centroid()
         : buffer_(), score_(0.0), follows_(0), similars_(), subitems_() {}
 
     //! Constructor
@@ -50,11 +50,8 @@ struct IndexCluster : public IndexModule {
 
     //! Constructor
     Centroid(const Centroid &rhs)
-        : buffer_(rhs.buffer_),
-          score_(rhs.score_),
-          follows_(rhs.follows_),
-          similars_(rhs.similars_),
-          subitems_(rhs.subitems_) {}
+
+        = default;
 
     //! Constructor
     Centroid(Centroid &&rhs)
@@ -65,14 +62,7 @@ struct IndexCluster : public IndexModule {
           subitems_(std::move(rhs.subitems_)) {}
 
     //! Assignment
-    Centroid &operator=(const Centroid &rhs) {
-      buffer_ = rhs.buffer_;
-      score_ = rhs.score_;
-      follows_ = rhs.follows_;
-      similars_ = rhs.similars_;
-      subitems_ = rhs.subitems_;
-      return *this;
-    }
+    Centroid &operator=(const Centroid &rhs) = default;
 
     //! Assignment
     Centroid &operator=(Centroid &&rhs) {
@@ -150,69 +140,69 @@ struct IndexCluster : public IndexModule {
     }
 
     //! Retrieve feature buffer
-    std::string *mutable_buffer(void) {
+    std::string *mutable_buffer() {
       return &buffer_;
     }
 
     //! Retrieve feature buffer
-    const std::string &buffer(void) const {
+    const std::string &buffer() const {
       return buffer_;
     }
 
     //! Retrieve feature vector
     template <typename T>
-    ailego::NumericalVector<T> *mutable_vector(void) {
+    ailego::NumericalVector<T> *mutable_vector() {
       return static_cast<ailego::NumericalVector<T> *>(&buffer_);
     }
 
     //! Retrieve feature vector
     template <typename T>
-    const ailego::NumericalVector<T> &vector(void) const {
+    const ailego::NumericalVector<T> &vector() const {
       return static_cast<const ailego::NumericalVector<T> &>(buffer_);
     }
 
     //! Retrieve feature pointer
-    const void *feature(void) const {
+    const void *feature() const {
       return buffer_.data();
     }
 
     //! Retrieve size of centroid in bytes
-    size_t size(void) const {
+    size_t size() const {
       return buffer_.size();
     }
 
     //! Retrieve score of centroid
-    double score(void) const {
+    double score() const {
       return score_;
     }
 
     //! Retrieve follows' count of centroid
-    size_t follows(void) const {
+    size_t follows() const {
       return follows_;
     }
 
     //! Retrieve similars of centroid
-    const std::vector<const void *> &similars(void) const {
+    const std::vector<const void *> &similars() const {
       return similars_;
     }
 
     //! Retrieve similars of centroid
-    std::vector<const void *> *mutable_similars(void) {
+    std::vector<const void *> *mutable_similars() {
       return &similars_;
     }
 
     //! Retrieve the sub centroids
-    const std::vector<Centroid> &subitems(void) const {
+    const std::vector<Centroid> &subitems() const {
       return subitems_;
     }
 
     //! Retrieve the sub centroids
-    std::vector<Centroid> *mutable_subitems(void) {
+    std::vector<Centroid> *mutable_subitems() {
       return &subitems_;
     }
 
     //! Retrieve the count of subitems (includes children's children)
-    size_t subcount(void) const {
+    size_t subcount() const {
       size_t total = subitems_.size();
       for (const auto &it : subitems_) {
         total += it.subcount();
@@ -233,7 +223,7 @@ struct IndexCluster : public IndexModule {
   typedef std::vector<Centroid> CentroidList;
 
   //! Destructor
-  ~IndexCluster(void) override {}
+  ~IndexCluster() override = default;
 
   //! Deserialize centroids from bundle
   static int Deserialize(const IndexMeta &meta, IndexBundle::Pointer bundle,
@@ -247,10 +237,10 @@ struct IndexCluster : public IndexModule {
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;
 
   //! Cleanup Cluster
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Reset Cluster
-  virtual int reset(void) = 0;
+  virtual int reset() = 0;
 
   //! Update Cluster
   virtual int update(const ailego::Params &params) = 0;

@@ -30,6 +30,27 @@
 
 namespace zvec {
 
+namespace segment_detail {
+
+// Configurable Flat storage is a conversion from a dense FP32 field. Other
+// field types keep the native Flat storage behavior they had before this
+// option was introduced.
+inline DataType FlatStorageDataTypeForField(DataType field_data_type,
+                                            DataType configured_data_type) {
+  return field_data_type == DataType::VECTOR_FP32 ? configured_data_type
+                                                  : DataType::UNDEFINED;
+}
+
+// These quantizers encode each record independently and therefore produce a
+// valid quantized index during insert, before optimize sees the full dataset.
+inline bool CanReuseInsertTimeQuantizedVectors(QuantizeType quantize_type) {
+  return quantize_type == QuantizeType::FP16 ||
+         quantize_type == QuantizeType::INT8 ||
+         quantize_type == QuantizeType::INT4;
+}
+
+}  // namespace segment_detail
+
 struct CompactTask {
   CompactTask(const std::string &collection_path,
               const CollectionSchema::Ptr &schema,
@@ -272,13 +293,15 @@ class SegmentHelper {
 
   // Returns a FieldSchema clone whose index_params is ready for building the
   // quantize indexer.
-  //   - RABITQ: clones HnswRabitqIndexParams, trains a RabitqConverter against
-  //     `raw_vector_provider`, and attaches the resulting reformer and raw
+  //   - HNSW_RABITQ: clones index params, trains a RabitqConverter against
+  //     `raw_vector_provider`, and attaches the resulting reformer and
   //     provider to the cloned params.
+  //   - IVF_RABITQ: uses the cloned field unchanged because its builder owns
+  //     KMeans and RaBitQ training.
   //   - Other quantize types: clones the field with its current index_params
   //     unchanged.
-  // `raw_vector_provider` must remain alive until the quantize indexer has
-  // been flushed; it may be null for non-RABITQ cases.
+  // `raw_vector_provider` must remain alive until an HNSW_RABITQ quantize
+  // indexer has been flushed; it may be null for other cases.
   static Status PrepareQuantizeField(
       const FieldSchema &field,
       const core::IndexProvider::Pointer &raw_vector_provider,

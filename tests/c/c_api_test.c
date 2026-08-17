@@ -85,6 +85,23 @@ static int current_test_passed = 1;  // Track if current test function passes
     }                          \
   } while (0)
 
+static void check_last_error(zvec_error_code_t code, const char *reason) {
+  char *message = NULL;
+  TEST_ASSERT(zvec_get_last_error(&message) == ZVEC_OK);
+  TEST_ASSERT(message != NULL);
+  if (message) {
+    TEST_ASSERT(strstr(message, reason) != NULL);
+  }
+  zvec_error_details_t details = {0};
+  TEST_ASSERT(zvec_get_last_error_details(&details) == ZVEC_OK);
+  TEST_ASSERT(details.code == code);
+  TEST_ASSERT(details.message != NULL);
+  if (message && details.message) {
+    TEST_ASSERT(strcmp(message, details.message) == 0);
+  }
+  zvec_free(message);
+}
+
 // =============================================================================
 // Helper functions tests
 // =============================================================================
@@ -148,6 +165,39 @@ void test_error_handling_functions(void) {
   zvec_error_details_t error_details = {0};
   err = zvec_get_last_error_details(&error_details);
   TEST_ASSERT(err == ZVEC_OK);
+
+  TEST_END();
+}
+
+void test_io_backend_functions(void) {
+  TEST_START();
+
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_PREAD),
+                     "pread") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_LIBAIO),
+                     "libaio") == 0);
+  TEST_ASSERT(
+      strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
+             "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED),
+                     "windows_overlapped") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
+
+  zvec_io_backend_type_t current = zvec_get_io_backend_type();
+#if defined(_WIN32)
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED);
+#elif defined(__APPLE__) && defined(__MACH__)
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD);
+#else
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD ||
+              current == ZVEC_IO_BACKEND_TYPE_LIBAIO ||
+              current == ZVEC_IO_BACKEND_TYPE_IO_URING);
+#endif
+  const char *description = zvec_get_io_backend_description();
+  TEST_ASSERT(description != NULL);
+  TEST_ASSERT(strstr(description, zvec_get_io_backend_type_name(current)) !=
+              NULL);
 
   TEST_END();
 }
@@ -474,11 +524,11 @@ void test_schema_edge_cases(void) {
   // Test 4: NULL schema parameter handling for all functions
   zvec_error_code_t err;
   const char **test_names = NULL;
-  size_t test_count = 0;
+  size_t field_name_count = 0;
   err = zvec_collection_schema_get_all_field_names(NULL, &test_names,
-                                                   &test_count);
+                                                   &field_name_count);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
-  TEST_ASSERT(test_count == 0);
+  TEST_ASSERT(field_name_count == 0);
 
   const zvec_field_schema_t *null_field =
       zvec_collection_schema_get_field(NULL, "test");
@@ -990,6 +1040,280 @@ void test_collection_basic_operations(void) {
   // Clean up temporary directory
   cleanup_temp_directory(temp_dir);
 
+  TEST_END();
+}
+
+void test_relaxed_name_validation(void) {
+  TEST_START();
+
+  const char *temp_dir = "./zvec_test_relaxed_name_validation";
+  cleanup_temp_directory(temp_dir);
+  const char *collection_name = "\xe9\x9b\x86\xe5\x90\x88 / 2026";
+  char field_name[65];
+  memset(field_name, 'f', sizeof(field_name) - 1);
+  field_name[sizeof(field_name) - 1] = '\0';
+  zvec_collection_schema_t *schema =
+      zvec_collection_schema_create(collection_name);
+  zvec_field_schema_t *field =
+      zvec_field_schema_create(field_name, ZVEC_DATA_TYPE_INT32, false, 0);
+  TEST_ASSERT(schema != NULL);
+  TEST_ASSERT(field != NULL);
+  TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+  zvec_field_schema_destroy(field);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+  if (collection) {
+    char long_id[1025];
+    memset(long_id, 'x', sizeof(long_id) - 1);
+    long_id[sizeof(long_id) - 1] = '\0';
+    const char *ids[] = {"\xe8\xae\xa2\xe5\x8d\x95:2026",
+                         "https://example.com/articles/42", long_id};
+    zvec_doc_t *doc = zvec_doc_create();
+    int32_t value = 42;
+    TEST_ASSERT(zvec_doc_add_field_by_value(doc, field_name,
+                                            ZVEC_DATA_TYPE_INT32, &value,
+                                            sizeof(value)) == ZVEC_OK);
+    const zvec_doc_t *docs[] = {doc};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+      zvec_doc_set_pk(doc, ids[i]);
+      size_t success_count = 0, error_count = 0;
+      err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                   &error_count);
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(success_count == 1);
+      TEST_ASSERT(error_count == 0);
+
+      zvec_doc_t **fetched = NULL;
+      size_t found_count = 0;
+      err = zvec_collection_fetch(collection, &ids[i], 1, NULL, 0, false,
+                                  &fetched, &found_count);
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(found_count == 1);
+      if (found_count == 1) {
+        TEST_ASSERT(strcmp(zvec_doc_get_pk_pointer(fetched[0]), ids[i]) == 0);
+      }
+      zvec_docs_free(fetched, found_count);
+    }
+
+    char oversized_id[1026];
+    memset(oversized_id, 'x', sizeof(oversized_id) - 1);
+    oversized_id[sizeof(oversized_id) - 1] = '\0';
+    const char *invalid_ids[] = {"\xff", oversized_id, "doc\nid"};
+    const char *reasons[] = {"not valid UTF-8", "exceeds 1024 bytes (got 1025)",
+                             "newline"};
+    for (size_t i = 0; i < sizeof(invalid_ids) / sizeof(invalid_ids[0]); ++i) {
+      zvec_doc_set_pk(doc, invalid_ids[i]);
+      size_t success_count = 0, error_count = 0;
+      err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                   &error_count);
+      TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+      TEST_ASSERT(success_count == 0);
+      TEST_ASSERT(error_count == 1);
+      char *error_msg = NULL;
+      zvec_get_last_error(&error_msg);
+      TEST_ASSERT(error_msg != NULL);
+      if (error_msg) {
+        TEST_ASSERT(strncmp(error_msg, "Invalid doc:", 12) == 0);
+        TEST_ASSERT(strstr(error_msg, reasons[i]) != NULL);
+        TEST_ASSERT(strstr(error_msg, "offset") == NULL);
+        zvec_free(error_msg);
+      }
+    }
+    zvec_doc_destroy(doc);
+    zvec_collection_destroy(collection);
+  }
+  zvec_collection_schema_destroy(schema);
+  cleanup_temp_directory(temp_dir);
+
+  TEST_END();
+}
+
+void test_collection_name_encoding_validation(void) {
+  TEST_START();
+
+  char max_name[257];
+  memset(max_name, 'c', sizeof(max_name) - 1);
+  max_name[sizeof(max_name) - 1] = '\0';
+  char oversized_name[258];
+  memset(oversized_name, 'c', sizeof(oversized_name) - 1);
+  oversized_name[sizeof(oversized_name) - 1] = '\0';
+  const char *names[] = {"x", max_name, "\xff", oversized_name};
+  const char *reasons[] = {NULL, NULL, "not valid UTF-8",
+                           "exceeds 256 bytes (got 257)"};
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    zvec_collection_schema_t *schema = zvec_collection_schema_create(names[i]);
+    zvec_field_schema_t *field =
+        zvec_field_schema_create("value", ZVEC_DATA_TYPE_INT32, false, 0);
+    TEST_ASSERT(schema != NULL);
+    TEST_ASSERT(field != NULL);
+    TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+    zvec_field_schema_destroy(field);
+
+    zvec_string_t *error_msg = NULL;
+    zvec_error_code_t err = zvec_collection_schema_validate(schema, &error_msg);
+    if (reasons[i]) {
+      TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+      TEST_ASSERT(error_msg != NULL);
+      if (error_msg) {
+        const char *message = zvec_string_c_str(error_msg);
+        TEST_ASSERT(strncmp(message, "Invalid schema:", 15) == 0);
+        TEST_ASSERT(strstr(message, "collection name") != NULL);
+        TEST_ASSERT(strstr(message, reasons[i]) != NULL);
+        TEST_ASSERT(strstr(message, "offset") == NULL);
+      }
+    } else {
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(error_msg == NULL);
+    }
+    zvec_free_string(error_msg);
+    zvec_collection_schema_destroy(schema);
+  }
+
+  TEST_END();
+}
+
+void test_validation_last_error(void) {
+  TEST_START();
+
+  zvec_collection_schema_t *schema = zvec_collection_schema_create("\xff");
+  zvec_field_schema_t *field =
+      zvec_field_schema_create("bad name", ZVEC_DATA_TYPE_INT32, false, 0);
+  TEST_ASSERT(schema != NULL);
+  TEST_ASSERT(field != NULL);
+
+  zvec_clear_error();
+  TEST_ASSERT(zvec_collection_schema_validate(schema, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid schema: collection name[\\xFF] is not valid UTF-8");
+  // Replacing a previous error must update both text and code.
+  TEST_ASSERT(zvec_field_schema_validate(field, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid schema: field[bad name] contains a space");
+
+  zvec_string_t *error = NULL;
+  TEST_ASSERT(zvec_collection_schema_validate(schema, &error) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(error != NULL);
+  if (error) {
+    check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, zvec_string_c_str(error));
+  }
+  zvec_free_string(error);
+
+  error = (zvec_string_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_collection_schema_validate(NULL, &error) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(error == NULL);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "cannot be null");
+  error = (zvec_string_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_field_schema_validate(NULL, &error) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(error == NULL);
+
+  zvec_collection_t *collection = (zvec_collection_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_collection_create_and_open("./zvec_test_invalid_utf8_name",
+                                              schema, NULL, &collection) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(collection == NULL);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid schema: collection name[\\xFF] is not valid UTF-8");
+
+  zvec_field_schema_destroy(field);
+  zvec_collection_schema_destroy(schema);
+  TEST_END();
+}
+
+void test_batch_validation_errors(void) {
+  TEST_START();
+
+  typedef zvec_error_code_t(ZVEC_CALL * count_write_fn)(
+      zvec_collection_t *, const zvec_doc_t **, size_t, size_t *, size_t *);
+  typedef zvec_error_code_t(ZVEC_CALL * result_write_fn)(
+      zvec_collection_t *, const zvec_doc_t **, size_t, zvec_write_result_t **,
+      size_t *);
+  count_write_fn count_ops[] = {zvec_collection_insert, zvec_collection_update,
+                                zvec_collection_upsert};
+  result_write_fn result_ops[] = {zvec_collection_insert_with_results,
+                                  zvec_collection_update_with_results,
+                                  zvec_collection_upsert_with_results};
+  for (size_t op = 0; op < 3; ++op) {
+    zvec_write_result_t *results = (zvec_write_result_t *)(uintptr_t)1;
+    size_t result_count = 123;
+    TEST_ASSERT(result_ops[op](NULL, NULL, 1, &results, &result_count) ==
+                ZVEC_ERROR_INVALID_ARGUMENT);
+    TEST_ASSERT(results == NULL);
+    TEST_ASSERT(result_count == 0);
+    check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "Invalid arguments:");
+  }
+  const char *path = "./zvec_test_batch_validation_errors";
+  cleanup_temp_directory(path);
+  zvec_collection_schema_t *schema = zvec_collection_schema_create("batch");
+  zvec_field_schema_t *field =
+      zvec_field_schema_create("value", ZVEC_DATA_TYPE_INT32, true, 0);
+  TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+  zvec_field_schema_destroy(field);
+  zvec_collection_t *collection = NULL;
+  TEST_ASSERT(zvec_collection_create_and_open(path, schema, NULL,
+                                              &collection) == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+  if (collection) {
+    zvec_doc_t *valid_doc = zvec_doc_create();
+    zvec_doc_t *invalid_doc = zvec_doc_create();
+    zvec_doc_set_pk(valid_doc, "valid_before_error");
+    zvec_doc_set_pk(invalid_doc, "\xff");
+    const zvec_doc_t *invalid_inputs[] = {NULL, invalid_doc};
+    const char *reasons[] = {"Invalid doc: document must not be null",
+                             "id[\\xFF] is not valid UTF-8"};
+    for (size_t i = 0; i < 2; ++i) {
+      const zvec_doc_t *docs[] = {valid_doc, invalid_inputs[i]};
+      for (size_t op = 0; op < 3; ++op) {
+        size_t success_count = 123, error_count = 456;
+        TEST_ASSERT(count_ops[op](collection, docs, 2, &success_count,
+                                  &error_count) == ZVEC_ERROR_INVALID_ARGUMENT);
+        TEST_ASSERT(success_count == 0);
+        TEST_ASSERT(error_count == 2);
+        check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
+        if (i == 0) {
+          zvec_error_details_t details = {0};
+          TEST_ASSERT(zvec_get_last_error_details(&details) == ZVEC_OK);
+          TEST_ASSERT(details.message &&
+                      strcmp(details.message, reasons[i]) == 0);
+        }
+
+        zvec_write_result_t *results = (zvec_write_result_t *)(uintptr_t)1;
+        size_t result_count = 123;
+        TEST_ASSERT(
+            result_ops[op](collection, docs, 2, &results, &result_count) ==
+            ZVEC_ERROR_INVALID_ARGUMENT);
+        TEST_ASSERT(results == NULL);
+        TEST_ASSERT(result_count == 0);
+        check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
+        if (i == 0) {
+          zvec_error_details_t details = {0};
+          TEST_ASSERT(zvec_get_last_error_details(&details) == ZVEC_OK);
+          TEST_ASSERT(details.message &&
+                      strcmp(details.message, reasons[i]) == 0);
+        }
+      }
+    }
+    const char *ids[] = {"valid_before_error"};
+    zvec_doc_t **fetched = NULL;
+    size_t found_count = 0;
+    TEST_ASSERT(zvec_collection_fetch(collection, ids, 1, NULL, 0, false,
+                                      &fetched, &found_count) == ZVEC_OK);
+    TEST_ASSERT(found_count == 0);
+    zvec_docs_free(fetched, found_count);
+    zvec_doc_destroy(valid_doc);
+    zvec_doc_destroy(invalid_doc);
+    zvec_collection_destroy(collection);
+  }
+  zvec_collection_schema_destroy(schema);
+  cleanup_temp_directory(path);
   TEST_END();
 }
 
@@ -3482,11 +3806,41 @@ void test_index_params_functions(void) {
   TEST_ASSERT(n_iters == 10);
   TEST_ASSERT(use_soar == false);  // Default is false
 
+  // Test DiskANN index params
+  zvec_index_params_t *diskann_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(diskann_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(diskann_params) ==
+              ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(diskann_params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 50);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 0);
+
+  // Test IVF RaBitQ index params
+  zvec_index_params_t *ivf_rabitq_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(ivf_rabitq_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(ivf_rabitq_params) ==
+              ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(zvec_index_params_get_metric_type(ivf_rabitq_params) ==
+              ZVEC_METRIC_TYPE_L2);
+  TEST_ASSERT(zvec_index_params_get_quantize_type(ivf_rabitq_params) ==
+              ZVEC_QUANTIZE_TYPE_RABITQ);
+
+  int nlist, total_bits, sample_count;
+  zvec_index_params_get_ivf_rabitq_params(ivf_rabitq_params, &nlist,
+                                          &total_bits, &sample_count);
+  TEST_ASSERT(nlist == 1024);
+  TEST_ASSERT(total_bits == 7);
+  TEST_ASSERT(sample_count == 0);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(ivf_params);
+  zvec_index_params_destroy(diskann_params);
+  zvec_index_params_destroy(ivf_rabitq_params);
 
   TEST_END();
 }
@@ -3705,6 +4059,26 @@ void test_index_params_api_functions(void) {
   TEST_ASSERT(n_iters == 20);
   TEST_ASSERT(use_soar == true);
 
+  // Test zvec_index_params_create for IVF_RABITQ
+  zvec_index_params_t *ivf_rabitq_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(ivf_rabitq_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(ivf_rabitq_params) ==
+              ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(zvec_index_params_get_metric_type(ivf_rabitq_params) ==
+              ZVEC_METRIC_TYPE_L2);
+  TEST_ASSERT(zvec_index_params_get_quantize_type(ivf_rabitq_params) ==
+              ZVEC_QUANTIZE_TYPE_RABITQ);
+
+  // Test zvec_index_params_set_ivf_rabitq_params
+  zvec_index_params_set_ivf_rabitq_params(ivf_rabitq_params, 256, 6, 4096);
+  int nlist, total_bits, sample_count;
+  zvec_index_params_get_ivf_rabitq_params(ivf_rabitq_params, &nlist,
+                                          &total_bits, &sample_count);
+  TEST_ASSERT(nlist == 256);
+  TEST_ASSERT(total_bits == 6);
+  TEST_ASSERT(sample_count == 4096);
+
   // Test zvec_index_params_create for INVERT
   zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
@@ -3729,11 +4103,28 @@ void test_index_params_api_functions(void) {
   TEST_ASSERT(zvec_index_params_get_metric_type(flat_params) ==
               ZVEC_METRIC_TYPE_IP);
 
+  // Test zvec_index_params_create for DiskANN
+  zvec_index_params_t *diskann_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(diskann_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(diskann_params) ==
+              ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(zvec_index_params_get_metric_type(diskann_params) ==
+              ZVEC_METRIC_TYPE_L2);
+
+  // Test zvec_index_params_set_diskann_params
+  zvec_index_params_set_diskann_params(diskann_params, 200, 100, 8);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(diskann_params) == 200);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 8);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(ivf_params);
+  zvec_index_params_destroy(ivf_rabitq_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(flat_params);
+  zvec_index_params_destroy(diskann_params);
 
   TEST_END();
 }
@@ -3764,6 +4155,14 @@ void test_utility_functions(void) {
 
   index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_INVERT);
   TEST_ASSERT(index_type_str != NULL);
+
+  index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_HNSW_RABITQ);
+  TEST_ASSERT(index_type_str != NULL &&
+              strcmp(index_type_str, "HNSW_RABITQ") == 0);
+
+  index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(index_type_str != NULL &&
+              strcmp(index_type_str, "IVF_RABITQ") == 0);
 
   TEST_END();
 }
@@ -3796,10 +4195,20 @@ void test_query_params_functions(void) {
       zvec_query_params_ivf_create(10, true, 1.5f);
   TEST_ASSERT(ivf_params != NULL);
 
+  // Test IVF RaBitQ query parameters
+  zvec_ivf_rabitq_query_params_t *ivf_rabitq_params =
+      zvec_query_params_ivf_rabitq_create(10, 0.2f, false, true);
+  TEST_ASSERT(ivf_rabitq_params != NULL);
+
   // Test Flat query parameters
   zvec_flat_query_params_t *flat_params =
       zvec_query_params_flat_create(false, 2.0f);
   TEST_ASSERT(flat_params != NULL);
+
+  // Test DiskANN query parameters
+  zvec_diskann_query_params_t *diskann_params =
+      zvec_query_params_diskann_create(500);
+  TEST_ASSERT(diskann_params != NULL);
 
   zvec_error_code_t err;
 
@@ -3846,6 +4255,35 @@ void test_query_params_functions(void) {
   err = zvec_query_params_ivf_set_is_using_refiner(ivf_params, false);
   TEST_ASSERT(err == ZVEC_OK);
   is_using_refiner = zvec_query_params_ivf_get_is_using_refiner(ivf_params);
+  TEST_ASSERT(is_using_refiner == false);
+
+  // Test IVF RaBitQ-specific parameters
+  err = zvec_query_params_ivf_rabitq_set_nprobe(ivf_rabitq_params, 18);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_nprobe(ivf_rabitq_params) == 18);
+
+  // Test IVF RaBitQ scale factor setting
+  err = zvec_query_params_ivf_rabitq_set_scale_factor(ivf_rabitq_params, 3.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(
+      zvec_query_params_ivf_rabitq_get_scale_factor(ivf_rabitq_params) == 3.5f);
+
+  // Test IVF RaBitQ common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_ivf_rabitq_set_radius(ivf_rabitq_params, 0.6f);
+  TEST_ASSERT(err == ZVEC_OK);
+  radius = zvec_query_params_ivf_rabitq_get_radius(ivf_rabitq_params);
+  TEST_ASSERT(radius == 0.6f);
+
+  err = zvec_query_params_ivf_rabitq_set_is_linear(ivf_rabitq_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_linear = zvec_query_params_ivf_rabitq_get_is_linear(ivf_rabitq_params);
+  TEST_ASSERT(is_linear == true);
+
+  err = zvec_query_params_ivf_rabitq_set_is_using_refiner(ivf_rabitq_params,
+                                                          false);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_using_refiner =
+      zvec_query_params_ivf_rabitq_get_is_using_refiner(ivf_rabitq_params);
   TEST_ASSERT(is_using_refiner == false);
 
   // Test Flat scale factor setting
@@ -3897,42 +4335,87 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
               false);
 
+  // Test DiskANN-specific parameters
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(diskann_params) == 500);
+  err = zvec_query_params_diskann_set_list_size(diskann_params, 800);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(diskann_params) == 800);
+
+  // Test DiskANN common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_diskann_set_radius(diskann_params, 1.2f);
+  TEST_ASSERT(err == ZVEC_OK);
+  radius = zvec_query_params_diskann_get_radius(diskann_params);
+  TEST_ASSERT(radius == 1.2f);
+
+  err = zvec_query_params_diskann_set_is_linear(diskann_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_linear = zvec_query_params_diskann_get_is_linear(diskann_params);
+  TEST_ASSERT(is_linear == true);
+
+  err = zvec_query_params_diskann_set_is_using_refiner(diskann_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_using_refiner =
+      zvec_query_params_diskann_get_is_using_refiner(diskann_params);
+  TEST_ASSERT(is_using_refiner == true);
+
   // Test destruction of valid parameters
   zvec_query_params_hnsw_destroy(hnsw_params);
   zvec_query_params_ivf_destroy(ivf_params);
+  zvec_query_params_ivf_rabitq_destroy(ivf_rabitq_params);
   zvec_query_params_flat_destroy(flat_params);
   zvec_query_params_vamana_destroy(vamana_params);
+  zvec_query_params_diskann_destroy(diskann_params);
+
 
   // Test boundary cases - null pointer handling
   zvec_query_params_hnsw_destroy(NULL);
   zvec_query_params_ivf_destroy(NULL);
+  zvec_query_params_ivf_rabitq_destroy(NULL);
   zvec_query_params_flat_destroy(NULL);
   zvec_query_params_vamana_destroy(NULL);
+  zvec_query_params_diskann_destroy(NULL);
 
   // Test null pointer handling for setters
   err = zvec_query_params_hnsw_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_ivf_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_ivf_rabitq_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_ivf_rabitq_set_scale_factor(NULL, 2.0f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_flat_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_vamana_set_ef_search(NULL, 100);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_list_size(NULL, 100);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   // Test default values for getters with NULL
   TEST_ASSERT(zvec_query_params_hnsw_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_ivf_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_scale_factor(NULL) == 10.0f);
   TEST_ASSERT(zvec_query_params_flat_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_diskann_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_nprobe(NULL) == 10);
   TEST_ASSERT(zvec_query_params_vamana_get_ef_search(NULL) == 200);
   TEST_ASSERT(zvec_query_params_vamana_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_vamana_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(NULL) == 300);
 
   TEST_END();
 }
@@ -5043,7 +5526,7 @@ void test_performance_benchmarks(void) {
           // Create random vector
           float vec[128];
           for (int j = 0; j < 128; j++) {
-            vec[j] = (float)rand() / RAND_MAX;
+            vec[j] = (float)rand() / (float)RAND_MAX;
           }
           zvec_doc_add_field_by_value(batch_docs[i], "vec",
                                       ZVEC_DATA_TYPE_VECTOR_FP32, vec,
@@ -5084,7 +5567,7 @@ void test_performance_benchmarks(void) {
       // Test query performance
       float query_vec[128];
       for (int i = 0; i < 128; i++) {
-        query_vec[i] = (float)rand() / RAND_MAX;
+        query_vec[i] = (float)rand() / (float)RAND_MAX;
       }
 
       zvec_vector_query_t *query = zvec_vector_query_create();
@@ -5248,6 +5731,15 @@ void test_index_params_creation_functions(void) {
   TEST_ASSERT(saturate_graph == true);
   TEST_ASSERT(use_contiguous_memory == true);
 
+  // two_pass_build is independently extensible without changing the existing
+  // aggregate Vamana setter/getter ABI.
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              false);
+  verr = zvec_index_params_set_vamana_two_pass_build(vamana_params, true);
+  TEST_ASSERT(verr == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              true);
+
   // Set metric and quantize type
   zvec_index_params_set_metric_type(vamana_params, ZVEC_METRIC_TYPE_COSINE);
   TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
@@ -5257,6 +5749,25 @@ void test_index_params_creation_functions(void) {
   verr = zvec_index_params_set_vamana_params(hnsw_params, 64, 100, 1.2f, false,
                                              false);
   TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  verr = zvec_index_params_set_vamana_two_pass_build(hnsw_params, true);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(hnsw_params) ==
+              false);
+  verr = zvec_index_params_set_vamana_two_pass_build(NULL, true);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(NULL) == false);
+
+  // Test DiskANN parameters using new API
+  zvec_index_params_t *diskann_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(diskann_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(diskann_params) ==
+              ZVEC_INDEX_TYPE_DISKANN);
+  zvec_index_params_set_metric_type(diskann_params, ZVEC_METRIC_TYPE_COSINE);
+  zvec_index_params_set_diskann_params(diskann_params, 64, 25, 4);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(diskann_params) == 64);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 25);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 4);
 
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
@@ -5264,6 +5775,7 @@ void test_index_params_creation_functions(void) {
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(vamana_params);
+  zvec_index_params_destroy(diskann_params);
 
   TEST_END();
 }
@@ -6093,8 +6605,437 @@ void test_collection_schema_getters(void) {
 }
 
 // =============================================================================
+// DiskANN Tests
+// =============================================================================
+
+void test_diskann_index_params_functions(void) {
+  TEST_START();
+
+  // Create DiskANN index params with defaults
+  zvec_index_params_t *params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(params) == ZVEC_INDEX_TYPE_DISKANN);
+
+  // Check defaults: max_degree=100, list_size=50, pq_chunk_num=0
+  // (aligned with DiskAnnIndexParams constructor defaults)
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(params) == 50);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(params) == 0);
+
+  // Default metric type is L2
+  TEST_ASSERT(zvec_index_params_get_metric_type(params) == ZVEC_METRIC_TYPE_L2);
+
+  // Set and verify custom values
+  zvec_index_params_set_metric_type(params, ZVEC_METRIC_TYPE_COSINE);
+  TEST_ASSERT(zvec_index_params_get_metric_type(params) ==
+              ZVEC_METRIC_TYPE_COSINE);
+
+  zvec_error_code_t err =
+      zvec_index_params_set_diskann_params(params, 200, 100, 8);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(params) == 200);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(params) == 8);
+
+  // Type-mismatch error path: HNSW params must not accept DiskANN setter
+  zvec_index_params_t *hnsw = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(hnsw != NULL);
+  err = zvec_index_params_set_diskann_params(hnsw, 100, 50, 0);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_index_params_destroy(hnsw);
+
+  // NULL pointer handling
+  err = zvec_index_params_set_diskann_params(NULL, 100, 50, 0);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(NULL) == 0);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(NULL) == 0);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(NULL) == 0);
+
+  // to_string should report DiskANN
+  const char *type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(type_str != NULL && strcmp(type_str, "DISKANN") == 0);
+
+  zvec_index_params_destroy(params);
+  TEST_END();
+}
+
+void test_diskann_query_params_functions(void) {
+  TEST_START();
+
+  // Create with default list_size
+  zvec_diskann_query_params_t *p_default =
+      zvec_query_params_diskann_create(300);
+  TEST_ASSERT(p_default != NULL);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(p_default) == 300);
+  zvec_query_params_diskann_destroy(p_default);
+
+  // Create with custom list_size
+  zvec_diskann_query_params_t *p = zvec_query_params_diskann_create(500);
+  TEST_ASSERT(p != NULL);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(p) == 500);
+
+  // Set/get list_size
+  zvec_error_code_t err = zvec_query_params_diskann_set_list_size(p, 1000);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(p) == 1000);
+
+  // Common params: radius
+  err = zvec_query_params_diskann_set_radius(p, 1.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_radius(p) == 1.5f);
+
+  // Common params: is_linear
+  err = zvec_query_params_diskann_set_is_linear(p, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_linear(p) == true);
+
+  // Common params: is_using_refiner
+  err = zvec_query_params_diskann_set_is_using_refiner(p, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_using_refiner(p) == true);
+
+  zvec_query_params_diskann_destroy(p);
+
+  // NULL pointer handling: destroy
+  zvec_query_params_diskann_destroy(NULL);
+
+  // NULL pointer handling: setters return error
+  err = zvec_query_params_diskann_set_list_size(NULL, 100);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_is_linear(NULL, false);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_is_using_refiner(NULL, false);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  // NULL pointer handling: getters return safe defaults
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(NULL) == 300);
+  TEST_ASSERT(zvec_query_params_diskann_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_using_refiner(NULL) == false);
+
+  TEST_END();
+}
+
+void test_diskann_wiring_on_vector_query(void) {
+  TEST_START();
+
+  zvec_error_code_t err;
+
+  // Test wiring on zvec_vector_query_t
+  zvec_vector_query_t *vq = zvec_vector_query_create();
+  TEST_ASSERT(vq != NULL);
+
+  zvec_diskann_query_params_t *dp1 = zvec_query_params_diskann_create(400);
+  TEST_ASSERT(dp1 != NULL);
+  err = zvec_vector_query_set_diskann_params(vq, dp1);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // NULL handling
+  zvec_diskann_query_params_t *dp_null = zvec_query_params_diskann_create(100);
+  err = zvec_vector_query_set_diskann_params(NULL, dp_null);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_query_params_diskann_destroy(dp_null);
+
+  err = zvec_vector_query_set_diskann_params(vq, NULL);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_vector_query_destroy(vq);
+
+  // Test wiring on zvec_group_by_vector_query_t
+  zvec_group_by_vector_query_t *gbq = zvec_group_by_vector_query_create();
+  TEST_ASSERT(gbq != NULL);
+
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(gbq) == 3);
+  err = zvec_group_by_vector_query_set_topk_per_group(gbq, 7);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(gbq) == 7);
+  err = zvec_group_by_vector_query_set_topk_per_group(NULL, 7);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_diskann_query_params_t *dp2 = zvec_query_params_diskann_create(200);
+  TEST_ASSERT(dp2 != NULL);
+  err = zvec_group_by_vector_query_set_diskann_params(gbq, dp2);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  err = zvec_group_by_vector_query_set_diskann_params(NULL, dp2);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_group_by_vector_query_destroy(gbq);
+
+  // Test wiring on zvec_sub_query_t
+  zvec_sub_query_t *sq = zvec_sub_query_create();
+  TEST_ASSERT(sq != NULL);
+
+  zvec_diskann_query_params_t *dp3 = zvec_query_params_diskann_create(150);
+  TEST_ASSERT(dp3 != NULL);
+  err = zvec_sub_query_set_diskann_params(sq, dp3);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  err = zvec_sub_query_set_diskann_params(NULL, dp3);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_sub_query_destroy(sq);
+
+  TEST_END();
+}
+
+// =============================================================================
 // Main function
 // =============================================================================
+
+// =============================================================================
+// Document iterator tests (zvec_collection_create_iterator / next / close)
+// =============================================================================
+
+// Insert `n` docs into the collection and flush.
+static void iter_insert_docs(zvec_collection_t *collection,
+                             const zvec_collection_schema_t *schema, int n) {
+  for (int i = 0; i < n; ++i) {
+    zvec_doc_t *doc = zvec_test_create_doc((uint64_t)i, schema, NULL);
+    zvec_doc_t *docs[] = {doc};
+    size_t ok_count = 0, err_count = 0;
+    zvec_error_code_t err = zvec_collection_insert(
+        collection, (const zvec_doc_t **)docs, 1, &ok_count, &err_count);
+    TEST_ASSERT(err == ZVEC_OK && ok_count == 1 && err_count == 0);
+    zvec_doc_destroy(doc);
+  }
+  TEST_ASSERT(zvec_collection_flush(collection) == ZVEC_OK);
+}
+
+// Basic iteration: count all docs, PK non-null.
+void test_iterator_basic(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_basic";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  TEST_ASSERT(schema != NULL);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  const int N = 20;
+  iter_insert_docs(collection, schema, N);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  int count = 0;
+  while (1) {
+    zvec_doc_t *doc = NULL;
+    err = zvec_doc_iterator_next(iter, &doc);
+    TEST_ASSERT(err == ZVEC_OK);
+    if (err != ZVEC_OK) break;
+    if (doc == NULL) break;  // EOF
+
+    const char *pk = zvec_doc_get_pk_pointer(doc);
+    TEST_ASSERT(pk != NULL && strlen(pk) > 0);
+    zvec_doc_destroy(doc);
+    count++;
+  }
+  TEST_ASSERT(count == N);
+
+  zvec_doc_iterator_close(iter);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// Flush is unaffected by open iterators, and closing the iterator handle
+// only releases the handle itself.
+void test_iterator_concurrent_semantics(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_lockrej";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  TEST_ASSERT(schema != NULL);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 10);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(iter, &doc);
+  TEST_ASSERT(err == ZVEC_OK && doc != NULL);
+  zvec_doc_destroy(doc);
+
+  // flush is not blocked by open iterators, and closing the handle only
+  // releases the handle itself (the collection is closed later).
+  err = zvec_collection_flush(collection);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // destroy is rejected with FAILED_PRECONDITION while the iterator is
+  // open, and succeeds after it is closed.
+  err = zvec_collection_destroy(collection);
+  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
+
+  zvec_doc_iterator_close(iter);
+
+  err = zvec_collection_flush(collection);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// include_vector=false: dense vector field should be absent.
+void test_iterator_exclude_vector(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_novec";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 5);
+
+  zvec_iterator_options_t *opts = zvec_iterator_options_create();
+  TEST_ASSERT(opts != NULL);
+  err = zvec_iterator_options_set_include_vector(opts, false);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, opts, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  int count = 0;
+  while (1) {
+    zvec_doc_t *doc = NULL;
+    err = zvec_doc_iterator_next(iter, &doc);
+    TEST_ASSERT(err == ZVEC_OK);
+    if (err != ZVEC_OK || doc == NULL) break;
+
+    TEST_ASSERT(zvec_doc_has_field(doc, "id"));
+    TEST_ASSERT(!zvec_doc_has_field(doc, "dense"));
+    zvec_doc_destroy(doc);
+    count++;
+  }
+  TEST_ASSERT(count == 5);
+
+  zvec_doc_iterator_close(iter);
+  zvec_iterator_options_destroy(opts);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// output_fields={"id"}: only "id" scalar returned, "name" absent.
+void test_iterator_output_fields(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_fields";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 5);
+
+  zvec_iterator_options_t *opts = zvec_iterator_options_create();
+  const char *fields[] = {"id"};
+  err = zvec_iterator_options_set_output_fields(opts, fields, 1);
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_iterator_options_set_include_vector(opts, false);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, opts, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  int count = 0;
+  while (1) {
+    zvec_doc_t *doc = NULL;
+    err = zvec_doc_iterator_next(iter, &doc);
+    if (err != ZVEC_OK || doc == NULL) break;
+
+    TEST_ASSERT(zvec_doc_has_field(doc, "id"));
+    TEST_ASSERT(!zvec_doc_has_field(doc, "name"));
+    zvec_doc_destroy(doc);
+    count++;
+  }
+  TEST_ASSERT(count == 5);
+
+  zvec_doc_iterator_close(iter);
+  zvec_iterator_options_destroy(opts);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// Empty collection yields immediate EOF.
+void test_iterator_empty(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_empty";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(iter, &doc);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(doc == NULL);  // EOF on empty collection
+
+  zvec_doc_iterator_close(iter);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// Null-argument handling.
+void test_iterator_null_args(void) {
+  TEST_START();
+
+  zvec_doc_iterator_t *iter = NULL;
+  zvec_error_code_t err = zvec_collection_create_iterator(NULL, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(NULL, &doc);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  err = zvec_iterator_options_set_include_vector(NULL, true);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_iterator_options_set_output_fields(NULL, NULL, 0);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  // close / destroy with NULL must be safe (no crash).
+  zvec_doc_iterator_close(NULL);
+  zvec_iterator_options_destroy(NULL);
+  TEST_END();
+}
 
 int main(void) {
   printf("Starting comprehensive C API tests...\n\n");
@@ -6119,6 +7060,7 @@ int main(void) {
 
   test_version_functions();
   test_error_handling_functions();
+  test_io_backend_functions();
   test_zvec_config();
   test_zvec_initialize();
   test_zvec_string_functions();
@@ -6140,6 +7082,10 @@ int main(void) {
 
   // Collection-related tests
   test_collection_basic_operations();
+  test_relaxed_name_validation();
+  test_collection_name_encoding_validation();
+  test_validation_last_error();
+  test_batch_validation_errors();
   test_collection_edge_cases();
   test_collection_delete_by_filter();
   test_collection_stats();
@@ -6174,12 +7120,25 @@ int main(void) {
   test_query_params_functions();
   test_actual_vector_queries();
 
+  // Document iterator tests
+  test_iterator_basic();
+  test_iterator_concurrent_semantics();
+  test_iterator_exclude_vector();
+  test_iterator_output_fields();
+  test_iterator_empty();
+  test_iterator_null_args();
+
   // FTS tests
   test_fts_index_params_functions();
   test_fts_query_params_functions();
   test_fts_wiring_on_vector_query();
   test_fts_wiring_on_sub_query();
   test_fts_end_to_end();
+
+  // DiskANN tests
+  test_diskann_index_params_functions();
+  test_diskann_query_params_functions();
+  test_diskann_wiring_on_vector_query();
 
   test_multi_vector_query_with_rrf_reranker();
   test_multi_vector_query_with_weighted_reranker();

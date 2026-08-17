@@ -109,12 +109,12 @@ int main() {
 
   // ------ Step 2: Build HNSW index with external-vector mode enabled
   auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithUseExternalVector(true)  // <-- key setting
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_use_external_vector(true)  // <-- key setting
+                   .build();
 
   auto index = IndexFactory::CreateAndInitIndex(*param);
   if (!index) {
@@ -122,7 +122,7 @@ int main() {
     return 1;
   }
 
-  int ret = index->Open(
+  int ret = index->open(
       index_path, StorageOptions{StorageOptions::StorageType::kMMAP, true});
   if (ret != 0) {
     std::cerr << "Failed to open index." << std::endl;
@@ -134,7 +134,7 @@ int main() {
     VectorData vd;
     vd.vector =
         DenseVector{vectors.data() + static_cast<size_t>(i) * kDimension};
-    ret = index->AddWithSource(vd, i, source);
+    ret = index->add_with_source(vd, i, source);
     if (ret != 0) {
       std::cerr << "Failed to add doc " << i << std::endl;
       return 1;
@@ -153,7 +153,7 @@ int main() {
   query.vector = DenseVector{query_vec};
 
   SearchResult result;
-  ret = index->SearchWithSource(query, query_param, source, &result);
+  ret = index->search_with_source(query, query_param, source, &result);
   if (ret != 0) {
     std::cerr << "Search failed." << std::endl;
     return 1;
@@ -183,7 +183,7 @@ int main() {
             << std::endl;
 
   // ------ Step 6: Reopen index and search again (persistence verification)
-  index->Close();
+  index->close();
   std::cout << "[OK] Index closed." << std::endl;
 
   // Must re-create index instance with same params before reopening
@@ -193,7 +193,7 @@ int main() {
     return 1;
   }
 
-  ret = index->Open(index_path,
+  ret = index->open(index_path,
                     StorageOptions{StorageOptions::StorageType::kMMAP, false});
   if (ret != 0) {
     std::cerr << "Failed to reopen index." << std::endl;
@@ -201,7 +201,7 @@ int main() {
   }
 
   SearchResult result2;
-  ret = index->SearchWithSource(query, query_param, source, &result2);
+  ret = index->search_with_source(query, query_param, source, &result2);
   if (ret != 0) {
     std::cerr << "Search after reopen failed." << std::endl;
     return 1;
@@ -212,7 +212,7 @@ int main() {
             << std::endl;
 
   // Cleanup
-  index->Close();
+  index->close();
   std::filesystem::remove_all(index_path);
   std::cout << "\n=== External Vector Example Complete ===" << std::endl;
   return 0;

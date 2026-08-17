@@ -21,10 +21,10 @@ namespace core {
  */
 struct IndexVersion {
   //! Retrieve the version number in string
-  static const char *String(void);
+  static const char *String();
 
   //! Retrieve the detailed version information
-  static const char *Details(void);
+  static const char *Details();
 };
 
 }  // namespace core

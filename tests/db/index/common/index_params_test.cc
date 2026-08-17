@@ -81,28 +81,41 @@ TEST(IndexParamsTest, VectorIndexParamsBase) {
 
 TEST(IndexParamsTest, HnswIndexParams) {
   // Test constructor
-  HnswIndexParams params(MetricType::COSINE, 20, 150, QuantizeType::INT4);
+  HnswIndexParams params(MetricType::COSINE, 20, 150, QuantizeType::INT4, true,
+                         QuantizerParam(true), true, DataType::VECTOR_FP16);
   EXPECT_EQ(params.type(), IndexType::HNSW);
   EXPECT_EQ(params.metric_type(), MetricType::COSINE);
   EXPECT_EQ(params.m(), 20);
   EXPECT_EQ(params.ef_construction(), 150);
   EXPECT_EQ(params.quantize_type(), QuantizeType::INT4);
+  EXPECT_TRUE(params.use_contiguous_memory());
+  EXPECT_TRUE(params.use_flat_contiguous_memory());
+  EXPECT_EQ(params.flat_data_type(), DataType::VECTOR_FP16);
 
   // Test clone
   auto cloned = params.clone();
   EXPECT_NE(cloned.get(), &params);
   EXPECT_EQ(cloned->type(), IndexType::HNSW);
+  auto cloned_hnsw = std::dynamic_pointer_cast<HnswIndexParams>(cloned);
+  ASSERT_NE(cloned_hnsw, nullptr);
+  EXPECT_TRUE(cloned_hnsw->use_flat_contiguous_memory());
+  EXPECT_EQ(cloned_hnsw->flat_data_type(), DataType::VECTOR_FP16);
+  EXPECT_TRUE(*cloned_hnsw == params);
 
   // Test comparison
-  HnswIndexParams params2(MetricType::COSINE, 20, 150, QuantizeType::INT4);
+  HnswIndexParams params2(MetricType::COSINE, 20, 150, QuantizeType::INT4, true,
+                          QuantizerParam(true), true, DataType::VECTOR_FP16);
   HnswIndexParams params3(MetricType::L2, 20, 150, QuantizeType::INT4);
   HnswIndexParams params4(MetricType::COSINE, 16, 150, QuantizeType::INT4);
   HnswIndexParams params5(MetricType::COSINE, 20, 200, QuantizeType::INT4);
+  HnswIndexParams params6(MetricType::COSINE, 20, 150, QuantizeType::INT4, true,
+                          QuantizerParam(true), true, DataType::VECTOR_FP32);
 
   EXPECT_TRUE(params == params2);
   EXPECT_FALSE(params == params3);
   EXPECT_FALSE(params == params4);
   EXPECT_FALSE(params == params5);
+  EXPECT_FALSE(params == params6);
 
   // Test setters
   params.set_m(10);
@@ -134,6 +147,29 @@ TEST(IndexParamsTest, FlatIndexParams) {
   EXPECT_FALSE(params == params4);
 }
 
+TEST(IndexParamsTest, DefaultFlatReferenceParams) {
+  HnswIndexParams hnsw(MetricType::L2);
+  VamanaIndexParams vamana(MetricType::L2);
+  EXPECT_EQ(hnsw.flat_data_type(), DataType::VECTOR_FP32);
+  EXPECT_EQ(vamana.flat_data_type(), DataType::VECTOR_FP32);
+
+  hnsw.set_flat_data_type(DataType::UNDEFINED);
+  vamana.set_flat_data_type(DataType::UNDEFINED);
+  EXPECT_EQ(hnsw.flat_data_type(), DataType::VECTOR_FP32);
+  EXPECT_EQ(vamana.flat_data_type(), DataType::VECTOR_FP32);
+
+  auto flat =
+      MakeDefaultVectorIndexParams(MetricType::L2, true, DataType::VECTOR_FP16);
+  EXPECT_EQ(flat.quantize_type(), QuantizeType::UNDEFINED);
+  EXPECT_TRUE(flat.use_contiguous_memory());
+  EXPECT_EQ(flat.storage_data_type(), DataType::VECTOR_FP16);
+  auto cloned = std::dynamic_pointer_cast<FlatIndexParams>(flat.clone());
+  ASSERT_NE(cloned, nullptr);
+  EXPECT_TRUE(cloned->use_contiguous_memory());
+  EXPECT_EQ(cloned->storage_data_type(), DataType::VECTOR_FP16);
+  EXPECT_TRUE(*cloned == flat);
+}
+
 TEST(IndexParamsTest, IVFIndexParams) {
   // Test constructor
   IVFIndexParams params(MetricType::L2, 128, 10, false, QuantizeType::INT8);
@@ -162,6 +198,63 @@ TEST(IndexParamsTest, IVFIndexParams) {
   params.set_n_list(64);
   EXPECT_EQ(params.n_list(), 64);
 }
+
+TEST(IndexParamsTest, DiskAnnIndexParams) {
+  DiskAnnIndexParams params(MetricType::L2, 48, 80, 16, QuantizeType::FP16,
+                            QuantizerParam(true));
+
+  EXPECT_EQ(IndexType::DISKANN, params.type());
+  EXPECT_EQ(MetricType::L2, params.metric_type());
+  EXPECT_EQ(48, params.max_degree());
+  EXPECT_EQ(80, params.list_size());
+  EXPECT_EQ(16, params.pq_chunk_num());
+  EXPECT_EQ(QuantizeType::FP16, params.quantize_type());
+  EXPECT_TRUE(params.quantizer_param().enable_rotate());
+
+  auto cloned = params.clone();
+  auto *cloned_diskann = dynamic_cast<DiskAnnIndexParams *>(cloned.get());
+  ASSERT_NE(nullptr, cloned_diskann);
+  EXPECT_EQ(params, *cloned_diskann);
+
+  cloned_diskann->set_list_size(40);
+  EXPECT_NE(params, *cloned_diskann);
+}
+
+#if RABITQ_SUPPORTED
+TEST(IndexParamsTest, IvfRabitqIndexParams) {
+  IvfRabitqIndexParams params(MetricType::COSINE, 32, 1, 5);
+  EXPECT_EQ(params.type(), IndexType::IVF_RABITQ);
+  EXPECT_EQ(params.metric_type(), MetricType::COSINE);
+  EXPECT_EQ(params.quantize_type(), QuantizeType::RABITQ);
+  EXPECT_EQ(params.nlist(), 32);
+  EXPECT_EQ(params.total_bits(), 1);
+  EXPECT_EQ(params.sample_count(), 5);
+
+  auto cloned = params.clone();
+  EXPECT_NE(cloned.get(), &params);
+  EXPECT_EQ(cloned->type(), IndexType::IVF_RABITQ);
+  EXPECT_TRUE(*cloned == params);
+
+  IvfRabitqIndexParams same_params(MetricType::COSINE, 32, 1, 5);
+  IvfRabitqIndexParams diff_metric(MetricType::IP, 32, 1, 5);
+  IvfRabitqIndexParams diff_nlist(MetricType::COSINE, 64, 1, 5);
+  IvfRabitqIndexParams diff_total_bits(MetricType::COSINE, 32, 7, 5);
+  IvfRabitqIndexParams diff_sample_count(MetricType::COSINE, 32, 1, 0);
+
+  EXPECT_TRUE(params == same_params);
+  EXPECT_FALSE(params == diff_metric);
+  EXPECT_FALSE(params == diff_nlist);
+  EXPECT_FALSE(params == diff_total_bits);
+  EXPECT_FALSE(params == diff_sample_count);
+
+  params.set_nlist(48);
+  params.set_total_bits(7);
+  params.set_sample_count(0);
+  EXPECT_EQ(params.nlist(), 48);
+  EXPECT_EQ(params.total_bits(), 7);
+  EXPECT_EQ(params.sample_count(), 0);
+}
+#endif
 
 TEST(IndexParamsTest, DefaultVectorIndexParams) {
   // Test default vector index params

@@ -117,15 +117,12 @@ struct Norm2Matrix<
     ailego_assert(m && dim && out);
 
     const ValueType *m_end = m + dim;
-    if (m != m_end) {
-      ValueType v = *m++;
-      *out = static_cast<float>(v * v);
-    }
+    float square = 0.0f;
     while (m != m_end) {
       ValueType v = *m++;
-      *out += static_cast<float>(v * v);
+      square += static_cast<float>(v * v);
     }
-    *out = std::sqrt(*out);
+    *out = std::sqrt(square);
   }
 };
 
@@ -291,14 +288,12 @@ struct SquaredNorm2Matrix<
     ailego_assert(m && dim && out);
 
     const ValueType *m_end = m + dim;
-    if (m != m_end) {
-      ValueType v = *m++;
-      *out = static_cast<float>(v * v);
-    }
+    float square = 0.0f;
     while (m != m_end) {
       ValueType v = *m++;
-      *out += static_cast<float>(v * v);
+      square += static_cast<float>(v * v);
     }
+    *out = square;
   }
 };
 
@@ -371,7 +366,7 @@ struct SquaredNorm2Matrix<uint8_t, M, typename std::enable_if<M >= 2>::type> {
   }
 };
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__SSE__) || defined(AILEGO_ARM64_NEON)
 /*! L2-Norm Matrix (FP32, M=1)
  */
 template <>
@@ -393,10 +388,11 @@ struct SquaredNorm2Matrix<float, 1> {
   //! Compute the squared L2-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
 };
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || AILEGO_ARM64_NEON
 
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+// MSVC ARM64 lacks `float16_t` without ARMv8.2 FP16; gate FP16 NEON
+// specialization to gcc/clang aarch64.
+#if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
 /*! L2-Norm Matrix (FP16, M=1)
  */
 template <>
@@ -418,7 +414,7 @@ struct SquaredNorm2Matrix<Float16, 1> {
   //! Compute the squared L2-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
 };
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
 }  // namespace ailego
 }  // namespace zvec

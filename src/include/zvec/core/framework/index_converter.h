@@ -14,11 +14,13 @@
 #pragma once
 
 #include <atomic>
+#include <utility>
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_stats.h>
 #include <zvec/core/framework/index_storage.h>
+#include <zvec/core/framework/index_threads.h>
 #include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
@@ -35,7 +37,7 @@ class IndexConverter : public IndexModule {
    */
   class Stats : public IndexStats {
    public:
-    Stats() {}
+    Stats() = default;
     Stats(const Stats &stats) {
       *this = stats;
     }
@@ -85,72 +87,72 @@ class IndexConverter : public IndexModule {
     }
 
     //! Retrieve count of documents trained
-    size_t trained_count(void) const {
+    size_t trained_count() const {
       return trained_count_;
     }
 
     //! Retrieve count of documents transformed
-    size_t transformed_count(void) const {
+    size_t transformed_count() const {
       return transformed_count_;
     }
 
     //! Retrieve size of documents dumped
-    size_t dumped_size(void) const {
+    size_t dumped_size() const {
       return dumped_size_;
     }
 
     //! Retrieve count of documents discarded
-    size_t discarded_count(void) const {
+    size_t discarded_count() const {
       return discarded_count_;
     }
 
     //! Retrieve time cost of documents trained
-    uint64_t trained_costtime(void) const {
+    uint64_t trained_costtime() const {
       return trained_costtime_;
     }
 
     //! Retrieve time cost of documents transformed
-    uint64_t transformed_costtime(void) const {
+    uint64_t transformed_costtime() const {
       return transformed_costtime_;
     }
 
     //! Retrieve time cost of documents dumped
-    uint64_t dumped_costtime(void) const {
+    uint64_t dumped_costtime() const {
       return dumped_costtime_;
     }
 
     //! Retrieve count of documents trained (mutable)
-    std::atomic<size_t> *mutable_trained_count(void) {
+    std::atomic<size_t> *mutable_trained_count() {
       return &trained_count_;
     }
 
     //! Retrieve count of documents transformed (mutable)
-    std::atomic<size_t> *mutable_transformed_count(void) {
+    std::atomic<size_t> *mutable_transformed_count() {
       return &transformed_count_;
     }
 
     //! Retrieve size of documents dumped (mutable)
-    std::atomic<size_t> *mutable_dumped_size(void) {
+    std::atomic<size_t> *mutable_dumped_size() {
       return &dumped_size_;
     }
 
     //! Retrieve count of documents discarded (mutable)
-    std::atomic<size_t> *mutable_discarded_count(void) {
+    std::atomic<size_t> *mutable_discarded_count() {
       return &discarded_count_;
     }
 
     //! Retrieve time cost of documents trained (mutable)
-    std::atomic<uint64_t> *mutable_trained_costtime(void) {
+    std::atomic<uint64_t> *mutable_trained_costtime() {
       return &trained_costtime_;
     }
 
     //! Retrieve time cost of documents transformed (mutable)
-    std::atomic<uint64_t> *mutable_transformed_costtime(void) {
+    std::atomic<uint64_t> *mutable_transformed_costtime() {
       return &transformed_costtime_;
     }
 
     //! Retrieve time cost of documents dumped (mutable)
-    std::atomic<uint64_t> *mutable_dumped_costtime(void) {
+    std::atomic<uint64_t> *mutable_dumped_costtime() {
       return &dumped_costtime_;
     }
 
@@ -166,17 +168,24 @@ class IndexConverter : public IndexModule {
   };
 
   //! Destructor
-  ~IndexConverter(void) override {}
+  ~IndexConverter() override = default;
 
   //! Initialize Converter
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;
 
   //! Cleanup Converter
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Train the data
   virtual int train(IndexHolder::Pointer) {
     return IndexError_NotImplemented;
+  }
+
+  //! Train the data with caller-provided thread resources when supported
+  virtual int train(IndexHolder::Pointer holder,
+                    IndexThreads::Pointer threads) {
+    (void)threads;
+    return train(std::move(holder));
   }
 
   //! Train the data
@@ -205,24 +214,29 @@ class IndexConverter : public IndexModule {
   }
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const = 0;
+  virtual const Stats &stats() const = 0;
 
   //! Retrieve a holder as result
-  virtual IndexHolder::Pointer result(void) const {
+  virtual IndexHolder::Pointer result() const {
     return nullptr;
   }
 
   //! Retrieve a holder as result
-  virtual IndexSparseHolder::Pointer sparse_result(void) const {
+  virtual IndexSparseHolder::Pointer sparse_result() const {
     return nullptr;
   }
 
   //! Retrieve Index Meta
-  virtual const IndexMeta &meta(void) const = 0;
+  virtual const IndexMeta &meta() const = 0;
 
   //! Train and transform the index
   static int TrainAndTransform(const IndexConverter::Pointer &converter,
                                IndexHolder::Pointer holder);
+
+  //! Train and transform with caller-provided thread resources
+  static int TrainAndTransform(const IndexConverter::Pointer &converter,
+                               IndexHolder::Pointer holder,
+                               IndexThreads::Pointer threads);
 
   //! Train, transform and dump the index
   static int TrainTransformAndDump(const IndexConverter::Pointer &converter,

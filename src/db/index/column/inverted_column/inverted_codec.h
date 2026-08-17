@@ -127,7 +127,7 @@ class InvertedIndexCodec {
   }
 
 
-  static std::string Encode_Reversed(const std::string &term) {
+  static std::string encode_reversed(const std::string &term) {
     std::string reversed = term;
     std::reverse(reversed.begin(), reversed.end());
     return reversed;
@@ -136,7 +136,7 @@ class InvertedIndexCodec {
 
   // Format of range key:
   // [range_begin_key][separator_byte][range_end_key][range_begin_key_size]
-  static void Decode_Range_Key(const char *range_key_ptr, size_t range_key_size,
+  static void decode_range_key(const char *range_key_ptr, size_t range_key_size,
                                char **range_begin_pos,
                                size_t *range_begin_key_size,
                                char **range_end_pos,
@@ -165,7 +165,7 @@ class InvertedIndexCodec {
   }
 
 
-  static bool Has_Prefix(const char *value, size_t value_len,
+  static bool has_prefix(const char *value, size_t value_len,
                          const char *prefix, size_t prefix_len) {
     if (value_len < prefix_len) {
       return false;
@@ -238,7 +238,7 @@ class InvertedIndexCodec {
   }
 
 
-  static Status Merge_OR(const char *data, size_t size, bool lazy,
+  static Status merge_or(const char *data, size_t size, bool lazy,
                          roaring_bitmap_t *bitmap) {
     if (!data || size == 0) {
       LOG_ERROR("Input data is invalid");
@@ -279,7 +279,7 @@ class InvertedIndexCodec {
   }
 
 
-  static Status Merge_AND(const char *data, size_t size,
+  static Status merge_and(const char *data, size_t size,
                           roaring_bitmap_t *bitmap) {
     if (!data || size == 0) {
       LOG_ERROR("Input data is invalid");

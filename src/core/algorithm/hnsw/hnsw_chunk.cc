@@ -15,10 +15,10 @@
 #include <chrono>
 #include <random>
 #include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_helper.h>
-#include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_streamer.h>
 
 namespace zvec {
@@ -109,7 +109,7 @@ int ChunkBroker::open(IndexStorage::Pointer stg, uint32_t &chunk_size,
     return IndexError_Duplicate;
   }
   stg_ = std::move(stg);
-  if (stg_->isHugePage()) {
+  if (stg_->is_huge_page()) {
     page_mask_ = ailego::MemoryHelper::HugePageSize() - 1;
   } else {
     page_mask_ = ailego::MemoryHelper::PageSize() - 1;
@@ -128,7 +128,7 @@ int ChunkBroker::open(IndexStorage::Pointer stg, uint32_t &chunk_size,
   return load_storage(chunk_size);
 }
 
-int ChunkBroker::close(void) {
+int ChunkBroker::close() {
   flush(0UL);
 
   stg_.reset();

@@ -37,7 +37,7 @@ template <template <typename, size_t, size_t> class DistanceType,
           typename ValueType, size_t BatchSize, size_t PrefetchStep,
           typename = void>
 struct BaseDistanceBatchWithScoreUnquantized {
-  static inline void _ComputeBatch(const ValueType **m, const ValueType *q,
+  static inline void compute_batch(const ValueType **m, const ValueType *q,
                                    size_t num, size_t dim, float *out) {
     for (size_t i = 0; i < num; ++i) {
       DistanceType<ValueType, 1, 1>::Compute(m[i], q, dim, out + i);
@@ -46,7 +46,8 @@ struct BaseDistanceBatchWithScoreUnquantized {
 
   // If Distance has ComputeBatch, use it; otherwise fall back to _ComputeBatch.
   static inline void ComputeBatch(const ValueType **m, const ValueType *q,
-                                  size_t num, size_t dim, float *out) {
+                                  size_t num, size_t dim, float *out,
+                                  const void ** /*extra_values*/) {
     // if constexpr (detail::HasComputeBatch<Distance, ValueType>::value) {
     //   return Distance::ComputeBatch(m, q, num, dim, out);
     // }
@@ -62,7 +63,7 @@ struct BaseDistanceBatchWithScoreUnquantized {
                                                             out);
     }
 
-    _ComputeBatch(m, q, num, dim, out);
+    compute_batch(m, q, num, dim, out);
   }
 };
 
@@ -85,7 +86,7 @@ struct CosineMinusInnerProductDistanceBatchWithScoreUnquantized<
     ImplType::ComputeBatch(vecs, query, num_vecs, original_dim, results);
   }
 
-  static ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc
+  static ailego::distance_batch::DistanceBatchQueryPreprocessFunc
   GetQueryPreprocessFunc() {
     return QueryPreprocess;
   }
@@ -119,8 +120,8 @@ template <size_t BatchSize, size_t PrefetchStep>
 struct MinusInnerProductDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
                                                           PrefetchStep> {
   using ImplType =
-      ailego::DistanceBatch::InnerProductDistanceBatch<int8_t, BatchSize,
-                                                       PrefetchStep>;
+      ailego::distance_batch::InnerProductDistanceBatch<int8_t, BatchSize,
+                                                        PrefetchStep>;
   static inline void ComputeBatch(const int8_t **vecs, const int8_t *query,
                                   size_t num_vecs, size_t dim, float *results) {
     const size_t original_dim = dim;
@@ -147,7 +148,7 @@ struct MinusInnerProductDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
     }
   }
 
-  static ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc
+  static ailego::distance_batch::DistanceBatchQueryPreprocessFunc
   GetQueryPreprocessFunc() {
     return ImplType::GetQueryPreprocessFunc();
   }
@@ -162,7 +163,7 @@ struct MinusInnerProductDistanceBatchWithScoreUnquantized<uint8_t, BatchSize,
     const size_t original_dim = dim;
     const size_t original_dim_in_uint8_array = original_dim >> 1;
 
-    ailego::DistanceBatch::InnerProductDistanceBatch<
+    ailego::distance_batch::InnerProductDistanceBatch<
         uint8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                         original_dim, results);
     const float *q_tail = reinterpret_cast<const float *>(
@@ -193,12 +194,12 @@ template <size_t BatchSize, size_t PrefetchStep>
 struct SquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
                                                          PrefetchStep> {
   using ImplType =
-      ailego::DistanceBatch::InnerProductDistanceBatch<int8_t, BatchSize,
-                                                       PrefetchStep>;
+      ailego::distance_batch::InnerProductDistanceBatch<int8_t, BatchSize,
+                                                        PrefetchStep>;
   static void ComputeBatch(const int8_t **vecs, const int8_t *query,
                            size_t num_vecs, size_t dim, float *results) {
     const size_t original_dim = dim - 20;
-    ailego::DistanceBatch::InnerProductDistanceBatch<
+    ailego::distance_batch::InnerProductDistanceBatch<
         int8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                        original_dim, results);
 
@@ -229,7 +230,7 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
     }
   }
 
-  static ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc
+  static ailego::distance_batch::DistanceBatchQueryPreprocessFunc
   GetQueryPreprocessFunc() {
     return QueryPreprocess;
   }
@@ -249,7 +250,7 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<uint8_t, BatchSize,
                            size_t num_vecs, size_t dim, float *results) {
     const size_t original_dim = dim - 32;
     const size_t original_dim_in_uint8_array = original_dim >> 1;
-    ailego::DistanceBatch::InnerProductDistanceBatch<
+    ailego::distance_batch::InnerProductDistanceBatch<
         uint8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                         original_dim, results);
 
@@ -288,12 +289,12 @@ template <size_t BatchSize, size_t PrefetchStep>
 struct MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
                                                              PrefetchStep> {
   using ImplType =
-      ailego::DistanceBatch::InnerProductDistanceBatch<int8_t, BatchSize,
-                                                       PrefetchStep>;
+      ailego::distance_batch::InnerProductDistanceBatch<int8_t, BatchSize,
+                                                        PrefetchStep>;
   static void ComputeBatch(const int8_t **vecs, const int8_t *query,
                            size_t num_vecs, size_t dim, float *results) {
     const size_t original_dim = dim - 20;
-    ailego::DistanceBatch::InnerProductDistanceBatch<
+    ailego::distance_batch::InnerProductDistanceBatch<
         int8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                        original_dim, results);
 
@@ -335,7 +336,7 @@ struct MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<uint8_t, BatchSize,
                            size_t num_vecs, size_t dim, float *results) {
     const size_t original_dim = dim - 32;
     const size_t original_dim_in_uint8_array = original_dim >> 1;
-    ailego::DistanceBatch::InnerProductDistanceBatch<
+    ailego::distance_batch::InnerProductDistanceBatch<
         uint8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                         original_dim, results);
 

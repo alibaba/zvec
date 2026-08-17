@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pin the test process to one Windows ANSI code page. Locale-name selection is
+  available on newer Windows releases. The test checks GetACP() at runtime and
+  skips rather than running against an unexpected code page.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity type="win32" name="zvec.tests.@ZVEC_ACP_TARGET@"
+                    version="1.0.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage
+          xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">@ZVEC_ACP_LOCALE@</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

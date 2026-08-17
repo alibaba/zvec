@@ -37,7 +37,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -82,15 +82,10 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
     centroid_searcher_ctx_->set_topk(topk_val);
 
-    // When nprobe is explicitly set, scale max_scan_count proportionally
-    // to ensure all probed clusters can be fully scanned.
+    // When nprobe is explicitly set, lift max_scan_count to the total vector
+    // count to ensure all selected clusters can be fully scanned.
     if (nprobe > 0 && entity_->inverted_list_count() > 0) {
-      uint32_t list_count =
-          static_cast<uint32_t>(entity_->inverted_list_count());
-      max_scan_count_ = static_cast<uint32_t>(
-          (static_cast<uint64_t>(entity_->vector_count()) * nprobe +
-           list_count - 1) /
-          list_count);
+      max_scan_count_ = static_cast<uint32_t>(entity_->vector_count());
     } else {
       max_scan_count_ = static_cast<uint32_t>(
           std::ceil(entity_->vector_count() * scan_ratio_));
@@ -100,7 +95,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve magic number
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -121,12 +116,12 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve scan ratio
-  float scan_ratio(void) const {
+  float scan_ratio() const {
     return scan_ratio_;
   }
 
   //! Retrieve max scan count
-  uint32_t max_scan_count(void) const {
+  uint32_t max_scan_count() const {
     return max_scan_count_;
   }
 
@@ -148,7 +143,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
     fetch_vector_ = v;
   }
 
-  bool fetch_vector(void) const override {
+  bool fetch_vector() const override {
     return fetch_vector_;
   }
 
@@ -180,7 +175,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve the centroid index context
-  IndexSearcher::Context::Pointer &centroid_searcher_ctx(void) {
+  IndexSearcher::Context::Pointer &centroid_searcher_ctx() {
     return centroid_searcher_ctx_;
   }
 

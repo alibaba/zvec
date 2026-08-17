@@ -44,17 +44,17 @@ class FixedVector {
   }
 
   //! Retrieve data pointer
-  T *data(void) {
+  T *data() {
     return data_;
   }
 
   //! Retrieve data pointer
-  const T *data(void) const {
+  const T *data() const {
     return data_;
   }
 
   //! Retrieve count of elements in vector
-  constexpr size_t size(void) const {
+  constexpr size_t size() const {
     return MAX_SIZE;
   }
 
@@ -85,7 +85,7 @@ class NumericalVector : public TBase {
   typedef const ValueType *const_iterator;
 
   //! Constructor
-  NumericalVector(void) : TBase() {}
+  NumericalVector() : TBase() {}
 
   //! Constructor
   explicit NumericalVector(size_t dim) : TBase() {
@@ -201,67 +201,67 @@ class NumericalVector : public TBase {
   }
 
   //! Access last element
-  ValueType &back(void) {
+  ValueType &back() {
     return *(this->rbegin());
   }
 
   //! Access last element
-  const ValueType &back(void) const {
+  const ValueType &back() const {
     return *(this->rbegin());
   }
 
   //! Retrieve iterator to beginning
-  iterator begin(void) {
+  iterator begin() {
     return this->data();
   }
 
   //! Retrieve iterator to beginning
-  const_iterator begin(void) const {
+  const_iterator begin() const {
     return this->data();
   }
 
   //! Retrieve size of allocated storage
-  size_t capacity(void) const {
+  size_t capacity() const {
     return (TBase::capacity() / sizeof(ValueType));
   }
 
   //! Clear the vector
-  void clear(void) {
+  void clear() {
     TBase::clear();
   }
 
   //! Retrieve pointer of data
-  ValueType *data(void) {
+  ValueType *data() {
     return reinterpret_cast<ValueType *>(&(TBase::operator[](0)));
   }
 
   //! Retrieve pointer of data
-  const ValueType *data(void) const {
+  const ValueType *data() const {
     return reinterpret_cast<const ValueType *>(TBase::data());
   }
 
   //! Test if vector is empty
-  bool empty(void) const {
+  bool empty() const {
     return TBase::empty();
   }
 
   //! An iterator to the past-the-end
-  iterator end(void) {
+  iterator end() {
     return (this->data() + this->size());
   }
 
   //! An iterator to the past-the-end
-  const_iterator end(void) const {
+  const_iterator end() const {
     return (this->data() + this->size());
   }
 
   //! Access first element
-  ValueType &front(void) {
+  ValueType &front() {
     return *(this->begin());
   }
 
   //! Access first element
-  const ValueType &front(void) const {
+  const ValueType &front() const {
     return *(this->begin());
   }
 
@@ -286,17 +286,17 @@ class NumericalVector : public TBase {
   }
 
   //! Retrieve dimension of vector
-  size_t size(void) const {
+  size_t size() const {
     return (TBase::size() / sizeof(ValueType));
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const {
+  size_t dimension() const {
     return (TBase::size() / sizeof(ValueType));
   }
 
   //! Retrieve size of vector in bytes
-  size_t bytes(void) const {
+  size_t bytes() const {
     return TBase::size();
   }
 
@@ -320,7 +320,7 @@ class NibbleVector : public TBase {
   class const_iterator {
    public:
     //! Constructor
-    const_iterator(void) : i_(0), owner_(nullptr) {}
+    const_iterator() : i_(0), owner_(nullptr) {}
 
     //! Constructor
     const_iterator(const NibbleVector *owner, size_t i)
@@ -385,7 +385,7 @@ class NibbleVector : public TBase {
   };
 
   //! Constructor
-  NibbleVector(void) : TBase() {}
+  NibbleVector() : TBase() {}
 
   //! Constructor
   explicit NibbleVector(size_t dim) : TBase() {
@@ -516,47 +516,47 @@ class NibbleVector : public TBase {
   }
 
   //! Access last element
-  ValueType back(void) const {
+  ValueType back() const {
     return this->at(this->size() - 1);
   }
 
   //! Retrieve iterator to beginning
-  const_iterator begin(void) const {
+  const_iterator begin() const {
     return const_iterator(this, 0);
   }
 
   //! Retrieve size of allocated storage
-  size_t capacity(void) const {
+  size_t capacity() const {
     return (TBase::capacity() << 1);
   }
 
   //! Clear the vector
-  void clear(void) {
+  void clear() {
     TBase::clear();
   }
 
   //! Retrieve pointer of data
-  StoreType *data(void) {
+  StoreType *data() {
     return reinterpret_cast<StoreType *>(&(TBase::operator[](0)));
   }
 
   //! Retrieve pointer of data
-  const StoreType *data(void) const {
+  const StoreType *data() const {
     return reinterpret_cast<const StoreType *>(TBase::data());
   }
 
   //! Test if vector is empty
-  bool empty(void) const {
+  bool empty() const {
     return TBase::empty();
   }
 
   //! An iterator to the past-the-end
-  const_iterator end(void) const {
+  const_iterator end() const {
     return const_iterator(this, this->size());
   }
 
   //! Access first element
-  ValueType front(void) const {
+  ValueType front() const {
     return this->at(0);
   }
 
@@ -580,17 +580,17 @@ class NibbleVector : public TBase {
   }
 
   //! Retrieve dimension of vector
-  size_t size(void) const {
+  size_t size() const {
     return (TBase::size() << 1);
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const {
+  size_t dimension() const {
     return (TBase::size() << 1);
   }
 
   //! Retrieve size of vector in bytes
-  size_t bytes(void) const {
+  size_t bytes() const {
     return TBase::size();
   }
 
@@ -630,7 +630,7 @@ class BinaryVector : public TBase {
   class const_iterator {
    public:
     //! Constructor
-    const_iterator(void) : i_(0), arr_(nullptr) {}
+    const_iterator() : i_(0), arr_(nullptr) {}
 
     //! Constructor
     const_iterator(const void *buf, size_t i)
@@ -695,7 +695,7 @@ class BinaryVector : public TBase {
   };
 
   //! Constructor
-  BinaryVector(void) : TBase() {}
+  BinaryVector() : TBase() {}
 
   //! Constructor
   explicit BinaryVector(size_t dim) : TBase() {
@@ -832,47 +832,47 @@ class BinaryVector : public TBase {
   }
 
   //! Access last element
-  bool back(void) const {
+  bool back() const {
     return this->at(this->size() - 1);
   }
 
   //! Retrieve const_iterator to beginning
-  const_iterator begin(void) const {
+  const_iterator begin() const {
     return const_iterator(this->data(), 0);
   }
 
   //! Retrieve size of allocated storage
-  size_t capacity(void) const {
+  size_t capacity() const {
     return (TBase::capacity() << 3);
   }
 
   //! Clear the vector
-  void clear(void) {
+  void clear() {
     TBase::clear();
   }
 
   //! Retrieve pointer of data
-  ValueType *data(void) {
+  ValueType *data() {
     return reinterpret_cast<ValueType *>(&(TBase::operator[](0)));
   }
 
   //! Retrieve pointer of data
-  const ValueType *data(void) const {
+  const ValueType *data() const {
     return reinterpret_cast<const ValueType *>(TBase::data());
   }
 
   //! Test if vector is empty
-  bool empty(void) const {
+  bool empty() const {
     return TBase::empty();
   }
 
   //! An const_iterator to the past-the-end
-  const_iterator end(void) const {
+  const_iterator end() const {
     return const_iterator(this->data(), this->size());
   }
 
   //! Access first element
-  bool front(void) const {
+  bool front() const {
     return this->at(0);
   }
 
@@ -896,17 +896,17 @@ class BinaryVector : public TBase {
   }
 
   //! Retrieve dimension of vector
-  size_t size(void) const {
+  size_t size() const {
     return (TBase::size() << 3);
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const {
+  size_t dimension() const {
     return (TBase::size() << 3);
   }
 
   //! Retrieve size of vector in bytes
-  size_t bytes(void) const {
+  size_t bytes() const {
     return TBase::size();
   }
 
@@ -928,7 +928,7 @@ class HybridVector : public NumericalVector<T, TBase> {
   typedef const ValueType *const_iterator;
 
   //! Constructor
-  HybridVector(void) = default;
+  HybridVector() = default;
 
   //! Constructor
   explicit HybridVector(size_t dim) : NumericalVector<T, TBase>(dim) {}
@@ -977,7 +977,7 @@ class HybridVector : public NumericalVector<T, TBase> {
     return reinterpret_cast<const uint32_t *>(sparse_indices_.data());
   }
 
-  const ValueType *sparse_data(void) const {
+  const ValueType *sparse_data() const {
     return reinterpret_cast<const ValueType *>(sparse_data_.data());
   }
 
@@ -1014,7 +1014,7 @@ class SparseVector {
   typedef const ValueType *const_iterator;
 
   //! Constructor
-  SparseVector(void) = default;
+  SparseVector() = default;
 
   size_t sparse_count() const {
     return sparse_count_;
@@ -1024,7 +1024,7 @@ class SparseVector {
     return reinterpret_cast<const uint32_t *>(sparse_indices_.data());
   }
 
-  const ValueType *sparse_data(void) const {
+  const ValueType *sparse_data() const {
     return reinterpret_cast<const ValueType *>(sparse_data_.data());
   }
 

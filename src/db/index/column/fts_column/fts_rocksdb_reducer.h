@@ -52,7 +52,9 @@ class FtsRocksdbReducer {
   Result<void> cleanup();
 
   /*! Feed a source segment to be merged.
-   *  Segments must be fed in consecutive doc_id order.
+   *  Segments must be fed in ascending, non-overlapping global doc_id order.
+   *  Gaps between global doc_id ranges are allowed because deleted documents
+   *  may already have been removed by an earlier compaction.
    *  \param segment_stats       Stats of the source segment (min/max doc_id)
    *  \param src_ctx             RocksdbContext owning the source CFs
    *  \param src_postings_cf     Source postings CF (must be BitPacked)

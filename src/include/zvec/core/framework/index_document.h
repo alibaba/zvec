@@ -29,32 +29,32 @@ class IndexSparseDocument {
   IndexSparseDocument() = default;
 
   //! Retrieve mutable sparse count
-  uint32_t *mutable_sparse_count(void) {
+  uint32_t *mutable_sparse_count() {
     return &sparse_count_;
   }
 
   //! Retrieve mutable sparse indices
-  std::string *mutable_sparse_indices(void) {
+  std::string *mutable_sparse_indices() {
     return &sparse_indices_;
   }
 
   //! Retrieve mutable sparse values
-  std::string *mutable_sparse_values(void) {
+  std::string *mutable_sparse_values() {
     return &sparse_values_;
   }
 
   //! Retrieve sparse count
-  uint32_t sparse_count(void) const {
+  uint32_t sparse_count() const {
     return sparse_count_;
   }
 
   //! Retrieve sparse indices
-  const std::string &sparse_indices(void) const {
+  const std::string &sparse_indices() const {
     return sparse_indices_;
   }
 
   //! Retrieve sparse values
-  const std::string &sparse_values(void) const {
+  const std::string &sparse_values() const {
     return sparse_values_;
   }
 
@@ -169,17 +169,17 @@ class IndexDocument {
   }
 
   //! Retrieve primary key
-  uint64_t key(void) const {
+  uint64_t key() const {
     return key_;
   }
 
   //! Retrieve score value
-  float score(void) const {
+  float score() const {
     return score_;
   }
 
   //! Retrieve index id
-  uint32_t index(void) const {
+  uint32_t index() const {
     return index_;
   }
 
@@ -199,17 +199,17 @@ class IndexDocument {
   }
 
   //! Retrieve mutable primary key
-  uint64_t *mutable_key(void) {
+  uint64_t *mutable_key() {
     return &key_;
   }
 
   //! Retrieve mutable score value
-  float *mutable_score(void) {
+  float *mutable_score() {
     return &score_;
   }
 
   //! Retrieve mutable index id
-  uint32_t *mutable_index(void) {
+  uint32_t *mutable_index() {
     return &index_;
   }
 
@@ -245,7 +245,7 @@ class IndexDocument {
 class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
  public:
   //! Constructor
-  IndexDocumentHeap(void) : ailego::Heap<IndexDocument>() {}
+  IndexDocumentHeap() = default;
 
   //! Constructor
   IndexDocumentHeap(size_t max) : ailego::Heap<IndexDocument>(max) {}
@@ -255,8 +255,7 @@ class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
       : ailego::Heap<IndexDocument>(max), threshold_(val) {}
 
   //! Constructor
-  IndexDocumentHeap(const IndexDocumentHeap &rhs)
-      : ailego::Heap<IndexDocument>(rhs), threshold_(rhs.threshold_) {}
+  IndexDocumentHeap(const IndexDocumentHeap &rhs) = default;
 
   //! Constructor
   IndexDocumentHeap(IndexDocumentHeap &&rhs)
@@ -291,7 +290,7 @@ class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
   }
 
   //! Retrieve value of threshold for RNN
-  float threshold(void) const {
+  float threshold() const {
     return threshold_;
   }
 

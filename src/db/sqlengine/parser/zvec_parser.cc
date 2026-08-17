@@ -63,7 +63,7 @@ std::string ZVecParser::to_formatted_string_tree(void *tree, void *parser) {
   int i = 0, num = 0;
   const std::string DELIMITER = "  ";
   const std::string LINE = "\n";
-  int lastPos1 = 0;
+  int last_pos1 = 0;
 
   std::string out;
 
@@ -83,14 +83,14 @@ std::string ZVecParser::to_formatted_string_tree(void *tree, void *parser) {
     }
 
     if (pos1 >= 0 && pos1 < pos2) {
-      if (lastPos1 == 1) {
+      if (last_pos1 == 1) {
         formatted += "(";
       }
       pos = pos1;
       formatted += tree_text.substr(start, (size_t)pos1 - start);
       num++;
     } else {
-      if (lastPos1 == 1) {
+      if (last_pos1 == 1) {
         formatted += "(";
       }
       pos = pos2;
@@ -106,9 +106,9 @@ std::string ZVecParser::to_formatted_string_tree(void *tree, void *parser) {
     start = pos + 1;
 
     if (pos == pos1) {
-      lastPos1 = 1;
+      last_pos1 = 1;
     } else {
-      lastPos1 = 0;
+      last_pos1 = 0;
     }
 
     out += formatted;

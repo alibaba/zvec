@@ -105,13 +105,13 @@ TEST(ArrowIpcWriter, General) {
             << std::endl;
 
   // 读取文件
-  std::shared_ptr<arrow::io::RandomAccessFile> output_file_;
+  std::shared_ptr<arrow::io::RandomAccessFile> output_file;
   std::string output_file_path_cp;
-  auto as = CreateRandomAccessFileByUri(output_file_path, &output_file_,
+  auto as = CreateRandomAccessFileByUri(output_file_path, &output_file,
                                         &output_file_path_cp);
   ASSERT_TRUE(as.ok());
 
-  auto result = arrow::ipc::RecordBatchFileReader::Open(output_file_);
+  auto result = arrow::ipc::RecordBatchFileReader::Open(output_file);
   ASSERT_TRUE(result.ok());
 
   auto reader = std::move(result).ValueOrDie();

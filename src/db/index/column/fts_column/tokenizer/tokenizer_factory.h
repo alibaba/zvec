@@ -44,22 +44,22 @@ using TokenizerPipelinePtr = std::shared_ptr<TokenizerPipeline>;
 
 /*! Tokenizer factory
  *  Create TokenizerPipeline based on FtsIndexParams configuration.
- *  Supported tokenizers: standard, jieba, whitespace.
- *  Supported filters: lowercase, ascii_folding.
  */
 class TokenizerFactory {
  public:
   /*! Create tokenizer pipeline from FtsIndexParams.
    *  \param params  FTS index parameters containing tokenizer_name, filters,
    *                 and extra_params (JSON string for tokenizer-specific
-   *                 configuration).
-   *  \return        Tokenizer pipeline, returns nullptr on failure
+   *                 configuration). The stemmer filter reads stemmer_lang from
+   *                 extra_params and uses Snowball English by default.
+   *  \return        Tokenizer pipeline, or a detailed error status.
    */
-  static TokenizerPipelinePtr create(const FtsIndexParams &params);
+  static Result<TokenizerPipelinePtr> create(const FtsIndexParams &params);
 
  private:
-  static TokenizerPtr create_tokenizer(const std::string &tokenizer_name,
-                                       const ailego::JsonObject &extra_json);
+  static Status create_tokenizer(const std::string &tokenizer_name,
+                                 const ailego::JsonObject &extra_json,
+                                 TokenizerPtr *tokenizer);
   static TokenFilterPtr create_filter(const std::string &filter_name);
 };
 

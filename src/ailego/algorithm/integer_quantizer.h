@@ -40,7 +40,7 @@ class EntropyIntegerQuantizer {
   static_assert(RANGE_MIN < RANGE_MAX, "Invalid value range");
 
   //! Constructor
-  EntropyIntegerQuantizer(void) {}
+  EntropyIntegerQuantizer() = default;
 
   //! Set histogram bins in train
   void set_histogram_bins(size_t bins) {
@@ -78,45 +78,45 @@ class EntropyIntegerQuantizer {
   }
 
   //! Get histogram bins in train
-  size_t histogram_bins(void) const {
+  size_t histogram_bins() const {
     return histogram_bins_;
   }
 
   //! Get quantization params scale
-  float scale(void) const {
+  float scale() const {
     return scale_;
   }
 
   //! Get quantization params bias
-  float bias(void) const {
+  float bias() const {
     return bias_;
   }
 
   //! Get quantization params max
-  float max(void) const {
+  float max() const {
     return max_;
   }
 
   //! Get quantization params min
-  float min(void) const {
+  float min() const {
     return min_;
   }
 
   //! Get quantization params non bias
-  bool non_bias(void) const {
+  bool non_bias() const {
     return non_bias_;
   }
 
   //! Retrieve the scale reciprocal for decoding
-  float scale_reciprocal(void) const {
+  float scale_reciprocal() const {
     return scale_reciprocal_;
   }
 
- protected:
   //! Disable them
   EntropyIntegerQuantizer(const EntropyIntegerQuantizer &) = delete;
   EntropyIntegerQuantizer &operator=(const EntropyIntegerQuantizer &) = delete;
 
+ protected:
   //! Members
   size_t histogram_bins_{0};
   float hist_interval_{1.0f};
@@ -139,7 +139,7 @@ class EntropyInt16Quantizer
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Encode float vector to int16
   void encode(const float *in, size_t dim, ValueType *out) const;
@@ -157,7 +157,7 @@ class EntropyUInt16Quantizer
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Encode float vector to uint16
   void encode(const float *in, size_t dim, ValueType *out) const;
@@ -174,7 +174,7 @@ class EntropyInt8Quantizer : public EntropyIntegerQuantizer<int8_t, -127, 127> {
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Encode float vector to int8
   void encode(const float *in, size_t dim, ValueType *out) const;
@@ -191,7 +191,7 @@ class EntropyUInt8Quantizer : public EntropyIntegerQuantizer<uint8_t, 0, 255> {
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Encode float vector to uint8
   void encode(const float *in, size_t dim, ValueType *out) const;
@@ -208,7 +208,7 @@ class EntropyInt4Quantizer : public EntropyIntegerQuantizer<uint8_t, -8, 7> {
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Encode float vector to int4
   void encode(const float *in, size_t dim, ValueType *out) const;
@@ -225,7 +225,7 @@ class EntropyUInt4Quantizer : public EntropyIntegerQuantizer<uint8_t, 0, 15> {
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Encode float vector to uint4
   void encode(const float *in, size_t dim, ValueType *out) const;

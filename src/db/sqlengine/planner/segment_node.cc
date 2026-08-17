@@ -64,15 +64,15 @@ SegmentNode::gen() {
 Status SegmentNode::prepare() {
   auto group = thread_pool_->make_group();
 
-  std::vector<Result<std::unique_ptr<arrow::RecordBatchReader>>> results_;
-  results_.resize(segment_plans_.size());
+  std::vector<Result<std::unique_ptr<arrow::RecordBatchReader>>> results;
+  results.resize(segment_plans_.size());
   for (size_t i = 0; i < segment_plans_.size(); i++) {
     auto &plan = segment_plans_[i];
-    group->execute([&, i]() { results_[i] = plan->execute_to_reader(); });
+    group->execute([&, i]() { results[i] = plan->execute_to_reader(); });
   }
   group->wait_finish();
   for (size_t i = 0; i < segment_plans_.size(); i++) {
-    auto &result = results_[i];
+    auto &result = results[i];
     if (!result) {
       return result.error();
     }

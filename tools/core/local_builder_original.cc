@@ -17,6 +17,8 @@
 #include <iostream>
 #include <memory>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantized_holder.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
 #if RABITQ_SUPPORTED
@@ -24,9 +26,9 @@
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #endif
+#include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_logger.h"
 #include "zvec/core/framework/index_plugin.h"
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
@@ -75,7 +77,7 @@ void stop(int signo) {
   }
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: local_builder CONFIG.yaml [plugin file path]" << endl;
 }
 
@@ -167,6 +169,53 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
   cerr << "HNSW RaBitQ is not supported on this platform" << endl;
   return -1;
 #endif
+}
+
+//! Handle the general [BuildFromOriginal] option: bind a provider of the
+//! original vectors so the graph is built from them
+IndexHolder::Pointer convert_holder(const std::string &name,
+                                    const ailego::Params &params,
+                                    VecsIndexHolder::Pointer &in_holder,
+                                    IndexMeta &index_meta);
+
+int setup_build_from_original(const string &builder_class,
+                              const IndexStreamer::Pointer &streamer,
+                              const IndexHolder::Pointer &build_holder,
+                              const IndexMeta &input_meta) {
+  IndexProvider::Pointer provider;
+  IndexMeta provider_meta = input_meta;
+
+  if (input_meta.metric_name() == "Cosine") {
+    // normalize the original vectors so they match the cosine metric space;
+    // note this materializes a full fp32 copy of the dataset in memory
+    VecsIndexHolder::Pointer vecs_holder =
+        std::dynamic_pointer_cast<VecsIndexHolder>(build_holder);
+    if (!vecs_holder) {
+      cerr << "Failed to cast build holder to VecsIndexHolder" << endl;
+      return -1;
+    }
+    IndexHolder::Pointer cv_holder = convert_holder(
+        "CosineFp32Converter", ailego::Params(), vecs_holder, provider_meta);
+    if (!cv_holder) {
+      cerr << "Failed to convert holder for BuildFromOriginal" << endl;
+      return -1;
+    }
+    provider = convert_holder_to_provider(cv_holder);
+  } else {
+    provider = std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  }
+
+  if (!provider) {
+    cerr << "Failed to create provider for BuildFromOriginal" << endl;
+    return -1;
+  }
+  if (!streamer || streamer->set_provider(provider, provider_meta) != 0) {
+    cerr << "[BuildFromOriginal] is not supported by builder class "
+         << builder_class << endl;
+    return -1;
+  }
+  cout << "Build " << builder_class << " graph from original vectors" << endl;
+  return 0;
 }
 
 bool check_config(YAML::Node &config_root) {
@@ -283,6 +332,7 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
                                 uint32_t thread_count) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -317,7 +367,6 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
       return;
     }
     std::string ovec;
-    IndexQueryMeta ometa;
     for (uint32_t id = idx; id < sparse_holder->count() && !stop_now;
          id += thread_count) {
       uint64_t key = sparse_holder->get_key(id);
@@ -437,6 +486,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
                          uint32_t thread_count, RetrievalMode retrieval_mode) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -460,7 +510,8 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
   }
 
   IndexQueryMeta qmeta(holder->data_type(), holder->dimension());
-  uint32_t keep_docs = holder->count() - holder->start_cursor();
+  const size_t keep_docs = holder->count();
+  const size_t end_cursor = holder->end_cursor();
 
   auto do_build = [&](size_t idx) {
     AILEGO_DEFER([&]() {
@@ -477,8 +528,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     }
     std::string ovec;
     IndexQueryMeta ometa;
-    for (uint32_t id = idx; id < holder->count() && !stop_now;
-         id += thread_count) {
+    for (uint32_t id = idx; id < end_cursor && !stop_now; id += thread_count) {
       uint64_t key = holder->get_key(id);
       if (retrieval_mode == RM_DENSE) {
         if (reformer) {
@@ -535,7 +585,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
       return errcode;
     }
     LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
-             finished.load() * 100.0f / holder->count());
+             finished.load() * 100.0f / end_cursor);
   }
   if (error.load(std::memory_order_acquire)) {
     cerr << "Failed to build index while waiting finish\n";
@@ -671,6 +721,69 @@ IndexHolder::Pointer convert_holder(const std::string &name,
   index_meta = converter->meta();
 
   return converter->result();
+}
+
+IndexHolder::Pointer quantize_holder(
+    const std::string &name, const ailego::Params &params,
+    VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
+  IndexHolder::Pointer cast_holder =
+      std::dynamic_pointer_cast<IndexHolder>(in_holder);
+  if (name.empty()) {
+    return cast_holder;
+  }
+
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer =
+      IndexFactory::CreateQuantizer(name);
+  if (!quantizer) {
+    cerr << "Failed to create quantizer " << name << endl;
+    return IndexHolder::Pointer();
+  }
+
+  int ret = quantizer->init(in_holder->index_meta(), params);
+  if (ret != 0) {
+    cerr << "Failed to init quantizer " << ret << endl;
+    return IndexHolder::Pointer();
+  }
+
+  if (quantizer->require_train()) {
+    ret = quantizer->train(cast_holder);
+    if (ret != 0) {
+      cerr << "Failed to train quantizer " << ret << endl;
+      return IndexHolder::Pointer();
+    }
+  }
+
+  // The output meta keeps the raw dimension; the record tail (e.g. scale,
+  // Cosine norm) is accounted by extra_meta_size.
+  IndexMeta out_meta = quantizer->meta();
+  size_t code_bytes = quantizer->quantized_datapoint_vector_length();
+  uint32_t unit = out_meta.unit_size();
+  if (unit == 0 || code_bytes % unit != 0 ||
+      code_bytes != out_meta.element_size()) {
+    cerr << "Quantized length " << code_bytes
+         << " mismatches meta element size " << out_meta.element_size() << endl;
+    return IndexHolder::Pointer();
+  }
+
+  if (!quantizer->require_train()) {
+    out_meta.set_quantizer(name, 0, params);
+  } else {
+    cerr << "Quantizer " << name
+         << " requires training, query-side quantizer info is not recorded "
+            "in the index meta"
+         << endl;
+  }
+
+  IndexHolder::Pointer result =
+      std::make_shared<zvec::turbo::QuantizedIndexHolder>(cast_holder,
+                                                          quantizer);
+
+  if (out_quantizer) {
+    *out_quantizer = quantizer;
+  }
+  index_meta = out_meta;
+  return result;
 }
 
 int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
@@ -903,6 +1016,26 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       return -1;
     }
   }
+
+  // Quantizer input: a turbo quantizer used as data transform, symmetric to
+  // the converter path.  Mutually exclusive with ConverterName.
+  string quantizer_name;
+  ailego::Params quantizer_params;
+  if (config_common["QuantizerName"] &&
+      !config_common["QuantizerName"].as<string>().empty()) {
+    quantizer_name = config_common["QuantizerName"].as<string>();
+    if (config_root["QuantizerParams"] &&
+        !prepare_params(config_root["QuantizerParams"], quantizer_params)) {
+      cerr << "Failed to prepare quantizer params" << endl;
+      return -1;
+    }
+  }
+  if (!converter_name.empty() && !quantizer_name.empty()) {
+    cerr << "ConverterName and QuantizerName are mutually exclusive, "
+            "configure only one of them"
+         << endl;
+    return -1;
+  }
   IndexMeta::MajorOrder order = IndexMeta::MO_UNDEFINED;
   if (config_common["MajorOrder"]) {
     std::string order_str = config_common["MajorOrder"].as<string>();
@@ -919,8 +1052,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   }
   if (config_common["KeepDocs"] && config_common["KeepDocs"].as<uint32_t>()) {
     auto keep_docs = config_common["KeepDocs"].as<uint32_t>();
-    if (keep_docs < build_holder->count()) {
-      build_holder->set_start_cursor(build_holder->count() - keep_docs);
+    if (keep_docs < build_holder->end_cursor()) {
+      build_holder->set_start_cursor(build_holder->end_cursor() - keep_docs);
     }
   }
 
@@ -939,11 +1072,30 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Created builder " << builder_class << endl;
 
 
-  IndexHolder::Pointer cv_build_holder =
-      convert_holder(converter_name, converter_params, build_holder, meta);
-  if (!cv_build_holder) {
-    cerr << "Convert holder failed." << endl;
-    return -1;
+  std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
+  IndexHolder::Pointer cv_build_holder;
+  if (!quantizer_name.empty()) {
+    // Quantizer path: only supported with IndexBuilder classes.  The
+    // streamer path feeds raw vectors from the global holder and relies on
+    // reformer info in the meta, which a quantizer does not provide.
+    if (!builder) {
+      cerr << "QuantizerName is not supported with streamer class "
+           << builder_class << endl;
+      return -1;
+    }
+    cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
+                                      build_holder, meta, &build_quantizer);
+    if (!cv_build_holder) {
+      cerr << "Quantize holder failed." << endl;
+      return -1;
+    }
+  } else {
+    cv_build_holder =
+        convert_holder(converter_name, converter_params, build_holder, meta);
+    if (!cv_build_holder) {
+      cerr << "Convert holder failed." << endl;
+      return -1;
+    }
   }
   meta.set_major_order(order);
   cout << IndexMetaHelper::to_string(meta) << endl;
@@ -956,8 +1108,22 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   }
 
   // INIT
-  int ret =
-      builder ? builder->init(meta, params) : streamer->init(meta, params);
+  // Pass the quantizer into the builder so it can compute distances with
+  // the quantizer; fall back to the plain init for builders without
+  // quantizer support.
+  int ret;
+  if (builder) {
+    if (build_quantizer) {
+      ret = builder->init(meta, params, build_quantizer);
+      if (ret == IndexError_NotImplemented) {
+        ret = builder->init(meta, params);
+      }
+    } else {
+      ret = builder->init(meta, params);
+    }
+  } else {
+    ret = streamer->init(meta, params);
+  }
   if (ret < 0) {
     cerr << "Failed to init builder, ret=" << ret << endl;
     return -1;
@@ -1023,8 +1189,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
       // support fp16 convert
 
-      IndexHolder::Pointer cv_train_holder =
-          convert_holder(converter_name, converter_params, train_holder, meta);
+      IndexHolder::Pointer cv_train_holder;
+      if (!quantizer_name.empty()) {
+        cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                          train_holder, meta, nullptr);
+      } else {
+        cv_train_holder = convert_holder(converter_name, converter_params,
+                                         train_holder, meta);
+      }
       if (!cv_train_holder) {
         cerr << "Convert train holder failed." << endl;
         return -1;
@@ -1080,8 +1252,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     if (!metric_name.empty()) {
       train_holder->set_metric(metric_name, metric_params);
     }
-    IndexHolder::Pointer cv_train_holder =
-        convert_holder(converter_name, converter_params, train_holder, meta);
+    IndexHolder::Pointer cv_train_holder;
+    if (!quantizer_name.empty()) {
+      cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                        train_holder, meta, nullptr);
+    } else {
+      cv_train_holder =
+          convert_holder(converter_name, converter_params, train_holder, meta);
+    }
     if (!cv_train_holder) {
       cerr << "Convert train holder failed." << endl;
       return -1;
@@ -1103,6 +1281,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   if (builder_class == "HnswRabitqStreamer") {
     if (setup_hnsw_rabitq_streamer(streamer, input_meta, config_root,
                                    converter_name, &cv_build_holder) != 0) {
+      return -1;
+    }
+  }
+
+  if (config_common["BuildFromOriginal"] &&
+      config_common["BuildFromOriginal"].as<bool>()) {
+    if (setup_build_from_original(builder_class, streamer, build_holder,
+                                  input_meta) != 0) {
       return -1;
     }
   }
@@ -1217,20 +1403,20 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_root["BuilderCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {
+      {"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+      {"info", zvec::ailego::Logger::LEVEL_INFO},
+      {"warn", zvec::ailego::Logger::LEVEL_WARN},
+      {"error", zvec::ailego::Logger::LEVEL_ERROR},
+      {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
 
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
 
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
-  if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
-    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
   }
 
   RetrievalMode retrieval_mode{RM_DENSE};

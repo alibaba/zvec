@@ -200,7 +200,7 @@ class FtsRecallTest : public ::testing::Test {
       doc.set_doc_id(i);
       doc.set<std::string>("content", entries[i].content);
       doc.set<int32_t>("tag", entries[i].tag);
-      auto status = segment->Insert(doc);
+      auto status = segment->insert(doc);
       ASSERT_TRUE(status.ok())
           << "Insert doc " << i << " failed: " << status.c_str();
     }
@@ -528,6 +528,13 @@ TEST_F(FtsRecallTest, FtsSearchWithFilter_TopkRespected) {
   EXPECT_LE(result->size(), 1u);
 }
 
+// "apple" matches docs 0,3,5, but no doc has tag=999.
+TEST_F(FtsRecallTest, FtsSearchWithFilter_ZeroMatchesReturnsEmpty) {
+  auto result = fts_search_with_filter("apple", "tag = 999");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_TRUE(result->empty());
+}
+
 // An FTS field can only be used as a query target, not as a filter condition.
 // Putting the FTS field ("content") in the WHERE filter must be rejected.
 TEST_F(FtsRecallTest, FtsFieldNotAllowedInFilter) {
@@ -695,7 +702,7 @@ class FtsRecallDeleteTest : public ::testing::Test {
       doc.set_doc_id(i);
       doc.set<std::string>("content", entries[i].content);
       doc.set<int32_t>("tag", entries[i].tag);
-      auto status = segment_->Insert(doc);
+      auto status = segment_->insert(doc);
       ASSERT_TRUE(status.ok())
           << "Insert doc " << i << " failed: " << status.c_str();
     }
@@ -769,7 +776,7 @@ TEST_F(FtsRecallDeleteTest, UpsertUpdatesSearchableContent) {
   updated.set_pk("pk_0");
   updated.set<std::string>("content", "mango pineapple watermelon");
   updated.set<int32_t>("tag", 1);
-  auto s = segment_->Upsert(updated);
+  auto s = segment_->upsert(updated);
   ASSERT_TRUE(s.ok()) << s.c_str();
 
   // "apple" should now only match doc 3

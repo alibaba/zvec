@@ -73,7 +73,7 @@ class IntegerQuantizerReformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     inner_product_ = false;
     return 0;
   }
@@ -84,7 +84,7 @@ class IntegerQuantizerReformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 
@@ -291,7 +291,7 @@ class IntegerStreamingReformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -321,7 +321,7 @@ class IntegerStreamingReformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

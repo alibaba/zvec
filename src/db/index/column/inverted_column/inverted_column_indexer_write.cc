@@ -34,7 +34,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
   AILEGO_DEFER([&]() {
     if (!s.ok()) {
       LOG_ERROR("Failed to insert terms of id[%u] to %s, code[%d], reason[%s]",
-                id, ID().c_str(), s.code(), s.ToString().c_str());
+                id, this->id().c_str(), s.code(), s.ToString().c_str());
     }
   });
 
@@ -43,7 +43,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
     std::sort(encoded_values.begin(), encoded_values.end());
     rocksdb::WriteBatch write_batch;
     for (auto encoded_value : encoded_values) {
-      s = write_batch.Merge(cf_terms_, encoded_value, encoded_id);
+      s = write_batch.merge(cf_terms_, encoded_value, encoded_id);
       if (!s.ok()) {
         return Status::InternalError();
       }
@@ -56,12 +56,12 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
     }
   } else {
     std::string encoded_value = encode(value);
-    s = ctx_.db_->Merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
+    s = ctx_.db_->merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
     if (!s.ok()) {
       return Status::InternalError();
     }
     if (cf_reversed_terms_) {
-      s = ctx_.db_->Merge(ctx_.write_opts_, cf_reversed_terms_,
+      s = ctx_.db_->merge(ctx_.write_opts_, cf_reversed_terms_,
                           encode_reversed(value), encoded_id);
       if (!s.ok()) {
         return Status::InternalError();
@@ -88,7 +88,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
   AILEGO_DEFER([&]() {
     if (!s.ok()) {
       LOG_ERROR("Failed to insert terms of id[%u] to %s, code[%d], reason[%s]",
-                id, ID().c_str(), s.code(), s.ToString().c_str());
+                id, this->id().c_str(), s.code(), s.ToString().c_str());
     }
   });
 
@@ -99,7 +99,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
   std::sort(encoded_values.begin(), encoded_values.end());
   rocksdb::WriteBatch write_batch;
   for (auto encoded_value : encoded_values) {
-    s = write_batch.Merge(cf_terms_, encoded_value, encoded_id);
+    s = write_batch.merge(cf_terms_, encoded_value, encoded_id);
     if (!s.ok()) {
       return Status::InternalError();
     }
@@ -124,13 +124,13 @@ Status InvertedColumnIndexer::insert(uint32_t id, bool value) {
   std::string encoded_value = encode(value);
 
   auto s =
-      ctx_.db_->Merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
+      ctx_.db_->merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
   if (s.ok()) {
     update_max_id(id);
     return Status::OK();
   } else {
     LOG_ERROR("Failed to insert terms of id[%u] to %s, code[%d], reason[%s]",
-              id, ID().c_str(), s.code(), s.ToString().c_str());
+              id, this->id().c_str(), s.code(), s.ToString().c_str());
     return Status::InternalError();
   }
 }
@@ -147,7 +147,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
   rocksdb::Status rs;
   if (rs = index_array_len(id, values.size()); !rs.ok()) {
-    LOG_ERROR("Failed to index array length for %s", ID().c_str());
+    LOG_ERROR("Failed to index array length for %s", this->id().c_str());
     return Status::InternalError();
   }
 
@@ -163,10 +163,10 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
   rocksdb::WriteBatch write_batch;
   if (has_true) {
-    write_batch.Merge(cf_terms_, encode(true), encoded_id);
+    write_batch.merge(cf_terms_, encode(true), encoded_id);
   }
   if (has_false) {
-    write_batch.Merge(cf_terms_, encode(false), encoded_id);
+    write_batch.merge(cf_terms_, encode(false), encoded_id);
   }
   rs = ctx_.db_->Write(ctx_.write_opts_, &write_batch);
   if (rs.ok()) {
@@ -174,7 +174,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
     return Status::OK();
   } else {
     LOG_ERROR("Failed to insert terms of id[%u] to %s, code[%d], reason[%s]",
-              id, ID().c_str(), rs.code(), rs.ToString().c_str());
+              id, this->id().c_str(), rs.code(), rs.ToString().c_str());
     return Status::InternalError();
   }
 }
@@ -204,7 +204,7 @@ Status InvertedColumnIndexer::flush_special_values() {
     auto s = ctx_.db_->Put(ctx_.write_opts_, key_null(), value);
     if (!s.ok()) {
       LOG_ERROR("Failed to insert null bitmap to %s, code[%d], reason[%s]",
-                ID().c_str(), s.code(), s.ToString().c_str());
+                id().c_str(), s.code(), s.ToString().c_str());
       return Status::InternalError();
     }
   }
@@ -212,29 +212,29 @@ Status InvertedColumnIndexer::flush_special_values() {
   auto s =
       ctx_.db_->Put(ctx_.write_opts_, key_max_id(), std::to_string(max_id_));
   if (s.ok()) {
-    LOG_DEBUG("Special values flushed to %s", ID().c_str());
+    LOG_DEBUG("Special values flushed to %s", id().c_str());
     return Status::OK();
   } else {
     LOG_ERROR("Failed to insert max_id to %s, code[%d], reason[%s]",
-              ID().c_str(), s.code(), s.ToString().c_str());
+              id().c_str(), s.code(), s.ToString().c_str());
     return Status::InternalError();
   }
 }
 
 
-rocksdb::Status InvertedColumnIndexer::index_array_len(uint32_t id,
+rocksdb::Status InvertedColumnIndexer::index_array_len(uint32_t array_id,
                                                        uint32_t len) {
   if (!cf_array_len_) {
-    LOG_ERROR("%s doesn't support array length index", ID().c_str());
+    LOG_ERROR("%s doesn't support array length index", id().c_str());
     return rocksdb::Status::NotSupported();
   }
 
   std::string encoded_id = std::string{1}.append(
-      reinterpret_cast<const char *>(&id), sizeof(uint32_t));
+      reinterpret_cast<const char *>(&array_id), sizeof(uint32_t));
   std::string encoded_len = InvertedIndexCodec::Encode(
       std::string((char *)&len, sizeof(uint32_t)), DataType::UINT32);
 
-  return ctx_.db_->Merge(ctx_.write_opts_, cf_array_len_, encoded_len,
+  return ctx_.db_->merge(ctx_.write_opts_, cf_array_len_, encoded_len,
                          encoded_id);
 }
 
@@ -254,7 +254,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   }
   cf_ranges_ = ctx_.get_cf(cf_name_ranges());
   if (!cf_ranges_) {
-    LOG_ERROR("Failed to get column families for %s", ID().c_str());
+    LOG_ERROR("Failed to get column families for %s", id().c_str());
     return Status::InternalError();
   }
 
@@ -293,7 +293,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     uint64_t range_key_begin_size = range_begin_key.size();
     range_key.append((char *)&range_key_begin_size, sizeof(uint64_t));
     std::string range_value_str;
-    s = InvertedIndexCodec::Serialize(bitmap_range, &range_value_str);
+    s = InvertedIndexCodec::serialize(bitmap_range, &range_value_str);
     if (!s.ok()) {
       LOG_ERROR("Failed to serialize bitmap");
       return Status::InternalError();
@@ -336,11 +336,11 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
 
   while (iter_term->Valid()) {
     term_count++;
-    s = InvertedIndexCodec::Deserialize(iter_term->value().data(),
+    s = InvertedIndexCodec::deserialize(iter_term->value().data(),
                                         iter_term->value().size(), &bitmap_cur);
     if (!s.ok()) {
       LOG_ERROR("Failed to deserialize bitmap for term[%s] from %s",
-                iter_term->key().ToString().c_str(), ID().c_str());
+                iter_term->key().ToString().c_str(), id().c_str());
       return Status::InternalError();
     }
     // The count of documents for the current term
@@ -391,14 +391,14 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   if (num_range_slot_created >= term_count) {
     LOG_DEBUG(
         "Drop range index in %s, range_slot_count[%zu] vs term_count[%zu].",
-        ID().c_str(), num_range_slot_created, term_count);
+        id().c_str(), num_range_slot_created, term_count);
     if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
       LOG_ERROR("Failed to drop range index");
       return Status::InternalError();
     }
     cf_ranges_ = ctx_.get_cf(cf_name_ranges());
     if (!cf_ranges_) {
-      LOG_ERROR("Failed to get cf_ranges for %s", ID().c_str());
+      LOG_ERROR("Failed to get cf_ranges for %s", id().c_str());
       return Status::InternalError();
     }
   }
@@ -415,7 +415,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
                      cdf_json.as_json_string().as_stl_string());
   if (!rs.ok()) {
     LOG_ERROR("Failed to insert CDF of field[%s] to %s, code[%d], reason[%s]",
-              field_.name().c_str(), ID().c_str(), rs.code(),
+              field_.name().c_str(), id().c_str(), rs.code(),
               rs.ToString().c_str());
     return Status::InternalError();
   }
@@ -423,11 +423,11 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   doc_range_stat_ =
       SegmentDocRangeStat::Create(cdf_json.as_json_string().as_stl_string());
   if (!doc_range_stat_) {
-    LOG_ERROR("Failed to create doc range stats from %s", ID().c_str());
+    LOG_ERROR("Failed to create doc range stats from %s", id().c_str());
     return Status::InternalError();
   }
 
-  LOG_INFO("Generated statistical indexes in %s", ID().c_str());
+  LOG_INFO("Generated statistical indexes in %s", id().c_str());
   return Status::OK();
 }
 
@@ -439,14 +439,14 @@ Status InvertedColumnIndexer::seal() {
 
   Status status = flush_special_values();
   if (!status.ok()) {
-    LOG_ERROR("Failed to flush special values to %s", ID().c_str());
+    LOG_ERROR("Failed to flush special values to %s", id().c_str());
     return status;
   }
 
   if (enable_range_optimization_) {
     status = generate_statistical_indexes();
     if (!status.ok()) {
-      LOG_ERROR("Failed to generate statistical indexes in %s", ID().c_str());
+      LOG_ERROR("Failed to generate statistical indexes in %s", id().c_str());
       return status;
     }
   }
@@ -457,7 +457,7 @@ Status InvertedColumnIndexer::seal() {
     read_only_ = true;
     return Status::OK();
   } else {
-    LOG_ERROR("Failed to seal %s", ID().c_str());
+    LOG_ERROR("Failed to seal %s", id().c_str());
     return Status::InternalError();
   }
 }

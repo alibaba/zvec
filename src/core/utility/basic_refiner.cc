@@ -22,7 +22,7 @@ namespace core {
  */
 class BasicRefiner : public IndexRefiner {
  public:
-  const uint32_t kScaleFactor = 10;
+  const uint32_t k_scale_factor = 10;
 
  public:
   class BasicRefinerContext : public Context {
@@ -49,7 +49,7 @@ class BasicRefiner : public IndexRefiner {
     }
 
     //! Retrieve search result with index
-    const IndexDocumentList &result(void) const override {
+    const IndexDocumentList &result() const override {
       return results_[0];
     }
 
@@ -87,7 +87,7 @@ class BasicRefiner : public IndexRefiner {
 
  public:
   //! Create a context
-  Context::Pointer create_context(void) const override {
+  Context::Pointer create_context() const override {
     auto base_ctx = base_runner_->create_context();
     auto refine_ctx = refine_runner_->create_context();
 
@@ -257,7 +257,7 @@ class BasicRefiner : public IndexRefiner {
   }
 
  private:
-  uint32_t scale_factor_{kScaleFactor};
+  uint32_t scale_factor_{k_scale_factor};
   ailego::Params params_;
 
   IndexRunner::Pointer base_runner_{nullptr};

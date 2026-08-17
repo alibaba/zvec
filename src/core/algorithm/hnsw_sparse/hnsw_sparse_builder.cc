@@ -15,16 +15,16 @@
 #include <iostream>
 #include <thread>
 #include <ailego/pattern/defer.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
-#include <zvec/core/framework/index_logger.h>
 #include "hnsw_sparse_algorithm.h"
 #include "hnsw_sparse_params.h"
 
 namespace zvec {
 namespace core {
 
-HnswSparseBuilder::HnswSparseBuilder() {}
+HnswSparseBuilder::HnswSparseBuilder() = default;
 
 int HnswSparseBuilder::init(const IndexMeta &meta,
                             const ailego::Params &params) {
@@ -148,7 +148,7 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
   return 0;
 }
 
-int HnswSparseBuilder::cleanup(void) {
+int HnswSparseBuilder::cleanup() {
   LOG_INFO("Begin HnswSparseBuilder::cleanup");
 
   l0_max_neighbor_cnt_ = HnswSparseEntity::kDefaultL0MaxNeighborCnt;

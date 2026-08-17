@@ -47,7 +47,7 @@ jobs:
         if: steps.changed_files.outputs.any_changed == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy=1:18.0-59~exp2 cmake ninja-build libomp-dev libaio-dev
+          sudo apt-get install -y clang-tidy=1:18.0-59~exp2 cmake ninja-build libomp-dev
 
       - name: Setup ccache
         if: steps.changed_files.outputs.any_changed == 'true'
@@ -91,7 +91,17 @@ jobs:
           selected = []
           skipped = []
 
+          # Auto-generated code is exempt from clang-tidy and must not be edited.
+          generated_dir_markers = (
+              "src/db/sqlengine/antlr/gen/",
+              "src/db/index/column/fts_column/gen/",
+          )
+
           for rel_path in changed:
+              norm_rel = rel_path.replace(os.sep, "/")
+              if any(marker in norm_rel for marker in generated_dir_markers):
+                  skipped.append(f"{rel_path} (generated file, exempt from clang-tidy)")
+                  continue
               abs_path = os.path.normpath(str((cwd / rel_path).resolve()))
               if abs_path in compile_entries:
                   selected.append(rel_path)
@@ -134,8 +144,7 @@ jobs:
           path: |
             build/external
             build/thirdparty
-            build/src/db/proto
-          key: clang-tidy-headers-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch', 'src/db/proto/*.proto') }}-${{ steps.submodule_hash.outputs.value }}
+          key: clang-tidy-headers-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch') }}-${{ steps.submodule_hash.outputs.value }}
 
       - name: Build generated headers only
         if: steps.tidy_files.outputs.any_tidy_files == 'true' && steps.cache_headers.outputs.cache-hit != 'true'
@@ -149,8 +158,7 @@ jobs:
           path: |
             build/external
             build/thirdparty
-            build/src/db/proto
-          key: clang-tidy-headers-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch', 'src/db/proto/*.proto') }}-${{ steps.submodule_hash.outputs.value }}
+          key: clang-tidy-headers-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch') }}-${{ steps.submodule_hash.outputs.value }}
 
       - name: Run clang-tidy on changed files (parallel)
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
@@ -178,12 +186,26 @@ jobs:
           failed=0
           for f in "$log_dir"/*.log; do
             [ -e "$f" ] || break
-            failed=1
             src=$(head -1 "$f")
-            echo ""
-            echo "::group::clang-tidy errors: $src"
-            tail -n +2 "$f"
-            echo "::endgroup::"
+            # Diagnostics originating in generated headers (antlr/gen,
+            # fts_column/gen) can leak in via #include from non-generated main
+            # files. Those files are exempt and must not be edited, so drop such
+            # blocks; a log only counts as a failure if real diagnostics remain.
+            body=$(tail -n +2 "$f" | awk '
+              /^[^[:space:]].*:[0-9]+:[0-9]+: (warning|error|note):/ {
+                path = $0
+                sub(/:[0-9]+:[0-9]+:.*/, "", path)
+                skip = (path ~ /(antlr\/gen\/|fts_column\/gen\/)/) ? 1 : 0
+              }
+              { if (!skip) print }
+            ')
+            if printf '%s\n' "$body" | grep -qE ': (warning|error):'; then
+              failed=1
+              echo ""
+              echo "::group::clang-tidy errors: $src"
+              printf '%s\n' "$body"
+              echo "::endgroup::"
+            fi
           done
 
           rm -rf "$log_dir"

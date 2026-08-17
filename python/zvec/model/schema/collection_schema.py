@@ -18,6 +18,7 @@ from typing import Optional, Union
 
 from zvec._zvec.schema import _CollectionSchema, _FieldSchema
 
+from .._validation import explain_utf8_conversion_error, format_name_for_error
 from .field_schema import FieldSchema, VectorSchema
 
 __all__ = [
@@ -64,7 +65,7 @@ class CollectionSchema:
     ):
         if name is None or not isinstance(name, str):
             raise ValueError(
-                f"schema validate failed: collection name must be str, got {type(name).__name__}"
+                f"Invalid schema: collection name must be str, got {type(name).__name__}"
             )
 
         # handle fields
@@ -75,10 +76,14 @@ class CollectionSchema:
         self._check_vectors(vectors, _fields_name, _fields_list)
 
         # init
-        self._cpp_obj = _CollectionSchema(
-            name=name,
-            fields=_fields_list,
-        )
+        try:
+            self._cpp_obj = _CollectionSchema(
+                name=name,
+                fields=_fields_list,
+            )
+        except TypeError:
+            explain_utf8_conversion_error(name, "Invalid schema: collection name")
+            raise
 
     def _check_fields(
         self,
@@ -96,20 +101,20 @@ class CollectionSchema:
             field_items = []
         else:
             raise TypeError(
-                f"schema validate failed: invalid 'fields' type, expected FieldSchema or list[FieldSchema], "
+                f"Invalid schema: invalid 'fields' type, expected FieldSchema or list[FieldSchema], "
                 f"got {type(fields).__name__}"
             )
 
         for idx, field in enumerate(field_items):
             if not isinstance(field, FieldSchema):
                 raise TypeError(
-                    f"schema validate failed: invalid field type in 'fields' list, expected FieldSchema, "
+                    f"Invalid schema: invalid field type in 'fields' list, expected FieldSchema, "
                     f"got {type(field).__name__} at index {idx}"
                 )
 
             if field.name in _fields_name:
                 raise ValueError(
-                    f"schema validate failed: duplicate field name '{field.name}': field names must be unique"
+                    f"Invalid schema: duplicate field name {format_name_for_error(field.name)}: field names must be unique"
                 )
             _fields_name.append(field.name)
             _fields_list.append(field._get_object())
@@ -129,20 +134,20 @@ class CollectionSchema:
             vectors_items = []
         else:
             raise TypeError(
-                f"schema validate failed: invalid 'vectors' type, expected VectorSchema or list[VectorSchema], "
+                f"Invalid schema: invalid 'vectors' type, expected VectorSchema or list[VectorSchema], "
                 f"got {type(vectors).__name__}"
             )
 
         for idx, vector in enumerate(vectors_items):
             if not isinstance(vector, VectorSchema):
                 raise TypeError(
-                    f"schema validate failed: invalid vector type in 'vectors' list, expected VectorSchema, "
+                    f"Invalid schema: invalid vector type in 'vectors' list, expected VectorSchema, "
                     f"got {type(vector).__name__} at index {idx}"
                 )
 
             if vector.name in _fields_name:
                 raise ValueError(
-                    f"schema validate failed: duplicate vector name '{vector.name}', vector names must be unique "
+                    f"Invalid schema: duplicate vector name {format_name_for_error(vector.name)}, vector names must be unique "
                     f"(conflicts with existing field or vector)"
                 )
             _fields_name.append(vector.name)
@@ -152,7 +157,7 @@ class CollectionSchema:
     def _from_core(cls, core_collection_schema: _CollectionSchema):
         inst = cls.__new__(cls)
         if not core_collection_schema:
-            raise ValueError("schema validate failed: schema is null")
+            raise ValueError("Invalid schema: schema is null")
         inst._cpp_obj = core_collection_schema
         return inst
 

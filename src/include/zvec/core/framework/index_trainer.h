@@ -53,17 +53,17 @@ class IndexTrainer : public IndexModule {
     }
 
     //! Retrieve count of documents trained
-    size_t trained_count(void) const {
+    size_t trained_count() const {
       return trained_count_;
     }
 
     //! Retrieve count of documents discarded
-    size_t discarded_count(void) const {
+    size_t discarded_count() const {
       return discarded_count_;
     }
 
     //! Retrieve time cost of documents trained
-    uint64_t trained_costtime(void) const {
+    uint64_t trained_costtime() const {
       return trained_costtime_;
     }
 
@@ -75,13 +75,13 @@ class IndexTrainer : public IndexModule {
   };
 
   //! Destructor
-  ~IndexTrainer(void) override {}
+  ~IndexTrainer() override = default;
 
   //! Initialize Trainer
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;
 
   //! Cleanup Trainer
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Train the data
   virtual int train(IndexHolder::Pointer holder) {
@@ -99,13 +99,13 @@ class IndexTrainer : public IndexModule {
   virtual int dump(const IndexDumper::Pointer &dumper) = 0;
 
   //! Retrieve Index Meta
-  virtual const IndexMeta &meta(void) const = 0;
+  virtual const IndexMeta &meta() const = 0;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const = 0;
+  virtual const Stats &stats() const = 0;
 
   //! Retrieve the output indexes
-  virtual IndexBundle::Pointer indexes(void) const = 0;
+  virtual IndexBundle::Pointer indexes() const = 0;
 };
 
 }  // namespace core

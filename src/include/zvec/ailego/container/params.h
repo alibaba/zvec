@@ -15,6 +15,7 @@
 #pragma once
 
 #include <zvec/ailego/container/hypercube.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
@@ -45,13 +46,13 @@ namespace ailego {
 
 /*! Index Params
  */
-class Params {
+class ZVEC_AILEGO_API Params {
  public:
   //! Constructor
-  Params(void) : hypercube_() {}
+  Params() = default;
 
   //! Constructor
-  Params(const Params &rhs) : hypercube_(rhs.hypercube_) {}
+  Params(const Params &rhs) = default;
 
   //! Constructor
   Params(Params &&rhs) : hypercube_() {
@@ -59,13 +60,10 @@ class Params {
   }
 
   //! Destructor
-  ~Params(void) {}
+  ~Params() = default;
 
   //! Assignment
-  Params &operator=(const Params &rhs) {
-    hypercube_ = rhs.hypercube_;
-    return *this;
-  }
+  Params &operator=(const Params &rhs) = default;
 
   //! Assignment
   Params &operator=(Params &&rhs) {
@@ -89,12 +87,12 @@ class Params {
   }
 
   //! Test if the map is empty
-  bool empty(void) const {
+  bool empty() const {
     return hypercube_.empty();
   }
 
   //! Clear the map
-  void clear(void) {
+  void clear() {
     hypercube_.clear();
   }
 
@@ -618,19 +616,19 @@ class Params {
   }
 
   //! Retrieve the debug string
-  std::string debug_string(void) const {
+  std::string debug_string() const {
     std::string str;
     SerializeToBuffer(*this, &str);
     return str;
   }
 
   //! Retrieve the map of parameters
-  const ailego::Hypercube &hypercube(void) const {
+  const ailego::Hypercube &hypercube() const {
     return hypercube_;
   }
 
   //! Retrieve the map of parameters
-  ailego::Hypercube *mutable_hypercube(void) {
+  ailego::Hypercube *mutable_hypercube() {
     return &hypercube_;
   }
 

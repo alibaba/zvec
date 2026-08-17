@@ -14,7 +14,6 @@
 
 #include <arrow/array.h>
 #include <arrow/builder.h>
-#include <arrow/dataset/api.h>
 #include <arrow/table.h>
 #include <arrow/type.h>
 #include <gmock/gmock-matchers.h>
@@ -38,24 +37,9 @@ class ExprValidatorTest : public ::testing::Test {
     schema_ = arrow::schema({arrow::field("int32_col", arrow::int32()),
                              arrow::field("double_col", arrow::float64()),
                              arrow::field("str_col", arrow::utf8())});
-
-    std::vector<std::shared_ptr<arrow::Array>> arrays;
-    for (const auto &field : schema_->fields()) {
-      std::unique_ptr<arrow::ArrayBuilder> builder;
-      ASSERT_TRUE(arrow::MakeBuilder(arrow::default_memory_pool(),
-                                     field->type(), &builder)
-                      .ok());
-      std::shared_ptr<arrow::Array> array;
-      ASSERT_TRUE(builder->Finish(&array).ok());
-      arrays.push_back(array);
-    }
-
-    auto table = arrow::Table::Make(schema_, arrays);
-    dataset_ = std::make_shared<arrow::dataset::InMemoryDataset>(table);
   }
 
   std::shared_ptr<arrow::Schema> schema_;
-  std::shared_ptr<arrow::dataset::Dataset> dataset_;
 };
 
 TEST_F(ExprValidatorTest, SingleNumericColumn_Valid) {

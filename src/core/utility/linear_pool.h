@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace core {
@@ -172,11 +173,39 @@ struct LinearPool {
     return true;
   }
 
+  // Insert one candidate and report whether it moves the expansion cursor
+  // backwards, allowing graph-search callers to prefetch the newly exposed
+  // graph row without changing the existing insert() interface.
+  ailego_force_inline bool insert_with_rewind(int u, dist_t dist,
+                                              bool *rewound) {
+    const int old_cur = cur_;
+    const bool inserted = insert(u, dist);
+    if (rewound != nullptr) {
+      *rewound = inserted && cur_ < old_cur;
+    }
+    return inserted;
+  }
+
   int pop() {
     set_checked(data_[cur_].id);
     int pre = cur_;
     while (cur_ < size_ && is_checked(data_[cur_].id)) {
       cur_++;
+    }
+    return get_id(data_[pre].id);
+  }
+
+  // Pop one candidate and expose the next unexpanded id for caller-managed
+  // prefetch. `next_id` is UINT32_MAX when no candidate remains.
+  int pop_with_next(uint32_t *next_id) {
+    set_checked(data_[cur_].id);
+    int pre = cur_;
+    while (cur_ < size_ && is_checked(data_[cur_].id)) {
+      cur_++;
+    }
+    if (next_id != nullptr) {
+      *next_id = cur_ < size_ ? static_cast<uint32_t>(get_id(data_[cur_].id))
+                              : UINT32_MAX;
     }
     return get_id(data_[pre].id);
   }

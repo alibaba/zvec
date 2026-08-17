@@ -33,7 +33,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_eq(
     }
     LOG_ERROR(
         "Failed to retrieve data for term[%s] from %s, code[%d], reason[%s]",
-        term.c_str(), ID().c_str(), s.code(), s.ToString().c_str());
+        term.c_str(), id().c_str(), s.code(), s.ToString().c_str());
     return tl::make_unexpected(Status::InternalError());
   }
 
@@ -45,7 +45,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_eq(
   } else {
     LOG_ERROR(
         "Failed to deserialize bitmap for term[%s] from %s, bitmap size[%zu]",
-        term.c_str(), ID().c_str(), bitmap_slice.size());
+        term.c_str(), id().c_str(), bitmap_slice.size());
     return tl::make_unexpected(Status::InternalError());
   }
 }
@@ -82,21 +82,21 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_contain(
                                           bitmap_slices[i].size(), &bitmap);
       if (!s.ok()) {
         LOG_ERROR("Failed to deserialize bitmap for term[%s] from %s",
-                  terms[i].c_str(), ID().c_str());
+                  terms[i].c_str(), id().c_str());
       }
       return;
     }
 
     if (is_any) {
-      s = InvertedIndexCodec::Merge_OR(bitmap_slices[i].data(),
+      s = InvertedIndexCodec::merge_or(bitmap_slices[i].data(),
                                        bitmap_slices[i].size(), true, bitmap);
     } else {
-      s = InvertedIndexCodec::Merge_AND(bitmap_slices[i].data(),
+      s = InvertedIndexCodec::merge_and(bitmap_slices[i].data(),
                                         bitmap_slices[i].size(), bitmap);
     }
     if (!s.ok()) {
       LOG_ERROR("Failed to merge bitmap for term[%s] from %s", terms[i].c_str(),
-                ID().c_str());
+                id().c_str());
     }
   };
 
@@ -114,7 +114,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_contain(
     } else {
       LOG_ERROR(
           "Failed to retrieve data for term[%s] from %s, code[%d], reason[%s]",
-          terms[i].c_str(), ID().c_str(), statuses[i].code(),
+          terms[i].c_str(), id().c_str(), statuses[i].code(),
           statuses[i].ToString().c_str());
       s = Status::InternalError();
       return tl::make_unexpected(s);
@@ -136,7 +136,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_ne(
       ret = flip_bitmap(ret.value());
     } else {
       LOG_ERROR("Failed to retrieve bitmap for term[%s] from %s", term.c_str(),
-                ID().c_str());
+                id().c_str());
     }
     return ret;
   } else {
@@ -154,13 +154,13 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_ne(
         iter->Next();
         continue;
       }
-      s = InvertedIndexCodec::Merge_OR(iter->value().data(),
+      s = InvertedIndexCodec::merge_or(iter->value().data(),
                                        iter->value().size(), true, bitmap);
       if (s.ok()) {
         iter->Next();
       } else {
         roaring_bitmap_free(bitmap);
-        LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
+        LOG_ERROR("Failed to merge bitmap from %s", id().c_str());
         return tl::make_unexpected(s);
       }
     }
@@ -177,38 +177,16 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
     return tl::make_unexpected(Status::InvalidArgument());
   }
 
-  roaring_bitmap_t *non_null_bitmap{nullptr};
+  auto non_null_result = get_bitmap_non_null();
+  if (!non_null_result) {
+    return non_null_result;
+  }
+  auto *non_null_bitmap = non_null_result.value();
   AILEGO_DEFER([&]() {
     if (non_null_bitmap) {
       roaring_bitmap_free(non_null_bitmap);
     }
   });
-
-  if (sealed_) {
-    non_null_bitmap = null_bitmap_.copy();
-    roaring_bitmap_flip_inplace(non_null_bitmap, 0, max_id_ + 1);
-  } else {
-    Status s;
-    non_null_bitmap = roaring_bitmap_create();
-    if (!non_null_bitmap) {
-      LOG_ERROR("Failed to create bitmap");
-      return tl::make_unexpected(Status::InternalError());
-    }
-    auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
-    AILEGO_DEFER([&]() { delete iter; });
-    iter->SeekToFirst();
-    while (iter->Valid()) {
-      s = InvertedIndexCodec::Merge_OR(
-          iter->value().data(), iter->value().size(), true, non_null_bitmap);
-      if (s.ok()) {
-        iter->Next();
-      } else {
-        LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
-        return tl::make_unexpected(s);
-      }
-    }
-    roaring_bitmap_repair_after_lazy(non_null_bitmap);
-  }
 
   auto ret = get_bitmap_contain(terms, is_any);
   if (ret) {
@@ -218,7 +196,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
     roaring_bitmap_flip_inplace(ret.value(), 0, max_id_ + 1);
   } else {
     LOG_ERROR("Failed to retrieve bitmap[%s] from %s, term size[%zu]",
-              is_any ? "contain_any" : "contain_all", ID().c_str(),
+              is_any ? "contain_any" : "contain_all", id().c_str(),
               terms.size());
     return ret;
   }
@@ -243,7 +221,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
       ret = flip_bitmap(ret.value());
     } else {
       LOG_ERROR("Failed to retrieve range bitmap for term[%s] from %s",
-                term.c_str(), ID().c_str());
+                term.c_str(), id().c_str());
     }
     return ret;
   }
@@ -285,7 +263,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
     while (iter_range->Valid()) {
       char *range_begin, *range_end;
       size_t range_begin_key_size, range_end_key_size;
-      InvertedIndexCodec::Decode_Range_Key(
+      InvertedIndexCodec::decode_range_key(
           iter_range->key().data(), iter_range->key().size(), &range_begin,
           &range_begin_key_size, &range_end, &range_end_key_size);
       lt = cmp_lt(range_end, range_end_key_size, term.data(), term.length(),
@@ -294,10 +272,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
         point_seek_start_pos.emplace(range_begin, range_begin_key_size);
         break;
       }
-      s = InvertedIndexCodec::Merge_OR(
+      s = InvertedIndexCodec::merge_or(
           iter_range->value().data(), iter_range->value().size(), true, bitmap);
       if (!s.ok()) {
-        LOG_ERROR("Failed to merge range bitmap from %s", ID().c_str());
+        LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
         return tl::make_unexpected(s);
       }
       iter_range->Next();
@@ -326,10 +304,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
     if (!lt) {
       break;
     }
-    s = InvertedIndexCodec::Merge_OR(iter_point->value().data(),
+    s = InvertedIndexCodec::merge_or(iter_point->value().data(),
                                      iter_point->value().size(), true, bitmap);
     if (!s.ok()) {
-      LOG_ERROR("Failed to merge range bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
     iter_point->Next();
@@ -355,7 +333,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
       ret = flip_bitmap(ret.value());
     } else {
       LOG_ERROR("Failed to retrieve range bitmap for term[%s] from %s",
-                term.c_str(), ID().c_str());
+                term.c_str(), id().c_str());
     }
     return ret;
   }
@@ -395,7 +373,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
     if (iter_range->Valid()) {
       char *range_begin, *range_end;
       size_t range_begin_key_size, range_end_key_size;
-      InvertedIndexCodec::Decode_Range_Key(
+      InvertedIndexCodec::decode_range_key(
           iter_range->key().data(), iter_range->key().size(), &range_begin,
           &range_begin_key_size, &range_end, &range_end_key_size);
       int ret =
@@ -403,7 +381,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
       if (ret == 0 && !include_eq) {
         iter_range->Next();
         if (iter_range->Valid()) {
-          InvertedIndexCodec::Decode_Range_Key(
+          InvertedIndexCodec::decode_range_key(
               iter_range->key().data(), iter_range->key().size(), &range_begin,
               &range_begin_key_size, &range_end, &range_end_key_size);
           point_seek_end_pos.emplace(range_begin, range_begin_key_size);
@@ -414,10 +392,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
     }
     // 2. Merge ranges where the begin boundary is greater than the search term
     while (iter_range->Valid()) {
-      s = InvertedIndexCodec::Merge_OR(
+      s = InvertedIndexCodec::merge_or(
           iter_range->value().data(), iter_range->value().size(), true, bitmap);
       if (!s.ok()) {
-        LOG_ERROR("Failed to merge range bitmap from %s", ID().c_str());
+        LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
         return tl::make_unexpected(s);
       }
       iter_range->Next();
@@ -437,10 +415,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
             (*point_seek_end_pos).data(), (*point_seek_end_pos).size()) >= 0) {
       break;
     }
-    s = InvertedIndexCodec::Merge_OR(iter_point->value().data(),
+    s = InvertedIndexCodec::merge_or(iter_point->value().data(),
                                      iter_point->value().size(), true, bitmap);
     if (!s.ok()) {
-      LOG_ERROR("Failed to merge range bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
     iter_point->Next();
@@ -465,7 +443,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_array_len_eq(
     }
     LOG_ERROR(
         "Failed to retrieve data for len[%u] from %s, code[%d], reason[%s]",
-        len, ID().c_str(), rs.code(), rs.ToString().c_str());
+        len, id().c_str(), rs.code(), rs.ToString().c_str());
     return tl::make_unexpected(Status::InternalError());
   }
 
@@ -477,7 +455,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_array_len_eq(
   } else {
     LOG_ERROR(
         "Failed to deserialize bitmap for len[%u] from %s, bitmap size[%zu]",
-        len, ID().c_str(), bitmap_slice.size());
+        len, id().c_str(), bitmap_slice.size());
     return tl::make_unexpected(Status::InternalError());
   }
 }
@@ -502,13 +480,13 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_array_len_ne(
       iter->Next();
       continue;
     }
-    s = InvertedIndexCodec::Merge_OR(iter->value().data(), iter->value().size(),
+    s = InvertedIndexCodec::merge_or(iter->value().data(), iter->value().size(),
                                      true, bitmap);
     if (s.ok()) {
       iter->Next();
     } else {
       roaring_bitmap_free(bitmap);
-      LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
   }
@@ -537,13 +515,13 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_array_len_lt(
     if (!lt) {
       break;
     }
-    s = InvertedIndexCodec::Merge_OR(iter->value().data(), iter->value().size(),
+    s = InvertedIndexCodec::merge_or(iter->value().data(), iter->value().size(),
                                      true, bitmap);
     if (s.ok()) {
       iter->Next();
     } else {
       roaring_bitmap_free(bitmap);
-      LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
   }
@@ -572,13 +550,13 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_array_len_gt(
     }
   }
   while (iter->Valid()) {
-    s = InvertedIndexCodec::Merge_OR(iter->value().data(), iter->value().size(),
+    s = InvertedIndexCodec::merge_or(iter->value().data(), iter->value().size(),
                                      true, bitmap);
     if (s.ok()) {
       iter->Next();
     } else {
       roaring_bitmap_free(bitmap);
-      LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
   }
@@ -620,32 +598,19 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_like(
         "like should have exactly one percent, unescaped:", term));
   }
   if (percent_loc == 0) {
-    return get_bitmap_suffix(term);
+    return get_bitmap_suffix(term.substr(1));
   } else if (percent_loc == size - 1) {
     return get_bitmap_prefix(term.substr(0, percent_loc));
   } else {
-    std::string prefix = term.substr(0, percent_loc - 1);
+    std::string prefix = term.substr(0, percent_loc);
     std::string suffix = term.substr(percent_loc + 1, size - percent_loc - 1);
-    auto prefix_bitmap = get_bitmap_prefix(prefix);
-    if (!prefix_bitmap.has_value()) {
-      return tl::make_unexpected(
-          Status::InternalError("Get bitmap prefix failed, unescaped:", term));
-    }
-    auto suffix_bitmap = get_bitmap_suffix(suffix);
-    if (!suffix_bitmap.has_value()) {
-      return tl::make_unexpected(
-          Status::InternalError("Get bitmap suffix failed, unescaped:", term));
-    }
-    auto *result = prefix_bitmap.value();
-    roaring_bitmap_and_inplace(result, suffix_bitmap.value());
-    roaring_bitmap_free(suffix_bitmap.value());
-    return result;
+    return get_bitmap_prefix(prefix, suffix);
   }
 }
 
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_prefix(
-    const std::string &term) const {
+    const std::string &term, const std::string &suffix) const {
   auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
   AILEGO_DEFER([&]() { delete iter; });
 
@@ -662,11 +627,19 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_prefix(
                     term.size())) {
       break;
     }
-    s = InvertedIndexCodec::Merge_OR(iter->value().data(), iter->value().size(),
+    // Validate both literals on the same term; LIKE cannot overlap them.
+    if (!suffix.empty() &&
+        (iter->key().size() < term.size() + suffix.size() ||
+         memcmp(iter->key().data() + iter->key().size() - suffix.size(),
+                suffix.data(), suffix.size()) != 0)) {
+      iter->Next();
+      continue;
+    }
+    s = InvertedIndexCodec::merge_or(iter->value().data(), iter->value().size(),
                                      true, bitmap);
     if (!s.ok()) {
       roaring_bitmap_free(bitmap);
-      LOG_ERROR("Failed to merge range bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
     iter->Next();
@@ -680,7 +653,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_prefix(
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_suffix(
     const std::string &term) const {
   if (!cf_reversed_terms_) {
-    LOG_ERROR("%s doesn't support suffix matching", ID().c_str());
+    LOG_ERROR("%s doesn't support suffix matching", id().c_str());
     return tl::make_unexpected(Status::PermissionDenied());
   }
 
@@ -701,11 +674,11 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_suffix(
                     reversed_term.data(), reversed_term.size())) {
       break;
     }
-    s = InvertedIndexCodec::Merge_OR(iter->value().data(), iter->value().size(),
+    s = InvertedIndexCodec::merge_or(iter->value().data(), iter->value().size(),
                                      true, bitmap);
     if (!s.ok()) {
       roaring_bitmap_free(bitmap);
-      LOG_ERROR("Failed to merge range bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
       return tl::make_unexpected(s);
     }
     iter->Next();
@@ -728,7 +701,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
     return bitmap;
   } else {
     Status s = Status::OK();
-    auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
+    // Empty arrays have a length entry but no term entries.
+    auto *cf = field_.is_array_type() ? cf_array_len_ : cf_terms_;
+    auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf);
     AILEGO_DEFER([&]() { delete iter; });
     roaring_bitmap_t *bitmap = roaring_bitmap_create();
     if (!bitmap) {
@@ -737,13 +712,13 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
     }
     iter->SeekToFirst();
     while (iter->Valid()) {
-      s = InvertedIndexCodec::Merge_OR(iter->value().data(),
+      s = InvertedIndexCodec::merge_or(iter->value().data(),
                                        iter->value().size(), true, bitmap);
       if (s.ok()) {
         iter->Next();
       } else {
         roaring_bitmap_free(bitmap);
-        LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
+        LOG_ERROR("Failed to merge bitmap from %s", id().c_str());
         return tl::make_unexpected(s);
       }
     }
@@ -757,7 +732,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
     const std::string &value, CompareOp op) const {
   if (field_.is_array_type()) {
     LOG_ERROR("%s: array type doesn't support single value search",
-              ID().c_str());
+              id().c_str());
     return nullptr;
   }
 
@@ -803,7 +778,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
       break;
     }
     default:
-      LOG_ERROR("%s: unsupported operator[%u]", ID().c_str(),
+      LOG_ERROR("%s: unsupported operator[%u]", id().c_str(),
                 static_cast<uint32_t>(op));
       return nullptr;
   }
@@ -812,7 +787,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", ID().c_str(),
+    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
               static_cast<int>(bitmap_res.error().code()));
     return nullptr;
   }
@@ -843,7 +818,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
       break;
     }
     default:
-      LOG_ERROR("%s: unsupported operator[%u]", ID().c_str(),
+      LOG_ERROR("%s: unsupported operator[%u]", id().c_str(),
                 static_cast<uint32_t>(op));
       return nullptr;
   }
@@ -852,7 +827,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", ID().c_str(),
+    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
               static_cast<int>(bitmap_res.error().code()));
     return nullptr;
   }
@@ -862,7 +837,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
     uint32_t len, CompareOp op) const {
   if (!field_.is_array_type()) {
-    LOG_ERROR("%s: non-array type doesn't array length search", ID().c_str());
+    LOG_ERROR("%s: non-array type doesn't array length search", id().c_str());
     return nullptr;
   }
 
@@ -895,7 +870,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
       break;
     }
     default:
-      LOG_ERROR("%s: unsupported operator[%u]", ID().c_str(),
+      LOG_ERROR("%s: unsupported operator[%u]", id().c_str(),
                 static_cast<uint32_t>(op));
       return nullptr;
   }
@@ -904,7 +879,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", ID().c_str(),
+    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
               static_cast<int>(bitmap_res.error().code()));
     return nullptr;
   }
@@ -918,7 +893,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", ID().c_str(),
+    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
               static_cast<int>(bitmap_res.error().code()));
     return nullptr;
   }
@@ -932,7 +907,7 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_non_null() const {
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", ID().c_str(),
+    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
               static_cast<int>(bitmap_res.error().code()));
     return nullptr;
   }
@@ -943,7 +918,7 @@ Status InvertedColumnIndexer::evaluate_ratio(const std::string &value,
                                              CompareOp op, uint64_t *total_size,
                                              uint64_t *range_size) const {
   if (field_.is_array_type()) {
-    LOG_ERROR("%s: array type doesn't support ratio evaluation", ID().c_str());
+    LOG_ERROR("%s: array type doesn't support ratio evaluation", id().c_str());
     return Status::PermissionDenied();
   }
 
@@ -963,7 +938,7 @@ inline Status InvertedColumnIndexer::estimate_range_ratio(
     uint64_t *matching_count) const {
   if (field_.is_array_type() || field_.element_data_type() == DataType::BOOL) {
     LOG_ERROR("%s: type[%d] doesn't support range ratio estimation",
-              ID().c_str(), (int)field_.data_type());
+              id().c_str(), (int)field_.data_type());
     return Status::PermissionDenied();
   }
 

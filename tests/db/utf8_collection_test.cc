@@ -45,14 +45,20 @@ using namespace zvec::test;
 // If the path handling is broken, the OS will show garbled names (mojibake).
 static const std::string kUtf8Dir =
     "utf8_col_\xe4\xb8\xad\xe6\x96\x87\xe6\xb5\x8b\xe8\xaf\x95";  // utf8_col_中文测试
+static const std::string kIssueUtf8Segment =
+    "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e-"
+    "\xed\x95\x9c\xea\xb5\xad\xec\x96\xb4";  // 日本語-한국어
+static const std::string kIssueUtf8Dir = "utf8_col_" + kIssueUtf8Segment;
 
 class Utf8CollectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ailego::FileHelper::RemovePath(kUtf8Dir.c_str());
+    ailego::FileHelper::RemovePath(kIssueUtf8Dir.c_str());
   }
   void TearDown() override {
     ailego::FileHelper::RemovePath(kUtf8Dir.c_str());
+    ailego::FileHelper::RemovePath(kIssueUtf8Dir.c_str());
   }
 };
 
@@ -73,15 +79,15 @@ TEST_F(Utf8CollectionTest, CreateInsertFlushReopen) {
   ASSERT_TRUE(ailego::FileHelper::IsExist(kUtf8Dir.c_str()));
 
   auto col = std::move(result).value();
-  ASSERT_EQ(col->Path(), kUtf8Dir);
+  ASSERT_EQ(col->path(), kUtf8Dir);
 
   const int kDocCount = 10;
   auto s = TestHelper::CollectionInsertDoc(col, 0, kDocCount);
   ASSERT_TRUE(s.ok()) << s.message();
 
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
-  auto stats = col->Stats().value();
+  auto stats = col->stats().value();
   ASSERT_EQ(stats.doc_count, kDocCount);
 
   col.reset();
@@ -90,8 +96,31 @@ TEST_F(Utf8CollectionTest, CreateInsertFlushReopen) {
   auto reopen = Collection::Open(kUtf8Dir, opts);
   ASSERT_TRUE(reopen.has_value()) << reopen.error().message();
   auto col2 = std::move(reopen).value();
-  auto stats2 = col2->Stats().value();
+  auto stats2 = col2->stats().value();
   ASSERT_EQ(stats2.doc_count, kDocCount);
+}
+
+TEST_F(Utf8CollectionTest, Issue665MixedUnicodePath) {
+  CollectionOptions opts;
+  opts.read_only_ = false;
+  opts.enable_mmap_ = true;
+
+  auto schema = TestHelper::CreateNormalSchema();
+  auto result = Collection::CreateAndOpen(kIssueUtf8Dir, *schema, opts);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+
+  auto col = std::move(result).value();
+  auto insert_status = TestHelper::CollectionInsertDoc(col, 0, 3);
+  ASSERT_TRUE(insert_status.ok()) << insert_status.message();
+  ASSERT_TRUE(col->flush().ok());
+  col.reset();
+
+  auto reopen = Collection::Open(kIssueUtf8Dir, opts);
+  ASSERT_TRUE(reopen.has_value()) << reopen.error().message();
+  auto reopened_col = std::move(reopen).value();
+  auto stats = reopened_col->stats();
+  ASSERT_TRUE(stats.has_value()) << stats.error().message();
+  ASSERT_EQ(stats.value().doc_count, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +136,7 @@ TEST_F(Utf8CollectionTest, CreateAndDestroy) {
   ASSERT_TRUE(result.has_value());
 
   auto col = std::move(result).value();
-  ASSERT_EQ(col->Destroy(), Status::OK());
+  ASSERT_EQ(col->destroy(), Status::OK());
   ASSERT_FALSE(ailego::FileHelper::IsExist(kUtf8Dir.c_str()));
 }
 
@@ -129,7 +158,7 @@ TEST_F(Utf8CollectionTest, NoDirGarble) {
   const int kDocCount = 5;
   auto s = TestHelper::CollectionInsertDoc(col, 0, kDocCount);
   ASSERT_TRUE(s.ok()) << s.message();
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
   // --- Check parent directory via FindFirstFileW ---
   {

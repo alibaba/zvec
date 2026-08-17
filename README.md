@@ -35,14 +35,17 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.5.0 (June 12, 2026)**
+> 🚀 **v0.7.0 (August 24, 2026)**
 >
-> - **Full-Text Search (FTS)**: Native full-text search — attach an FTS index to any string field and query it with natural-language or structured expressions, no external search engine required.
-> - **Hybrid Retrieval**: Combine full-text and vector search in a single `MultiQuery` across dense vectors, sparse vectors, scalar filters, and text.
-> - **DiskANN Index**: New on-disk index that keeps the bulk of the index on disk, drastically cutting memory usage for large-scale datasets.
-> - **Ecosystem & Platforms**: New official [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDKs, the [Zvec Studio](https://github.com/zvec-ai/zvec-studio) visual tool, and RISC-V support.
+> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
+> - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
+> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with automatic fallback to the best available I/O option — no user intervention needed.
+> - **Index optimization**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
+> - **Deployment experience improved**: Prebuilt dynamic libraries slimmed significantly (macOS arm64 C API library 37→22 MB, **-40%**); new **musl libc / Alpine Linux** support; prebuilt SDK binaries for Linux (glibc/musl), macOS, Windows, Android, and iOS published with every release.
+> - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
+> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
@@ -59,18 +62,20 @@
 
 Zvec offers official SDKs across multiple languages:
 
-- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires Python 3.10–3.14)
+- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14)
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
 - **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
-- **[Rust](https://github.com/zvec-ai/zvec-rust)**: High-performance Rust bindings.
+- **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust`
 - **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
+
+Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
 ### ✅ Supported Platforms
 
-- Linux (x86_64, ARM64)
-- macOS (ARM64)
+- Linux (x86_64, ARM64; glibc & musl)
+- macOS (ARM64, x86_64)
 - Windows (x86_64)
 
 ### 🛠️ Building from Source
@@ -99,7 +104,7 @@ collection.insert([
 
 # Search by vector similarity
 results = collection.query(
-    zvec.VectorQuery("embedding", vector=[0.4, 0.3, 0.3, 0.1]),
+    zvec.Query(field_name="embedding", vector=[0.4, 0.3, 0.3, 0.1]),
     topk=10
 )
 
@@ -123,7 +128,7 @@ For detailed benchmark methodology, configurations, and complete results, please
 
 | 💬 DingTalk | 📱 WeChat | 🎮 Discord | X (Twitter) |
 | :---: | :---: | :---: | :---: |
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=6" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v3" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | Scan to join | Scan to join | Click to join | Click to follow |
 
 </div>

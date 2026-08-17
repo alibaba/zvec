@@ -49,15 +49,6 @@ void BlockHeap::reset(int32_t capacity, int32_t block_size) {
   cur_ = 0;
 }
 
-uint32_t BlockHeap::pop() {
-  size_t ret_idx = cur_;
-  set_checked(data_[cur_].first);
-  while (cur_ < data_.size() && is_checked(data_[cur_].first)) {
-    ++cur_;
-  }
-  return get_id(data_[ret_idx].first);
-}
-
 void BlockHeap::to_sorted(uint32_t *ids, float *scores, int32_t length) const {
   const int32_t n = std::min(length, static_cast<int32_t>(data_.size()));
   for (int32_t i = 0; i < n; ++i) {

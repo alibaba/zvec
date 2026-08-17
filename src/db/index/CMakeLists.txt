@@ -29,6 +29,7 @@ file(GLOB ZVEC_INDEX_SRCS
      storage/*.cc
      storage/wal/*.cc
      common/*.cc
+     common/manifest/*.cc
      ../training/*.cc)
 
 if(NOT ZVEC_ENABLE_OMEGA)
@@ -38,14 +39,13 @@ endif()
 
 set(ZVEC_INDEX_LIBS
          zvec_common
-         zvec_proto
          rocksdb
          core_interface
          Arrow::arrow_static
          Arrow::parquet_static
          Arrow::arrow_compute
-         Arrow::arrow_dataset
          cppjieba
+         snowball
          FastPFOR
          utf8proc)
 if(ZVEC_ENABLE_OMEGA)

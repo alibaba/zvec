@@ -1,43 +1,57 @@
 cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0077 NEW)
+# Some thirdparty subdirectories declare cmake_minimum_required < 3.25, which would
+# leave CMP0141 unset for them and make them ignore CMAKE_MSVC_DEBUG_INFORMATION_FORMAT.
+# Force NEW as the default so /Z7 (see below) is applied uniformly across the whole tree.
+set(CMAKE_POLICY_DEFAULT_CMP0141 NEW)
 project(zvec)
 set(CC_CXX_STANDARD 17)
 
+function(zvec_add_msvc_c_cxx_compile_options)
+  foreach(_option IN LISTS ARGN)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:${_option}>")
+  endforeach()
+endfunction()
+
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
+    zvec_add_msvc_c_cxx_compile_options(/utf-8)
     # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
-    # Use CACHE FORCE so it propagates into thirdparty subdirectories that call project().
-    foreach(_cfg DEBUG RELWITHDEBINFO)
-        foreach(_lang C CXX)
-            string(REPLACE "/Zi" "/Z7" _flags "${CMAKE_${_lang}_FLAGS_${_cfg}}")
-            set(CMAKE_${_lang}_FLAGS_${_cfg} "${_flags}" CACHE STRING "" FORCE)
-        endforeach()
-    endforeach()
-    add_compile_options(/EHsc) # def c++ exception behavior
-    add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
-    add_compile_options(/we4716) # -Werror=return-type
+    # Since CMake 3.25 (CMP0141=NEW) the debug info format is no longer part of
+    # CMAKE_*_FLAGS_<CFG> but is driven by this abstract variable and appended at the end of
+    # the compile command. Patching /Zi->/Z7 in the flag strings is therefore a no-op and the
+    # abstract default (/Zi) would clash with thirdparty /Z7, producing warning D9025.
+    # CACHE FORCE so it propagates into thirdparty subdirectories that call project().
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
+        "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>" CACHE STRING "" FORCE)
+    zvec_add_msvc_c_cxx_compile_options(/EHsc) # def c++ exception behavior
+    zvec_add_msvc_c_cxx_compile_options(/Zc:preprocessor /Zc:__cplusplus)
+    zvec_add_msvc_c_cxx_compile_options(/we4716) # -Werror=return-type
 
     ###### reduce output length to make vibe coding work better :) should be removed or solved later
     # TODO(windows): fix&cleanup
-    add_compile_options(/wd4267 /wd4244 /wd4305 /wd4242) # conversion/truncation from 'size_t' to 'type', possible loss of data
-    add_compile_options(/wd4310) # cast truncates constant value
-    add_compile_options(/wd4146) # unary minus operator applied to unsigned type #usage: uint32_t seg_id_{-1U};
-    add_compile_options(/wd4245) # conversion from 'type1' to 'type2', signed/unsigned mismatch
-    add_compile_options(/wd4251) # class 'type' needs to have dll-interface to be used by clients of class 'type2'
-    add_compile_options(/wd4099) # type name first seen using 'object_type1' now seen using 'object_type2'
-    add_compile_options(/wd4200) # nonstandard extension used : zero-sized array in struct/union
-    add_compile_options(/wd4324) # structure was padded due to alignment specifier
-    add_compile_options(/wd4702) # unreachable code
-    add_compile_options(/wd4996) # wstring_convert are deprecated in C++17 # usage: in antlr4
-    add_compile_options(/wd4101) # unreferenced local variable
-    add_compile_options(/wd4996) # The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _lseek
+    zvec_add_msvc_c_cxx_compile_options(/wd4267 /wd4244 /wd4305 /wd4242) # conversion/truncation from 'size_t' to 'type', possible loss of data
+    zvec_add_msvc_c_cxx_compile_options(/wd4310) # cast truncates constant value
+    zvec_add_msvc_c_cxx_compile_options(/wd4146) # unary minus operator applied to unsigned type #usage: uint32_t seg_id_{-1U};
+    zvec_add_msvc_c_cxx_compile_options(/wd4245) # conversion from 'type1' to 'type2', signed/unsigned mismatch
+    zvec_add_msvc_c_cxx_compile_options(/wd4251) # class 'type' needs to have dll-interface to be used by clients of class 'type2'
+    zvec_add_msvc_c_cxx_compile_options(/wd4099) # type name first seen using 'object_type1' now seen using 'object_type2'
+    zvec_add_msvc_c_cxx_compile_options(/wd4200) # nonstandard extension used : zero-sized array in struct/union
+    zvec_add_msvc_c_cxx_compile_options(/wd4324) # structure was padded due to alignment specifier
+    zvec_add_msvc_c_cxx_compile_options(/wd4702) # unreachable code
+    zvec_add_msvc_c_cxx_compile_options(/wd4996) # wstring_convert are deprecated in C++17 # usage: in antlr4
+    zvec_add_msvc_c_cxx_compile_options(/wd4101) # unreferenced local variable
+    zvec_add_msvc_c_cxx_compile_options(/wd4996) # The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _lseek
     # result of 32-bit shift implicitly converted to 64 bits (was 64-bit shift intended?) # usage: keeps |= (1 << k);
-    add_compile_options(/wd4334)
+    zvec_add_msvc_c_cxx_compile_options(/wd4334)
     ######
 
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror=return-type")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror=return-type")
+    # Fine-grained dead code elimination: place each function/data in its own section
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
@@ -45,14 +59,46 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 endif()
 
+# Detect musl libc. Some code paths need to avoid large stack buffers on musl
+# because its default thread stack is much smaller than glibc's (128KB vs 8MB).
+# Detection: musl's ldd prints "musl libc" to stderr.
+set(ZVEC_ON_MUSL FALSE CACHE BOOL "Building on musl libc" FORCE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    execute_process(
+        COMMAND ldd --version
+        OUTPUT_VARIABLE _zvec_ldd_stdout
+        ERROR_VARIABLE _zvec_ldd_stderr
+    )
+    if("${_zvec_ldd_stdout}${_zvec_ldd_stderr}" MATCHES "musl")
+        set(ZVEC_ON_MUSL TRUE CACHE BOOL "Building on musl libc" FORCE)
+        message(STATUS "musl libc detected")
+    endif()
+endif()
+
 if(NOT DEFINED PROJECT_ROOT_DIR OR NOT PROJECT_ROOT_DIR)
     set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Root directory of the project" FORCE)
+endif()
+
+# LTO (Link-Time Optimization) — helps on Linux with --gc-sections but may
+# increase size on macOS due to aggressive inlining.  Default OFF; enable
+# explicitly with -DZVEC_ENABLE_LTO=ON when targeting Linux.
+option(ZVEC_ENABLE_LTO "Enable Link-Time Optimization for Release builds" OFF)
+if(ZVEC_ENABLE_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_OUTPUT)
+    if(IPO_SUPPORTED)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO enabled for Release build")
+    else()
+        message(STATUS "LTO not supported: ${IPO_OUTPUT}")
+    endif()
 endif()
 
 message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
 
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/version.cmake)
 
 # iOS platform detection
 if(NOT ANDROID AND NOT IOS AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -74,13 +120,22 @@ endif()
 include_directories(${PROJECT_ROOT_DIR}/src/include)
 include_directories(${PROJECT_ROOT_DIR}/src)
 
-option(BUILD_ZVEC_SHARED "Build all-in-one C++ shared library libzvec" ON)
-option(BUILD_ZVEC_AILEGO_SHARED "Build all-in-one zvec-ailego shared library libzvec_ailego" ON)
-option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec_core" ON)
+set(ZVEC_CPP_SHARED_DEFAULT ON)
+if(ANDROID OR IOS)
+  # A C++ shared library built with a static libc++ cannot safely exchange STL
+  # objects with a mobile application. Mobile C++ consumers use the static SDK
+  # targets below; the shared C API remains available through BUILD_C_BINDINGS.
+  set(ZVEC_CPP_SHARED_DEFAULT OFF)
+endif()
+
+option(BUILD_ZVEC_SHARED "Build all-in-one C++ shared library libzvec" ${ZVEC_CPP_SHARED_DEFAULT})
+option(BUILD_ZVEC_AILEGO_SHARED "Build all-in-one zvec-ailego shared library libzvec_ailego" ${ZVEC_CPP_SHARED_DEFAULT})
+option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec_core" ${ZVEC_CPP_SHARED_DEFAULT})
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_TOOLS "Build tools" ON)
+option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
@@ -88,6 +143,7 @@ message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
+message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
 if(ANDROID)
     option(ZVEC_ENABLE_OMEGA "Build OMEGA support" OFF)
@@ -96,48 +152,77 @@ else()
 endif()
 message(STATUS "ZVEC_ENABLE_OMEGA:${ZVEC_ENABLE_OMEGA}")
 add_compile_definitions(ZVEC_ENABLE_OMEGA=$<BOOL:${ZVEC_ENABLE_OMEGA}>)
+# RaBitQ support (rabitqlib ships x86-64 AVX2/AVX-512 kernels with runtime dispatch):
+#   - Linux x86_64 with GCC/Clang
+#   - Windows x86_64 with MSVC (added upstream in v0.3.8)
+# Everything else (ARM, Android, iOS, 32-bit) falls back to the stub libraries.
+set(RABITQ_SUPPORTED OFF)
+if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
+   AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (WIN32 AND MSVC)))
+  if(MSVC)
+    # /arch:AVX512 turns on the complete F/CD/VL/BW/DQ group. MSVC has no
+    # separate switch for VPOPCNTDQ, so the popcount backend is compiled with
+    # the same flag and stays behind the runtime CPUID guard in cpu_features.cpp.
+    set(RABITQ_AVX2_FLAGS "/arch:AVX2")
+    set(RABITQ_AVX512_FLAGS "/arch:AVX512")
+    set(RABITQ_AVX512_POPCNT_FLAGS "/arch:AVX512")
+    set(RABITQ_HNSW_AVX512_CORE_FLAGS "/arch:AVX512")
+  else()
+    set(RABITQ_AVX2_FLAGS "-mavx2;-mfma")
+    set(RABITQ_AVX512_FLAGS "-mavx512f;-mavx512bw;-mavx512dq;-mfma")
+    set(RABITQ_AVX512_POPCNT_FLAGS
+        "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vpopcntdq;-mfma")
+    set(RABITQ_HNSW_AVX512_CORE_FLAGS
+        "-mavx512f;-mavx512bw;-mavx512dq;-mavx2;-mfma")
+  endif()
 
-option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
+  # check_cxx_compiler_flag takes one argument, so the semicolon-separated
+  # GCC/Clang spellings above need a space-separated copy.
+  include(CheckCXXCompilerFlag)
+  set(RABITQ_SUPPORTED ON)
+  foreach(_rabitq_variant AVX2 AVX512 AVX512_POPCNT)
+    string(REPLACE ";" " " _rabitq_probe "${RABITQ_${_rabitq_variant}_FLAGS}")
+    check_cxx_compiler_flag(
+        "${_rabitq_probe}" COMPILER_SUPPORTS_RABITQ_${_rabitq_variant})
+    if(NOT COMPILER_SUPPORTS_RABITQ_${_rabitq_variant})
+      set(RABITQ_SUPPORTED OFF)
+    endif()
+  endforeach()
+  unset(_rabitq_probe)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID AND NOT IOS)
-  include(CheckCCompilerFlag)
-
-  check_c_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
-  check_c_compiler_flag("-mavx512f -mavx512bw -mavx512vl" COMPILER_SUPPORTS_AVX512)
-
-  if(COMPILER_SUPPORTS_AVX2 OR COMPILER_SUPPORTS_AVX512)
-    set(RABITQ_SUPPORTED ON)
+  if(RABITQ_SUPPORTED)
     add_definitions(-DRABITQ_SUPPORTED=1)
-    if(RABITQ_ENABLE_AVX512 AND COMPILER_SUPPORTS_AVX512)
-      add_definitions(-DRABITQ_COMPILED_AVX512=1)
-      set(RABITQ_ARCH_FLAG "${MATH_MARCH_FLAG_AVX512}")
-    else()
-      set(RABITQ_ARCH_FLAG "${MATH_MARCH_FLAG_AVX2}")
+    if(MSVC)
+      # rabitqlib's AVX2 rotator calls FHT kernels that only exist as MASM on
+      # MSVC; enable_language() must run in the top-level directory.
+      enable_language(ASM_MASM)
     endif()
   else()
-    set(RABITQ_SUPPORTED OFF)
     add_definitions(-DRABITQ_SUPPORTED=0)
-    message(STATUS "RaBitQ support disabled - compiler does not support AVX2 or AVX-512")
+    message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
   endif()
-elseif(IOS)
-  set(RABITQ_SUPPORTED OFF)
-  add_definitions(-DRABITQ_SUPPORTED=0)
-  message(STATUS "RaBitQ support disabled - not supported on iOS")
 else()
-  set(RABITQ_SUPPORTED OFF)
   add_definitions(-DRABITQ_SUPPORTED=0)
-  message(STATUS "RaBitQ support disabled - only supported on Linux x86_64")
+  message(STATUS "RaBitQ support disabled - only supported on Linux x86_64 and Windows x86_64 (MSVC)")
 endif()
-message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
+message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 
-# DiskAnn support (Linux x86_64 only, requires libaio)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
+# DiskAnn support:
+#   - Linux x86_64 and ARM64 with io_uring, libaio, or pread
+#   - 64-bit Android and iOS with the portable synchronous pread backend
+#   - macOS ARM64 (Apple Silicon) with synchronous pread
+#   - Windows x86_64 with overlapped I/O
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" AND NOT ANDROID AND NOT IOS)
+    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS)
+    OR ((ANDROID OR IOS) AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    OR (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled - only supported on Linux x86_64")
+  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 
@@ -150,18 +235,30 @@ message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 cc_directory(thirdparty)
 cc_directories(src)
 
+if(BUILD_CPP_EXAMPLES)
+  add_subdirectory(examples/c++ EXCLUDE_FROM_ALL)
+endif()
+
 cc_directories(tests)
 
-add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
+add_custom_target(clang_tidy_deps DEPENDS ARROW.BUILD glog gflags Lz4.BUILD)
 
 if(BUILD_TOOLS)
     cc_directories(tools)
 endif()
 
-git_version(GIT_SRCS_VER ${PROJECT_ROOT_DIR})
-set(CPACK_PACKAGE_VERSION ${GIT_SRCS_VER})
+set(CPACK_PACKAGE_VERSION ${ZVEC_VERSION_NUMBER})
+set(CPACK_PACKAGE_VERSION_MAJOR ${ZVEC_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${ZVEC_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
+
+# cppjieba dict files bundled with installed artifacts so the `jieba` FTS
+# tokenizer works out of the box (source of truth for both the Python wheel
+# and the native SDK packages).
+set(ZVEC_JIEBA_DICT_SRC
+    "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
 
 if(BUILD_PYTHON_BINDINGS)
     if(APPLE)
@@ -188,32 +285,27 @@ if(BUILD_PYTHON_BINDINGS)
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec
             COMPONENT python)
 
-    # DiskAnn ships as a runtime-loaded shared module
-    # (libzvec_diskann_plugin.so) that is brought online implicitly the
-    # first time a DiskAnn index is created — users never call any load
-    # function. The Python extension resolves the module next to _zvec.so
-    # (see the $ORIGIN rpath in src/binding/python/CMakeLists.txt); the
-    # module must therefore be installed alongside _zvec.so, i.e. inside the
-    # zvec package directory as well.
-    #
-    # Gate on DISKANN_SUPPORTED, not on the target's existence: on unsupported
-    # platforms (e.g. macOS / ARM64) the core_knn_diskann target is still
-    # defined, but built from an empty stub (src/core/algorithm/CMakeLists.txt)
-    # with zero exported symbols and a runtime load path compiled out
-    # (#if DISKANN_SUPPORTED). Shipping that stub is pure dead weight, so it is
-    # only packaged where DiskAnn is real — currently Linux x86_64 with libaio.
-    if(DISKANN_SUPPORTED)
-        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec
-                COMPONENT python)
-    endif()
+    # DiskAnn is now statically linked into _zvec.so via --whole-archive
+    # (see src/binding/python/CMakeLists.txt -> core_knn_diskann_static),
+    # so no separate runtime .so needs to be installed in the wheel.
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
     # importlib.resources and registers it with set_default_jieba_dict_dir().
-    set(ZVEC_JIEBA_DICT_SRC
-        "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
     install(FILES
         "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
         "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
         DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
         COMPONENT python)
 endif()
+
+# Ship the same dict files with the native SDK install (prebuilt packages)
+# as well, under <prefix>/data/jieba_dict (mirrors the wheel's
+# zvec/data/jieba_dict layout). Unlike Python there is no
+# import-time registration: consumers register the directory explicitly via
+# zvec_set_default_jieba_dict_dir() / zvec_config_data_set_jieba_dict_dir(),
+# the ZVEC_JIEBA_DICT_DIR env var, or per-field extra_params.jieba_dict_dir.
+# Default component, so the wheel build (COMPONENT python) is unaffected.
+install(FILES
+    "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
+    "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
+    DESTINATION data/jieba_dict)

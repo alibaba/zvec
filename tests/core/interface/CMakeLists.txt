@@ -21,6 +21,9 @@ set(ZVEC_TEST_CORE_INTERFACE_LIBS
     core_knn_ivf
     core_knn_hnsw_rabitq
     core_knn_vamana
+    core_knn_ivf_rabitq
+    core_knn_diskann
+    zvec_turbo
 )
 if(ZVEC_ENABLE_OMEGA)
   list(APPEND ZVEC_TEST_CORE_INTERFACE_LIBS core_knn_omega omega)

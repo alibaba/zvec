@@ -42,9 +42,9 @@ void random_gaussian_matrix(float *mat, size_t dim) {
 // Implemented manually to avoid rabitqlib/Eigen dependency whose ISA-sensitive
 // inline functions cause ODR violations (duplicate codegen with different
 // -march flags) leading to SEGFAULT on linux-x64-clang.
-void householder_qr(const float *A_in, float *q, size_t dim) {
+void householder_qr(const float *a_in, float *q, size_t dim) {
   // R starts as a copy of A
-  std::vector<float> R(A_in, A_in + dim * dim);
+  std::vector<float> r(a_in, a_in + dim * dim);
 
   // Q starts as identity
   std::fill(q, q + dim * dim, 0.0f);
@@ -58,18 +58,18 @@ void householder_qr(const float *A_in, float *q, size_t dim) {
     // x = R[k:dim, k]  (sub-column below and including diagonal)
     float norm_x_sq = 0.0f;
     for (size_t i = k; i < dim; ++i) {
-      norm_x_sq += R[i * dim + k] * R[i * dim + k];
+      norm_x_sq += r[i * dim + k] * r[i * dim + k];
     }
     if (norm_x_sq == 0.0f) continue;
 
     float norm_x = std::sqrt(norm_x_sq);
 
     // alpha = -sign(R[k][k]) * ||x||  (choose sign to avoid cancellation)
-    float alpha = (R[k * dim + k] >= 0.0f) ? -norm_x : norm_x;
+    float alpha = (r[k * dim + k] >= 0.0f) ? -norm_x : norm_x;
 
     // v = x - alpha * e1  (only the sub-vector [k, dim) is non-zero)
     for (size_t i = k; i < dim; ++i) {
-      v[i - k] = R[i * dim + k];
+      v[i - k] = r[i * dim + k];
     }
     v[0] -= alpha;
 
@@ -88,11 +88,11 @@ void householder_qr(const float *A_in, float *q, size_t dim) {
     for (size_t j = k; j < dim; ++j) {
       float dot = 0.0f;
       for (size_t i = 0; i < dim - k; ++i) {
-        dot += v[i] * R[(k + i) * dim + j];
+        dot += v[i] * r[(k + i) * dim + j];
       }
       dot *= 2.0f;
       for (size_t i = 0; i < dim - k; ++i) {
-        R[(k + i) * dim + j] -= v[i] * dot;
+        r[(k + i) * dim + j] -= v[i] * dot;
       }
     }
 
@@ -121,14 +121,14 @@ int MatrixRotator::init_impl(size_t dim) {
   random_gaussian_matrix(rand_mat.data(), dim);
 
   // Householder QR: A = Q * R, use Q^T as the rotation matrix
-  std::vector<float> Q(dim * dim);
-  householder_qr(rand_mat.data(), Q.data(), dim);
+  std::vector<float> q(dim * dim);
+  householder_qr(rand_mat.data(), q.data(), dim);
 
   // Store Q^T (transpose) as the rotation matrix
   matrix_.resize(dim * dim);
   for (size_t i = 0; i < dim; ++i) {
     for (size_t j = 0; j < dim; ++j) {
-      matrix_[j * dim + i] = Q[i * dim + j];
+      matrix_[j * dim + i] = q[i * dim + j];
     }
   }
   return 0;

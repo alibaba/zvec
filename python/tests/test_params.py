@@ -17,6 +17,7 @@ import os
 import pickle
 import sys
 import time
+import pickle
 
 
 import numpy as np
@@ -25,15 +26,18 @@ from zvec import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
+    DiskAnnIndexParam,
     FlatIndexParam,
     HnswIndexParam,
     OmegaIndexParam,
+    IvfRabitqIndexParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
     OptimizeOption,
     HnswQueryParam,
     OmegaQueryParam,
+    IvfRabitqQueryParam,
     IVFQueryParam,
     Query,
     VectorQuery,
@@ -43,6 +47,7 @@ from zvec import (
     QuantizerParam,
     DataType,
     VectorSchema,
+    VamanaIndexParam,
 )
 
 from zvec._zvec.param import _SearchQuery
@@ -58,6 +63,40 @@ OMEGA_AVAILABLE = OMEGA_ENABLED and not IS_ANDROID
 OMEGA_ANDROID_SKIP = pytest.mark.skipif(
     not OMEGA_AVAILABLE, reason="OMEGA is disabled on this build/platform"
 )
+
+
+@pytest.mark.parametrize(
+    "param_type",
+    [
+        FlatIndexParam,
+        IVFIndexParam,
+        DiskAnnIndexParam,
+        HnswIndexParam,
+        VamanaIndexParam,
+    ],
+)
+@pytest.mark.parametrize(
+    "quantize_type,expected_name",
+    [
+        (QuantizeType.UNDEFINED, "UNDEFINED"),
+        (QuantizeType.FP16, "FP16"),
+        (QuantizeType.INT8, "INT8"),
+        (QuantizeType.INT4, "INT4"),
+        (QuantizeType.UNIFORM_UINT7, "UNIFORM_UINT7"),
+        (QuantizeType.UNIFORM_UINT8, "UNIFORM_UINT8"),
+        (QuantizeType.UNIFORM_UINT4, "UNIFORM_UINT4"),
+    ],
+)
+def test_quantizer_parameter_representation(param_type, quantize_type, expected_name):
+    # Parameters can be represented even when their index/quantizer combination
+    # is rejected at collection creation. Compare to the specified name, not
+    # only to the original: a round trip can preserve an incorrect string.
+    param = param_type(metric_type=MetricType.L2, quantize_type=quantize_type)
+    for value in (param, param.clone(), pickle.loads(pickle.dumps(param))):
+        assert value.quantize_type == quantize_type
+        assert value.to_dict()["quantize_type"] == expected_name
+        assert expected_name in repr(value)
+
 
 # ----------------------------
 # Invert Index Param Test Case
@@ -103,6 +142,8 @@ class TestHnswIndexParam:
         assert param.m == 50
         assert param.ef_construction == 500
         assert param.quantize_type == QuantizeType.UNDEFINED
+        assert param.use_flat_contiguous_memory is False
+        assert param.flat_data_type == DataType.VECTOR_FP32
         assert param.type == IndexType.HNSW
 
     def test_custom(self):
@@ -111,14 +152,26 @@ class TestHnswIndexParam:
             m=10,
             ef_construction=1000,
             quantize_type=QuantizeType.FP16,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         assert param.metric_type == MetricType.L2
         assert param.m == 10
         assert param.ef_construction == 1000
         assert param.quantize_type == QuantizeType.FP16
+        assert param.use_flat_contiguous_memory is True
+        assert param.flat_data_type == DataType.VECTOR_FP16
 
     @pytest.mark.parametrize(
-        "attr", ["metric_type", "m", "ef_construction", "quantize_type"]
+        "attr",
+        [
+            "metric_type",
+            "m",
+            "ef_construction",
+            "quantize_type",
+            "use_flat_contiguous_memory",
+            "flat_data_type",
+        ],
     )
     def test_readonly_attributes(self, attr):
         param = HnswIndexParam()
@@ -141,15 +194,21 @@ class TestFlatIndexParam:
         assert param.type == IndexType.FLAT
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.metric_type == MetricType.IP
+        assert param.use_contiguous_memory is False
 
     def test_custom(self):
         param = FlatIndexParam(
-            metric_type=MetricType.L2, quantize_type=QuantizeType.INT8
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.INT8,
+            use_contiguous_memory=True,
         )
         assert param.metric_type == MetricType.L2
         assert param.quantize_type == QuantizeType.INT8
+        assert param.use_contiguous_memory is True
 
-    @pytest.mark.parametrize("attr", ["metric_type", "quantize_type"])
+    @pytest.mark.parametrize(
+        "attr", ["metric_type", "quantize_type", "use_contiguous_memory"]
+    )
     def test_readonly_attributes(self, attr):
         param = FlatIndexParam()
         import sys
@@ -257,6 +316,66 @@ class TestOmegaIndexParam:
         assert restored.m == 24
         assert restored.ef_training == 640
         assert restored.k_train == 2
+
+# Ivf Rabitq Index Param Test Case
+# ----------------------------
+class TestIvfRabitqIndexParam:
+    def test_default(self):
+        param = IvfRabitqIndexParam()
+        assert param.metric_type == MetricType.IP
+        assert param.nlist == 1024
+        assert param.total_bits == 7
+        assert param.sample_count == 0
+        assert param.quantize_type == QuantizeType.RABITQ
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_custom(self):
+        param = IvfRabitqIndexParam(
+            metric_type=MetricType.L2, nlist=128, total_bits=6, sample_count=1000
+        )
+        assert param.metric_type == MetricType.L2
+        assert param.nlist == 128
+        assert param.total_bits == 6
+        assert param.sample_count == 1000
+        assert param.quantize_type == QuantizeType.RABITQ
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_to_dict(self):
+        param = IvfRabitqIndexParam(
+            metric_type=MetricType.L2, nlist=128, total_bits=6, sample_count=1000
+        )
+        data = param.to_dict()
+        assert data["type"] == "IVF_RABITQ"
+        assert data["metric_type"] == "L2"
+        assert data["quantize_type"] == "RABITQ"
+        assert data["nlist"] == 128
+        assert data["total_bits"] == 6
+        assert data["sample_count"] == 1000
+
+    def test_vector_schema_accepts_param(self):
+        param = IvfRabitqIndexParam(metric_type=MetricType.L2, nlist=128)
+        schema = VectorSchema(
+            name="embedding",
+            data_type=DataType.VECTOR_FP32,
+            dimension=128,
+            index_param=param,
+        )
+        assert schema.index_param.type == IndexType.IVF_RABITQ
+        assert schema.index_param.nlist == 128
+
+    @pytest.mark.parametrize(
+        "attr", ["metric_type", "nlist", "total_bits", "sample_count", "quantize_type"]
+    )
+    def test_readonly_attributes(self, attr):
+        param = IvfRabitqIndexParam()
+        import sys
+
+        if sys.version_info >= (3, 11):
+            match_pattern = r"(can't set attribute|has no setter|readonly attribute)"
+        else:
+            match_pattern = r"can't set attribute"
+        with pytest.raises(AttributeError, match=match_pattern):
+            setattr(param, attr, getattr(param, attr))
 
 
 # ----------------------------
@@ -485,6 +604,58 @@ class TestOmegaQueryParam:
         assert restored.is_linear is True
         assert restored.is_using_refiner is True
 
+# IvfRabitqQueryParam Test Case
+# ----------------------------
+class TestIvfRabitqQueryParam:
+    def test_default(self):
+        param = IvfRabitqQueryParam()
+        assert param is not None
+        assert param.nprobe == 10
+        assert param.is_using_refiner == False
+        assert param.radius == 0
+        assert param.is_linear == False
+        assert param.scale_factor == 10.0
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_custom(self):
+        param = IvfRabitqQueryParam(
+            nprobe=20,
+            is_using_refiner=True,
+            radius=30,
+            is_linear=True,
+            scale_factor=3.5,
+        )
+        assert param.nprobe == 20
+        assert param.is_using_refiner == True
+        assert param.radius == 30
+        assert param.is_linear == True
+        assert param.scale_factor == 3.5
+        assert param.type == IndexType.IVF_RABITQ
+
+    def test_query_accepts_param(self):
+        param = IvfRabitqQueryParam(nprobe=20)
+        query = Query(field_name="embedding", vector=[0.1, 0.2], param=param)
+        assert query.param == param
+        assert query.param.type == IndexType.IVF_RABITQ
+
+    def test_pickle_roundtrip(self):
+        import pickle
+
+        param = IvfRabitqQueryParam(nprobe=20, is_using_refiner=True, scale_factor=3.5)
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.nprobe == 20
+        assert restored.is_using_refiner == True
+        assert restored.scale_factor == 3.5
+
+    def test_readonly_attributes(self):
+        param = IvfRabitqQueryParam()
+        if sys.version_info >= (3, 11):
+            match_pattern = r"(can't set attribute|has no setter|readonly attribute)"
+        else:
+            match_pattern = r"can't set attribute"
+        with pytest.raises(AttributeError, match=match_pattern):
+            param.nprobe = 10
+
 
 # # ----------------------------
 # # IVFQueryParam Test Case
@@ -544,9 +715,10 @@ class TestQuery:
         with pytest.raises(ValueError):
             Query(field_name="embedding", id="doc123", vector=[0.1])._validate()
 
-    def test_init_without_field_name_raises_error(self):
-        with pytest.raises(ValueError):
-            Query(field_name=None)._validate()
+    @pytest.mark.parametrize("field_name", [None, "", "   ", 123])
+    def test_init_without_valid_field_name_raises_error(self, field_name):
+        with pytest.raises(ValueError, match="Field name must be a non-empty string"):
+            Query(field_name=field_name)._validate()
 
     def test_has_id_returns_true_when_id_set(self):
         vq = Query(field_name="embedding", id="doc123")

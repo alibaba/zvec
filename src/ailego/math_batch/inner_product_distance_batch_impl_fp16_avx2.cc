@@ -18,7 +18,7 @@
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/type_helper.h>
 
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 #if defined(__AVX2__)
 
@@ -106,4 +106,4 @@ void compute_one_to_many_inner_product_avx2_fp16_12(
 
 #endif
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch

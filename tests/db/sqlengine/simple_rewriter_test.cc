@@ -15,11 +15,22 @@
 #include "sqlengine/analyzer/simple_rewriter.h"
 #include <gtest/gtest.h>
 #include "db/sqlengine/analyzer/query_info.h"
+#include "db/sqlengine/analyzer/query_info_helper.h"
+#include "db/sqlengine/analyzer/search_cond_binder.h"
+#include "db/sqlengine/analyzer/search_cond_validator.h"
 #include "db/sqlengine/sqlengine_impl.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/schema.h"
 
 namespace zvec::sqlengine {
+
+size_t count_op(const QueryNode::Ptr &node, QueryNodeOp op) {
+  if (node == nullptr) {
+    return 0;
+  }
+  size_t count = node->op() == op ? 1 : 0;
+  return count + count_op(node->left(), op) + count_op(node->right(), op);
+}
 
 class SimpleRewriterTest : public testing::Test {
  public:
@@ -46,6 +57,11 @@ class SimpleRewriterTest : public testing::Test {
     column_gender->set_name("gender");
     column_gender->set_data_type(DataType::UINT32);
     param.add_field(column_gender);
+
+    auto column_score = std::make_shared<FieldSchema>();
+    column_score->set_name("score");
+    column_score->set_data_type(DataType::DOUBLE);
+    param.add_field(column_score);
 
     auto column3 = std::make_shared<FieldSchema>();
     column3->set_name("category");
@@ -187,7 +203,7 @@ class SimpleRewriterTest : public testing::Test {
   // Tears down the test fixture.
   static void TearDownTestSuite() {}
 
-  QueryInfo::Ptr parse(const std::string &filter) {
+  Result<QueryInfo::Ptr> parse_result(const std::string &filter) {
     SearchQuery query;
     query.output_fields_ = {"*"};
     query.topk_ = 11;
@@ -195,13 +211,15 @@ class SimpleRewriterTest : public testing::Test {
     query.filter_ = filter;
 
     auto engine = std::make_shared<SQLEngineImpl>(profiler_);
-    auto ret = engine->build_query_info(schema, query, nullptr);
+    return engine->build_query_info(schema, query, nullptr);
+  }
 
+  QueryInfo::Ptr parse(const std::string &filter) {
+    auto ret = parse_result(filter);
     // ASSERT_TRUE(ret.has_value());
     QueryInfo::Ptr new_query_info = ret.value();
     return new_query_info;
   }
-
 
  protected:
   Profiler::Ptr profiler_{new Profiler};
@@ -283,7 +301,9 @@ TEST_F(EqOrRewriteTest, SimpleManyEqOrParas) {
 TEST_F(EqOrRewriteTest, SimpleNeOr) {
   auto info = parse("age != 10 or age != 20 ");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (10, 20)(FORWARD)");
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age!=10(FORWARD)(OR_A)) or (age!=20(FORWARD)(OR_A))");
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 0u);
 }
 
 TEST_F(EqOrRewriteTest, SimpleManyNeOr) {
@@ -293,10 +313,8 @@ TEST_F(EqOrRewriteTest, SimpleManyNeOr) {
       "!= 10 or age != 11 or age != 12 or age != 13 or age != 14 or age != 15 "
       "or age != 16 or age != 17 or age != 18 or age != 19 or age != 20");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(),
-            "age in NOT (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, "
-            "16, 17, 18, "
-            "19, 20)(FORWARD)");
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_NE), 20u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 0u);
 }
 
 TEST_F(EqOrRewriteTest, EqAndNe) {
@@ -304,9 +322,108 @@ TEST_F(EqOrRewriteTest, EqAndNe) {
       "age != 10 or age != 20 or age = 30 or "
       "age = 40");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(),
-            "(age in NOT (10, 20)(FORWARD)(OR_A)) or (age in (30, "
-            "40)(FORWARD)(OR_A))");
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_NE), 2u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 1u);
+}
+
+TEST_F(EqOrRewriteTest, EqOrInUnion) {
+  auto info = parse("age = 2 or age in (2, 3)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in (2, 3)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, InOrInUnion) {
+  auto info = parse("age in (1, 2) or age in (2, 3)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in (1, 2, 3)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, NeAndNotInUnion) {
+  auto info = parse("age != 1 and age not in (2, 3) and age != 2");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (1, 2, 3)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, InAndInIsNotRewritten) {
+  auto info = parse("age in (1, 2, 2, 3) and age in (2, 3, 4)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 2u);
+}
+
+TEST_F(EqOrRewriteTest, EqAndInIsNotRewritten) {
+  auto info = parse("age = 2 and age in (2, 3)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 1u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 1u);
+}
+
+TEST_F(EqOrRewriteTest, DisjointInPredicatesAreNotFolded) {
+  auto info = parse("age in (1, 2) and age in (3, 4)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_FALSE(info->is_filter_unsatisfiable());
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 2u);
+}
+
+TEST_F(EqOrRewriteTest, DisjointInPredicatesWithSiblingAreNotFolded) {
+  auto info = parse("age in (1, 2) and age in (3, 4) and gender = 1");
+  ASSERT_NE(info, nullptr);
+  EXPECT_FALSE(info->is_filter_unsatisfiable());
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 2u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 1u);
+}
+
+TEST_F(EqOrRewriteTest, ConflictingEqualitiesWithSiblingAreNotFolded) {
+  auto info = parse("age = 1 and age = 2 and state = 1");
+  ASSERT_NE(info, nullptr);
+  EXPECT_FALSE(info->is_filter_unsatisfiable());
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 3u);
+}
+
+TEST_F(EqOrRewriteTest, ContradictionDoesNotHideInvalidSibling) {
+  auto result =
+      parse_result("age in (1) and age in (2) and gender in (1, 1.5)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(EqOrRewriteTest, UnionDoesNotCanonicalizeNumericLiterals) {
+  auto info = parse("score = 1 or score in (1.0, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "score in (1, 1.0, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, UnionDoesNotCanonicalizeSignedZero) {
+  auto info = parse("score = -0.0 or score in (0.0, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "score in (-0.0, 0.0, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, UnionDoesNotHideDifferentLiteralTypes) {
+  auto result = parse_result("age = 1 or age in ('1', 2)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(EqOrRewriteTest, InvalidValueIsRejectedWithoutIntersection) {
+  auto result = parse_result("age in (1, 1.5) and age in (1)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(EqOrRewriteTest, InListIsNotDeduplicated) {
+  auto info = parse("age in (1, 2, 1, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in (1, 2, 1, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, NotInListIsNotDeduplicated) {
+  auto info = parse("age not in (1, 2, 1, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (1, 2, 1, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, BoolEqOrIsNotRewrittenToIn) {
+  auto info = parse("is_type1 = true or is_type1 = false");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 2u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 0u);
 }
 
 TEST_F(EqOrRewriteTest, PreEqOr) {
@@ -377,6 +494,21 @@ TEST_F(EqOrRewriteTest, PrePostEqAnd) {
   EXPECT_EQ(info->filter_cond()->text(),
             "((gender=1(FORWARD)) and (age in (10, 20, 30, 40)(FORWARD))) and "
             "(loc!=3(FORWARD))");
+}
+
+TEST_F(EqOrRewriteTest, EqOrGroupsSeparatedByAnd) {
+  auto info = parse("(age = 10 or age = 20) and (age = 30 or age = 40)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age in (10, 20)(FORWARD)) and (age in (30, 40)(FORWARD))");
+}
+
+TEST_F(EqOrRewriteTest, EqOrMustNotCrossAndSubtreeBoundary) {
+  auto info = parse("((age = 10 or age = 20) and gender = 1) or age = 30");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "((age in (10, 20)(FORWARD)(OR_A)) and "
+            "(gender=1(FORWARD)(OR_A))) or (age=30(FORWARD)(OR_A))");
 }
 
 TEST_F(EqOrRewriteTest, UserCases1) {
@@ -632,6 +764,18 @@ TEST_F(ContainRewriteTest, AlwaysFalseConditionOrComplex) {
             "(a>1(FORWARD)(OR_A)) or (a<0(FORWARD)(OR_A))");
 }
 
+TEST_F(ContainRewriteTest, MissingFieldInPrunedBranchIsRejected) {
+  auto result = parse_result(
+      "a = 1 or (category_array contain_any () and missing_field = 2)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(ContainRewriteTest, InvalidTypeInPrunedBranchIsRejected) {
+  auto result = parse_result(
+      "a = 1 or (category_array contain_any () and age = 'invalid')");
+  EXPECT_FALSE(result.has_value());
+}
+
 TEST_F(SimpleRewriterTest, MiscOr) {
   auto info = parse("a = 1 or a = 2 or a = 3 or category_array contain_any ()");
   ASSERT_NE(info, nullptr);
@@ -646,5 +790,518 @@ TEST_F(SimpleRewriterTest, MiscAnd) {
   EXPECT_EQ(info->is_filter_unsatisfiable(), true);
 }
 
+
+namespace {
+
+QueryRelNode::Ptr scalar_condition(const std::string &field,
+                                   const std::string &value) {
+  auto rel = std::make_shared<QueryRelNode>();
+  rel->set_op(QueryNodeOp::Q_EQ);
+  rel->set_left(std::make_shared<QueryIDNode>(field));
+  rel->left()->set_op(QueryNodeOp::Q_ID);
+  auto constant = std::make_shared<QueryConstantNode>(value);
+  constant->set_op(QueryNodeOp::Q_INT_VALUE);
+  rel->set_right(constant);
+  return rel;
+}
+
+QueryNode::Ptr logic_condition(QueryNodeOp op, QueryNode::Ptr left,
+                               QueryNode::Ptr right) {
+  auto node = std::make_shared<QueryNode>(op);
+  node->set_left(std::move(left));
+  node->set_right(std::move(right));
+  return node;
+}
+
+CollectionSchema pipeline_schema() {
+  CollectionSchema schema;
+  schema.set_name("pipeline");
+  auto number = std::make_shared<FieldSchema>();
+  number->set_name("number");
+  number->set_data_type(DataType::UINT32);
+  number->set_index_params(std::make_shared<InvertIndexParams>());
+  schema.add_field(number);
+  auto array = std::make_shared<FieldSchema>();
+  array->set_name("array");
+  array->set_data_type(DataType::ARRAY_INT32);
+  array->set_index_params(std::make_shared<InvertIndexParams>());
+  schema.add_field(array);
+  return schema;
+}
+
+QueryRelNode::Ptr empty_contain(QueryNodeOp op) {
+  auto node = std::make_shared<QueryRelNode>();
+  node->set_op(op);
+  node->set_left(std::make_shared<QueryIDNode>("array"));
+  node->left()->set_op(QueryNodeOp::Q_ID);
+  node->set_right(std::make_shared<QueryListNode>());
+  return node;
+}
+
+}  // namespace
+
+TEST(SearchCondPipelineTest,
+     ValidationPreservesAstAndBindingConvertsMergedValues) {
+  auto schema = pipeline_schema();
+  auto first = scalar_condition("number", "01");
+  auto second = scalar_condition("number", "2");
+  auto root = logic_condition(QueryNodeOp::Q_OR, first, second);
+  const auto original_text = root->text();
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  EXPECT_EQ(root->text(), original_text);
+  EXPECT_FALSE(first->or_ancestor());
+  EXPECT_EQ(first->rel_type(), QueryRelNode::RelType::NO_TYPE);
+  EXPECT_EQ(second->rel_type(), QueryRelNode::RelType::NO_TYPE);
+
+  QueryInfo info;
+  info.set_search_cond(root);
+  SimpleRewriter().rewrite(&info, schema);
+  ASSERT_EQ(info.search_cond(), first);
+  ASSERT_EQ(first->op(), QueryNodeOp::Q_IN);
+  auto list = std::dynamic_pointer_cast<QueryListNode>(first->right());
+  ASSERT_NE(list, nullptr);
+  ASSERT_EQ(list->value_expr_list().size(), 2);
+  EXPECT_EQ(list->value_expr_list()[0]->text(), "01");
+  EXPECT_EQ(list->value_expr_list()[1], second->right());
+  EXPECT_EQ(first->parent(), nullptr);
+  EXPECT_EQ(list->parent(), first.get());
+  for (const auto &value : list->value_expr_list()) {
+    EXPECT_EQ(value->parent(), list.get());
+  }
+
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(info.invert_cond(), first);
+  EXPECT_FALSE(first->or_ancestor());
+  EXPECT_TRUE(first->is_invert());
+  EXPECT_EQ(second->rel_type(), QueryRelNode::RelType::NO_TYPE);
+  std::string decoded;
+  ASSERT_TRUE(QueryInfoHelper::data_buf_2_text(
+      list->value_expr_list()[0]->text(), DataType::UINT32, &decoded));
+  EXPECT_EQ(decoded, "1");
+}
+
+TEST(SearchCondPipelineTest, PrunedBranchDoesNotLeaveExecutionState) {
+  auto schema = pipeline_schema();
+  auto removed = empty_contain(QueryNodeOp::Q_CONTAIN_ANY);
+  auto kept = scalar_condition("number", "12");
+  auto root = logic_condition(QueryNodeOp::Q_OR, removed, kept);
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  QueryInfo info;
+  info.set_search_cond(root);
+  SimpleRewriter().rewrite(&info, schema);
+  ASSERT_EQ(info.search_cond(), kept);
+  EXPECT_EQ(kept->parent(), nullptr);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  ASSERT_NE(info.invert_cond(), nullptr);
+  EXPECT_FALSE(kept->or_ancestor());
+  EXPECT_FALSE(kept->left()->or_ancestor());
+  EXPECT_EQ(removed->rel_type(), QueryRelNode::RelType::NO_TYPE);
+}
+
+TEST(SearchCondPipelineTest, RewrittenNullPredicateNeedsNoNumericBuffer) {
+  auto schema = pipeline_schema();
+  auto root = empty_contain(QueryNodeOp::Q_CONTAIN_ALL);
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  QueryInfo info;
+  info.set_search_cond(root);
+  SimpleRewriter().rewrite(&info, schema);
+  EXPECT_EQ(root->op(), QueryNodeOp::Q_IS_NOT_NULL);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_TRUE(root->is_invert());
+  EXPECT_EQ(root->right()->op(), QueryNodeOp::Q_NULL_VALUE);
+}
+
+TEST(SearchCondPipelineTest, FinalFilterLimitAppliesAfterRewrite) {
+  auto schema = pipeline_schema();
+  std::vector<QueryNode::Ptr> level;
+  for (size_t i = 0; i < 4097; ++i) {
+    level.push_back(scalar_condition("number", std::to_string(i)));
+  }
+  // Build a balanced tree to exercise the limit without relying on stack size.
+  while (level.size() > 1) {
+    std::vector<QueryNode::Ptr> next;
+    for (size_t i = 0; i < level.size(); i += 2) {
+      next.push_back(
+          i + 1 == level.size()
+              ? level[i]
+              : logic_condition(QueryNodeOp::Q_OR, level[i], level[i + 1]));
+    }
+    level = std::move(next);
+  }
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(level[0]).ok());
+  QueryInfo info;
+  info.set_search_cond(level[0]);
+  SimpleRewriter().rewrite(&info, schema);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(info.invert_cond()->op(), QueryNodeOp::Q_IN);
+
+  // Different operators prevent union, so the same count must be rejected.
+  level.clear();
+  for (size_t i = 0; i < 4097; ++i) {
+    auto rel = scalar_condition("number", "1");
+    rel->set_op(QueryNodeOp::Q_GT);
+    level.push_back(rel);
+  }
+  while (level.size() > 1) {
+    std::vector<QueryNode::Ptr> next;
+    for (size_t i = 0; i < level.size(); i += 2) {
+      next.push_back(
+          i + 1 == level.size()
+              ? level[i]
+              : logic_condition(QueryNodeOp::Q_AND, level[i], level[i + 1]));
+    }
+    level = std::move(next);
+  }
+  const auto &unmerged = level[0];
+  SearchCondValidator second_validator(schema);
+  ASSERT_TRUE(second_validator.validate(unmerged).ok());
+  SearchCondBinder second_binder(schema);
+  QueryInfo unmerged_info;
+  unmerged_info.set_search_cond(unmerged);
+  auto status = second_binder.bind(&unmerged_info);
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.message(),
+            "too many filter conditions: 4097; the maximum is 4096");
+}
+
+TEST_F(ContainRewriteTest, PrunedBranchStillValidatesFunctionAndOperator) {
+  for (const std::string &invalid :
+       {"array_length(age) = 1", "array_length(category_array, age) = 1",
+        "age contain_any ()"}) {
+    SCOPED_TRACE(invalid);
+    EXPECT_FALSE(parse_result("((category_array contain_any ()) and (" +
+                              invalid + ")) or age = 1")
+                     .has_value());
+  }
+}
+
+TEST_F(ContainRewriteTest, PrunedBranchStillValidatesOriginalListLength) {
+  std::string filter = "category_array contain_any () and age in (0";
+  for (size_t i = 0; i < 20000; ++i) {
+    filter += ",0";
+  }
+  filter += ")";
+  EXPECT_FALSE(parse_result(filter).has_value());
+}
+
+TEST(SearchCondPipelineTest, NumericConversionPreservesLegacyAcceptance) {
+  struct RangeCase {
+    DataType type;
+    QueryNodeOp op;
+    const char *valid;
+    const char *invalid;
+  };
+  const RangeCase cases[] = {
+      {DataType::INT32, QueryNodeOp::Q_INT_VALUE, "2147483647", "2147483648"},
+      {DataType::INT32, QueryNodeOp::Q_INT_VALUE, "-2147483648", "-2147483649"},
+      {DataType::UINT32, QueryNodeOp::Q_INT_VALUE, "4294967295", "4294967296"},
+      {DataType::UINT32, QueryNodeOp::Q_INT_VALUE, "-0", "-1"},
+      {DataType::INT64, QueryNodeOp::Q_INT_VALUE, "9223372036854775807",
+       "9223372036854775808"},
+      {DataType::INT64, QueryNodeOp::Q_INT_VALUE, "-9223372036854775808",
+       "-9223372036854775809"},
+      {DataType::UINT64, QueryNodeOp::Q_INT_VALUE, "18446744073709551615",
+       "18446744073709551616"},
+      {DataType::UINT64, QueryNodeOp::Q_INT_VALUE, "0", "-1"},
+      {DataType::FLOAT, QueryNodeOp::Q_FLOAT_VALUE, "3.4e38", "3.5e38"},
+      {DataType::DOUBLE, QueryNodeOp::Q_FLOAT_VALUE, "1.7e308", "1.8e308"},
+  };
+  for (const auto &item : cases) {
+    for (bool indexed : {false, true}) {
+      SCOPED_TRACE(item.invalid);
+      SCOPED_TRACE(indexed);
+      CollectionSchema schema;
+      auto field = std::make_shared<FieldSchema>();
+      field->set_name("number");
+      field->set_data_type(item.type);
+      if (indexed) {
+        field->set_index_params(std::make_shared<InvertIndexParams>());
+      }
+      ASSERT_TRUE(schema.add_field(field).ok());
+      auto valid = scalar_condition("number", item.valid);
+      valid->right()->set_op(item.op);
+      SearchCondValidator validator(schema);
+      ASSERT_TRUE(validator.validate(valid).ok());
+      SearchCondBinder binder(schema);
+      QueryInfo info;
+      info.set_search_cond(valid);
+      ASSERT_TRUE(binder.bind(&info).ok());
+      if (indexed) {
+        EXPECT_TRUE(valid->is_invert());
+        std::string expected;
+        ASSERT_TRUE(
+            QueryInfoHelper::text_2_data_buf(item.valid, item.type, &expected));
+        EXPECT_EQ(valid->right()->text(), expected);
+      } else {
+        EXPECT_TRUE(valid->is_forward());
+        EXPECT_EQ(valid->right()->text(), item.valid);
+      }
+      auto invalid = scalar_condition("number", item.invalid);
+      invalid->right()->set_op(item.op);
+      SearchCondValidator invalid_validator(schema);
+      // Legacy conversions accept overflow, unsigned negatives and floating
+      // overflow. Forward predicates only check the literal node type.
+      ASSERT_TRUE(invalid_validator.validate(invalid).ok());
+      QueryInfo legacy_info;
+      legacy_info.set_search_cond(invalid);
+      ASSERT_TRUE(binder.bind(&legacy_info).ok());
+      if (indexed) {
+        std::string expected;
+        ASSERT_TRUE(QueryInfoHelper::text_2_data_buf(item.invalid, item.type,
+                                                     &expected));
+        EXPECT_EQ(invalid->right()->text(), expected);
+      } else {
+        EXPECT_EQ(invalid->right()->text(), item.invalid);
+      }
+    }
+  }
+}
+
+TEST(SearchCondPipelineTest,
+     BinderComputesRemainingOrAncestryAndHandlesEmptyTree) {
+  auto schema = pipeline_schema();
+  auto first = scalar_condition("number", "1");
+  auto second = scalar_condition("number", "2");
+  second->set_op(QueryNodeOp::Q_GT);
+  auto root = logic_condition(QueryNodeOp::Q_OR, first, second);
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  QueryInfo info;
+  info.set_search_cond(root);
+  SimpleRewriter().rewrite(&info, schema);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_FALSE(root->or_ancestor());
+  EXPECT_TRUE(first->or_ancestor());
+  EXPECT_TRUE(first->right()->or_ancestor());
+  EXPECT_TRUE(second->or_ancestor());
+  QueryInfo empty_info;
+  ASSERT_TRUE(binder.bind(&empty_info).ok());
+  EXPECT_EQ(empty_info.invert_cond(), nullptr);
+  EXPECT_EQ(empty_info.filter_cond(), nullptr);
+  EXPECT_EQ(empty_info.vector_cond_info(), nullptr);
+}
+
+TEST(SearchCondPipelineTest, MixedOrKeepsForwardLiteralsUnchanged) {
+  auto schema = pipeline_schema();
+  auto forward = std::make_shared<FieldSchema>();
+  forward->set_name("forward_number");
+  forward->set_data_type(DataType::UINT32);
+  ASSERT_TRUE(schema.add_field(forward).ok());
+  auto indexed_rel = scalar_condition("number", "0x10");
+  auto forward_rel = scalar_condition("forward_number", "01");
+  auto root = logic_condition(QueryNodeOp::Q_OR, indexed_rel, forward_rel);
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  QueryInfo info;
+  info.set_search_cond(root);
+  SimpleRewriter().rewrite(&info, schema);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(info.invert_cond(), nullptr);
+  EXPECT_EQ(info.filter_cond(), root);
+  EXPECT_TRUE(indexed_rel->is_forward());
+  EXPECT_TRUE(forward_rel->is_forward());
+  EXPECT_EQ(indexed_rel->right()->text(), "0x10");
+  EXPECT_EQ(forward_rel->right()->text(), "01");
+}
+
+TEST(SearchCondPipelineTest, BindingAcceptsReplacementNodesWithoutMetadata) {
+  auto schema = pipeline_schema();
+  auto original = scalar_condition("number", "1");
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(original).ok());
+  // Model an equivalent rewrite that constructs entirely new nodes.
+  auto replacement = scalar_condition("number", "1");
+  QueryInfo info;
+  info.set_search_cond(replacement);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(info.invert_cond(), replacement);
+  EXPECT_TRUE(replacement->is_invert());
+  EXPECT_EQ(original->right()->text(), "1");
+  EXPECT_EQ(original->rel_type(), QueryRelNode::RelType::NO_TYPE);
+}
+
+TEST(SearchCondPipelineTest, ArrayLengthFallbackPreservesIntegerLiteral) {
+  auto schema = pipeline_schema();
+  auto forward = std::make_shared<FieldSchema>();
+  forward->set_name("forward_number");
+  forward->set_data_type(DataType::UINT32);
+  ASSERT_TRUE(schema.add_field(forward).ok());
+  auto rel = scalar_condition("number", "01");
+  auto func = std::make_shared<QueryFuncNode>();
+  func->set_op(QueryNodeOp::Q_FUNCTION_CALL);
+  func->set_func_name_node(std::make_shared<QueryIDNode>("array_length"));
+  auto arg = std::make_shared<QueryIDNode>("array");
+  arg->set_op(QueryNodeOp::Q_ID);
+  func->add_argument(arg);
+  rel->set_left(func);
+  auto root = logic_condition(QueryNodeOp::Q_OR, rel,
+                              scalar_condition("forward_number", "2"));
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  QueryInfo info;
+  info.set_search_cond(root);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(info.invert_cond(), nullptr);
+  EXPECT_TRUE(rel->is_forward());
+  EXPECT_EQ(rel->right()->text(), "01");
+}
+
+TEST(SearchCondPipelineTest, VectorAndInvertLeaveNoEmptyForwardFilter) {
+  auto schema = pipeline_schema();
+  auto field = std::make_shared<FieldSchema>();
+  field->set_name("vector");
+  field->set_data_type(DataType::VECTOR_FP32);
+  field->set_dimension(1);
+  field->set_index_params(std::make_shared<FlatIndexParams>(MetricType::IP));
+  ASSERT_TRUE(schema.add_field(field).ok());
+  const std::string matrix(sizeof(float), '\0');
+  auto vector = scalar_condition("vector", "0");
+  auto payload = std::make_shared<VectorMatrixNode>(matrix, "", "", nullptr);
+  auto value = std::make_shared<QueryVectorMatrixNode>(payload);
+  value->set_op(QueryNodeOp::Q_VECTOR_MATRIX_VALUE);
+  vector->set_right(value);
+  auto number = scalar_condition("number", "1");
+  auto root = logic_condition(QueryNodeOp::Q_AND, vector, number);
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(root).ok());
+  QueryInfo info;
+  info.set_search_cond(root);
+  SearchCondBinder binder(schema);
+  root->set_op(QueryNodeOp::Q_OR);
+  auto invalid_status = binder.bind(&info);
+  EXPECT_FALSE(invalid_status.ok());
+  EXPECT_EQ(invalid_status.message(),
+            "vector search condition cannot appear within an OR expression");
+  EXPECT_EQ(number->right()->text(), "1");
+  EXPECT_EQ(number->rel_type(), QueryRelNode::RelType::NO_TYPE);
+  root->set_op(QueryNodeOp::Q_AND);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(info.filter_cond(), nullptr);
+  EXPECT_EQ(info.search_cond(), nullptr);
+  ASSERT_EQ(info.invert_cond(), number);
+  EXPECT_EQ(number->parent(), nullptr);
+  ASSERT_NE(info.vector_cond_info(), nullptr);
+  EXPECT_EQ(info.vector_cond_info()->vector_field_name(), "vector");
+}
+
+TEST_F(ContainRewriteTest, OriginalValidationAcceptanceIsPreserved) {
+  for (const std::string &filter :
+       {"age = 4294967296", "age = -1", "age = 08",
+        "array_length(category_array) = -1",
+        "array_length(category_array) = 4294967296", "age like '1%'",
+        "((category_array contain_any ()) and face_feature = 1) or age = 1"}) {
+    SCOPED_TRACE(filter);
+    EXPECT_TRUE(parse_result(filter).has_value());
+  }
+}
+
+TEST(SearchCondPipelineTest,
+     NumericSyntaxCheckStillDependsOnIndexAvailability) {
+  for (bool indexed : {false, true}) {
+    CollectionSchema schema;
+    auto field = std::make_shared<FieldSchema>();
+    field->set_name("number");
+    field->set_data_type(DataType::UINT32);
+    if (indexed) {
+      field->set_index_params(std::make_shared<InvertIndexParams>());
+    }
+    ASSERT_TRUE(schema.add_field(field).ok());
+    // Base-0 conversion rejects 08; legacy forward validation checks type only.
+    auto rel = scalar_condition("number", "08");
+    SearchCondValidator validator(schema);
+    EXPECT_EQ(validator.validate(rel).ok(), !indexed);
+  }
+}
+
+TEST(SearchCondPipelineTest, IndexedLikeDoesNotConvertStringPatternToNumber) {
+  auto schema = pipeline_schema();
+  auto rel = scalar_condition("number", "1%");
+  rel->set_op(QueryNodeOp::Q_LIKE);
+  rel->right()->set_op(QueryNodeOp::Q_STRING_VALUE);
+  SearchCondValidator validator(schema);
+  ASSERT_TRUE(validator.validate(rel).ok());
+  QueryInfo info;
+  info.set_search_cond(rel);
+  SearchCondBinder binder(schema);
+  ASSERT_TRUE(binder.bind(&info).ok());
+  EXPECT_EQ(rel->right()->text(), "1%");
+}
+
+TEST(SearchCondPipelineTest, ArrayLengthRetainsLegacyNumericConversion) {
+  for (bool indexed : {false, true}) {
+    for (const std::string &text : {"-1", "4294967296", "08"}) {
+      SCOPED_TRACE(text);
+      SCOPED_TRACE(indexed);
+      CollectionSchema schema;
+      auto field = std::make_shared<FieldSchema>();
+      field->set_name("array");
+      field->set_data_type(DataType::ARRAY_STRING);
+      if (indexed) {
+        field->set_index_params(std::make_shared<InvertIndexParams>());
+      }
+      ASSERT_TRUE(schema.add_field(field).ok());
+      auto rel = scalar_condition("array", text);
+      auto func = std::make_shared<QueryFuncNode>();
+      func->set_op(QueryNodeOp::Q_FUNCTION_CALL);
+      func->set_func_name_node(std::make_shared<QueryIDNode>("array_length"));
+      auto arg = std::make_shared<QueryIDNode>("array");
+      arg->set_op(QueryNodeOp::Q_ID);
+      func->add_argument(arg);
+      rel->set_left(func);
+      SearchCondValidator validator(schema);
+      const bool accepted = !indexed || text != "08";
+      ASSERT_EQ(validator.validate(rel).ok(), accepted);
+      if (!accepted) {
+        continue;
+      }
+      QueryInfo info;
+      info.set_search_cond(rel);
+      SearchCondBinder binder(schema);
+      ASSERT_TRUE(binder.bind(&info).ok());
+      if (indexed) {
+        std::string expected;
+        ASSERT_TRUE(QueryInfoHelper::text_2_data_buf(text, DataType::UINT32,
+                                                     &expected));
+        EXPECT_EQ(rel->right()->text(), expected);
+      } else {
+        EXPECT_EQ(rel->right()->text(), text);
+      }
+    }
+  }
+}
+
+TEST(SearchCondPipelineTest, BinderRejectsUnknownFunctionWithoutInferringType) {
+  auto schema = pipeline_schema();
+  auto rel = scalar_condition("array", "1");
+  auto func = std::make_shared<QueryFuncNode>();
+  func->set_op(QueryNodeOp::Q_FUNCTION_CALL);
+  func->set_func_name_node(std::make_shared<QueryIDNode>("unknown_function"));
+  auto arg = std::make_shared<QueryIDNode>("array");
+  arg->set_op(QueryNodeOp::Q_ID);
+  func->add_argument(arg);
+  rel->set_left(func);
+  QueryInfo info;
+  info.set_search_cond(rel);
+  // Binder must resolve the function explicitly even without prior validation.
+  SearchCondBinder binder(schema);
+  auto status = binder.bind(&info);
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("unsupported function: unknown_function"),
+            std::string::npos);
+  EXPECT_EQ(rel->right()->text(), "1");
+  EXPECT_EQ(rel->rel_type(), QueryRelNode::RelType::NO_TYPE);
+}
 
 }  // namespace zvec::sqlengine

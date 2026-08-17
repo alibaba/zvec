@@ -27,8 +27,8 @@ class FlatSparseSearcher : public IndexSearcher {
   using ContextPointer = IndexSearcher::Context::Pointer;
 
  public:
-  FlatSparseSearcher(void);
-  ~FlatSparseSearcher(void) override;
+  FlatSparseSearcher();
+  ~FlatSparseSearcher() override;
 
   FlatSparseSearcher(const FlatSparseSearcher &) = delete;
   FlatSparseSearcher &operator=(const FlatSparseSearcher &) = delete;
@@ -38,14 +38,14 @@ class FlatSparseSearcher : public IndexSearcher {
   int init(const ailego::Params &params) override;
 
   //! Cleanup Searcher
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Load Index from storage
   int load(IndexStorage::Pointer container,
            IndexMetric::Pointer /*measure*/) override;
 
   //! Unload index from storage
-  int unload(void) override;
+  int unload() override;
 
   int search_impl(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
                   Context::Pointer & /*context*/) const override {
@@ -128,29 +128,29 @@ class FlatSparseSearcher : public IndexSearcher {
   ContextPointer create_context() const override;
 
   //! Create a new iterator
-  IndexSearcher::SparseProvider::Pointer create_sparse_provider(
-      void) const override;
+  IndexSearcher::SparseProvider::Pointer create_sparse_provider()
+      const override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Retrieve params of index
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
-  const FlatSparseSearcherEntity &entity(void) const {
+  const FlatSparseSearcherEntity &entity() const {
     return entity_;
   }
 
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return magic_;
   }
 

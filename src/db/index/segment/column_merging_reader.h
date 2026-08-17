@@ -44,6 +44,7 @@ class ColumnMergingReader : public arrow::RecordBatchReader {
   std::vector<std::shared_ptr<arrow::ipc::RecordBatchReader>> input_readers_;
 
   std::vector<std::shared_ptr<arrow::RecordBatch>> current_batches_;
+  std::vector<int64_t> current_batch_offsets_;
   bool has_more_ = true;
 };
 

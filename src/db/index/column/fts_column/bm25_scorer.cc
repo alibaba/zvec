@@ -38,7 +38,7 @@ int BM25Scorer::load_segment_stats(const std::string &field_name,
   auto ret = ctx->db_->Get(ctx->read_opts_, stat_cf,
                            make_total_docs_key(field_name), &total_docs_value);
   if (!ret.ok()) {
-    LOG_ERROR(
+    LOG_DEBUG(
         "BM25Scorer::load_segment_stats: failed to read total_docs. "
         "field[%s]",
         field_name.c_str());
@@ -60,7 +60,7 @@ int BM25Scorer::load_segment_stats(const std::string &field_name,
       ctx->db_->Get(ctx->read_opts_, stat_cf, make_total_tokens_key(field_name),
                     &total_tokens_value);
   if (!status.ok()) {
-    LOG_ERROR(
+    LOG_DEBUG(
         "BM25Scorer::load_segment_stats: failed to read total_tokens. "
         "field[%s]",
         field_name.c_str());

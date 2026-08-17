@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "diskann_streamer.h"
+#include <limits>
+#include <ailego/pattern/defer.h>
 #include "diskann_context.h"
 #include "diskann_index_provider.h"
 #include "diskann_indexer.h"
@@ -21,15 +23,68 @@
 namespace zvec {
 namespace core {
 
-DiskAnnStreamer::DiskAnnStreamer() {}
+namespace {
 
-DiskAnnStreamer::~DiskAnnStreamer() {}
+bool query_meta_matches(const IndexMeta &meta, const IndexQueryMeta &qmeta) {
+  return qmeta.data_type() == meta.data_type() &&
+         qmeta.dimension() == meta.dimension() &&
+         qmeta.element_size() == meta.element_size();
+}
+
+bool group_options_valid(const DiskAnnContext *ctx) {
+  return !ctx->group_by_search() ||
+         (ctx->group_topk() > 0 && ctx->group_by().is_valid());
+}
+
+}  // namespace
+
+DiskAnnStreamer::DiskAnnStreamer() = default;
+
+DiskAnnStreamer::~DiskAnnStreamer() = default;
 
 int DiskAnnStreamer::init(const IndexMeta &meta,
                           const ailego::Params &search_params) {
+  if (state_ == STATE_LOADED) {
+    LOG_ERROR("Close DiskAnnStreamer before reinitializing it");
+    return IndexError_NoReady;
+  }
+
+  log_diskann_io_backend();
+
+  uint32_t list_size = 200;
+  uint32_t cache_nodes_num = 0;
+  search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
+  long long configured_cache_nodes = 0;
+  if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
+                        &configured_cache_nodes)) {
+    if (configured_cache_nodes < 0 ||
+        static_cast<unsigned long long>(configured_cache_nodes) >
+            std::numeric_limits<uint32_t>::max()) {
+      LOG_ERROR("cache_node_num must be in [0, UINT32_MAX]");
+      return IndexError_InvalidArgument;
+    }
+    cache_nodes_num = static_cast<uint32_t>(configured_cache_nodes);
+  }
+
+  // Commit only after every value has been validated. A failed re-init must
+  // leave either the previous valid configuration or STATE_INIT untouched.
   meta_ = meta;
-  search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
-  search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);
+  params_ = search_params;
+  list_size_ = list_size;
+  cache_nodes_num_ = cache_nodes_num;
+  data_quantizer_.reset();
+  state_ = STATE_INITED;
+  return 0;
+}
+
+int DiskAnnStreamer::init(const IndexMeta &meta,
+                          const ailego::Params &search_params,
+                          const turbo::Quantizer::Pointer &quantizer) {
+  int ret = init(meta, search_params);
+  if (ret != 0) {
+    return ret;
+  }
+  data_quantizer_ = quantizer;
   return 0;
 }
 
@@ -38,6 +93,13 @@ void DiskAnnStreamer::print_debug_info() {}
 int DiskAnnStreamer::cleanup() {
   LOG_INFO("Begin DiskAnnStreamer:cleanup");
 
+  unload();
+  params_.clear();
+  data_quantizer_.reset();
+  list_size_ = 200;
+  cache_nodes_num_ = 0;
+  state_ = STATE_INIT;
+
   LOG_INFO("End DiskAnnStreamer:cleanup");
 
   return 0;
@@ -45,6 +107,25 @@ int DiskAnnStreamer::cleanup() {
 
 int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
   LOG_INFO("DiskAnnStreamer::load Begin");
+
+  if (!storage) {
+    LOG_ERROR("Invalid storage");
+    return IndexError_InvalidArgument;
+  }
+  if (state_ != STATE_INITED) {
+    LOG_ERROR("Initialize and close DiskAnnStreamer before opening an index");
+    return IndexError_NoReady;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(fetch_mutex_);
+    fetch_ctx_.reset();
+    fetch_vector_buffer_.clear();
+    diskann_indexer_.reset();
+    entity_.clear();
+    measure_.reset();
+    stats_.clear();
+  }
 
   auto start_time = ailego::Monotime::MilliSeconds();
 
@@ -60,23 +141,34 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return ret;
   }
 
+  // Construct the quantizer from the persisted meta buffer here; the entity
+  // only owns the bytes and the indexer receives the ready-to-use quantizer.
+  // The implementation is resolved from the meta buffer header, so any
+  // supported quantize type (PQ today, others later) plugs in transparently.
+  std::string quantizer_meta_buffer;
+  ret = entity_.read_pq_quantizer_meta_buffer(&quantizer_meta_buffer);
+  if (ret != 0) {
+    LOG_ERROR("Read quantizer meta buffer failed, ret=%d", ret);
+    return ret;
+  }
+  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+      quantizer_meta_buffer, meta_,
+      static_cast<uint32_t>(entity_.pq_chunk_num()),
+      entity_.legacy_pq_layout());
+  if (!quantizer) {
+    return IndexError_NoExist;
+  }
+
   diskann_indexer_ = std::make_shared<DiskAnnIndexer>(meta_);
 
-  int res = diskann_indexer_->init(entity_);
+  int res = diskann_indexer_->init(entity_, std::move(quantizer));
   if (res != 0) {
     return res;
   }
 
-  if (cache_nodes_num_ != 0) {
-    std::vector<diskann_id_t> node_list;
-    LOG_INFO("Caching %u nodes around medoid(s)", cache_nodes_num_);
-
-    diskann_indexer_->cache_bfs_levels(cache_nodes_num_, node_list);
-
-    diskann_indexer_->load_cache_list(node_list);
-
-    node_list.clear();
-    node_list.shrink_to_fit();
+  ret = diskann_indexer_->configure_cache(cache_nodes_num_);
+  if (ret != 0) {
+    return ret;
   }
 
   measure_ = IndexFactory::CreateMetric(meta_.metric_name());
@@ -94,6 +186,7 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
   }
 
   stats_.set_loaded_costtime(ailego::Monotime::MilliSeconds() - start_time);
+  stats_.set_loaded_count(entity_.doc_cnt());
   state_ = STATE_LOADED;
 
   magic_ = IndexContext::GenerateMagic();
@@ -106,7 +199,19 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
 int DiskAnnStreamer::unload() {
   LOG_INFO("DiskAnnStreamer unload index");
 
-  state_ = STATE_INITED;
+  const State next_state = state_ == STATE_INIT ? STATE_INIT : STATE_INITED;
+  {
+    std::lock_guard<std::mutex> lock(fetch_mutex_);
+    fetch_ctx_.reset();
+    fetch_vector_buffer_.clear();
+    diskann_indexer_.reset();
+    entity_.clear();
+    measure_.reset();
+    meta_.clear();
+    stats_.clear();
+  }
+
+  state_ = next_state;
 
   return 0;
 }
@@ -119,15 +224,44 @@ int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
   }
 
   return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
-                             entity, magic_);
+                             entity, magic_, data_quantizer_);
+}
+
+int DiskAnnStreamer::ensure_compatible_context(ContextPointer &context,
+                                               DiskAnnContext *&ctx) const {
+  if (ctx->magic() == magic_) {
+    return 0;
+  }
+
+  auto replacement = create_context();
+  if (!replacement) {
+    LOG_ERROR("Failed to recreate context for current streamer");
+    return IndexError_Runtime;
+  }
+  auto *replacement_ctx = dynamic_cast<DiskAnnContext *>(replacement.get());
+  if (!replacement_ctx) {
+    LOG_ERROR("Failed to cast recreated DiskAnn context");
+    return IndexError_Cast;
+  }
+  replacement_ctx->copy_query_options_from(*ctx);
+  context = std::move(replacement);
+  ctx = replacement_ctx;
+  return 0;
 }
 
 int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                  uint32_t count,
                                  Context::Pointer &context) const {
-  // do search
+  if (ailego_unlikely(state_ != STATE_LOADED)) {
+    LOG_ERROR("Open DiskAnnStreamer before searching");
+    return IndexError_NoReady;
+  }
   if (ailego_unlikely(!query || !context)) {
     LOG_ERROR("The context is not created by this searcher");
+    return IndexError_Mismatch;
+  }
+  if (ailego_unlikely(!query_meta_matches(meta_, qmeta))) {
+    LOG_ERROR("Query meta does not match DiskAnn index meta");
     return IndexError_Mismatch;
   }
 
@@ -137,18 +271,14 @@ int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     return IndexError_Cast;
   }
 
-  // Context is pooled per index type. When switching between DiskAnn indexes
-  // with different element sizes (e.g., fp16 vs fp32), the cached context has
-  // undersized buffers. Recreate it to ensure correct buffer allocations.
-  if (ctx->magic() != magic_) {
-    uint32_t saved_topk = ctx->topk();
-    context = create_context();
-    if (!context) {
-      LOG_ERROR("Failed to recreate context for current streamer");
-      return IndexError_Runtime;
-    }
-    ctx = dynamic_cast<DiskAnnContext *>(context.get());
-    ctx->set_topk(saved_topk);
+  int ret = ensure_compatible_context(context, ctx);
+  if (ret != 0) {
+    return ret;
+  }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
+  if (ailego_unlikely(!group_options_valid(ctx))) {
+    LOG_ERROR("Group search requires a callback and a positive group topk");
+    return IndexError_InvalidArgument;
   }
 
   ctx->clear();
@@ -157,7 +287,14 @@ int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   for (uint32_t i = 0; i < count; i++) {
     ctx->reset_query(query);
 
-    diskann_indexer_->knn_search(ctx);
+    ret = diskann_indexer_->knn_search(ctx);
+    if (ailego_unlikely(ret != 0)) {
+      return ret;
+    }
+
+    if (ailego_unlikely(ctx->error())) {
+      return IndexError_Runtime;
+    }
 
     ctx->topk_to_result(i);
 
@@ -170,8 +307,16 @@ int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int DiskAnnStreamer::search_bf_impl(const void *query,
                                     const IndexQueryMeta &qmeta, uint32_t count,
                                     Context::Pointer &context) const {
+  if (ailego_unlikely(state_ != STATE_LOADED)) {
+    LOG_ERROR("Open DiskAnnStreamer before searching");
+    return IndexError_NoReady;
+  }
   if (ailego_unlikely(!query || !context)) {
     LOG_ERROR("The context is not created by this searcher");
+    return IndexError_Mismatch;
+  }
+  if (ailego_unlikely(!query_meta_matches(meta_, qmeta))) {
+    LOG_ERROR("Query meta does not match DiskAnn index meta");
     return IndexError_Mismatch;
   }
 
@@ -181,17 +326,14 @@ int DiskAnnStreamer::search_bf_impl(const void *query,
     return IndexError_Cast;
   }
 
-  if (ctx->magic() != magic_) {
-    //! context is created by another searcher or streamer, recreate it
-    //! to ensure buffers are correctly sized for this index's parameters.
-    uint32_t saved_topk = ctx->topk();
-    context = create_context();
-    if (!context) {
-      LOG_ERROR("Failed to recreate context for current streamer");
-      return IndexError_Runtime;
-    }
-    ctx = dynamic_cast<DiskAnnContext *>(context.get());
-    ctx->set_topk(saved_topk);
+  int ret = ensure_compatible_context(context, ctx);
+  if (ret != 0) {
+    return ret;
+  }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
+  if (ailego_unlikely(!group_options_valid(ctx))) {
+    LOG_ERROR("Group search requires a callback and a positive group topk");
+    return IndexError_InvalidArgument;
   }
 
   ctx->clear();
@@ -200,7 +342,10 @@ int DiskAnnStreamer::search_bf_impl(const void *query,
   for (size_t i = 0; i < count; ++i) {
     ctx->reset_query(query);
 
-    diskann_indexer_->linear_search(ctx);
+    ret = diskann_indexer_->linear_search(ctx);
+    if (ailego_unlikely(ret != 0)) {
+      return ret;
+    }
 
     ctx->topk_to_result(i);
 
@@ -218,8 +363,16 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (ailego_unlikely(state_ != STATE_LOADED)) {
+    LOG_ERROR("Open DiskAnnStreamer before searching");
+    return IndexError_NoReady;
+  }
   if (ailego_unlikely(!query || !context)) {
     LOG_ERROR("The context is not created by this searcher");
+    return IndexError_Mismatch;
+  }
+  if (ailego_unlikely(!query_meta_matches(meta_, qmeta))) {
+    LOG_ERROR("Query meta does not match DiskAnn index meta");
     return IndexError_Mismatch;
   }
 
@@ -234,17 +387,14 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
     return IndexError_InvalidArgument;
   }
 
-  if (ctx->magic() != magic_) {
-    //! context is created by another searcher or streamer, recreate it
-    //! to ensure buffers are correctly sized for this index's parameters.
-    uint32_t saved_topk = ctx->topk();
-    context = create_context();
-    if (!context) {
-      LOG_ERROR("Failed to recreate context for current streamer");
-      return IndexError_Runtime;
-    }
-    ctx = dynamic_cast<DiskAnnContext *>(context.get());
-    ctx->set_topk(saved_topk);
+  int ret = ensure_compatible_context(context, ctx);
+  if (ret != 0) {
+    return ret;
+  }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
+  if (ailego_unlikely(!group_options_valid(ctx))) {
+    LOG_ERROR("Group search requires a callback and a positive group topk");
+    return IndexError_InvalidArgument;
   }
 
   ctx->clear();
@@ -253,7 +403,10 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
   for (size_t i = 0; i < count; ++i) {
     ctx->reset_query(query);
 
-    diskann_indexer_->keys_search(p_keys[i], ctx);
+    ret = diskann_indexer_->keys_search(p_keys[i], ctx);
+    if (ailego_unlikely(ret != 0)) {
+      return ret;
+    }
 
     ctx->topk_to_result(i);
 
@@ -269,7 +422,31 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
 
 int DiskAnnStreamer::get_vector(uint64_t key, Context::Pointer &context,
                                 std::string &vector) const {
-  return diskann_indexer_->get_vector(key, context, vector);
+  vector.clear();
+  if (state_ != STATE_LOADED) {
+    LOG_ERROR("Open DiskAnnStreamer before fetching vectors");
+    return IndexError_NoReady;
+  }
+  if (!context) {
+    LOG_ERROR("Invalid context for get_vector");
+    return IndexError_Mismatch;
+  }
+  auto *ctx = dynamic_cast<DiskAnnContext *>(context.get());
+  if (!ctx) {
+    LOG_ERROR("Cast context to DiskAnnContext failed");
+    return IndexError_Cast;
+  }
+  int ret = ensure_compatible_context(context, ctx);
+  if (ret != 0) {
+    return ret;
+  }
+
+  diskann_id_t id = diskann_indexer_->get_id(key);
+  if (id == kInvalidId) {
+    LOG_ERROR("Vector key does not exist: %lu", (unsigned long)key);
+    return IndexError_NoExist;
+  }
+  return diskann_indexer_->get_vector(id, context, vector);
 }
 
 const void *DiskAnnStreamer::get_vector_by_id(uint32_t /*id*/) const {
@@ -281,24 +458,44 @@ const void *DiskAnnStreamer::get_vector_by_id(uint32_t /*id*/) const {
 
 int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
                                       IndexStorage::MemoryBlock &block) const {
-  // Lazily create a reusable context for fetch operations
+  if (state_ != STATE_LOADED) {
+    LOG_ERROR("Open DiskAnnStreamer before fetching vectors");
+    return IndexError_NoReady;
+  }
+  if (id >= entity_.doc_cnt()) {
+    LOG_ERROR("Vector id out of range: %u", id);
+    return IndexError_OutOfRange;
+  }
+
+  std::lock_guard<std::mutex> lock(fetch_mutex_);
   if (!fetch_ctx_) {
-    fetch_ctx_ = create_context();
+    const DiskAnnEntity::Pointer fetch_entity = entity_.clone();
+    fetch_ctx_ =
+        DiskAnnContext::create_fetch_context(meta_, measure_, fetch_entity);
     if (!fetch_ctx_) {
-      LOG_ERROR("Failed to create context for get_vector_by_id");
+      LOG_ERROR("Failed to create fetch context for get_vector_by_id");
       return IndexError_Runtime;
     }
   }
+
   int ret = diskann_indexer_->get_vector(id, fetch_ctx_, fetch_vector_buffer_);
   if (ret != 0) {
     LOG_ERROR("Failed to get vector by id: %u", id);
-    return IndexError_Runtime;
+    return ret;
   }
-  block.reset((void *)fetch_vector_buffer_.data());
+
+  void *owned = ailego_malloc(fetch_vector_buffer_.size());
+  if (!owned) {
+    LOG_ERROR("Failed to allocate fetched vector buffer");
+    return IndexError_NoMemory;
+  }
+  std::memcpy(owned, fetch_vector_buffer_.data(), fetch_vector_buffer_.size());
+  block =
+      IndexStorage::MemoryBlock::MakeOwned(owned, fetch_vector_buffer_.size());
   return 0;
 }
 
-IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider(void) const {
+IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider() const {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Load the index first before creating a provider");
     return nullptr;
@@ -308,26 +505,37 @@ IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider(void) const {
     LOG_ERROR("Failed to clone DiskAnn entity for provider");
     return nullptr;
   }
-  return IndexProvider::Pointer(new (std::nothrow) DiskAnnIndexProvider(
-      meta_, entity, "DiskAnnStreamer"));
+  std::unique_ptr<DiskAnnIndexProvider> provider(
+      new (std::nothrow) DiskAnnIndexProvider(
+          meta_, measure_, entity, diskann_indexer_, "DiskAnnStreamer"));
+  if (!provider || !provider->ready()) {
+    LOG_ERROR("Failed to initialize DiskAnn provider dependencies");
+    return nullptr;
+  }
+  return IndexProvider::Pointer(provider.release());
 }
 
 IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
+  if (state_ != STATE_LOADED) {
+    LOG_ERROR("Open DiskAnnStreamer before creating a context");
+    return Context::Pointer();
+  }
   const DiskAnnEntity::Pointer search_ctx_entity = entity_.clone();
   if (!search_ctx_entity) {
     LOG_ERROR("Failed to create search context entity");
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx =
-      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx = new (std::nothrow)
+      DiskAnnContext(meta_, measure_, search_ctx_entity, data_quantizer_);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();
   }
   if (ailego_unlikely(ctx->init(
           DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), meta_.element_size())) != 0) {
+          search_ctx_entity->pq_chunk_num(), meta_.element_size(),
+          diskann_indexer_->requires_io_context())) != 0) {
     LOG_ERROR("Init DiskAnn Context failed");
     delete ctx;
 
@@ -335,6 +543,7 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
   }
 
   ctx->set_list_size(list_size_);
+  ctx->set_magic(magic_);
 
   return Context::Pointer(ctx);
 }

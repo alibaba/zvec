@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include "db/common/cgroup_util.h"
+#include <charconv>
+#include <sstream>
+#include <system_error>
 
 namespace zvec {
 
@@ -32,35 +35,35 @@ void CgroupUtil::initialize() {
     return;
   }
 
-  updateCpuCores();
-  updateMemoryLimit();
-  initializeCpuStats();
+  update_cpu_cores();
+  update_memory_limit();
+  initialize_cpu_stats();
 
   initialized_ = true;
 }
 
-int CgroupUtil::getCpuLimit() {
+int CgroupUtil::get_cpu_limit() {
   initialize();
   return cpu_cores_;
 }
 
-uint64_t CgroupUtil::getMemoryLimit() {
+uint64_t CgroupUtil::get_memory_limit() {
   initialize();
   return memory_limit_;
 }
 
 // Other static methods implementation
-double CgroupUtil::getCpuUsage() {
+double CgroupUtil::get_cpu_usage() {
   initialize();
-  return calculateCpuUsage();
+  return calculate_cpu_usage();
 }
 
-uint64_t CgroupUtil::getMemoryUsage() {
+uint64_t CgroupUtil::get_memory_usage() {
   initialize();
-  return getCurrentMemoryUsage();
+  return get_current_memory_usage();
 }
 
-uint64_t CgroupUtil::getUptime() {
+uint64_t CgroupUtil::get_uptime() {
 #if defined(PLATFORM_LINUX)
   struct sysinfo info;
   if (sysinfo(&info) == 0) {
@@ -81,8 +84,8 @@ uint64_t CgroupUtil::getUptime() {
   return 0;
 }
 
-void CgroupUtil::updateCpuCores() {
-  if (readCpuCgroup()) {
+void CgroupUtil::update_cpu_cores() {
+  if (read_cpu_cgroup()) {
     return;
   }
 
@@ -109,24 +112,20 @@ void CgroupUtil::updateCpuCores() {
 #endif
 }
 
-bool CgroupUtil::readCpuCgroup() {
+bool CgroupUtil::read_cpu_cgroup() {
 #if defined(PLATFORM_LINUX)
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/cpu.max");
   if (file.is_open()) {
-    uint64_t quota, period;
-    char slash;
-    file >> quota >> slash >> period;
-    file.close();
+    std::string cpu_max;
+    std::getline(file, cpu_max);
 
-    if (quota != std::numeric_limits<uint64_t>::max() && quota != 0 &&
-        period > 0) {
-      cpu_cores_ =
-          static_cast<int>(std::ceil(static_cast<double>(quota) / period));
+    int cpu_cores = 0;
+    if (parse_cpu_max(cpu_max, &cpu_cores)) {
+      cpu_cores_ = cpu_cores;
       return true;
-    } else {
-      return false;
     }
+    return false;
   }
 
   // cgroup v1
@@ -150,8 +149,45 @@ bool CgroupUtil::readCpuCgroup() {
   return false;
 }
 
-void CgroupUtil::updateMemoryLimit() {
-  if (readMemoryCgroup()) {
+bool CgroupUtil::parse_cpu_max(const std::string &cpu_max, int *cpu_cores) {
+  if (cpu_cores == nullptr) {
+    return false;
+  }
+
+  std::istringstream stream(cpu_max);
+  std::string quota_token;
+  uint64_t period = 0;
+  if (!(stream >> quota_token >> period) || period == 0) {
+    return false;
+  }
+
+  std::string trailing_token;
+  if (stream >> trailing_token) {
+    return false;
+  }
+  if (quota_token == "max") {
+    return false;
+  }
+
+  uint64_t quota = 0;
+  const auto result = std::from_chars(
+      quota_token.data(), quota_token.data() + quota_token.size(), quota);
+  if (result.ec != std::errc{} ||
+      result.ptr != quota_token.data() + quota_token.size() || quota == 0) {
+    return false;
+  }
+
+  const uint64_t cores = quota / period + (quota % period != 0 ? 1 : 0);
+  if (cores > static_cast<uint64_t>((std::numeric_limits<int>::max)())) {
+    return false;
+  }
+
+  *cpu_cores = static_cast<int>(cores);
+  return true;
+}
+
+void CgroupUtil::update_memory_limit() {
+  if (read_memory_cgroup()) {
     return;
   }
 
@@ -182,7 +218,7 @@ void CgroupUtil::updateMemoryLimit() {
 #endif
 }
 
-bool CgroupUtil::readMemoryCgroup() {
+bool CgroupUtil::read_memory_cgroup() {
 #if defined(PLATFORM_LINUX)
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/memory.max");
@@ -217,15 +253,15 @@ bool CgroupUtil::readMemoryCgroup() {
   return false;
 }
 
-void CgroupUtil::initializeCpuStats() {
+void CgroupUtil::initialize_cpu_stats() {
   last_cpu_check_ = std::chrono::steady_clock::now();
 #if defined(PLATFORM_LINUX)
-  readProcStat();
+  read_proc_stat();
 #endif
 }
 
 #if defined(PLATFORM_LINUX)
-bool CgroupUtil::readProcStat() {
+bool CgroupUtil::read_proc_stat() {
   std::ifstream file("/proc/stat");
   if (!file.is_open()) {
     return false;
@@ -258,18 +294,18 @@ bool CgroupUtil::readProcStat() {
 }
 #endif
 
-uint64_t CgroupUtil::getCurrentMemoryUsage() {
+uint64_t CgroupUtil::get_current_memory_usage() {
 #if defined(PLATFORM_LINUX)
   // cgroup
-  uint64_t usage = readMemoryUsageCgroup();
+  uint64_t usage = read_memory_usage_cgroup();
   if (usage > 0) {
     return usage;
   }
 
   // back to /proc/meminfo
-  return readMemoryUsageProc();
+  return read_memory_usage_proc();
 #elif defined(PLATFORM_MACOS)
-  return getMacOSMemoryUsage();
+  return get_mac_os_memory_usage();
 #elif defined(PLATFORM_WINDOWS)
   MEMORYSTATUSEX statex;
   statex.dwLength = sizeof(statex);
@@ -283,7 +319,7 @@ uint64_t CgroupUtil::getCurrentMemoryUsage() {
 }
 
 #if defined(PLATFORM_LINUX)
-uint64_t CgroupUtil::readMemoryUsageCgroup() {
+uint64_t CgroupUtil::read_memory_usage_cgroup() {
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/memory.current");
   if (file.is_open()) {
@@ -305,7 +341,7 @@ uint64_t CgroupUtil::readMemoryUsageCgroup() {
   return 0;
 }
 
-uint64_t CgroupUtil::readMemoryUsageProc() {
+uint64_t CgroupUtil::read_memory_usage_proc() {
   std::ifstream file("/proc/meminfo");
   if (!file.is_open()) {
     return 0;
@@ -320,15 +356,15 @@ uint64_t CgroupUtil::readMemoryUsageProc() {
 
   while (std::getline(file, line)) {
     if (line.find("MemTotal:") == 0) {
-      total_mem = extractMemoryValue(line);
+      total_mem = extract_memory_value(line);
     } else if (line.find("MemFree:") == 0) {
-      free_mem = extractMemoryValue(line);
+      free_mem = extract_memory_value(line);
     } else if (line.find("MemAvailable:") == 0) {
-      available_mem = extractMemoryValue(line);
+      available_mem = extract_memory_value(line);
     } else if (line.find("Buffers:") == 0) {
-      buffers = extractMemoryValue(line);
+      buffers = extract_memory_value(line);
     } else if (line.find("Cached:") == 0) {
-      cached = extractMemoryValue(line);
+      cached = extract_memory_value(line);
     }
   }
 
@@ -345,7 +381,7 @@ uint64_t CgroupUtil::readMemoryUsageProc() {
 #endif
 
 #if defined(PLATFORM_MACOS)
-uint64_t CgroupUtil::getMacOSMemoryUsage() {
+uint64_t CgroupUtil::get_mac_os_memory_usage() {
   mach_port_t host_port = mach_host_self();
   mach_msg_type_number_t host_size =
       sizeof(vm_statistics64_data_t) / sizeof(integer_t);
@@ -369,7 +405,7 @@ uint64_t CgroupUtil::getMacOSMemoryUsage() {
 }
 #endif
 
-uint64_t CgroupUtil::extractMemoryValue(const std::string &line) {
+uint64_t CgroupUtil::extract_memory_value(const std::string &line) {
   size_t colon_pos = line.find(':');
   if (colon_pos == std::string::npos) {
     return 0;
@@ -390,19 +426,19 @@ uint64_t CgroupUtil::extractMemoryValue(const std::string &line) {
   return value;
 }
 
-double CgroupUtil::calculateCpuUsage() {
+double CgroupUtil::calculate_cpu_usage() {
 #if defined(PLATFORM_LINUX)
-  return calculateLinuxCpuUsage();
+  return calculate_linux_cpu_usage();
 #elif defined(PLATFORM_MACOS)
-  return calculateMacOSCpuUsage();
+  return calculate_mac_os_cpu_usage();
 #else
   return 0.0;
 #endif
 }
 
 #if defined(PLATFORM_LINUX)
-double CgroupUtil::calculateLinuxCpuUsage() {
-  if (!readProcStat()) {
+double CgroupUtil::calculate_linux_cpu_usage() {
+  if (!read_proc_stat()) {
     return 0.0;
   }
 
@@ -450,7 +486,7 @@ double CgroupUtil::calculateLinuxCpuUsage() {
 #endif
 
 #if defined(PLATFORM_MACOS)
-double CgroupUtil::calculateMacOSCpuUsage() {
+double CgroupUtil::calculate_mac_os_cpu_usage() {
   host_cpu_load_info_data_t cpuinfo;
   mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
 
@@ -472,7 +508,7 @@ double CgroupUtil::calculateMacOSCpuUsage() {
     prev_total = total_tick;
     prev_idle = idle_tick;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    return calculateMacOSCpuUsage();
+    return calculate_mac_os_cpu_usage();
   }
 
   unsigned long long total_delta = total_tick - prev_total;

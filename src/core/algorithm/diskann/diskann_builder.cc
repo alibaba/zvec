@@ -13,18 +13,24 @@
 // limitations under the License.
 
 #include "diskann_builder.h"
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <thread>
 #include <vector>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
+#include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
+#include "utility/prefix_index_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
+#include "diskann_util.h"
 
 namespace zvec {
 namespace core {
@@ -32,12 +38,20 @@ namespace core {
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
 
+  if (state_ != BUILD_STATE_INIT) {
+    LOG_ERROR("Cleanup DiskAnnBuilder before reinitializing it");
+    return IndexError_NoReady;
+  }
+
+  cleanup();
+  log_diskann_io_backend();
+
   params.get(PARAM_DISKANN_BUILDER_MAX_DEGREE, &max_degree_);
   params.get(PARAM_DISKANN_BUILDER_LIST_SIZE, &list_size_);
   params.get(PARAM_DISKANN_BUILDER_THREAD_COUNT, &build_thread_count_);
 
   if (build_thread_count_ == 0) {
-    build_thread_count_ = std::thread::hardware_concurrency();
+    build_thread_count_ = std::max(1U, std::thread::hardware_concurrency());
   }
 
   if (build_thread_count_ > std::thread::hardware_concurrency()) {
@@ -60,7 +74,11 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
 
   if (params.has(PARAM_DISKANN_BUILDER_MEMORY_LIMIT)) {
     params.get(PARAM_DISKANN_BUILDER_MEMORY_LIMIT, &memory_limit_);
-    if (memory_limit_ <= 0) {
+    const double memory_limit_bytes = get_memory_in_bytes(memory_limit_);
+    if (!std::isfinite(memory_limit_) || memory_limit_ <= 0 ||
+        !std::isfinite(memory_limit_bytes) ||
+        memory_limit_bytes >
+            static_cast<double>(std::numeric_limits<size_t>::max())) {
       LOG_ERROR("Invalid memory limit: %lf", memory_limit_);
       return IndexError_InvalidArgument;
     }
@@ -72,6 +90,10 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     params.get(PARAM_DISKANN_BUILDER_MAX_TRAIN_SAMPLE_COUNT,
                &max_train_sample_count_);
   }
+  if (max_train_sample_count_ == 0) {
+    LOG_ERROR("Max train sample count must be positive");
+    return IndexError_InvalidArgument;
+  }
 
   if (params.has(PARAM_DISKANN_BUILDER_TRAIN_SAMPLE_RATIO)) {
     params.get(PARAM_DISKANN_BUILDER_TRAIN_SAMPLE_RATIO, &train_sample_ratio_);
@@ -79,17 +101,9 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
 
   raw_meta_ = meta;
 
-  build_meta_ = meta;
-  if (meta.metric_name() == "InnerProduct") {
-    build_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
-  } else if (meta.metric_name() == "Cosine") {
-    build_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
-
-    if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
-      build_meta_.set_dimension(meta.dimension() - 1);
-    } else {
-      build_meta_.set_dimension(meta.dimension() - 2);
-    }
+  int ret = DiskAnnUtil::quantizer_init_meta(meta, &build_meta_);
+  if (ret != 0) {
+    return ret;
   }
 
   metric_ = IndexFactory::CreateMetric(build_meta_.metric_name());
@@ -99,7 +113,7 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     return IndexError_NoExist;
   }
 
-  int ret = metric_->init(build_meta_, build_meta_.metric_params());
+  ret = metric_->init(build_meta_, build_meta_.metric_params());
   if (ret != 0) {
     LOG_ERROR("IndexMeasure init failed, ret=%d", ret);
     return ret;
@@ -116,15 +130,47 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   algo_ =
       DiskAnnAlgorithm::UPointer(new DiskAnnAlgorithm(entity_, max_degree_));
 
-  trainer_ =
-      DiskAnnPqTrainer::UPointer(new DiskAnnPqTrainer(max_train_sample_count_));
-
   state_ = BUILD_STATE_INITED;
 
   return 0;
 }
 
-int DiskAnnBuilder::cleanup(void) {
+int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params,
+                         const turbo::Quantizer::Pointer &quantizer) {
+  int ret = init(meta, params);
+  if (ret != 0) {
+    return ret;
+  }
+  data_quantizer_ = quantizer;
+  return 0;
+}
+
+int DiskAnnBuilder::cleanup() {
+  holder_.reset();
+  algo_.reset();
+  quantizer_.reset();
+  data_quantizer_.reset();
+  metric_.reset();
+  entity_.clear();
+  raw_meta_.clear();
+  build_meta_.clear();
+  stats_.clear();
+  data_file_.clear();
+  max_degree_ = kDefaultMaxDegree;
+  list_size_ = kDefaultListSize;
+  memory_limit_ = 0.0;
+  memory_limit_set_ = false;
+  max_pq_chunk_num_ = kDefaultPqChunkNum;
+  pq_chunk_num_ = kDefaultPqChunkNum;
+  build_thread_count_ = 0;
+  max_train_sample_count_ = kDefaultMaxTrainSampleCount;
+  train_sample_ratio_ = kDefaultTrainSampleRatio;
+  universal_label_.clear();
+  codebook_prefix_.clear();
+  index_path_prefix_ = "./diskann";
+  errcode_ = 0;
+  error_ = false;
+  state_ = BUILD_STATE_INIT;
   return 0;
 }
 
@@ -219,30 +265,31 @@ int DiskAnnBuilder::calculate_pq_chunk_num() {
     return IndexError_InvalidLength;
   }
 
+  uint32_t requested_chunk_num = max_pq_chunk_num_;
+  if (requested_chunk_num == 0 || requested_chunk_num == kDefaultPqChunkNum) {
+    requested_chunk_num =
+        std::max(1U, static_cast<uint32_t>(build_meta_.dimension() / 2));
+    LOG_INFO(
+        "No Chunk Num input. Quantizing %u dimension data into %u dimension.",
+        build_meta_.dimension(), requested_chunk_num);
+  }
+
+  pq_chunk_num_ = requested_chunk_num;
   if (memory_limit_set_) {
-    size_t memory_limit_bytes = get_memory_in_bytes(memory_limit_);
-    size_t pq_chunk_num = std::floor(memory_limit_bytes / doc_cnt);
-    if (pq_chunk_num <= 0) {
+    size_t memory_limit_bytes =
+        static_cast<size_t>(get_memory_in_bytes(memory_limit_));
+    size_t budget_chunk_num = memory_limit_bytes / doc_cnt;
+    if (budget_chunk_num == 0) {
       LOG_ERROR("Insufficient memory limit for vec, memory: %zu, vec num: %zu",
                 memory_limit_bytes, doc_cnt);
       return IndexError_InvalidArgument;
     }
+    pq_chunk_num_ = std::min(pq_chunk_num_,
+                             static_cast<uint32_t>(std::min<size_t>(
+                                 budget_chunk_num, build_meta_.dimension())));
   }
 
-  pq_chunk_num_ =
-      pq_chunk_num_ < max_pq_chunk_num_ ? pq_chunk_num_ : max_pq_chunk_num_;
-
-  // A chunk num of 0 (public API default) or the internal sentinel means
-  // "auto": quantize into half the dimensions. Resolve it before the
-  // upper-bound check so the default never reaches the divide-by-chunk path.
-  if (pq_chunk_num_ == 0 || pq_chunk_num_ == kDefaultPqChunkNum) {
-    pq_chunk_num_ = build_meta_.dimension() / 2;
-    LOG_INFO(
-        "No Chunk Num input. Quantizing %u dimension data into %u dimension.",
-        build_meta_.dimension(), pq_chunk_num_);
-  }
-
-  if (pq_chunk_num_ > build_meta_.dimension()) {
+  if (pq_chunk_num_ == 0 || pq_chunk_num_ > build_meta_.dimension()) {
     LOG_ERROR("PQ Chunk Num is more than dimension, chunk num: %u, dim: %u",
               pq_chunk_num_, build_meta_.dimension());
     return IndexError_InvalidArgument;
@@ -332,21 +379,48 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
   LOG_INFO("Starting Train: Chunk Num: %u", pq_chunk_num_);
 
   ailego::ElapsedTime timer;
-  int ret = trainer_->train_quantized_data(
-      threads, holder_, build_meta_, entity_.pq_full_pivot_data(),
-      entity_.pq_centroid(), entity_.pq_chunk_offsets(), pq_chunk_num_);
+
+  quantizer_ = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  if (!quantizer_) {
+    LOG_ERROR("Create PqInt8Quantizer failed");
+    return IndexError_NoExist;
+  }
+
+  ailego::Params qp;
+  qp.set("num_chunk", pq_chunk_num_);
+  // The quantizer creates its own pool, so bound it by the caller's pool.
+  const auto pq_thread_count = static_cast<uint32_t>(std::max<size_t>(
+      1, std::min<size_t>(build_thread_count_, threads->count())));
+  qp.set("thread_count", pq_thread_count);
+  qp.set("use_zero_mean", false);
+  int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {
-    LOG_ERROR("Train Quantized Data Error, ret=%d", ret);
+    LOG_ERROR("PqInt8Quantizer init failed, ret=%d", ret);
+    return ret;
+  }
+
+  // Keep the legacy prefix and sample order without materializing a second
+  // training holder. The quantizer copies only its selected training rows.
+  IndexHolder::Pointer training_holder = std::make_shared<PrefixIndexHolder>(
+      holder_, max_train_sample_count_, build_meta_);
+  ret = quantizer_->train(std::move(training_holder));
+  if (ret != 0) {
+    LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
+    return ret;
+  }
+
+  std::string &quantizer_meta_buffer = entity_.pq_quantizer_meta_buffer();
+  ret = quantizer_->serialize(&quantizer_meta_buffer);
+  if (ret != 0) {
+    LOG_ERROR("PqInt8Quantizer serialize failed, ret=%d", ret);
     return ret;
   }
 
   size_t pq_time = timer.milli_seconds();
   LOG_INFO("Train Quantized Data Done, time: %zu ms", pq_time);
 
-  (*entity_.mutable_pq_meta()).full_pivot_data_size =
-      entity_.pq_full_pivot_data().size();
-  (*entity_.mutable_pq_meta()).centroid_data_size =
-      entity_.pq_centroid().size();
+  (*entity_.mutable_pq_meta()).quantizer_meta_buffer_size =
+      quantizer_meta_buffer.size();
   (*entity_.mutable_pq_meta()).chunk_num = pq_chunk_num_;
 
   return 0;
@@ -357,18 +431,92 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
            memory_limit_, pq_chunk_num_);
 
   ailego::ElapsedTime timer;
-  int ret = trainer_->generate_quantized_data(
-      threads, holder_, build_meta_, entity_.pq_centroid(),
-      entity_.block_compressed_data(), pq_chunk_num_);
-  if (ret != 0) {
-    LOG_ERROR("Generate Quantized Data Error, ret=%d", ret);
-    return ret;
+
+  if (!quantizer_) {
+    LOG_ERROR("Quantizer not exist");
+    return IndexError_NoReady;
+  }
+
+  size_t num_vecs = holder_->count();
+  auto &codes = entity_.block_compressed_data();
+  codes.resize(num_vecs * pq_chunk_num_);
+
+  auto iter = holder_->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Create iterator for holder failed");
+    return IndexError_Runtime;
+  }
+
+  const size_t elem_size = build_meta_.element_size();
+  const size_t thread_count =
+      threads ? std::max<size_t>(1, threads->count()) : 1;
+  constexpr size_t kEncodeMemoryBudget = 4u * 1024u * 1024u;
+  const size_t batch_size =
+      std::min(num_vecs, std::max<size_t>(1, kEncodeMemoryBudget / elem_size));
+  std::vector<uint8_t> block(batch_size * elem_size);
+
+  size_t id = 0;
+  while (id < num_vecs) {
+    size_t cur = 0;
+    for (; cur < batch_size && id + cur < num_vecs && iter->is_valid();
+         iter->next(), ++cur) {
+      // The quantizer widens FP16 input internally — pass raw data directly.
+      const void *data = iter->data();
+      if (!data) return IndexError_ReadData;
+      if (iter->key() != entity_.get_key(id + cur)) return IndexError_Mismatch;
+      std::memcpy(block.data() + cur * elem_size, data, elem_size);
+    }
+    if (cur == 0) {
+      break;
+    }
+
+    if (thread_count > 1) {
+      auto task_group = threads->make_group();
+      if (!task_group) {
+        LOG_ERROR("Failed to create task group");
+        return IndexError_Runtime;
+      }
+      size_t stripe = DiskAnnUtil::div_round_up(cur, thread_count);
+      for (size_t t = 0; t < thread_count; ++t) {
+        uint64_t begin = t * stripe;
+        uint64_t end = std::min<uint64_t>(begin + stripe, cur);
+        if (begin >= end) {
+          break;
+        }
+        task_group->submit(
+            ailego::Closure::New(this, &DiskAnnBuilder::encode_pq_batch,
+                                 static_cast<const uint8_t *>(block.data()),
+                                 static_cast<uint64_t>(id), begin, end));
+      }
+      task_group->wait_finish();
+    } else {
+      encode_pq_batch(block.data(), id, 0, cur);
+    }
+
+    id += cur;
+  }
+
+  if (id != num_vecs || iter->is_valid()) {
+    LOG_ERROR("PQ generate: iterated %zu vectors, expected %zu", id, num_vecs);
+    return IndexError_Runtime;
   }
 
   size_t pq_time = timer.milli_seconds();
   LOG_INFO("Generate Quantized Data Done, time: %zu ms", pq_time);
 
   return 0;
+}
+
+void DiskAnnBuilder::encode_pq_batch(const uint8_t *block_data,
+                                     uint64_t block_start_id, uint64_t begin,
+                                     uint64_t end) {
+  const size_t elem_size = build_meta_.element_size();
+  auto &codes = entity_.block_compressed_data();
+  for (uint64_t i = begin; i < end; ++i) {
+    quantizer_->quantize_data(
+        block_data + i * elem_size,
+        codes.data() + (block_start_id + i) * pq_chunk_num_);
+  }
 }
 
 void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
@@ -380,7 +528,8 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
 
   DiskAnnContext *ctx = new (std::nothrow) DiskAnnContext(
       build_meta_, metric_,
-      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}));
+      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}),
+      data_quantizer_);
 
   if (ailego_unlikely(ctx == nullptr)) {
     if (!error_.exchange(true)) {
@@ -391,13 +540,20 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   }
 
   DiskAnnContext::Pointer auto_ptr(ctx);
-  ctx->init(DiskAnnContext::kBuilderContext, max_degree_, pq_chunk_num_,
-            build_meta_.element_size());
+  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_,
+                      pq_chunk_num_, build_meta_.element_size());
+  if (ailego_unlikely(ret != 0)) {
+    if (!error_.exchange(true)) {
+      LOG_ERROR("Failed to initialize build context");
+      errcode_ = ret;
+    }
+    return;
+  }
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
     ctx->reset_query(entity_.get_vector(id));
-    int ret = algo_->add_node(id, ctx);
+    ret = algo_->add_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (!error_.exchange(true)) {
         LOG_ERROR("DiskAnn graph add node failed");
@@ -419,7 +575,8 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
 
   DiskAnnContext *ctx = new (std::nothrow) DiskAnnContext(
       build_meta_, metric_,
-      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}));
+      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}),
+      data_quantizer_);
 
   if (ailego_unlikely(ctx == nullptr)) {
     if (!error_.exchange(true)) {
@@ -430,13 +587,20 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
   }
 
   DiskAnnContext::Pointer auto_ptr(ctx);
-  ctx->init(DiskAnnContext::kBuilderContext, max_degree_, pq_chunk_num_,
-            build_meta_.element_size());
+  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_,
+                      pq_chunk_num_, build_meta_.element_size());
+  if (ailego_unlikely(ret != 0)) {
+    if (!error_.exchange(true)) {
+      LOG_ERROR("Failed to initialize prune context");
+      errcode_ = ret;
+    }
+    return;
+  }
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
     ctx->reset_query(entity_.get_vector(id));
-    int ret = algo_->prune_node(id, ctx);
+    ret = algo_->prune_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (!error_.exchange(true)) {
         LOG_ERROR("DiskAnn graph add node failed");
@@ -472,7 +636,12 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
     LOG_ERROR("Init the builder before DiskAnnBuilder::train");
     return IndexError_NoReady;
   }
+  if (!holder) {
+    LOG_ERROR("Invalid holder for DiskAnnBuilder::train");
+    return IndexError_InvalidArgument;
+  }
 
+  if (!holder->is_matched(raw_meta_)) return IndexError_Mismatch;
   LOG_INFO("Begin DiskAnnBuilder::train");
 
   auto start_time = ailego::Monotime::MilliSeconds();
@@ -527,6 +696,15 @@ int DiskAnnBuilder::do_norm(const void *data_ptr, std::string *norm_data) {
 
 int DiskAnnBuilder::build(IndexThreads::Pointer threads,
                           IndexHolder::Pointer holder) {
+  if (state_ != BUILD_STATE_TRAINED) {
+    LOG_ERROR("Train the builder before DiskAnnBuilder::build");
+    return IndexError_NoReady;
+  }
+  if (!holder) {
+    LOG_ERROR("Invalid holder for DiskAnnBuilder::build");
+    return IndexError_InvalidArgument;
+  }
+
   LOG_INFO("Start DiskAnnBuilder::build");
 
   auto start_time = ailego::Monotime::MilliSeconds();
@@ -547,15 +725,21 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
+  if (!holder->is_matched(raw_meta_) || !holder->multipass() ||
+      holder->count() > std::numeric_limits<uint32_t>::max()) {
+    return IndexError_Mismatch;
+  }
   if (ailego_unlikely(holder->count() == 0)) {
     LOG_ERROR("Holder is empty");
     return IndexError_Runtime;
   }
 
   int ret = entity_.reserve_space(holder->count());
+  if (ret != 0) return ret;
 
   error_ = false;
   while (iter->is_valid()) {
+    if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
     ret = entity_.add_vector(iter->key(), iter->data());
     if (ailego_unlikely(ret != 0)) {
       return ret;
@@ -564,6 +748,8 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     iter->next();
   }
 
+  if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
+  iter.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");
@@ -584,6 +770,9 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return ret;
   }
 
+  // All graph workers have joined. Subsequent stages consume holder_, so
+  // release the full vector copy before allocating PQ buffers.
+  entity_.release_vectors();
   LOG_INFO("Start to generate quantized data");
   ret = generate_quantized_data(threads);
   if (ailego_unlikely(ret != 0)) {
@@ -619,9 +808,8 @@ int DiskAnnBuilder::dump(const IndexDumper::Pointer &dumper) {
 
   ret = entity_.dump(holder_, raw_meta_, dumper);
   if (ret != 0) {
-    LOG_ERROR("Index dump failed, ret: %u", ret);
-
-    return IndexError_Runtime;
+    LOG_ERROR("Index dump failed, ret: %d", ret);
+    return ret;
   }
 
   stats_.set_dumped_count(holder_->count());

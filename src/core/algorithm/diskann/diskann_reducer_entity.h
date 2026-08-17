@@ -19,7 +19,6 @@
 #include <zvec/core/framework/index_holder.h>
 #include "diskann_entity.h"
 #include "diskann_file_reader.h"
-#include "diskann_pq_table.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -32,7 +31,7 @@ class DiskAnnReducerEntity : public DiskAnnEntity {
 
  public:
   DiskAnnReducerEntity() = default;
-  virtual ~DiskAnnReducerEntity() = default;
+  ~DiskAnnReducerEntity() override = default;
 
   int load(const IndexStorage::Pointer &container, bool check_crc);
   int load_segments(bool check_crc);

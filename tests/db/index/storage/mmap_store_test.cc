@@ -22,6 +22,7 @@
 #include <arrow/table.h>
 #include <gtest/gtest.h>
 #include "db/common/constants.h"
+#include "db/index/storage/chunked_file_writer.h"
 #define private public
 #define protected public
 #include "db/index/storage/mmap_forward_store.h"
@@ -30,6 +31,31 @@
 #include "utils/utils.h"
 
 using namespace zvec;
+
+namespace {
+
+arrow::Status WriteUnevenBatchIPC(const std::string &path) {
+  auto schema = arrow::schema({arrow::field("id", arrow::int32())});
+  auto writer = ChunkedFileWriter::Open(path, schema, FileFormat::IPC);
+  if (!writer) {
+    return arrow::Status::IOError("failed to open IPC writer");
+  }
+
+  int32_t next_id = 0;
+  for (int64_t batch_size : {3, 4}) {
+    arrow::Int32Builder builder;
+    for (int64_t i = 0; i < batch_size; ++i) {
+      ARROW_RETURN_NOT_OK(builder.Append(next_id++));
+    }
+    std::shared_ptr<arrow::Array> ids;
+    ARROW_RETURN_NOT_OK(builder.Finish(&ids));
+    auto batch = arrow::RecordBatch::Make(schema, batch_size, {ids});
+    ARROW_RETURN_NOT_OK(writer->write(*batch));
+  }
+  return writer->close();
+}
+
+}  // namespace
 
 class MmapStoreTest : public testing::Test {
  protected:
@@ -53,16 +79,20 @@ class MmapStoreTest : public testing::Test {
     if (std::filesystem::exists(parquet_path)) {
       std::filesystem::remove(parquet_path);
     }
+    if (std::filesystem::exists(uneven_ipc_path)) {
+      std::filesystem::remove(uneven_ipc_path);
+    }
   }
 
   std::string ipc_path = "test.ipc";
   std::string parquet_path = "test.parquet";
+  std::string uneven_ipc_path = "uneven.ipc";
 };
 
 
 TEST_F(MmapStoreTest, GeneralIPC) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({"id", "name", "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(ipc_table != nullptr);
@@ -85,7 +115,7 @@ TEST_F(MmapStoreTest, GeneralIPC) {
 
 TEST_F(MmapStoreTest, IPCFetchWithLocalRowID) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({LOCAL_ROW_ID, "id", "name", "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(ipc_table != nullptr);
@@ -95,7 +125,7 @@ TEST_F(MmapStoreTest, IPCFetchWithLocalRowID) {
 
 TEST_F(MmapStoreTest, IPCCheckOrderWithLocalRowIDMiddle) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr mmap_table =
       ipc_store->fetch({"id", "name", LOCAL_ROW_ID, "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(mmap_table != nullptr);
@@ -122,7 +152,7 @@ TEST_F(MmapStoreTest, IPCCheckOrderWithLocalRowIDMiddle) {
 
 TEST_F(MmapStoreTest, IPCCheckOrderWithLocalRowIDEnd) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr mmap_table =
       ipc_store->fetch({"id", "name", "score", LOCAL_ROW_ID}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(mmap_table != nullptr);
@@ -150,7 +180,7 @@ TEST_F(MmapStoreTest, IPCCheckOrderWithLocalRowIDEnd) {
 
 TEST_F(MmapStoreTest, IPCFetchWithUID) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({USER_ID, "id", "name", "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(ipc_table != nullptr);
@@ -160,7 +190,7 @@ TEST_F(MmapStoreTest, IPCFetchWithUID) {
 
 TEST_F(MmapStoreTest, IPCFetchWithGlobalDocID) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({GLOBAL_DOC_ID, "id", "name", "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(ipc_table != nullptr);
@@ -170,14 +200,14 @@ TEST_F(MmapStoreTest, IPCFetchWithGlobalDocID) {
 
 TEST_F(MmapStoreTest, IPCFetchWithEmptyColumns) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table = ipc_store->fetch({}, std::vector<int>{});
   EXPECT_EQ(ipc_table, nullptr);
 }
 
 TEST_F(MmapStoreTest, IPCFetchWithInvalidColumns) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({"id", "unknown_column"}, std::vector<int>{});
   EXPECT_EQ(ipc_table, nullptr);
@@ -185,7 +215,7 @@ TEST_F(MmapStoreTest, IPCFetchWithInvalidColumns) {
 
 TEST_F(MmapStoreTest, IPCFetchWithEmptyIndices) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({"id", "name", "score"}, std::vector<int>{});
   ASSERT_TRUE(ipc_table != nullptr);
@@ -195,7 +225,7 @@ TEST_F(MmapStoreTest, IPCFetchWithEmptyIndices) {
 
 TEST_F(MmapStoreTest, IPCFetchWithInvalidIndices) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table =
       ipc_store->fetch({"id"}, std::vector<int>{-1});  // Negative index
   EXPECT_EQ(ipc_table, nullptr);
@@ -207,14 +237,14 @@ TEST_F(MmapStoreTest, IPCFetchWithInvalidIndices) {
 
 TEST_F(MmapStoreTest, IPCFetchWithEmptyColumnsValidIndices) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   TablePtr ipc_table = ipc_store->fetch({}, {0, 1});
   EXPECT_EQ(ipc_table, nullptr);
 }
 
 TEST_F(MmapStoreTest, IPCScan) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   auto table_reader = ipc_store->scan({"id", "name", "score"});
   ASSERT_TRUE(table_reader != nullptr);
   EXPECT_NE(table_reader->schema(), nullptr);
@@ -238,7 +268,7 @@ TEST_F(MmapStoreTest, IPCScan) {
 
 TEST_F(MmapStoreTest, IPCScanWithSelectColumns) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   auto table_reader = ipc_store->scan({"id", "name"});
   int batch_count = 0;
   int total_rows = 0;
@@ -260,14 +290,14 @@ TEST_F(MmapStoreTest, IPCScanWithSelectColumns) {
 
 TEST_F(MmapStoreTest, IPCScanWithInvalidColumn) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   auto table_reader = ipc_store->scan({"id", "unknown_column"});
   ASSERT_TRUE(table_reader == nullptr);
 }
 
 TEST_F(MmapStoreTest, IPCScanWithUserID) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   auto table_reader = ipc_store->scan({USER_ID, "id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -289,7 +319,7 @@ TEST_F(MmapStoreTest, IPCScanWithUserID) {
 
 TEST_F(MmapStoreTest, IPCScanWithGlobalDocID) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   auto table_reader = ipc_store->scan({GLOBAL_DOC_ID, "id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -312,7 +342,7 @@ TEST_F(MmapStoreTest, IPCScanWithGlobalDocID) {
 
 TEST_F(MmapStoreTest, GeneralParquet) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   TablePtr mmap_table = mmap_store->fetch({"id", "name", "score"}, {0, 1, 2});
   ASSERT_TRUE(mmap_table != nullptr);
   EXPECT_EQ(mmap_table->num_rows(), 3);
@@ -321,14 +351,14 @@ TEST_F(MmapStoreTest, GeneralParquet) {
 
 TEST_F(MmapStoreTest, ParquetFetchWitEmptyColumns) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   TablePtr mmap_table = mmap_store->fetch({}, std::vector<int>{});
   EXPECT_EQ(mmap_table, nullptr);
 }
 
 TEST_F(MmapStoreTest, ParquetFetchWithInvalidIndices) {
   auto parquet_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(parquet_store->Open().ok());
+  ASSERT_TRUE(parquet_store->open().ok());
   TablePtr parquet_table =
       parquet_store->fetch({"id"}, std::vector<int>{-1});  // Negative index
   EXPECT_EQ(parquet_table, nullptr);
@@ -340,7 +370,7 @@ TEST_F(MmapStoreTest, ParquetFetchWithInvalidIndices) {
 
 TEST_F(MmapStoreTest, ParquetCheckOrder) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   TablePtr mmap_table =
       mmap_store->fetch({"id", "name", "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(mmap_table != nullptr);
@@ -366,7 +396,7 @@ TEST_F(MmapStoreTest, ParquetCheckOrder) {
 
 TEST_F(MmapStoreTest, ParquetCheckOrderWithLocalRowIDMiddle) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   TablePtr mmap_table =
       mmap_store->fetch({"id", "name", LOCAL_ROW_ID, "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(mmap_table != nullptr);
@@ -393,7 +423,7 @@ TEST_F(MmapStoreTest, ParquetCheckOrderWithLocalRowIDMiddle) {
 
 TEST_F(MmapStoreTest, ParquetCheckOrderWithLocalRowIDEnd) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   TablePtr mmap_table =
       mmap_store->fetch({"id", "name", "score", LOCAL_ROW_ID}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(mmap_table != nullptr);
@@ -420,7 +450,7 @@ TEST_F(MmapStoreTest, ParquetCheckOrderWithLocalRowIDEnd) {
 
 TEST_F(MmapStoreTest, ParquetScan) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   auto table_reader = mmap_store->scan({"id", "name", "score"});
   ASSERT_TRUE(table_reader != nullptr);
   EXPECT_NE(table_reader->schema(), nullptr);
@@ -444,14 +474,14 @@ TEST_F(MmapStoreTest, ParquetScan) {
 
 TEST_F(MmapStoreTest, ParquetScanWithInvalidColumn) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   auto table_reader = mmap_store->scan({"id", "unknown_column"});
   ASSERT_TRUE(table_reader == nullptr);
 }
 
 TEST_F(MmapStoreTest, ParquetScanWithUserID) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   auto table_reader = mmap_store->scan({USER_ID, "id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -473,7 +503,7 @@ TEST_F(MmapStoreTest, ParquetScanWithUserID) {
 
 TEST_F(MmapStoreTest, ParquetScanWithGlobalDocID) {
   auto mmap_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
   auto table_reader = mmap_store->scan({GLOBAL_DOC_ID, "id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -495,7 +525,7 @@ TEST_F(MmapStoreTest, ParquetScanWithGlobalDocID) {
 
 TEST_F(MmapStoreTest, IPCFetchSingleRow) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
 
   auto func = [&](int index) -> void {
     ExecBatchPtr ipc_batch = ipc_store->fetch({"id", "name", "score"}, index);
@@ -516,9 +546,23 @@ TEST_F(MmapStoreTest, IPCFetchSingleRow) {
   }
 }
 
+TEST_F(MmapStoreTest, IPCFetchFromLargerLastChunk) {
+  ASSERT_TRUE(WriteUnevenBatchIPC(uneven_ipc_path).ok());
+  auto ipc_store = std::make_shared<MmapForwardStore>(uneven_ipc_path);
+  ASSERT_TRUE(ipc_store->open().ok());
+
+  auto result = ipc_store->fetch({"id"}, std::vector<int>{6});
+  ASSERT_NE(result, nullptr);
+  ASSERT_EQ(result->num_rows(), 1);
+  auto ids =
+      std::dynamic_pointer_cast<arrow::Int32Array>(result->column(0)->chunk(0));
+  ASSERT_NE(ids, nullptr);
+  EXPECT_EQ(ids->Value(0), 6);
+}
+
 TEST_F(MmapStoreTest, ParquetFetchSingleRow) {
   auto parquet_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(parquet_store->Open().ok());
+  ASSERT_TRUE(parquet_store->open().ok());
 
   auto func = [&](int index) -> void {
     ExecBatchPtr parquet_batch =
@@ -542,7 +586,7 @@ TEST_F(MmapStoreTest, ParquetFetchSingleRow) {
 
 TEST_F(MmapStoreTest, IPCFetchSingleRowWithInvalidIndex) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
 
   ExecBatchPtr ipc_batch = ipc_store->fetch({"id", "name"}, -1);
   EXPECT_EQ(ipc_batch, nullptr);
@@ -553,7 +597,7 @@ TEST_F(MmapStoreTest, IPCFetchSingleRowWithInvalidIndex) {
 
 TEST_F(MmapStoreTest, IPCFetchSingleRowWithInvalidColumn) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
 
   ExecBatchPtr ipc_batch = ipc_store->fetch({"id", "invalid_column"}, 0);
   EXPECT_EQ(ipc_batch, nullptr);
@@ -561,7 +605,7 @@ TEST_F(MmapStoreTest, IPCFetchSingleRowWithInvalidColumn) {
 
 TEST_F(MmapStoreTest, IPCFetchSingleRowWithEmptyColumns) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
 
   ExecBatchPtr ipc_batch = ipc_store->fetch({}, 0);
   EXPECT_EQ(ipc_batch, nullptr);
@@ -569,7 +613,7 @@ TEST_F(MmapStoreTest, IPCFetchSingleRowWithEmptyColumns) {
 
 TEST_F(MmapStoreTest, ParquetFetchSingleRowWithInvalidIndex) {
   auto parquet_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(parquet_store->Open().ok());
+  ASSERT_TRUE(parquet_store->open().ok());
 
   ExecBatchPtr parquet_batch = parquet_store->fetch({"id", "name"}, -1);
   EXPECT_EQ(parquet_batch, nullptr);
@@ -580,7 +624,7 @@ TEST_F(MmapStoreTest, ParquetFetchSingleRowWithInvalidIndex) {
 
 TEST_F(MmapStoreTest, AllDataType) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
 
   std::vector<std::string> columns = {"id", "list_int32"};
   std::vector<int> indices = {0, 3, 6, 1, 0};
@@ -619,26 +663,26 @@ TEST_F(MmapStoreTest, AllDataType) {
 
 TEST_F(MmapStoreTest, FindRowGroupForRow) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
 
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(0), 0);
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(1), 0);
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(2), 0);
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(3), 1);
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(6), 2);
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(9), 3);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(0), 0);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(1), 0);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(2), 0);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(3), 1);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(6), 2);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(9), 3);
 
-  EXPECT_EQ(mmap_store->FindRowGroupForRow(100), 3);
+  EXPECT_EQ(mmap_store->find_row_group_for_row(100), 3);
 }
 
 TEST_F(MmapStoreTest, GetRowGroupOffset) {
   auto mmap_store = std::make_shared<MmapForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
 
-  EXPECT_EQ(mmap_store->GetRowGroupOffset(0), 0);
-  EXPECT_EQ(mmap_store->GetRowGroupOffset(1), 3);
-  EXPECT_EQ(mmap_store->GetRowGroupOffset(2), 6);
-  EXPECT_EQ(mmap_store->GetRowGroupOffset(3), 9);
+  EXPECT_EQ(mmap_store->get_row_group_offset(0), 0);
+  EXPECT_EQ(mmap_store->get_row_group_offset(1), 3);
+  EXPECT_EQ(mmap_store->get_row_group_offset(2), 6);
+  EXPECT_EQ(mmap_store->get_row_group_offset(3), 9);
 }
 
 TEST_F(MmapStoreTest, InvalidPath) {
@@ -650,7 +694,7 @@ TEST_F(MmapStoreTest, InvalidPath) {
   };
   for (const auto &path : err_path) {
     auto ipc_store = std::make_shared<MmapForwardStore>(path);
-    ASSERT_FALSE(ipc_store->Open().ok());
+    ASSERT_FALSE(ipc_store->open().ok());
   }
 }
 
@@ -661,7 +705,7 @@ TEST_F(MmapStoreTest, InvalidFileFormat) {
 
 TEST_F(MmapStoreTest, ValidateEmptyColumns) {
   auto ipc_store = std::make_shared<MmapForwardStore>(ipc_path);
-  ASSERT_TRUE(ipc_store->Open().ok());
+  ASSERT_TRUE(ipc_store->open().ok());
   EXPECT_FALSE(ipc_store->validate({}));
 }
 

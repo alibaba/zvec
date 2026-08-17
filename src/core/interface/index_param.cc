@@ -18,7 +18,166 @@
 
 namespace zvec {
 namespace core_interface {
-ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
+
+BaseIndexQueryParam::BaseIndexQueryParam() = default;
+BaseIndexQueryParam::BaseIndexQueryParam(const BaseIndexQueryParam &) = default;
+BaseIndexQueryParam::BaseIndexQueryParam(BaseIndexQueryParam &&) noexcept =
+    default;
+BaseIndexQueryParam &BaseIndexQueryParam::operator=(
+    const BaseIndexQueryParam &) = default;
+BaseIndexQueryParam &BaseIndexQueryParam::operator=(
+    BaseIndexQueryParam &&) noexcept = default;
+BaseIndexQueryParam::~BaseIndexQueryParam() = default;
+
+FlatQueryParam::FlatQueryParam() = default;
+FlatQueryParam::FlatQueryParam(const FlatQueryParam &) = default;
+FlatQueryParam::FlatQueryParam(FlatQueryParam &&) noexcept = default;
+FlatQueryParam &FlatQueryParam::operator=(const FlatQueryParam &) = default;
+FlatQueryParam &FlatQueryParam::operator=(FlatQueryParam &&) noexcept = default;
+FlatQueryParam::~FlatQueryParam() = default;
+
+BaseIndexQueryParam::Pointer FlatQueryParam::clone() const {
+  return std::make_shared<FlatQueryParam>(*this);
+}
+
+HNSWQueryParam::HNSWQueryParam() = default;
+HNSWQueryParam::HNSWQueryParam(const HNSWQueryParam &) = default;
+HNSWQueryParam::HNSWQueryParam(HNSWQueryParam &&) noexcept = default;
+HNSWQueryParam &HNSWQueryParam::operator=(const HNSWQueryParam &) = default;
+HNSWQueryParam &HNSWQueryParam::operator=(HNSWQueryParam &&) noexcept = default;
+HNSWQueryParam::~HNSWQueryParam() = default;
+
+BaseIndexQueryParam::Pointer HNSWQueryParam::clone() const {
+  return std::make_shared<HNSWQueryParam>(*this);
+}
+
+HNSWRabitqQueryParam::HNSWRabitqQueryParam() = default;
+HNSWRabitqQueryParam::HNSWRabitqQueryParam(const HNSWRabitqQueryParam &) =
+    default;
+HNSWRabitqQueryParam::HNSWRabitqQueryParam(HNSWRabitqQueryParam &&) noexcept =
+    default;
+HNSWRabitqQueryParam &HNSWRabitqQueryParam::operator=(
+    const HNSWRabitqQueryParam &) = default;
+HNSWRabitqQueryParam &HNSWRabitqQueryParam::operator=(
+    HNSWRabitqQueryParam &&) noexcept = default;
+HNSWRabitqQueryParam::~HNSWRabitqQueryParam() = default;
+
+BaseIndexQueryParam::Pointer HNSWRabitqQueryParam::clone() const {
+  return std::make_shared<HNSWRabitqQueryParam>(*this);
+}
+
+IVFRabitqQueryParam::IVFRabitqQueryParam() = default;
+IVFRabitqQueryParam::IVFRabitqQueryParam(const IVFRabitqQueryParam &) = default;
+IVFRabitqQueryParam::IVFRabitqQueryParam(IVFRabitqQueryParam &&) noexcept =
+    default;
+IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
+    const IVFRabitqQueryParam &) = default;
+IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
+    IVFRabitqQueryParam &&) noexcept = default;
+IVFRabitqQueryParam::~IVFRabitqQueryParam() = default;
+
+BaseIndexQueryParam::Pointer IVFRabitqQueryParam::clone() const {
+  return std::make_shared<IVFRabitqQueryParam>(*this);
+}
+
+IVFQueryParam::IVFQueryParam() = default;
+IVFQueryParam::IVFQueryParam(const IVFQueryParam &) = default;
+IVFQueryParam::IVFQueryParam(IVFQueryParam &&) noexcept = default;
+IVFQueryParam &IVFQueryParam::operator=(const IVFQueryParam &) = default;
+IVFQueryParam &IVFQueryParam::operator=(IVFQueryParam &&) noexcept = default;
+IVFQueryParam::~IVFQueryParam() = default;
+
+BaseIndexQueryParam::Pointer IVFQueryParam::clone() const {
+  auto cloned_this = std::make_shared<IVFQueryParam>(*this);
+  cloned_this->l1_query_param =
+      l1_query_param ? l1_query_param->clone() : nullptr;
+  cloned_this->l2_query_param =
+      l2_query_param ? l2_query_param->clone() : nullptr;
+  return cloned_this;
+}
+
+DiskAnnQueryParam::DiskAnnQueryParam() = default;
+DiskAnnQueryParam::DiskAnnQueryParam(const DiskAnnQueryParam &) = default;
+DiskAnnQueryParam::DiskAnnQueryParam(DiskAnnQueryParam &&) noexcept = default;
+DiskAnnQueryParam &DiskAnnQueryParam::operator=(const DiskAnnQueryParam &) =
+    default;
+DiskAnnQueryParam &DiskAnnQueryParam::operator=(DiskAnnQueryParam &&) noexcept =
+    default;
+DiskAnnQueryParam::~DiskAnnQueryParam() = default;
+
+BaseIndexQueryParam::Pointer DiskAnnQueryParam::clone() const {
+  return std::make_shared<DiskAnnQueryParam>(*this);
+}
+
+BaseIndexParam::BaseIndexParam(IndexType type, MetricType metric, int dim,
+                               int ver)
+    : index_type(type), metric_type(metric), dimension(dim), version(ver) {}
+BaseIndexParam::BaseIndexParam(const BaseIndexParam &) = default;
+BaseIndexParam &BaseIndexParam::operator=(const BaseIndexParam &) = default;
+BaseIndexParam::~BaseIndexParam() = default;
+
+IVFIndexParam::IVFIndexParam() : BaseIndexParam(IndexType::kIVF) {}
+IVFIndexParam::IVFIndexParam(int nlist, int niters,
+                             std::shared_ptr<BaseIndexParam> l1_index,
+                             std::shared_ptr<BaseIndexParam> l2_index)
+    : BaseIndexParam(IndexType::kIVF),
+      nlist(nlist),
+      niters(niters),
+      l1_index(std::move(l1_index)),
+      l2_index(std::move(l2_index)) {}
+IVFIndexParam::IVFIndexParam(MetricType metric, int dim, int nlist, int niters,
+                             std::shared_ptr<BaseIndexParam> l1_index,
+                             std::shared_ptr<BaseIndexParam> l2_index)
+    : BaseIndexParam(IndexType::kIVF, metric, dim),
+      nlist(nlist),
+      niters(niters),
+      l1_index(std::move(l1_index)),
+      l2_index(std::move(l2_index)) {}
+IVFIndexParam::IVFIndexParam(const IVFIndexParam &) = default;
+IVFIndexParam::IVFIndexParam(IVFIndexParam &&) = default;
+IVFIndexParam &IVFIndexParam::operator=(const IVFIndexParam &) = default;
+IVFIndexParam &IVFIndexParam::operator=(IVFIndexParam &&) = default;
+IVFIndexParam::~IVFIndexParam() = default;
+
+BaseIndexQueryParam::Pointer VamanaQueryParam::clone() const {
+  return std::make_shared<VamanaQueryParam>(*this);
+}
+
+HNSWRabitqIndexParam::HNSWRabitqIndexParam()
+    : BaseIndexParam(IndexType::kHNSWRabitq) {}
+HNSWRabitqIndexParam::HNSWRabitqIndexParam(int m, int ef_construction)
+    : BaseIndexParam(IndexType::kHNSWRabitq),
+      m(m),
+      ef_construction(ef_construction) {}
+HNSWRabitqIndexParam::HNSWRabitqIndexParam(MetricType metric, int dim, int m,
+                                           int ef_construction)
+    : BaseIndexParam(IndexType::kHNSWRabitq, metric, dim),
+      m(m),
+      ef_construction(ef_construction) {}
+HNSWRabitqIndexParam::HNSWRabitqIndexParam(const HNSWRabitqIndexParam &) =
+    default;
+HNSWRabitqIndexParam::HNSWRabitqIndexParam(HNSWRabitqIndexParam &&) = default;
+HNSWRabitqIndexParam &HNSWRabitqIndexParam::operator=(
+    const HNSWRabitqIndexParam &) = default;
+HNSWRabitqIndexParam &HNSWRabitqIndexParam::operator=(HNSWRabitqIndexParam &&) =
+    default;
+HNSWRabitqIndexParam::~HNSWRabitqIndexParam() = default;
+
+IVFRabitqIndexParam::IVFRabitqIndexParam()
+    : BaseIndexParam(IndexType::kIVFRabitq) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(int nlist)
+    : BaseIndexParam(IndexType::kIVFRabitq), nlist(nlist) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(MetricType metric, int dim, int nlist)
+    : BaseIndexParam(IndexType::kIVFRabitq, metric, dim), nlist(nlist) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(const IVFRabitqIndexParam &) = default;
+IVFRabitqIndexParam::IVFRabitqIndexParam(IVFRabitqIndexParam &&) = default;
+IVFRabitqIndexParam &IVFRabitqIndexParam::operator=(
+    const IVFRabitqIndexParam &) = default;
+IVFRabitqIndexParam &IVFRabitqIndexParam::operator=(IVFRabitqIndexParam &&) =
+    default;
+IVFRabitqIndexParam::~IVFRabitqIndexParam() = default;
+
+ailego::JsonObject BaseIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
   ailego::JsonObject json_obj;
 
@@ -54,36 +213,51 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
   }
 
   // if (preprocess_param) {
-  //   json.set("preprocess_param", preprocess_param->SerializeToJson());
+  //   json.set("preprocess_param", preprocess_param->serialize_to_json());
   // }
-  if (!omit_empty_value || quantizer_param.type != QuantizerType::kNone) {
+  if (quantizer_param) {
+    if (!omit_empty_value || quantizer_param->type != QuantizerType::kNone) {
+      json_obj.set("quantizer_param",
+                   quantizer_param->serialize_to_json_object(omit_empty_value));
+    }
+  } else if (!omit_empty_value) {
+    // no quantizer configured, keep the default(kNone) object as before
     json_obj.set("quantizer_param",
-                 quantizer_param.SerializeToJsonObject(omit_empty_value));
+                 QuantizerParam().serialize_to_json_object(false));
   }
   // if (refiner_param) {
-  //   json.set("refiner_param", refiner_param->SerializeToJson());
+  //   json.set("refiner_param", refiner_param->serialize_to_json());
   // }
   // if (default_query_param) {
   //   json.set("default_query_param",
-  //   default_query_param->SerializeToJson());
+  //   default_query_param->serialize_to_json());
   // }
   return json_obj;
 }
 
 
-ailego::JsonObject FlatIndexParam::SerializeToJsonObject(
+ailego::JsonObject FlatIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
-  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
   if (!omit_empty_value || major_order != IndexMeta::MajorOrder::MO_UNDEFINED) {
     json_obj.set("major_order",
                  ailego::JsonValue(magic_enum::enum_name(major_order).data()));
   }
+  if (!omit_empty_value || use_contiguous_memory) {
+    json_obj.set("use_contiguous_memory",
+                 ailego::JsonValue(use_contiguous_memory));
+  }
+  if (!omit_empty_value || storage_data_type != DataType::DT_UNDEFINED) {
+    json_obj.set(
+        "storage_data_type",
+        ailego::JsonValue(magic_enum::enum_name(storage_data_type).data()));
+  }
   return json_obj;
 }
 
-ailego::JsonObject HNSWIndexParam::SerializeToJsonObject(
+ailego::JsonObject HNSWIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
-  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
   json_obj.set("m", ailego::JsonValue(m));
   json_obj.set("ef_construction", ailego::JsonValue(ef_construction));
   if (!omit_empty_value || use_contiguous_memory) {
@@ -93,9 +267,9 @@ ailego::JsonObject HNSWIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
-ailego::JsonObject OmegaIndexParam::SerializeToJsonObject(
+ailego::JsonObject OmegaIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
-  auto json_obj = HNSWIndexParam::SerializeToJsonObject(omit_empty_value);
+  auto json_obj = HNSWIndexParam::serialize_to_json_object(omit_empty_value);
   json_obj.set(
       "index_type",
       ailego::JsonValue(magic_enum::enum_name(IndexType::kOMEGA).data()));
@@ -122,7 +296,7 @@ ailego::JsonObject OmegaIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
-bool BaseIndexParam::DeserializeFromJsonObject(
+bool BaseIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
   DESERIALIZE_ENUM_FIELD(json_obj, index_type, IndexType);
   DESERIALIZE_ENUM_FIELD(json_obj, metric_type, MetricType);
@@ -139,16 +313,29 @@ bool BaseIndexParam::DeserializeFromJsonObject(
   if (json_obj.has("quantizer_param")) {
     if (json_obj.get("quantizer_param", &tmp_json_value);
         tmp_json_value.is_object()) {
-      quantizer_param.DeserializeFromJsonObject(tmp_json_value.as_object());
+      const auto &quantizer_json_obj = tmp_json_value.as_object();
+      // the concrete param type is determined by the quantizer type
+      auto quantizer_type = QuantizerType::kNone;
+      ailego::JsonValue type_json_value;
+      if (!extract_enum_from_json<QuantizerType>(
+              quantizer_json_obj, "type", quantizer_type, type_json_value)) {
+        LOG_ERROR("Error when deserialize json - field:quantizer_param.type");
+        return false;
+      }
+      auto quantizer = QuantizerParam::Create(quantizer_type);
+      if (!quantizer->deserialize_from_json_object(quantizer_json_obj)) {
+        LOG_ERROR("Error when deserialize json - field:quantizer_param");
+      }
+      quantizer_param = std::move(quantizer);
     }
   }
 
   return true;
 }
 
-bool FlatIndexParam::DeserializeFromJsonObject(
+bool FlatIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
     return false;
   }
 
@@ -158,12 +345,14 @@ bool FlatIndexParam::DeserializeFromJsonObject(
   }
 
   DESERIALIZE_ENUM_FIELD(json_obj, major_order, IndexMeta::MajorOrder);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_ENUM_FIELD(json_obj, storage_data_type, DataType);
   return true;
 }
 
-bool HNSWIndexParam::DeserializeFromJsonObject(
+bool HNSWIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
     return false;
   }
 
@@ -179,9 +368,9 @@ bool HNSWIndexParam::DeserializeFromJsonObject(
   return true;
 }
 
-bool OmegaIndexParam::DeserializeFromJsonObject(
+bool OmegaIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
     return false;
   }
 
@@ -202,9 +391,9 @@ bool OmegaIndexParam::DeserializeFromJsonObject(
   return true;
 }
 
-bool HNSWRabitqIndexParam::DeserializeFromJsonObject(
+bool HNSWRabitqIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
     return false;
   }
 
@@ -222,9 +411,9 @@ bool HNSWRabitqIndexParam::DeserializeFromJsonObject(
   return true;
 }
 
-ailego::JsonObject HNSWRabitqIndexParam::SerializeToJsonObject(
+ailego::JsonObject HNSWRabitqIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
-  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
   json_obj.set("m", ailego::JsonValue(m));
   json_obj.set("ef_construction", ailego::JsonValue(ef_construction));
   json_obj.set("total_bits", ailego::JsonValue(total_bits));
@@ -235,9 +424,38 @@ ailego::JsonObject HNSWRabitqIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
-ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
+bool IVFRabitqIndexParam::deserialize_from_json_object(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVFRabitq) {
+    LOG_ERROR("index_type is not kIVFRabitq");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+
+  return true;
+}
+
+ailego::JsonObject IVFRabitqIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
-  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("total_bits", ailego::JsonValue(total_bits));
+  if (!omit_empty_value || sample_count != 0) {
+    json_obj.set("sample_count", ailego::JsonValue(sample_count));
+  }
+  return json_obj;
+}
+
+ailego::JsonObject VamanaIndexParam::serialize_to_json_object(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
   json_obj.set("max_degree", ailego::JsonValue(max_degree));
   json_obj.set("search_list_size", ailego::JsonValue(search_list_size));
   json_obj.set("alpha", ailego::JsonValue(alpha));
@@ -252,12 +470,15 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
   }
+  if (!omit_empty_value || two_pass_build) {
+    json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
+  }
   return json_obj;
 }
 
-bool DiskAnnIndexParam::DeserializeFromJsonObject(
+bool DiskAnnIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
     return false;
   }
 
@@ -266,18 +487,25 @@ bool DiskAnnIndexParam::DeserializeFromJsonObject(
     return false;
   }
 
+  DESERIALIZE_VALUE_FIELD(json_obj, max_degree);
+  DESERIALIZE_VALUE_FIELD(json_obj, list_size);
+  DESERIALIZE_VALUE_FIELD(json_obj, pq_chunk_num);
+
   return true;
 }
 
-ailego::JsonObject DiskAnnIndexParam::SerializeToJsonObject(
+ailego::JsonObject DiskAnnIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
-  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("max_degree", ailego::JsonValue(max_degree));
+  json_obj.set("list_size", ailego::JsonValue(list_size));
+  json_obj.set("pq_chunk_num", ailego::JsonValue(pq_chunk_num));
   return json_obj;
 }
 
-bool VamanaIndexParam::DeserializeFromJsonObject(
+bool VamanaIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
     return false;
   }
 
@@ -292,11 +520,12 @@ bool VamanaIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, max_occlusion_size);
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
 
   return true;
 }
 
-ailego::JsonObject QuantizerParam::SerializeToJsonObject(
+ailego::JsonObject QuantizerParam::serialize_to_json_object(
     bool omit_empty_value) const {
   ailego::JsonObject json_obj;
   if (!omit_empty_value || type != QuantizerType::kNone) {
@@ -309,14 +538,41 @@ ailego::JsonObject QuantizerParam::SerializeToJsonObject(
   return json_obj;
 }
 
-bool QuantizerParam::DeserializeFromJsonObject(
+bool QuantizerParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
   DESERIALIZE_ENUM_FIELD(json_obj, type, QuantizerType);
   DESERIALIZE_VALUE_FIELD(json_obj, enable_rotate);
   return true;
 }
 
-// bool BaseIndexQueryParam::DeserializeFromJsonObject(
+QuantizerParam::Pointer QuantizerParam::Create(QuantizerType t) {
+  switch (t) {
+    case QuantizerType::kPQ:
+      return std::make_shared<PqQuantizerParam>();
+    default:
+      return std::make_shared<QuantizerParam>(t);
+  }
+}
+
+ailego::JsonObject PqQuantizerParam::serialize_to_json_object(
+    bool omit_empty_value) const {
+  auto json_obj = QuantizerParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("num_chunk", ailego::JsonValue(num_chunk));
+  json_obj.set("num_bits", ailego::JsonValue(num_bits));
+  return json_obj;
+}
+
+bool PqQuantizerParam::deserialize_from_json_object(
+    const ailego::JsonObject &json_obj) {
+  if (!QuantizerParam::deserialize_from_json_object(json_obj)) {
+    return false;
+  }
+  DESERIALIZE_VALUE_FIELD(json_obj, num_chunk);
+  DESERIALIZE_VALUE_FIELD(json_obj, num_bits);
+  return true;
+}
+
+// bool BaseIndexQueryParam::deserialize_from_json_object(
 //     const ailego::JsonObject &json_obj) {
 //   DESERIALIZE_ENUM_FIELD(json_obj, index_type, IndexType);
 //   DESERIALIZE_VALUE_FIELD(json_obj, topk);
@@ -326,7 +582,7 @@ bool QuantizerParam::DeserializeFromJsonObject(
 //   return true;
 // }
 
-// ailego::JsonObject BaseIndexQueryParam::SerializeToJsonObject(
+// ailego::JsonObject BaseIndexQueryParam::serialize_to_json_object(
 //     bool omit_empty_value) const {
 //   ailego::JsonObject json_obj;
 //   if (!omit_empty_value || index_type != IndexType::kNone) {
@@ -348,9 +604,9 @@ bool QuantizerParam::DeserializeFromJsonObject(
 //   return json_obj;
 // }
 
-// bool FlatQueryParam::DeserializeFromJsonObject(
+// bool FlatQueryParam::deserialize_from_json_object(
 //     const ailego::JsonObject &json_obj) {
-//   if (!BaseIndexQueryParam::DeserializeFromJsonObject(json_obj)) {
+//   if (!BaseIndexQueryParam::deserialize_from_json_object(json_obj)) {
 //     return false;
 //   }
 //   if (index_type != IndexType::kFlat) {
@@ -360,16 +616,16 @@ bool QuantizerParam::DeserializeFromJsonObject(
 //   return true;
 // }
 
-// ailego::JsonObject FlatQueryParam::SerializeToJsonObject(
+// ailego::JsonObject FlatQueryParam::serialize_to_json_object(
 //     bool omit_empty_value) const {
 //   auto json_obj =
-//       BaseIndexQueryParam::SerializeToJsonObject(omit_empty_value);
+//       BaseIndexQueryParam::serialize_to_json_object(omit_empty_value);
 //   return json_obj;
 // }
 
-// bool HNSWQueryParam::DeserializeFromJsonObject(
+// bool HNSWQueryParam::deserialize_from_json_object(
 //     const ailego::JsonObject &json_obj) {
-//   if (!BaseIndexQueryParam::DeserializeFromJsonObject(json_obj)) {
+//   if (!BaseIndexQueryParam::deserialize_from_json_object(json_obj)) {
 //     return false;
 //   }
 //   if (index_type != IndexType::kHNSW) {
@@ -380,10 +636,10 @@ bool QuantizerParam::DeserializeFromJsonObject(
 //   return true;
 // }
 
-// ailego::JsonObject HNSWQueryParam::SerializeToJsonObject(
+// ailego::JsonObject HNSWQueryParam::serialize_to_json_object(
 //     bool omit_empty_value) const {
 //   auto json_obj =
-//       BaseIndexQueryParam::SerializeToJsonObject(omit_empty_value);
+//       BaseIndexQueryParam::serialize_to_json_object(omit_empty_value);
 //   if (!omit_empty_value || ef_search != 0) {
 //     json_obj.set("ef_search", ailego::JsonValue(ef_search));
 //   }

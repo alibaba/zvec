@@ -27,11 +27,72 @@ namespace ailego {
  */
 template <typename T, typename TCompare = std::less<T>,
           typename TBase = std::vector<T>>
-class Heap : public TBase {
+class Heap : private TBase {
  public:
+  //! Remove all elements
+  void clear() {
+    TBase::clear();
+  }
+
+  //! Retrieve the begin iterator
+  auto begin() const {
+    return TBase::begin();
+  }
+
+  //! Retrieve the end iterator
+  auto end() const {
+    return TBase::end();
+  }
+
+  //! Retrieve the front element
+  const T &front() const {
+    return TBase::front();
+  }
+
+  //! Retrieve the back element
+  const T &back() const {
+    return TBase::back();
+  }
+
+  //! Retrieve the element at the specified position
+  const T &operator[](size_t pos) const {
+    return TBase::operator[](pos);
+  }
+
+  //! Retrieve the mutable element at the specified position
+  T &mutable_at(size_t pos) {
+    return TBase::operator[](pos);
+  }
+
+  //! Expose the underlying container for read-only APIs
+  const TBase &container() const {
+    return *this;
+  }
+
+  //! Expose the underlying container for intentional mutable interop
+  TBase &mutable_container() {
+    return *this;
+  }
+
+  //! Shrink after in-place pruning without exposing vector::resize growth
+  void truncate(size_t size) {
+    if (size < TBase::size()) {
+      TBase::resize(size);
+    }
+  }
+
+  //! Retrieve the number of elements
+  size_t size() const {
+    return TBase::size();
+  }
+
+  //! Check whether the heap is empty
+  bool empty() const {
+    return TBase::empty();
+  }
+
   //! Constructor
-  Heap(void)
-      : TBase(), limit_(std::numeric_limits<size_t>::max()), compare_() {}
+  Heap() : TBase(), limit_(std::numeric_limits<size_t>::max()), compare_() {}
 
   //! Constructor
   template <typename... Args>
@@ -90,7 +151,7 @@ class Heap : public TBase {
   }
 
   //! Pop the front element
-  void pop(void) {
+  void pop() {
     if (TBase::empty()) {
       return;
     }
@@ -144,7 +205,7 @@ class Heap : public TBase {
   }
 
   //! Retrieve the limit of heap
-  size_t limit(void) const {
+  size_t limit() const {
     return limit_;
   }
 
@@ -155,17 +216,17 @@ class Heap : public TBase {
   }
 
   //! Unlimit the size of heap
-  void unlimit(void) {
+  void unlimit() {
     limit_ = std::numeric_limits<size_t>::max();
   }
 
   //! Check whether the heap is full
-  bool full(void) const {
+  bool full() const {
     return (TBase::size() == limit_);
   }
 
   //! Update the heap
-  void update(void) {
+  void update() {
     std::make_heap(TBase::begin(), TBase::end(), compare_);
     while (limit_ < TBase::size()) {
       this->pop();
@@ -173,7 +234,7 @@ class Heap : public TBase {
   }
 
   //! Sort the elements in the heap
-  void sort(void) {
+  void sort() {
     std::sort(TBase::begin(), TBase::end(), compare_);
   }
 

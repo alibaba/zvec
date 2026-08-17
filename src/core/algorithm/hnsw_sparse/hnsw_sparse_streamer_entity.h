@@ -126,7 +126,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   HnswSparseStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  ~HnswSparseStreamerEntity();
+  ~HnswSparseStreamerEntity() override;
 
   //! Init entity
   int init(uint64_t max_index_size, size_t max_doc_cnt);
@@ -172,8 +172,9 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   inline node_id_t get_id(key_t key) const {
     keys_map_lock_->lock_shared();
     auto it = keys_map_->find(key);
+    node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
     keys_map_lock_->unlock_shared();
-    return it == keys_map_->end() ? kInvalidNodeId : it->second;
+    return id;
   }
 
   void print_key_map() {
@@ -262,7 +263,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   }
 
   //! Called only in searching procedure per context, so no need to lock
-  void sync_chunks(SparseChunkBroker::CHUNK_TYPE type, size_t idx,
+  void sync_chunks(SparseChunkBroker::ChunkType type, size_t idx,
                    std::vector<SparseChunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
       return;
@@ -472,7 +473,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   //! Init node chunk and neighbor chunks
   int init_chunks(const SparseChunk::Pointer &header_chunk);
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       // do not need to flush
       return 0;
@@ -493,10 +494,12 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     return 0;
   }
 
- private:
+ public:
   HnswSparseStreamerEntity(const HnswSparseStreamerEntity &) = delete;
   HnswSparseStreamerEntity &operator=(const HnswSparseStreamerEntity &) =
       delete;
+
+ private:
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  private:

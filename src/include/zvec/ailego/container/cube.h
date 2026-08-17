@@ -27,7 +27,7 @@ namespace internal {
  */
 struct CubePolicy {
   //! Destructor
-  virtual ~CubePolicy(void) {}
+  virtual ~CubePolicy() = default;
 
   //! Assign `src` to `dst`
   virtual void assign(const void *src, void **dst) = 0;
@@ -42,10 +42,10 @@ struct CubePolicy {
   virtual void move(void *src, void **dst) = 0;
 
   //! Retrieve size
-  virtual size_t size(void) const = 0;
+  virtual size_t size() const = 0;
 
   //! Retrieve type information
-  virtual const std::type_info &type(void) const = 0;
+  virtual const std::type_info &type() const = 0;
 
   //! Retrieve value
   virtual void *value(void **src) = 0;
@@ -59,42 +59,42 @@ struct CubePolicy {
 template <typename T>
 struct SmallCubePolicy : public CubePolicy {
   //! Assign `src` to `dst`
-  void assign(const void *src, void **dst) {
+  void assign(const void *src, void **dst) override {
     new (dst) T(*reinterpret_cast<const T *>(src));
   }
 
   //! Cleanup value
-  void cleanup(void **val) {
+  void cleanup(void **val) override {
     reinterpret_cast<T *>(val)->~T();
   }
 
   //! Clone value of `src` to `dst`
-  void clone(void *const *src, void **dst) {
+  void clone(void *const *src, void **dst) override {
     new (dst) T(*reinterpret_cast<const T *>(src));
   }
 
   //! Move `src` to `dst`
-  void move(void *src, void **dst) {
+  void move(void *src, void **dst) override {
     new (dst) T(std::move(*reinterpret_cast<T *>(src)));
   }
 
   //! Retrieve size
-  size_t size(void) const {
+  size_t size() const override {
     return sizeof(T);
   }
 
   //! Retrieve type information
-  const std::type_info &type(void) const {
+  const std::type_info &type() const override {
     return typeid(T);
   }
 
   //! Retrieve value
-  void *value(void **src) {
+  void *value(void **src) override {
     return reinterpret_cast<void *>(src);
   }
 
   //! Retrieve value
-  const void *value(void *const *src) const {
+  const void *value(void *const *src) const override {
     return reinterpret_cast<const void *>(src);
   }
 };
@@ -104,42 +104,42 @@ struct SmallCubePolicy : public CubePolicy {
 template <typename T>
 struct LargeCubePolicy : public CubePolicy {
   //! Assign `src` to `dst`
-  void assign(const void *src, void **dst) {
+  void assign(const void *src, void **dst) override {
     *dst = new T(*reinterpret_cast<const T *>(src));
   }
 
   //! Cleanup value
-  void cleanup(void **val) {
+  void cleanup(void **val) override {
     delete (reinterpret_cast<T *>(*val));
   }
 
   //! Clone value of `src` to `dst`
-  void clone(void *const *src, void **dst) {
+  void clone(void *const *src, void **dst) override {
     *dst = new T(**reinterpret_cast<T *const *>(src));
   }
 
   //! Move `src` to `dst`
-  void move(void *src, void **dst) {
+  void move(void *src, void **dst) override {
     *dst = new T(std::move(*reinterpret_cast<T *>(src)));
   }
 
   //! Retrieve size
-  size_t size(void) const {
+  size_t size() const override {
     return sizeof(T);
   }
 
   //! Retrieve type information
-  const std::type_info &type(void) const {
+  const std::type_info &type() const override {
     return typeid(T);
   }
 
   //! Retrieve value
-  void *value(void **src) {
+  void *value(void **src) override {
     return *src;
   }
 
   //! Retrieve value
-  const void *value(void *const *src) const {
+  const void *value(void *const *src) const override {
     return *src;
   }
 };
@@ -166,7 +166,7 @@ struct PolicySelector<
 class Cube {
  public:
   //! Constructor
-  Cube(void) : policy_(Cube::Policy<Cube::EmptyPolicy>()), object_(nullptr) {}
+  Cube() : policy_(Cube::Policy<Cube::EmptyPolicy>()), object_(nullptr) {}
 
   //! Constructor
   template <typename T>
@@ -207,7 +207,7 @@ class Cube {
   }
 
   //! Destructor
-  ~Cube(void) {
+  ~Cube() {
     policy_->cleanup(&object_);
   }
 
@@ -324,7 +324,7 @@ class Cube {
 
   //! Cast to the original type
   template <typename T>
-  T &cast(void) {
+  T &cast() {
     if (policy_ != Cube::Policy<T>()) {
       throw std::bad_cast();
     }
@@ -333,7 +333,7 @@ class Cube {
 
   //! Cast to the original type
   template <typename T>
-  const T &cast(void) const {
+  const T &cast() const {
     if (policy_ != Cube::Policy<T>()) {
       throw std::bad_cast();
     }
@@ -342,23 +342,23 @@ class Cube {
 
   //! Cast to the original type (unsafe)
   template <typename T>
-  T &unsafe_cast(void) {
+  T &unsafe_cast() {
     return *reinterpret_cast<T *>(policy_->value(&object_));
   }
 
   //! Cast to the original type (unsafe)
   template <typename T>
-  const T &unsafe_cast(void) const {
+  const T &unsafe_cast() const {
     return *reinterpret_cast<const T *>(policy_->value(&object_));
   }
 
   //! Test if the Cube is empty
-  bool empty(void) const {
+  bool empty() const {
     return (policy_ == Cube::Policy<Cube::EmptyPolicy>());
   }
 
   //! Reset Cube allocated memory
-  void reset(void) {
+  void reset() {
     policy_->cleanup(&object_);
     policy_ = Cube::Policy<Cube::EmptyPolicy>();
     object_ = nullptr;
@@ -371,18 +371,18 @@ class Cube {
 
   //! Test if the Cube is compatible with another one
   template <typename T>
-  bool compatible(void) const {
+  bool compatible() const {
     return (policy_ == Cube::Policy<T>() ||
             policy_->type() == Cube::Policy<T>()->type());
   }
 
   //! Retrieve size
-  size_t size(void) const {
+  size_t size() const {
     return (!this->empty() ? policy_->size() : 0u);
   }
 
   //! Retrieve type information
-  const std::type_info &type(void) const {
+  const std::type_info &type() const {
     return (!this->empty() ? policy_->type() : typeid(void));
   }
 
@@ -393,14 +393,14 @@ class Cube {
 
   //! Make a static policy object
   template <typename T>
-  static internal::CubePolicy *MakePolicy(void) {
+  static internal::CubePolicy *MakePolicy() {
     static typename internal::PolicySelector<T>::Type policy;
     return (&policy);
   }
 
   //! Retrieve a static policy object
   template <typename T>
-  static internal::CubePolicy *Policy(void) {
+  static internal::CubePolicy *Policy() {
     return MakePolicy<typename UnderlyingType<T>::type>();
   }
 

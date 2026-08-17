@@ -229,13 +229,85 @@ TEST_F(ColumnMergingReaderTest, InconsistentRowCounts) {
   readers.push_back(std::make_shared<MockRecordBatchReader>(batch1));
   readers.push_back(std::make_shared<MockRecordBatchReader>(batch2));
 
+  auto target_schema = arrow::schema({arrow::field("col1", arrow::int32()),
+                                      arrow::field("col2", arrow::int32())});
   auto merging_reader =
-      ColumnMergingReader::Make(target_schema_, std::move(readers));
+      ColumnMergingReader::Make(target_schema, std::move(readers));
 
   std::shared_ptr<arrow::RecordBatch> result_batch;
+  ASSERT_OK(merging_reader->ReadNext(&result_batch));
+  ASSERT_NE(result_batch, nullptr);
+  EXPECT_EQ(result_batch->num_rows(), 2);
+
   arrow::Status status = merging_reader->ReadNext(&result_batch);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), arrow::StatusCode::Invalid);
+}
+
+TEST_F(ColumnMergingReaderTest, DifferentBatchBoundaries) {
+  class MultiBatchRecordBatchReader : public arrow::ipc::RecordBatchReader {
+   public:
+    explicit MultiBatchRecordBatchReader(
+        std::vector<std::shared_ptr<arrow::RecordBatch>> batches)
+        : batches_(std::move(batches)) {}
+
+    std::shared_ptr<arrow::Schema> schema() const override {
+      return batches_[0]->schema();
+    }
+
+    arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch> *out) override {
+      if (index_ < batches_.size()) {
+        *out = batches_[index_++];
+      } else {
+        *out = nullptr;
+      }
+      return arrow::Status::OK();
+    }
+
+   private:
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches_;
+    size_t index_ = 0;
+  };
+
+  auto col1_batch1 = MakeInt32RecordBatch("col1", {1, 2, 3}).ValueOrDie();
+  auto col1_batch2 = MakeInt32RecordBatch("col1", {4}).ValueOrDie();
+  auto col2_batch1 = MakeInt32RecordBatch("col2", {5, 6}).ValueOrDie();
+  auto col2_batch2 = MakeInt32RecordBatch("col2", {7, 8}).ValueOrDie();
+
+  std::vector<std::shared_ptr<arrow::ipc::RecordBatchReader>> readers;
+  readers.push_back(std::make_shared<MultiBatchRecordBatchReader>(
+      std::vector<std::shared_ptr<arrow::RecordBatch>>{col1_batch1,
+                                                       col1_batch2}));
+  readers.push_back(std::make_shared<MultiBatchRecordBatchReader>(
+      std::vector<std::shared_ptr<arrow::RecordBatch>>{col2_batch1,
+                                                       col2_batch2}));
+
+  auto target_schema = arrow::schema({arrow::field("col1", arrow::int32()),
+                                      arrow::field("col2", arrow::int32())});
+  auto merging_reader =
+      ColumnMergingReader::Make(target_schema, std::move(readers));
+
+  std::vector<int32_t> actual_col1;
+  std::vector<int32_t> actual_col2;
+  std::vector<int64_t> batch_sizes;
+  while (true) {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    ASSERT_OK(merging_reader->ReadNext(&batch));
+    if (batch == nullptr) {
+      break;
+    }
+    batch_sizes.push_back(batch->num_rows());
+    auto col1 = std::static_pointer_cast<arrow::Int32Array>(batch->column(0));
+    auto col2 = std::static_pointer_cast<arrow::Int32Array>(batch->column(1));
+    for (int64_t i = 0; i < batch->num_rows(); ++i) {
+      actual_col1.push_back(col1->Value(i));
+      actual_col2.push_back(col2->Value(i));
+    }
+  }
+
+  EXPECT_EQ(batch_sizes, (std::vector<int64_t>{2, 1, 1}));
+  EXPECT_EQ(actual_col1, (std::vector<int32_t>{1, 2, 3, 4}));
+  EXPECT_EQ(actual_col2, (std::vector<int32_t>{5, 6, 7, 8}));
 }
 
 // Test missing column

@@ -225,7 +225,7 @@
 #define AILEGO_VERSION_OPENMP ""
 #endif
 
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
 #define AILEGO_VERSION_SIMD "  Arm Neon Instruction Set\n"
 #elif defined(__AVX512FP16__)
 #define AILEGO_VERSION_SIMD "  AVX-512FP16 Instruction Set\n"

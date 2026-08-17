@@ -29,7 +29,7 @@ class ParquetWriter : public ForwardWriter {
   explicit ParquetWriter(const std::string &filepath,
                          int64_t max_rows_per_group = 0);
 
-  ~ParquetWriter();
+  ~ParquetWriter() override;
 
   arrow::Status insert(std::shared_ptr<arrow::RecordBatchReader> reader,
                        const IndexFilter::Ptr &filter = nullptr) override;

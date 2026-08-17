@@ -1,0 +1,11 @@
+__ZN4zvec*
+__ZNK4zvec*
+__ZZN4zvec*
+__ZZNK4zvec*
+__ZTVN4zvec*
+__ZTIN4zvec*
+__ZTSN4zvec*
+__ZGVN4zvec*
+__ZGVZN4zvec*
+__ZGVZNK4zvec*
+_zvec_*

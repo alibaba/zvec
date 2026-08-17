@@ -65,8 +65,18 @@ class Segment {
 
   virtual SegmentMeta::Ptr meta() const = 0;
 
+  // Doc-id bounds for routing, read under the shared segment lock. Concurrent
+  // callers must use this instead of min/max_doc_id() off meta(), which
+  // Insert/flush() mutate.
+  virtual void doc_id_range(uint64_t *min_id, uint64_t *max_id) const = 0;
+
+  // Like doc_id_range(): total doc count read under the segment lock.
+  virtual uint64_t doc_count_snapshot() const = 0;
+
   // Count documents visible to an optional global-doc-ID filter.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
+
+  virtual bool has_record() = 0;
 
   // ---- Schema and index mutation -----------------------------------------
   virtual Status add_column(FieldSchema::Ptr column_schema,
@@ -79,7 +89,7 @@ class Segment {
 
   virtual Status drop_column(const std::string &column_name) = 0;
 
-  virtual Status create_all_vector_index(
+  virtual Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
@@ -140,17 +150,19 @@ class Segment {
                                   const FtsIndexer::Ptr &new_fts_indexer) = 0;
 
   // ---- Data operations ----------------------------------------------------
-  virtual Status Insert(Doc &doc) = 0;
+  virtual Status insert(Doc &doc) = 0;
 
-  virtual Status Upsert(Doc &doc) = 0;
+  virtual Status upsert(Doc &doc) = 0;
 
-  virtual Status Update(Doc &doc) = 0;
+  virtual Status update(Doc &doc) = 0;
 
+  // NOLINTNEXTLINE(readability-identifier-naming): 'delete' is a keyword
   virtual Status Delete(const std::string &pk) = 0;
 
+  // NOLINTNEXTLINE(readability-identifier-naming): 'delete' is a keyword
   virtual Status Delete(uint64_t g_doc_id) = 0;
 
-  virtual Doc::Ptr Fetch(uint64_t g_doc_id,
+  virtual Doc::Ptr fetch(uint64_t g_doc_id,
                          const std::optional<std::vector<std::string>>
                              &output_fields = std::nullopt,
                          bool include_vector = true) = 0;
@@ -199,6 +211,11 @@ class Segment {
   virtual Status flush() = 0;
 
   virtual Status dump() = 0;
+
+  // Drops the writing forward block under the exclusive segment lock. Callers
+  // must use this instead of meta()->remove_writing_forward_block(): readers
+  // copy that block out of the meta, so an unlocked reset can free it mid-copy.
+  virtual void remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
 };

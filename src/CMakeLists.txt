@@ -1,9 +1,6 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-# Retrieve version from git repository
-git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
-
 # Add repository
 cc_directory(ailego)
 cc_directory(turbo)
@@ -15,13 +12,14 @@ cc_directory(binding)
 # Build ALL-IN-ONE C++ Shared Libraries
 # =============================================================================
 # Merges zvec internal static libraries into shared libraries while preserving
-# C++ symbols for direct C++ linking.
+# C++ symbols for direct C++ linking. Windows uses component-owned object
+# variants so DLL export definitions never leak into static or plugin targets.
 
 include(GNUInstallDirs)
 find_package(Threads REQUIRED)
 
 function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
-    cmake_parse_arguments(ZVEC_ALLIN "" "" "LIBS" ${ARGN})
+    cmake_parse_arguments(ZVEC_ALLIN "" "" "LIBS;EXPORT_COMPONENTS" ${ARGN})
     if(NOT ZVEC_ALLIN_LIBS)
         message(FATAL_ERROR "zvec_add_all_in_one_shared requires LIBS")
     endif()
@@ -29,6 +27,12 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
         if(NOT TARGET ${ZVEC_ALLIN_LIB})
             message(FATAL_ERROR "Target ${ZVEC_ALLIN_LIB} is required by ${TARGET_NAME}")
+        endif()
+    endforeach()
+    foreach(ZVEC_ALLIN_EXPORT_COMPONENT ${ZVEC_ALLIN_EXPORT_COMPONENTS})
+        if(NOT ZVEC_ALLIN_EXPORT_COMPONENT IN_LIST ZVEC_ALLIN_LIBS)
+            message(FATAL_ERROR
+                "Export component ${ZVEC_ALLIN_EXPORT_COMPONENT} is not part of ${TARGET_NAME}")
         endif()
     endforeach()
 
@@ -43,40 +47,52 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     set_target_properties(${TARGET_NAME} PROPERTIES
         OUTPUT_NAME "${OUTPUT_NAME}"
         POSITION_INDEPENDENT_CODE ON
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
     if(WIN32)
         set_target_properties(${TARGET_NAME} PROPERTIES
-            ARCHIVE_OUTPUT_NAME "${TARGET_NAME}"
             WINDOWS_EXPORT_ALL_SYMBOLS OFF
+        )
+    endif()
+    if(WIN32)
+        set_target_properties(${TARGET_NAME} PROPERTIES
+            ARCHIVE_OUTPUT_NAME "${TARGET_NAME}"
         )
     endif()
     target_compile_features(${TARGET_NAME} PUBLIC cxx_std_17)
 
-    if(MSVC)
-        set(ZVEC_ALLIN_MSVC_LINK_LIBS)
-        set(ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS)
+    if(WIN32)
         foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
-            if(TARGET ${ZVEC_ALLIN_LIB}_static)
-                list(APPEND ZVEC_ALLIN_MSVC_LINK_LIBS ${ZVEC_ALLIN_LIB}_static)
-                list(APPEND ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS
-                    /WHOLEARCHIVE:$<TARGET_FILE:${ZVEC_ALLIN_LIB}_static>
-                )
+            if(ZVEC_ALLIN_LIB IN_LIST ZVEC_ALLIN_EXPORT_COMPONENTS)
+                set(ZVEC_ALLIN_OBJECT_TARGET ${ZVEC_ALLIN_LIB}_export_objects)
             else()
-                list(APPEND ZVEC_ALLIN_MSVC_LINK_LIBS ${ZVEC_ALLIN_LIB})
-                list(APPEND ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS
-                    /WHOLEARCHIVE:$<TARGET_FILE:${ZVEC_ALLIN_LIB}>
-                )
+                set(ZVEC_ALLIN_OBJECT_TARGET ${ZVEC_ALLIN_LIB}_objects)
             endif()
+            if(NOT TARGET ${ZVEC_ALLIN_OBJECT_TARGET})
+                message(FATAL_ERROR
+                    "Object target ${ZVEC_ALLIN_OBJECT_TARGET} is required by ${TARGET_NAME}")
+            endif()
+            target_sources(${TARGET_NAME} PRIVATE
+                $<TARGET_OBJECTS:${ZVEC_ALLIN_OBJECT_TARGET}>
+            )
         endforeach()
 
+        set(ZVEC_ALLIN_LINK_LIBS)
+        foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
+            get_target_property(ZVEC_ALLIN_LIB_DEPS ${ZVEC_ALLIN_LIB} LINK_LIBRARIES)
+            if(NOT ZVEC_ALLIN_LIB_DEPS)
+                continue()
+            endif()
+            foreach(ZVEC_ALLIN_LIB_DEP ${ZVEC_ALLIN_LIB_DEPS})
+                if(NOT ZVEC_ALLIN_LIB_DEP IN_LIST ZVEC_ALLIN_LIBS)
+                    list(APPEND ZVEC_ALLIN_LINK_LIBS ${ZVEC_ALLIN_LIB_DEP})
+                endif()
+            endforeach()
+        endforeach()
+        list(APPEND ZVEC_ALLIN_LINK_LIBS Threads::Threads)
+        list(REMOVE_DUPLICATES ZVEC_ALLIN_LINK_LIBS)
         target_link_libraries(${TARGET_NAME}
             PRIVATE
-                ${ZVEC_ALLIN_MSVC_LINK_LIBS}
-                Threads::Threads
-        )
-        target_link_options(${TARGET_NAME} PRIVATE
-            ${ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS}
+                ${ZVEC_ALLIN_LINK_LIBS}
         )
     elseif(APPLE)
         foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
@@ -127,6 +143,30 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         endif()
     endif()
 
+    # Restrict exported symbols to zvec's own public C++ API (namespace zvec,
+    # which includes nested zvec::ailego / zvec::core / zvec::turbo /
+    # zvec::reranker). All third-party symbols (arrow, rocksdb, parquet,
+    # antlr4) are hidden, and unreferenced code is dead-stripped to
+    # reduce the shared library size. The public C++ headers never expose
+    # third-party types, so hiding them is safe for external C++ consumers.
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        if(APPLE)
+            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.txt)
+            target_link_options(${TARGET_NAME} PRIVATE
+                "-Wl,-exported_symbols_list,${_ZVEC_ALLIN_EXPORTS}"
+                "-Wl,-dead_strip")
+            set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
+                LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
+        elseif(UNIX)
+            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.lds)
+            target_link_options(${TARGET_NAME} PRIVATE
+                "-Wl,--version-script,${_ZVEC_ALLIN_EXPORTS}"
+                "-Wl,--gc-sections")
+            set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
+                LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
+        endif()
+    endif()
+
     target_include_directories(${TARGET_NAME}
         PUBLIC
             $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/src/generated>
@@ -135,6 +175,23 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/src
     )
+
+    set(ZVEC_ALLIN_USE_DEFS)
+    foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_EXPORT_COMPONENTS})
+        if(ZVEC_ALLIN_LIB STREQUAL zvec)
+            list(APPEND ZVEC_ALLIN_USE_DEFS ZVEC_DB_USE_SHARED)
+        elseif(ZVEC_ALLIN_LIB STREQUAL zvec_core)
+            list(APPEND ZVEC_ALLIN_USE_DEFS ZVEC_CORE_USE_SHARED)
+        elseif(ZVEC_ALLIN_LIB STREQUAL zvec_ailego)
+            list(APPEND ZVEC_ALLIN_USE_DEFS ZVEC_AILEGO_USE_SHARED)
+        elseif(ZVEC_ALLIN_LIB STREQUAL zvec_turbo)
+            list(APPEND ZVEC_ALLIN_USE_DEFS ZVEC_TURBO_USE_SHARED)
+        endif()
+    endforeach()
+    if(ZVEC_ALLIN_USE_DEFS)
+        list(REMOVE_DUPLICATES ZVEC_ALLIN_USE_DEFS)
+        target_compile_definitions(${TARGET_NAME} INTERFACE ${ZVEC_ALLIN_USE_DEFS})
+    endif()
 
     # Strip symbols in release builds to reduce library size.
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -158,9 +215,96 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     )
 endfunction()
 
+# Mobile public C++ API.  These build-tree targets keep the application and
+# zvec in one C++ runtime when the NDK/iOS toolchain uses a static libc++.
+# Whole-archive is required because module registration is performed by static
+# initializers that otherwise have no referenced symbol at link time.
+function(zvec_add_mobile_static_sdk TARGET_NAME)
+    cmake_parse_arguments(ZVEC_STATIC_SDK "" "" "LIBS" ${ARGN})
+    if(NOT ZVEC_STATIC_SDK_LIBS)
+        message(FATAL_ERROR "zvec_add_mobile_static_sdk requires LIBS")
+    endif()
+
+    foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
+        if(NOT TARGET ${ZVEC_STATIC_SDK_LIB})
+            message(FATAL_ERROR
+                "Target ${ZVEC_STATIC_SDK_LIB} is required by ${TARGET_NAME}")
+        endif()
+    endforeach()
+
+    add_library(${TARGET_NAME} INTERFACE)
+    target_compile_features(${TARGET_NAME} INTERFACE cxx_std_17)
+    target_include_directories(${TARGET_NAME}
+        INTERFACE
+            $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/src/generated>
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
+    )
+
+    if(IOS)
+        set(ZVEC_STATIC_SDK_LINK_OPTIONS)
+        foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
+            list(APPEND ZVEC_STATIC_SDK_LINK_OPTIONS
+                -Wl,-force_load,$<TARGET_FILE:${ZVEC_STATIC_SDK_LIB}>
+            )
+        endforeach()
+        target_link_options(${TARGET_NAME}
+            INTERFACE ${ZVEC_STATIC_SDK_LINK_OPTIONS}
+        )
+        target_link_libraries(${TARGET_NAME}
+            INTERFACE
+                ${ZVEC_STATIC_SDK_LIBS}
+                Threads::Threads
+                ${CMAKE_DL_LIBS}
+                # Arrow's iOS timezone implementation uses CoreFoundation.
+                "-framework CoreFoundation"
+        )
+    else()
+        # Keep whole-archive scoped to the SDK archives themselves.  Putting
+        # these flags in target_link_libraries() also encloses transitive
+        # dependencies inserted by CMake, which forces both Arrow's bundled
+        # utf8proc and zvec's standalone utf8proc into the executable.
+        set(ZVEC_STATIC_SDK_LINK_OPTIONS)
+        foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
+            list(APPEND ZVEC_STATIC_SDK_LINK_OPTIONS
+                -Wl,--whole-archive,$<TARGET_FILE:${ZVEC_STATIC_SDK_LIB}>,--no-whole-archive
+            )
+        endforeach()
+        target_link_options(${TARGET_NAME}
+            INTERFACE ${ZVEC_STATIC_SDK_LINK_OPTIONS}
+        )
+        target_link_libraries(${TARGET_NAME}
+            INTERFACE
+                ${ZVEC_STATIC_SDK_LIBS}
+                Threads::Threads
+                ${CMAKE_DL_LIBS}
+        )
+        if(ANDROID)
+            target_link_libraries(${TARGET_NAME} INTERFACE log)
+        endif()
+    endif()
+endfunction()
+
+if(ANDROID OR IOS)
+    zvec_add_mobile_static_sdk(zvec_static_sdk
+        LIBS zvec zvec_core zvec_ailego zvec_turbo
+    )
+    zvec_add_mobile_static_sdk(zvec_core_static_sdk
+        LIBS zvec_core zvec_ailego zvec_turbo
+    )
+    zvec_add_mobile_static_sdk(zvec_ailego_static_sdk
+        LIBS zvec_ailego
+    )
+
+    add_library(zvec::static ALIAS zvec_static_sdk)
+    add_library(zvec::core_static ALIAS zvec_core_static_sdk)
+    add_library(zvec::ailego_static ALIAS zvec_ailego_static_sdk)
+endif()
+
 if(BUILD_ZVEC_AILEGO_SHARED)
     zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
         LIBS
+            zvec_ailego
+        EXPORT_COMPONENTS
             zvec_ailego
     )
 endif()
@@ -168,6 +312,10 @@ endif()
 if(BUILD_ZVEC_CORE_SHARED)
     zvec_add_all_in_one_shared(zvec_core_shared zvec_core
         LIBS
+            zvec_core
+            zvec_ailego
+            zvec_turbo
+        EXPORT_COMPONENTS
             zvec_core
             zvec_ailego
             zvec_turbo
@@ -181,5 +329,8 @@ if(BUILD_ZVEC_SHARED)
             zvec_core
             zvec_ailego
             zvec_turbo
+        EXPORT_COMPONENTS
+            zvec
+            zvec_ailego
     )
 endif()

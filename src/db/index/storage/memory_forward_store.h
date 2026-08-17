@@ -16,6 +16,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 #include <arrow/compute/api.h>
@@ -58,7 +59,7 @@ class MemForwardStore : public BaseForwardStore {
 
   /// Open the store
   /// \return 0 on success, non-zero on failure
-  Status Open() override;
+  Status open() override;
 
   /// Insert a document into the store
   /// \param doc The document to insert
@@ -122,32 +123,61 @@ class MemForwardStore : public BaseForwardStore {
  private:
   /// Create a RecordBatchBuilder for this store
   /// \return A new RecordBatchBuilder
-  RecordBatchBuilderPtr createBuilder();
+  RecordBatchBuilderPtr create_builder();
 
   /// Convert internal data to a RecordBatch
   /// \return A Result containing the RecordBatch or an error status
-  arrow::Result<RecordBatchPtr> convertToRecordBatch();
+  arrow::Result<RecordBatchPtr> convert_to_record_batch();
 
   /// Convert internal data to a Table
   /// \param columns The list of column names to include
   /// \param indices The list of row indices to include
   /// \return A Result containing the Table or an error status
-  arrow::Result<TablePtr> convertToTable(
+  arrow::Result<TablePtr> convert_to_table(
       const std::vector<std::string> &columns, const std::vector<int> &indices);
 
   /// Convert internal data to a RecordBatchBuilder
   /// \param builder The builder to populate
   /// \return arrow::Status indicating success or failure
-  arrow::Status convertToBuilder(RecordBatchBuilderPtr &builder);
+  arrow::Status convert_to_builder(RecordBatchBuilderPtr &builder);
+
+  /// Append a single document to a builder
+  /// \param doc The document to append
+  /// \param builder The builder to append into
+  /// \return arrow::Status indicating success or failure
+  arrow::Status append_doc_to_builder(const Doc &doc,
+                                      RecordBatchBuilderPtr &builder);
+
+  /// Locate the single source holding every requested row
+  /// \param indices The requested row ids
+  /// \param source Receives a batch containing those rows
+  /// \param local_rows Receives their offsets inside that batch
+  /// \return true when one source covers all of them, false otherwise
+  bool locate_single_source(const std::vector<int> &indices,
+                            RecordBatchPtr *source,
+                            std::vector<int> *local_rows);
+
+  /// Apply row filtering and column projection to a table
+  /// \param table The table to narrow
+  /// \param indices The rows to keep, empty to keep all
+  /// \param columns The columns to keep, empty to keep all
+  /// \return A Result containing the narrowed Table or an error status
+  arrow::Result<TablePtr> apply_row_and_column_selection(
+      const TablePtr &table, const std::vector<int> &indices,
+      const std::vector<std::string> &columns);
 
   /// Validate that the requested columns exist in the schema
   /// \param columns The list of column names to validate
   /// \return true if all columns are valid, false otherwise
   bool validate(const std::vector<std::string> &columns) const;
 
+  /// flush() without locking; callers must hold cache_mtx_ exclusively
+  Status flush_locked();
+
  private:
-  /// Mutex to protect cache access
-  std::mutex cache_mtx_;
+  /// Guards cache_, batches_ and num_rows_, which insert(), flush() and close()
+  /// rewrite. Read-only accessors take it shared so readers do not serialize.
+  std::shared_mutex cache_mtx_;
 
   /// Cache of documents waiting to be flushed
   std::vector<Doc> cache_;

@@ -18,6 +18,7 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
+#include <turbo/quantizer/quantizer.h>
 #include "utility/sparse_utility.h"
 #include "utility/steady_clock_timer.h"
 #include "hnsw_algorithm.h"
@@ -73,6 +74,35 @@ std::atomic<uint64_t> &HnswQueryStatsSequence() {
 
 }  // namespace
 
+
+namespace {
+
+using TurboQuantizer = zvec::turbo::Quantizer;
+
+// Adapt Turbo's typed operations to the callbacks used by graph traversal.
+template <auto Distance, auto BatchDistance = nullptr>
+void BindTurboDistances(TurboQuantizer::Pointer quantizer,
+                        IndexMetric::MatrixDistance &distance,
+                        IndexMetric::MatrixBatchDistance &batch_distance) {
+  distance = [quantizer](const void *lhs, const void *rhs, size_t, float *out) {
+    *out = ((*quantizer).*Distance)(lhs, rhs);
+  };
+  batch_distance = [quantizer](const void **vectors, const void *query,
+                               size_t count, size_t, float *out,
+                               const void **) {
+    if constexpr (BatchDistance != nullptr) {
+      ((*quantizer).*BatchDistance)(vectors, static_cast<int>(count), query,
+                                    out);
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        out[i] = ((*quantizer).*Distance)(vectors[i], query);
+      }
+    }
+  };
+}
+
+}  // namespace
+
 HnswStreamer::HnswStreamer() = default;
 
 HnswStreamer::~HnswStreamer() {
@@ -89,6 +119,19 @@ int HnswStreamer::FastSearchWithHooks(HnswContext *ctx,
                                       const SearchHooks *hooks,
                                       bool *stopped_early) const {
   return alg_->fast_search_with_hooks(ctx, hooks, stopped_early);
+}
+
+void HnswStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
+  if (!trained_meta.reformer_name().empty()) {
+    meta_.set_reformer(trained_meta.reformer_name(),
+                       trained_meta.reformer_revision(),
+                       trained_meta.reformer_params());
+  }
+  if (!trained_meta.converter_name().empty()) {
+    meta_.set_converter(trained_meta.converter_name(),
+                        trained_meta.converter_revision(),
+                        trained_meta.converter_params());
+  }
 }
 
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
@@ -235,7 +278,22 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   return 0;
 }
 
-int HnswStreamer::cleanup(void) {
+int HnswStreamer::init(
+    const IndexMeta &imeta, const ailego::Params &params,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+  if (!quantizer) {
+    return this->init(imeta, params);
+  }
+
+  quantizer_ = quantizer;
+  int ret = this->init(imeta, params);
+  if (ret != 0) {
+    quantizer_.reset();
+  }
+  return ret;
+}
+
+int HnswStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -244,7 +302,16 @@ int HnswStreamer::cleanup(void) {
 
   meta_.clear();
   metric_.reset();
+  quantizer_.reset();
+  add_distance_ = {};
+  add_batch_distance_ = {};
+  search_distance_ = {};
+  search_batch_distance_ = {};
   stats_.clear();
+  provider_.reset();
+  provider_meta_.clear();
+  provider_metric_.reset();
+  provider_quantizer_.reset();
   if (entity_) {
     entity_->cleanup();
   }
@@ -350,7 +417,8 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     if (index_meta.dimension() != meta_.dimension() ||
         index_meta.element_size() != meta_.element_size() ||
         index_meta.metric_name() != meta_.metric_name() ||
-        index_meta.data_type() != meta_.data_type()) {
+        index_meta.data_type() != meta_.data_type() ||
+        index_meta.quantizer_name() != meta_.quantizer_name()) {
       LOG_ERROR("IndexMeta mismatch from the previous in index");
       return IndexError_Mismatch;
     }
@@ -372,37 +440,164 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     }
   }
 
-  metric_ = IndexFactory::CreateMetric(meta_.metric_name());
-  if (!metric_) {
-    LOG_ERROR("Failed to create metric %s", meta_.metric_name().c_str());
-    return IndexError_NoExist;
+  auto valid_vector_layout = [](size_t vector_size, size_t extra_values_size) {
+    return extra_values_size == 0 || extra_values_size < vector_size;
+  };
+
+  if (quantizer_) {
+    if (use_external_vector_) {
+      // External records and build queries are raw; search queries are encoded.
+      BindTurboDistances<&TurboQuantizer::calc_distance_input_input,
+                         &TurboQuantizer::calc_distance_input_input_batch>(
+          quantizer_, add_distance_, add_batch_distance_);
+      BindTurboDistances<&TurboQuantizer::calc_distance_input_query,
+                         &TurboQuantizer::calc_distance_input_query_batch>(
+          quantizer_, search_distance_, search_batch_distance_);
+    } else {
+      BindTurboDistances<&TurboQuantizer::calc_distance_dp_dp>(
+          quantizer_, add_distance_, add_batch_distance_);
+      BindTurboDistances<&TurboQuantizer::calc_distance_dp_query,
+                         &TurboQuantizer::calc_distance_dp_query_batch>(
+          quantizer_, search_distance_, search_batch_distance_);
+    }
+  } else {
+    metric_ = IndexFactory::CreateMetric(meta_.metric_name());
+    if (!metric_) {
+      LOG_ERROR("Failed to create metric %s", meta_.metric_name().c_str());
+      return IndexError_NoExist;
+    }
+    ret = metric_->init(meta_, meta_.metric_params());
+    if (ret != 0) {
+      LOG_ERROR("Failed to init metric, ret=%d", ret);
+      return ret;
+    }
+
+    if (!metric_->distance() || !metric_->batch_distance()) {
+      LOG_ERROR("Invalid metric distance");
+      return IndexError_InvalidArgument;
+    }
+
+    add_distance_ = metric_->distance();
+    add_batch_distance_ = metric_->batch_distance();
+
+    const size_t stored_vector_size = meta_.element_size();
+    const size_t stored_extra_values_size =
+        metric_->extra_values_size_per_vector();
+    if (!valid_vector_layout(stored_vector_size, stored_extra_values_size)) {
+      LOG_ERROR("Invalid HNSW vector layout, vector_size=%zu extra_size=%zu",
+                stored_vector_size, stored_extra_values_size);
+      return IndexError_InvalidArgument;
+    }
+
+    search_distance_ = add_distance_;
+    search_batch_distance_ = add_batch_distance_;
+
+    const auto query_metric = metric_->query_metric();
+    if (query_metric && query_metric->distance() &&
+        query_metric->batch_distance()) {
+      const size_t query_extra_values_size =
+          query_metric->extra_values_size_per_vector();
+      if (query_extra_values_size != stored_extra_values_size) {
+        LOG_ERROR(
+            "HNSW query metric layout mismatch, stored_extra_size=%zu "
+            "query_extra_size=%zu",
+            stored_extra_values_size, query_extra_values_size);
+        return IndexError_InvalidArgument;
+      }
+      search_distance_ = query_metric->distance();
+      search_batch_distance_ = query_metric->batch_distance();
+    }
   }
-  ret = metric_->init(meta_, meta_.metric_params());
-  if (ret != 0) {
-    LOG_ERROR("Failed to init metric, ret=%d", ret);
-    return ret;
-  }
 
-  if (!metric_->distance()) {
-    LOG_ERROR("Invalid metric distance");
-    return IndexError_InvalidArgument;
-  }
-
-  if (!metric_->batch_distance()) {
-    LOG_ERROR("Invalid metric batch distance");
-    return IndexError_InvalidArgument;
-  }
-
-  add_distance_ = metric_->distance();
-  add_batch_distance_ = metric_->batch_distance();
-
-  search_distance_ = add_distance_;
-  search_batch_distance_ = add_batch_distance_;
-
-  if (metric_->query_metric() && metric_->query_metric()->distance() &&
-      metric_->query_metric()->batch_distance()) {
-    search_distance_ = metric_->query_metric()->distance();
-    search_batch_distance_ = metric_->query_metric()->batch_distance();
+  //! Create a dedicated build distance path for original-vector providers.
+  //! Plain FP32 providers use Turbo in their original vector space. Check
+  //! the layout here as core callers can bypass the interface's selection;
+  //! other providers keep their dtype-compatible legacy build metric.
+  provider_metric_.reset();
+  provider_quantizer_.reset();
+  if (provider_) {
+    const bool use_index_metric = provider_meta_.metric_name().empty();
+    const std::string &provider_metric_name =
+        use_index_metric ? meta_.metric_name() : provider_meta_.metric_name();
+    const bool use_turbo_provider =
+        quantizer_ && provider_meta_.data_type() == IndexMeta::DT_FP32 &&
+        provider_meta_.unit_size() == sizeof(float) &&
+        provider_meta_.extra_meta_size() == 0 &&
+        provider_meta_.element_size() ==
+            static_cast<size_t>(provider_meta_.dimension()) * sizeof(float) &&
+        (provider_metric_name == "SquaredEuclidean" ||
+         provider_metric_name == "Cosine" ||
+         provider_metric_name == "InnerProduct");
+    if (use_turbo_provider) {
+      IndexMeta provider_quantizer_meta = provider_meta_;
+      if (use_index_metric) {
+        provider_quantizer_meta.set_metric(meta_.metric_name(), 0,
+                                           meta_.metric_params());
+      }
+      provider_quantizer_ = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      if (!provider_quantizer_) {
+        LOG_ERROR("Failed to create provider Fp32Quantizer");
+        return IndexError_NoExist;
+      }
+      ret =
+          provider_quantizer_->init(provider_quantizer_meta, ailego::Params{});
+      if (ret != 0) {
+        LOG_ERROR("Failed to init provider Fp32Quantizer, ret=%d", ret);
+        return ret;
+      }
+      BindTurboDistances<&TurboQuantizer::calc_distance_input_input,
+                         &TurboQuantizer::calc_distance_input_input_batch>(
+          provider_quantizer_, add_distance_, add_batch_distance_);
+    } else {
+      const bool layout_differs =
+          provider_meta_.data_type() != meta_.data_type() ||
+          provider_meta_.dimension() != meta_.dimension() ||
+          provider_meta_.element_size() != meta_.element_size();
+      // Turbo search leaves metric_ empty. Always create a separate metric
+      // when this provider cannot use Turbo, even if its layout matches.
+      if (quantizer_ || layout_differs || !use_index_metric) {
+        const std::string &metric_name = use_index_metric
+                                             ? meta_.metric_name()
+                                             : provider_meta_.metric_name();
+        const ailego::Params &metric_params =
+            use_index_metric ? meta_.metric_params()
+                             : provider_meta_.metric_params();
+        provider_metric_ = IndexFactory::CreateMetric(metric_name);
+        if (!provider_metric_) {
+          LOG_ERROR("Failed to create provider metric %s", metric_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = provider_metric_->init(provider_meta_, metric_params);
+        if (ret != 0) {
+          LOG_ERROR("Failed to init provider metric, ret=%d", ret);
+          return ret;
+        }
+        if (!provider_metric_->distance() ||
+            !provider_metric_->batch_distance()) {
+          LOG_ERROR("Invalid provider metric distance");
+          return IndexError_InvalidArgument;
+        }
+        add_distance_ = provider_metric_->distance();
+        add_batch_distance_ = provider_metric_->batch_distance();
+      }
+    }
+    // Turbo input vectors have no framework-managed extra values. The legacy
+    // path keeps validating its metric-specific provider layout.
+    const IndexMetric *add_metric =
+        provider_metric_ ? provider_metric_.get() : metric_.get();
+    if (!provider_quantizer_ && add_metric) {
+      const size_t provider_vector_size = provider_meta_.element_size();
+      const size_t provider_extra_values_size =
+          add_metric->extra_values_size_per_vector();
+      if (!valid_vector_layout(provider_vector_size,
+                               provider_extra_values_size)) {
+        LOG_ERROR(
+            "Invalid HNSW provider vector layout, vector_size=%zu "
+            "extra_size=%zu",
+            provider_vector_size, provider_extra_values_size);
+        return IndexError_InvalidArgument;
+      }
+    }
   }
 
   // Create algorithm based on entity storage mode
@@ -446,11 +641,13 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int HnswStreamer::close(void) {
+int HnswStreamer::close() {
   LOG_INFO("HnswStreamer close");
 
   stats_.clear();
-  meta_.set_metric(metric_->name(), 0, metric_->params());
+  if (metric_) {
+    meta_.set_metric(metric_->name(), 0, metric_->params());
+  }
   entity_->set_index_meta(meta_);
   int ret = entity_->close();
   if (ret != 0) {
@@ -464,7 +661,9 @@ int HnswStreamer::close(void) {
 int HnswStreamer::flush(uint64_t checkpoint) {
   LOG_INFO("HnswStreamer flush checkpoint=%zu", (size_t)checkpoint);
 
-  meta_.set_metric(metric_->name(), 0, metric_->params());
+  if (metric_) {
+    meta_.set_metric(metric_->name(), 0, metric_->params());
+  }
   entity_->set_index_meta(meta_);
   return entity_->flush(checkpoint);
 }
@@ -483,7 +682,7 @@ int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_->dump(dumper);
 }
 
-IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer HnswStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -529,7 +728,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer HnswStreamer::create_provider(void) const {
+IndexProvider::Pointer HnswStreamer::create_provider() const {
   LOG_DEBUG("HnswStreamer create provider");
 
   auto entity = entity_->clone();
@@ -553,6 +752,25 @@ int HnswStreamer::update_context(HnswContext *ctx) const {
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
   return ctx->update_context(HnswContext::kStreamerContext, meta_, metric_,
                              entity, magic_);
+}
+
+void HnswStreamer::bind_add_dist_space(HnswContext *ctx) const {
+  const IndexMetric *add_metric =
+      provider_metric_ ? provider_metric_.get() : metric_.get();
+  const size_t vector_size =
+      provider_ ? provider_meta_.element_size() : meta_.element_size();
+  // The quantizer path has no metric, and quantizers keep no extra values
+  const size_t extra_values_size =
+      add_metric ? add_metric->extra_values_size_per_vector() : 0;
+  ctx->bind_dist_space(add_distance_, add_batch_distance_, provider_,
+                       vector_size, extra_values_size);
+}
+
+void HnswStreamer::bind_search_dist_space(HnswContext *ctx) const {
+  const size_t extra_values_size =
+      metric_ ? metric_->extra_values_size_per_vector() : 0;
+  ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr,
+                       meta_.element_size(), extra_values_size);
 }
 
 //! Add a vector with id into index
@@ -597,11 +815,33 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
+  bind_add_dist_space(ctx);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
-  if (metric_->support_train()) {
+  //! use the original vector from provider as the build query, fetched
+  //! before mutating the entity so a missing vector cannot leave an
+  //! orphan node in the index; a node added with id is keyed by id
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    ret = provider_->get_vector(id, original_query_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Failed to get original vector from provider, id=%u", id);
+      (*stats_.mutable_discarded_count())++;
+      return ret;
+    }
+    ctx->reset_query_raw(original_query_block.data(), provider_meta_);
+  } else if (ailego_unlikely(use_external_vector_ && quantizer_)) {
+    if (ailego_unlikely(ctx->external_build_query() == nullptr)) {
+      LOG_ERROR("External build query is not set");
+      (*stats_.mutable_discarded_count())++;
+      return IndexError_InvalidArgument;
+    }
+    ctx->reset_query_raw(ctx->external_build_query(), meta_);
+  } else {
+    ctx->reset_query(query, meta_);
+  }
+
+  if (metric_ && metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
     ret = metric_->train(query, meta_.dimension());
     if (ailego_unlikely(ret != 0)) {
@@ -677,11 +917,32 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
+  bind_add_dist_space(ctx);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
-  if (metric_->support_train()) {
+  //! use the original vector from provider as the build query
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    ret = provider_->get_vector(pkey, original_query_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Failed to get original vector from provider, key=%llu",
+                static_cast<unsigned long long>(pkey));
+      (*stats_.mutable_discarded_count())++;
+      return ret;
+    }
+    ctx->reset_query_raw(original_query_block.data(), provider_meta_);
+  } else if (ailego_unlikely(use_external_vector_ && quantizer_)) {
+    if (ailego_unlikely(ctx->external_build_query() == nullptr)) {
+      LOG_ERROR("External build query is not set");
+      (*stats_.mutable_discarded_count())++;
+      return IndexError_InvalidArgument;
+    }
+    ctx->reset_query_raw(ctx->external_build_query(), meta_);
+  } else {
+    ctx->reset_query(query, meta_);
+  }
+
+  if (metric_ && metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
     ret = metric_->train(query, meta_.dimension());
     if (ailego_unlikely(ret != 0)) {
@@ -749,14 +1010,15 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  bind_search_dist_space(ctx);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   const bool use_empty_hooks = UseEmptyHnswHooks();
   SearchHooks empty_hooks;
   for (size_t q = 0; q < count; ++q) {
     auto query_start = SteadyClockTimer::Now();
-    ctx->reset_query(query);
+    ctx->reset_query(query, meta_);
     auto query_search_start = SteadyClockTimer::Now();
     if (use_empty_hooks) {
       bool stopped_early = false;
@@ -792,6 +1054,52 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     return IndexError_Runtime;
   }
 
+  return 0;
+}
+
+int HnswStreamer::search_candidates_impl(
+    const void *query, const IndexQueryMeta &qmeta, std::vector<uint64_t> &keys,
+    IndexStreamer::Context::Pointer &context) const {
+  keys.clear();
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) {
+    return ret;
+  }
+  HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to HnswContext failed");
+    return IndexError_Cast;
+  }
+  if (ctx->group_by_search()) {
+    return IndexError_InvalidArgument;
+  }
+
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+    return IndexRunner::search_candidates_impl(query, qmeta, keys, context);
+  }
+
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) {
+      return ret;
+    }
+  }
+
+  ctx->clear();
+  bind_search_dist_space(ctx);
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->reset_query(query, meta_);
+  ret = alg_->search(ctx);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("Hnsw searcher fast search failed");
+    return ret;
+  }
+  ctx->topk_to_keys(keys);
+
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
   return 0;
 }
 
@@ -844,7 +1152,8 @@ int HnswStreamer::search_bf_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  bind_search_dist_space(ctx);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -858,7 +1167,7 @@ int HnswStreamer::search_bf_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       ctx->group_topk_heaps().clear();
 
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
@@ -867,7 +1176,7 @@ int HnswStreamer::search_bf_impl(
         }
 
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_->get_key(id))) {
-          dist_t dist = ctx->dist_calculator().batch_dist(id);
+          dist_t dist = ctx->batch_dist(id);
 
           std::string group_id = group_by(id);
 
@@ -875,7 +1184,7 @@ int HnswStreamer::search_bf_impl(
           if (topk_heap.empty()) {
             topk_heap.limit(ctx->group_topk());
           }
-          topk_heap.emplace_back(id, dist);
+          topk_heap.emplace(id, dist);
         }
       }
       ctx->topk_to_result(q);
@@ -883,11 +1192,11 @@ int HnswStreamer::search_bf_impl(
     }
   } else {
     auto &filter = ctx->filter();
-    auto &topk = ctx->topk_heap();
+    auto &topk = ctx->search_heap().select<TopkHeap>();
 
     for (size_t q = 0; q < count; ++q) {
       auto query_start = SteadyClockTimer::Now();
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       topk.clear();
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
         if (entity_->get_key(id) == kInvalidKey) {
@@ -895,7 +1204,7 @@ int HnswStreamer::search_bf_impl(
         }
 
         if (!filter.is_valid() || !filter(entity_->get_key(id))) {
-          dist_t dist = ctx->dist_calculator().batch_dist(id);
+          dist_t dist = ctx->batch_dist(id);
           topk.emplace(id, dist);
         }
       }
@@ -950,7 +1259,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  bind_search_dist_space(ctx);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -964,7 +1274,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       ctx->group_topk_heaps().clear();
 
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
@@ -972,14 +1282,14 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_->get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().batch_dist(id);
+            dist_t dist = ctx->batch_dist(id);
             std::string group_id = group_by(id);
 
             auto &topk_heap = ctx->group_topk_heaps()[group_id];
             if (topk_heap.empty()) {
               topk_heap.limit(ctx->group_topk());
             }
-            topk_heap.emplace_back(id, dist);
+            topk_heap.emplace(id, dist);
           }
         }
       }
@@ -988,17 +1298,17 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     }
   } else {
     auto &filter = ctx->filter();
-    auto &topk = ctx->topk_heap();
+    auto &topk = ctx->search_heap().select<TopkHeap>();
 
     for (size_t q = 0; q < count; ++q) {
-      ctx->reset_query(query);
+      ctx->reset_query(query, meta_);
       topk.clear();
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         key_t pk = p_keys[q][idx];
         if (!filter.is_valid() || !filter(pk)) {
           node_id_t id = entity_->get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().batch_dist(id);
+            dist_t dist = ctx->batch_dist(id);
             topk.emplace(id, dist);
           }
         }

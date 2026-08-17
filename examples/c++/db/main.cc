@@ -200,7 +200,7 @@ int main() {
     return -1;
   }
 
-  std::cout << "init stats: " << result.value()->Stats().value().to_string()
+  std::cout << "init stats: " << result.value()->stats().value().to_string()
             << std::endl;
 
   auto coll = std::move(result).value();
@@ -209,23 +209,23 @@ int main() {
   {
     auto doc1 = create_doc(0, *schema);
     std::vector<Doc> docs{doc1};
-    auto res = coll->Insert(docs);
+    auto res = coll->insert(docs);
     if (!res.has_value()) {
       std::cout << res.error().message() << std::endl;
       return -1;
     }
-    std::cout << "after insert stats " << coll->Stats().value().to_string()
+    std::cout << "after insert stats " << coll->stats().value().to_string()
               << std::endl;
   }
 
   // optimize
   {
-    auto res = coll->Optimize();
+    auto res = coll->optimize();
     if (!res.ok()) {
       std::cout << res.message() << std::endl;
       return -1;
     }
-    std::cout << "after optimize stats " << coll->Stats().value().to_string()
+    std::cout << "after optimize stats " << coll->stats().value().to_string()
               << std::endl;
   }
 
@@ -238,7 +238,7 @@ int main() {
     std::vector<float> query_vector = std::vector<float>(128, 0.1);
     query.target_.set_vector(std::string((char *)query_vector.data(),
                                          query_vector.size() * sizeof(float)));
-    auto res = coll->Query(query);
+    auto res = coll->query(query);
     if (!res.has_value()) {
       std::cout << res.error().message() << std::endl;
       return -1;
@@ -257,7 +257,7 @@ int main() {
     std::cout << result.error().message() << std::endl;
     return -1;
   }
-  std::cout << "reopen stats: " << result.value()->Stats().value().to_string()
+  std::cout << "reopen stats: " << result.value()->stats().value().to_string()
             << std::endl;
 
   return 0;

@@ -16,7 +16,23 @@
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/internal/platform.h>
 
-#if !defined(__SSE4_2__) && !defined(__ARM_FEATURE_CRC32)
+/**
+ *  Hardware CRC32C strategy:
+ *  - CRC32C_SSE42_DIRECT: the target ISA already guarantees SSE4.2
+ *    (e.g. -march=native or MSVC), call the hardware kernel directly.
+ *  - CRC32C_SSE42_RUNTIME: baseline x86 build; compile only the hardware
+ *    kernel with a per-function target attribute and select it at runtime
+ *    via CpuFeatures, keeping the rest of this file at the baseline march.
+ */
+#if defined(__SSE4_2__)
+#define CRC32C_SSE42_DIRECT 1
+#define CRC32C_TARGET_SSE42
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386))
+#define CRC32C_SSE42_RUNTIME 1
+#define CRC32C_TARGET_SSE42 __attribute__((target("sse4.2")))
+#endif
+
+#if !defined(CRC32C_SSE42_DIRECT) && !defined(__ARM_FEATURE_CRC32)
 /**
  *  The following CRC lookup table was generated automagically
  *  using the following model parameters:
@@ -512,12 +528,13 @@ static inline uint32_t crc32c_slicing8(const void *data, size_t len,
   }
   return crc;
 }
-#endif  // !__SSE4_2__
+#endif  // !CRC32C_SSE42_DIRECT && !__ARM_FEATURE_CRC32
 
-#if defined(__SSE4_2__)
+#if defined(CRC32C_SSE42_DIRECT) || defined(CRC32C_SSE42_RUNTIME)
 #if defined(AILEGO_M64)
-static inline uint32_t crc32c_sse42(const void *data, size_t len,
-                                    uint32_t crc) {
+static inline CRC32C_TARGET_SSE42 uint32_t crc32c_sse42(const void *data,
+                                                        size_t len,
+                                                        uint32_t crc) {
   const uint8_t *first = (const uint8_t *)data;
   const uint8_t *last = first + ((len >> 3) << 3);
 
@@ -555,8 +572,9 @@ static inline uint32_t crc32c_sse42(const void *data, size_t len,
   return crc;
 }
 #else
-static inline uint32_t crc32c_sse42(const void *data, size_t len,
-                                    uint32_t crc) {
+static inline CRC32C_TARGET_SSE42 uint32_t crc32c_sse42(const void *data,
+                                                        size_t len,
+                                                        uint32_t crc) {
   const uint8_t *first = (const uint8_t *)data;
   const uint8_t *last = first + ((len >> 2) << 2);
 
@@ -578,7 +596,7 @@ static inline uint32_t crc32c_sse42(const void *data, size_t len,
   return crc;
 }
 #endif  // AILEGO_M64
-#endif  // __SSE4_2__
+#endif  // CRC32C_SSE42_DIRECT || CRC32C_SSE42_RUNTIME
 
 #if defined(__ARM_FEATURE_CRC32)
 static inline uint32_t crc32c_neon(const void *data, size_t len, uint32_t crc) {
@@ -624,10 +642,15 @@ namespace zvec {
 namespace ailego {
 
 uint32_t Crc32c::Hash(const void *data, size_t len, uint32_t crc) {
-#if defined(__SSE4_2__)
+#if defined(CRC32C_SSE42_DIRECT)
   return crc32c_sse42(data, len, crc);
 #elif defined(__ARM_FEATURE_CRC32)
   return crc32c_neon(data, len, crc);
+#elif defined(CRC32C_SSE42_RUNTIME)
+  if (internal::CpuFeatures::static_flags_.SSE4_2) {
+    return crc32c_sse42(data, len, crc);
+  }
+  return crc32c_slicing8(data, len, crc);
 #else
   return crc32c_slicing8(data, len, crc);
 #endif

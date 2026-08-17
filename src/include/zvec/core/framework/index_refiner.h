@@ -36,7 +36,7 @@ class IndexRefiner : public IndexModule {
   struct Context : public IndexContext {
    public:
     Context() = default;
-    ~Context() = default;
+    ~Context() override = default;
 
     virtual int set_contexts(IndexRunner::Context::Pointer base_ctx,
                              IndexRunner::Context::Pointer refine_ctx) = 0;
@@ -51,7 +51,7 @@ class IndexRefiner : public IndexModule {
   virtual int cleanup() = 0;
 
   //! Create a context
-  virtual Context::Pointer create_context(void) const = 0;
+  virtual Context::Pointer create_context() const = 0;
 
   //! Add a vector into index
   virtual int add_impl(uint64_t key, const void *base_query,

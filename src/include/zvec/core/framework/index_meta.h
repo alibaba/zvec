@@ -38,7 +38,11 @@ class IndexMeta {
     DT_INT4 = 6,
     DT_BINARY32 = 7,
     DT_BINARY64 = 8,
+    // Native unsigned-byte vector storage. Unlike uniform quantization this
+    // carries no scale/bias metadata: every component is stored verbatim.
+    DT_UINT8 = 9,
   };
+
 
   /*! Major Orders
    */
@@ -49,7 +53,7 @@ class IndexMeta {
   };
 
   //! Constructor
-  IndexMeta(void) {
+  IndexMeta() {
     this->set_meta(DataType::DT_FP32, 128u);
     this->set_metric("SquaredEuclidean", 0, ailego::Params());
   }
@@ -71,38 +75,8 @@ class IndexMeta {
 
   //! Constructor
   IndexMeta(const IndexMeta &rhs)
-      : meta_type_{rhs.meta_type_},
-        major_order_(rhs.major_order_),
-        data_type_(rhs.data_type_),
-        dimension_(rhs.dimension_),
-        unit_size_(rhs.unit_size_),
-        element_size_(rhs.element_size_),
-        space_id_(rhs.space_id_),
-        metric_revision_(rhs.metric_revision_),
-        converter_revision_(rhs.converter_revision_),
-        reformer_revision_(rhs.reformer_revision_),
-        trainer_revision_(rhs.trainer_revision_),
-        builder_revision_(rhs.builder_revision_),
-        reducer_revision_(rhs.reducer_revision_),
-        searcher_revision_(rhs.searcher_revision_),
-        streamer_revision_(rhs.streamer_revision_),
-        metric_name_(rhs.metric_name_),
-        converter_name_(rhs.converter_name_),
-        reformer_name_(rhs.reformer_name_),
-        trainer_name_(rhs.trainer_name_),
-        builder_name_(rhs.builder_name_),
-        reducer_name_(rhs.reducer_name_),
-        searcher_name_(rhs.searcher_name_),
-        streamer_name_(rhs.streamer_name_),
-        metric_params_(rhs.metric_params_),
-        converter_params_(rhs.converter_params_),
-        reformer_params_(rhs.reformer_params_),
-        trainer_params_(rhs.trainer_params_),
-        builder_params_(rhs.builder_params_),
-        reducer_params_(rhs.reducer_params_),
-        searcher_params_(rhs.searcher_params_),
-        streamer_params_(rhs.streamer_params_),
-        attributes_(rhs.attributes_) {}
+
+      = default;
 
   //! Constructor
   IndexMeta(IndexMeta &&rhs)
@@ -112,10 +86,12 @@ class IndexMeta {
         dimension_(rhs.dimension_),
         unit_size_(rhs.unit_size_),
         element_size_(rhs.element_size_),
+        extra_meta_size_(rhs.extra_meta_size_),
         space_id_(rhs.space_id_),
         metric_revision_(rhs.metric_revision_),
         converter_revision_(rhs.converter_revision_),
         reformer_revision_(rhs.reformer_revision_),
+        quantizer_revision_(rhs.quantizer_revision_),
         trainer_revision_(rhs.trainer_revision_),
         builder_revision_(rhs.builder_revision_),
         reducer_revision_(rhs.reducer_revision_),
@@ -124,6 +100,7 @@ class IndexMeta {
         metric_name_(std::move(rhs.metric_name_)),
         converter_name_(std::move(rhs.converter_name_)),
         reformer_name_(std::move(rhs.reformer_name_)),
+        quantizer_name_(std::move(rhs.quantizer_name_)),
         trainer_name_(std::move(rhs.trainer_name_)),
         builder_name_(std::move(rhs.builder_name_)),
         reducer_name_(std::move(rhs.reducer_name_)),
@@ -132,6 +109,7 @@ class IndexMeta {
         metric_params_(std::move(rhs.metric_params_)),
         converter_params_(std::move(rhs.converter_params_)),
         reformer_params_(std::move(rhs.reformer_params_)),
+        quantizer_params_(std::move(rhs.quantizer_params_)),
         trainer_params_(std::move(rhs.trainer_params_)),
         builder_params_(std::move(rhs.builder_params_)),
         reducer_params_(std::move(rhs.reducer_params_)),
@@ -151,6 +129,7 @@ class IndexMeta {
     metric_revision_ = rhs.metric_revision_;
     converter_revision_ = rhs.converter_revision_;
     reformer_revision_ = rhs.reformer_revision_;
+    quantizer_revision_ = rhs.quantizer_revision_;
     trainer_revision_ = rhs.trainer_revision_;
     builder_revision_ = rhs.builder_revision_;
     reducer_revision_ = rhs.reducer_revision_;
@@ -159,6 +138,7 @@ class IndexMeta {
     metric_name_ = std::move(rhs.metric_name_);
     converter_name_ = std::move(rhs.converter_name_);
     reformer_name_ = std::move(rhs.reformer_name_);
+    quantizer_name_ = std::move(rhs.quantizer_name_);
     trainer_name_ = std::move(rhs.trainer_name_);
     builder_name_ = std::move(rhs.builder_name_);
     reducer_name_ = std::move(rhs.reducer_name_);
@@ -167,12 +147,14 @@ class IndexMeta {
     metric_params_ = std::move(rhs.metric_params_);
     converter_params_ = std::move(rhs.converter_params_);
     reformer_params_ = std::move(rhs.reformer_params_);
+    quantizer_params_ = std::move(rhs.quantizer_params_);
     trainer_params_ = std::move(rhs.trainer_params_);
     builder_params_ = std::move(rhs.builder_params_);
     reducer_params_ = std::move(rhs.reducer_params_);
     searcher_params_ = std::move(rhs.searcher_params_);
     streamer_params_ = std::move(rhs.streamer_params_);
     attributes_ = std::move(rhs.attributes_);
+    extra_meta_size_ = rhs.extra_meta_size_;
 
     return *this;
   }
@@ -189,6 +171,7 @@ class IndexMeta {
     metric_revision_ = rhs.metric_revision_;
     converter_revision_ = rhs.converter_revision_;
     reformer_revision_ = rhs.reformer_revision_;
+    quantizer_revision_ = rhs.quantizer_revision_;
     trainer_revision_ = rhs.trainer_revision_;
     builder_revision_ = rhs.builder_revision_;
     reducer_revision_ = rhs.reducer_revision_;
@@ -197,6 +180,7 @@ class IndexMeta {
     metric_name_ = std::move(rhs.metric_name_);
     converter_name_ = std::move(rhs.converter_name_);
     reformer_name_ = std::move(rhs.reformer_name_);
+    quantizer_name_ = std::move(rhs.quantizer_name_);
     trainer_name_ = std::move(rhs.trainer_name_);
     builder_name_ = std::move(rhs.builder_name_);
     reducer_name_ = std::move(rhs.reducer_name_);
@@ -205,18 +189,20 @@ class IndexMeta {
     metric_params_ = std::move(rhs.metric_params_);
     converter_params_ = std::move(rhs.converter_params_);
     reformer_params_ = std::move(rhs.reformer_params_);
+    quantizer_params_ = std::move(rhs.quantizer_params_);
     trainer_params_ = std::move(rhs.trainer_params_);
     builder_params_ = std::move(rhs.builder_params_);
     reducer_params_ = std::move(rhs.reducer_params_);
     searcher_params_ = std::move(rhs.searcher_params_);
     streamer_params_ = std::move(rhs.streamer_params_);
     attributes_ = std::move(rhs.attributes_);
+    extra_meta_size_ = rhs.extra_meta_size_;
 
     return *this;
   }
 
   //! Reset the meta
-  void clear(void) {
+  void clear() {
     meta_type_ = MetaType::MT_DENSE;
     major_order_ = MajorOrder::MO_UNDEFINED;
     data_type_ = DataType::DT_UNDEFINED;
@@ -227,6 +213,7 @@ class IndexMeta {
     metric_revision_ = 0;
     converter_revision_ = 0;
     reformer_revision_ = 0;
+    quantizer_revision_ = 0;
     trainer_revision_ = 0;
     builder_revision_ = 0;
     reducer_revision_ = 0;
@@ -235,6 +222,7 @@ class IndexMeta {
     metric_name_.clear();
     converter_name_.clear();
     reformer_name_.clear();
+    quantizer_name_.clear();
     trainer_name_.clear();
     builder_name_.clear();
     reducer_name_.clear();
@@ -243,176 +231,198 @@ class IndexMeta {
     metric_params_.clear();
     converter_params_.clear();
     reformer_params_.clear();
+    quantizer_params_.clear();
     trainer_params_.clear();
     builder_params_.clear();
     reducer_params_.clear();
     searcher_params_.clear();
     streamer_params_.clear();
     attributes_.clear();
+    extra_meta_size_ = 0;
   }
 
   //! Retrieve major order information
-  MetaType meta_type(void) const {
+  MetaType meta_type() const {
     return meta_type_;
   }
 
   //! Retrieve major order information
-  MajorOrder major_order(void) const {
+  MajorOrder major_order() const {
     return major_order_;
   }
 
   //! Retrieve type information
-  DataType data_type(void) const {
+  DataType data_type() const {
     return data_type_;
   }
 
   //! Retrieve dimension
-  uint32_t dimension(void) const {
+  uint32_t dimension() const {
     return dimension_;
   }
 
   //! Retrieve unit size in bytes
-  uint32_t unit_size(void) const {
+  uint32_t unit_size() const {
     return unit_size_;
   }
 
   //! Retrieve element size in bytes
-  uint32_t element_size(void) const {
+  uint32_t element_size() const {
     return element_size_;
   }
 
+  //! Retrieve extra meta size in bytes
+  uint32_t extra_meta_size() const {
+    return extra_meta_size_;
+  }
+
   //! Retrieve space id
-  uint64_t space_id(void) const {
+  uint64_t space_id() const {
     return space_id_;
   }
 
   //! Retrieve revision of metric
-  uint32_t metric_revision(void) const {
+  uint32_t metric_revision() const {
     return metric_revision_;
   }
 
   //! Retrieve revision of converter
-  uint32_t converter_revision(void) const {
+  uint32_t converter_revision() const {
     return converter_revision_;
   }
 
   //! Retrieve revision of reformer
-  uint32_t reformer_revision(void) const {
+  uint32_t reformer_revision() const {
     return reformer_revision_;
   }
 
+  //! Retrieve revision of quantizer
+  uint32_t quantizer_revision() const {
+    return quantizer_revision_;
+  }
+
   //! Retrieve revision of trainer
-  uint32_t trainer_revision(void) const {
+  uint32_t trainer_revision() const {
     return trainer_revision_;
   }
 
   //! Retrieve revision of builder
-  uint32_t builder_revision(void) const {
+  uint32_t builder_revision() const {
     return builder_revision_;
   }
 
   //! Retrieve revision of searcher
-  uint32_t searcher_revision(void) const {
+  uint32_t searcher_revision() const {
     return searcher_revision_;
   }
 
   //! Retrieve revision of reducer
-  uint32_t reducer_revision(void) const {
+  uint32_t reducer_revision() const {
     return reducer_revision_;
   }
 
   //! Retrieve revision of streamer
-  uint32_t streamer_revision(void) const {
+  uint32_t streamer_revision() const {
     return streamer_revision_;
   }
 
   //! Retrieve name of metric
-  const std::string &metric_name(void) const {
+  const std::string &metric_name() const {
     return metric_name_;
   }
 
   //! Retrieve name of converter
-  const std::string &converter_name(void) const {
+  const std::string &converter_name() const {
     return converter_name_;
   }
 
   //! Retrieve name of reformer
-  const std::string &reformer_name(void) const {
+  const std::string &reformer_name() const {
     return reformer_name_;
   }
 
+  //! Retrieve name of quantizer
+  const std::string &quantizer_name() const {
+    return quantizer_name_;
+  }
+
   //! Retrieve name of trainer
-  const std::string &trainer_name(void) const {
+  const std::string &trainer_name() const {
     return trainer_name_;
   }
 
   //! Retrieve name of builder
-  const std::string &builder_name(void) const {
+  const std::string &builder_name() const {
     return builder_name_;
   }
 
   //! Retrieve name of reducer
-  const std::string &reducer_name(void) const {
+  const std::string &reducer_name() const {
     return reducer_name_;
   }
 
   //! Retrieve name of searcher
-  const std::string &searcher_name(void) const {
+  const std::string &searcher_name() const {
     return searcher_name_;
   }
 
   //! Retrieve name of streamer
-  const std::string &streamer_name(void) const {
+  const std::string &streamer_name() const {
     return streamer_name_;
   }
 
   //! Retrieve metric params
-  const ailego::Params &metric_params(void) const {
+  const ailego::Params &metric_params() const {
     return metric_params_;
   }
 
   //! Retrieve converter params
-  const ailego::Params &converter_params(void) const {
+  const ailego::Params &converter_params() const {
     return converter_params_;
   }
 
   //! Retrieve reformer params
-  const ailego::Params &reformer_params(void) const {
+  const ailego::Params &reformer_params() const {
     return reformer_params_;
   }
 
+  //! Retrieve quantizer params
+  const ailego::Params &quantizer_params() const {
+    return quantizer_params_;
+  }
+
   //! Retrieve trainer params
-  const ailego::Params &trainer_params(void) const {
+  const ailego::Params &trainer_params() const {
     return trainer_params_;
   }
 
   //! Retrieve builder params
-  const ailego::Params &builder_params(void) const {
+  const ailego::Params &builder_params() const {
     return builder_params_;
   }
 
   //! Retrieve reducer params
-  const ailego::Params &reducer_params(void) const {
+  const ailego::Params &reducer_params() const {
     return reducer_params_;
   }
 
   //! Retrieve searcher params
-  const ailego::Params &searcher_params(void) const {
+  const ailego::Params &searcher_params() const {
     return searcher_params_;
   }
 
   //! Retrieve streamer params
-  const ailego::Params &streamer_params(void) const {
+  const ailego::Params &streamer_params() const {
     return streamer_params_;
   }
 
   //! Retrieve attributes
-  const ailego::Params &attributes(void) const {
+  const ailego::Params &attributes() const {
     return attributes_;
   }
 
   //! Retrieve mutable attributes
-  ailego::Params *mutable_attributes(void) {
+  ailego::Params *mutable_attributes() {
     return &attributes_;
   }
 
@@ -429,7 +439,8 @@ class IndexMeta {
   //! Set dimension of feature
   void set_dimension(uint32_t dim) {
     dimension_ = dim;
-    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim);
+    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim) +
+                    extra_meta_size_;
   }
 
   //! Set meta information of feature
@@ -443,12 +454,19 @@ class IndexMeta {
     data_type_ = data_type;
     dimension_ = dim;
     unit_size_ = unit;
-    element_size_ = ElementSizeof(data_type, unit, dim);
+    element_size_ = ElementSizeof(data_type, unit, dim) + extra_meta_size_;
   }
 
   //! Set meta information of feature
   void set_meta(DataType data_type, uint32_t dim) {
     this->set_meta(data_type, UnitSizeof(data_type), dim);
+  }
+
+  //! Set extra meta size
+  void set_extra_meta_size(uint32_t size) {
+    extra_meta_size_ = size;
+    element_size_ =
+        ElementSizeof(data_type_, unit_size_, dimension_) + extra_meta_size_;
   }
 
   //! Set information of metric
@@ -473,6 +491,14 @@ class IndexMeta {
     reformer_name_ = std::forward<TName>(name);
     reformer_revision_ = rev;
     reformer_params_ = std::forward<TParams>(params);
+  }
+
+  //! Set information of quantizer
+  template <typename TName, typename TParams>
+  void set_quantizer(TName &&name, uint32_t rev, TParams &&params) {
+    quantizer_name_ = std::forward<TName>(name);
+    quantizer_revision_ = rev;
+    quantizer_params_ = std::forward<TParams>(params);
   }
 
   //! Set information of trainer
@@ -532,7 +558,8 @@ class IndexMeta {
         sizeof(int16_t),   // DT_INT16
         sizeof(uint8_t),   // DT_INT4
         sizeof(uint32_t),  // DT_BINARY32
-        sizeof(uint64_t)   // DT_BINARY64
+        sizeof(uint64_t),  // DT_BINARY64
+        sizeof(uint8_t)    // DT_UINT8
     };
     return unit_size_table[data_type];
   }
@@ -548,7 +575,8 @@ class IndexMeta {
         sizeof(int16_t),      // DT_INT16
         sizeof(uint8_t) * 4,  // DT_INT4
         sizeof(uint32_t),     // DT_BINARY32
-        sizeof(uint64_t)      // DT_BINARY64
+        sizeof(uint64_t),     // DT_BINARY64
+        sizeof(uint8_t) * 4   // DT_UINT8
     };
     return align_size_table[ft];
   }
@@ -564,6 +592,7 @@ class IndexMeta {
       case DataType::DT_FP64:
       case DataType::DT_INT8:
       case DataType::DT_INT16:
+      case DataType::DT_UINT8:
         return (dim * unit);
       case DataType::DT_INT4:
         return (dim + unit * 2 - 1) / (unit * 2) * unit;
@@ -586,10 +615,12 @@ class IndexMeta {
   uint32_t dimension_{0};
   uint32_t unit_size_{0};
   uint32_t element_size_{0};
+  uint32_t extra_meta_size_{0};
   uint64_t space_id_{0};
   uint32_t metric_revision_{0};
   uint32_t converter_revision_{0};
   uint32_t reformer_revision_{0};
+  uint32_t quantizer_revision_{0};
   uint32_t trainer_revision_{0};
   uint32_t builder_revision_{0};
   uint32_t reducer_revision_{0};
@@ -599,6 +630,7 @@ class IndexMeta {
   std::string metric_name_{};
   std::string converter_name_{};
   std::string reformer_name_{};
+  std::string quantizer_name_{};
   std::string trainer_name_{};
   std::string builder_name_{};
   std::string reducer_name_{};
@@ -608,6 +640,7 @@ class IndexMeta {
   ailego::Params metric_params_{};
   ailego::Params converter_params_{};
   ailego::Params reformer_params_{};
+  ailego::Params quantizer_params_{};
   ailego::Params trainer_params_{};
   ailego::Params builder_params_{};
   ailego::Params reducer_params_{};
@@ -621,7 +654,7 @@ class IndexMeta {
 class IndexQueryMeta {
  public:
   //! Constructor
-  IndexQueryMeta(void) {}
+  IndexQueryMeta() = default;
 
   //! Constructor
   IndexQueryMeta(IndexMeta::MetaType meta_type, IndexMeta::DataType data_type,
@@ -631,6 +664,19 @@ class IndexQueryMeta {
         dimension_(dim),
         unit_size_(unit),
         element_size_(IndexMeta::ElementSizeof(data_type, unit, dim)) {}
+
+  //! Constructor
+  IndexQueryMeta(IndexMeta::MetaType meta_type, IndexMeta::DataType data_type,
+                 uint32_t unit, uint32_t dim, uint32_t quantize_type,
+                 uint32_t extra_meta_size)
+      : meta_type_(meta_type),
+        data_type_(data_type),
+        dimension_(dim),
+        unit_size_(unit),
+        quantize_type_(quantize_type),
+        extra_meta_size_(extra_meta_size),
+        element_size_(IndexMeta::ElementSizeof(data_type, unit, dim) +
+                      extra_meta_size_) {}
 
   //! Constructor
   IndexQueryMeta(IndexMeta::DataType data_type, uint32_t dim)
@@ -649,34 +695,45 @@ class IndexQueryMeta {
                        dim} {}
 
   //! Retrieve meta type
-  IndexMeta::MetaType meta_type(void) const {
+  IndexMeta::MetaType meta_type() const {
     return meta_type_;
   }
 
   //! Retrieve data
-  IndexMeta::DataType data_type(void) const {
+  IndexMeta::DataType data_type() const {
     return data_type_;
   }
 
   //! Retrieve dimension of features
-  uint32_t dimension(void) const {
+  uint32_t dimension() const {
     return dimension_;
   }
 
   //! Retrieve unit size of feature
-  uint32_t unit_size(void) const {
+  uint32_t unit_size() const {
     return unit_size_;
   }
 
   //! Retrieve element size of feature
-  uint32_t element_size(void) const {
+  uint32_t element_size() const {
     return element_size_;
+  }
+
+  //! Retrieve quantize type
+  uint32_t quantize_type() const {
+    return quantize_type_;
+  }
+
+  //! Retrieve extra meta size in bytes
+  uint32_t extra_meta_size() const {
+    return extra_meta_size_;
   }
 
   //! Set dimension of feature
   void set_dimension(uint32_t dim) {
     dimension_ = dim;
-    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim);
+    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim) +
+                    extra_meta_size_;
   }
 
   //! Set meta type
@@ -689,12 +746,21 @@ class IndexQueryMeta {
     data_type_ = data_type;
   }
 
+  //! Set extra meta size
+  void set_extra_meta_size(uint32_t size) {
+    extra_meta_size_ = size;
+    element_size_ =
+        IndexMeta::ElementSizeof(data_type_, unit_size_, dimension_) +
+        extra_meta_size_;
+  }
+
   //! Set meta information of feature
   void set_meta(IndexMeta::DataType data_type, uint32_t unit, uint32_t dim) {
     data_type_ = data_type;
     dimension_ = dim;
     unit_size_ = unit;
-    element_size_ = IndexMeta::ElementSizeof(data_type, unit, dim);
+    element_size_ =
+        IndexMeta::ElementSizeof(data_type, unit, dim) + extra_meta_size_;
   }
 
   //! Set meta information of feature
@@ -702,11 +768,25 @@ class IndexQueryMeta {
     this->set_meta(data_type, IndexMeta::UnitSizeof(data_type), dim);
   }
 
+  //! Set meta information of feature with quantize type and extra meta size
+  void set_meta(IndexMeta::DataType data_type, uint32_t dim,
+                uint32_t quantize_type, uint32_t extra_meta_size) {
+    data_type_ = data_type;
+    dimension_ = dim;
+    unit_size_ = IndexMeta::UnitSizeof(data_type);
+    quantize_type_ = quantize_type;
+    extra_meta_size_ = extra_meta_size;
+    element_size_ =
+        IndexMeta::ElementSizeof(data_type, unit_size_, dim) + extra_meta_size_;
+  }
+
  private:
   IndexMeta::MetaType meta_type_{IndexMeta::MetaType::MT_DENSE};
   IndexMeta::DataType data_type_{IndexMeta::DataType::DT_UNDEFINED};
   uint32_t dimension_{0};
   uint32_t unit_size_{0};
+  uint32_t quantize_type_{0};
+  uint32_t extra_meta_size_{0};
   uint32_t element_size_{0};
 };
 

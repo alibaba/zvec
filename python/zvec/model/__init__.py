@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from .collection import Collection
-from .doc import Doc
+from .doc import Doc, GroupResult
 from .param.query import Fts, Query, VectorQuery
 from .schema.collection_schema import CollectionSchema
 from .schema.field_schema import FieldSchema
@@ -25,6 +25,7 @@ __all__ = [
     "Doc",
     "FieldSchema",
     "Fts",
+    "GroupResult",
     "Query",
     "VectorQuery",
 ]

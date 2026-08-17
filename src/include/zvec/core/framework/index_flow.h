@@ -17,6 +17,9 @@
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_searcher.h>
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
 namespace core {
 
 /*! Index Flow
@@ -34,7 +37,7 @@ class IndexFlow {
     typedef std::unique_ptr<Context> UPointer;
 
     //! Retrieve searcher context
-    IndexSearcher::Context::Pointer &searcher_context(void) {
+    IndexSearcher::Context::Pointer &searcher_context() {
       return searcher_context_;
     }
 
@@ -44,7 +47,7 @@ class IndexFlow {
     }
 
     //! Retrieve search results
-    const IndexDocumentList &result(void) const {
+    const IndexDocumentList &result() const {
       return searcher_context_->result();
     }
 
@@ -60,7 +63,7 @@ class IndexFlow {
     }
 
     //! Reset the filter of context
-    void reset_filter(void) {
+    void reset_filter() {
       searcher_context_->reset_filter();
     }
 
@@ -75,27 +78,27 @@ class IndexFlow {
     }
 
     //! Retrieve debug information
-    std::string debug_string(void) const {
+    std::string debug_string() const {
       return searcher_context_->debug_string();
     }
 
     //! Retrieve magic number
-    uint32_t magic(void) const {
+    uint32_t magic() const {
       return searcher_context_->magic();
     }
 
     //! Retrieve mode of debug
-    bool debug_mode(void) const {
+    bool debug_mode() const {
       return searcher_context_->debug_mode();
     }
 
     //! Retrieve mutable features buffer
-    std::string *mutable_features(void) {
+    std::string *mutable_features() {
       return &features_;
     }
 
     //! Retrieve features buffer
-    const std::string &features(void) const {
+    const std::string &features() const {
       return features_;
     }
 
@@ -112,12 +115,13 @@ class IndexFlow {
   };
 
   //! Constructor
-  IndexFlow(void) {}
+  IndexFlow() = default;
 
   //! Constructor
   IndexFlow(IndexFlow &&rhs)
       : storage_(std::move(rhs.storage_)),
         reformer_(std::move(rhs.reformer_)),
+        query_quantizer_(std::move(rhs.query_quantizer_)),
         searcher_(std::move(rhs.searcher_)),
         metric_(std::move(rhs.metric_)),
         user_reformer_(std::move(rhs.user_reformer_)),
@@ -129,6 +133,7 @@ class IndexFlow {
   IndexFlow &operator=(IndexFlow &&rhs) {
     storage_ = std::move(rhs.storage_);
     reformer_ = std::move(rhs.reformer_);
+    query_quantizer_ = std::move(rhs.query_quantizer_);
     searcher_ = std::move(rhs.searcher_);
     metric_ = std::move(rhs.metric_);
     user_reformer_ = std::move(rhs.user_reformer_);
@@ -139,22 +144,22 @@ class IndexFlow {
   }
 
   //! Retrieve index meta
-  const IndexMeta &meta(void) const {
+  const IndexMeta &meta() const {
     return meta_;
   }
 
   //! Retrieve index reformer
-  const IndexReformer::Pointer &reformer(void) const {
+  const IndexReformer::Pointer &reformer() const {
     return reformer_;
   }
 
   //! Retrieve index searcher
-  const IndexSearcher::Pointer &searcher(void) const {
+  const IndexSearcher::Pointer &searcher() const {
     return searcher_;
   }
 
   //! Retrieve index metric
-  const IndexMetric::Pointer &metric(void) const {
+  const IndexMetric::Pointer &metric() const {
     return metric_;
   }
 
@@ -177,7 +182,7 @@ class IndexFlow {
   int load(const std::string &path);
 
   //! Unload index
-  int unload(void);
+  int unload();
 
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -371,21 +376,23 @@ class IndexFlow {
   }
 
   //! Create a flow context
-  Context::Pointer create_context(void) const {
+  Context::Pointer create_context() const {
     return Context::Pointer(new Context(searcher_->create_context()));
   }
 
- private:
+ public:
   //! Disable them
   IndexFlow(const IndexFlow &) = delete;
   IndexFlow &operator=(const IndexFlow &) = delete;
 
+ private:
   int load_internal();
 
   //! Members
   IndexMeta meta_{};
   IndexStorage::Pointer storage_{};
   IndexReformer::Pointer reformer_{};
+  std::shared_ptr<zvec::turbo::Quantizer> query_quantizer_{};
   IndexSearcher::Pointer searcher_{};
   IndexMetric::Pointer metric_{};
   IndexReformer::Pointer user_reformer_{};
@@ -410,7 +417,7 @@ class IndexSparseFlow {
     typedef std::unique_ptr<Context> UPointer;
 
     //! Retrieve searcher context
-    IndexSearcher::Context::Pointer &searcher_context(void) {
+    IndexSearcher::Context::Pointer &searcher_context() {
       return searcher_context_;
     }
 
@@ -420,7 +427,7 @@ class IndexSparseFlow {
     }
 
     //! Retrieve search results
-    const IndexDocumentList &result(void) const {
+    const IndexDocumentList &result() const {
       return searcher_context_->result();
     }
 
@@ -436,7 +443,7 @@ class IndexSparseFlow {
     }
 
     //! Reset the filter of context
-    void reset_filter(void) {
+    void reset_filter() {
       searcher_context_->reset_filter();
     }
 
@@ -451,27 +458,27 @@ class IndexSparseFlow {
     }
 
     //! Retrieve debug information
-    std::string debug_string(void) const {
+    std::string debug_string() const {
       return searcher_context_->debug_string();
     }
 
     //! Retrieve magic number
-    uint32_t magic(void) const {
+    uint32_t magic() const {
       return searcher_context_->magic();
     }
 
     //! Retrieve mode of debug
-    bool debug_mode(void) const {
+    bool debug_mode() const {
       return searcher_context_->debug_mode();
     }
 
     //! Retrieve mutable features buffer
-    std::string *mutable_features(void) {
+    std::string *mutable_features() {
       return &features_;
     }
 
     //! Retrieve features buffer
-    const std::string &features(void) const {
+    const std::string &features() const {
       return features_;
     }
 
@@ -488,7 +495,7 @@ class IndexSparseFlow {
   };
 
   //! Constructor
-  IndexSparseFlow(void) {}
+  IndexSparseFlow() = default;
 
   //! Constructor
   IndexSparseFlow(IndexSparseFlow &&rhs)
@@ -515,22 +522,22 @@ class IndexSparseFlow {
   }
 
   //! Retrieve index sparse meta
-  const IndexMeta &meta(void) const {
+  const IndexMeta &meta() const {
     return meta_;
   }
 
   //! Retrieve index reformer
-  const IndexReformer::Pointer &reformer(void) const {
+  const IndexReformer::Pointer &reformer() const {
     return reformer_;
   }
 
   //! Retrieve index searcher
-  const IndexSearcher::Pointer &searcher(void) const {
+  const IndexSearcher::Pointer &searcher() const {
     return searcher_;
   }
 
   //! Retrieve index metric
-  const IndexMetric::Pointer &metric(void) const {
+  const IndexMetric::Pointer &metric() const {
     return metric_;
   }
 
@@ -553,7 +560,7 @@ class IndexSparseFlow {
   int load(const std::string &path);
 
   //! Unload index
-  int unload(void);
+  int unload();
 
   //! Similarity search with sparse inputs
   int search_impl(const uint32_t sparse_count, const uint32_t *sparse_indices,
@@ -620,15 +627,16 @@ class IndexSparseFlow {
   }
 
   //! Create a flow context
-  Context::Pointer create_context(void) const {
+  Context::Pointer create_context() const {
     return Context::Pointer(new Context(searcher_->create_context()));
   }
 
- private:
+ public:
   //! Disable them
   IndexSparseFlow(const IndexSparseFlow &) = delete;
   IndexSparseFlow &operator=(const IndexSparseFlow &) = delete;
 
+ private:
   int load_internal();
 
   //! Members

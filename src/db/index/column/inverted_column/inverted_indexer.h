@@ -38,7 +38,7 @@ class InvertedIndexer {
 
   virtual ~InvertedIndexer() {
     rocksdb_context_.close();
-    LOG_INFO("Closed %s", ID().c_str());
+    LOG_INFO("Closed %s", id().c_str());
   }
 
 
@@ -84,7 +84,7 @@ class InvertedIndexer {
     return working_dir_;
   }
 
-  inline const std::string ID() const {
+  inline const std::string id() const {
     return "InvertedIndexer[collection:" + collection_name_ + "|path:'" +
            working_dir_ + "']";
   }

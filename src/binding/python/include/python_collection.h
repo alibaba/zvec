@@ -27,6 +27,7 @@ class ZVecPyCollection {
   static void Initialize(py::module_ &m);
 
  private:
+  static void bind_iterator(py::module_ &m);
   static void bind_db_methods(py::class_<Collection, Collection::Ptr> &col);
   static void bind_ddl_methods(py::class_<Collection, Collection::Ptr> &col);
   static void bind_dml_methods(py::class_<Collection, Collection::Ptr> &col);

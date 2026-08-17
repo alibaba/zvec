@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <memory>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_metric.h>
@@ -23,6 +24,9 @@
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
 namespace core {
 
 /*! Index Searcher
@@ -39,13 +43,22 @@ class IndexSearcher : public IndexRunner {
   ~IndexSearcher() override = default;
 
   //! Initialize Searcher
-  virtual int init(const ailego::Params & /*params*/) = 0;
+  virtual int init(const ailego::Params & /*params*/) {
+    return IndexError_NotImplemented;
+  }
+
+  //! Initialize Searcher with a quantizer for distance computation
+  virtual int init(
+      const ailego::Params & /*params*/,
+      const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
+    return IndexError_NotImplemented;
+  }
 
   //! Retrieve meta of index
-  virtual const IndexMeta &meta(void) const = 0;
+  virtual const IndexMeta &meta() const = 0;
 
   //! Retrieve params of index
-  virtual const ailego::Params &params(void) const = 0;
+  virtual const ailego::Params &params() const = 0;
 
   virtual int load(IndexStorage::Pointer /*container*/,
                    IndexMetric::Pointer /*metric*/) {

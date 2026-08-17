@@ -15,6 +15,7 @@
 #pragma once
 
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include "db/common/concurrent_roaring_bitmap.h"
@@ -51,12 +52,11 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   }
 
 
- private:
   DeleteStore(const DeleteStore &) = delete;
   DeleteStore &operator=(const DeleteStore &) = delete;
   DeleteStore &operator=(DeleteStore &&) = delete;
 
-
+ private:
  public:
   class Filter : public IndexFilter {
    public:
@@ -74,7 +74,7 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   Status load(const std::string &file_path) {
     Status status = bitmap_.deserialize(file_path);
     if (status.ok()) {
-      empty_ = bitmap_.cardinality() == 0 ? true : false;
+      empty_.store(bitmap_.cardinality() == 0, std::memory_order_relaxed);
       LOG_INFO("Opened delete store, count[%lu]", bitmap_.cardinality());
     } else {
       LOG_ERROR("Failed to load delete store from file[%s]", file_path.c_str());
@@ -95,7 +95,7 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
 
   void mark_deleted(uint64_t doc_id) {
     bitmap_.add(doc_id);
-    empty_ = false;
+    empty_.store(false, std::memory_order_relaxed);
     modified_since_last_flush_ = true;
   }
 
@@ -104,7 +104,9 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   }
 
   std::shared_ptr<IndexFilter> make_filter() const {
-    return empty_ ? nullptr : std::make_shared<Filter>(shared_from_this());
+    return empty_.load(std::memory_order_relaxed)
+               ? nullptr
+               : std::make_shared<Filter>(shared_from_this());
   };
 
   size_t storage_size_in_bytes() const {
@@ -130,13 +132,13 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   Ptr clone() const {
     auto ptr = std::make_shared<DeleteStore>(collection_name_);
     ptr->bitmap_ = bitmap_;
-    ptr->empty_ = bitmap_.cardinality() == 0 ? true : false;
+    ptr->empty_.store(bitmap_.cardinality() == 0, std::memory_order_relaxed);
     ptr->modified_since_last_flush_ = false;
     return ptr;
   }
 
   bool empty() const {
-    return empty_;
+    return empty_.load(std::memory_order_relaxed);
   }
 
  private:
@@ -144,7 +146,9 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
 
   const std::string collection_name_{};
   ConcurrentRoaringBitmap64 bitmap_{};
-  bool empty_{true};
+  // atomic: get_filter()/empty() read it lock-free during queries while
+  // mark_deleted() writes it on the write path.
+  std::atomic<bool> empty_{true};
   bool modified_since_last_flush_{false};
 };
 

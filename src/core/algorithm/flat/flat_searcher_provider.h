@@ -39,28 +39,28 @@ class FlatSearcherProvider : public IndexProvider {
   }
 
   //! Create a new iterator
-  IndexProvider::Iterator::Pointer create_iterator(void) override {
+  IndexProvider::Iterator::Pointer create_iterator() override {
     return IndexProvider::Iterator::Pointer(
         new (std::nothrow) FlatSearcherProvider::Iterator(owner_));
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const override {
+  size_t count() const override {
     return total_vector_count_;
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return owner_->meta().dimension();
   }
 
   //! Retrieve type of vector
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return owner_->meta().data_type();
   }
 
   //! Retrieve vector size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return owner_->meta().element_size();
   }
 
@@ -70,7 +70,7 @@ class FlatSearcherProvider : public IndexProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_->name();
   }
 
@@ -95,22 +95,22 @@ class FlatSearcherProvider : public IndexProvider {
     //! Retrieve pointer of data
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
-    const void *data(void) const override {
+    const void *data() const override {
       return data_;
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (!invalid_ && cursor_index_ < total_vector_count_);
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return owner_->key(cursor_index_);
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++cursor_index_;
 
       if ((cursor_index_ % BATCH_SIZE) != 0) {
@@ -122,7 +122,7 @@ class FlatSearcherProvider : public IndexProvider {
 
    protected:
     //! Read a block of data
-    void next_block(void) {
+    void next_block() {
       const void *read_data = nullptr;
       size_t read_size = 0;
 

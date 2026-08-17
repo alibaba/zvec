@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #include <zvec/ailego/io/mmap_file.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
-#include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_mapping.h>
 #include "ailego/utility/memory_helper.h"
 
@@ -91,7 +91,7 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) {
   path_ = path;
   full_mode_ = full_mode;
   copy_on_write_ = cow;
-  huge_page_ = Ishugetlbfs(path);
+  huge_page_ = ishugetlbfs(path);
 
   bool read_only = copy_on_write_ && !full_mode_;
   if (!file_.open(path.c_str(), read_only, false)) {
@@ -126,7 +126,7 @@ int IndexMapping::create(const std::string &path, size_t seg_meta_capacity) {
               ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_CreateFile;
   }
-  huge_page_ = Ishugetlbfs(path);
+  huge_page_ = ishugetlbfs(path);
   if (huge_page_) {
     return init_hugepage_meta_section();
   }
@@ -235,7 +235,7 @@ int IndexMapping::init_hugepage_meta_section() {
   return this->init_index_mapping(len);
 }
 
-void IndexMapping::close(void) {
+void IndexMapping::close() {
   // Unmap all memory
   this->unmap_all();
   if (header_) {
@@ -407,7 +407,7 @@ void IndexMapping::unmap(const std::string &id) {
   }
 }
 
-void IndexMapping::unmap_all(void) {
+void IndexMapping::unmap_all() {
   for (auto iter = segments_.begin(); iter != segments_.end(); ++iter) {
     SegmentInfo &segment_info = iter->second;
     Segment *item = &segment_info.segment;
@@ -420,7 +420,7 @@ void IndexMapping::unmap_all(void) {
   }
 }
 
-int IndexMapping::flush(void) {
+int IndexMapping::flush() {
   if ((file_.size() < index_size_) && !file_.truncate(index_size_)) {
     LOG_ERROR("Failed to truncate file size %zu, %s", index_size_,
               ailego::FileHelper::GetLastErrorString().c_str());
@@ -599,7 +599,7 @@ int IndexMapping::init_index_mapping(size_t len) {
   return 0;
 }
 
-bool IndexMapping::Ishugetlbfs(const std::string &path) const {
+bool IndexMapping::ishugetlbfs(const std::string &path) const {
 #ifdef __linux__
   struct statfs buf;
   if (statfs(path.c_str(), &buf) != 0) {

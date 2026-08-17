@@ -16,29 +16,88 @@
 #define MAX_IO_DEPTH 128
 
 #include <fcntl.h>
+#include <array>
 
-#if (defined(__linux) || defined(__linux__))
-#include <libaio.h>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
+#include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
+#elif defined(_WIN32) || defined(_WIN64)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#include <Windows.h>
+
+// Do not leak Win32's function-like aliases into headers included below.
+// They otherwise rewrite qualified names such as FileHelper::DeleteFile().
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
 #endif
 
+#if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>
-#include <atomic>
+#endif
+#include <memory>
+#include <string>
 #include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
 namespace zvec {
+namespace ailego {
+class VecBufferPool;
+}
 namespace core {
 
-#if (defined(__linux) || defined(__linux__))
-typedef io_context_t IOContext;
-#else
-typedef uint32_t IOContext;
+// IoBackend holds the selected backend for each thread. On Linux it also owns
+// the resources required by the asynchronous backends. The priority is:
+//   1. io_uring  (raw kernel syscalls — zero dependency)
+//   2. libaio    (dlopen — soft dependency)
+//   3. pread     (always available — synchronous fallback)
+//
+// macOS uses a real context with type kPread so that the active backend can be
+// inspected and reported consistently instead of using an opaque placeholder.
+// Windows stores a private file handle, completion port, and stable OVERLAPPED
+// request slots in each I/O context. Keeping completion ports private prevents
+// one context from consuming another context's completions.
+// IOContext is a pointer to IoBackend; nullptr means uninitialised.
+struct IoBackend {
+  ailego::IOBackendType type{ailego::IOBackendType::kPread};
+
+#if defined(__linux__) && !defined(__ANDROID__)
+  ailego::IoUringRing ring{};
+  io_context_t aio_ctx{nullptr};
+#elif defined(_WIN32) || defined(_WIN64)
+  std::array<OVERLAPPED, MAX_IO_DEPTH> reqs{};
+  std::array<uint8_t, MAX_IO_DEPTH> active_requests{};
+  HANDLE file_handle{INVALID_HANDLE_VALUE};
+  HANDLE completion_port{nullptr};
+  std::wstring file_path;
+  uint64_t file_identity{0};
+  uint32_t outstanding_count{0};
+  uint64_t generation{0};
 #endif
+};
+
+typedef IoBackend *IOContext;
 
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
 
+// Log the current DiskAnn I/O backend (io_uring, libaio, or pread). Probes the
+// backend on first call. Android and iOS always use synchronous pread.
+void log_diskann_io_backend();
+
+#if defined(__linux__) && !defined(__ANDROID__)
+using AlignedRead = ailego::IoUringRead;
+#else
 struct AlignedRead {
   uint64_t offset;
   uint64_t len;
@@ -48,55 +107,157 @@ struct AlignedRead {
 
   AlignedRead(uint64_t offset, uint64_t len, void *buf)
       : offset(offset), len(len), buf(buf) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    // O_DIRECT requires 512-byte alignment on Linux.
     ailego_assert(static_cast<size_t>(offset) % 512 == 0);
     ailego_assert(static_cast<size_t>(len) % 512 == 0);
     ailego_assert(reinterpret_cast<size_t>(buf) % 512 == 0);
+#endif
   }
+};
+#endif
+
+struct PendingBatch {
+#if defined(__linux__) && !defined(__ANDROID__)
+  std::vector<struct iocb> cbs;
+  std::vector<struct iocb *> cb_ptrs;
+#elif defined(_WIN32) || defined(_WIN64)
+  std::vector<uint64_t> expected_lengths;
+  std::vector<uint8_t> completed;
+  uint64_t generation{0};
+#endif
+  uint32_t n_submitted{0};
+  uint32_t n_reaped{0};
+  bool used_pread{false};
 };
 
 class AlignedFileReader {
- protected:
-  std::map<std::thread::id, IOContext> ctx_map;
-  std::mutex ctx_mut;
-
  public:
-  virtual IOContext &get_ctx() = 0;
-
-  virtual ~AlignedFileReader() {}
-
-  virtual void register_thread() = 0;
-  virtual void deregister_thread() = 0;
-  virtual void deregister_all_threads() = 0;
+  virtual ~AlignedFileReader() = default;
 
   virtual void open(const std::string &fname) = 0;
   virtual void close() = 0;
 
   virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
                    bool async = false) = 0;
+
+  virtual int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+                     IOContext &ctx) = 0;
+
+  virtual int get_completed(PendingBatch &batch, IOContext &ctx,
+                            int min_completed,
+                            std::vector<uint32_t> &completed_indices) = 0;
+
+  // Release any lazy per-context file resources at an operation boundary.
+  // POSIX backends keep their process-local queue resources for reuse; Windows
+  // overrides this to close private file and completion-port handles.
+  virtual void release_io_ctx(IOContext &ctx) = 0;
+
+  virtual bool requires_io_context() const {
+    return true;
+  }
 };
 
+// POSIX reader implementation. Linux selects io_uring, libaio, or pread;
+// macOS ARM64 uses synchronous pread.
+#if !defined(_WIN32) && !defined(_WIN64)
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
 
-  IOContext bad_ctx = (IOContext)-1;
-
  public:
   LinuxAlignedFileReader();
   LinuxAlignedFileReader(int file_desc);
-  ~LinuxAlignedFileReader();
+  LinuxAlignedFileReader(const LinuxAlignedFileReader &) = delete;
+  LinuxAlignedFileReader &operator=(const LinuxAlignedFileReader &) = delete;
+  ~LinuxAlignedFileReader() override;
 
  public:
-  IOContext &get_ctx();
-
-  void register_thread();
-  void deregister_thread();
-  void deregister_all_threads();
-  void open(const std::string &fname);
-  void close();
+  void open(const std::string &fname) override;
+  // Duplicate an already-open descriptor so metadata and graph reads stay on
+  // the same file object even if fname is atomically replaced.
+  int open_from_handle(const std::string &fname, int source_fd);
+  void close() override;
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-           bool async = false);
+           bool async = false) override;
+
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override;
+
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override;
+  void release_io_ctx(IOContext & /*ctx*/) override {}
+};
+#else
+class WindowsAlignedFileReader : public AlignedFileReader {
+ private:
+  friend class WindowsAlignedFileReaderTestPeer;
+
+  std::wstring file_path_;
+  HANDLE stable_file_handle_{INVALID_HANDLE_VALUE};
+  uint64_t file_identity_{0};
+
+  int prepare_io_ctx(IOContext &ctx);
+  void reset_io_ctx(IOContext &ctx);
+
+ public:
+  WindowsAlignedFileReader() = default;
+  WindowsAlignedFileReader(const WindowsAlignedFileReader &) = delete;
+  WindowsAlignedFileReader &operator=(const WindowsAlignedFileReader &) =
+      delete;
+  ~WindowsAlignedFileReader() override;
+
+  void open(const std::string &fname) override;
+  // Capture the same file object as an already-open buffered handle. This is
+  // used while loading an index so metadata and later graph reads cannot come
+  // from different files if fname is atomically replaced between the two.
+  int open_from_handle(const std::string &fname, HANDLE source_handle);
+  void close() override;
+
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
+           bool async = false) override;
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override;
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override;
+  void release_io_ctx(IOContext &ctx) override;
+};
+#endif
+
+#if defined(_WIN32) || defined(_WIN64)
+using PlatformAlignedFileReader = WindowsAlignedFileReader;
+#else
+using PlatformAlignedFileReader = LinuxAlignedFileReader;
+#endif
+
+class BufferPoolAlignedFileReader : public AlignedFileReader {
+ public:
+  explicit BufferPoolAlignedFileReader(
+      std::shared_ptr<ailego::VecBufferPool> pool);
+  ~BufferPoolAlignedFileReader() override;
+
+  void open(const std::string &fname) override;
+  //! Capture the pool's file, not a potentially replaced pathname. Also works
+  //! when the pool cannot reserve page-table memory and uses bypass-only I/O.
+  int open_from_pool(const std::string &fname);
+  void close() override;
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
+           bool async = false) override;
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override;
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override;
+  void release_io_ctx(IOContext &ctx) override;
+
+  bool requires_io_context() const override {
+    return false;
+  }
+
+ private:
+  std::shared_ptr<ailego::VecBufferPool> pool_;
+  PlatformAlignedFileReader bypass_reader_;
+  bool opened_{false};
 };
 
 }  // namespace core

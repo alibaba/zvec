@@ -47,7 +47,7 @@ jobs:
           max-size: 150M
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -60,14 +60,6 @@ jobs:
           sudo apt-get install -y clang libomp-dev
         shell: bash
 
-      - name: Install AIO 
-        if: runner.os == 'Linux' && runner.arch == 'X64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libaio-dev
-        shell: bash
-
       - name: Print CPU info
         if: runner.os == 'Linux'
         run: lscpu
@@ -76,7 +68,7 @@ jobs:
       - name: Set up environment variables
         run: |
           # Set number of processors for parallel builds
-          if [[ "${{ matrix.platform }}" == "macos-arm64" ]]; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
             NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
           else
             NPROC=$(nproc 2>/dev/null || echo 2)
@@ -144,6 +136,7 @@ jobs:
         shell: bash
 
       - name: Run C++ Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
           # Unset LD_LIBRARY_PATH to avoid conflicts with system libraries
@@ -152,10 +145,51 @@ jobs:
           cmake --build . --target unittest --parallel $NPROC
         shell: bash
 
+      - name: Run macOS x64 C++ compatibility tests
+        if: matrix.platform == 'macos-x64'
+        run: |
+          test "$(uname -m)" = "x86_64"
+          df -h /
+          cd "$GITHUB_WORKSPACE/build"
+          cmake --build . \
+            --target shared_api_test c_api_test \
+            --parallel "$NPROC"
+          ctest --output-on-failure \
+            -R '^(shared_api_test|c_api_test)$' \
+            --parallel 1
+        shell: bash
+
       - name: Run Python Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/
+        shell: bash
+
+      - name: Run macOS x64 Python compatibility smoke test
+        if: matrix.platform == 'macos-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -X faulthandler -c \
+            "import platform, zvec; print('Imported zvec on', platform.machine(), zvec.__version__)"
+          python -X faulthandler .github/scripts/macos_x64_python_smoke.py
+        shell: bash
+
+      - name: Diagnose macOS x64 Python native crash
+        if: failure() && matrix.platform == 'macos-x64'
+        run: |
+          echo "Recent macOS crash reports:"
+          find "$HOME/Library/Logs/DiagnosticReports" \
+            -type f -mmin -15 \
+            \( -name 'Python*.ips' -o -name 'Python*.crash' \) \
+            -print -exec tail -n 500 {} \; 2>/dev/null || true
+
+          echo "Reproducing under LLDB:"
+          lldb --batch \
+            -o run \
+            -k 'thread backtrace all' \
+            -- "$(command -v python)" -X faulthandler \
+            "$GITHUB_WORKSPACE/.github/scripts/macos_x64_python_smoke.py"
         shell: bash
 
       - name: Run C++ Examples
@@ -186,4 +220,89 @@ jobs:
           ./c_api_field_schema_example
           ./c_api_index_example
           ./c_api_optimized_example
+        shell: bash
+
+      # ------------------------------------------------------------------ #
+      # DiskAnn io_uring round: GitHub-hosted runners are full VMs on
+      # kernel 6.8+, so raw io_uring syscalls are available and win the
+      # backend priority (io_uring > libaio > pread).  The main test
+      # rounds above therefore already exercised the io_uring path;
+      # this step asserts it so a silent probe regression fails CI.
+      # ------------------------------------------------------------------ #
+      - name: Verify io_uring backend is active
+        if: runner.os == 'Linux'
+        run: |
+          uname -r
+          python -c "
+          import zvec
+          from zvec.typing import IOBackendType
+          t = zvec.io_backend_type()
+          print('Active I/O backend:', t, '-', zvec.io_backend_description())
+          assert t == IOBackendType.IO_URING, f'expected IO_URING, got {t}'
+          "
+        shell: bash
+
+      # ------------------------------------------------------------------ #
+      # DiskAnn libaio round: disable io_uring via sysctl (kernel 6.6+,
+      # makes io_uring_setup() fail with -EPERM), install libaio, and
+      # re-run tests so the libaio fallback path is genuinely exercised.
+      # ------------------------------------------------------------------ #
+      - name: Install libaio runtime and disable io_uring
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update -y
+          # libaio1t64 on Ubuntu 24.04+ (t64 transition), libaio1 on older
+          sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1
+          echo "=== libaio status (should be present) ==="
+          dpkg -l | grep -i libaio || true
+          ldconfig -p | grep libaio || true
+          sudo sysctl -w kernel.io_uring_disabled=2
+          python -c "
+          import zvec
+          from zvec.typing import IOBackendType
+          t = zvec.io_backend_type()
+          print('Active I/O backend:', t)
+          assert t == IOBackendType.LIBAIO, f'expected LIBAIO, got {t}'
+          "
+        shell: bash
+
+      - name: Run DiskAnn C++ Tests
+        if: matrix.platform != 'macos-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R diskann --output-on-failure --parallel $NPROC
+          "$GITHUB_WORKSPACE/examples/c++/build/diskann-core-example"
+        shell: bash
+
+      - name: Run DiskAnn Python Tests (w/ libaio)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -m pytest python/tests/test_collection_diskann.py -v
+        shell: bash
+
+      # ------------------------------------------------------------------ #
+      # DiskAnn pread round: with io_uring still disabled, remove libaio
+      # so the final synchronous pread() fallback is exercised too.
+      # ------------------------------------------------------------------ #
+      - name: Remove libaio (force pread fallback)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get remove -y libaio1t64 libaio1 2>/dev/null || \
+            sudo apt-get remove -y libaio1t64 || \
+            sudo apt-get remove -y libaio1
+          python -c "
+          import zvec
+          from zvec.typing import IOBackendType
+          t = zvec.io_backend_type()
+          print('Active I/O backend:', t)
+          assert t == IOBackendType.PREAD, f'expected PREAD, got {t}'
+          "
+        shell: bash
+
+      - name: Run DiskAnn C++ Tests (w/ pread)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R diskann --output-on-failure --parallel $NPROC
         shell: bash

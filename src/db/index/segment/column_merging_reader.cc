@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "column_merging_reader.h"
+#include <algorithm>
 #include <iostream>
+#include <limits>
 #include <arrow/array.h>
 #include <arrow/result.h>
 #include <arrow/status.h>
@@ -36,6 +38,7 @@ ColumnMergingReader::ColumnMergingReader(
     : target_schema_(target_schema), input_readers_(std::move(input_readers)) {
   current_batches_.resize(input_readers_.size());
   std::fill(current_batches_.begin(), current_batches_.end(), nullptr);
+  current_batch_offsets_.resize(input_readers_.size(), 0);
 }
 
 std::shared_ptr<arrow::Schema> ColumnMergingReader::schema() const {
@@ -50,45 +53,51 @@ arrow::Status ColumnMergingReader::ReadNext(
     return arrow::Status::OK();
   }
 
-  // Read next batch from each input reader
+  // Load a non-empty batch for each reader that exhausted its current batch.
   for (size_t i = 0; i < input_readers_.size(); ++i) {
-    arrow::Status status = input_readers_[i]->ReadNext(&current_batches_[i]);
-    if (!status.ok()) {
-      return status;
-    }
-  }
-
-  // Check if all readers have reached EOF
-  bool all_null = true;
-  for (const auto &batch : current_batches_) {
-    if (batch != nullptr) {
-      all_null = false;
-      break;
-    }
-  }
-
-  // All readers reached EOF
-  if (all_null) {
-    has_more_ = false;
-    return arrow::Status::OK();
-  }
-
-  // Verify that all non-null batches have consistent row counts
-  int64_t expected_rows = -1;
-  for (const auto &batch : current_batches_) {
-    if (batch) {
-      if (expected_rows == -1) {
-        expected_rows = batch->num_rows();
-      } else if (expected_rows != batch->num_rows()) {
-        return arrow::Status::Invalid(
-            "Input readers have inconsistent row counts");
+    while (current_batches_[i] == nullptr) {
+      arrow::Status status = input_readers_[i]->ReadNext(&current_batches_[i]);
+      if (!status.ok()) {
+        return status;
+      }
+      current_batch_offsets_[i] = 0;
+      if (current_batches_[i] == nullptr) {
+        break;
+      }
+      if (current_batches_[i]->num_rows() == 0) {
+        current_batches_[i] = nullptr;
       }
     }
   }
 
-  if (expected_rows <= 0) {
+  // Check whether readers reached EOF at the same logical row.
+  bool all_null = true;
+  bool any_null = false;
+  for (const auto &batch : current_batches_) {
+    if (batch == nullptr) {
+      any_null = true;
+    } else {
+      all_null = false;
+    }
+  }
+
+  if (all_null) {
     has_more_ = false;
     return arrow::Status::OK();
+  }
+  if (any_null) {
+    return arrow::Status::Invalid(
+        "Input readers have inconsistent total row counts");
+  }
+
+  int64_t output_rows = std::numeric_limits<int64_t>::max();
+  for (size_t i = 0; i < current_batches_.size(); ++i) {
+    const int64_t remaining_rows =
+        current_batches_[i]->num_rows() - current_batch_offsets_[i];
+    if (remaining_rows <= 0) {
+      return arrow::Status::Invalid("Input reader has an invalid batch offset");
+    }
+    output_rows = std::min(output_rows, remaining_rows);
   }
 
   // Build each column
@@ -100,11 +109,14 @@ arrow::Status ColumnMergingReader::ReadNext(
     std::shared_ptr<arrow::Array> col_array = nullptr;
 
     // Try to find this column from any batch
-    for (const auto &batch : current_batches_) {
+    for (size_t reader_idx = 0; reader_idx < current_batches_.size();
+         ++reader_idx) {
+      const auto &batch = current_batches_[reader_idx];
       if (!batch) continue;
       int col_idx = batch->schema()->GetFieldIndex(field->name());
       if (col_idx != -1) {
-        col_array = batch->column(col_idx);
+        col_array = batch->column(col_idx)->Slice(
+            current_batch_offsets_[reader_idx], output_rows);
         break;
       }
     }
@@ -118,14 +130,19 @@ arrow::Status ColumnMergingReader::ReadNext(
   }
 
   // Construct final batch
-  *out = arrow::RecordBatch::Make(target_schema_, expected_rows,
-                                  std::move(columns));
+  *out =
+      arrow::RecordBatch::Make(target_schema_, output_rows, std::move(columns));
   if (!*out) {
     return arrow::Status::Invalid("Failed to create merged record batch");
   }
 
-  // Clear current batches, prepare for next read
-  std::fill(current_batches_.begin(), current_batches_.end(), nullptr);
+  for (size_t i = 0; i < current_batches_.size(); ++i) {
+    current_batch_offsets_[i] += output_rows;
+    if (current_batch_offsets_[i] == current_batches_[i]->num_rows()) {
+      current_batches_[i] = nullptr;
+      current_batch_offsets_[i] = 0;
+    }
+  }
 
   return arrow::Status::OK();
 }

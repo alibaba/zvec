@@ -44,10 +44,8 @@ class IndexPacker {
 
     //! Constructor
     SegmentMeta(const SegmentMeta &rhs)
-        : data_size_(rhs.data_size_),
-          padding_size_(rhs.padding_size_),
-          data_crc_(rhs.data_crc_),
-          id_(rhs.id_) {}
+
+        = default;
 
     //! Constructor
     SegmentMeta(SegmentMeta &&rhs)
@@ -57,22 +55,22 @@ class IndexPacker {
           id_(std::move(rhs.id_)) {}
 
     //! Retrieve id of segment
-    const std::string &id(void) const {
+    const std::string &id() const {
       return id_;
     }
 
     //! Retrieve size of data
-    size_t data_size(void) const {
+    size_t data_size() const {
       return data_size_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const {
+    uint32_t data_crc() const {
       return data_crc_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const {
+    size_t padding_size() const {
       return padding_size_;
     }
 
@@ -84,12 +82,12 @@ class IndexPacker {
   };
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return magic_;
   }
 
   //! Reset the packer
-  void reset(void) {
+  void reset() {
     magic_ = 0;
     data_crc_ = 0u;
     data_size_ = 0u;

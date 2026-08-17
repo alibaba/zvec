@@ -30,7 +30,8 @@ struct IndexMetaFormatHeader {
   uint32_t space_id;
   uint32_t attachment_offset;
   uint32_t attachment_size;
-  uint8_t reserved_[4092];
+  uint32_t extra_meta_size;
+  uint8_t reserved_[4088];
 };
 
 static_assert(sizeof(IndexMetaFormatHeader) % 32 == 0,
@@ -47,6 +48,7 @@ void IndexMeta::serialize(std::string *out) const {
   format.dimension = dimension_;
   format.unit_size = unit_size_;
   format.space_id = space_id_;
+  format.extra_meta_size = extra_meta_size_;
 
   if (!metric_name_.empty()) {
     ailego::Params item;
@@ -69,6 +71,13 @@ void IndexMeta::serialize(std::string *out) const {
     item.set("revision", reformer_revision_);
     item.set("params", reformer_params_);
     attachment.set("reformer", std::move(item));
+  }
+  if (!quantizer_name_.empty()) {
+    ailego::Params item;
+    item.set("name", quantizer_name_);
+    item.set("revision", quantizer_revision_);
+    item.set("params", quantizer_params_);
+    attachment.set("quantizer", std::move(item));
   }
   if (!trainer_name_.empty()) {
     ailego::Params item;
@@ -141,7 +150,9 @@ bool IndexMeta::deserialize(const void *data, size_t len) {
   data_type_ = static_cast<IndexMeta::DataType>(format->data_type);
   dimension_ = format->dimension;
   unit_size_ = format->unit_size;
-  element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dimension_);
+  extra_meta_size_ = format->extra_meta_size;
+  element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dimension_) +
+                  extra_meta_size_;
   space_id_ = format->space_id;
 
   // Read attachment
@@ -173,6 +184,11 @@ bool IndexMeta::deserialize(const void *data, size_t len) {
     item.get("name", &reformer_name_);
     item.get("revision", &reformer_revision_);
     item.get("params", &reformer_params_);
+  }
+  if (attachment.get("quantizer", &item)) {
+    item.get("name", &quantizer_name_);
+    item.get("revision", &quantizer_revision_);
+    item.get("params", &quantizer_params_);
   }
   if (attachment.get("trainer", &item)) {
     item.get("name", &trainer_name_);

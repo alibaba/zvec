@@ -112,12 +112,13 @@ CollectionSchema::Ptr TestHelper::CreateNormalSchema(
       "dense_int8", DataType::VECTOR_INT8, 128, false,
       std::make_shared<FlatIndexParams>(MetricType::IP)));
 
-  // IVF, HNSW_RABITQ and DISKANN do not support sparse vectors, always use
-  // Flat for sparse fields in those cases.
+  // IVF, RabitQ and DISKANN do not support sparse vectors, always use Flat for
+  // sparse fields in those cases.
   auto supports_sparse = [](const IndexParams::Ptr &params) {
     auto type = params->type();
     return type != IndexType::IVF && type != IndexType::HNSW_RABITQ &&
-           type != IndexType::DISKANN && type != IndexType::OMEGA;
+           type != IndexType::IVF_RABITQ && type != IndexType::DISKANN &&
+           type != IndexType::OMEGA;
   };
 
   IndexParams::Ptr sparse_index_params;
@@ -428,10 +429,10 @@ Status TestHelper::SegmentInsertDoc(const Segment::Ptr &segment,
 
       Status s;
       if (upsert) {
-        s = segment->Upsert(new_doc);
+        s = segment->upsert(new_doc);
         CHECK_RETURN_STATUS(s);
       } else {
-        s = segment->Insert(new_doc);
+        s = segment->insert(new_doc);
         CHECK_RETURN_STATUS(s);
       }
     }
@@ -446,13 +447,13 @@ Status TestHelper::CollectionInsertDoc(const Collection::Ptr &collection,
   if (!collection) {
     return Status::InvalidArgument("collection is nullptr");
   }
-  auto schema = collection->Schema().value();
+  auto schema = collection->schema().value();
   auto make_doc = [&](uint64_t doc_id) -> Doc {
     return nullable ? CreateDocNull(doc_id, schema) : CreateDoc(doc_id, schema);
   };
   auto exec_write = [&](std::vector<Doc> &docs) -> Status {
     Result<WriteResults> result =
-        upsert ? collection->Upsert(docs) : collection->Insert(docs);
+        upsert ? collection->upsert(docs) : collection->insert(docs);
 
     if (!result.has_value()) {
       LOG_ERROR("Failed to %s docs (count=%zu), error: %s.",
@@ -757,7 +758,7 @@ arrow::Status TestHelper::WriteTestFile(const std::string &filepath,
   }
 
   // Open output stream
-  ARROW_ASSIGN_OR_RAISE(auto out, arrow::io::FileOutputStream::Open(filepath));
+  ARROW_ASSIGN_OR_RAISE(auto out, arrow::io::FileOutputStream::open(filepath));
 
   if (format == FileFormat::PARQUET) {
     // Parquet write logic - create table with multiple record batches
@@ -793,12 +794,12 @@ arrow::Status TestHelper::WriteTestFile(const std::string &filepath,
       ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
     }
 
-    ARROW_RETURN_NOT_OK(writer->Close());
+    ARROW_RETURN_NOT_OK(writer->close());
 
     std::cout << "Wrote test IPC file with " << batches.size()
               << " batches: " << filepath << std::endl;
   }
 
-  ARROW_RETURN_NOT_OK(out->Close());
+  ARROW_RETURN_NOT_OK(out->close());
   return arrow::Status::OK();
 }

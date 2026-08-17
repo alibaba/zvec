@@ -28,7 +28,7 @@ class ArrowIpcWriter : public ForwardWriter {
  public:
   explicit ArrowIpcWriter(const std::string &filepath,
                           int64_t max_rows_per_batch = 0);
-  ~ArrowIpcWriter();
+  ~ArrowIpcWriter() override;
 
   arrow::Status insert(std::shared_ptr<arrow::RecordBatchReader> reader,
                        const IndexFilter::Ptr &filter = nullptr) override;

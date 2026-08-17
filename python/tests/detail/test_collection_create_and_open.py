@@ -53,6 +53,19 @@ def check_collection_basic(coll: Collection, optimize: bool = False):
         results = coll.query()
         assert len(results) == len(docs)
 
+        # A forward scan does not exercise vector-index selection. Check ANN
+        # queries as well, both before and after optimize, for every quantizer.
+        for vector_schema in schema.vectors:
+            results = coll.query(
+                Query(
+                    field_name=vector_schema.name,
+                    vector=docs[0].vector(vector_schema.name),
+                ),
+                topk=len(docs),
+            )
+            assert len(results) == len(docs)
+            assert {doc.id for doc in results} == {doc.id for doc in docs}
+
     check_fetch_query()
 
     if optimize:
@@ -586,7 +599,7 @@ class TestCreateAndOpen:
                     path=str(collection_path), option=collection_option
                 )
                 with lock:
-                    results.append((thread_id, reopened_coll))
+                    results.append((thread_id, reopened_coll.path))
                 # Clean up the collection if opened successfully
                 if hasattr(reopened_coll, "close") and reopened_coll is not None:
                     reopened_coll.close()
@@ -616,11 +629,11 @@ class TestCreateAndOpen:
         )
 
         # Additional verification: check that the successful open has a valid collection
-        successful_thread_id, successful_collection = results[0]
-        assert successful_collection is not None, (
+        successful_thread_id, successful_collection_path = results[0]
+        assert successful_collection_path is not None, (
             "Successful open should return a valid collection"
         )
-        assert successful_collection.path == str(collection_path), (
+        assert successful_collection_path == str(collection_path), (
             "Collection path mismatch"
         )
 

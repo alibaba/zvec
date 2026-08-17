@@ -14,13 +14,16 @@
 
 #include <memory>
 #include <string>
+#include <ailego/pattern/defer.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "utility/utility_params.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
 
-int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("IVF Index not support sparse vector");
     return core::IndexError_InvalidArgument;
@@ -32,6 +35,13 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 
   proxima_index_params_.set(core::PARAM_IVF_BUILDER_CENTROID_COUNT,
                             param_.nlist);
+  ailego::Params cluster_params;
+  cluster_params.set(core::KMEANS_CLUSTER_MAX_ITERATIONS, param_.niters);
+  cluster_params.set(core::OPTKMEANS_CLUSTER_MAX_ITERATIONS, param_.niters);
+  // Forward n_iters to the first-level IVF clusterer.
+  proxima_index_params_.set(
+      core::PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX + "1",
+      cluster_params);
 
   // TODO: add_vector_with_id & fetch_by_id don't rely on this param
   builder_ = core::IndexFactory::CreateBuilder("IVFBuilder");
@@ -62,7 +72,7 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   return 0;
 }
 
-int IVFIndex::Open(const std::string &file_path,
+int IVFIndex::open(const std::string &file_path,
                    StorageOptions storage_options) {
   ailego::Params storage_params;
   file_path_ = file_path;
@@ -83,21 +93,23 @@ int IVFIndex::Open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      // NOTE: IVF index is dumped via FileDumper (plain binary file), which is
-      // not compatible with BufferStorage's IndexFormat layout (header/footer
-      // chain). Until IVF gains a BufferStorage-aware dump path, fall back to
-      // MMapFileReadStorage so the freshly-dumped file can be reopened.
-      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+      // IVF is immutable after training and FileDumper already emits the
+      // IndexFormat consumed by BufferReadStorage. Keep construction on the
+      // FileDumper path and use the bounded page cache after dump/reopen.
+      // Opening an index must not prewarm the entire file or displace other
+      // collections' cached pages. Populate the cache on demand instead.
+      storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
+                         core::BUFFER_READ_STORAGE_WARMUP_NONE);
+      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR(
-            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
+        LOG_ERROR("Failed to create BufferReadStorage for IVF");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
         LOG_ERROR(
-            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
-            "path: %s, err: %s",
+            "Failed to init BufferReadStorage for IVF, path: %s, "
+            "err: %s",
             file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }
@@ -132,14 +144,14 @@ int IVFIndex::Open(const std::string &file_path,
   return 0;
 }
 
-int IVFIndex::GenerateHolder() {
+int IVFIndex::generate_holder() {
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
                               converter_, &holder_);
 }
 
-int IVFIndex::Add(const VectorData &vector, uint32_t doc_id) {
-  if (is_trained_) {
-    LOG_ERROR("this IVF index is trained");
+int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
+  if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
+    LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
@@ -161,20 +173,92 @@ int IVFIndex::Add(const VectorData &vector, uint32_t doc_id) {
   return 0;
 }
 
-int IVFIndex::Train() {
-  GenerateHolder();
-  builder_->train(holder_);
-  builder_->build(holder_);
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
-
-  dumper->create(file_path_);
-  builder_->dump(dumper);
-  // Dump converter state (e.g., rotator for INT8+rotate) to dumper
-  if (converter_ && converter_->dump(dumper) != 0) {
-    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
+int IVFIndex::train() {
+  if (is_trained_) {
+    return 0;
   }
-  dumper->close();
+  if (build_stage_ == BuildStage::kCollecting) {
+    int ret = generate_holder();
+    if (ret != 0) {
+      return ret;
+    }
+    ret = builder_->train(holder_);
+    if (ret != 0) {
+      return ret;
+    }
+    build_stage_ = BuildStage::kTrained;
+  }
+  if (build_stage_ == BuildStage::kTrained) {
+    int ret = builder_->build(holder_);
+    if (ret != 0) {
+      return ret;
+    }
+    build_stage_ = BuildStage::kBuilt;
+  }
+  return dump_and_open();
+}
+
+int IVFIndex::reset_builder() {
+  auto next_builder = core::IndexFactory::CreateBuilder("IVFBuilder");
+  if (!next_builder) {
+    return core::IndexError_NoExist;
+  }
+  int ret =
+      next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
+                         proxima_index_params_);
+  if (ret != 0) {
+    return ret;
+  }
+  builder_ = std::move(next_builder);
+  return 0;
+}
+
+int IVFIndex::dump_and_open() {
+  if (build_stage_ == BuildStage::kBuilt) {
+    auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+    if (!dumper) {
+      return core::IndexError_NoExist;
+    }
+
+    int ret = dumper->create(file_path_);
+    if (ret != 0) {
+      return ret;
+    }
+    AILEGO_DEFER([&]() {
+      if (dumper) dumper->close();
+    });
+    ret = builder_->dump(dumper);
+    if (ret != 0) {
+      return ret;
+    }
+    // Dump converter state (e.g., rotator for INT8+rotate) to dumper
+    if (converter_ && converter_->dump(dumper) != 0) {
+      LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
+      return core::IndexError_Runtime;
+    }
+    ret = dumper->close();
+    if (ret != 0) {
+      return ret;
+    }
+    dumper.reset();
+
+    // Release the full builder state before opening the persisted index.
+    // If opening fails, retry only open: the replacement builder is empty.
+    ret = reset_builder();
+    if (ret != 0) {
+      return ret;
+    }
+    build_stage_ = BuildStage::kDumped;
+  } else if (build_stage_ != BuildStage::kDumped) {
+    return core::IndexError_NoReady;
+  }
+
+  AILEGO_DEFER([&]() {
+    if (!is_trained_) {
+      if (streamer_) streamer_->close();
+      storage_->close();
+    }
+  });
   int ret = storage_->open(file_path_, false);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
@@ -191,6 +275,12 @@ int IVFIndex::Train() {
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
+  // Only the reformer is needed after the persisted index is ready. Destroy
+  // the build-only converter and its input ownership chain, but keep it on
+  // every failure path so dump/open can be retried with the trained state.
+  converter_.reset();
+  holder_.reset();
+  decltype(doc_cache_)().swap(doc_cache_);
   return 0;
 }
 
@@ -199,6 +289,14 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
   if (is_trained_) {
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // A failed merge has no cached input; sparse doc IDs also leave holes.
+    if (doc_id >= doc_cache_.size()) {
+      return core::IndexError_OutOfRange;
+    }
+    if (doc_cache_[doc_id].first == kInvalidKey) {
+      return core::IndexError_NoExist;
+    }
     DenseVectorBuffer dense_vector_buffer;
     std::string &out_vector_buffer = dense_vector_buffer.data;
     out_vector_buffer = doc_cache_[doc_id].second;
@@ -214,10 +312,17 @@ int IVFIndex::_prepare_for_search(
   const auto &ivf_search_param =
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
+  if (search_param->group_by_param && search_param->group_by_param->group_by) {
+    LOG_ERROR("group_by search is not supported for IVF index");
+    return core::IndexError_Unsupported;
+  }
+
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
-  if (ivf_search_param->filter) {
+  if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
     context->set_filter(std::move(*ivf_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (ivf_search_param->radius > 0.0f) {
     context->set_threshold(ivf_search_param->radius);
@@ -231,38 +336,32 @@ int IVFIndex::_prepare_for_search(
   return 0;
 }
 
-int IVFIndex::Merge(const std::vector<Index::Pointer> &indexes,
+int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
                     const IndexFilter &filter, const MergeOptions &options) {
-  int pre_ret = Index::Merge(indexes, filter, options);
+  if (indexes.empty()) {
+    return 0;
+  }
+  if (is_trained_) {
+    // Dumping to a loaded index would overwrite its file before the existing
+    // streamer rejects open(). Rebuilding requires a separate target index.
+    LOG_ERROR("Cannot merge into a trained IVF index; use a new target");
+    return core::IndexError_Unsupported;
+  }
+  // A new merge (including a retry) rebuilds from its explicit inputs. Do not
+  // reuse a partially trained builder or silently resume different inputs.
+  int ret = reset_builder();
+  if (ret != 0) {
+    return ret;
+  }
+  build_stage_ = BuildStage::kCollecting;
+  int pre_ret = Index::merge(indexes, filter, options);
   if (pre_ret != 0) {
     return pre_ret;
   }
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
-
-  dumper->create(file_path_);
-  builder_->dump(dumper);
-  // Dump converter state (e.g., rotator for INT8+rotate) to dumper
-  if (converter_ && converter_->dump(dumper) != 0) {
-    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  dumper->close();
-  int ret = storage_->open(file_path_, false);
-  if (ret != 0) {
-    LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
-  }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  // Load reformer data from storage (e.g., rotation matrix)
-  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
-    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  is_trained_ = true;
-  return 0;
+  build_stage_ = BuildStage::kBuilt;
+  // Index::merge marks the reduce phase complete. IVF is not usable until
+  // dump/open finishes; train() may resume that phase if it fails.
+  is_trained_ = false;
+  return dump_and_open();
 }
 }  // namespace zvec::core_interface

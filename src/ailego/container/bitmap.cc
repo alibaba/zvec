@@ -75,7 +75,7 @@ size_t Bitset::BitwiseOrCardinality(const Bitset &lhs, const Bitset &rhs) {
                                             rhs.array_.data(), lsize);
 }
 
-void Bitmap::clear(void) {
+void Bitmap::clear() {
   for (std::vector<Bucket *>::iterator iter = array_.begin();
        iter != array_.end(); ++iter) {
     delete (*iter);
@@ -96,7 +96,7 @@ void Bitmap::copy(const Bitmap &rhs) {
   }
 }
 
-void Bitmap::shrink_to_fit(void) {
+void Bitmap::shrink_to_fit() {
   size_t shrink_count = 0;
   std::vector<Bucket *>::reverse_iterator iter;
 
@@ -273,7 +273,7 @@ void Bitmap::bitwise_xor(const Bitmap &rhs) {
   }
 }
 
-void Bitmap::bitwise_not(void) {
+void Bitmap::bitwise_not() {
   for (std::vector<Bucket *>::iterator iter = array_.begin();
        iter != array_.end(); ++iter) {
     Bucket *&bucket = *iter;
@@ -284,7 +284,7 @@ void Bitmap::bitwise_not(void) {
   }
 }
 
-bool Bitmap::test_all(void) const {
+bool Bitmap::test_all() const {
   if (array_.empty()) {
     return false;
   }
@@ -297,7 +297,7 @@ bool Bitmap::test_all(void) const {
   return true;
 }
 
-bool Bitmap::test_any(void) const {
+bool Bitmap::test_any() const {
   for (std::vector<Bucket *>::const_iterator iter = array_.begin();
        iter != array_.end(); ++iter) {
     if (*iter && (*iter)->test_any()) {
@@ -307,7 +307,7 @@ bool Bitmap::test_any(void) const {
   return false;
 }
 
-bool Bitmap::test_none(void) const {
+bool Bitmap::test_none() const {
   for (std::vector<Bucket *>::const_iterator iter = array_.begin();
        iter != array_.end(); ++iter) {
     if (*iter && !(*iter)->test_none()) {
@@ -317,7 +317,7 @@ bool Bitmap::test_none(void) const {
   return true;
 }
 
-size_t Bitmap::cardinality(void) const {
+size_t Bitmap::cardinality() const {
   size_t result = 0;
   for (std::vector<Bucket *>::const_iterator iter = array_.begin();
        iter != array_.end(); ++iter) {

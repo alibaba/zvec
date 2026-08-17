@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_framework.h>
 #include "vamana_algorithm.h"
@@ -25,20 +26,25 @@ class VamanaStreamer : public IndexStreamer {
  public:
   using ContextPointer = IndexStreamer::Context::Pointer;
 
-  VamanaStreamer(void);
-  ~VamanaStreamer(void) override;
+  VamanaStreamer();
+  ~VamanaStreamer() override;
 
   VamanaStreamer(const VamanaStreamer &) = delete;
   VamanaStreamer &operator=(const VamanaStreamer &) = delete;
 
+  //! Run the configured-alpha second graph pass exactly once.
+  int finalize_build();
+
+  void merge_trained_meta(const IndexMeta &meta) override;
+
  protected:
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 
-  int cleanup(void) override;
+  int cleanup() override;
 
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   int add_impl(uint64_t pkey, const void *query, const IndexQueryMeta &qmeta,
                Context::Pointer &context) override;
@@ -52,6 +58,10 @@ class VamanaStreamer : public IndexStreamer {
 
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
+
+  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                             std::vector<uint64_t> &keys,
+                             Context::Pointer &context) const override;
 
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
@@ -91,17 +101,17 @@ class VamanaStreamer : public IndexStreamer {
 
   int open(IndexStorage::Pointer stg) override;
 
-  int close(void) override;
+  int close() override;
 
   int flush(uint64_t checkpoint) override;
 
   int dump(const IndexDumper::Pointer &dumper) override;
 
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -125,13 +135,15 @@ class VamanaStreamer : public IndexStreamer {
 
   int setup_entity();
   int update_context(VamanaContext *ctx) const;
+  int finalize_build_locked();
+  void update_entry_point_to_medoid();
 
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
 
   class Stats : public IndexStreamer::Stats {
    public:
-    void clear(void) {
+    void clear() {
       set_revision_id(0u);
       set_loaded_count(0u);
       set_added_count(0u);
@@ -149,6 +161,11 @@ class VamanaStreamer : public IndexStreamer {
   VamanaAlgorithmBase::UPointer alg_;
   IndexMeta meta_{};
   IndexMetric::Pointer metric_{};
+
+  IndexMetric::MatrixDistance add_distance_{};
+  IndexMetric::MatrixDistance search_distance_{};
+  IndexMetric::MatrixBatchDistance add_batch_distance_{};
+  IndexMetric::MatrixBatchDistance search_batch_distance_{};
 
   Stats stats_{};
   std::mutex mutex_{};
@@ -175,6 +192,8 @@ class VamanaStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
+  bool two_pass_build_enabled_{false};
+  std::atomic<bool> build_finalized_{false};
 
   ailego::SharedMutex shared_mutex_{};
 };

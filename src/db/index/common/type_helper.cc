@@ -76,6 +76,8 @@ core::IndexMeta::DataType DataTypeCodeBook::to_data_type(DataType type) {
       return core::IndexMeta::DataType::DT_FP16;
     case DataType::VECTOR_INT8:
       return core::IndexMeta::DataType::DT_INT8;
+    case DataType::VECTOR_UINT8:
+      return core::IndexMeta::DataType::DT_UINT8;
     case DataType::VECTOR_INT16:
       return core::IndexMeta::DataType::DT_INT16;
     case DataType::VECTOR_INT4:

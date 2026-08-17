@@ -33,15 +33,15 @@ class CaseChangingCharStream : public CharStream {
     upper_ = m_upper;
   }
 
-  std::string getText(const misc::Interval &interval) {
+  std::string getText(const misc::Interval &interval) override {
     return stream_->getText(interval);
   }
 
-  void consume() {
+  void consume() override {
     stream_->consume();
   }
 
-  size_t LA(ssize_t i) {
+  size_t LA(ssize_t i) override {
     size_t c = stream_->LA(i);
     if (c <= 0) {
       return c;
@@ -52,31 +52,31 @@ class CaseChangingCharStream : public CharStream {
     return tolower((int)c);
   }
 
-  ssize_t mark() {
+  ssize_t mark() override {
     return stream_->mark();
   }
 
-  void release(ssize_t marker) {
+  void release(ssize_t marker) override {
     stream_->release(marker);
   }
 
-  size_t index() {
+  size_t index() override {
     return stream_->index();
   }
 
-  void seek(size_t m_index) {
+  void seek(size_t m_index) override {
     stream_->seek(m_index);
   }
 
-  size_t size() {
+  size_t size() override {
     return stream_->size();
   }
 
-  std::string getSourceName() const {
+  std::string getSourceName() const override {
     return stream_->getSourceName();
   }
 
-  std::string toString() const {
+  std::string toString() const override {
     return stream_->toString();
   }
 

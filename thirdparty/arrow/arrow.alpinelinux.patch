@@ -1,0 +1,21 @@
+diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+index 7fa4b66d4b..bbf2e4a2ea 100644
+--- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
++++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -2755,12 +2755,16 @@ macro(build_re2)
+ 
+   set(RE2_CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS} "-DCMAKE_INSTALL_PREFIX=${RE2_PREFIX}")
+ 
++  # Add <cstdint> to re2's util/pcre.h on musl/Alpine where GCC 13+ exposes the missing header.
++  set(ZVEC_RE2_PATCH_COMMAND PATCH_COMMAND sed -i "/#include \"re2\\/stringpiece.h\"/a #include <cstdint>" util/pcre.h)
++
+   externalproject_add(re2_ep
+                       ${EP_COMMON_OPTIONS}
+                       INSTALL_DIR ${RE2_PREFIX}
+                       URL ${RE2_SOURCE_URL}
+                       URL_HASH "SHA256=${ARROW_RE2_BUILD_SHA256_CHECKSUM}"
+                       CMAKE_ARGS ${RE2_CMAKE_ARGS}
++                      ${ZVEC_RE2_PATCH_COMMAND}
+                       BUILD_BYPRODUCTS "${RE2_STATIC_LIB}")
+ 
+   file(MAKE_DIRECTORY "${RE2_PREFIX}/include")

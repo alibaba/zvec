@@ -56,11 +56,11 @@ namespace ailego {
 //! Calculate sum of absolute (NEON)
 #define SA_FP32_NEON(v_m, v_sum) v_sum = vaddq_f32(vabsq_f32(v_m), v_sum);
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__SSE__) || defined(AILEGO_ARM64_NEON)
 //! Compute the L1-norm of vectors (FP32, M=1)
 void Norm1Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                     float *out) {
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
   NORM_FP32_1_NEON(m, dim, out, )
 #else
 #if defined(__AVX512F__)
@@ -78,7 +78,7 @@ void Norm1Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
   NORM_FP32_1_SSE(m, dim, out, )
 #endif
 }
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || AILEGO_ARM64_NEON
 
 }  // namespace ailego
 }  // namespace zvec

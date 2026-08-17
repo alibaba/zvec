@@ -37,7 +37,7 @@ struct ConsoleLogger : public Logger {
   }
 
   //! Cleanup Logger
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -63,11 +63,10 @@ struct ConsoleLogger : public Logger {
   }
 };
 
-//! Logger Level
-int LoggerBroker::logger_level_ = Logger::LEVEL_WARN;
-
-//! Logger
-Logger::Pointer LoggerBroker::logger_(new ConsoleLogger);
+//! Default logger factory for the Meyers singleton in LoggerBroker.
+Logger::Pointer LoggerBroker::MakeDefaultLogger() {
+  return std::make_shared<ConsoleLogger>();
+}
 
 //! Register Console Logger in Factory
 FACTORY_REGISTER_LOGGER(ConsoleLogger);

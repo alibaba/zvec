@@ -46,7 +46,7 @@ class Reservoir {
         pool_(std::move(rhs.pool_)) {}
 
   //! Destructor
-  ~Reservoir(void) {}
+  ~Reservoir() = default;
 
   //! Assignment
   Reservoir &operator=(const Reservoir &rhs) {
@@ -65,27 +65,27 @@ class Reservoir {
   }
 
   //! Retrieve pool of reservoir
-  std::vector<T, Allocator> *mutable_pool(void) {
+  std::vector<T, Allocator> *mutable_pool() {
     return &pool_;
   }
 
   //! Retrieve pool of reservoir
-  const std::vector<T, Allocator> &pool(void) const {
+  const std::vector<T, Allocator> &pool() const {
     return pool_;
   }
 
   //! Retrieve count of samples
-  size_t samples(void) const {
+  size_t samples() const {
     return samples_;
   }
 
   //! Retrieve total count of filling
-  size_t total(void) const {
+  size_t total() const {
     return total_;
   }
 
   //! Reset the reservoir
-  void reset(void) {
+  void reset() {
     total_ = 0;
     pool_.clear();
     pool_.reserve(samples_);
@@ -125,10 +125,10 @@ class Reservoir {
     ++total_;
   }
 
- private:
   //! Disable them
-  Reservoir(void) = delete;
+  Reservoir() = delete;
 
+ private:
   //! Members
   size_t samples_;
   size_t total_;

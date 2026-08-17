@@ -30,8 +30,8 @@ class FlatSparseStreamer : public IndexStreamer {
  public:
   using ContextPointer = IndexStreamer::Context::Pointer;
 
-  FlatSparseStreamer(void);
-  ~FlatSparseStreamer(void) override;
+  FlatSparseStreamer();
+  ~FlatSparseStreamer() override;
 
   FlatSparseStreamer(const FlatSparseStreamer &streamer) = delete;
   FlatSparseStreamer &operator=(const FlatSparseStreamer &streamer) = delete;
@@ -41,13 +41,13 @@ class FlatSparseStreamer : public IndexStreamer {
   int init(const IndexMeta &, const ailego::Params &) override;
 
   //! Cleanup Streamer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
-  int close(void) override;
+  int close() override;
 
   //! flush file
   int flush(uint64_t checkpoint) override;
@@ -56,11 +56,11 @@ class FlatSparseStreamer : public IndexStreamer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Create a context
-  ContextPointer create_context(void) const override;
+  ContextPointer create_context() const override;
 
   //! Create a new iterator
-  IndexStreamer::SparseProvider::Pointer create_sparse_provider(
-      void) const override;
+  IndexStreamer::SparseProvider::Pointer create_sparse_provider()
+      const override;
 
   int add_impl(uint64_t pkey, const uint32_t sparse_count,
                const uint32_t *sparse_indices, const void *sparse_query,
@@ -122,19 +122,19 @@ class FlatSparseStreamer : public IndexStreamer {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
-  const FlatSparseStreamerEntity &entity(void) const {
+  const FlatSparseStreamerEntity &entity() const {
     return entity_;
   }
 
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return magic_;
   }
 

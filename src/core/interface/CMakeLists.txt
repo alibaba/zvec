@@ -21,12 +21,15 @@ set(CORE_INTERFACE_LIBS
     core_framework
     core_mix_reducer
     core_knn_hnsw_rabitq
-    core_plugin
+    core_knn_ivf_rabitq
     sparsehash
     magic_enum
     rabitqlib)
 if(ZVEC_ENABLE_OMEGA)
   list(APPEND CORE_INTERFACE_LIBS core_knn_omega)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND CORE_INTERFACE_LIBS ${CMAKE_DL_LIBS})
 endif()
 
 cc_library(

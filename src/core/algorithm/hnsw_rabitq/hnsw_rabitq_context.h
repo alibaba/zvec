@@ -49,12 +49,12 @@ class HnswRabitqContext : public IndexContext {
  public:
   //! Set topk of search result
   void set_topk(uint32_t val) override {
-    topk_ = val;
-    topk_heap_.limit(std::max(val, ef_));
+    topk_ = group_by_search() ? group_topk_ * group_num_ : val;
+    topk_heap_.limit(std::max(topk_, ef_));
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -70,7 +70,7 @@ class HnswRabitqContext : public IndexContext {
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
 
@@ -79,7 +79,15 @@ class HnswRabitqContext : public IndexContext {
     return group_results_[idx];
   }
 
-  uint32_t magic(void) const override {
+  IndexGroupDocumentList *mutable_group_result() override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -89,12 +97,12 @@ class HnswRabitqContext : public IndexContext {
   }
 
   //! Retrieve mode of debug
-  bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return this->debugging();
   }
 
   //! Retrieve string of debug
-  std::string debug_string(void) const override {
+  std::string debug_string() const override {
     char buf[4096];
     size_t size = snprintf(
         buf, sizeof(buf),
@@ -326,7 +334,7 @@ class HnswRabitqContext : public IndexContext {
   }
 
   //! Reset context
-  void reset(void) override {
+  void reset() override {
     set_filter(nullptr);
     reset_threshold();
     set_fetch_vector(false);
@@ -353,7 +361,7 @@ class HnswRabitqContext : public IndexContext {
     return level_topks_[level];
   }
 
-  inline void check_need_adjuct_ctx(void) {
+  inline void check_need_adjuct_ctx() {
     check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -428,7 +436,7 @@ class HnswRabitqContext : public IndexContext {
     return &stats_visit_dup_cnt_;
   }
 
-  inline bool debugging(void) const {
+  inline bool debugging() const {
     return debug_mode_;
   }
 
@@ -462,12 +470,9 @@ class HnswRabitqContext : public IndexContext {
   void set_group_params(uint32_t group_num, uint32_t group_topk) override {
     group_num_ = group_num;
     group_topk_ = group_topk;
-
-    topk_ = group_topk_ * group_num_;
-
-    topk_heap_.limit(std::max(topk_, ef_));
-
     group_topk_heaps_.clear();
+
+    set_topk(group_topk_ * group_num_);
   }
 
   void set_provider(IndexProvider::Pointer provider) {
@@ -489,7 +494,7 @@ class HnswRabitqContext : public IndexContext {
 
  private:
   // Filling random nodes if topk not full
-  void fill_random_to_topk_full(void);
+  void fill_random_to_topk_full();
 
   constexpr static uint32_t kTriggerReserveCnt = 4096UL;
   constexpr static uint32_t kMinReserveDocCnt = 4096UL;

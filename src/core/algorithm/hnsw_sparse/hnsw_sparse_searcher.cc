@@ -19,9 +19,9 @@
 namespace zvec {
 namespace core {
 
-HnswSparseSearcher::HnswSparseSearcher() {}
+HnswSparseSearcher::HnswSparseSearcher() = default;
 
-HnswSparseSearcher::~HnswSparseSearcher() {}
+HnswSparseSearcher::~HnswSparseSearcher() = default;
 
 int HnswSparseSearcher::init(const ailego::Params &search_params) {
   params_ = search_params;
@@ -348,7 +348,7 @@ int HnswSparseSearcher::search_bf_impl(
           if (topk_heap.empty()) {
             topk_heap.limit(ctx->group_topk());
           }
-          topk_heap.emplace_back(id, dist);
+          topk_heap.emplace(id, dist);
         }
       }
       ctx->topk_to_result(q);
@@ -459,7 +459,7 @@ int HnswSparseSearcher::search_bf_by_p_keys_impl(
             if (topk_heap.empty()) {
               topk_heap.limit(ctx->group_topk());
             }
-            topk_heap.emplace_back(id, dist);
+            topk_heap.emplace(id, dist);
           }
         }
       }
@@ -539,7 +539,7 @@ IndexSearcher::Context::Pointer HnswSparseSearcher::create_context() const {
 }
 
 IndexSearcher::SparseProvider::Pointer
-HnswSparseSearcher::create_sparse_provider(void) const {
+HnswSparseSearcher::create_sparse_provider() const {
   LOG_DEBUG("HnswSparseSearcher create sparse provider");
 
   auto entity = entity_.clone();

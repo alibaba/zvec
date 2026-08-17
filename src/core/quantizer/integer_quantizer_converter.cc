@@ -45,34 +45,43 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
-      return front_iter_->is_valid();
+    bool is_valid() const override {
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->encode_record();
     }
 
    private:
     //! Encode the data by quantizer
-    inline void encode_record(void) {
-      if (front_iter_->is_valid()) {
+    inline void encode_record() {
+      if (this->is_valid()) {
         const float *vec = reinterpret_cast<const float *>(front_iter_->data());
+        status_ = front_iter_->status();
+        if (vec == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
         quantizer_->encode(
             vec, dim_,
             reinterpret_cast<typename Quantizer::ValueType *>(buffer_.data()));
@@ -84,6 +93,7 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
     IndexHolder::Iterator::Pointer front_iter_{};
     std::shared_ptr<Quantizer> quantizer_{};
     size_t dim_{0u};
+    int status_{0};
   };
 
   //! Constructor
@@ -95,32 +105,32 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
         data_type_(tp) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return data_type_;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(this->data_type(), front_->dimension());
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new IntegerQuantizerConverterHolder::Iterator(
@@ -202,7 +212,7 @@ class IntegerQuantizerConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -339,17 +349,17 @@ class IntegerQuantizerConverter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -372,7 +382,7 @@ class IntegerStreamingConverter : public IndexConverter {
       : data_type_(dst_type) {}
 
   //! Destructor
-  ~IntegerStreamingConverter() override {}
+  ~IntegerStreamingConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
@@ -427,7 +437,7 @@ class IntegerStreamingConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     *stats_.mutable_transformed_count() = 0;
     return 0;
   }
@@ -474,17 +484,17 @@ class IntegerStreamingConverter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -506,35 +516,44 @@ class IntegerStreamingConverter : public IndexConverter {
       }
 
       //! Destructor
-      ~Iterator(void) override {}
+      ~Iterator() override = default;
 
       //! Retrieve pointer of data
-      const void *data(void) const override {
+      const void *data() const override {
         return buffer_.data();
       }
 
       //! Test if the iterator is valid
-      bool is_valid(void) const override {
-        return front_iter_->is_valid();
+      bool is_valid() const override {
+        return this->status() == 0 && front_iter_->is_valid();
+      }
+
+      int status() const override {
+        return status_ != 0 ? status_ : front_iter_->status();
       }
 
       //! Retrieve primary key
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return front_iter_->key();
       }
 
       //! Next iterator
-      void next(void) override {
+      void next() override {
         front_iter_->next();
         this->encode_record();
       }
 
      private:
       //! Encode the data by quantizer
-      void encode_record(void) {
-        if (front_iter_->is_valid()) {
+      void encode_record() {
+        if (this->is_valid()) {
           const float *vec =
               reinterpret_cast<const float *>(front_iter_->data());
+          status_ = front_iter_->status();
+          if (vec == nullptr || status_ != 0) {
+            if (status_ == 0) status_ = IndexError_Runtime;
+            return;
+          }
           size_t dim = owner_->dimension_;
           if (owner_->rotator_) {
             float *rotate_buf =
@@ -562,6 +581,7 @@ class IntegerStreamingConverter : public IndexConverter {
       std::string normalize_buffer_{};
       std::string rotate_buffer_{};
       IndexHolder::Iterator::Pointer front_iter_{};
+      int status_{0};
     };
 
     //! Constructor
@@ -577,32 +597,32 @@ class IntegerStreamingConverter : public IndexConverter {
           rotator_(std::move(rotator)) {}
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
-    size_t count(void) const override {
+    size_t count() const override {
       return front_->count();
     }
 
     //! Retrieve dimension
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return dimension_ + ExtraDimension(data_type_);
     }
 
     //! Retrieve type information
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return data_type_;
     }
 
     //! Retrieve element size in bytes
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return IndexMeta::ElementSizeof(this->data_type(), this->dimension());
     }
 
     //! Retrieve if it can multi-pass
-    bool multipass(void) const override {
+    bool multipass() const override {
       return front_->multipass();
     }
 
     //! Create a new iterator
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       IndexHolder::Iterator::Pointer iter = front_->create_iterator();
       return iter ? IndexHolder::Iterator::Pointer(
                         new IntegerStreamingConverterHolder::Iterator(

@@ -63,14 +63,16 @@ TokenizerPipelinePtr TokenizerPipelineManager::acquire(
 
   // Create the pipeline outside of the lock to avoid blocking other
   // acquire/release calls during the (potentially expensive) construction.
-  TokenizerPipelinePtr pipeline = TokenizerFactory::create(params);
-  if (!pipeline) {
+  auto pipeline_result = TokenizerFactory::create(params);
+  if (!pipeline_result.has_value()) {
     LOG_ERROR(
         "TokenizerPipelineManager: failed to create pipeline for "
-        "tokenizer[%s] key[%s]",
-        params.tokenizer_name.c_str(), key.c_str());
+        "tokenizer[%s] key[%s]: %s",
+        params.tokenizer_name.c_str(), key.c_str(),
+        pipeline_result.error().message().c_str());
     return nullptr;
   }
+  TokenizerPipelinePtr pipeline = std::move(pipeline_result).value();
 
   // Re-acquire the lock and check whether another thread has already
   // created a pipeline with the same key while we were constructing ours.

@@ -15,11 +15,31 @@
 #include <atomic>
 #include <random>
 #include <zvec/core/framework/index_context.h>
+#include "turbo/quantizer/quantizer.h"
 
 namespace zvec {
 namespace core {
 
-uint32_t IndexContext::GenerateMagic(void) {
+void IndexContext::apply_threshold() {
+  float val = raw_threshold_;
+  if (threshold_uses_quantizer_) {
+    auto quantizer = index_quantizer_.lock();
+    if (!quantizer) {
+      // Fail closed until the context is rebound to a live backend. Never
+      // mistake a caller-facing radius for an internal distance on expiry.
+      threshold_ = -std::numeric_limits<float>::infinity();
+      return;
+    }
+    if (quantizer->support_score_normalization()) {
+      quantizer->denormalize_score(&val);
+    }
+  } else if (index_metric_ && index_metric_->support_normalize()) {
+    index_metric_->denormalize(&val);
+  }
+  threshold_ = val;
+}
+
+uint32_t IndexContext::GenerateMagic() {
   static std::atomic_uint32_t magic_number{std::random_device()()};
   return magic_number.fetch_add(1);
 }

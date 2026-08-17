@@ -33,13 +33,22 @@ class HnswRabitqStreamer : public IndexStreamer {
   HnswRabitqStreamer();
   explicit HnswRabitqStreamer(IndexProvider::Pointer provider,
                               RabitqReformer::Pointer reformer = nullptr);
-  ~HnswRabitqStreamer(void) override;
+  ~HnswRabitqStreamer() override;
 
   HnswRabitqStreamer(const HnswRabitqStreamer &streamer) = delete;
   HnswRabitqStreamer &operator=(const HnswRabitqStreamer &streamer) = delete;
 
   void set_provider(IndexProvider::Pointer provider) {
     provider_ = std::move(provider);
+  }
+
+  //! The build-from-original provider binding is not supported: rabitq
+  //! already builds from its own provider with rerank semantics, and
+  //! accepting this call would silently overwrite it
+  int set_provider(IndexProvider::Pointer /*provider*/,
+                   const IndexMeta & /*provider_meta*/) override {
+    LOG_ERROR("Build from original provider is not supported by rabitq");
+    return IndexError_Unsupported;
   }
 
   void set_reformer(IndexReformer::Pointer reformer) {
@@ -51,13 +60,13 @@ class HnswRabitqStreamer : public IndexStreamer {
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 
   //! Cleanup Streamer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Create a context
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
   //! Create a new iterator
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   //! Add a vector into index
   int add_impl(uint64_t pkey, const void *query, const IndexQueryMeta &qmeta,
@@ -122,7 +131,7 @@ class HnswRabitqStreamer : public IndexStreamer {
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
-  int close(void) override;
+  int close() override;
 
   //! flush file
   int flush(uint64_t checkpoint) override;
@@ -131,12 +140,12 @@ class HnswRabitqStreamer : public IndexStreamer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -179,7 +188,7 @@ class HnswRabitqStreamer : public IndexStreamer {
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
    public:
-    void clear(void) {
+    void clear() {
       set_revision_id(0u);
       set_loaded_count(0u);
       set_added_count(0u);

@@ -22,7 +22,7 @@
 #include <zvec/ailego/math_batch/utils.h>
 #include <zvec/ailego/utility/type_helper.h>
 
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 // SquaredEuclideanDistanceBatch
 template <typename T, size_t BatchSize, size_t PrefetchStep, typename = void>
@@ -61,7 +61,8 @@ struct SquaredEuclideanDistanceBatch {
 
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
-                                  size_t dim, float *results) {
+                                  size_t dim, float *results,
+                                  const void ** /*extra_values*/) {
     size_t i = 0;
     for (; i + BatchSize <= num_vecs; i += BatchSize) {
       std::array<const ValueType *, BatchSize> prefetch_ptrs;
@@ -97,7 +98,7 @@ struct EuclideanDistanceBatch {
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
     SquaredEuclideanDistanceBatch<T, BatchSize, PrefetchStep>::ComputeBatch(
-        vecs, query, num_vecs, dim, results);
+        vecs, query, num_vecs, dim, results, nullptr);
 
     for (size_t i = 0; i < num_vecs; ++i) {
       results[i] = std::sqrt(results[i]);
@@ -140,4 +141,4 @@ struct SquaredEuclideanDistanceBatchImpl<float, 12> {
                                   size_t dim, float *sums);
 };
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch

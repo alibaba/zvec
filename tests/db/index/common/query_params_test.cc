@@ -21,7 +21,6 @@ TEST(QueryParamsTest, QueryParamsBaseClass) {
   // Test constructor
   QueryParams params(IndexType::HNSW);
   EXPECT_EQ(params.type(), IndexType::HNSW);
-
 }
 
 TEST(QueryParamsTest, HnswQueryParams) {
@@ -44,6 +43,31 @@ TEST(QueryParamsTest, IVFQueryParams) {
   // Test setter
   params.set_nprobe(75);
   EXPECT_EQ(params.nprobe(), 75);
+}
+
+TEST(QueryParamsTest, IvfRabitqQueryParams) {
+  IvfRabitqQueryParams params;
+  EXPECT_EQ(params.type(), IndexType::IVF_RABITQ);
+  EXPECT_EQ(params.nprobe(), 10);
+  EXPECT_FLOAT_EQ(params.scale_factor(), 10.0f);
+
+  params.set_nprobe(75);
+  params.set_scale_factor(3.5f);
+  EXPECT_EQ(params.nprobe(), 75);
+  EXPECT_FLOAT_EQ(params.scale_factor(), 3.5f);
+}
+
+TEST(QueryParamsTest, VamanaQueryParams) {
+  VamanaQueryParams params;
+  EXPECT_EQ(params.type(), IndexType::VAMANA);
+  EXPECT_EQ(params.ef_search(), core_interface::kDefaultVamanaEfSearch);
+  EXPECT_EQ(params.prefetch_offset(), core_interface::kDefaultPrefetchOffset);
+  EXPECT_EQ(params.prefetch_lines(), core_interface::kDefaultPrefetchLines);
+
+  params.set_prefetch_offset(0);
+  params.set_prefetch_lines(0);
+  EXPECT_EQ(params.prefetch_offset(), 0U);
+  EXPECT_EQ(params.prefetch_lines(), 0U);
 }
 
 TEST(QueryParamsTest, Polymorphism) {

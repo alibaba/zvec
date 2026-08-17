@@ -26,35 +26,36 @@ class StratifiedClusterTrainer : public IndexTrainer {
   typedef std::shared_ptr<StratifiedClusterTrainer> Pointer;
 
   //! Constructor
-  StratifiedClusterTrainer(void) {}
+  StratifiedClusterTrainer() = default;
 
   //! Destructor
-  ~StratifiedClusterTrainer(void) {}
+  ~StratifiedClusterTrainer() override = default;
 
  protected:
   //! Initialize Trainer
-  virtual int init(const IndexMeta &meta, const ailego::Params &params);
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Trainer
-  virtual int cleanup(void);
+  int cleanup() override;
 
   //! Train the data
-  virtual int train(IndexThreads::Pointer threads, IndexHolder::Pointer holder);
+  int train(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
   //! Load index from file path or dir
-  virtual int load(IndexStorage::Pointer cntr);
+  int load(IndexStorage::Pointer cntr) override;
 
   //! Dump index into file path or dir
-  virtual int dump(const IndexDumper::Pointer &dumper);
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve Index Meta
-  virtual const IndexMeta &meta(void) const;
+  const IndexMeta &meta() const override;
 
   //! Retrieve statistics
-  virtual const IndexTrainer::Stats &stats(void) const;
+  const IndexTrainer::Stats &stats() const override;
 
   //! Retrieve the output indexes
-  virtual IndexBundle::Pointer indexes(void) const;
+  IndexBundle::Pointer indexes() const override;
 
  private:
   int init_params(const ailego::Params &params);

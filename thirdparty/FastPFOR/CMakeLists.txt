@@ -52,3 +52,12 @@ cc_library(
     DEFS ${FASTPFOR_EXTRA_DEFS}
     CXXFLAGS ${FASTPFOR_EXTRA_CXXFLAGS}
 )
+
+# Mark SIMDe's x86 emulation headers as a SYSTEM include so consumers of
+# FastPFOR (e.g. src/db's bitpacked posting-list translation units) do not
+# inherit SIMDe's warnings under strict /W4 /WX builds. Without this MSVC
+# ARM64 fails on C4189 / C4127 / C4324 from simde/x86/mmx.h.
+if(_FASTPFOR_NEEDS_SIMDE)
+    set_property(TARGET FastPFOR APPEND PROPERTY
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${simde_SOURCE_DIR}")
+endif()

@@ -32,7 +32,7 @@ Result<std::shared_ptr<arrow::Array>> fetch_dense_vector_helper(
   CHECK_ARROW_STATUS("Reserve vector builder failed:",
                      vector_builder.Reserve(count));
   for (Iter i = begin; i != end; ++i) {
-    auto vector_res = indexer->Fetch(*i);
+    auto vector_res = indexer->fetch(*i);
     if (!vector_res) {
       return tl::make_unexpected(vector_res.error());
     }
@@ -88,7 +88,7 @@ Result<std::shared_ptr<arrow::Array>> fetch_sparse_vector_helper(
   CHECK_ARROW_STATUS("Reserve failed:", sparse_index_builder->Reserve(count));
   CHECK_ARROW_STATUS("Reserve failed:", sparse_value_builder->Reserve(count));
   for (auto i = begin; i != end; i++) {
-    auto vector_res = indexer->Fetch(*i);
+    auto vector_res = indexer->fetch(*i);
     if (!vector_res) {
       return tl::make_unexpected(vector_res.error());
     }

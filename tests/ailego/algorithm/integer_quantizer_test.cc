@@ -21,7 +21,7 @@ namespace zvec::ailego {
 
 TEST(IntegerQuantizer, INT8_Uniform_Distribution) {
   std::vector<size_t> tests = {1, 100, 1000, 10000, 100000};
-  for (auto COUNT : tests) {
+  for (auto count : tests) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::vector<float> data;
@@ -29,7 +29,7 @@ TEST(IntegerQuantizer, INT8_Uniform_Distribution) {
     std::uniform_real_distribution<float> dist(1.0, 2.0);
     float max = -std::numeric_limits<float>::max();
     float min = std::numeric_limits<float>::max();
-    for (size_t i = 0; i < COUNT; ++i) {
+    for (size_t i = 0; i < count; ++i) {
       auto v = dist(gen);
       max = std::max(max, v);
       min = std::min(min, v);
@@ -53,7 +53,7 @@ TEST(IntegerQuantizer, INT8_Uniform_Distribution) {
     for (size_t i = 0; i < data.size(); ++i) {
       var += (data[i] - recover_data[i]) * (data[i] - recover_data[i]);
     }
-    EXPECT_LT(var / COUNT, 0.01);
+    EXPECT_LT(var / count, 0.01);
   }
 }
 
@@ -147,7 +147,7 @@ TEST(IntegerQuantizer, INT8_Poisson_Distribution) {
 
 TEST(IntegerQuantizer, INT4_Uniform_Distribution) {
   std::vector<size_t> tests = {2, 1000, 10000, 100000};
-  for (auto COUNT : tests) {
+  for (auto count : tests) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::vector<float> data;
@@ -155,7 +155,7 @@ TEST(IntegerQuantizer, INT4_Uniform_Distribution) {
     std::uniform_real_distribution<float> dist(1.0, 2.0);
     float max = -std::numeric_limits<float>::min();
     float min = std::numeric_limits<float>::max();
-    for (size_t i = 0; i < COUNT; ++i) {
+    for (size_t i = 0; i < count; ++i) {
       auto v = dist(gen);
       max = std::max(max, v);
       min = std::min(min, v);
@@ -188,7 +188,7 @@ TEST(IntegerQuantizer, INT4_Uniform_Distribution) {
            *std::min_element(recover_data.begin(), recover_data.end()));
     printf("var=%f\n", var);
 #endif
-    EXPECT_LT(var / COUNT, 0.1);
+    EXPECT_LT(var / count, 0.1);
   }
 }
 
@@ -292,7 +292,7 @@ TEST(IntegerQuantizer, INT4_Poisson_Distribution) {
 
 TEST(IntegerQuantizer, UINT8_Uniform_Distribution) {
   std::vector<size_t> tests = {1, 100, 1000, 10000, 100000};
-  for (auto COUNT : tests) {
+  for (auto count : tests) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::vector<float> data;
@@ -300,7 +300,7 @@ TEST(IntegerQuantizer, UINT8_Uniform_Distribution) {
     std::uniform_real_distribution<float> dist(1.0, 2.0);
     float max = -std::numeric_limits<float>::max();
     float min = std::numeric_limits<float>::max();
-    for (size_t i = 0; i < COUNT; ++i) {
+    for (size_t i = 0; i < count; ++i) {
       auto v = dist(gen);
       max = std::max(max, v);
       min = std::min(min, v);
@@ -324,7 +324,7 @@ TEST(IntegerQuantizer, UINT8_Uniform_Distribution) {
     for (size_t i = 0; i < data.size(); ++i) {
       var += (data[i] - recover_data[i]) * (data[i] - recover_data[i]);
     }
-    EXPECT_LT(var / COUNT, 0.01);
+    EXPECT_LT(var / count, 0.01);
   }
 }
 
@@ -419,7 +419,7 @@ TEST(IntegerQuantizer, UINT8_Poisson_Distribution) {
 
 TEST(IntegerQuantizer, UINT4_Uniform_Distribution) {
   std::vector<size_t> tests = {2, 100, 5000, 10000, 100000};
-  for (auto COUNT : tests) {
+  for (auto count : tests) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::vector<float> data;
@@ -427,7 +427,7 @@ TEST(IntegerQuantizer, UINT4_Uniform_Distribution) {
     std::uniform_real_distribution<float> dist(1.0, 2.0);
     float max = -std::numeric_limits<float>::min();
     float min = std::numeric_limits<float>::max();
-    for (size_t i = 0; i < COUNT; ++i) {
+    for (size_t i = 0; i < count; ++i) {
       auto v = dist(gen);
       max = std::max(max, v);
       min = std::min(min, v);
@@ -460,7 +460,7 @@ TEST(IntegerQuantizer, UINT4_Uniform_Distribution) {
            *std::min_element(recover_data.begin(), recover_data.end()));
     printf("var=%f\n", var);
 #endif
-    EXPECT_LT(var / COUNT, 0.1);
+    EXPECT_LT(var / count, 0.1);
   }
 }
 

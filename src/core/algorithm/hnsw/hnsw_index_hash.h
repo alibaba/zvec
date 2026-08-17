@@ -113,7 +113,7 @@ class HnswIndexHashMap {
     return 0;
   }
 
-  int cleanup(void) {
+  int cleanup() {
     slots_.clear();
     slots_.shrink_to_fit();
     broker_.reset();
@@ -124,7 +124,7 @@ class HnswIndexHashMap {
     return 0;
   }
 
-  const_iterator end(void) const {
+  const_iterator end() const {
     return nullptr;
   }
 
@@ -184,7 +184,7 @@ class HnswIndexHashMap {
     return true;
   }
 
-  int load(void) {
+  int load() {
     size_t slots_cnt =
         broker_->get_chunk_cnt(ChunkBroker::CHUNK_TYPE_NEIGHBOR_INDEX);
     for (size_t i = 0UL; i < slots_cnt; ++i) {

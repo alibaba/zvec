@@ -47,54 +47,69 @@ class DiskAnnContext : public IndexContext,
     kUnknownContext = 0,
     kSearcherContext = 1,
     kBuilderContext = 2,
-    kReducerContext = 3
+    kReducerContext = 3,
+    kFetchContext = 4
   };
 
   //! Construct
   DiskAnnContext(const IndexMeta &meta, const IndexMetric::Pointer &measure,
-                 const DiskAnnEntity::Pointer &entity);
+                 const DiskAnnEntity::Pointer &entity,
+                 const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Destructor
-  virtual ~DiskAnnContext();
+  ~DiskAnnContext() override;
+
+  //! Create a lightweight context for reading vectors by id.
+  static Pointer create_fetch_context(const IndexMeta &meta,
+                                      const IndexMetric::Pointer &measure,
+                                      const DiskAnnEntity::Pointer &entity);
 
  public:
   //! Init
   int init(ContextType type, uint32_t graph_degree, uint32_t pq_chunk_num,
-           uint32_t element_size);
+           uint32_t element_size, bool setup_io_context = true);
 
   //! Update context, the context may be shared by different searcher/streamer
   int update_context(ContextType type, const IndexMeta &meta,
                      const IndexMetric::Pointer &measure,
-                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num);
+                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num,
+                     const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
   //! Retrieve result object for output
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(
-      size_t idx) const override {
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  IndexGroupDocumentList *mutable_group_result() override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -103,17 +118,17 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Set mode of debug
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return debug_mode_;
   }
 
   //! Retrieve string of debug
-  virtual std::string debug_string(void) const override {
+  std::string debug_string() const override {
     return std::string("");
   }
 
@@ -167,14 +182,6 @@ class DiskAnnContext : public IndexContext,
     return query_rotated_;
   }
 
-  inline float *pq_table_dist_buffer() {
-    return pq_table_dist_buffer_;
-  }
-
-  inline void *pq_coord_buffer() {
-    return pq_coord_buffer_;
-  }
-
   inline void *coord_buffer() {
     return coord_buffer_;
   }
@@ -183,8 +190,16 @@ class DiskAnnContext : public IndexContext,
     return sector_buffer_;
   }
 
+  inline size_t sector_buffer_size() const {
+    return sector_buffer_size_;
+  }
+
   inline IOContext &io_ctx() {
     return io_ctx_;
+  }
+
+  ContextType context_type() const {
+    return static_cast<ContextType>(type_);
   }
 
   inline void resize_results(size_t size) {
@@ -207,11 +222,31 @@ class DiskAnnContext : public IndexContext,
     for (auto &it : results_) {
       it.clear();
     }
+    for (auto &it : group_results_) {
+      it.clear();
+    }
 
     best_list_nodes_.clear();
     expanded_nodes_.clear();
     visit_filter_.clear();
+    group_topk_heaps_.clear();
     has_error_ = false;
+  }
+
+  //! Preserve query-time options when replacing an incompatible pooled
+  //! context. Search scratch space and previous results are intentionally not
+  //! copied.
+  void copy_query_options_from(const DiskAnnContext &rhs) {
+    copy_common_query_options_from(rhs);
+    topk_ = rhs.topk_;
+    topk_heap_.clear();
+    topk_heap_.limit(topk_);
+    group_num_ = rhs.group_num_;
+    group_topk_ = rhs.group_topk_;
+    group_topk_heaps_.clear();
+    list_size_ = rhs.list_size_;
+    fetch_vector_ = rhs.fetch_vector_;
+    debug_mode_ = rhs.debug_mode_;
   }
 
   SearchStats &query_stats() {
@@ -239,7 +274,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Reset context
-  void reset(void) override {
+  void reset() override {
     set_filter(nullptr);
     reset_threshold();
     set_fetch_vector(false);
@@ -262,7 +297,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Get if group by search
-  inline bool group_by_search() {
+  inline bool group_by_search() const {
     return group_num_ > 0;
   }
 
@@ -319,6 +354,8 @@ class DiskAnnContext : public IndexContext,
     }
   }
 
+  int resize_fetch_sector_buffer(const DiskAnnEntity::Pointer &entity);
+
  private:
   constexpr static uint32_t kInvalidMgic = -1U;
 
@@ -341,15 +378,14 @@ class DiskAnnContext : public IndexContext,
   uint32_t group_num_{0};
   std::map<std::string, TopkHeap> group_topk_heaps_{};
 
-  IOContext io_ctx_{0};
+  IOContext io_ctx_{};
   SearchStats query_stats_;
 
-  float *pq_table_dist_buffer_{nullptr};
-  void *pq_coord_buffer_{nullptr};
   void *query_{nullptr};
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};
   void *sector_buffer_{nullptr};
+  size_t sector_buffer_size_{0};
 
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};

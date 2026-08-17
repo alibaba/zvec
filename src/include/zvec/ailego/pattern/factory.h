@@ -76,7 +76,7 @@ class Factory {
     }
 
     //! Construct a register object
-    static TImpl *Construct(void) {
+    static TImpl *Construct() {
       return new (std::nothrow) TImpl();
     }
   };
@@ -102,13 +102,13 @@ class Factory {
   }
 
   //! Retrieve classes in factory
-  static std::vector<std::string> Classes(void) {
+  static std::vector<std::string> Classes() {
     return Factory::Instance()->classes();
   }
 
  protected:
   //! Constructor
-  Factory(void) : map_() {}
+  Factory() = default;
 
   //! Retrieve the singleton factory.
   //!
@@ -120,21 +120,24 @@ class Factory {
   //! a guard variable (`_ZGVZN...E7factory`) alongside the object, and both
   //! must be unified across DSOs for the singleton to be shared.
   //!
-  //! In the Python extension build the _zvec.so version script exports the
-  //! storage (`zvec::*` matches its demangled name) while the guard variable,
-  //! whose demangled form is `guard variable for zvec::...`, ends up hidden
-  //! (compilers emit the guard in a COMDAT group whose visibility is not
-  //! upgraded by our version script). When libzvec_diskann_plugin.so is
-  //! loaded, _zvec.so and the plugin then share the `factory` storage but
-  //! each have their own guard; the plugin's still-zero guard triggers a
-  //! second run of the Factory constructor on the shared storage, wiping
-  //! all registrations performed during _zvec.so import (e.g. FlatStreamer).
+  //! Historically (when DiskAnn was a runtime-loaded shared plugin) the
+  //! _zvec.so version script exported the storage (`zvec::*` matches its
+  //! demangled name) while the guard variable, whose demangled form is
+  //! `guard variable for zvec::...`, ended up hidden (compilers emit the
+  //! guard in a COMDAT group whose visibility is not upgraded by our version
+  //! script). When the plugin was loaded, _zvec.so and the plugin shared the
+  //! `factory` storage but each had its own guard; the plugin's still-zero
+  //! guard triggered a second run of the Factory constructor on the shared
+  //! storage, wiping out registrations performed during _zvec.so import.
+  //! DiskAnn is now statically linked into _zvec.so, so this DSO-splitting
+  //! issue no longer applies, but the atomic-pointer pattern is retained as
+  //! a defensive measure.
   //!
   //! A constant-initialized static std::atomic<T*> has NO guard variable
   //! (its zero init is compile-time), so we use a leaked heap singleton with
   //! atomic double-checked locking. Only the atomic pointer itself needs to
   //! be unified across DSOs, and it merges cleanly as STT_GNU_UNIQUE.
-  static Factory *Instance(void) {
+  static Factory *Instance() {
     static std::atomic<Factory *> ptr{nullptr};
     Factory *cur = ptr.load(std::memory_order_acquire);
     if (cur) {
@@ -170,7 +173,7 @@ class Factory {
   }
 
   //! Retrieve classes in factory
-  std::vector<std::string> classes(void) const {
+  std::vector<std::string> classes() const {
     std::vector<std::string> vec;
     for (const auto &it : map_) {
       vec.push_back(std::string(it.first));
@@ -178,12 +181,13 @@ class Factory {
     return vec;
   }
 
- private:
+ public:
   //! Disable them
-  Factory(const Factory &);
-  Factory(Factory &&);
-  Factory &operator=(const Factory &);
+  Factory(const Factory &) = delete;
+  Factory(Factory &&) = delete;
+  Factory &operator=(const Factory &) = delete;
 
+ private:
   /*! Key Comparer
    */
   struct KeyComparer {

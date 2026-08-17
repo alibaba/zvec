@@ -171,7 +171,7 @@ class FtsMultiSegmentTest : public ::testing::Test {
       doc.set_pk(pk_prefix + std::to_string(i));
       doc.set_doc_id(i);
       doc.set<std::string>("content", entries[i].content);
-      auto status = segment->Insert(doc);
+      auto status = segment->insert(doc);
       ASSERT_TRUE(status.ok())
           << pk_prefix << i << " insert failed: " << status.c_str();
     }

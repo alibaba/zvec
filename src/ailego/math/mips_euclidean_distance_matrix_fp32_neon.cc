@@ -19,7 +19,7 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
 float InnerProductAndSquaredNormFp32NEON(const float *lhs, const float *rhs,
                                          size_t size, float *sql, float *sqr) {
@@ -71,7 +71,7 @@ float InnerProductAndSquaredNormFp32NEON(const float *lhs, const float *rhs,
   return result;
 }
 
-#endif  //__ARM_NEON
+#endif  // AILEGO_HAVE_NEON
 
 }  // namespace ailego
 }  // namespace zvec

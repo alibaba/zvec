@@ -16,13 +16,14 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <zvec/export.h>
 
 namespace zvec {
 
 /*
  * Collection stats
  */
-struct CollectionStats {
+struct ZVEC_API CollectionStats {
   uint64_t doc_count{0};
   // column -> completeness
   std::unordered_map<std::string, float> index_completeness;

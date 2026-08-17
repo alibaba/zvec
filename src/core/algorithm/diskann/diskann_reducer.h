@@ -28,26 +28,26 @@ namespace core {
 class DiskAnnReducer : public IndexReducer {
  public:
   //! Constructor
-  DiskAnnReducer(void) = default;
+  DiskAnnReducer() = default;
 
  protected:
   //! Initialize Reducer
-  virtual int init(const ailego::Params &params) override;
+  int init(const ailego::Params &params) override;
 
   //! Cleanup Reducer
-  virtual int cleanup(void) override;
+  int cleanup() override;
 
   //! Feed indexes from containers
-  // virtual int feed(IndexStorage::Pointer container) override;
+  // int feed(IndexStorage::Pointer container) override;
 
   //! Reduce operator (with filter)
-  virtual int reduce(const IndexFilter &filter) override;
+  int reduce(const IndexFilter &filter) override;
 
   //! Dump index by dumper
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
@@ -76,9 +76,9 @@ class DiskAnnReducer : public IndexReducer {
   Stats stats_{};
   State state_{STATE_UNINITED};
 
-  const std::string kDiskAnnBuilderName{"DiskAnnBuilder"};
-  const std::string kReducerFileName{"diskann.reducer.builder."};
-  const std::string kHolderFileName{"diskann.reducer.holder."};
+  const std::string k_disk_ann_builder_name{"DiskAnnBuilder"};
+  const std::string k_reducer_file_name{"diskann.reducer.builder."};
+  const std::string k_holder_file_name{"diskann.reducer.holder."};
 };
 
 }  // namespace core

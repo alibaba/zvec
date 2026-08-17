@@ -81,7 +81,8 @@ def init(
             Must be ≥ 1 if provided.
         optimize_threads (Optional[int], optional):
             Threads for background tasks (e.g., compaction, indexing).
-            If ``None``, defaults to same as ``query_threads`` or CPU count.
+            If ``None`` (default), uses the same environment-aware default as
+            ``query_threads``.
         invert_to_forward_scan_ratio (Optional[float], optional):
             Threshold to switch from inverted index to full forward scan.
             Range: [0.0, 1.0]. Higher → more aggressive index skipping.

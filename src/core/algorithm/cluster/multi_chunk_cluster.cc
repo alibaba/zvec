@@ -18,7 +18,7 @@
 namespace zvec {
 namespace core {
 
-bool MultiChunkClusterAlgorithm::is_valid(void) const {
+bool MultiChunkClusterAlgorithm::is_valid() const {
   return features_ && features_->count();
 }
 
@@ -33,13 +33,13 @@ void MultiChunkClusterAlgorithm::init_centroids(
   out->resize(count);
 }
 
-int MultiChunkClusterAlgorithm::reset(void) {
+int MultiChunkClusterAlgorithm::reset() {
   features_.reset();
 
   return 0;
 }
 
-int MultiChunkClusterAlgorithm::cleanup(void) {
+int MultiChunkClusterAlgorithm::cleanup() {
   features_.reset();
 
   return 0;
@@ -70,20 +70,20 @@ int MultiChunkClusterAlgorithm::update_params(const ailego::Params &params) {
 }
 
 int MultiChunkClusterAlgorithm::init_distance_func() {
-  IndexMetric::Pointer metric_{};
-  metric_ = IndexFactory::CreateMetric(meta_.metric_name());
-  if (!metric_) {
+  IndexMetric::Pointer metric{};
+  metric = IndexFactory::CreateMetric(meta_.metric_name());
+  if (!metric) {
     LOG_ERROR("Create metric %s failed.", meta_.metric_name().c_str());
     return IndexError_Unsupported;
   }
 
-  int ret = metric_->init(meta_, meta_.metric_params());
+  int ret = metric->init(meta_, meta_.metric_params());
   if (ret != 0) {
     LOG_ERROR("IndexMetric init failed wit ret %d.", ret);
     return ret;
   }
 
-  distance_func_ = metric_->distance_matrix(1, 1);
+  distance_func_ = metric->distance_matrix(1, 1);
   if (!distance_func_) {
     LOG_ERROR("DistanceMatrix function is nullptr.");
     return IndexError_Unsupported;
@@ -98,15 +98,15 @@ int MultiChunkClusterAlgorithm::do_chunk() {
   }
 
   size_t large_chunk_count = meta_.dimension() % chunk_count_;
-  size_t base_chunk_dim_ = meta_.dimension() / chunk_count_;
+  size_t base_chunk_dim = meta_.dimension() / chunk_count_;
 
   chunk_dims_.clear();
 
   for (size_t i = 0; i < chunk_count_; ++i) {
     if (i < large_chunk_count) {
-      chunk_dims_.push_back(base_chunk_dim_ + 1);
+      chunk_dims_.push_back(base_chunk_dim + 1);
     } else {
-      chunk_dims_.push_back(base_chunk_dim_);
+      chunk_dims_.push_back(base_chunk_dim);
     }
   }
 
@@ -335,12 +335,12 @@ int MultiChunkCluster::update(const ailego::Params &params) {
 }
 
 //! Reset Cluster
-int MultiChunkCluster::reset(void) {
+int MultiChunkCluster::reset() {
   return algorithm_->reset();
 }
 
 //! Cleanup Cluster
-int MultiChunkCluster::cleanup(void) {
+int MultiChunkCluster::cleanup() {
   return algorithm_->cleanup();
 }
 

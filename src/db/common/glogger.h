@@ -28,8 +28,8 @@
 
 namespace google {
 namespace glog_internal_namespace_ {
-extern bool IsGoogleLoggingInitialized(void);
-extern bool ShutdownGoogleLoggingUtilities(void);
+extern bool IsGoogleLoggingInitialized();
+extern bool ShutdownGoogleLoggingUtilities();
 }  // namespace glog_internal_namespace_
 }  // namespace google
 
@@ -39,7 +39,7 @@ class AppendLogger : public ailego::Logger {
  public:
   AppendLogger() = default;
 
-  ~AppendLogger() {
+  ~AppendLogger() override {
     this->cleanup();
   }
 

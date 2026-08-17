@@ -47,7 +47,7 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
                            : query_info_->get_selected_scalar_field_names()) {
   auto table = segment_->fetch(fetched_columns_, std::vector<int>{});
   schema_ = table->schema();
-  schema_ = Util::append_field(*schema_, kFieldScore, arrow::float32());
+  schema_ = Util::append_field(*schema_, FIELD_SCORE, arrow::float32());
   if (query_info_->is_include_vector()) {
     for (auto &field : query_info_->selected_vector_fields()) {
       if (field.field_schema_ptr->is_dense_vector()) {
@@ -60,7 +60,7 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
     }
   }
   if (query_info_->group_by()) {
-    schema_ = Util::append_field(*schema_, kFieldGroupId, arrow::utf8());
+    schema_ = Util::append_field(*schema_, FIELD_GROUP_ID, arrow::utf8());
   }
 }
 
@@ -139,27 +139,27 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   if (!filter_status.ok()) {
     return tl::make_unexpected(filter_status);
   }
-  auto &vector_cond_ = query_info_->vector_cond_info();
+  auto &vector_cond = query_info_->vector_cond_info();
   CombinedVectorColumnIndexer::Ptr vector_indexer;
   if (auto *vector_params = dynamic_cast<const VectorIndexParams *>(
-          vector_cond_->vector_schema()->index_params().get());
+          vector_cond->vector_schema()->index_params().get());
       vector_params == nullptr ||
       vector_params->quantize_type() == QuantizeType::UNDEFINED) {
-    vector_indexer = segment_->get_combined_vector_indexer(
-        vector_cond_->vector_field_name());
+    vector_indexer =
+        segment_->get_combined_vector_indexer(vector_cond->vector_field_name());
   } else {
     vector_indexer = segment_->get_quant_combined_vector_indexer(
-        vector_cond_->vector_field_name());
+        vector_cond->vector_field_name());
   }
   if (!vector_indexer) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "vector index not found:", vector_cond_->vector_field_name()));
+        "vector index not found:", vector_cond->vector_field_name()));
   }
   vector_column_params::QueryParams query_params;
   query_params.topk = query_info_->query_topn();
-  query_params.data_type = vector_cond_->vector_schema()->data_type();
-  query_params.dimension = vector_cond_->dimension();
-  query_params.query_params = vector_cond_->query_params();
+  query_params.data_type = vector_cond->vector_schema()->data_type();
+  query_params.dimension = vector_cond->dimension();
+  query_params.query_params = vector_cond->query_params();
   auto brute_force_keys = doc_filter_->get_bf_by_keys_and_update(
       GlobalConfig::Instance().brute_force_by_keys_ratio());
   if (brute_force_keys) {
@@ -196,17 +196,17 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   }
 
   vector_column_params::VectorData vector_data;
-  if (vector_cond_->vector_schema()->is_dense_vector()) {
+  if (vector_cond->vector_schema()->is_dense_vector()) {
     vector_data.vector =
-        vector_column_params::DenseVector{vector_cond_->vector_term().data()};
+        vector_column_params::DenseVector{vector_cond->vector_term().data()};
   } else {
     vector_data.vector = vector_column_params::SparseVector{
-        vector_cond_->sparse_count(),
-        vector_cond_->vector_sparse_indices().data(),
-        vector_cond_->vector_sparse_values().data()};
+        vector_cond->sparse_count(),
+        vector_cond->vector_sparse_indices().data(),
+        vector_cond->vector_sparse_values().data()};
   }
 
-  auto vector_ret = vector_indexer->Search(vector_data, query_params);
+  auto vector_ret = vector_indexer->search(vector_data, query_params);
   if (!vector_ret) {
     return tl::make_unexpected(vector_ret.error());
   }
@@ -245,7 +245,7 @@ VectorRecallNode::State::collect_batch() {
   auto record_batch = std::move(batch.ValueUnsafe());
   ARROW_ASSIGN_OR_RAISE(
       record_batch,
-      record_batch->AddColumn(record_batch->num_columns(), kFieldScore,
+      record_batch->AddColumn(record_batch->num_columns(), FIELD_SCORE,
                               score_array.MoveValueUnsafe()));
 
   if (self_->query_info_->is_include_vector()) {
@@ -277,7 +277,7 @@ VectorRecallNode::State::collect_batch() {
     }
     ARROW_ASSIGN_OR_RAISE(
         record_batch,
-        record_batch->AddColumn(record_batch->num_columns(), kFieldGroupId,
+        record_batch->AddColumn(record_batch->num_columns(), FIELD_GROUP_ID,
                                 group_id_array.MoveValueUnsafe()));
   }
 

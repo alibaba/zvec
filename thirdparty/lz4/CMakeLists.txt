@@ -84,7 +84,15 @@ elseif(IOS)
     "CFLAGS=${_lz4_cflags}"
   )
 else()
-  list(APPEND _lz4_env "CFLAGS=-fPIC")
+  # `make` can't auto detect the sdk root on Apple platforms
+  if (APPLE)
+    list(APPEND _lz4_env "SDKROOT=${CMAKE_OSX_SYSROOT}")
+  endif ()
+
+  list(APPEND _lz4_env
+    "CC=${CMAKE_C_COMPILER}"
+    "CFLAGS=-fPIC"
+  )
 endif()
 
 if(MSVC)

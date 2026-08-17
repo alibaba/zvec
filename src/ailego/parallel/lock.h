@@ -36,10 +36,10 @@ namespace ailego {
 class SpinMutex {
  public:
   //! Constructor
-  SpinMutex(void) {}
+  SpinMutex() = default;
 
   //! Locking
-  void lock(void) {
+  void lock() {
     bool expected = false;
     while (!flag_.compare_exchange_weak(
         expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
@@ -52,24 +52,24 @@ class SpinMutex {
   }
 
   //! Try locking
-  bool try_lock(void) {
+  bool try_lock() {
     bool expected = false;
     return flag_.compare_exchange_strong(
         expected, true, std::memory_order_acquire, std::memory_order_relaxed);
   }
 
   //! Unlocking
-  void unlock(void) {
+  void unlock() {
     flag_.store(false, std::memory_order_release);
   }
 
- private:
   //! Disable them
   SpinMutex(const SpinMutex &) = delete;
   SpinMutex(SpinMutex &&) = delete;
   SpinMutex &operator=(const SpinMutex &) = delete;
   SpinMutex &operator=(SpinMutex &&) = delete;
 
+ private:
   //! Members
   std::atomic_bool flag_{false};
 };
@@ -80,20 +80,20 @@ class SpinMutex {
 class SpinMutex {
  public:
   //! Constructor
-  SpinMutex(void) {}
+  SpinMutex() {}
 
   //! Locking
-  void lock(void) {
+  void lock() {
     while (flag_.test_and_set(std::memory_order_acquire));
   }
 
   //! Try locking
-  bool try_lock(void) {
+  bool try_lock() {
     return (!flag_.test_and_set(std::memory_order_acquire));
   }
 
   //! Unlocking
-  void unlock(void) {
+  void unlock() {
     flag_.clear(std::memory_order_release);
   }
 
@@ -120,10 +120,10 @@ using SharedMutex = std::shared_mutex;
 class SharedMutex {
  public:
   //! Constructor
-  SharedMutex(void) {}
+  SharedMutex() {}
 
   //! Locking
-  void lock(void) {
+  void lock() {
     std::unique_lock<std::mutex> q(mutex_);
     ++write_count_;
     write_cond_.wait(q, [this]() { return (pending_count_ == 0); });
@@ -132,7 +132,7 @@ class SharedMutex {
   }
 
   //! Try locking
-  bool try_lock(void) {
+  bool try_lock() {
     std::unique_lock<std::mutex> q(mutex_, std::defer_lock);
     if (q.try_lock()) {
       if (pending_count_ == 0) {
@@ -144,7 +144,7 @@ class SharedMutex {
   }
 
   //! Unlocking
-  void unlock(void) {
+  void unlock() {
     std::lock_guard<std::mutex> q(mutex_);
     ++pending_count_;
 
@@ -156,7 +156,7 @@ class SharedMutex {
   }
 
   //! Locking (shared)
-  void lock_shared(void) {
+  void lock_shared() {
     std::unique_lock<std::mutex> q(mutex_);
     ++read_count_;
     read_cond_.wait(
@@ -166,7 +166,7 @@ class SharedMutex {
   }
 
   //! Try locking (shared)
-  bool try_lock_shared(void) {
+  bool try_lock_shared() {
     std::lock_guard<std::mutex> q(mutex_);
     if (write_count_ == 0 && pending_count_ >= 0) {
       ++pending_count_;
@@ -176,7 +176,7 @@ class SharedMutex {
   }
 
   //! Unlocking (shared)
-  void unlock_shared(void) {
+  void unlock_shared() {
     std::lock_guard<std::mutex> q(mutex_);
     --pending_count_;
 
@@ -213,28 +213,28 @@ class WriteLock {
   WriteLock(SharedMutex &mutex) : mutex_(mutex) {}
 
   //! Locking
-  void lock(void) {
+  void lock() {
     mutex_.lock();
   }
 
   //! Try locking
-  bool try_lock(void) {
+  bool try_lock() {
     return mutex_.try_lock();
   }
 
   //! Unlocking
-  void unlock(void) {
+  void unlock() {
     mutex_.unlock();
   }
 
- private:
   //! Disable them
-  WriteLock(void) = delete;
+  WriteLock() = delete;
   WriteLock(const WriteLock &) = delete;
   WriteLock(WriteLock &&) = delete;
   WriteLock &operator=(const WriteLock &) = delete;
   WriteLock &operator=(WriteLock &&) = delete;
 
+ private:
   //! Members
   SharedMutex &mutex_;
 };
@@ -247,28 +247,28 @@ class ReadLock {
   ReadLock(SharedMutex &mutex) : mutex_(mutex) {}
 
   //! Locking
-  void lock(void) {
+  void lock() {
     mutex_.lock_shared();
   }
 
   //! Try locking
-  bool try_lock(void) {
+  bool try_lock() {
     return mutex_.try_lock_shared();
   }
 
   //! Unlocking
-  void unlock(void) {
+  void unlock() {
     mutex_.unlock_shared();
   }
 
- private:
   //! Disable them
-  ReadLock(void) = delete;
+  ReadLock() = delete;
   ReadLock(const ReadLock &) = delete;
   ReadLock(ReadLock &&) = delete;
   ReadLock &operator=(const ReadLock &) = delete;
   ReadLock &operator=(ReadLock &&) = delete;
 
+ private:
   //! Members
   SharedMutex &mutex_;
 };

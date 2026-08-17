@@ -33,7 +33,7 @@ class JsonString {
   typedef mod_json_integer_t integer_type;
 
   //! Constructor
-  JsonString(void) : str_(nullptr) {}
+  JsonString() : str_(nullptr) {}
 
   //! Constructor
   JsonString(const JsonString &rhs) : str_(nullptr) {
@@ -66,7 +66,7 @@ class JsonString {
   }
 
   //! Destructor
-  ~JsonString(void) {
+  ~JsonString() {
     mod_json_string_unset(str_);
   }
 
@@ -138,12 +138,12 @@ class JsonString {
   }
 
   //! Retrieve non-zero if the string is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (str_ != (mod_json_string_t *)nullptr);
   }
 
   //! Retrieve non-zero if the string is empty
-  bool empty(void) const {
+  bool empty() const {
     return mod_json_string_empty(str_);
   }
 
@@ -259,7 +259,7 @@ class JsonString {
   }
 
   //! Clear the JSON string
-  void clear(void) {
+  void clear() {
     mod_json_string_unset(str_);
     str_ = nullptr;
   }
@@ -272,17 +272,17 @@ class JsonString {
   }
 
   //! Retrieve the data pointer
-  char *data(void) {
+  char *data() {
     return mod_json_string_data(str_);
   }
 
   //! Retrieve the data pointer
-  const char *data(void) const {
+  const char *data() const {
     return mod_json_string_data(str_);
   }
 
   //! Retrieve HASH of a JSON string
-  size_type hash(void) const {
+  size_type hash() const {
     return mod_json_string_hash(str_);
   }
 
@@ -308,56 +308,56 @@ class JsonString {
   }
 
   // Encode a JSON string
-  JsonString encode(void) const {
+  JsonString encode() const {
     JsonString ret;
     ret.str_ = mod_json_string_encode(str_);
     return ret;
   }
 
   // Decode a JSON string
-  JsonString decode(void) const {
+  JsonString decode() const {
     JsonString ret;
     ret.str_ = mod_json_string_decode(str_);
     return ret;
   }
 
   //! Retrieve the capacity of string
-  size_type capacity(void) const {
+  size_type capacity() const {
     return mod_json_string_capacity(str_);
   }
 
   //! Retrieve the length of string
-  size_type size(void) const {
+  size_type size() const {
     return mod_json_string_length(str_);
   }
 
   //! Retrieve the length of string
-  size_type length(void) const {
+  size_type length() const {
     return mod_json_string_length(str_);
   }
 
   //! Retrieve refer-counter of string
-  ssize_type refer(void) const {
+  ssize_type refer() const {
     return mod_json_string_refer(str_);
   }
 
   //! Retrieve the c-style string
-  const char *c_str(void) const {
+  const char *c_str() const {
     return mod_json_string_cstr(str_);
   }
 
   //! Convert string to float
-  float_type as_float(void) const {
+  float_type as_float() const {
     return mod_json_string_float(str_);
   }
 
   //! Convert string to integer
-  integer_type as_integer(void) const {
+  integer_type as_integer() const {
     return mod_json_string_integer(str_);
   }
 
   //! Retrieve string as a STL string
-  std::string as_stl_string(void) const {
+  std::string as_stl_string() const {
     if (!this->empty()) {
       return std::string(this->data(), this->size());
     }
@@ -366,7 +366,7 @@ class JsonString {
 
  protected:
   //! Clone the string for writing
-  bool copy_on_write(void) {
+  bool copy_on_write() {
     if (str_) {
       if (mod_json_string_is_shared(str_)) {
         mod_json_string_put(str_);
@@ -379,7 +379,7 @@ class JsonString {
   }
 
   //! Clone the value and leak it
-  bool copy_and_leak(void) {
+  bool copy_and_leak() {
     if (copy_on_write()) {
       mod_json_string_set_leaked(str_);
       return true;
@@ -404,7 +404,7 @@ class JsonValue {
   typedef mod_json_integer_t integer_type;
 
   //! Constructor
-  JsonValue(void) : val_(nullptr) {}
+  JsonValue() : val_(nullptr) {}
 
   //! Constructor
   explicit JsonValue(const bool &val) {
@@ -527,7 +527,7 @@ class JsonValue {
 #endif
 
   //! Destructor
-  ~JsonValue(void) {
+  ~JsonValue() {
     mod_json_value_unset(val_);
   }
 
@@ -716,42 +716,42 @@ class JsonValue {
   }
 
   //! Retrieve non-zero if the value is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (val_ != (mod_json_value_t *)nullptr);
   }
 
   //! Retrieve non-zero if the value is a object
-  bool is_object(void) const {
+  bool is_object() const {
     return mod_json_value_is_object(val_);
   }
 
   //! Retrieve non-zero if the value is an array
-  bool is_array(void) const {
+  bool is_array() const {
     return mod_json_value_is_array(val_);
   }
 
   //! Retrieve non-zero if the value is a string
-  bool is_string(void) const {
+  bool is_string() const {
     return mod_json_value_is_string(val_);
   }
 
   //! Retrieve non-zero if the value is null
-  bool is_null(void) const {
+  bool is_null() const {
     return mod_json_value_is_null(val_);
   }
 
   //! Retrieve non-zero if the value is a float
-  bool is_float(void) const {
+  bool is_float() const {
     return mod_json_value_is_float(val_);
   }
 
   //! Retrieve non-zero if the value is an integer
-  bool is_integer(void) const {
+  bool is_integer() const {
     return mod_json_value_is_integer(val_);
   }
 
   //! Retrieve non-zero if the value is a boolean
-  bool is_boolean(void) const {
+  bool is_boolean() const {
     return mod_json_value_is_boolean(val_);
   }
 
@@ -932,12 +932,12 @@ class JsonValue {
   void assign(const JsonObject &obj);
 
   //! Retrieve refer-counter of JSON value
-  ssize_type refer(void) const {
+  ssize_type refer() const {
     return mod_json_value_refer(val_);
   }
 
   //! Retrieve value as JSON format string
-  JsonString as_json_string(void) const {
+  JsonString as_json_string() const {
     mod_json_string_t *tmp = mod_json_dump(val_);
     JsonString ret = *reinterpret_cast<JsonString *>(&tmp);
     if (tmp) {
@@ -947,7 +947,7 @@ class JsonValue {
   }
 
   //! Retrieve value as a STL string
-  std::string as_stl_string(void) const {
+  std::string as_stl_string() const {
     if (is_string()) {
       return to_string().as_stl_string();
     }
@@ -955,7 +955,7 @@ class JsonValue {
   }
 
   //! Retrieve value as JSON string
-  const JsonString &as_string(void) const {
+  const JsonString &as_string() const {
     if (!is_string()) {
       throw std::logic_error("JsonValue::as_string");
     }
@@ -963,12 +963,12 @@ class JsonValue {
   }
 
   //! Retrieve value as c-style string
-  const char *as_c_string(void) const {
+  const char *as_c_string() const {
     return mod_json_value_cstring(val_);
   }
 
   //! Retrieve value as JSON string
-  JsonString &as_string(void) {
+  JsonString &as_string() {
     if (!is_string()) {
       throw std::logic_error("JsonValue::as_string");
     }
@@ -979,7 +979,7 @@ class JsonValue {
   }
 
   //! Retrieve value as JSON array
-  const JsonArray &as_array(void) const {
+  const JsonArray &as_array() const {
     if (!is_array()) {
       throw std::logic_error("JsonValue::as_array");
     }
@@ -987,7 +987,7 @@ class JsonValue {
   }
 
   //! Retrieve value as JSON array
-  JsonArray &as_array(void) {
+  JsonArray &as_array() {
     if (!is_array()) {
       throw std::logic_error("JsonValue::as_array");
     }
@@ -998,7 +998,7 @@ class JsonValue {
   }
 
   //! Retrieve value as JSON object
-  const JsonObject &as_object(void) const {
+  const JsonObject &as_object() const {
     if (!is_object()) {
       throw std::logic_error("JsonValue::as_object");
     }
@@ -1006,7 +1006,7 @@ class JsonValue {
   }
 
   //! Retrieve value as JSON object
-  JsonObject &as_object(void) {
+  JsonObject &as_object() {
     if (!is_object()) {
       throw std::logic_error("JsonValue::as_object");
     }
@@ -1017,17 +1017,17 @@ class JsonValue {
   }
 
   //! Retrieve value as float
-  float_type as_float(void) const {
+  float_type as_float() const {
     return mod_json_value_float(val_);
   }
 
   //! Retrieve value as integer
-  integer_type as_integer(void) const {
+  integer_type as_integer() const {
     return mod_json_value_integer(val_);
   }
 
   //! Retrieve value as boolean
-  bool as_bool(void) const {
+  bool as_bool() const {
     return mod_json_value_boolean(val_);
   }
 
@@ -1075,7 +1075,7 @@ class JsonValue {
 
  protected:
   //! Clone the value for writing
-  bool copy_on_write(void) {
+  bool copy_on_write() {
     if (val_) {
       if (mod_json_value_is_shared(val_)) {
         mod_json_value_put(val_);
@@ -1088,7 +1088,7 @@ class JsonValue {
   }
 
   //! Clone the value and leak it
-  bool copy_and_leak(void) {
+  bool copy_and_leak() {
     if (copy_on_write()) {
       mod_json_value_set_leaked(val_);
       return true;
@@ -1097,22 +1097,22 @@ class JsonValue {
   }
 
   //! Convert value to JSON object
-  JsonObject &to_object(void);
+  JsonObject &to_object();
 
   //! Convert value to JSON object
-  const JsonObject &to_object(void) const;
+  const JsonObject &to_object() const;
 
   //! Convert value to JSON array
-  JsonArray &to_array(void);
+  JsonArray &to_array();
 
   //! Convert value to JSON array
-  const JsonArray &to_array(void) const;
+  const JsonArray &to_array() const;
 
   //! Convert value to JSON string
-  JsonString &to_string(void);
+  JsonString &to_string();
 
   //! Convert value to JSON string
-  const JsonString &to_string(void) const;
+  const JsonString &to_string() const;
 
   //! Treat self value as object by force, retrieving value of a key
   JsonValue &get_value(const char *key);
@@ -1153,7 +1153,7 @@ class JsonArray {
   class const_iterator {
    public:
     //! Constructor
-    const_iterator(void) : iter_(nullptr) {}
+    const_iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_iterator &rhs) const {
@@ -1224,7 +1224,7 @@ class JsonArray {
   class iterator {
    public:
     //! Constructor
-    iterator(void) : iter_(nullptr) {}
+    iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const iterator &rhs) const {
@@ -1303,7 +1303,7 @@ class JsonArray {
   class const_reverse_iterator {
    public:
     //! Constructor
-    const_reverse_iterator(void) : iter_(nullptr) {}
+    const_reverse_iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_reverse_iterator &rhs) const {
@@ -1374,7 +1374,7 @@ class JsonArray {
   class reverse_iterator {
    public:
     //! Constructor
-    reverse_iterator(void) : iter_(nullptr) {}
+    reverse_iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const reverse_iterator &rhs) const {
@@ -1449,7 +1449,7 @@ class JsonArray {
   };
 
   //! Constructor
-  JsonArray(void) : arr_(nullptr) {}
+  JsonArray() : arr_(nullptr) {}
 
   //! Constructor
   JsonArray(const JsonArray &rhs) : arr_(nullptr) {
@@ -1466,7 +1466,7 @@ class JsonArray {
 #endif
 
   //! Destructor
-  ~JsonArray(void) {
+  ~JsonArray() {
     mod_json_array_unset(arr_);
   }
 
@@ -1505,27 +1505,27 @@ class JsonArray {
   }
 
   //! Retrieve non-zero if the array is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (arr_ != (mod_json_array_t *)nullptr);
   }
 
   //! Retrieve non-zero if the array is empty
-  bool empty(void) const {
+  bool empty() const {
     return mod_json_array_empty(arr_);
   }
 
   //! Retrieve the size of JSON array
-  size_type size(void) const {
+  size_type size() const {
     return mod_json_array_count(arr_);
   }
 
   //! Retrieve the capacity of JSON array
-  size_type capacity(void) const {
+  size_type capacity() const {
     return mod_json_array_capacity(arr_);
   }
 
   //! Retrieve refer-counter of JSON array
-  ssize_type refer(void) const {
+  ssize_type refer() const {
     return mod_json_array_refer(arr_);
   }
 
@@ -1552,7 +1552,7 @@ class JsonArray {
   }
 
   //! Reverse the order of the elements
-  void reverse(void) {
+  void reverse() {
     if (arr_ && copy_on_write()) {
       mod_json_array_reverse(arr_);
     }
@@ -1569,7 +1569,7 @@ class JsonArray {
   }
 
   //! Pop the last element from array
-  void pop(void) {
+  void pop() {
     if (arr_) {
       if (!copy_on_write()) {
         throw std::runtime_error("JsonArray::pop");
@@ -1579,7 +1579,7 @@ class JsonArray {
   }
 
   //! Remove the first element of array
-  void shift(void) {
+  void shift() {
     if (arr_) {
       if (!copy_on_write()) {
         throw std::runtime_error("JsonArray::shift");
@@ -1608,7 +1608,7 @@ class JsonArray {
   }
 
   //! Retrieve a reference to the first element
-  JsonValue &front(void) {
+  JsonValue &front() {
     if (this->size() <= 0) {
       throw std::out_of_range("JsonArray::front");
     }
@@ -1619,7 +1619,7 @@ class JsonArray {
   }
 
   //! Retrieve a reference to the first element
-  const JsonValue &front(void) const {
+  const JsonValue &front() const {
     if (this->size() <= 0) {
       throw std::out_of_range("JsonArray::front");
     }
@@ -1627,7 +1627,7 @@ class JsonArray {
   }
 
   //! Retrieve a reference to the last element
-  JsonValue &back(void) {
+  JsonValue &back() {
     if (this->size() <= 0) {
       throw std::out_of_range("JsonArray::back");
     }
@@ -1638,7 +1638,7 @@ class JsonArray {
   }
 
   //! Retrieve a reference to the last element
-  const JsonValue &back(void) const {
+  const JsonValue &back() const {
     if (this->size() <= 0) {
       throw std::out_of_range("JsonArray::back");
     }
@@ -1646,7 +1646,7 @@ class JsonArray {
   }
 
   //! Clear the JSON array
-  void clear(void) {
+  void clear() {
     mod_json_array_unset(arr_);
     arr_ = nullptr;
   }
@@ -1675,7 +1675,7 @@ class JsonArray {
   }
 
   //! Retrieve an iterator pointing to the first element
-  iterator begin(void) {
+  iterator begin() {
     if (copy_and_leak()) {
       return iterator(mod_json_array_begin(arr_));
     }
@@ -1683,7 +1683,7 @@ class JsonArray {
   }
 
   //! Retrieve a const iterator pointing to the first element
-  const_iterator begin(void) const {
+  const_iterator begin() const {
     if (arr_) {
       return const_iterator(mod_json_array_begin(arr_));
     }
@@ -1691,7 +1691,7 @@ class JsonArray {
   }
 
   //! Retrieve a const iterator pointing to the first element
-  const_iterator cbegin(void) const {
+  const_iterator cbegin() const {
     if (arr_) {
       return const_iterator(mod_json_array_begin(arr_));
     }
@@ -1699,7 +1699,7 @@ class JsonArray {
   }
 
   //! Retrieve a reverse iterator pointing to the last element
-  reverse_iterator rbegin(void) {
+  reverse_iterator rbegin() {
     if (copy_and_leak()) {
       return reverse_iterator(mod_json_array_rbegin(arr_));
     }
@@ -1707,7 +1707,7 @@ class JsonArray {
   }
 
   //! Retrieve a const reverse iterator pointing to the last element
-  const_reverse_iterator rbegin(void) const {
+  const_reverse_iterator rbegin() const {
     if (arr_) {
       return const_reverse_iterator(mod_json_array_rbegin(arr_));
     }
@@ -1715,7 +1715,7 @@ class JsonArray {
   }
 
   //! Retrieve a const reverse iterator pointing to the last element
-  const_reverse_iterator crbegin(void) const {
+  const_reverse_iterator crbegin() const {
     if (arr_) {
       return const_reverse_iterator(mod_json_array_rbegin(arr_));
     }
@@ -1723,7 +1723,7 @@ class JsonArray {
   }
 
   //! Retrieve an iterator pointing to the past-the-end element
-  iterator end(void) {
+  iterator end() {
     if (copy_and_leak()) {
       return iterator(mod_json_array_end(arr_));
     }
@@ -1731,7 +1731,7 @@ class JsonArray {
   }
 
   //! Retrieve a const iterator pointing to the past-the-end element
-  const_iterator end(void) const {
+  const_iterator end() const {
     if (arr_) {
       return const_iterator(mod_json_array_end(arr_));
     }
@@ -1739,7 +1739,7 @@ class JsonArray {
   }
 
   //! Retrieve a const iterator pointing to the past-the-end element
-  const_iterator cend(void) const {
+  const_iterator cend() const {
     if (arr_) {
       return const_iterator(mod_json_array_end(arr_));
     }
@@ -1747,7 +1747,7 @@ class JsonArray {
   }
 
   //! Retrieve a reverse pointing to the past-the-end element
-  reverse_iterator rend(void) {
+  reverse_iterator rend() {
     if (copy_and_leak()) {
       return reverse_iterator(mod_json_array_rend(arr_));
     }
@@ -1755,7 +1755,7 @@ class JsonArray {
   }
 
   //! Retrieve a const reverse pointing to the past-the-end element
-  const_reverse_iterator rend(void) const {
+  const_reverse_iterator rend() const {
     if (arr_) {
       return const_reverse_iterator(mod_json_array_rend(arr_));
     }
@@ -1763,7 +1763,7 @@ class JsonArray {
   }
 
   //! Retrieve a const reverse pointing to the past-the-end element
-  const_reverse_iterator crend(void) const {
+  const_reverse_iterator crend() const {
     if (arr_) {
       return const_reverse_iterator(mod_json_array_rend(arr_));
     }
@@ -1772,7 +1772,7 @@ class JsonArray {
 
  protected:
   //! Clone the array for writing
-  bool copy_on_write(void) {
+  bool copy_on_write() {
     if (arr_) {
       if (mod_json_array_is_shared(arr_)) {
         mod_json_array_put(arr_);
@@ -1785,7 +1785,7 @@ class JsonArray {
   }
 
   //! Clone the array and leak it
-  bool copy_and_leak(void) {
+  bool copy_and_leak() {
     if (copy_on_write()) {
       mod_json_array_set_leaked(arr_);
       return true;
@@ -1812,25 +1812,25 @@ class JsonArray {
 class JsonPair {
  public:
   //! Constructor
-  JsonPair(void) : pair_(nullptr) {}
+  JsonPair() : pair_(nullptr) {}
 
   //! Retrieve non-zero if the pair is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (pair_ != (mod_json_pair_t *)nullptr);
   }
 
   //! Retrieve the key of pair
-  const JsonString &key(void) const {
+  const JsonString &key() const {
     return *reinterpret_cast<JsonString *>(&pair_->key);
   }
 
   //! Retrieve the value of pair
-  JsonValue &value(void) {
+  JsonValue &value() {
     return *reinterpret_cast<JsonValue *>(&pair_->val);
   }
 
   //! Retrieve the value of pair
-  const JsonValue &value(void) const {
+  const JsonValue &value() const {
     return *reinterpret_cast<JsonValue *>(&pair_->val);
   }
 
@@ -1841,7 +1841,7 @@ class JsonPair {
   JsonPair(mod_json_pair_t *pair) : pair_(pair) {}
 
   //! Constructor for friends
-  JsonPair(const JsonPair &rhs) : pair_(rhs.pair_) {}
+  JsonPair(const JsonPair &rhs) = default;
 
  private:
   mod_json_pair_t *pair_;
@@ -1864,7 +1864,7 @@ class JsonObject {
   class const_iterator {
    public:
     //! Constructor
-    const_iterator(void) : iter_(nullptr) {}
+    const_iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_iterator &rhs) const {
@@ -1935,7 +1935,7 @@ class JsonObject {
   class iterator {
    public:
     //! Constructor
-    iterator(void) : iter_(nullptr) {}
+    iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const iterator &rhs) const {
@@ -2014,7 +2014,7 @@ class JsonObject {
   class const_reverse_iterator {
    public:
     //! Constructor
-    const_reverse_iterator(void) : iter_(nullptr) {}
+    const_reverse_iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_reverse_iterator &rhs) const {
@@ -2085,7 +2085,7 @@ class JsonObject {
   class reverse_iterator {
    public:
     //! Constructor
-    reverse_iterator(void) : iter_(nullptr) {}
+    reverse_iterator() : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const reverse_iterator &rhs) const {
@@ -2160,7 +2160,7 @@ class JsonObject {
   };
 
   //! Constructor
-  JsonObject(void) : obj_(nullptr) {}
+  JsonObject() : obj_(nullptr) {}
 
   //! Constructor
   JsonObject(const JsonObject &rhs) : obj_(nullptr) {
@@ -2177,7 +2177,7 @@ class JsonObject {
 #endif
 
   //! Destructor
-  ~JsonObject(void) {
+  ~JsonObject() {
     mod_json_object_unset(obj_);
   }
 
@@ -2243,22 +2243,22 @@ class JsonObject {
   }
 
   //! Retrieve non-zero if the object is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (obj_ != (mod_json_object_t *)nullptr);
   }
 
   //! Retrieve non-zero if the object is empty
-  bool empty(void) const {
+  bool empty() const {
     return mod_json_object_empty(obj_);
   }
 
   //! Retrieve the size of JSON object
-  size_type size(void) const {
+  size_type size() const {
     return mod_json_object_count(obj_);
   }
 
   //! Retrieve refer-counter of JSON object
-  ssize_type refer(void) const {
+  ssize_type refer() const {
     return mod_json_object_refer(obj_);
   }
 
@@ -2278,7 +2278,7 @@ class JsonObject {
 #endif
 
   //! Clear the JSON object
-  void clear(void) {
+  void clear() {
     mod_json_object_unset(obj_);
     obj_ = nullptr;
   }
@@ -2537,7 +2537,7 @@ class JsonObject {
   }
 
   //! Retrieve an iterator pointing to the first element
-  iterator begin(void) {
+  iterator begin() {
     if (copy_and_leak()) {
       return iterator(mod_json_object_begin(obj_));
     }
@@ -2545,7 +2545,7 @@ class JsonObject {
   }
 
   //! Retrieve a const iterator pointing to the first element
-  const_iterator begin(void) const {
+  const_iterator begin() const {
     if (obj_) {
       return const_iterator(mod_json_object_begin(obj_));
     }
@@ -2553,7 +2553,7 @@ class JsonObject {
   }
 
   //! Retrieve a const iterator pointing to the first element
-  const_iterator cbegin(void) const {
+  const_iterator cbegin() const {
     if (obj_) {
       return const_iterator(mod_json_object_begin(obj_));
     }
@@ -2561,7 +2561,7 @@ class JsonObject {
   }
 
   //! Retrieve a reverse iterator pointing to the last element
-  reverse_iterator rbegin(void) {
+  reverse_iterator rbegin() {
     if (copy_and_leak()) {
       return reverse_iterator(mod_json_object_rbegin(obj_));
     }
@@ -2569,7 +2569,7 @@ class JsonObject {
   }
 
   //! Retrieve a const reverse iterator pointing to the last element
-  const_reverse_iterator rbegin(void) const {
+  const_reverse_iterator rbegin() const {
     if (obj_) {
       return const_reverse_iterator(mod_json_object_rbegin(obj_));
     }
@@ -2577,7 +2577,7 @@ class JsonObject {
   }
 
   //! Retrieve a const reverse iterator pointing to the last element
-  const_reverse_iterator crbegin(void) const {
+  const_reverse_iterator crbegin() const {
     if (obj_) {
       return const_reverse_iterator(mod_json_object_rbegin(obj_));
     }
@@ -2585,7 +2585,7 @@ class JsonObject {
   }
 
   //! Retrieve an iterator pointing to the past-the-end element
-  iterator end(void) {
+  iterator end() {
     if (copy_and_leak()) {
       return iterator(mod_json_object_end(obj_));
     }
@@ -2593,7 +2593,7 @@ class JsonObject {
   }
 
   //! Retrieve a const iterator pointing to the past-the-end element
-  const_iterator end(void) const {
+  const_iterator end() const {
     if (obj_) {
       return const_iterator(mod_json_object_end(obj_));
     }
@@ -2601,7 +2601,7 @@ class JsonObject {
   }
 
   //! Retrieve a const iterator pointing to the past-the-end element
-  const_iterator cend(void) const {
+  const_iterator cend() const {
     if (obj_) {
       return const_iterator(mod_json_object_end(obj_));
     }
@@ -2609,7 +2609,7 @@ class JsonObject {
   }
 
   //! Retrieve a reverse pointing to the past-the-end element
-  reverse_iterator rend(void) {
+  reverse_iterator rend() {
     if (copy_and_leak()) {
       return reverse_iterator(mod_json_object_rend(obj_));
     }
@@ -2617,7 +2617,7 @@ class JsonObject {
   }
 
   //! Retrieve a const reverse pointing to the past-the-end element
-  const_reverse_iterator rend(void) const {
+  const_reverse_iterator rend() const {
     if (obj_) {
       return const_reverse_iterator(mod_json_object_rend(obj_));
     }
@@ -2625,7 +2625,7 @@ class JsonObject {
   }
 
   //! Retrieve a const reverse pointing to the past-the-end element
-  const_reverse_iterator crend(void) const {
+  const_reverse_iterator crend() const {
     if (obj_) {
       return const_reverse_iterator(mod_json_object_rend(obj_));
     }
@@ -2634,7 +2634,7 @@ class JsonObject {
 
  protected:
   //! Clone the object for writing
-  bool copy_on_write(void) {
+  bool copy_on_write() {
     if (obj_) {
       if (mod_json_object_is_shared(obj_)) {
         mod_json_object_put(obj_);
@@ -2647,7 +2647,7 @@ class JsonObject {
   }
 
   //! Clone the object and leak it
-  bool copy_and_leak(void) {
+  bool copy_and_leak() {
     if (copy_on_write()) {
       mod_json_object_set_leaked(obj_);
       return true;
@@ -2670,32 +2670,32 @@ inline void JsonValue::assign(const JsonObject &obj) {
 }
 
 //! Convert value to JSON object
-inline JsonObject &JsonValue::to_object(void) {
+inline JsonObject &JsonValue::to_object() {
   return *reinterpret_cast<JsonObject *>(&val_->data.c_obj);
 }
 
 //! Convert value to JSON object
-inline const JsonObject &JsonValue::to_object(void) const {
+inline const JsonObject &JsonValue::to_object() const {
   return *reinterpret_cast<JsonObject *>(&val_->data.c_obj);
 }
 
 //! Convert value to JSON array
-inline JsonArray &JsonValue::to_array(void) {
+inline JsonArray &JsonValue::to_array() {
   return *reinterpret_cast<JsonArray *>(&val_->data.c_arr);
 }
 
 //! Convert value to JSON array
-inline const JsonArray &JsonValue::to_array(void) const {
+inline const JsonArray &JsonValue::to_array() const {
   return *reinterpret_cast<JsonArray *>(&val_->data.c_arr);
 }
 
 //! Convert value to JSON string
-inline JsonString &JsonValue::to_string(void) {
+inline JsonString &JsonValue::to_string() {
   return *reinterpret_cast<JsonString *>(&val_->data.c_str);
 }
 
 //! Convert value to JSON string
-inline const JsonString &JsonValue::to_string(void) const {
+inline const JsonString &JsonValue::to_string() const {
   return *reinterpret_cast<JsonString *>(&val_->data.c_str);
 }
 
@@ -2754,7 +2754,7 @@ class JsonParser {
   typedef mod_json_size_t size_type;
 
   //! Constructor
-  JsonParser(void)
+  JsonParser()
       : state_(mod_json_state_null),
         error_(mod_json_error_null),
         context_(nullptr) {
@@ -2764,7 +2764,7 @@ class JsonParser {
   }
 
   //! Destructor
-  ~JsonParser(void) {}
+  ~JsonParser() = default;
 
   //! Set the max object depth
   void set_object_depth(size_type depth) {
@@ -2843,17 +2843,17 @@ class JsonParser {
   }
 
   //! Retrieve the error code of parser
-  int error(void) const {
+  int error() const {
     return (int)error_;
   }
 
   //! Retrieve the state code of parser
-  int state(void) const {
+  int state() const {
     return (int)state_;
   }
 
   //! Retrieve the context of parser
-  const char *context(void) const {
+  const char *context() const {
     return context_;
   }
 
@@ -2869,10 +2869,10 @@ class JsonParser {
 class JsonDumper {
  public:
   //! Constructor
-  JsonDumper(void) : str_() {}
+  JsonDumper() : str_() {}
 
   //! Destructor
-  ~JsonDumper(void) {}
+  ~JsonDumper() = default;
 
   //! Dump a JSON value to string
   bool dump(const JsonValue &val) {
@@ -2888,12 +2888,12 @@ class JsonDumper {
   }
 
   //! Retrieve result of dumper
-  JsonString &result(void) {
+  JsonString &result() {
     return str_;
   }
 
   //! Retrieve result of dumper
-  const JsonString &result(void) const {
+  const JsonString &result() const {
     return str_;
   }
 

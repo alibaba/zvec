@@ -28,10 +28,10 @@ namespace core {
  */
 struct VectorMean {
   //! Destructor
-  virtual ~VectorMean(void) {}
+  virtual ~VectorMean() = default;
 
   //! Reset accumulator
-  virtual void reset(void) = 0;
+  virtual void reset() = 0;
 
   //! Plus a vector
   virtual bool plus(const void *vec, size_t len) = 0;
@@ -46,17 +46,17 @@ struct VectorMean {
   virtual bool merge(const VectorMean &rhs) = 0;
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve the dimension of vectors
-  virtual size_t dimension(void) const = 0;
+  virtual size_t dimension() const = 0;
 };
 
 /*! Vector Mean Array
  */
 struct VectorMeanArray {
   //! Destructor
-  virtual ~VectorMeanArray(void) {}
+  virtual ~VectorMeanArray() = default;
 
   //! Operator []
   VectorMean &operator[](size_t i) {
@@ -72,7 +72,7 @@ struct VectorMeanArray {
   virtual void resize(size_t cnt) = 0;
 
   //! Clear accumulators
-  virtual void clear(void) = 0;
+  virtual void clear() = 0;
 
   //! Retrieve an accumulator
   virtual VectorMean &at(size_t i) = 0;
@@ -81,10 +81,10 @@ struct VectorMeanArray {
   virtual const VectorMean &at(size_t i) const = 0;
 
   //! Retrieve the count of accumulators
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve the dimension of accumulators
-  virtual size_t dimension(void) const = 0;
+  virtual size_t dimension() const = 0;
 };
 
 /*! General Vector Mean Array
@@ -115,7 +115,7 @@ class GeneralVectorMeanArray : public VectorMeanArray {
   }
 
   //! Resize accumulators
-  virtual void resize(size_t cnt) {
+  void resize(size_t cnt) override {
     if (array_.size() < cnt) {
       for (size_t i = array_.size(); i < cnt; ++i) {
         array_.emplace_back(dimension_);
@@ -126,34 +126,34 @@ class GeneralVectorMeanArray : public VectorMeanArray {
   }
 
   //! Clear accumulators
-  virtual void clear(void) {
+  void clear() override {
     array_.clear();
   }
 
   //! Retrieve an accumulator
-  virtual VectorMean &at(size_t i) {
+  VectorMean &at(size_t i) override {
     return array_[i];
   }
 
   //! Retrieve an accumulator
-  virtual const VectorMean &at(size_t i) const {
+  const VectorMean &at(size_t i) const override {
     return array_[i];
   }
 
   //! Retrieve the count of accumulators
-  virtual size_t count(void) const {
+  size_t count() const override {
     return array_.size();
   }
 
   //! Retrieve the dimension of accumulators
-  virtual size_t dimension(void) const {
+  size_t dimension() const override {
     return dimension_;
   }
 
- private:
   //! Disable them
-  GeneralVectorMeanArray(void) = delete;
+  GeneralVectorMeanArray() = delete;
 
+ private:
   //! Members
   size_t dimension_;
   std::vector<T> array_;
@@ -167,7 +167,7 @@ template <typename T,
 class NumericalVectorMean : public VectorMean {
  public:
   //! Constructor
-  NumericalVectorMean(void) : count_(0), accums_() {}
+  NumericalVectorMean() : count_(0), accums_() {}
 
   //! Constructor
   NumericalVectorMean(const NumericalVectorMean &rhs)
@@ -196,12 +196,12 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  void reset() override {
     this->reset(accums_.size());
   }
 
   //! Plus a vector
-  virtual bool plus(const void *vec, size_t len) {
+  bool plus(const void *vec, size_t len) override {
     size_t dim = accums_.size();
     if (dim * sizeof(T) != len) {
       return false;
@@ -214,7 +214,7 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual bool mean(void *out, size_t len) const {
+  bool mean(void *out, size_t len) const override {
     size_t dim = accums_.size();
     if (dim * sizeof(T) != len) {
       return false;
@@ -226,7 +226,7 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual void mean(std::string *out) const {
+  void mean(std::string *out) const override {
     ailego::NumericalVector<T> &vec =
         *static_cast<ailego::NumericalVector<T> *>(out);
 
@@ -238,7 +238,7 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Merge another vector mean
-  virtual bool merge(const VectorMean &rhs) {
+  bool merge(const VectorMean &rhs) override {
     const NumericalVectorMean<T> &src =
         dynamic_cast<const NumericalVectorMean<T> &>(rhs);
 
@@ -254,12 +254,12 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  size_t count() const override {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  size_t dimension() const override {
     return accums_.size();
   }
 
@@ -292,7 +292,7 @@ template <typename T,
 class NumericalVectorHarmonicMean : public VectorMean {
  public:
   //! Constructor
-  NumericalVectorHarmonicMean(void) : count_(0), accums_() {}
+  NumericalVectorHarmonicMean() : count_(0), accums_() {}
 
   //! Constructor
   NumericalVectorHarmonicMean(const NumericalVectorHarmonicMean &rhs)
@@ -321,12 +321,12 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  void reset() override {
     this->reset(accums_.size());
   }
 
   //! Plus a vector (harmonic)
-  virtual bool plus(const void *vec, size_t len) {
+  bool plus(const void *vec, size_t len) override {
     size_t dim = accums_.size();
     if (dim * sizeof(T) != len) {
       return false;
@@ -339,7 +339,7 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors (harmonic)
-  virtual bool mean(void *out, size_t len) const {
+  bool mean(void *out, size_t len) const override {
     size_t dim = accums_.size();
     if (dim * sizeof(T) != len) {
       return false;
@@ -351,7 +351,7 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual void mean(std::string *out) const {
+  void mean(std::string *out) const override {
     ailego::NumericalVector<T> &vec =
         *static_cast<ailego::NumericalVector<T> *>(out);
 
@@ -363,7 +363,7 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Merge another vector mean
-  virtual bool merge(const VectorMean &rhs) {
+  bool merge(const VectorMean &rhs) override {
     const NumericalVectorHarmonicMean<T> &src =
         dynamic_cast<const NumericalVectorHarmonicMean<T> &>(rhs);
 
@@ -379,12 +379,12 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  size_t count() const override {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  size_t dimension() const override {
     return accums_.size();
   }
 
@@ -417,7 +417,7 @@ template <typename T,
 class NumericalVectorGeometricMean : public VectorMean {
  public:
   //! Constructor
-  NumericalVectorGeometricMean(void) : count_(0), accums_() {}
+  NumericalVectorGeometricMean() : count_(0), accums_() {}
 
   //! Constructor
   NumericalVectorGeometricMean(const NumericalVectorGeometricMean &rhs)
@@ -446,12 +446,12 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  void reset() override {
     this->reset(accums_.size());
   }
 
   //! Plus a vector (geometric)
-  virtual bool plus(const void *vec, size_t len) {
+  bool plus(const void *vec, size_t len) override {
     size_t dim = accums_.size();
     if (dim * sizeof(T) != len) {
       return false;
@@ -464,7 +464,7 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors (geometric)
-  virtual bool mean(void *out, size_t len) const {
+  bool mean(void *out, size_t len) const override {
     size_t dim = accums_.size();
     if (dim * sizeof(T) != len) {
       return false;
@@ -477,7 +477,7 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual void mean(std::string *out) const {
+  void mean(std::string *out) const override {
     ailego::NumericalVector<T> &vec =
         *static_cast<ailego::NumericalVector<T> *>(out);
 
@@ -489,7 +489,7 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Merge another vector mean
-  virtual bool merge(const VectorMean &rhs) {
+  bool merge(const VectorMean &rhs) override {
     const NumericalVectorGeometricMean<T> &src =
         dynamic_cast<const NumericalVectorGeometricMean<T> &>(rhs);
 
@@ -505,12 +505,12 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  size_t count() const override {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  size_t dimension() const override {
     return accums_.size();
   }
 
@@ -540,7 +540,7 @@ class NumericalVectorGeometricMean : public VectorMean {
 class BinaryVectorMean : public VectorMean {
  public:
   //! Constructor
-  BinaryVectorMean(void) : count_(0), accums_() {}
+  BinaryVectorMean() : count_(0), accums_() {}
 
   //! Constructor
   BinaryVectorMean(const BinaryVectorMean &rhs)
@@ -574,12 +574,12 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  void reset() override {
     this->reset(accums_.size());
   }
 
   //! Plus a vector
-  virtual bool plus(const void *vec, size_t len) {
+  bool plus(const void *vec, size_t len) override {
     size_t dim = accums_.size();
     if (dim != (len << 3)) {
       return false;
@@ -596,7 +596,7 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual bool mean(void *out, size_t len) const {
+  bool mean(void *out, size_t len) const override {
     size_t dim = accums_.size();
     if (dim != (len << 3)) {
       return false;
@@ -614,7 +614,7 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual void mean(std::string *out) const {
+  void mean(std::string *out) const override {
     size_t dim = accums_.size();
     out->clear();
     out->resize((dim + 7) / 8);
@@ -630,7 +630,7 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Merge another vector mean
-  virtual bool merge(const VectorMean &rhs) {
+  bool merge(const VectorMean &rhs) override {
     const BinaryVectorMean &src = dynamic_cast<const BinaryVectorMean &>(rhs);
 
     size_t dim = accums_.size();
@@ -645,12 +645,12 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  size_t count() const override {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  size_t dimension() const override {
     return accums_.size();
   }
 
@@ -667,7 +667,7 @@ template <typename T,
 class NibbleVectorMean : public VectorMean {
  public:
   //! Constructor
-  NibbleVectorMean(void) : count_(0), accums_() {}
+  NibbleVectorMean() : count_(0), accums_() {}
 
   //! Constructor
   NibbleVectorMean(const NibbleVectorMean &rhs)
@@ -701,12 +701,12 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  void reset() override {
     this->reset(accums_.size());
   }
 
   //! Plus a vector
-  virtual bool plus(const void *vec, size_t len) {
+  bool plus(const void *vec, size_t len) override {
     size_t dim = accums_.size();
     if (dim != (len << 1)) {
       return false;
@@ -723,7 +723,7 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual bool mean(void *out, size_t len) const {
+  bool mean(void *out, size_t len) const override {
     size_t dim = accums_.size();
     if (dim != (len << 1)) {
       return false;
@@ -742,7 +742,7 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Retrieve the mean of vectors
-  virtual void mean(std::string *out) const {
+  void mean(std::string *out) const override {
     size_t dim = accums_.size();
     out->clear();
     out->resize(dim >> 1);
@@ -757,7 +757,7 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Merge another vector mean
-  virtual bool merge(const VectorMean &rhs) {
+  bool merge(const VectorMean &rhs) override {
     const NibbleVectorMean &src = dynamic_cast<const NibbleVectorMean &>(rhs);
 
     size_t dim = accums_.size();
@@ -772,12 +772,12 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  size_t count() const override {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  size_t dimension() const override {
     return accums_.size();
   }
 

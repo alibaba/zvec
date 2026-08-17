@@ -19,7 +19,7 @@ API_LEVEL=${1:-35}
 BUILD_TYPE=${2:-"Release"}
 CORE_COUNT=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
-# ── Android SDK paths (set later, after host protoc build) ───────────
+# ── Android SDK paths ────────────────────────────────────────────────
 ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}
 ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_SDK_ROOT/ndk/"* 2>/dev/null | sort -V | tail -1)}
 
@@ -39,40 +39,9 @@ if [ ! -d "$ANDROID_NDK_HOME" ]; then
     exit 1
 fi
 
-# ── Step 1: build host protoc (using HOST compiler, NOT NDK) ─────────
+# ── Step 1: cross-compile zvec + tests for Android ───────────────────
 echo ""
-echo ">>> Step 1: Building protoc for host..."
-HOST_BUILD_DIR="build_host"
-
-git submodule foreach --recursive 'git stash --include-untracked' 2>/dev/null || true
-
-if [ ! -f "$CURRENT_DIR/$HOST_BUILD_DIR/bin/protoc" ]; then
-    # Explicitly avoid NDK toolchain for host build
-    cmake -S . -B "$HOST_BUILD_DIR" \
-        -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-        -DCMAKE_TOOLCHAIN_FILE="" \
-        -G Ninja
-    cmake --build "$HOST_BUILD_DIR" --target protoc -j"$CORE_COUNT"
-else
-    echo "  (cached — skipping)"
-fi
-PROTOC_EXECUTABLE=$CURRENT_DIR/$HOST_BUILD_DIR/bin/protoc
-echo ">>> Step 1: Done (protoc=$PROTOC_EXECUTABLE)"
-
-# ── Now export Android env vars for cross-compilation ────────────────
-export ANDROID_SDK_ROOT
-export ANDROID_HOME=$ANDROID_SDK_ROOT
-export ANDROID_NDK_HOME
-export CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake
-
-export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
-export PATH=$PATH:$ANDROID_SDK_ROOT/platform-tools
-export PATH=$PATH:$ANDROID_SDK_ROOT/emulator
-export PATH=$PATH:$ANDROID_NDK_HOME
-
-# ── Step 2: cross-compile zvec + tests for Android ───────────────────
-echo ""
-echo ">>> Step 2: Cross-compiling zvec for Android ($ABI, API $API_LEVEL)..."
+echo ">>> Step 1: Cross-compiling zvec for Android ($ABI, API $API_LEVEL)..."
 
 # reset thirdparty so the cross toolchain can patch cleanly
 git submodule foreach --recursive 'git stash --include-untracked' 2>/dev/null || true
@@ -82,6 +51,11 @@ BUILD_DIR="build_android_${ABI}"
 # Force CMake reconfigure to pick up any bazel.cmake changes
 rm -f "$BUILD_DIR/CMakeCache.txt"
 
+# With c++_static, disable the C++ shared libraries so C++ consumers link the
+# static SDK into a single executable or JNI library. Otherwise, the app and
+# C++ shared libraries can each embed libc++, making cross-library STL ownership
+# and exception handling unsafe. The shared C API remains available through
+# BUILD_C_BINDINGS.
 cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DANDROID_NDK="$ANDROID_NDK_HOME" \
     -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
@@ -89,12 +63,15 @@ cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DANDROID_NATIVE_API_LEVEL="$API_LEVEL" \
     -DANDROID_STL="c++_static" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DBUILD_ZVEC_SHARED=OFF \
+    -DBUILD_ZVEC_AILEGO_SHARED=OFF \
+    -DBUILD_ZVEC_CORE_SHARED=OFF \
     -DBUILD_PYTHON_BINDINGS=OFF \
     -DBUILD_TOOLS=OFF \
+    -DBUILD_CPP_EXAMPLES=ON \
     -DENABLE_NATIVE=OFF \
     -DAUTO_DETECT_ARCH=OFF \
     -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/install" \
-    -DGLOBAL_CC_PROTOBUF_PROTOC="$PROTOC_EXECUTABLE"
 
 echo "  Building library..."
 cmake --build "$BUILD_DIR" -j"$CORE_COUNT"
@@ -130,11 +107,11 @@ fi
 echo "  Building ${#TEST_NAMES[@]} test executables..."
 ninja -C "$BUILD_DIR" -j"$CORE_COUNT" "${TEST_NAMES[@]}"
 
-echo ">>> Step 2: Done"
+echo ">>> Step 1: Done"
 
-# ── Step 3: collect test binaries ────────────────────────────────────
+# ── Step 2: collect test binaries ────────────────────────────────────
 echo ""
-echo ">>> Step 3: Collecting test binaries..."
+echo ">>> Step 2: Collecting test binaries..."
 
 TEST_BINS=()
 for name in "${TEST_NAMES[@]}"; do
@@ -391,5 +368,34 @@ echo "============================================================"
 if [ $FAILED -gt 0 ]; then
     exit 1
 fi
+
+echo ""
+echo ">>> Step 6: Running statically linked C++ examples..."
+cmake --build "$BUILD_DIR" --target zvec_cpp_examples -j"$CORE_COUNT"
+READELF=$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -type f -name llvm-readelf | head -1)
+if [ -z "$READELF" ]; then
+    echo "ERROR: llvm-readelf was not found in $ANDROID_NDK_HOME"
+    exit 1
+fi
+
+for example in ailego-example core-example external-vector-example db-example; do
+    example_path="$BUILD_DIR/bin/$example"
+    if [ ! -f "$example_path" ]; then
+        echo "ERROR: Example binary not found: $example_path"
+        exit 1
+    fi
+
+    dynamic_section=$("$READELF" --dynamic "$example_path")
+    if echo "$dynamic_section" | grep -Eq 'libzvec[^]]*\.so|libc\+\+_shared\.so'; then
+        echo "ERROR: $example unexpectedly depends on a C++ shared library"
+        echo "$dynamic_section" | grep NEEDED || true
+        exit 1
+    fi
+
+    echo "  Running $example..."
+    $ADB_BIN push "$example_path" "/data/local/tmp/$example" > /dev/null 2>&1
+    $ADB_BIN shell "chmod 755 /data/local/tmp/$example && cd /data/local/tmp && ./$example"
+    $ADB_BIN shell "rm -f /data/local/tmp/$example"
+done
 
 echo "All tests passed!"

@@ -86,37 +86,46 @@ class MipsConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
-      return front_iter_->is_valid();
+    bool is_valid() const override {
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_data();
     }
 
    private:
     //! Transform the data
-    void transform_data(void) {
-      if (!front_iter_->is_valid()) {
+    void transform_data() {
+      if (!this->is_valid()) {
         return;
       }
 
       const float *src = reinterpret_cast<const float *>(front_iter_->data());
+      status_ = front_iter_->status();
+      if (src == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
+        return;
+      }
       float *dst = buffer_.data();
       if (!spherical_injection_) {
         ConvertRepeatedQuadraticInjection(src, buffer_.size() - m_value_,
@@ -133,6 +142,7 @@ class MipsConverterHolder : public IndexHolder {
     float l2_norm_{0.0f};
     bool spherical_injection_{false};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor
@@ -145,43 +155,44 @@ class MipsConverterHolder : public IndexHolder {
         front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension() + m_value_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP32,
                                     front_->dimension() + m_value_);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new MipsConverterHolder::Iterator(this, std::move(iter)))
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
-  MipsConverterHolder(void) = delete;
+  MipsConverterHolder() = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -214,36 +225,45 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
-      return front_iter_->is_valid();
+    bool is_valid() const override {
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_record();
     }
 
    private:
-    void transform_record(void) {
-      if (!front_iter_->is_valid()) {
+    void transform_record() {
+      if (!this->is_valid()) {
         return;
       }
 
       const float *src = reinterpret_cast<const float *>(front_iter_->data());
+      status_ = front_iter_->status();
+      if (src == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
+        return;
+      }
       ailego::Float16 *dst = buffer_.data();
       if (!spherical_injection_) {
         ConvertRepeatedQuadraticInjection(src, buffer_.size() - m_value_,
@@ -260,6 +280,7 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     float l2_norm_{0.0f};
     bool spherical_injection_{false};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor
@@ -273,33 +294,33 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
         front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension() + m_value_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP16,
                                     front_->dimension() + m_value_);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new MipsConverterForcedHalfHolder::Iterator(
@@ -307,10 +328,11 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
-  MipsConverterForcedHalfHolder(void) = delete;
+  MipsConverterForcedHalfHolder() = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -343,37 +365,46 @@ class MipsConverterHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
-      return front_iter_->is_valid();
+    bool is_valid() const override {
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_record();
     }
 
    private:
-    void transform_record(void) {
-      if (!front_iter_->is_valid()) {
+    void transform_record() {
+      if (!this->is_valid()) {
         return;
       }
 
       const ailego::Float16 *src =
           reinterpret_cast<const ailego::Float16 *>(front_iter_->data());
+      status_ = front_iter_->status();
+      if (src == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
+        return;
+      }
       ailego::Float16 *dst = buffer_.data();
       if (!spherical_injection_) {
         ConvertRepeatedQuadraticInjection(src, buffer_.size() - m_value_,
@@ -390,6 +421,7 @@ class MipsConverterHalfHolder : public IndexHolder {
     float l2_norm_{0.0f};
     bool spherical_injection_{false};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor
@@ -402,33 +434,33 @@ class MipsConverterHalfHolder : public IndexHolder {
         front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension() + m_value_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP16,
                                     front_->dimension() + m_value_);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new MipsConverterHalfHolder::Iterator(this,
@@ -436,10 +468,11 @@ class MipsConverterHalfHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
-  MipsConverterHalfHolder(void) = delete;
+  MipsConverterHalfHolder() = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -453,7 +486,7 @@ class MipsConverterHalfHolder : public IndexHolder {
 class MipsConverter : public IndexConverter {
  public:
   //! Destructor
-  ~MipsConverter(void) override {}
+  ~MipsConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {
@@ -511,7 +544,7 @@ class MipsConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -629,17 +662,17 @@ class MipsConverter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 

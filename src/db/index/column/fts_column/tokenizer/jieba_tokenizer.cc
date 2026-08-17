@@ -44,7 +44,7 @@ static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
   return GlobalConfig::Instance().jieba_dict_dir();
 }
 
-bool JiebaTokenizer::init(const ailego::JsonObject &config) {
+Status JiebaTokenizer::init(const ailego::JsonObject &config) {
   std::string user_dict_path =
       get_string_or_default(config, "user_dict_path", "");
 
@@ -58,8 +58,8 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   } else if (mode_str == "hmm") {
     cut_mode_ = CutMode::kHmm;
   } else {
-    LOG_ERROR("JiebaTokenizer: unknown cut_mode '%s'", mode_str.c_str());
-    return false;
+    return Status::InvalidArgument("JiebaTokenizer: unknown cut_mode '",
+                                   mode_str, "'");
   }
 
   bool needs_dict = cut_mode_ != CutMode::kHmm;
@@ -67,12 +67,11 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
 
   std::string dict_dir = resolve_jieba_dict_dir(config);
   if ((needs_dict || needs_model) && dict_dir.empty()) {
-    LOG_ERROR(
+    return Status::InvalidArgument(
         "JiebaTokenizer: jieba_dict_dir not configured. Set via "
         "extra_params.jieba_dict_dir, ZVEC_JIEBA_DICT_DIR env var, "
         "or zvec.set_default_jieba_dict_dir() / "
         "zvec.init(jieba_dict_dir=...).");
-    return false;
   }
 
   std::string dict_path = needs_dict ? dict_dir + "/jieba.dict.utf8" : "";
@@ -107,13 +106,13 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   } catch (const std::exception &e) {
     LOG_ERROR("JiebaTokenizer init failed: %s", e.what());
     reset();
-    return false;
+    return Status::InvalidArgument("JiebaTokenizer init failed: ", e.what());
   }
 
   initialized_ = true;
   LOG_INFO("JiebaTokenizer init success. dict_dir[%s] cut_mode[%s]",
            dict_dir.c_str(), mode_str.c_str());
-  return true;
+  return Status::OK();
 }
 
 JiebaTokenizer::~JiebaTokenizer() = default;

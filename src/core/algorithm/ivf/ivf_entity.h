@@ -32,10 +32,10 @@ class IVFEntity {
   class IVFReformerWrapper;
 
   //! Constructor
-  IVFEntity() {}
+  IVFEntity() = default;
 
   //! Destructor
-  virtual ~IVFEntity() {}
+  virtual ~IVFEntity() = default;
 
   //! Disable them
   IVFEntity(const IVFEntity &) = delete;
@@ -62,14 +62,14 @@ class IVFEntity {
              IndexContext::Stats *context_stats) const;
 
   //! Clone the entity
-  virtual IVFEntity::Pointer clone(void) const;
+  virtual IVFEntity::Pointer clone() const;
 
   //! Clone the entity
   IVFEntity::Pointer clone(const IVFEntity::Pointer &entity) const;
 
   //! Retrieve the primary keys by local id in heap
   int retrieve_keys(IndexDocumentHeap *heap) const {
-    for (auto &it : (*heap)) {
+    for (auto &it : heap->mutable_container()) {
       uint64_t key = this->get_key(it.index());
       if (key == kInvalidKey) {
         return IndexError_ReadData;
@@ -81,27 +81,27 @@ class IVFEntity {
   }
 
   //! Retrieve the total vectors in the index
-  size_t vector_count(void) const {
+  size_t vector_count() const {
     return header_.total_vector_count;
   }
 
   //! Retrieve the inverted list count
-  size_t inverted_list_count(void) const {
+  size_t inverted_list_count() const {
     return header_.inverted_list_count;
   }
 
   //! Retrieve block size of the inverted vector
-  size_t inverted_block_size(void) const {
+  size_t inverted_block_size() const {
     return header_.block_size;
   }
 
   //! Retrieve the vectors count in one block
-  size_t block_vector_count(void) const {
+  size_t block_vector_count() const {
     return header_.block_vector_count;
   }
 
   //! Retrieve IndexMeta of the inverted index
-  const IndexMeta &meta(void) const {
+  const IndexMeta &meta() const {
     return meta_;
   }
 
@@ -171,17 +171,21 @@ class IVFEntity {
     return *static_cast<const uint64_t *>(data);
   }
 
-  //! Retrieve the key-order mapping (sorted rank -> local_id).
-  //! mapping[rank] is the local_id of the vector with the rank-th smallest
-  //! key. Returns nullptr if mapping segment is unavailable.
-  const uint32_t *get_key_order_mapping() const {
-    if (!mapping_) return nullptr;
-    const void *data = nullptr;
-    const size_t size = vector_count() * sizeof(uint32_t);
-    if (mapping_->read(0, &data, size) != size) {
-      return nullptr;
+  //! Test whether the sorted-rank to local-id mapping is available.
+  bool has_key_order_mapping() const {
+    return mapping_ != nullptr;
+  }
+
+  //! Fetch a range from the key-order mapping (sorted rank -> local_id).
+  //! Explicit copying avoids retaining storage-owned transient pointers.
+  size_t get_key_order_mapping(size_t rank, uint32_t *out, size_t count) const {
+    if (!mapping_ || !out || count == 0 || rank >= vector_count()) {
+      return 0;
     }
-    return static_cast<const uint32_t *>(data);
+    count = std::min(count, vector_count() - rank);
+    const size_t bytes = count * sizeof(uint32_t);
+    return mapping_->fetch(rank * sizeof(uint32_t), out, bytes) /
+           sizeof(uint32_t);
   }
 
   //! Retrieve vector by local id
@@ -233,7 +237,7 @@ class IVFEntity {
       return this->convert_to_normalize_value(scale);
     }
 
-    return norm_value_;
+    return 1.0f;
   }
 
   //! Check whether the feature segment exist
@@ -242,7 +246,7 @@ class IVFEntity {
   }
 
   //! Retrieve reformer
-  const IVFReformerWrapper &reformer(void) const {
+  const IVFReformerWrapper &reformer() const {
     return reformer_;
   }
 
@@ -252,7 +256,7 @@ class IVFEntity {
   class IVFReformerWrapper {
    public:
     //! Constructor
-    IVFReformerWrapper() {}
+    IVFReformerWrapper() = default;
 
     //! Assignment
     IVFReformerWrapper &operator=(const IVFReformerWrapper &wrapper) {
@@ -358,6 +362,8 @@ class IVFEntity {
   IndexStorage::Segment::Pointer features_{};
   IndexStorage::Segment::Pointer integer_quantizer_params_{};
   mutable std::string vector_{};  // temporary buffer for colomn major order
+  //! Temporary buffer for one row-major vector split across storage pages.
+  mutable std::vector<uint8_t> scatter_vector_{};
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
   InvertedIndexHeader header_;

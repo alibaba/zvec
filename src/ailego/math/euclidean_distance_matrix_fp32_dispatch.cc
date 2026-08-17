@@ -18,7 +18,7 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
 void SquaredEuclideanDistanceFp32NEON(const float *lhs, const float *rhs,
                                       size_t size, float *out);
 #endif
@@ -49,7 +49,7 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
                                                           const ValueType *q,
                                                           size_t dim,
                                                           float *out) {
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
   SquaredEuclideanDistanceFp32NEON(m, q, dim, out);
 #else
 #if defined(__AVX512F__)
@@ -72,7 +72,7 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
   }
 #endif  // __SSE__
   *out = SquaredEuclideanDistanceFp32Scalar(m, q, dim);
-#endif  // __ARM_NEON
+#endif  // AILEGO_HAVE_NEON
 }
 
 //-----------------------------------------------------------

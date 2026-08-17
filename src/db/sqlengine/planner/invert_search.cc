@@ -20,7 +20,7 @@
 
 namespace zvec::sqlengine {
 
-const std::unordered_map<QueryNodeOp, CompareOp> kOpMap_ = {
+const std::unordered_map<QueryNodeOp, CompareOp> kOpMap = {
     {QueryNodeOp::Q_EQ, CompareOp::EQ},
     {QueryNodeOp::Q_NE, CompareOp::NE},
     {QueryNodeOp::Q_LT, CompareOp::LT},
@@ -72,8 +72,8 @@ Result<InvertedSearchResult::Ptr> InvertSearch::exec_invert_cond_tree(
 }
 
 CompareOp InvertSearch::query_nodeop2search_op(QueryNodeOp op) {
-  auto iter = kOpMap_.find(op);
-  if (iter == kOpMap_.end()) {
+  auto iter = kOpMap.find(op);
+  if (iter == kOpMap.end()) {
     return CompareOp::NONE;
   }
   return iter->second;

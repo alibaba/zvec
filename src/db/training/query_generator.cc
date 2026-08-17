@@ -50,7 +50,7 @@ SampledVectors TrainingQueryGenerator::SampleBaseVectorsWithIds(
     uint64_t doc_idx = dist(rng);
 
     // Fetch document
-    auto doc = segment->Fetch(doc_idx);
+    auto doc = segment->fetch(doc_idx);
     if (!doc) {
       LOG_WARN("Failed to fetch document at index %zu, skipping",
                static_cast<size_t>(doc_idx));

@@ -31,25 +31,27 @@ static void ExitLogHandler() {
 }
 
 GlobalConfig::ConfigData::ConfigData()
-    : memory_limit_bytes(CgroupUtil::getMemoryLimit() *
+    : memory_limit_bytes(CgroupUtil::get_memory_limit() *
                          DEFAULT_MEMORY_LIMIT_RATIO),
       log_config(std::make_shared<ConsoleLogConfig>()),
-      query_thread_count(CgroupUtil::getCpuLimit()),
+      query_thread_count(CgroupUtil::get_cpu_limit()),
+      query_thread_binding(false),
       invert_to_forward_scan_ratio(0.9),
       brute_force_by_keys_ratio(0.1),
       fts_brute_force_by_keys_ratio(0.05),
-      optimize_thread_count(CgroupUtil::getCpuLimit()),
+      optimize_thread_count(query_thread_count),
+      optimize_thread_binding(false),
       jieba_dict_dir() {}
 
-Status GlobalConfig::Validate(const ConfigData &config) const {
+Status GlobalConfig::validate(const ConfigData &config) const {
   if (config.memory_limit_bytes < MIN_MEMORY_LIMIT_BYTES) {
     return Status::InvalidArgument("memory_limit_bytes must be greater than ",
                                    MIN_MEMORY_LIMIT_BYTES);
   }
 
-  if (config.memory_limit_bytes > CgroupUtil::getMemoryLimit()) {
+  if (config.memory_limit_bytes > CgroupUtil::get_memory_limit()) {
     return Status::InvalidArgument("memory_limit_bytes must be less than ",
-                                   CgroupUtil::getMemoryLimit());
+                                   CgroupUtil::get_memory_limit());
   }
 
   // Validate query thread count
@@ -85,7 +87,7 @@ Status GlobalConfig::Validate(const ConfigData &config) const {
   }
 
   // Validate log configuration
-  if (config.log_config->GetLoggerType() == FILE_LOG_TYPE_NAME) {
+  if (config.log_config->get_logger_type() == FILE_LOG_TYPE_NAME) {
     auto log_config =
         std::dynamic_pointer_cast<FileLogConfig>(config.log_config);
 
@@ -115,14 +117,14 @@ Status GlobalConfig::Validate(const ConfigData &config) const {
   return Status::OK();
 }
 
-Status GlobalConfig::Initialize(const ConfigData &config) {
+Status GlobalConfig::initialize(const ConfigData &config) {
   // Use atomic compare-exchange to ensure only one initialization
   bool expected = false;
   if (!initialized_.compare_exchange_strong(expected, true)) {
     return Status::OK();
   }
 
-  auto s = Validate(config);
+  auto s = validate(config);
   CHECK_RETURN_STATUS(s);
 
   // Preserve the SDK-set jieba_dict_dir when caller didn't specify one.

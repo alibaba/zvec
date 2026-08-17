@@ -57,7 +57,7 @@ class InvertedRocksdbValueMerger : public rocksdb::MergeOperator {
     AILEGO_DEFER([&]() { roaring_bitmap_free(bitmap); });
 
     for (const rocksdb::Slice &m : merge_in.operand_list) {
-      s = InvertedIndexCodec::Merge_OR(m.data(), m.size(), true, bitmap);
+      s = InvertedIndexCodec::merge_or(m.data(), m.size(), true, bitmap);
       if (!s.ok()) {
         LOG_ERROR("Failed to merge bitmap");
         return false;
@@ -88,7 +88,7 @@ class InvertedRocksdbValueMerger : public rocksdb::MergeOperator {
     }
     AILEGO_DEFER([&]() { roaring_bitmap_free(bitmap); });
 
-    s = InvertedIndexCodec::Merge_OR(right_operand.data(), right_operand.size(),
+    s = InvertedIndexCodec::merge_or(right_operand.data(), right_operand.size(),
                                      false, bitmap);
     if (!s.ok()) {
       LOG_ERROR("Failed to merge bitmap");

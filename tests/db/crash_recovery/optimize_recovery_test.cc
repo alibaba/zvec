@@ -37,10 +37,10 @@ typedef HANDLE pid_t;
 namespace zvec {
 
 
-static std::string optimizer_bin_;
-const std::string collection_name_{"optimize_recovery_test"};
-const std::string dir_path_{"optimize_recovery_test_db"};
-const zvec::CollectionOptions options_{false, true, 256 * 1024};
+static std::string optimizer_bin;
+const std::string collection_name{"optimize_recovery_test"};
+const std::string dir_path{"optimize_recovery_test_db"};
+const zvec::CollectionOptions options{false, true, 256 * 1024};
 const int batch_size{50};
 const int num_batches{1000};
 
@@ -54,7 +54,7 @@ void ExecuteOptimizer(const std::string &path, int kill_after_seconds = -1) {
   bool should_crash = kill_after_seconds >= 0;
 
 #ifdef _WIN32
-  std::string cmd_str = optimizer_bin_ + " --path " + path;
+  std::string cmd_str = optimizer_bin + " --path " + path;
 
   STARTUPINFOA si = {sizeof(si)};
   PROCESS_INFORMATION pi;
@@ -93,7 +93,7 @@ void ExecuteOptimizer(const std::string &path, int kill_after_seconds = -1) {
 
   if (pid == 0) {
     char arg_path[] = "--path";
-    char *args[] = {const_cast<char *>(optimizer_bin_.c_str()), arg_path,
+    char *args[] = {const_cast<char *>(optimizer_bin.c_str()), arg_path,
                     const_cast<char *>(path.c_str()), nullptr};
     execvp(args[0], args);
     perror("execvp failed");
@@ -132,7 +132,7 @@ class OptimizeRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
     zvec::test_util::RemoveTestPath("./optimize_recovery_test_db");
-    ASSERT_NO_THROW(optimizer_bin_ = LocateOptimizeGenerator());
+    ASSERT_NO_THROW(optimizer_bin = LocateOptimizeGenerator());
   }
 
   void TearDown() override {
@@ -143,8 +143,8 @@ class OptimizeRecoveryTest : public ::testing::Test {
 
 TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
   {  // Create a collection and insert some documents
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -153,32 +153,32 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
       for (int i = 0; i < batch_size; i++) {
         docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
       }
-      auto write_result = collection->Insert(docs);
+      auto write_result = collection->insert(docs);
       ASSERT_TRUE(write_result);
       for (auto &s : write_result.value()) {
         ASSERT_TRUE(s.ok());
       }
     }
 
-    ASSERT_EQ(collection->Stats()->doc_count, num_batches * batch_size);
+    ASSERT_EQ(collection->stats()->doc_count, num_batches * batch_size);
     collection.reset();
   }
 
-  RunOptimizerAndCrash(dir_path_, 4);
+  RunOptimizerAndCrash(dir_path, 4);
 
   {  // Open the collection and verify data integrity
-    auto result = Collection::Open(dir_path_, options_);
+    auto result = Collection::Open(dir_path, options);
     ASSERT_TRUE(result.has_value())
         << "Failed to reopen collection after crash. "
            "Recovery mechanism may be broken.";
     auto collection = result.value();
-    uint64_t doc_count{collection->Stats().value().doc_count};
+    uint64_t doc_count{collection->stats().value().doc_count};
     ASSERT_EQ(doc_count, num_batches * batch_size);
     for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
       Doc expected_doc = CreateTestDoc(doc_id, 0);
       std::vector<std::string> pks{};
       pks.emplace_back(expected_doc.pk());
-      if (auto res = collection->Fetch(pks); res) {
+      if (auto res = collection->fetch(pks); res) {
         auto map = res.value();
         if (map.find(expected_doc.pk()) == map.end()) {
           FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
@@ -198,7 +198,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
     query.target_.set_vector(std::string((const char *)feature.data(),
                                          feature.size() * sizeof(float)));
     query.target_.field_name_ = "dense_fp32_field";
-    auto query_result = collection->Query(query);
+    auto query_result = collection->query(query);
     ASSERT_TRUE(query_result);
     auto doc_list = query_result.value();
     ASSERT_EQ(doc_list.size(), 10);
@@ -210,7 +210,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
       for (int i = 0; i < batch_size; i++) {
         docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
       }
-      auto write_result = collection->Insert(docs);
+      auto write_result = collection->insert(docs);
       ASSERT_TRUE(write_result);
       for (auto &s : write_result.value()) {
         ASSERT_TRUE(s.ok());
@@ -220,20 +220,20 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
     collection.reset();
   }
 
-  RunOptimizer(dir_path_);
+  RunOptimizer(dir_path);
 
   // Open the collection and verify data integrity
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->Stats().value().doc_count};
+  uint64_t doc_count{collection->stats().value().doc_count};
   ASSERT_EQ(doc_count, (num_batches + 500) * batch_size);
   for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
     Doc expected_doc = CreateTestDoc(doc_id, 0);
     std::vector<std::string> pks{};
     pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
+    if (auto res = collection->fetch(pks); res) {
       auto map = res.value();
       if (map.find(expected_doc.pk()) == map.end()) {
         FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
@@ -253,7 +253,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
   query.target_.set_vector(std::string((const char *)feature.data(),
                                        feature.size() * sizeof(float)));
   query.target_.field_name_ = "dense_fp32_field";
-  auto query_result = collection->Query(query);
+  auto query_result = collection->query(query);
   ASSERT_TRUE(query_result);
   auto doc_list = query_result.value();
   ASSERT_EQ(doc_list.size(), 10);

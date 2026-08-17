@@ -64,28 +64,28 @@ class ScopedEnvVar {
 
 BaseIndexParam::Pointer CreateOmegaIndexParam() {
   return OmegaIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(kDimension)
-      .WithIsSparse(false)
-      .WithM(8)
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(kDimension)
+      .with_is_sparse(false)
+      .with_m(8)
       .WithEFConstruction(64)
-      .Build();
+      .build();
 }
 
 BaseIndexParam::Pointer CreateTrainableOmegaIndexParam() {
   return OmegaIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(kDimension)
-      .WithIsSparse(false)
-      .WithM(8)
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(kDimension)
+      .with_is_sparse(false)
+      .with_m(8)
       .WithEFConstruction(64)
       .WithMinVectorThreshold(1)
       .WithNumTrainingQueries(32)
       .WithEFTraining(64)
       .WithEFGroundTruth(64)
-      .Build();
+      .build();
 }
 
 void PopulateIndex(const Index::Pointer &index, uint32_t doc_count) {
@@ -95,7 +95,7 @@ void PopulateIndex(const Index::Pointer &index, uint32_t doc_count) {
 
     VectorData vector_data;
     vector_data.vector = DenseVector{values.data()};
-    ASSERT_EQ(index->Add(vector_data, doc_id), 0);
+    ASSERT_EQ(index->add(vector_data, doc_id), 0);
   }
 }
 
@@ -127,7 +127,7 @@ std::vector<std::vector<float>> PopulateRandomIndex(const Index::Pointer &index,
     dataset.push_back(MakeRandomUnitVector(rng));
     VectorData vector_data;
     vector_data.vector = DenseVector{dataset.back().data()};
-    if (index->Add(vector_data, doc_id) != 0) {
+    if (index->add(vector_data, doc_id) != 0) {
       ADD_FAILURE() << "failed to add random training document " << doc_id;
       return {};
     }
@@ -157,11 +157,11 @@ TEST_F(OmegaIndexIntegrationTest,
        SearchFallsBackWithoutModelAndReturnsResults) {
   auto index = IndexFactory::CreateAndInitIndex(*CreateOmegaIndexParam());
   ASSERT_NE(index, nullptr);
-  ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
+  ASSERT_EQ(index->open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
 
   PopulateIndex(index, 8);
-  ASSERT_EQ(index->Train(), 0);
+  ASSERT_EQ(index->train(), 0);
 
   auto query_param = OmegaQueryParamBuilder()
                          .with_topk(3)
@@ -172,24 +172,24 @@ TEST_F(OmegaIndexIntegrationTest,
 
   auto query = MakeQuery(0.0f);
   SearchResult result;
-  ASSERT_EQ(index->Search(query, query_param, &result), 0);
+  ASSERT_EQ(index->search(query, query_param, &result), 0);
   ASSERT_EQ(result.doc_list_.size(), 3U);
   EXPECT_EQ(result.doc_list_[0].key(), 7U);
   EXPECT_TRUE(result.training_records_.empty());
   EXPECT_TRUE(result.gt_cmps_per_rank_.empty());
 
-  ASSERT_EQ(index->Close(), 0);
+  ASSERT_EQ(index->close(), 0);
 }
 
 TEST_F(OmegaIndexIntegrationTest,
        TrainingSessionCollectsArtifactsThroughIndexSearch) {
   auto index = IndexFactory::CreateAndInitIndex(*CreateOmegaIndexParam());
   ASSERT_NE(index, nullptr);
-  ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
+  ASSERT_EQ(index->open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
 
   PopulateIndex(index, 8);
-  ASSERT_EQ(index->Train(), 0);
+  ASSERT_EQ(index->train(), 0);
 
   auto *training_capable = index->GetTrainingCapability();
   ASSERT_NE(training_capable, nullptr);
@@ -213,7 +213,7 @@ TEST_F(OmegaIndexIntegrationTest,
 
   auto query = MakeQuery(0.0f);
   SearchResult result;
-  ASSERT_EQ(index->Search(query, query_param, &result), 0);
+  ASSERT_EQ(index->search(query, query_param, &result), 0);
   EXPECT_EQ(result.training_query_id_, 0);
   EXPECT_FALSE(result.training_records_.empty());
   ASSERT_EQ(result.gt_cmps_per_rank_.size(), 1U);
@@ -235,18 +235,18 @@ TEST_F(OmegaIndexIntegrationTest,
   EXPECT_EQ(consumed.gt_cmps_data.total_cmps[0], result.total_cmps_);
 
   session->Finish();
-  ASSERT_EQ(index->Close(), 0);
+  ASSERT_EQ(index->close(), 0);
 }
 
 TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
   auto index =
       IndexFactory::CreateAndInitIndex(*CreateTrainableOmegaIndexParam());
   ASSERT_NE(index, nullptr);
-  ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
+  ASSERT_EQ(index->open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
 
   auto dataset = PopulateRandomIndex(index, 128);
-  ASSERT_EQ(index->Train(), 0);
+  ASSERT_EQ(index->train(), 0);
 
   EXPECT_TRUE(std::filesystem::exists(
       "OmegaIndexIntegrationTest/omega_model/model.txt"));
@@ -269,7 +269,7 @@ TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
   {
     ScopedEnvVar profile_enabled("ZVEC_OMEGA_PROFILE_PREDICTION", "1");
     ScopedEnvVar profile_output("ZVEC_OMEGA_PROFILE_OUTPUT", profile_path);
-    ASSERT_EQ(index->Search(query, query_param, &result), 0);
+    ASSERT_EQ(index->search(query, query_param, &result), 0);
   }
   ASSERT_EQ(result.doc_list_.size(), 5U);
 
@@ -283,7 +283,7 @@ TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
   EXPECT_NE(profile_line.find("\"saved_comparisons\""), std::string::npos);
   EXPECT_NE(profile_line.find("\"baseline_comparisons\""), std::string::npos);
 
-  ASSERT_EQ(index->Close(), 0);
+  ASSERT_EQ(index->close(), 0);
 }
 
 }  // namespace

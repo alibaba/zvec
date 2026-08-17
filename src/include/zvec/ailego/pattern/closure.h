@@ -244,15 +244,15 @@ class Callback<void> {
   using Pointer = std::shared_ptr<Callback<void>>;
 
   //! Destructor
-  virtual ~Callback(void) {}
+  virtual ~Callback() = default;
 
   //! Function call
-  void operator()(void) {
+  void operator()() {
     this->run();
   }
 
   //! Run the callback function
-  virtual void run(void) = 0;
+  virtual void run() = 0;
 
   //! Create callback closure (member function pointer)
   template <typename T, typename R, typename... TParams, typename... TArgs>
@@ -295,7 +295,7 @@ class Callback : public Callback<void> {
   using Callback<void>::run;
 
   //! Function call
-  void operator()(void) {
+  void operator()() {
     this->run();
   }
 
@@ -309,7 +309,7 @@ class Callback : public Callback<void> {
 
  protected:
   //! Constructor
-  Callback(void) {};
+  Callback() = default;
 };
 
 /*! Callback Implementation
@@ -335,7 +335,7 @@ class CallbackImpl : public Callback<R> {
         tuple_(std::forward<TArgs>(args)...) {}
 
   //! Run the callback function
-  void run(void) override {
+  void run() override {
     Functor::Run(obj_, impl_, tuple_);
   }
 
@@ -344,9 +344,8 @@ class CallbackImpl : public Callback<R> {
     *r = Functor::Run(obj_, impl_, tuple_);
   }
 
- protected:
   //! Disable them
-  CallbackImpl(void) = delete;
+  CallbackImpl() = delete;
   CallbackImpl(const CallbackImpl &) = delete;
   CallbackImpl(CallbackImpl &&) = delete;
   CallbackImpl &operator=(const CallbackImpl &) = delete;
@@ -380,13 +379,12 @@ class CallbackImpl<T, void, TFunc> : public Callback<void> {
         tuple_(std::forward<TArgs>(args)...) {}
 
   //! Run the callback function
-  void run(void) override {
+  void run() override {
     Functor::Run(obj_, impl_, tuple_);
   }
 
- protected:
   //! Disable them
-  CallbackImpl(void) = delete;
+  CallbackImpl() = delete;
   CallbackImpl(const CallbackImpl &) = delete;
   CallbackImpl(CallbackImpl &&) = delete;
   CallbackImpl &operator=(const CallbackImpl &) = delete;
@@ -415,7 +413,7 @@ class CallbackImpl<void, R, TFunc> : public Callback<R> {
       : impl_(std::move(impl)), tuple_(std::forward<TArgs>(args)...) {}
 
   //! Run the callback function
-  void run(void) override {
+  void run() override {
     Functor::Run(impl_, tuple_);
   }
 
@@ -424,9 +422,8 @@ class CallbackImpl<void, R, TFunc> : public Callback<R> {
     *r = Functor::Run(impl_, tuple_);
   }
 
- protected:
   //! Disable them
-  CallbackImpl(void) = delete;
+  CallbackImpl() = delete;
   CallbackImpl(const CallbackImpl &) = delete;
   CallbackImpl(CallbackImpl &&) = delete;
   CallbackImpl &operator=(const CallbackImpl &) = delete;
@@ -454,13 +451,12 @@ class CallbackImpl<void, void, TFunc> : public Callback<void> {
       : impl_(std::move(impl)), tuple_(std::forward<TArgs>(args)...) {}
 
   //! Run the callback function
-  void run(void) override {
+  void run() override {
     Functor::Run(impl_, tuple_);
   }
 
- protected:
   //! Disable them
-  CallbackImpl(void) = delete;
+  CallbackImpl() = delete;
   CallbackImpl(const CallbackImpl &) = delete;
   CallbackImpl(CallbackImpl &&) = delete;
   CallbackImpl &operator=(const CallbackImpl &) = delete;

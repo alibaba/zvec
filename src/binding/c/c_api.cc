@@ -29,9 +29,12 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <ailego/io/io_backend_def.h>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
+#include <zvec/db/doc_iterator.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/options.h>
 #include <zvec/db/reranker.h>
@@ -429,7 +432,7 @@ bool zvec_config_log_is_file_type(const zvec_log_config_t *config) {
   }
   auto *cpp_config =
       reinterpret_cast<const zvec::GlobalConfig::LogConfig *>(config);
-  return cpp_config->GetLoggerType() == zvec::FILE_LOG_TYPE_NAME;
+  return cpp_config->get_logger_type() == zvec::FILE_LOG_TYPE_NAME;
 }
 
 inline const zvec::GlobalConfig::FileLogConfig* file_config_from_config(const zvec_log_config_t *config) {
@@ -561,7 +564,7 @@ zvec_log_type_t zvec_config_data_get_log_type(const zvec_config_data_t *config) 
     return ZVEC_LOG_TYPE_CONSOLE;
   }
 
-  if (cpp_config->log_config->GetLoggerType() == zvec::FILE_LOG_TYPE_NAME) {
+  if (cpp_config->log_config->get_logger_type() == zvec::FILE_LOG_TYPE_NAME) {
     return ZVEC_LOG_TYPE_FILE;
   }
   return ZVEC_LOG_TYPE_CONSOLE;
@@ -720,9 +723,9 @@ zvec_error_code_t zvec_initialize(const zvec_config_data_t *config) {
       }
 
       // Initialize global configuration
-      auto status = zvec::GlobalConfig::Instance().Initialize(cpp_config);
+      auto status = zvec::GlobalConfig::Instance().initialize(cpp_config);
       if (!status.ok()) {
-        set_last_error(status.message());
+        SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR, status.message());
         return ZVEC_ERROR_INTERNAL_ERROR;
       }
 
@@ -760,6 +763,39 @@ const char *zvec_get_default_jieba_dict_dir(void) {
 }
 
 // =============================================================================
+// I/O Backend Introspection
+// =============================================================================
+
+static_assert(
+    static_cast<uint32_t>(zvec::ailego::IOBackendType::kPread) ==
+    ZVEC_IO_BACKEND_TYPE_PREAD);
+static_assert(
+    static_cast<uint32_t>(zvec::ailego::IOBackendType::kLibAio) ==
+    ZVEC_IO_BACKEND_TYPE_LIBAIO);
+static_assert(
+    static_cast<uint32_t>(zvec::ailego::IOBackendType::kIoUring) ==
+    ZVEC_IO_BACKEND_TYPE_IO_URING);
+static_assert(
+    static_cast<uint32_t>(
+        zvec::ailego::IOBackendType::kWindowsOverlapped) ==
+    ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED);
+
+zvec_io_backend_type_t zvec_get_io_backend_type(void) {
+  auto type = zvec::ailego::current_io_backend_type();
+  return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));
+}
+
+const char *zvec_get_io_backend_type_name(zvec_io_backend_type_t type) {
+  auto cpp_type = static_cast<zvec::ailego::IOBackendType>(type);
+  return zvec::ailego::IOBackendTypeName(cpp_type);
+}
+
+const char *zvec_get_io_backend_description(void) {
+  auto type = zvec::ailego::current_io_backend_type();
+  return zvec::ailego::IOBackendDescription(type);
+}
+
+// =============================================================================
 // Error handling interface implementation
 // =============================================================================
 
@@ -791,6 +827,15 @@ static zvec_error_code_t status_to_error_code(const zvec::Status &status) {
   return static_cast<zvec_error_code_t>(status.code());
 }
 
+// Record a returned core error without changing the per-document status mapping.
+static zvec_error_code_t handle_status(const zvec::Status &status) {
+  const auto code = status_to_error_code(status);
+  if (code != ZVEC_OK) {
+    set_last_error_details(code, status.message());
+  }
+  return code;
+}
+
 // Helper function: handle Expected results
 template <typename T>
 static zvec_error_code_t handle_expected_result(
@@ -801,8 +846,7 @@ static zvec_error_code_t handle_expected_result(
     }
     return ZVEC_OK;
   } else {
-    set_last_error(result.error().message());
-    return status_to_error_code(result.error());
+    return handle_status(result.error());
   }
 }
 
@@ -872,21 +916,6 @@ static zvec_error_code_t build_write_results(
   }
 
   return ZVEC_OK;
-}
-
-static std::vector<std::string> collect_doc_pks(const zvec_doc_t **docs,
-                                                size_t doc_count) {
-  std::vector<std::string> pks;
-  pks.reserve(doc_count);
-  for (size_t i = 0; i < doc_count; ++i) {
-    if (!docs[i]) {
-      pks.emplace_back("");
-      continue;
-    }
-    auto *doc_ptr = reinterpret_cast<const zvec::Doc *>(docs[i]);
-    pks.emplace_back(doc_ptr->pk_ref());
-  }
-  return pks;
 }
 
 // =============================================================================
@@ -1355,6 +1384,11 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                                        false,                // use_soar (default)
                                        zvec::QuantizeType::UNDEFINED);
           break;
+        case ZVEC_INDEX_TYPE_IVF_RABITQ:
+          cpp_params = new zvec::IvfRabitqIndexParams(
+              zvec::MetricType::L2, zvec::core_interface::kDefaultIvfRabitqNlist,
+              zvec::core_interface::kDefaultRabitqTotalBits, 0);
+          break;
         case ZVEC_INDEX_TYPE_VAMANA:
           cpp_params =
               new zvec::VamanaIndexParams(
@@ -1380,6 +1414,15 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
           cpp_params =
               new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
                                         zvec::QuantizeType::UNDEFINED);
+          break;
+        case ZVEC_INDEX_TYPE_DISKANN:
+          cpp_params =
+              new zvec::DiskAnnIndexParams(
+                  zvec::MetricType::L2,   // metric_type
+                  100,                     // max_degree (default)
+                  50,                      // list_size (default)
+                  0,                       // pq_chunk_num (default)
+                  zvec::QuantizeType::UNDEFINED);
           break;
       }
 
@@ -1731,6 +1774,140 @@ zvec_error_code_t zvec_index_params_get_vamana_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_index_params_set_vamana_two_pass_build(
+    zvec_index_params_t *params, bool two_pass_build) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *vamana_params = dynamic_cast<zvec::VamanaIndexParams *>(cpp_params);
+  if (!vamana_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  vamana_params->set_two_pass_build(two_pass_build);
+  return ZVEC_OK;
+}
+
+bool zvec_index_params_get_vamana_two_pass_build(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return false;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *vamana_params =
+      dynamic_cast<const zvec::VamanaIndexParams *>(cpp_params);
+  if (!vamana_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not Vamana index type");
+    return false;
+  }
+  return vamana_params->two_pass_build();
+}
+
+/**
+ * @brief Set DiskANN-specific parameters
+ * @param params Index parameters (must be DiskANN type)
+ * @param max_degree Graph connectivity (max degree of Vamana graph)
+ * @param list_size Build-time list size
+ * @param pq_chunk_num PQ chunk count
+ * @return ZVEC_OK on success, error code on failure
+ */
+zvec_error_code_t zvec_index_params_set_diskann_params(
+    zvec_index_params_t *params, int max_degree, int list_size,
+    int pq_chunk_num) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *diskann_params = dynamic_cast<zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  diskann_params->set_max_degree(max_degree);
+  diskann_params->set_list_size(list_size);
+  diskann_params->set_pq_chunk_num(pq_chunk_num);
+  return ZVEC_OK;
+}
+
+/**
+ * @brief Get DiskANN max_degree parameter
+ * @param params Index parameters (must be DiskANN type)
+ * @return max_degree parameter value, or 0 on error
+ */
+int zvec_index_params_get_diskann_max_degree(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *diskann_params =
+      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  return diskann_params->max_degree();
+}
+
+/**
+ * @brief Get DiskANN list_size parameter
+ * @param params Index parameters (must be DiskANN type)
+ * @return list_size parameter value, or 0 on error
+ */
+int zvec_index_params_get_diskann_list_size(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *diskann_params =
+      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  return diskann_params->list_size();
+}
+
+/**
+ * @brief Get DiskANN pq_chunk_num parameter
+ * @param params Index parameters (must be DiskANN type)
+ * @return pq_chunk_num parameter value, or 0 on error
+ */
+int zvec_index_params_get_diskann_pq_chunk_num(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *diskann_params =
+      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
+  if (!diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not DiskANN index type");
+    return 0;
+  }
+  return diskann_params->pq_chunk_num();
+}
+
 /**
  * @brief Set IVF-specific parameters
  * @param params Index parameters (must be IVF type)
@@ -1787,6 +1964,55 @@ zvec_error_code_t zvec_index_params_get_ivf_params(const zvec_index_params_t *pa
   if (out_n_list) *out_n_list = ivf_params->n_list();
   if (out_n_iters) *out_n_iters = ivf_params->n_iters();
   if (out_use_soar) *out_use_soar = ivf_params->use_soar();
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_set_ivf_rabitq_params(
+    zvec_index_params_t *params, int nlist, int total_bits, int sample_count) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *ivf_rabitq_params =
+      dynamic_cast<zvec::IvfRabitqIndexParams *>(cpp_params);
+  if (!ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  ivf_rabitq_params->set_nlist(nlist);
+  ivf_rabitq_params->set_total_bits(total_bits);
+  ivf_rabitq_params->set_sample_count(sample_count);
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_ivf_rabitq_params(
+    const zvec_index_params_t *params, int *out_nlist, int *out_total_bits,
+    int *out_sample_count) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *ivf_rabitq_params =
+      dynamic_cast<const zvec::IvfRabitqIndexParams *>(cpp_params);
+  if (!ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF_RABITQ index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_nlist) {
+    *out_nlist = ivf_rabitq_params->nlist();
+  }
+  if (out_total_bits) {
+    *out_total_bits = ivf_rabitq_params->total_bits();
+  }
+  if (out_sample_count) {
+    *out_sample_count = ivf_rabitq_params->sample_count();
+  }
   return ZVEC_OK;
 }
 
@@ -2162,14 +2388,14 @@ zvec_error_code_t zvec_field_schema_set_index_params(
 
 zvec_error_code_t zvec_field_schema_validate(const zvec_field_schema_t *schema,
                                          zvec_string_t **error_msg) {
+  if (error_msg) {
+    *error_msg = nullptr;
+  }
+
   if (!schema) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Field schema pointer cannot be null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-
-  if (error_msg) {
-    *error_msg = nullptr;
   }
 
   ZVEC_TRY_RETURN_ERROR(
@@ -2179,7 +2405,7 @@ zvec_error_code_t zvec_field_schema_validate(const zvec_field_schema_t *schema,
         if (error_msg) {
           *error_msg = zvec_string_create(status.message().c_str());
         }
-        return status_to_error_code(status);
+        return handle_status(status);
       })
 
   return ZVEC_OK;
@@ -2267,7 +2493,7 @@ zvec_error_code_t zvec_collection_schema_add_field(zvec_collection_schema_t *sch
       // Clone the field schema
       auto cloned_field = std::make_shared<zvec::FieldSchema>(*cpp_field);
       auto status = cpp_schema->add_field(cloned_field);
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 zvec_error_code_t zvec_collection_schema_alter_field(
@@ -2288,7 +2514,7 @@ zvec_error_code_t zvec_collection_schema_alter_field(
       auto cloned_field = std::make_shared<zvec::FieldSchema>(*cpp_new_field);
       auto status =
           cpp_schema->alter_field(std::string(field_name), cloned_field);
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 zvec_error_code_t zvec_collection_schema_drop_field(zvec_collection_schema_t *schema,
@@ -2303,7 +2529,7 @@ zvec_error_code_t zvec_collection_schema_drop_field(zvec_collection_schema_t *sc
       "Failed to drop field",
       auto *cpp_schema = reinterpret_cast<zvec::CollectionSchema *>(schema);
       auto status = cpp_schema->drop_field(std::string(field_name));
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 bool zvec_collection_schema_has_field(const zvec_collection_schema_t *schema,
@@ -2581,14 +2807,14 @@ zvec_error_code_t zvec_collection_schema_set_max_doc_count_per_segment(
 
 zvec_error_code_t zvec_collection_schema_validate(
     const zvec_collection_schema_t *schema, zvec_string_t **error_msg) {
+  if (error_msg) {
+    *error_msg = nullptr;
+  }
+
   if (!schema) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Collection schema pointer cannot be null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-
-  if (error_msg) {
-    *error_msg = nullptr;
   }
 
   ZVEC_TRY_RETURN_ERROR(
@@ -2599,7 +2825,7 @@ zvec_error_code_t zvec_collection_schema_validate(
         if (error_msg) {
           *error_msg = zvec_string_create(status.message().c_str());
         }
-        return status_to_error_code(status);
+        return handle_status(status);
       } 
       return ZVEC_OK;)
 }
@@ -2620,7 +2846,7 @@ zvec_error_code_t zvec_collection_schema_add_index(
       auto cpp_index_params = convert_c_index_params_to_cpp(index_params);
       auto status =
           cpp_schema->add_index(std::string(field_name), cpp_index_params);
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 zvec_error_code_t zvec_collection_schema_drop_index(zvec_collection_schema_t *schema,
@@ -2724,6 +2950,8 @@ const char *zvec_data_type_to_string(zvec_data_type_t data_type) {
       return "VECTOR_INT4";
     case ZVEC_DATA_TYPE_VECTOR_INT8:
       return "VECTOR_INT8";
+    case ZVEC_DATA_TYPE_VECTOR_UINT8:
+      return "VECTOR_UINT8";
     case ZVEC_DATA_TYPE_VECTOR_INT16:
       return "VECTOR_INT16";
     case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16:
@@ -2765,12 +2993,14 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "FLAT";
     case ZVEC_INDEX_TYPE_HNSW_RABITQ:
       return "HNSW_RABITQ";
-    case ZVEC_INDEX_TYPE_VAMANA:
-      return "VAMANA";
-    case ZVEC_INDEX_TYPE_OMEGA:
-      return "OMEGA";
     case ZVEC_INDEX_TYPE_DISKANN:
       return "DISKANN";
+    case ZVEC_INDEX_TYPE_VAMANA:
+      return "VAMANA";
+    case ZVEC_INDEX_TYPE_IVF_RABITQ:
+      return "IVF_RABITQ";
+    case ZVEC_INDEX_TYPE_OMEGA:
+      return "OMEGA";
     case ZVEC_INDEX_TYPE_INVERT:
       return "INVERT";
     case ZVEC_INDEX_TYPE_FTS:
@@ -3022,8 +3252,14 @@ std::vector<std::string> extract_binary_array(const void *value,
   return binary_array;
 }
 
-static std::vector<zvec::Doc> convert_zvec_docs_to_internal(
+static zvec::Result<std::vector<zvec::Doc>> convert_zvec_docs_to_internal(
     const zvec_doc_t **zvec_docs, size_t doc_count) {
+  for (size_t i = 0; i < doc_count; ++i) {
+    if (!zvec_docs[i]) {
+      return tl::make_unexpected(zvec::Status::InvalidArgument(
+          "Invalid doc: document must not be null"));
+    }
+  }
   std::vector<zvec::Doc> docs;
   docs.reserve(doc_count);
 
@@ -4627,10 +4863,12 @@ zvec_error_code_t zvec_doc_to_detail_string(const zvec_doc_t *doc, char **detail
 zvec_error_code_t zvec_collection_create_and_open(
     const char *path, const zvec_collection_schema_t *schema,
     const zvec_collection_options_t *options, zvec_collection_t **collection) {
+  if (collection) *collection = nullptr;
   ZVEC_TRY_RETURN_ERROR(
       "Exception in zvec_collection_create_and_open_with_schema",
       if (!path || !schema || !collection) {
-        set_last_error("Path, schema, or collection cannot be null");
+        SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                       "Path, schema, or collection cannot be null");
         return ZVEC_ERROR_INVALID_ARGUMENT;
       }
 
@@ -4639,7 +4877,7 @@ zvec_error_code_t zvec_collection_create_and_open(
       auto status =
           convert_zvec_collection_schema_to_internal(schema, schema_ptr);
       if (!status.ok()) {
-        set_last_error(status.message());
+        SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, status.message());
         return ZVEC_ERROR_INVALID_ARGUMENT;
       }
 
@@ -4680,7 +4918,7 @@ zvec_error_code_t zvec_collection_open(const char *path,
         collection_options.read_only_ = opts->read_only_;
       }
 
-      auto result = zvec::Collection::Open(path, collection_options);
+      auto result = zvec::Collection::open(path, collection_options);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -4713,10 +4951,8 @@ zvec_error_code_t zvec_collection_destroy(zvec_collection_t *collection) {
       "Exception occurred",
       auto &coll =
           *reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = coll->Destroy();
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+      zvec::Status status = coll->destroy();
+      return handle_status(status);)
 }
 
 zvec_error_code_t zvec_collection_flush(zvec_collection_t *collection) {
@@ -4729,11 +4965,9 @@ zvec_error_code_t zvec_collection_flush(zvec_collection_t *collection) {
       "Exception occurred",
       auto &coll =
           *reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = coll->Flush();
+      zvec::Status status = coll->flush();
 
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 zvec_error_code_t zvec_collection_get_schema(const zvec_collection_t *collection,
@@ -4747,7 +4981,7 @@ zvec_error_code_t zvec_collection_get_schema(const zvec_collection_t *collection
       "Exception occurred",
       auto &coll = *reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
           collection);
-      auto result = coll->Schema();
+      auto result = coll->schema();
 
       zvec_error_code_t error_code = handle_expected_result(result);
       if (error_code == ZVEC_OK) {
@@ -4773,7 +5007,7 @@ zvec_error_code_t zvec_collection_get_options(const zvec_collection_t *collectio
       auto collection_ptr =
           reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
               collection);
-      auto result = (*collection_ptr)->Options();
+      auto result = (*collection_ptr)->options();
 
       if (!result.has_value()) {
         set_last_error("Failed to get collection option: " +
@@ -4800,7 +5034,7 @@ zvec_error_code_t zvec_collection_get_stats(const zvec_collection_t *collection,
       auto collection_ptr =
           reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
               collection);
-      auto result = (*collection_ptr)->Stats();
+      auto result = (*collection_ptr)->stats();
 
       if (!result.has_value()) {
         set_last_error("Failed to get collection stats: " +
@@ -4827,6 +5061,7 @@ void zvec_collection_stats_destroy(zvec_collection_stats_t *stats) {
 // Users should create type-specific query params:
 // - HnswQueryParams via zvec_query_params_hnsw_create()
 // - IVFQueryParams via zvec_query_params_ivf_create()
+// - IvfRabitqQueryParams via zvec_query_params_ivf_rabitq_create()
 // - FlatQueryParams via zvec_query_params_flat_create()
 //
 // Each type-specific instance has its own destroy function.
@@ -5034,6 +5269,100 @@ bool zvec_query_params_hnsw_get_is_using_refiner(
 }
 
 // =============================================================================
+// DiskAnnQueryParams implementation - wrapper around zvec::DiskAnnQueryParams
+// =============================================================================
+
+zvec_diskann_query_params_t *zvec_query_params_diskann_create(int list_size) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create DiskAnnQueryParams",
+      auto *params = new zvec::DiskAnnQueryParams(list_size);
+      return reinterpret_cast<zvec_diskann_query_params_t *>(params);)
+  return nullptr;
+}
+
+void zvec_query_params_diskann_destroy(zvec_diskann_query_params_t *params) {
+  if (params) {
+    delete reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  }
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_list_size(
+    zvec_diskann_query_params_t *params, int list_size) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_list_size(list_size);
+  return ZVEC_OK;
+}
+
+int zvec_query_params_diskann_get_list_size(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return 300;  // DiskAnnQueryParams default
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->list_size();
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_radius(
+    zvec_diskann_query_params_t *params, float radius) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_radius(radius);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_diskann_get_radius(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return 0.0f;
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->radius();
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_is_linear(
+    zvec_diskann_query_params_t *params, bool is_linear) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_is_linear(is_linear);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_diskann_get_is_linear(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return false;
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->is_linear();
+}
+
+zvec_error_code_t zvec_query_params_diskann_set_is_using_refiner(
+    zvec_diskann_query_params_t *params, bool is_using_refiner) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "DiskANN query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::DiskAnnQueryParams *>(params);
+  ptr->set_is_using_refiner(is_using_refiner);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_diskann_get_is_using_refiner(
+    const zvec_diskann_query_params_t *params) {
+  if (!params) return false;
+  auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
+  return ptr->is_using_refiner();
+}
+
+// =============================================================================
 // IVFQueryParams implementation - wrapper around zvec::IVFQueryParams
 // =============================================================================
 
@@ -5141,6 +5470,132 @@ bool zvec_query_params_ivf_get_is_using_refiner(
     const zvec_ivf_query_params_t *params) {
   if (!params) return false;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
+  return ptr->is_using_refiner();
+}
+
+// =============================================================================
+// IvfRabitqQueryParams implementation - wrapper around zvec::IvfRabitqQueryParams
+// =============================================================================
+
+zvec_ivf_rabitq_query_params_t *zvec_query_params_ivf_rabitq_create(
+    int nprobe, float radius, bool is_linear, bool is_using_refiner) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create IvfRabitqQueryParams",
+      auto *params = new zvec::IvfRabitqQueryParams(
+          nprobe, radius, is_linear, is_using_refiner);
+      return reinterpret_cast<zvec_ivf_rabitq_query_params_t *>(params);)
+  return nullptr;
+}
+
+void zvec_query_params_ivf_rabitq_destroy(
+    zvec_ivf_rabitq_query_params_t *params) {
+  if (params) {
+    delete reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  }
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_nprobe(
+    zvec_ivf_rabitq_query_params_t *params, int nprobe) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_nprobe(nprobe);
+  return ZVEC_OK;
+}
+
+int zvec_query_params_ivf_rabitq_get_nprobe(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return zvec::core_interface::kDefaultIvfRabitqNprobe;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->nprobe();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_scale_factor(
+    zvec_ivf_rabitq_query_params_t *params, float scale_factor) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_scale_factor(scale_factor);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_ivf_rabitq_get_scale_factor(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return 10.0f;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->scale_factor();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_radius(
+    zvec_ivf_rabitq_query_params_t *params, float radius) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_radius(radius);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_ivf_rabitq_get_radius(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return 0.0f;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->radius();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_is_linear(
+    zvec_ivf_rabitq_query_params_t *params, bool is_linear) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_is_linear(is_linear);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_ivf_rabitq_get_is_linear(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return false;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->is_linear();
+}
+
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_is_using_refiner(
+    zvec_ivf_rabitq_query_params_t *params, bool is_using_refiner) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_is_using_refiner(is_using_refiner);
+  return ZVEC_OK;
+}
+
+bool zvec_query_params_ivf_rabitq_get_is_using_refiner(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return false;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->is_using_refiner();
 }
 
@@ -5341,6 +5796,8 @@ zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  // Copies into VectorClause (not VectorViewClause) because the C API does
+  // not require `data` to stay alive after this call returns.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -5615,6 +6072,24 @@ zvec_error_code_t zvec_vector_query_set_ivf_params(zvec_vector_query_t *query,
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_vector_query_set_ivf_rabitq_params(
+    zvec_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params) {
+  if (!query || !ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or IVF_RABITQ params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::IvfRabitqQueryParams *>(ivf_rabitq_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_vector_query_set_flat_params(
     zvec_vector_query_t *query, zvec_flat_query_params_t *flat_params) {
   if (!query || !flat_params) {
@@ -5658,6 +6133,23 @@ zvec_error_code_t zvec_vector_query_set_vamana_params(
   auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   auto *params_ptr =
       reinterpret_cast<zvec::VamanaQueryParams *>(vamana_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_vector_query_set_diskann_params(
+    zvec_vector_query_t *query, zvec_diskann_query_params_t *diskann_params) {
+  if (!query || !diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or DiskANN params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::DiskAnnQueryParams *>(diskann_params);
 
   query_ptr->target_.query_params_.reset(params_ptr);
 
@@ -5748,7 +6240,7 @@ zvec_group_by_vector_query_t *zvec_group_by_vector_query_create(void) {
   ZVEC_TRY_RETURN_NULL(
       "Failed to create GroupByVectorQuery",
       auto *query = new zvec::GroupByVectorQuery();
-      query->group_count_ = 2; query->group_topk_ = 3;
+      query->group_count_ = 2; query->topk_per_group_ = 3;
       return reinterpret_cast<zvec_group_by_vector_query_t *>(query);)
   return nullptr;
 }
@@ -5818,23 +6310,23 @@ uint32_t zvec_group_by_vector_query_get_group_count(
   return ptr->group_count_;
 }
 
-zvec_error_code_t zvec_group_by_vector_query_set_group_topk(
-    zvec_group_by_vector_query_t *query, uint32_t topk) {
+zvec_error_code_t zvec_group_by_vector_query_set_topk_per_group(
+    zvec_group_by_vector_query_t *query, uint32_t topk_per_group) {
   if (!query) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "GroupByVectorQuery pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
-  ptr->group_topk_ = topk;
+  ptr->topk_per_group_ = topk_per_group;
   return ZVEC_OK;
 }
 
-uint32_t zvec_group_by_vector_query_get_group_topk(
+uint32_t zvec_group_by_vector_query_get_topk_per_group(
     const zvec_group_by_vector_query_t *query) {
   if (!query) return 3;
   auto *ptr = reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-  return ptr->group_topk_;
+  return ptr->topk_per_group_;
 }
 
 zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
@@ -5845,6 +6337,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -5985,6 +6478,24 @@ zvec_error_code_t zvec_group_by_vector_query_set_ivf_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_group_by_vector_query_set_ivf_rabitq_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params) {
+  if (!query || !ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or IVF_RABITQ params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::IvfRabitqQueryParams *>(ivf_rabitq_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_group_by_vector_query_set_flat_params(
     zvec_group_by_vector_query_t *query, zvec_flat_query_params_t *flat_params) {
   if (!query || !flat_params) {
@@ -6013,6 +6524,24 @@ zvec_error_code_t zvec_group_by_vector_query_set_vamana_params(
   auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   auto *params_ptr =
       reinterpret_cast<zvec::VamanaQueryParams *>(vamana_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_group_by_vector_query_set_diskann_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_diskann_query_params_t *diskann_params) {
+  if (!query || !diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or DiskANN params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::DiskAnnQueryParams *>(diskann_params);
 
   query_ptr->target_.query_params_.reset(params_ptr);
 
@@ -6266,6 +6795,7 @@ zvec_error_code_t zvec_sub_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   auto &payload = std::get<zvec::VectorClause>(ptr->target_.clause_);
   payload.query_vector_.assign(static_cast<const char *>(data), size);
   return ZVEC_OK;
@@ -6348,6 +6878,21 @@ zvec_error_code_t zvec_sub_query_set_ivf_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_sub_query_set_ivf_rabitq_params(
+    zvec_sub_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params) {
+  if (!query || !ivf_rabitq_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Sub-vector query or IVF_RABITQ params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::IvfRabitqQueryParams *>(ivf_rabitq_params);
+  ptr->target_.query_params_.reset(params_ptr);
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_sub_query_set_flat_params(
     zvec_sub_query_t *query, zvec_flat_query_params_t *flat_params) {
   if (!query || !flat_params) {
@@ -6384,6 +6929,20 @@ zvec_error_code_t zvec_sub_query_set_fts_params(
   }
   auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::FtsQueryParams *>(fts_params);
+  ptr->target_.query_params_.reset(params_ptr);
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_sub_query_set_diskann_params(
+    zvec_sub_query_t *query, zvec_diskann_query_params_t *diskann_params) {
+  if (!query || !diskann_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Sub-vector query or DiskANN params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  auto *params_ptr =
+      reinterpret_cast<zvec::DiskAnnQueryParams *>(diskann_params);
   ptr->target_.query_params_.reset(params_ptr);
   return ZVEC_OK;
 }
@@ -6435,8 +6994,8 @@ zvec_error_code_t zvec_collection_create_index(
     auto *cpp_params =
         reinterpret_cast<const zvec::IndexParams *>(index_params);
     auto index_params_ptr = cpp_params->clone();
-    auto status = (*coll_ptr)->CreateIndex(field_name_str, index_params_ptr);
-    return status_to_error_code(status);)
+    auto status = (*coll_ptr)->create_index(field_name_str, index_params_ptr);
+    return handle_status(status);)
 }
 
 /**
@@ -6457,10 +7016,8 @@ zvec_error_code_t zvec_collection_drop_index(zvec_collection_t *collection,
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->DropIndex(column_name);
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+      zvec::Status status = (*coll_ptr)->drop_index(column_name);
+      return handle_status(status);)
 }
 
 /**
@@ -6478,10 +7035,8 @@ zvec_error_code_t zvec_collection_optimize(zvec_collection_t *collection) {
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->Optimize();
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+      zvec::Status status = (*coll_ptr)->optimize();
+      return handle_status(status);)
 }
 
 // =============================================================================
@@ -6516,11 +7071,9 @@ zvec_error_code_t zvec_collection_add_column(zvec_collection_t *collection,
           std::make_shared<zvec::FieldSchema>(*cpp_schema);
 
       std::string expr = expression ? expression : "";
-      zvec::Status status = (*coll_ptr)->AddColumn(schema, expr);
+      zvec::Status status = (*coll_ptr)->add_column(schema, expr);
 
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 /**
@@ -6541,11 +7094,9 @@ zvec_error_code_t zvec_collection_drop_column(zvec_collection_t *collection,
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->DropColumn(column_name);
+      zvec::Status status = (*coll_ptr)->drop_column(column_name);
 
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+      return handle_status(status);)
 }
 
 zvec_error_code_t zvec_collection_alter_column(
@@ -6574,10 +7125,8 @@ zvec_error_code_t zvec_collection_alter_column(
       }
 
       zvec::Status status =
-          (*coll_ptr)->AlterColumn(column_name, rename, schema);
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
+          (*coll_ptr)->alter_column(column_name, rename, schema);
+      return handle_status(status);)
 }
 
 // =============================================================================
@@ -6588,9 +7137,11 @@ zvec_error_code_t zvec_collection_insert(zvec_collection_t *collection,
                                       const zvec_doc_t **docs, size_t doc_count,
                                       size_t *success_count,
                                       size_t *error_count) {
+  if (success_count) *success_count = 0;
+  if (error_count) *error_count = doc_count;
   if (!collection || !docs || doc_count == 0 || !success_count ||
       !error_count) {
-    set_last_error(
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
         "Invalid arguments: collection, docs, doc_count, success_count and "
         "error_count cannot be null/zero");
     return ZVEC_ERROR_INVALID_ARGUMENT;
@@ -6601,10 +7152,13 @@ zvec_error_code_t zvec_collection_insert(zvec_collection_t *collection,
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      std::vector<zvec::Doc> internal_docs =
-          convert_zvec_docs_to_internal(docs, doc_count);
+      auto converted_docs = convert_zvec_docs_to_internal(docs, doc_count);
+      if (!converted_docs.has_value()) {
+        return handle_status(converted_docs.error());
+      }
+      auto &internal_docs = converted_docs.value();
 
-      auto result = (*coll_ptr)->Insert(internal_docs);
+      auto result = (*coll_ptr)->insert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -6630,26 +7184,27 @@ zvec_error_code_t zvec_collection_insert_with_results(zvec_collection_t *collect
                                                   size_t doc_count,
                                                   zvec_write_result_t **results,
                                                   size_t *result_count) {
+  if (results) *results = nullptr;
+  if (result_count) *result_count = 0;
   if (!collection || !docs || doc_count == 0 || !results || !result_count) {
-    set_last_error(
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
         "Invalid arguments: collection, docs, doc_count, results and "
         "result_count cannot be null/zero");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
-  *results = nullptr;
-  *result_count = 0;
 
   ZVEC_TRY_RETURN_ERROR(
       "Exception in zvec_collection_insert_with_results",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      std::vector<zvec::Doc> internal_docs =
-          convert_zvec_docs_to_internal(docs, doc_count);
-      std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+      auto converted_docs = convert_zvec_docs_to_internal(docs, doc_count);
+      if (!converted_docs.has_value()) {
+        return handle_status(converted_docs.error());
+      }
+      auto &internal_docs = converted_docs.value();
 
-      auto result = (*coll_ptr)->Insert(internal_docs);
+      auto result = (*coll_ptr)->insert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -6661,9 +7216,11 @@ zvec_error_code_t zvec_collection_update(zvec_collection_t *collection,
                                       const zvec_doc_t **docs, size_t doc_count,
                                       size_t *success_count,
                                       size_t *error_count) {
+  if (success_count) *success_count = 0;
+  if (error_count) *error_count = doc_count;
   if (!collection || !docs || doc_count == 0 || !success_count ||
       !error_count) {
-    set_last_error(
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
         "Invalid arguments: collection, docs, doc_count, success_count and "
         "error_count cannot be null/zero");
     return ZVEC_ERROR_INVALID_ARGUMENT;
@@ -6674,10 +7231,13 @@ zvec_error_code_t zvec_collection_update(zvec_collection_t *collection,
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      std::vector<zvec::Doc> internal_docs =
-          convert_zvec_docs_to_internal(docs, doc_count);
+      auto converted_docs = convert_zvec_docs_to_internal(docs, doc_count);
+      if (!converted_docs.has_value()) {
+        return handle_status(converted_docs.error());
+      }
+      auto &internal_docs = converted_docs.value();
 
-      auto result = (*coll_ptr)->Update(internal_docs);
+      auto result = (*coll_ptr)->update(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -6700,26 +7260,27 @@ zvec_error_code_t zvec_collection_update_with_results(zvec_collection_t *collect
                                                   size_t doc_count,
                                                   zvec_write_result_t **results,
                                                   size_t *result_count) {
+  if (results) *results = nullptr;
+  if (result_count) *result_count = 0;
   if (!collection || !docs || doc_count == 0 || !results || !result_count) {
-    set_last_error(
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
         "Invalid arguments: collection, docs, doc_count, results and "
         "result_count cannot be null/zero");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
-  *results = nullptr;
-  *result_count = 0;
 
   ZVEC_TRY_RETURN_ERROR(
       "Exception in zvec_collection_update_with_results",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      std::vector<zvec::Doc> internal_docs =
-          convert_zvec_docs_to_internal(docs, doc_count);
-      std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+      auto converted_docs = convert_zvec_docs_to_internal(docs, doc_count);
+      if (!converted_docs.has_value()) {
+        return handle_status(converted_docs.error());
+      }
+      auto &internal_docs = converted_docs.value();
 
-      auto result = (*coll_ptr)->Update(internal_docs);
+      auto result = (*coll_ptr)->update(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -6731,9 +7292,11 @@ zvec_error_code_t zvec_collection_upsert(zvec_collection_t *collection,
                                       const zvec_doc_t **docs, size_t doc_count,
                                       size_t *success_count,
                                       size_t *error_count) {
+  if (success_count) *success_count = 0;
+  if (error_count) *error_count = doc_count;
   if (!collection || !docs || doc_count == 0 || !success_count ||
       !error_count) {
-    set_last_error(
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
         "Invalid arguments: collection, docs, doc_count, success_count and "
         "error_count cannot be null/zero");
     return ZVEC_ERROR_INVALID_ARGUMENT;
@@ -6744,10 +7307,13 @@ zvec_error_code_t zvec_collection_upsert(zvec_collection_t *collection,
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      std::vector<zvec::Doc> internal_docs =
-          convert_zvec_docs_to_internal(docs, doc_count);
+      auto converted_docs = convert_zvec_docs_to_internal(docs, doc_count);
+      if (!converted_docs.has_value()) {
+        return handle_status(converted_docs.error());
+      }
+      auto &internal_docs = converted_docs.value();
 
-      auto result = (*coll_ptr)->Upsert(internal_docs);
+      auto result = (*coll_ptr)->upsert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -6770,26 +7336,27 @@ zvec_error_code_t zvec_collection_upsert_with_results(zvec_collection_t *collect
                                                   size_t doc_count,
                                                   zvec_write_result_t **results,
                                                   size_t *result_count) {
+  if (results) *results = nullptr;
+  if (result_count) *result_count = 0;
   if (!collection || !docs || doc_count == 0 || !results || !result_count) {
-    set_last_error(
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
         "Invalid arguments: collection, docs, doc_count, results and "
         "result_count cannot be null/zero");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
-  *results = nullptr;
-  *result_count = 0;
 
   ZVEC_TRY_RETURN_ERROR(
       "Exception in zvec_collection_upsert_with_results",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      std::vector<zvec::Doc> internal_docs =
-          convert_zvec_docs_to_internal(docs, doc_count);
-      std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+      auto converted_docs = convert_zvec_docs_to_internal(docs, doc_count);
+      if (!converted_docs.has_value()) {
+        return handle_status(converted_docs.error());
+      }
+      auto &internal_docs = converted_docs.value();
 
-      auto result = (*coll_ptr)->Upsert(internal_docs);
+      auto result = (*coll_ptr)->upsert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -6821,7 +7388,7 @@ zvec_error_code_t zvec_collection_delete(zvec_collection_t *collection,
         }
       }
 
-      auto result = (*coll_ptr)->Delete(primary_keys);
+      auto result = (*coll_ptr)->delete_(primary_keys);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -6868,7 +7435,7 @@ zvec_error_code_t zvec_collection_delete_with_results(zvec_collection_t *collect
         }
       }
 
-      auto result = (*coll_ptr)->Delete(primary_keys);
+      auto result = (*coll_ptr)->delete_(primary_keys);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -6889,9 +7456,8 @@ zvec_error_code_t zvec_collection_delete_by_filter(zvec_collection_t *collection
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      auto status = (*coll_ptr)->DeleteByFilter(filter); if (!status.ok()) {
-        set_last_error(status.message());
-        return status_to_error_code(status);
+      auto status = (*coll_ptr)->delete_by_filter(filter); if (!status.ok()) {
+        return handle_status(status);
       } 
       return ZVEC_OK;)
 }
@@ -7046,7 +7612,7 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
       auto *internal_query =
           reinterpret_cast<const zvec::SearchQuery *>(query);
 
-      auto result = (*coll_ptr)->Query(*internal_query);
+      auto result = (*coll_ptr)->query(*internal_query);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7081,7 +7647,7 @@ zvec_error_code_t zvec_collection_multi_query(
       auto *internal_query =
           reinterpret_cast<const zvec::MultiQuery *>(query);
 
-      auto result = (*coll_ptr)->Query(*internal_query);
+      auto result = (*coll_ptr)->query(*internal_query);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7150,7 +7716,7 @@ zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
       }
 
       // Call C++ fetch method
-      auto result = (*coll_ptr)->Fetch(pk_vector, cpp_output_fields, include_vector);
+      auto result = (*coll_ptr)->fetch(pk_vector, cpp_output_fields, include_vector);
       if (!result.has_value()) {
         set_last_error("Failed to fetch documents: " +
                         result.error().message());
@@ -7158,9 +7724,141 @@ zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
       }
 
       auto doc_map = result.value();
-      auto schema_result = (*coll_ptr)->Schema();
+      auto schema_result = (*coll_ptr)->schema();
       if (schema_result.has_value()) {
         normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
       } 
       return convert_fetched_document_results(doc_map, results, doc_count);)
+}
+
+// =============================================================================
+// Document Iterator Interface implementation
+// =============================================================================
+
+zvec_iterator_options_t *zvec_iterator_options_create(void) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create zvec_iterator_options_t",
+      auto *options = new zvec::IteratorOptions();
+      return reinterpret_cast<zvec_iterator_options_t *>(options);)
+  return nullptr;
+}
+
+void zvec_iterator_options_destroy(zvec_iterator_options_t *options) {
+  if (options) {
+    delete reinterpret_cast<zvec::IteratorOptions *>(options);
+  }
+}
+
+zvec_error_code_t zvec_iterator_options_set_output_fields(
+    zvec_iterator_options_t *options, const char *const *output_fields,
+    size_t count) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(options, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Iterator options pointer is null");
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to set output_fields",
+      auto *ptr = reinterpret_cast<zvec::IteratorOptions *>(options);
+      // NULL output_fields means "return all fields" (nullopt). A non-NULL
+      // array with count == 0 yields an empty selection (no scalar fields).
+      if (output_fields == nullptr) {
+        ptr->output_fields_ = std::nullopt;
+        return ZVEC_OK;
+      }
+      std::vector<std::string> fields;
+      fields.reserve(count);
+      for (size_t i = 0; i < count; ++i) {
+        if (output_fields[i]) {
+          fields.emplace_back(output_fields[i]);
+        } else {
+          SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                         "Null output_field at index " + std::to_string(i));
+          return ZVEC_ERROR_INVALID_ARGUMENT;
+        }
+      }
+      ptr->output_fields_ = std::move(fields);
+      return ZVEC_OK;)
+}
+
+zvec_error_code_t zvec_iterator_options_set_include_vector(
+    zvec_iterator_options_t *options, bool include) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(options, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Iterator options pointer is null");
+  auto *ptr = reinterpret_cast<zvec::IteratorOptions *>(options);
+  ptr->include_vector_ = include;
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_collection_create_iterator(
+    zvec_collection_t *collection, const zvec_iterator_options_t *options,
+    zvec_doc_iterator_t **out_iter) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(collection, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Collection handle is null");
+  ZVEC_CHECK_NOTNULL_ERRCODE(out_iter, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "out_iter pointer is null");
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_create_iterator",
+      // CreateIterator is non-const: on writable collections it seals the
+      // writing segment into the snapshot.
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      zvec::IteratorOptions iter_options;
+      if (options) {
+        iter_options =
+            *reinterpret_cast<const zvec::IteratorOptions *>(options);
+      }
+
+      auto result = (*coll_ptr)->create_iterator(iter_options);
+      if (!result.has_value()) {
+        zvec_error_code_t code = status_to_error_code(result.error());
+        SET_LAST_ERROR(code, "Failed to create iterator: " +
+                                 result.error().message());
+        return code;
+      }
+
+      *out_iter = reinterpret_cast<zvec_doc_iterator_t *>(
+          new std::shared_ptr<zvec::DocIterator>(std::move(result.value())));
+      return ZVEC_OK;)
+}
+
+zvec_error_code_t zvec_doc_iterator_next(zvec_doc_iterator_t *iter,
+                                         zvec_doc_t **out_doc) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(iter, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Iterator handle is null");
+  ZVEC_CHECK_NOTNULL_ERRCODE(out_doc, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "out_doc pointer is null");
+
+  *out_doc = nullptr;
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_doc_iterator_next",
+      auto iter_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::DocIterator> *>(iter);
+
+      auto result = (*iter_ptr)->next();
+      if (!result.has_value()) {
+        zvec_error_code_t code = status_to_error_code(result.error());
+        SET_LAST_ERROR(code,
+                       "Iterator next failed: " + result.error().message());
+        return code;
+      }
+
+      // EOF: value() is nullptr → leave *out_doc = NULL, return OK.
+      auto doc = result.value();
+      if (doc == nullptr) {
+        return ZVEC_OK;
+      }
+
+      // Copy into a heap Doc owned by the caller (freed via zvec_doc_destroy).
+      *out_doc = reinterpret_cast<zvec_doc_t *>(new zvec::Doc(*doc));
+      return ZVEC_OK;)
+}
+
+void zvec_doc_iterator_close(zvec_doc_iterator_t *iter) {
+  if (iter) {
+    // Deleting the shared_ptr wrapper releases the DocIterator (whose
+    // destructor calls close() and releases segments/delete_store).
+    delete reinterpret_cast<std::shared_ptr<zvec::DocIterator> *>(iter);
+  }
 }

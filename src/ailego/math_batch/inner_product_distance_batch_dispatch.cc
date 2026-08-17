@@ -20,7 +20,7 @@
 #include <zvec/ailego/utility/type_helper.h>
 #include "inner_product_distance_batch.h"
 
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 #if defined(__AVX512VNNI__)
 void compute_one_to_many_inner_product_avx512_vnni_int8_query_preprocess(
@@ -225,4 +225,4 @@ void InnerProductDistanceBatchImpl<int8_t, 12>::compute_one_to_many(
                                                     dim, sums);
 }
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch

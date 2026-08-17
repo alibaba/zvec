@@ -26,9 +26,11 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   using Pointer = std::shared_ptr<DiskAnnBuilderEntity>;
 
   DiskAnnBuilderEntity() = default;
-  virtual ~DiskAnnBuilderEntity() = default;
+  ~DiskAnnBuilderEntity() override = default;
 
  public:
+  void clear();
+
   int add_vector(diskann_key_t key, const void *vec) override;
 
   std::pair<uint32_t, const diskann_id_t *> get_neighbors(
@@ -62,16 +64,12 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   int reserve_space(uint32_t docs);
 
-  std::vector<uint8_t> &pq_full_pivot_data() {
-    return pq_full_pivot_data_;
-  }
+  // Graph construction is the only consumer of these vectors. PQ encoding
+  // and dump read the retained source holder instead.
+  void release_vectors();
 
-  std::vector<uint8_t> &pq_centroid() {
-    return pq_centroid_;
-  }
-
-  std::vector<uint32_t> &pq_chunk_offsets() {
-    return pq_chunk_offsets_;
+  std::string &pq_quantizer_meta_buffer() {
+    return pq_quantizer_meta_buffer_;
   }
 
   std::vector<uint8_t> &block_compressed_data() {
@@ -97,9 +95,7 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   IndexMeta meta_;
 
-  std::vector<uint8_t> pq_full_pivot_data_;
-  std::vector<uint8_t> pq_centroid_;
-  std::vector<uint32_t> pq_chunk_offsets_;
+  std::string pq_quantizer_meta_buffer_{};
   std::vector<uint8_t> block_compressed_data_;
 };
 

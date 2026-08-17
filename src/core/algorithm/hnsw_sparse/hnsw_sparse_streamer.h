@@ -25,8 +25,8 @@ class HnswSparseStreamer : public IndexStreamer {
  public:
   using ContextPointer = IndexStreamer::Context::Pointer;
 
-  HnswSparseStreamer(void);
-  ~HnswSparseStreamer(void) override;
+  HnswSparseStreamer();
+  ~HnswSparseStreamer() override;
 
   HnswSparseStreamer(const HnswSparseStreamer &streamer) = delete;
   HnswSparseStreamer &operator=(const HnswSparseStreamer &streamer) = delete;
@@ -36,14 +36,14 @@ class HnswSparseStreamer : public IndexStreamer {
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 
   //! Cleanup Streamer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Create a context
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
   //! Create a new sparse iterator
-  IndexStreamer::SparseProvider::Pointer create_sparse_provider(
-      void) const override;
+  IndexStreamer::SparseProvider::Pointer create_sparse_provider()
+      const override;
 
   int add_impl(uint64_t pkey, const uint32_t sparse_count,
                const uint32_t *sparse_indices, const void *sparse_query,
@@ -112,7 +112,7 @@ class HnswSparseStreamer : public IndexStreamer {
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
-  int close(void) override;
+  int close() override;
 
   //! flush file
   int flush(uint64_t checkpoint) override;
@@ -121,12 +121,12 @@ class HnswSparseStreamer : public IndexStreamer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve sparse meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -162,7 +162,7 @@ class HnswSparseStreamer : public IndexStreamer {
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
    public:
-    void clear(void) {
+    void clear() {
       set_revision_id(0u);
       set_loaded_count(0u);
       set_added_count(0u);

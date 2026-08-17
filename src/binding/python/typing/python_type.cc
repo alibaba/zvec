@@ -16,7 +16,7 @@
 
 namespace zvec {
 
-void ZVecPyTyping::Initialize(pybind11::module_ &parent) {
+void ZVecPyTyping::initialize(pybind11::module_ &parent) {
   auto m = parent.def_submodule(
       "typing", "This module contains the basic data types of Zvec");
   // binding base types
@@ -24,6 +24,7 @@ void ZVecPyTyping::Initialize(pybind11::module_ &parent) {
   bind_index_types(m);
   bind_metric_types(m);
   bind_quantize_types(m);
+  bind_io_backend_types(m);
   bind_status(m);
 }
 
@@ -56,6 +57,7 @@ Examples:
       .value("VECTOR_FP32", DataType::VECTOR_FP32)
       .value("VECTOR_FP64", DataType::VECTOR_FP64)
       .value("VECTOR_INT8", DataType::VECTOR_INT8)
+      .value("VECTOR_UINT8", DataType::VECTOR_UINT8)
 
 
       // sparse vector type
@@ -96,12 +98,15 @@ Examples:
 )pbdoc")
       .value("UNDEFINED", IndexType::UNDEFINED)
       .value("HNSW", IndexType::HNSW)
-      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("IVF", IndexType::IVF)
+      .value("IVF_RABITQ", IndexType::IVF_RABITQ)
       .value("FLAT", IndexType::FLAT)
+      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
+      .value("DISKANN", IndexType::DISKANN)
+      .value("VAMANA", IndexType::VAMANA)
       .value("INVERT", IndexType::INVERT)
-      .value("OMEGA", IndexType::OMEGA)
-      .value("VAMANA", IndexType::VAMANA);
+      .value("FTS", IndexType::FTS)
+      .value("OMEGA", IndexType::OMEGA);
 }
 
 void ZVecPyTyping::bind_metric_types(pybind11::module_ &m) {
@@ -135,7 +140,31 @@ Examples:
       .value("FP16", QuantizeType::FP16)
       .value("INT8", QuantizeType::INT8)
       .value("INT4", QuantizeType::INT4)
-      .value("RABITQ", QuantizeType::RABITQ);
+      .value("RABITQ", QuantizeType::RABITQ)
+      .value("UNIFORM_UINT7", QuantizeType::UNIFORM_UINT7)
+      .value("UNIFORM_UINT8", QuantizeType::UNIFORM_UINT8)
+      .value("UNIFORM_UINT4", QuantizeType::UNIFORM_UINT4);
+}
+
+void ZVecPyTyping::bind_io_backend_types(py::module_ &m) {
+  py::enum_<ailego::IOBackendType>(m, "IOBackendType", R"pbdoc(
+Enumeration of supported I/O backend types for DiskAnn disk reads.
+
+- PREAD: Synchronous pread(); no async I/O.
+- LIBAIO: libaio loaded at runtime via dlopen().
+- IO_URING: io_uring via raw kernel syscalls (zero dependency).
+- WINDOWS_OVERLAPPED: Windows unbuffered overlapped I/O using per-context
+  I/O completion ports.
+
+Examples:
+    >>> from zvec.typing import IOBackendType
+    >>> print(IOBackendType.LIBAIO)
+    IOBackendType.LIBAIO
+)pbdoc")
+      .value("PREAD", ailego::IOBackendType::kPread)
+      .value("LIBAIO", ailego::IOBackendType::kLibAio)
+      .value("IO_URING", ailego::IOBackendType::kIoUring)
+      .value("WINDOWS_OVERLAPPED", ailego::IOBackendType::kWindowsOverlapped);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

@@ -46,24 +46,24 @@ class MemoryReadStorage : public IndexStorage {
           rope_(rope) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment() override = default;
 
     //! Retrieve size of data
-    size_t data_size(void) const override {
+    size_t data_size() const override {
       return data_size_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return data_crc_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return padding_size_;
     }
 
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return region_size_;
     }
 
@@ -124,7 +124,7 @@ class MemoryReadStorage : public IndexStorage {
     }
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return shared_from_this();
     }
 
@@ -139,7 +139,7 @@ class MemoryReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~MemoryReadStorage(void) override {}
+  ~MemoryReadStorage() override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {
@@ -148,7 +148,7 @@ class MemoryReadStorage : public IndexStorage {
   }
 
   //! Cleanup container
-  int flush(void) override {
+  int flush() override {
     return IndexError_NotImplemented;
   }
 
@@ -160,12 +160,12 @@ class MemoryReadStorage : public IndexStorage {
     return;
   }
 
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return 0;
   }
 
   //! Cleanup container
-  int cleanup(void) override {
+  int cleanup() override {
     return this->close();
   }
 
@@ -196,7 +196,7 @@ class MemoryReadStorage : public IndexStorage {
   }
 
   //! Unload all indexes
-  int close(void) override {
+  int close() override {
     rope_ = nullptr;
     segments_.clear();
     return 0;
@@ -215,8 +215,8 @@ class MemoryReadStorage : public IndexStorage {
   }
 
   //! Retrieve all segments
-  std::map<std::string, IndexStorage::Segment::Pointer> get_all(
-      void) const override {
+  std::map<std::string, IndexStorage::Segment::Pointer> get_all()
+      const override {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     if (rope_) {
       for (const auto &it : segments_) {
@@ -232,7 +232,7 @@ class MemoryReadStorage : public IndexStorage {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 

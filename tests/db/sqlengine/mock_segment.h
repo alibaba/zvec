@@ -85,7 +85,7 @@ class MockIndexResult : public InvertedSearchResult {
 class MockVectorIndexer : public CombinedVectorColumnIndexer {
  public:
   //! Search results with query
-  Result<IndexResults::Ptr> Search(
+  Result<IndexResults::Ptr> search(
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params) override {
     // return tl::make_unexpected(Status::InternalError("err"));
@@ -98,7 +98,7 @@ class MockVectorIndexer : public CombinedVectorColumnIndexer {
                                  "group_2", "group_0"});
   }
 
-  Result<vector_column_params::VectorDataBuffer> Fetch(
+  Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t doc_id) const override {
     // float f = doc_id;
     // std::vector<float> v(4, f);
@@ -378,8 +378,21 @@ class MockSegment : public Segment {
     return nullptr;
   }
 
+  void doc_id_range(uint64_t *min_id, uint64_t *max_id) const override {
+    *min_id = 0;
+    *max_id = 0;
+  }
+
+  uint64_t doc_count_snapshot() const override {
+    return 0;
+  }
+
   uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) override {
     return 0;
+  }
+
+  bool has_record() override {
+    return false;
   }
 
   Status add_column(FieldSchema::Ptr column_schema,
@@ -399,7 +412,7 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status create_all_vector_index(
+  Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segmnet_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
@@ -481,15 +494,15 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status Insert(Doc &doc) override {
+  Status insert(Doc &doc) override {
     return Status::OK();
   }
 
-  Status Upsert(Doc &doc) override {
+  Status upsert(Doc &doc) override {
     return Status::OK();
   }
 
-  Status Update(Doc &doc) override {
+  Status update(Doc &doc) override {
     return Status::OK();
   }
 
@@ -501,7 +514,7 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Doc::Ptr Fetch(uint64_t doc_id,
+  Doc::Ptr fetch(uint64_t doc_id,
                  const std::optional<std::vector<std::string>> &output_fields =
                      std::nullopt,
                  bool include_vector = true) override {
@@ -536,6 +549,8 @@ class MockSegment : public Segment {
   Status dump() override {
     return Status::OK();
   }
+
+  void remove_writing_forward_block() override {}
 
   Status destroy() override {
     return Status::OK();

@@ -51,17 +51,17 @@ std::vector<float> MakeRandomUnitVector(std::mt19937 &rng) {
 
 BaseIndexParam::Pointer CreateOmegaParam() {
   return OmegaIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(kDimension)
-      .WithIsSparse(false)
-      .WithM(32)
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(kDimension)
+      .with_is_sparse(false)
+      .with_m(32)
       .WithEFConstruction(500)
       .WithMinVectorThreshold(10000)
       .WithNumTrainingQueries(1000)
       .WithEFTraining(500)
       .WithEFGroundTruth(1000)
-      .Build();
+      .build();
 }
 
 }  // namespace
@@ -76,7 +76,7 @@ int main() {
     return 1;
   }
 
-  if (index->Open(kIndexPath, StorageOptions{StorageOptions::StorageType::kMMAP,
+  if (index->open(kIndexPath, StorageOptions{StorageOptions::StorageType::kMMAP,
                                              true}) != 0) {
     std::cerr << "failed to open omega index" << std::endl;
     return 1;
@@ -89,13 +89,13 @@ int main() {
     dataset.push_back(MakeRandomUnitVector(rng));
     VectorData vector_data;
     vector_data.vector = DenseVector{dataset.back().data()};
-    if (index->Add(vector_data, doc_id) != 0) {
+    if (index->add(vector_data, doc_id) != 0) {
       std::cerr << "failed to add document " << doc_id << std::endl;
       return 1;
     }
   }
 
-  if (index->Train() != 0) {
+  if (index->train() != 0) {
     std::cerr << "failed to train omega index" << std::endl;
     return 1;
   }
@@ -114,7 +114,7 @@ int main() {
                          .build();
 
   SearchResult result;
-  if (index->Search(query, query_param, &result) != 0) {
+  if (index->search(query, query_param, &result) != 0) {
     std::cerr << "failed to search omega index" << std::endl;
     return 1;
   }
@@ -131,7 +131,7 @@ int main() {
     std::cerr << "unexpected top result key" << std::endl;
     return 1;
   }
-  if (index->Close() != 0) {
+  if (index->close() != 0) {
     std::cerr << "failed to close omega index" << std::endl;
     return 1;
   }

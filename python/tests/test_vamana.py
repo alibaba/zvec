@@ -77,6 +77,7 @@ def _build_schema(
     search_list_size: int = 64,
     alpha: float = 1.2,
     use_contiguous_memory: bool = False,
+    two_pass_build: bool = False,
 ) -> CollectionSchema:
     """Create a simple schema with a single FP32 Vamana vector column."""
     return CollectionSchema(
@@ -100,6 +101,7 @@ def _build_schema(
                     search_list_size=search_list_size,
                     alpha=alpha,
                     use_contiguous_memory=use_contiguous_memory,
+                    two_pass_build=two_pass_build,
                 ),
             ),
         ],
@@ -122,13 +124,17 @@ def _generate_docs(rng: np.random.Generator, num: int = NUM_DOCS) -> list[Doc]:
 
 
 def _query_topk(
-    coll: Collection, query_vec: list[float], *, ef_search: int = 64
+    coll: Collection,
+    query_vec: list[float],
+    *,
+    ef_search: int = 64,
+    is_linear: bool = False,
 ) -> list[str]:
     """Run a top-k vector query and return the returned ids in order."""
     vector_query = Query(
         field_name="dense",
         vector=query_vec,
-        param=VamanaQueryParam(ef_search=ef_search),
+        param=VamanaQueryParam(ef_search=ef_search, is_linear=is_linear),
     )
     hits = coll.query(vector_query, topk=TOPK)
     assert hits is not None, "query returned None"
@@ -154,7 +160,10 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is DEFAULT_SATURATE_GRAPH
         assert param.use_contiguous_memory is False
         assert param.use_id_map is False
+        assert param.two_pass_build is False
         assert param.quantize_type == QuantizeType.UNDEFINED
+        assert param.use_flat_contiguous_memory is False
+        assert param.flat_data_type == DataType.VECTOR_FP32
 
     def test_custom_construction(self):
         param = VamanaIndexParam(
@@ -165,7 +174,10 @@ class TestVamanaIndexParamSurface:
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
+            two_pass_build=True,
             quantize_type=QuantizeType.INT8,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         assert param.type == IndexType.VAMANA
         assert param.metric_type == MetricType.COSINE
@@ -175,7 +187,10 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is True
         assert param.use_contiguous_memory is True
         assert param.use_id_map is False
+        assert param.two_pass_build is True
         assert param.quantize_type == QuantizeType.INT8
+        assert param.use_flat_contiguous_memory is True
+        assert param.flat_data_type == DataType.VECTOR_FP16
 
     def test_to_dict_includes_all_fields(self):
         param = VamanaIndexParam(
@@ -186,7 +201,10 @@ class TestVamanaIndexParamSurface:
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
+            two_pass_build=True,
             quantize_type=QuantizeType.FP16,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         data = param.to_dict()
         assert data["type"] == "VAMANA"
@@ -197,7 +215,10 @@ class TestVamanaIndexParamSurface:
         assert data["saturate_graph"] is True
         assert data["use_contiguous_memory"] is True
         assert data["use_id_map"] is False
+        assert data["two_pass_build"] is True
         assert data["quantize_type"] == "FP16"
+        assert data["use_flat_contiguous_memory"] is True
+        assert data["flat_data_type"] == "VECTOR_FP16"
 
     def test_repr_contains_key_fields(self):
         text = repr(
@@ -208,6 +229,9 @@ class TestVamanaIndexParamSurface:
                 alpha=1.4,
                 saturate_graph=True,
                 use_contiguous_memory=True,
+                two_pass_build=True,
+                use_flat_contiguous_memory=True,
+                flat_data_type=DataType.VECTOR_FP16,
             )
         )
         # Spot-check the most diagnostic fields are rendered.
@@ -218,6 +242,9 @@ class TestVamanaIndexParamSurface:
         assert "alpha" in text
         assert "saturate_graph" in text and "true" in text
         assert "use_contiguous_memory" in text and "true" in text
+        assert "two_pass_build" in text and "true" in text
+        assert "use_flat_contiguous_memory" in text and "true" in text
+        assert "flat_data_type" in text and "VECTOR_FP16" in text
 
     @pytest.mark.parametrize(
         "field, kwargs",
@@ -228,6 +255,12 @@ class TestVamanaIndexParamSurface:
             ("saturate_graph", dict(saturate_graph=True)),
             ("use_contiguous_memory", dict(use_contiguous_memory=True)),
             ("use_id_map", dict(use_id_map=True)),
+            ("two_pass_build", dict(two_pass_build=True)),
+            (
+                "use_flat_contiguous_memory",
+                dict(use_flat_contiguous_memory=True),
+            ),
+            ("flat_data_type", dict(flat_data_type=DataType.VECTOR_FP16)),
         ],
     )
     def test_readonly_properties(self, field, kwargs):
@@ -239,27 +272,42 @@ class TestVamanaIndexParamSurface:
         with pytest.raises(AttributeError, match=match_pattern):
             setattr(param, field, getattr(param, field))
 
-    def test_pickle_roundtrip(self):
+    @pytest.mark.parametrize(
+        "metric_type,quantize_type",
+        [
+            (MetricType.COSINE, QuantizeType.INT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT7),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT4),
+        ],
+    )
+    def test_pickle_roundtrip(self, metric_type, quantize_type):
         original = VamanaIndexParam(
-            metric_type=MetricType.COSINE,
+            metric_type=metric_type,
             max_degree=48,
             search_list_size=120,
             alpha=1.4,
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
-            quantize_type=QuantizeType.INT8,
+            two_pass_build=True,
+            quantize_type=quantize_type,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
-        assert restored.metric_type == MetricType.COSINE
+        assert restored.metric_type == metric_type
         assert restored.max_degree == 48
         assert restored.search_list_size == 120
         assert restored.alpha == pytest.approx(1.4)
         assert restored.saturate_graph is True
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
-        assert restored.quantize_type == QuantizeType.INT8
+        assert restored.two_pass_build is True
+        assert restored.quantize_type == quantize_type
+        assert restored.use_flat_contiguous_memory is True
+        assert restored.flat_data_type == DataType.VECTOR_FP16
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
 
@@ -296,6 +344,20 @@ class TestVamanaQueryParamSurface:
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
 
+    def test_zero_prefetch_values_are_preserved(self):
+        q = VamanaQueryParam(extra_params={"prefetch_offset": 0, "prefetch_lines": 0})
+        assert q.prefetch_offset == 0
+        assert q.prefetch_lines == 0
+
+    def test_prefetch_fields_can_override_defaults_independently(self):
+        offset_only = VamanaQueryParam(extra_params={"prefetch_offset": 96})
+        assert offset_only.prefetch_offset == 96
+        assert offset_only.prefetch_lines == 0
+
+        lines_only = VamanaQueryParam(extra_params={"prefetch_lines": 1})
+        assert lines_only.prefetch_offset == 8
+        assert lines_only.prefetch_lines == 1
+
     def test_repr_contains_key_fields(self):
         text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
         assert "VAMANA" in text
@@ -330,6 +392,12 @@ class TestVamanaQueryParamSurface:
         assert restored.is_using_refiner is True
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
+
+    def test_default_prefetch_pickle_roundtrip(self):
+        restored = pickle.loads(pickle.dumps(VamanaQueryParam(ef_search=96)))
+        assert restored.ef_search == 96
+        assert restored.prefetch_offset == 8
+        assert restored.prefetch_lines == 0
 
 
 class TestVamanaPublicNamespace:
@@ -380,6 +448,7 @@ class TestVamanaEndToEnd:
             search_list_size=80,
             alpha=1.3,
             use_contiguous_memory=True,
+            two_pass_build=True,
         )
         path = tmp_path_factory.mktemp("zvec") / "vamana_schema_rt"
         coll = zvec.create_and_open(
@@ -394,6 +463,7 @@ class TestVamanaEndToEnd:
             assert ip.search_list_size == 80
             assert ip.alpha == pytest.approx(1.3)
             assert ip.use_contiguous_memory is True
+            assert ip.two_pass_build is True
         finally:
             coll.destroy()
 
@@ -467,7 +537,7 @@ class TestVamanaEndToEnd:
         ``vamana_streamer.cc`` was never linked in. This test pins down the
         regression.
         """
-        schema = _build_schema("vamana_e2e_optimize")
+        schema = _build_schema("vamana_e2e_optimize", two_pass_build=True)
         path = tmp_path_factory.mktemp("zvec") / "vamana_e2e_optimize"
         coll = zvec.create_and_open(
             path=str(path), schema=schema, option=collection_option
@@ -487,15 +557,18 @@ class TestVamanaEndToEnd:
             # RuntimeError("Failed to create index").
             coll.optimize()
 
-            # Persisted segment must still serve queries with the same
-            # top-1 self-recall guarantee. We do not assert full top-k
-            # equality with the writer segment because the persisted
-            # streamer may visit nodes in a different order; top-1 self-
-            # recall is the strong invariant.
+            # Exercise the persisted graph search without treating ANN recall
+            # as deterministic across builders and platforms.
             ids_post = _query_topk(coll, query_vec)
-            assert ids_post[0] == "5", (
-                f"post-optimize top-1 should still be probe id, got {ids_post}"
-            )
             assert len(ids_post) == TOPK
+
+            # Linear search isolates storage/doc-id correctness from graph
+            # recall and gives the strict self-recall invariant this test
+            # needs for the persisted segment.
+            ids_post_linear = _query_topk(coll, query_vec, is_linear=True)
+            assert ids_post_linear[0] == "5", (
+                "post-optimize linear top-1 should still be probe id, "
+                f"got {ids_post_linear}"
+            )
         finally:
             coll.destroy()

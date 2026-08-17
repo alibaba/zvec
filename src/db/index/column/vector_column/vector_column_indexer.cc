@@ -20,7 +20,7 @@
 
 namespace zvec {
 
-Status VectorColumnIndexer::Open(
+Status VectorColumnIndexer::open(
     const vector_column_params::ReadOptions &read_options) {
   if (index != nullptr) {
     return Status::InvalidArgument("Index already opened");
@@ -28,13 +28,13 @@ Status VectorColumnIndexer::Open(
 
   // TODO: pass read_options to proxima index
   if (engine_name_ == "proxima") {
-    return CreateProximaIndex(read_options);
+    return create_proxima_index(read_options);
   } else {
     return Status::InvalidArgument("Engine name not supported");
   }
 }
 
-Status VectorColumnIndexer::CreateProximaIndex(
+Status VectorColumnIndexer::create_proxima_index(
     const vector_column_params::ReadOptions &read_options) {
   auto index_param_result =
       ProximaEngineHelper::convert_to_engine_index_param(field_schema_);
@@ -54,7 +54,7 @@ Status VectorColumnIndexer::CreateProximaIndex(
           ? core_interface::StorageOptions::StorageType::kMMAP
           : core_interface::StorageOptions::StorageType::kBufferPool;
 
-  if (0 != index->Open(this->index_file_path(),
+  if (0 != index->open(this->index_file_path(),
                        {storage_type, read_options.create_new,
                         read_options.read_only})) {
     return Status::InternalError("Failed to open index");
@@ -63,36 +63,36 @@ Status VectorColumnIndexer::CreateProximaIndex(
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Flush() {
+Status VectorColumnIndexer::flush() {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
   }
 
-  if (0 != index->Flush()) {
+  if (0 != index->flush()) {
     return Status::InternalError("Failed to flush index");
   }
   return Status::OK();
 }
 
 
-Status VectorColumnIndexer::Close() {
+Status VectorColumnIndexer::close() {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
   }
 
-  if (0 != index->Close()) {
+  if (0 != index->close()) {
     return Status::InternalError("Failed to close index");
   }
   index.reset();
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Destroy() {
+Status VectorColumnIndexer::destroy() {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
   }
 
-  if (Close() != Status::OK()) {
+  if (close() != Status::OK()) {
     return Status::InternalError("Failed to close index");
   }
   if (!ailego::File::RemovePath(index_file_path_)) {
@@ -101,7 +101,7 @@ Status VectorColumnIndexer::Destroy() {
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Merge(
+Status VectorColumnIndexer::merge(
     const std::vector<VectorColumnIndexer::Ptr> &indexers,
     const IndexFilter::Ptr &filter,
     const vector_column_params::MergeOptions &merge_options) {
@@ -127,7 +127,7 @@ Status VectorColumnIndexer::Merge(
     return Status::InvalidArgument("Failed to convert filter");
   }
   if (0 !=
-      index->Merge(engine_indexers, *engine_filter,
+      index->merge(engine_indexers, *engine_filter,
                    {merge_options.write_concurrency, merge_options.pool})) {
     return Status::InternalError("Failed to merge index");
   }
@@ -135,7 +135,7 @@ Status VectorColumnIndexer::Merge(
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Insert(
+Status VectorColumnIndexer::insert(
     const vector_column_params::VectorData &vector_data, uint32_t doc_id) {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
@@ -143,13 +143,13 @@ Status VectorColumnIndexer::Insert(
 
   auto engine_vector_data =
       ProximaEngineHelper::convert_to_engine_vector(vector_data, is_sparse_);
-  if (0 != index->Add(engine_vector_data.value(), doc_id)) {
+  if (0 != index->add(engine_vector_data.value(), doc_id)) {
     return Status::InternalError("Failed to add vector to index");
   }
   return Status::OK();
 }
 
-Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
+Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::fetch(
     uint32_t doc_id) const {
   if (index == nullptr) {
     return tl::make_unexpected(Status::InvalidArgument("Index not opened"));
@@ -157,7 +157,7 @@ Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
 
   auto vector_data_buffer = core_interface::VectorDataBuffer();
 
-  if (0 != index->Fetch(doc_id, &vector_data_buffer)) {
+  if (0 != index->fetch(doc_id, &vector_data_buffer)) {
     return tl::make_unexpected(
         Status::InternalError("Failed to fetch vector from index"));
   }
@@ -166,7 +166,7 @@ Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
       .value();
 }
 
-Result<IndexResults::Ptr> VectorColumnIndexer::Search(
+Result<IndexResults::Ptr> VectorColumnIndexer::search(
     const vector_column_params::VectorData &vector_data,
     const vector_column_params::QueryParams &query_params) {
   if (index == nullptr) {
@@ -194,7 +194,7 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
   } else {
     engine_query_param->bf_pks = nullptr;
   }
-  if (0 != index->Search(engine_vector_data.value(),
+  if (0 != index->search(engine_vector_data.value(),
                          std::move(engine_query_param), &search_result)) {
     return tl::make_unexpected(
         Status::InternalError("Failed to search vector"));
@@ -222,6 +222,15 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
     artifacts.total_cmps = search_result.total_cmps_;
     artifacts.training_query_id = search_result.training_query_id_;
     training_session->CollectQueryArtifacts(std::move(artifacts));
+  }
+
+  // Return grouped results when group_by is active
+  if (!search_result.group_doc_list_.empty()) {
+    auto result = std::make_shared<GroupVectorIndexResults>(
+        std::move(search_result.group_doc_list_),
+        std::move(search_result.group_reverted_vector_list_),
+        std::move(search_result.group_reverted_sparse_values_list_));
+    return result;
   }
 
   auto result = std::make_shared<VectorIndexResults>(

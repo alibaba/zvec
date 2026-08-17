@@ -29,11 +29,11 @@ static const char AILEGO_VERSION_DETAILS[] = AILEGO_VERSION_COMPILE_DETAILS(
     "AiLego Library Version " AILEGO_VERSION_STRING
     ".\nCopyright (C) The Software Authors. All rights reserved.\n");
 
-const char *Version::String(void) {
+const char *Version::String() {
   return AILEGO_VERSION_STRING;
 }
 
-const char *Version::Details(void) {
+const char *Version::Details() {
   return AILEGO_VERSION_DETAILS;
 }
 

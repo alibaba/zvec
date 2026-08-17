@@ -48,7 +48,7 @@ class BufferPoolStoreTest : public testing::Test {
 
 TEST_F(BufferPoolStoreTest, ParquetFetch) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table = store->fetch({"id", "name", "score"}, {0, 1, 2});
   ASSERT_TRUE(table != nullptr);
   EXPECT_EQ(table->num_rows(), 3);
@@ -57,7 +57,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetch) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWithSelectColumns) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table = store->fetch({"id", "name"}, {0, 1, 2});
   ASSERT_TRUE(table != nullptr);
   EXPECT_EQ(table->num_rows(), 3);
@@ -66,7 +66,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchWithSelectColumns) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWithUID) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto table = store->fetch({USER_ID, "id", "name"}, {0, 1, 2});
   ASSERT_TRUE(table != nullptr);
   EXPECT_EQ(table->num_rows(), 3);
@@ -75,7 +75,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchWithUID) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWithGlobalDocID) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto table = store->fetch({GLOBAL_DOC_ID, "id", "name"}, {0, 1, 2});
   ASSERT_TRUE(table != nullptr);
   EXPECT_EQ(table->num_rows(), 3);
@@ -84,14 +84,14 @@ TEST_F(BufferPoolStoreTest, ParquetFetchWithGlobalDocID) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWitEmptyColumns) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table = store->fetch({}, std::vector<int>{});
   EXPECT_EQ(table, nullptr);
 }
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWitEmptyIndices) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table = store->fetch({"id", "name"}, std::vector<int>{});
   ASSERT_TRUE(table != nullptr);
   EXPECT_EQ(table->num_rows(), 0);
@@ -100,7 +100,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchWitEmptyIndices) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWithMoreIndices) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table = store->fetch({"id"}, {0, 1, 2, 3, 6, 2, 1, 7});
   ASSERT_TRUE(table != nullptr);
   EXPECT_EQ(table->num_rows(), 8);
@@ -109,14 +109,14 @@ TEST_F(BufferPoolStoreTest, ParquetFetchWithMoreIndices) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWithInvalidIndices) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table = store->fetch({"id"}, {0, 1, 30});
   ASSERT_TRUE(table == nullptr);
 }
 
 TEST_F(BufferPoolStoreTest, ParquetFetchCheckOrderWithLocalRowIDMiddle) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table =
       store->fetch({"id", "name", LOCAL_ROW_ID, "score"}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(table != nullptr);
@@ -144,7 +144,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchCheckOrderWithLocalRowIDMiddle) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchCheckOrderWithLocalRowIDEnd) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   TablePtr table =
       store->fetch({"id", "name", "score", LOCAL_ROW_ID}, {0, 3, 6, 1, 0});
   ASSERT_TRUE(table != nullptr);
@@ -172,7 +172,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchCheckOrderWithLocalRowIDEnd) {
 
 TEST_F(BufferPoolStoreTest, ParquetScan) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto reader = store->scan({"id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -194,7 +194,7 @@ TEST_F(BufferPoolStoreTest, ParquetScan) {
 
 TEST_F(BufferPoolStoreTest, ParquetScanWithSelectColumns) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto reader = store->scan({"id", "name"});
   int batch_count = 0;
   int total_rows = 0;
@@ -216,7 +216,7 @@ TEST_F(BufferPoolStoreTest, ParquetScanWithSelectColumns) {
 
 TEST_F(BufferPoolStoreTest, ParquetScanWithInvalidColumn) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto reader = store->scan({"id", "unknown_column"});
   ASSERT_TRUE(reader == nullptr);
 }
@@ -224,7 +224,7 @@ TEST_F(BufferPoolStoreTest, ParquetScanWithInvalidColumn) {
 
 TEST_F(BufferPoolStoreTest, ParquetScanWithUserID) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto reader = store->scan({USER_ID, "id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -246,7 +246,7 @@ TEST_F(BufferPoolStoreTest, ParquetScanWithUserID) {
 
 TEST_F(BufferPoolStoreTest, ParquetScanWithGlobalDocID) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   auto reader = store->scan({GLOBAL_DOC_ID, "id", "name", "score"});
   int batch_count = 0;
   int total_rows = 0;
@@ -268,7 +268,7 @@ TEST_F(BufferPoolStoreTest, ParquetScanWithGlobalDocID) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRow) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({"id", "name", "score"}, 0);
   ASSERT_TRUE(batch != nullptr);
@@ -284,7 +284,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRow) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSpecificRow) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({"id", "name", "score"}, 3);
   ASSERT_TRUE(batch != nullptr);
@@ -300,7 +300,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSpecificRow) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithUserID) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({USER_ID, "id", "name"}, 1);
   ASSERT_TRUE(batch != nullptr);
@@ -315,7 +315,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithUserID) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithGlobalDocID) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({GLOBAL_DOC_ID, "id", "name"}, 4);
   ASSERT_TRUE(batch != nullptr);
@@ -330,7 +330,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithGlobalDocID) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithNegativeIndex) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({"id", "name"}, -1);
   EXPECT_EQ(batch, nullptr);
@@ -338,7 +338,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithNegativeIndex) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithOutOfRangeIndex) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({"id", "name"}, 15);
   EXPECT_EQ(batch, nullptr);
@@ -346,7 +346,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithOutOfRangeIndex) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithInvalidColumn) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({"id", "invalid_column"}, 0);
   EXPECT_EQ(batch, nullptr);
@@ -354,7 +354,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithInvalidColumn) {
 
 TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithEmptyColumns) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({}, 0);
   EXPECT_EQ(batch, nullptr);
@@ -362,7 +362,7 @@ TEST_F(BufferPoolStoreTest, ParquetFetchSingleRowWithEmptyColumns) {
 
 TEST_F(BufferPoolStoreTest, AllDataTypeFetchSingleRow) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   ExecBatchPtr batch = store->fetch({"id", "list_int32"}, 2);
   ASSERT_TRUE(batch != nullptr);
@@ -391,7 +391,7 @@ TEST_F(BufferPoolStoreTest, AllDataTypeFetchSingleRow) {
 
 TEST_F(BufferPoolStoreTest, AllDataType) {
   auto mmap_store = std::make_shared<BufferPoolForwardStore>(parquet_path);
-  ASSERT_TRUE(mmap_store->Open().ok());
+  ASSERT_TRUE(mmap_store->open().ok());
 
   std::vector<std::string> columns = {"id", "list_int32"};
   std::vector<int> indices = {0, 3, 6, 1, 0};
@@ -436,6 +436,6 @@ TEST_F(BufferPoolStoreTest, DeleteDestructs) {
 TEST_F(BufferPoolStoreTest, PhysicSchema) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);
   ASSERT_NE(store, nullptr);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
   EXPECT_NE(store->physic_schema(), nullptr);
 }

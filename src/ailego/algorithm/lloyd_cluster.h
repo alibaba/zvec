@@ -103,10 +103,10 @@ class LloydCluster {
         spherical_{spherical} {}
 
   //! Constructor
-  LloydCluster(void) {}
+  LloydCluster() = default;
 
   //! Destructor
-  ~LloydCluster(void) {}
+  ~LloydCluster() = default;
 
   //! Append a feature
   void append(const StoreType *arr, size_t dim) {
@@ -202,7 +202,7 @@ class LloydCluster {
 
     if (spherical_) {
       for (size_t i = 0, n = centroids_.count(); i != n; ++i) {
-        float norm;
+        float norm = 0.0f;
         ContextType::Norm2(centroids_[i], centroids_.dimension(), &norm);
       }
     }
@@ -211,32 +211,37 @@ class LloydCluster {
   }
 
   //! Retrieve the controids
-  ContainerType *mutable_centroids(void) {
+  ContainerType *mutable_centroids() {
     return &centroids_;
   }
 
   //! Retrieve the controids
-  const ContainerType &centroids(void) const {
+  const ContainerType &centroids() const {
     return centroids_;
   }
 
   //! Retrieve the K value
-  size_t k_value(void) const {
+  size_t k_value() const {
     return k_value_;
   }
 
+  //! Retrieve spherical option
+  bool spherical() const {
+    return spherical_;
+  }
+
   //! Retrieve context
-  const ContextType &context(void) const {
+  const ContextType &context() const {
     return context_;
   }
 
   //! Retrieve the feature cache
-  const ContainerType &feature_cache(void) const {
+  const ContainerType &feature_cache() const {
     return feature_cache_;
   }
 
   //! Retrieve the feature matrix
-  const ContainerType &feature_matrix(void) const {
+  const ContainerType &feature_matrix() const {
     return feature_matrix_;
   }
 
@@ -247,7 +252,7 @@ class LloydCluster {
 
  protected:
   //! Cluster the cache features
-  void cluster_cache_features(void) {
+  void cluster_cache_features() {
     std::array<float, BatchCount> scores;
 
     for (size_t i = 0, n = feature_cache_.count(); i != n; ++i) {

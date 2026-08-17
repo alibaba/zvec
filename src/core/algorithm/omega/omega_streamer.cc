@@ -459,7 +459,7 @@ int OmegaStreamer::omega_search_impl(const void *query,
   LOG_DEBUG(
       "OMEGA search completed: scan_cmps=%d, reported_cmps=%d, hops=%d, "
       "results=%zu, early_stop=%d",
-      omega_scan_cmps, cmps, hops, hnsw_ctx->topk_heap().size(),
+      omega_scan_cmps, cmps, hops, hnsw_ctx->search_heap().size(),
       (early_stop_hit || omega_search_ctx->EarlyStopHit()) ? 1 : 0);
   std::string profile_output_path = OmegaPredictionProfileOutputPath();
   if (profile_prediction) {
@@ -495,9 +495,9 @@ int OmegaStreamer::omega_search_impl(const void *query,
   int baseline_cmps = -1;
   if (!profile_output_path.empty() && !training_mode_enabled_ &&
       !hnsw_ctx->group_by_search()) {
-    TopkHeap omega_topk_heap = hnsw_ctx->topk_heap();
+    TopkHeap omega_topk_heap = hnsw_ctx->search_heap().select<TopkHeap>();
     hnsw_ctx->reset_query(query);
-    hnsw_ctx->topk_heap().clear();
+    hnsw_ctx->search_heap().clear();
     bool baseline_stopped_early = false;
     ret = alg_->search_with_hooks(hnsw_ctx, nullptr, &baseline_stopped_early);
     if (ret != 0) {
@@ -506,7 +506,7 @@ int OmegaStreamer::omega_search_impl(const void *query,
       return ret;
     }
     baseline_cmps = static_cast<int>(hnsw_ctx->get_scan_num());
-    hnsw_ctx->topk_heap() = omega_topk_heap;
+    hnsw_ctx->search_heap().reset<TopkHeap>(omega_topk_heap.limit()) = std::move(omega_topk_heap);
   }
 
   if (profile_prediction || !profile_output_path.empty()) {

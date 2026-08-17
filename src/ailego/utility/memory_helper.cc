@@ -56,7 +56,7 @@ bool MemoryHelper::SelfUsage(size_t *vsz, size_t *rss) {
   return true;
 }
 
-size_t MemoryHelper::SelfRSS(void) {
+size_t MemoryHelper::SelfRSS() {
   FILE *fp = fopen("/proc/self/statm", "r");
   if (!fp) {
     return 0;
@@ -71,17 +71,17 @@ size_t MemoryHelper::SelfRSS(void) {
   return (rss * sysconf(_SC_PAGESIZE));
 }
 
-size_t MemoryHelper::SelfPeakRSS(void) {
+size_t MemoryHelper::SelfPeakRSS() {
   struct rusage rusage;
   getrusage(RUSAGE_SELF, &rusage);
   return (size_t)(rusage.ru_maxrss * 1024);
 }
 
-size_t MemoryHelper::TotalRamSize(void) {
+size_t MemoryHelper::TotalRamSize() {
   return (sysconf(_SC_PHYS_PAGES) * sysconf(_SC_PAGESIZE));
 }
 
-size_t MemoryHelper::AvailableRamSize(void) {
+size_t MemoryHelper::AvailableRamSize() {
   FILE *fp = fopen("/proc/meminfo", "r");
   if (!fp) {
     return 0;
@@ -134,7 +134,7 @@ size_t MemoryHelper::AvailableRamSize(void) {
   return (avail * 1024);
 }
 
-size_t MemoryHelper::UsedRamSize(void) {
+size_t MemoryHelper::UsedRamSize() {
   FILE *fp = fopen("/proc/meminfo", "r");
   if (!fp) {
     return 0;
@@ -189,7 +189,7 @@ size_t MemoryHelper::UsedRamSize(void) {
   return ((total - avail) * 1024);
 }
 
-size_t MemoryHelper::ContainerAwareTotalRamSize(void) {
+size_t MemoryHelper::ContainerAwareTotalRamSize() {
   size_t total_ram_size = TotalRamSize();
   std::string limit_in_bytes = "/sys/fs/cgroup/memory/memory.limit_in_bytes";
   if (FileHelper::IsExist(limit_in_bytes.c_str())) {
@@ -229,7 +229,7 @@ bool MemoryHelper::SelfUsage(size_t *vsz, size_t *rss) {
   return true;
 }
 
-size_t MemoryHelper::SelfRSS(void) {
+size_t MemoryHelper::SelfRSS() {
   struct mach_task_basic_info info;
   mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
 
@@ -240,7 +240,7 @@ size_t MemoryHelper::SelfRSS(void) {
   return info.resident_size;
 }
 
-size_t MemoryHelper::SelfPeakRSS(void) {
+size_t MemoryHelper::SelfPeakRSS() {
   struct mach_task_basic_info info;
   mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
 
@@ -251,7 +251,7 @@ size_t MemoryHelper::SelfPeakRSS(void) {
   return info.resident_size_max;
 }
 
-size_t MemoryHelper::TotalRamSize(void) {
+size_t MemoryHelper::TotalRamSize() {
   int mib[2] = {CTL_HW, HW_MEMSIZE};
   uint64_t size = 0;
   size_t len = sizeof(size);
@@ -261,7 +261,7 @@ size_t MemoryHelper::TotalRamSize(void) {
   return (size_t)size;
 }
 
-size_t MemoryHelper::AvailableRamSize(void) {
+size_t MemoryHelper::AvailableRamSize() {
   struct vm_statistics stat;
   mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
   vm_size_t pagesize = 0;
@@ -276,7 +276,7 @@ size_t MemoryHelper::AvailableRamSize(void) {
   return ((stat.free_count + stat.inactive_count) * pagesize);
 }
 
-size_t MemoryHelper::UsedRamSize(void) {
+size_t MemoryHelper::UsedRamSize() {
   struct vm_statistics stat;
   mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
   vm_size_t pagesize = 0;
@@ -291,12 +291,12 @@ size_t MemoryHelper::UsedRamSize(void) {
   return ((stat.active_count + stat.wire_count) * pagesize);
 }
 
-size_t MemoryHelper::ContainerAwareTotalRamSize(void) {
+size_t MemoryHelper::ContainerAwareTotalRamSize() {
   return 0u;
 }
 
 #elif defined(_WIN64) || defined(_WIN32)
-static inline int getpagesize(void) {
+static inline int getpagesize() {
   SYSTEM_INFO info;
   GetSystemInfo(&info);
   return info.dwPageSize;
@@ -312,7 +312,7 @@ bool MemoryHelper::SelfUsage(size_t *vsz, size_t *rss) {
   return true;
 }
 
-size_t MemoryHelper::SelfRSS(void) {
+size_t MemoryHelper::SelfRSS() {
   PROCESS_MEMORY_COUNTERS info;
   if (!GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof(info))) {
     return 0u;
@@ -320,34 +320,34 @@ size_t MemoryHelper::SelfRSS(void) {
   return (size_t)info.WorkingSetSize;
 }
 
-size_t MemoryHelper::SelfPeakRSS(void) {
+size_t MemoryHelper::SelfPeakRSS() {
   PROCESS_MEMORY_COUNTERS info;
   GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof(info));
   return (size_t)info.PeakWorkingSetSize;
 }
 
-size_t MemoryHelper::TotalRamSize(void) {
+size_t MemoryHelper::TotalRamSize() {
   MEMORYSTATUSEX status;
   status.dwLength = sizeof(status);
   GlobalMemoryStatusEx(&status);
   return (size_t)status.ullTotalPhys;
 }
 
-size_t MemoryHelper::AvailableRamSize(void) {
+size_t MemoryHelper::AvailableRamSize() {
   MEMORYSTATUSEX status;
   status.dwLength = sizeof(status);
   GlobalMemoryStatusEx(&status);
   return (size_t)status.ullAvailPhys;
 }
 
-size_t MemoryHelper::UsedRamSize(void) {
+size_t MemoryHelper::UsedRamSize() {
   MEMORYSTATUSEX status;
   status.dwLength = sizeof(status);
   GlobalMemoryStatusEx(&status);
   return (size_t)(status.ullTotalPhys - status.ullAvailPhys);
 }
 
-size_t MemoryHelper::ContainerAwareTotalRamSize(void) {
+size_t MemoryHelper::ContainerAwareTotalRamSize() {
   return 0u;
 }
 
@@ -358,37 +358,37 @@ bool MemoryHelper::SelfUsage(size_t *vsz, size_t *rss) {
   return false;
 }
 
-size_t MemoryHelper::SelfRSS(void) {
+size_t MemoryHelper::SelfRSS() {
   return 0u;
 }
 
-size_t MemoryHelper::SelfPeakRSS(void) {
+size_t MemoryHelper::SelfPeakRSS() {
   return 0u;
 }
 
-size_t MemoryHelper::TotalRamSize(void) {
+size_t MemoryHelper::TotalRamSize() {
   return 0u;
 }
 
-size_t MemoryHelper::AvailableRamSize(void) {
+size_t MemoryHelper::AvailableRamSize() {
   return 0u;
 }
 
-size_t MemoryHelper::UsedRamSize(void) {
+size_t MemoryHelper::UsedRamSize() {
   return 0u;
 }
 
-size_t MemoryHelper::ContainerAwareTotalRamSize(void) {
+size_t MemoryHelper::ContainerAwareTotalRamSize() {
   return 0u;
 }
 #endif
 
-size_t MemoryHelper::PageSize(void) {
+size_t MemoryHelper::PageSize() {
   static size_t page_size = static_cast<size_t>(getpagesize());
   return page_size;
 }
 
-size_t MemoryHelper::HugePageSize(void) {
+size_t MemoryHelper::HugePageSize() {
   static size_t page_size = static_cast<size_t>(2 * 1024 * 1024);
   return page_size;
 }

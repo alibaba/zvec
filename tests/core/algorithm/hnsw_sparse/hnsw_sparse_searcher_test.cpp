@@ -40,8 +40,8 @@ constexpr size_t static sparse_dim_count = 16;
 
 class HnswSparseSearcherTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp();
+  void TearDown();
   void generate_sparse_data(
       size_t cnt, uint32_t sparse_dim_count,
       std::vector<NumericalVector<uint32_t>> &sparse_indices_list,
@@ -84,13 +84,13 @@ void HnswSparseSearcherTest::generate_sparse_data(
   }
 }
 
-void HnswSparseSearcherTest::SetUp(void) {
+void HnswSparseSearcherTest::SetUp() {
   _index_meta_ptr.reset(new (nothrow) IndexMeta(IndexMeta::MetaType::MT_SPARSE,
                                                 IndexMeta::DataType::DT_FP32));
   _index_meta_ptr->set_metric("InnerProductSparse", 0, ailego::Params());
 }
 
-void HnswSparseSearcherTest::TearDown(void) {
+void HnswSparseSearcherTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

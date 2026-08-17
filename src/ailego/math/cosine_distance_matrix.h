@@ -39,6 +39,7 @@ struct CosineDistanceMatrix<
                              float *out) {
     ailego_assert(m && q && dim && out);
 
+    // NOLINTNEXTLINE(bugprone-sizeof-expression): intentional byte-width ratio
     constexpr size_t extra_dim = sizeof(float) / sizeof(ValueType);
     size_t d = dim - extra_dim;
 

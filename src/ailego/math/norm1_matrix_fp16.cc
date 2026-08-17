@@ -67,12 +67,14 @@ static const __m512 ABS_MASK_FP32_AVX512 =
 //! Calculate sum of absolute (NEON)
 #define SA_FP16_NEON(v_m, v_sum) v_sum = vaddq_f16(vabsq_f16(v_m), v_sum);
 
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+// MSVC ARM64 lacks `float16_t` without ARMv8.2 FP16, so the NEON FP16
+// kernel is gated to gcc/clang aarch64. The generic Float16 path is used
+// on MSVC ARM64.
+#if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
 //! Compute the L1-norm of vectors (FP16, M=1)
 void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                       float *out) {
-#if defined(__ARM_NEON)
+#if defined(AILEGO_ARM64_GNU_LIKE)
   NORM_FP16_1_NEON(m, dim, out, )
 #else
 #if defined(__AVX512F__)
@@ -84,7 +86,7 @@ void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
   NORM_FP16_1_AVX(m, dim, out, )
 #endif
 }
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
 }  // namespace ailego
 }  // namespace zvec

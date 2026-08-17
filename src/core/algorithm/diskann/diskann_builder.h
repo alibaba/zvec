@@ -13,11 +13,12 @@
 // limitations under the License.
 #pragma once
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_builder.h>
+#include <zvec/core/framework/index_factory.h>
 #include "diskann_algorithm.h"
 #include "diskann_builder_entity.h"
-#include "diskann_pq_trainer.h"
 
 namespace zvec {
 namespace core {
@@ -28,28 +29,34 @@ class DiskAnnBuilder : public IndexBuilder {
   DiskAnnBuilder() = default;
 
   //! Initialize the builder
-  virtual int init(const IndexMeta &meta,
-                   const ailego::Params &params) override;
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
+
+  //! Initialize the builder with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller; it takes precedence
+  //! over the internal factory selection for the full-precision distance
+  //! used during graph construction.
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
 
   //! Cleanup the builder
-  virtual int cleanup(void) override;
+  int cleanup() override;
 
   //! Train the data
-  virtual int train(IndexThreads::Pointer threads,
-                    IndexHolder::Pointer holder) override;
+  int train(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
   //! Train the data
-  virtual int train(const IndexTrainer::Pointer &trainer) override;
+  int train(const IndexTrainer::Pointer &trainer) override;
 
   //! Build the index
-  virtual int build(IndexThreads::Pointer threads,
-                    IndexHolder::Pointer holder) override;
+  int build(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
   //! Dump index into storage
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
@@ -58,6 +65,9 @@ class DiskAnnBuilder : public IndexBuilder {
  private:
   int train_quantized_data(IndexThreads::Pointer threads);
   int generate_quantized_data(IndexThreads::Pointer threads);
+
+  void encode_pq_batch(const uint8_t *block_data, uint64_t block_start_id,
+                       uint64_t begin, uint64_t end);
   int build_internal(IndexThreads::Pointer threads);
   int prune_internal(IndexThreads::Pointer threads);
 
@@ -76,7 +86,7 @@ class DiskAnnBuilder : public IndexBuilder {
   }
 
  private:
-  enum BUILD_STATE {
+  enum BuildState {
     BUILD_STATE_INIT = 0,
     BUILD_STATE_INITED = 1,
     BUILD_STATE_TRAINED = 2,
@@ -87,6 +97,8 @@ class DiskAnnBuilder : public IndexBuilder {
   constexpr static uint32_t kDefaultListSize = 50U;
   constexpr static uint32_t kDefaultMaxDegree = 100U;
   constexpr static uint32_t kDefaultPqChunkNum = -1U;
+  constexpr static uint32_t kDefaultMaxTrainSampleCount = 200000U;
+  constexpr static double kDefaultTrainSampleRatio = 1.0;
 
   std::string data_file_;
 
@@ -97,13 +109,13 @@ class DiskAnnBuilder : public IndexBuilder {
   uint32_t max_pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t build_thread_count_{0};
-  uint32_t max_train_sample_count_{PQTable::kMaxTrainSampleCount};
-  double train_sample_ratio_{PQTable::kTrainSampleRatio};
+  uint32_t max_train_sample_count_{kDefaultMaxTrainSampleCount};
+  double train_sample_ratio_{kDefaultTrainSampleRatio};
   std::string universal_label_{""};
   std::string codebook_prefix_{""};
   std::string index_path_prefix_{"./diskann"};
 
-  BUILD_STATE state_;
+  BuildState state_{BUILD_STATE_INIT};
   Stats stats_;
 
   int errcode_{0};
@@ -122,7 +134,12 @@ class DiskAnnBuilder : public IndexBuilder {
   IndexHolder::Pointer holder_;
 
   DiskAnnAlgorithm::UPointer algo_;
-  DiskAnnPqTrainer::UPointer trainer_;
+  turbo::Quantizer::Pointer quantizer_;
+
+  //! Externally constructed quantizer for the full-precision distance used
+  //! during graph construction, forwarded to every build context's
+  //! DistCalculator (may be empty).
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   uint32_t check_interval_secs_{kDefaultLogIntervalSecs};
 };

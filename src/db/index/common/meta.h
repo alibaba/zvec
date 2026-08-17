@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -179,7 +180,7 @@ class SegmentMeta {
   using Ptr = std::shared_ptr<SegmentMeta>;
 
  public:
-  SegmentMeta() {};
+  SegmentMeta() = default;
 
   explicit SegmentMeta(SegmentID id) : id_(id) {}
 
@@ -363,8 +364,6 @@ class SegmentMeta {
   bool operator!=(const SegmentMeta &other) const {
     return !(*this == other);
   }
-
-  // Add these methods to SegmentMeta class in meta.h
 
   std::string to_string() const {
     std::ostringstream oss;

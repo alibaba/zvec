@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_flow.h>
@@ -155,22 +156,52 @@ int IndexFlow::load_internal() {
     metric_ = query_metric;
   }
 
+  // Prepare query quantizer
+  const std::string &quantizer_name = meta_.quantizer_name();
+  if (!quantizer_name.empty()) {
+    query_quantizer_ = IndexFactory::CreateQuantizer(quantizer_name);
+    if (!query_quantizer_) {
+      LOG_ERROR("Failed to create quantizer %s", quantizer_name.c_str());
+      return IndexError_NoExist;
+    }
+    ret = query_quantizer_->init(meta_, meta_.quantizer_params());
+    if (ret != 0) {
+      LOG_ERROR("Failed to init quantizer %s", quantizer_name.c_str());
+      query_quantizer_.reset();
+      return ret;
+    }
+  }
+
   // Prepare reformer
   if (!user_reformer_) {
     const std::string &reformer_name = meta_.reformer_name();
     if (!reformer_name.empty()) {
-      reformer_ = IndexFactory::CreateReformer(reformer_name);
-      if (!reformer_) {
-        LOG_ERROR("Failed to create a index reformer with name: %s",
-                  reformer_name.c_str());
-        return IndexError_NoExist;
-      }
-      ret = reformer_->init(meta_.reformer_params());
-      if (ret < 0) {
-        LOG_ERROR("Failed to initialize index reformer %s",
-                  reformer_name.c_str());
-        reformer_ = nullptr;
-        return ret;
+      if (IndexFactory::HasQuantizer(reformer_name)) {
+        query_quantizer_ = IndexFactory::CreateQuantizer(reformer_name);
+        if (!query_quantizer_) {
+          LOG_ERROR("Failed to create quantizer %s", reformer_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = query_quantizer_->init(meta_, meta_.reformer_params());
+        if (ret != 0) {
+          LOG_ERROR("Failed to init quantizer %s", reformer_name.c_str());
+          query_quantizer_.reset();
+          return ret;
+        }
+      } else {
+        reformer_ = IndexFactory::CreateReformer(reformer_name);
+        if (!reformer_) {
+          LOG_ERROR("Failed to create a index reformer with name: %s",
+                    reformer_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = reformer_->init(meta_.reformer_params());
+        if (ret < 0) {
+          LOG_ERROR("Failed to initialize index reformer %s",
+                    reformer_name.c_str());
+          reformer_ = nullptr;
+          return ret;
+        }
       }
     }
   } else {
@@ -200,7 +231,17 @@ int IndexFlow::load_internal() {
                 name.c_str());
       return IndexError_NoExist;
     }
-    ret = searcher_->init(meta_.searcher_params());
+    // Pass the query quantizer into the searcher so it can compute
+    // distances with the quantizer; fall back to the plain init for
+    // searchers without quantizer support.
+    if (query_quantizer_) {
+      ret = searcher_->init(meta_.searcher_params(), query_quantizer_);
+      if (ret == IndexError_NotImplemented) {
+        ret = searcher_->init(meta_.searcher_params());
+      }
+    } else {
+      ret = searcher_->init(meta_.searcher_params());
+    }
     if (ret < 0) {
       LOG_ERROR("Failed to initialize index searcher %s", name.c_str());
       searcher_ = nullptr;
@@ -209,6 +250,15 @@ int IndexFlow::load_internal() {
   } else {
     // Using user searcher
     searcher_ = user_searcher_;
+    if (query_quantizer_) {
+      ret = searcher_->init(searcher_->params(), query_quantizer_);
+      if (ret < 0 && ret != IndexError_NotImplemented) {
+        LOG_ERROR("Failed to initialize user searcher %s with quantizer",
+                  searcher_->name().c_str());
+        searcher_ = nullptr;
+        return ret;
+      }
+    }
   }
 
   ret = searcher_->load(storage_, metric_);
@@ -224,7 +274,7 @@ int IndexFlow::load_internal() {
   return 0;
 }
 
-int IndexFlow::unload(void) {
+int IndexFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {
@@ -240,6 +290,9 @@ int IndexFlow::unload(void) {
                ret);
     }
     reformer_ = nullptr;
+  }
+  if (query_quantizer_) {
+    query_quantizer_.reset();
   }
   if (metric_) {
     int ret = metric_->cleanup();
@@ -267,7 +320,19 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    error_code = query_quantizer_->quantize(
+        query, qmeta, context->mutable_features(), &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      error_code = searcher_->search_bf_impl(
+          reinterpret_cast<const void *>(context->features().data()), new_qmeta,
+          context->searcher_context());
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, context->mutable_features(),
                                       &new_qmeta);
@@ -311,7 +376,19 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    error_code = query_quantizer_->quantize(
+        query, qmeta, context->mutable_features(), &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      error_code = searcher_->search_impl(
+          reinterpret_cast<const void *>(context->features().data()), new_qmeta,
+          context->searcher_context());
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, context->mutable_features(),
                                       &new_qmeta);
@@ -355,7 +432,33 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    std::string tmp;
+    error_code = query_quantizer_->quantize(query, qmeta, &tmp, &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      std::string *features = context->mutable_features();
+      features->resize(tmp.size() * count);
+      memcpy(&(*features)[0], tmp.data(), tmp.size());
+      for (uint32_t i = 1; i < count && error_code == 0; ++i) {
+        IndexQueryMeta qmeta_i;
+        error_code = query_quantizer_->quantize(
+            static_cast<const char *>(query) + i * qmeta.element_size(), qmeta,
+            &tmp, &qmeta_i);
+        if (error_code == 0) {
+          memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+        }
+      }
+      if (error_code == 0) {
+        error_code = searcher_->search_bf_impl(
+            reinterpret_cast<const void *>(features->data()), new_qmeta, count,
+            context->searcher_context());
+      }
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, count,
                                       context->mutable_features(), &new_qmeta);
@@ -410,7 +513,33 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    std::string tmp;
+    error_code = query_quantizer_->quantize(query, qmeta, &tmp, &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      std::string *features = context->mutable_features();
+      features->resize(tmp.size() * count);
+      memcpy(&(*features)[0], tmp.data(), tmp.size());
+      for (uint32_t i = 1; i < count && error_code == 0; ++i) {
+        IndexQueryMeta qmeta_i;
+        error_code = query_quantizer_->quantize(
+            static_cast<const char *>(query) + i * qmeta.element_size(), qmeta,
+            &tmp, &qmeta_i);
+        if (error_code == 0) {
+          memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+        }
+      }
+      if (error_code == 0) {
+        error_code = searcher_->search_impl(
+            reinterpret_cast<const void *>(features->data()), new_qmeta, count,
+            context->searcher_context());
+      }
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, count,
                                       context->mutable_features(), &new_qmeta);
@@ -656,7 +785,7 @@ int IndexSparseFlow::load_internal() {
   return 0;
 }
 
-int IndexSparseFlow::unload(void) {
+int IndexSparseFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {

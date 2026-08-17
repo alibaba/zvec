@@ -12,18 +12,102 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <thread>
+#include <type_traits>
 #include <gtest/gtest.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <pthread.h>
+#endif
+
 using namespace zvec::ailego;
 
-struct A {
-  A(void) : pool(std::make_shared<ThreadPool>()) {}
+static_assert(!std::is_constructible<ThreadPool, uint32_t>::value,
+              "ThreadPool thread count must not be ambiguous with binding");
+static_assert(!std::is_constructible<ThreadPool, bool>::value,
+              "ThreadPool binding must require an explicit thread count");
+static_assert(std::is_constructible<ThreadPool, uint32_t, bool>::value,
+              "ThreadPool must accept an explicit count and binding");
 
-  int ThreadMain(int32_t &thread_index, uint32_t &num) {
+TEST(ThreadPool, ConstructorBehavior) {
+  const auto hardware_concurrency =
+      std::max(std::thread::hardware_concurrency(), 1u);
+
+  ThreadPool default_pool;
+  EXPECT_EQ(hardware_concurrency, default_pool.count());
+
+  ThreadPool single_unbound_pool(1, false);
+  EXPECT_EQ(1u, single_unbound_pool.count());
+
+  const uint32_t bound_count = std::min(hardware_concurrency, 2u);
+  ThreadPool bound_pool(bound_count, true);
+  EXPECT_EQ(bound_count, bound_pool.count());
+}
+
+TEST(ThreadPool, CapsExcessiveWorkerCount) {
+  const auto hardware_concurrency =
+      std::max(std::thread::hardware_concurrency(), 1u);
+  ThreadPool pool((std::numeric_limits<uint32_t>::max)(), false);
+  EXPECT_EQ(hardware_concurrency, pool.count());
+}
+
+TEST(ThreadPool, EnsuresAtLeastOneWorker) {
+  ThreadPool pool(0, false);
+  EXPECT_EQ(1u, pool.count());
+
+  bool executed = false;
+  pool.execute_and_wait([&executed]() { executed = true; });
+  EXPECT_TRUE(executed);
+}
+
+#if defined(__linux__) && !defined(__ANDROID__)
+TEST(ThreadPool, BindingRespectsCallerAffinityMask) {
+  cpu_set_t caller_mask;
+  CPU_ZERO(&caller_mask);
+  ASSERT_EQ(0, pthread_getaffinity_np(pthread_self(), sizeof(caller_mask),
+                                      &caller_mask));
+  ASSERT_GT(CPU_COUNT(&caller_mask), 0);
+
+  ThreadPool pool(1, true);
+  cpu_set_t bound_mask;
+  CPU_ZERO(&bound_mask);
+  int get_affinity_error = -1;
+  pool.execute_and_wait([&]() {
+    get_affinity_error =
+        pthread_getaffinity_np(pthread_self(), sizeof(bound_mask), &bound_mask);
+  });
+
+  ASSERT_EQ(0, get_affinity_error);
+  ASSERT_EQ(1, CPU_COUNT(&bound_mask));
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (CPU_ISSET(cpu, &bound_mask)) {
+      EXPECT_TRUE(CPU_ISSET(cpu, &caller_mask));
+    }
+  }
+
+  pool.unbind();
+  cpu_set_t unbound_mask;
+  CPU_ZERO(&unbound_mask);
+  pool.execute_and_wait([&]() {
+    get_affinity_error = pthread_getaffinity_np(
+        pthread_self(), sizeof(unbound_mask), &unbound_mask);
+  });
+
+  ASSERT_EQ(0, get_affinity_error);
+  EXPECT_TRUE(CPU_EQUAL(&caller_mask, &unbound_mask));
+}
+#endif
+
+struct A {
+  A() : pool(std::make_shared<ThreadPool>()) {}
+
+  int thread_main(int32_t &thread_index, uint32_t &num) {
     std::stringstream buf;
     buf << num << " Task (" << thread_index << " : " << pool->indexof_this()
         << ") " << pool->active_count() << ' ' << pool->pending_count()
@@ -38,11 +122,13 @@ struct A {
 };
 
 struct B {
-  B(void) : pool(std::make_shared<ThreadPool>(true)) {}
+  B()
+      : pool(std::make_shared<ThreadPool>(
+            std::max(std::thread::hardware_concurrency(), 1u), true)) {}
 
-  std::string ThreadMain(uint32_t &num) {
+  std::string thread_main(uint32_t &num) {
     aaa.pool->enqueue(
-        Closure::New(&aaa, &A::ThreadMain, pool->indexof_this(), num));
+        Closure::New(&aaa, &A::thread_main, pool->indexof_this(), num));
     aaa.pool->wake_any();
     // std::this_thread::sleep_for(
     //    std::chrono::microseconds(std::rand() % 1000 + 1));
@@ -60,7 +146,7 @@ TEST(ThreadPool, General) {
 
   B bbb;
   for (uint32_t i = 0; i < 10000u; ++i) {
-    bbb.pool->execute(&bbb, &B::ThreadMain, i);
+    bbb.pool->execute(&bbb, &B::thread_main, i);
   }
   bbb.pool->wait_finish();
   bbb.aaa.pool->wait_finish();

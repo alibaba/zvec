@@ -18,7 +18,16 @@ jobs:
       matrix:
         include:
           - platform: windows-2022
+            msvc_arch: x64
+            python_version: '3.10'
           - platform: windows-2025
+            msvc_arch: x64
+            python_version: '3.10'
+          # Windows ARM64: Python 3.10 has no official ARM64 installer;
+          # 3.11 is the first CPython release with a Windows-on-ARM build.
+          - platform: windows-11-arm
+            msvc_arch: arm64
+            python_version: '3.11'
 
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -42,19 +51,23 @@ jobs:
         shell: powershell
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          # The explicit statistics steps below are best-effort. Do not let
+          # the action's post-run statistics fail an otherwise successful job.
+          disable_annotations: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python_version }}
           cache: 'pip'
           cache-dependency-path: 'pyproject.toml'
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: x64
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Set up environment variables
         run: |
@@ -90,6 +103,7 @@ jobs:
 
       - name: Show sccache statistics after pip install
         if: always()
+        continue-on-error: true
         run: sccache --show-stats
         shell: powershell
 
@@ -101,6 +115,7 @@ jobs:
 
       - name: Show sccache statistics after tests
         if: always()
+        continue-on-error: true
         run: sccache --show-stats
         shell: powershell
 
@@ -115,22 +130,14 @@ jobs:
           cd "$env:GITHUB_WORKSPACE\examples\c++"
           mkdir build
           cd build
+          # These small examples do not need a remote compiler cache. Clear
+          # both launchers so a cache outage cannot block their smoke tests.
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          $oldErrorActionPreference = $ErrorActionPreference
-          $ErrorActionPreference = "Continue"
+            -DCMAKE_C_COMPILER_LAUNCHER= `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build . --config Release --parallel $env:NPROC
-          $buildExitCode = $LASTEXITCODE
-          $ErrorActionPreference = $oldErrorActionPreference
-          if ($buildExitCode -ne 0) {
-            Write-Host "C++ example link response files:"
-            Get-ChildItem -Path . -Filter "*.rsp" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "---- $($_.FullName) ----"
-              Get-Content $_.FullName
-            }
-            exit $buildExitCode
-          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Copy zvec DLLs next to the example executables so Windows can find them.
           # CMake places DLLs in bin/ (RUNTIME output) and import libs in lib/.
@@ -159,11 +166,15 @@ jobs:
           }
 
           .\db-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\core-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\ailego-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: powershell
 
       - name: Show sccache statistics
         if: always()
+        continue-on-error: true
         run: sccache --show-stats
         shell: powershell

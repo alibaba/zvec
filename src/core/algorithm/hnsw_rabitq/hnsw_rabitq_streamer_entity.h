@@ -93,7 +93,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   HnswRabitqStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  ~HnswRabitqStreamerEntity();
+  ~HnswRabitqStreamerEntity() override;
 
   //! Get vector feature data by key
   const void *get_vector_by_key(key_t key) const override {
@@ -347,7 +347,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     uint64_t chunk_offset = -1UL;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
     uint64_t chunk_index = upper_neighbor_chunks_.size() - 1UL;
-    if (chunk_index == -1UL ||
+    if (chunk_index == UINT64_MAX ||
         (upper_neighbor_chunks_[chunk_index]->padding_size() <
          neighbors_size)) {  // no space left and need to alloc
       chunk_index++;
@@ -488,7 +488,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   //! Init node chunk and neighbor chunks
   int init_chunks(const Chunk::Pointer &header_chunk);
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       // do not need to flush
       return 0;
@@ -509,13 +509,13 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     return 0;
   }
 
- private:
+ public:
   HnswRabitqStreamerEntity(const HnswRabitqStreamerEntity &) = delete;
   HnswRabitqStreamerEntity &operator=(const HnswRabitqStreamerEntity &) =
       delete;
-  static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  private:
+  static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
   IndexStreamer::Stats &stats_;
   HNSWHeader header_{};
   std::mutex mutex_{};

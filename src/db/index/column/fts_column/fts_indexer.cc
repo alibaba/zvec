@@ -104,6 +104,10 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
                                    ret.error().message());
     }
 
+    if (!term_freq_cf) {
+      // $TF is removed first when sealing; this field cannot accept writes.
+      indexer->reset_side_cfs();
+    }
     indexers_[name] = indexer;
   }
 
@@ -143,12 +147,14 @@ Status FtsIndexer::close() {
 }
 
 Status FtsIndexer::create_snapshot(const std::string &snapshot_path) {
-  auto s = flush();
-  if (!s.ok()) {
-    LOG_ERROR("FtsIndexer: flush failed during snapshot");
-    return s;
+  if (fts_ctx_ && !fts_ctx_->read_only()) {
+    auto s = flush();
+    if (!s.ok()) {
+      LOG_ERROR("FtsIndexer: flush failed during snapshot");
+      return s;
+    }
   }
-  s = fts_ctx_->create_checkpoint(snapshot_path);
+  auto s = fts_ctx_->create_checkpoint(snapshot_path);
   if (!s.ok()) {
     LOG_ERROR("FtsIndexer: create_checkpoint to [%s] failed: %s",
               snapshot_path.c_str(), s.message().c_str());
@@ -286,10 +292,13 @@ Status FtsIndexer::seal(const std::string &field_name) {
                                  field_name, " ", ret.error().message());
   }
 
+  // Drop $TF first: its absence identifies completed conversion on recovery.
   indexer->reset_side_cfs();
-  fts_ctx_->drop_cf(field_name + kFtsTfSuffix);
-  fts_ctx_->drop_cf(field_name + kFtsMaxTfSuffix);
-  fts_ctx_->drop_cf(field_name + kFtsDocLenSuffix);
+  for (const auto &suffix : {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+    if (auto status = fts_ctx_->drop_cf(field_name + suffix); !status.ok()) {
+      return status;
+    }
+  }
 
   return Status::OK();
 }
@@ -313,14 +322,18 @@ Status FtsIndexer::seal_all() {
     }
   }
 
-  // Reset side CFs and drop them.
+  // Reset side CFs and drop them. For each field, $TF must be dropped first
+  // and any failure must stop cleanup, preserving the recovery invariant.
   for (const auto &[name, indexer] : indexers_) {
     indexer->reset_side_cfs();
   }
   for (const auto &[name, _] : indexers_) {
-    fts_ctx_->drop_cf(name + kFtsTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsMaxTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
+    for (const auto &suffix :
+         {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+      if (auto status = fts_ctx_->drop_cf(name + suffix); !status.ok()) {
+        return status;
+      }
+    }
   }
 
   return Status::OK();

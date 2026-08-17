@@ -87,7 +87,7 @@ class SegmentTest : public testing::TestWithParam<bool> {
   }
 
  public:
-  std::string GetColPath() {
+  std::string get_col_path() {
     return col_path_;
   }
 

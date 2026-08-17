@@ -1,0 +1,268 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <zvec/ailego/container/params.h>
+#include <zvec/core/framework/index_holder.h>
+#include <zvec/core/framework/index_meta.h>
+#include <zvec/turbo/turbo.h>
+#include "distance.h"
+
+namespace zvec {
+namespace turbo {
+
+using namespace zvec::core;
+
+//! Optional physical storage precision, encoded as an integer
+//! IndexMeta::DataType. Round input values to this precision before metric
+//! preprocessing, and round reconstructed values back to it. This is
+//! independent of the input buffer type and the quantizer's output codes.
+//! DT_UNDEFINED keeps ordinary quantization.
+inline constexpr char QUANTIZER_STORAGE_DATA_TYPE[] =
+    "quantizer.storage_data_type";
+
+//! Read storage precision; an absent option preserves the original encoding.
+inline bool GetQuantizerStorageDataType(const ailego::Params &params,
+                                        IndexMeta::DataType *data_type) {
+  *data_type = IndexMeta::DT_UNDEFINED;
+  if (params.has(QUANTIZER_STORAGE_DATA_TYPE)) {
+    int64_t type = 0;
+    if (!params.get(QUANTIZER_STORAGE_DATA_TYPE, &type) ||
+        type < IndexMeta::DT_UNDEFINED || type > IndexMeta::DT_UINT8) {
+      return false;
+    }
+    *data_type = static_cast<IndexMeta::DataType>(type);
+  }
+  return true;
+}
+
+inline bool QuantizerStorageDataTypeMatches(const IndexMeta &lhs,
+                                            const IndexMeta &rhs) {
+  IndexMeta::DataType lhs_type, rhs_type;
+  return GetQuantizerStorageDataType(lhs.quantizer_params(), &lhs_type) &&
+         GetQuantizerStorageDataType(rhs.quantizer_params(), &rhs_type) &&
+         lhs_type == rhs_type;
+}
+
+//! Self-describing, fixed-size header that prefixes every serialized quantizer.
+//! The type-specific payload (scalar params, codebook, rotation matrix, ...)
+//! follows immediately after this header.
+struct QuantizerSerHeader {
+  uint32_t magic;         // kQuantizerMagic
+  uint16_t version;       // kQuantizerSerVersion
+  uint16_t quant_type;    // QuantizeType
+  uint32_t dim;           // original dim (sanity check)
+  uint32_t metric;        // MetricType  (sanity check)
+  uint32_t payload_size;  // bytes following the header
+  uint16_t data_type;     // DataType of the stored codes: distinguishes PQ
+                          // blobs sharing quant_type == kPQ.  0 means "unset"
+                          // (legacy blobs, parsed as int8); non-int8 layouts
+                          // must stamp a non-zero value (raw DataType::kInt4
+                          // equals 0 and therefore cannot be used here)
+  uint16_t reserved;      // 0, for future use / alignment
+};
+static_assert(sizeof(QuantizerSerHeader) == 24,
+              "QuantizerSerHeader must be 24 bytes");
+
+class Quantizer {
+ public:
+  typedef std::shared_ptr<Quantizer> Pointer;
+
+  virtual ~Quantizer() = default;
+
+  //! Initialize quantizer with index metadata and parameters
+  virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;
+
+  //! Get the output metadata after initialization
+  virtual const IndexMeta &meta() const = 0;
+
+  //! Input data type accepted by the quantizer
+  virtual DataType input_data_type() const = 0;
+
+  //! Data type
+  virtual QuantizeType type() const {
+    return type_;
+  }
+
+  //! Dimensionality of the input vectors
+  virtual int dim() const = 0;
+
+  //! Train the quantizer with a contiguous batch of data
+  virtual int train(const void * /*data*/, size_t /*num*/, size_t /*stride*/) {
+    return 0;
+  }
+
+  //! Whether the quantizer requires training before use
+  virtual bool require_train() const = 0;
+
+  //! Train the quantizer with data from an IndexHolder
+  virtual int train(IndexHolder::Pointer /*holder*/) {
+    return 0;
+  }
+
+  //! Train the quantizer with data from an IndexHolder, hinting the number
+  //! of worker threads. Default falls back to the sequential train.
+  virtual int train(IndexHolder::Pointer holder, int /*thread_count*/) {
+    return train(holder);
+  }
+
+  //! Byte length of a quantized datapoint vector
+  virtual size_t quantized_datapoint_vector_length() const = 0;
+
+  //! Byte length of a quantized query vector
+  virtual size_t quantized_query_vector_length() const = 0;
+
+  //! Quantize a datapoint vector
+  virtual void quantize_data(const void *input, void *output) const = 0;
+
+  //! Quantize a query vector
+  virtual void quantize_query(const void *input, void *output) const = 0;
+
+  //! Distance between a quantized datapoint and a quantized query
+  virtual float calc_distance_dp_query(const void *dp,
+                                       const void *query) const = 0;
+
+  //! Batched distance between quantized datapoints and a quantized query.
+  //! Gather-style contract: each datapoint is addressed by its own pointer,
+  //! so this works for any code layout (HNSW neighbors, IVF posting codes).
+  //! Packed-block scanners (FastScan) live in the PackedCodeQuantizer
+  //! capability instead.
+  virtual void calc_distance_dp_query_batch(const void *const *dp_list,
+                                            int dp_num, const void *query,
+                                            float *dist_list) const = 0;
+
+  //! Distance between a quantized datapoint and an unquantized query
+  virtual float calc_distance_dp_query_unquantized(const void *dp,
+                                                   const void *query) const = 0;
+
+  //! Batched distance between quantized datapoints and an unquantized query
+  virtual void calc_distance_dp_query_batch_unquantized(
+      const void *const *dp_list, int dp_num, const void *query,
+      float *dist_list) const = 0;
+
+  //! Distance between two quantized datapoints
+  virtual float calc_distance_dp_dp(const void *dp1, const void *dp2) const = 0;
+
+  //! Distance between an input datapoint and an already-quantized query.
+  //!
+  //! This is used by indexes whose vectors live outside the index in the
+  //! quantizer's input layout.  The default implementation quantizes the
+  //! datapoint before dispatching to the quantized distance kernel.
+  virtual float calc_distance_input_query(const void *dp,
+                                          const void *query) const;
+
+  //! Batched input-datapoint to quantized-query distance.
+  virtual void calc_distance_input_query_batch(const void *const *dp_list,
+                                               int dp_num, const void *query,
+                                               float *dist_list) const;
+
+  //! Distance between two vectors in the quantizer's input layout.
+  //!
+  //! The default implementation quantizes both sides, which keeps graph
+  //! construction in the quantizer pipeline even when an original-vector
+  //! provider supplies the build vectors.
+  virtual float calc_distance_input_input(const void *dp1,
+                                          const void *dp2) const;
+
+  //! Batched input-datapoint to input-query distance.
+  virtual void calc_distance_input_input_batch(const void *const *dp_list,
+                                               int dp_num, const void *query,
+                                               float *dist_list) const;
+
+  //! Quantize a query vector for search
+  virtual int quantize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
+                       std::string * /*out*/,
+                       IndexQueryMeta * /*ometa*/) const {
+    return 0;
+  }
+
+  //! Dequantize a result vector back to original format
+  virtual int dequantize(const void * /*in*/, const IndexQueryMeta & /*qmeta*/,
+                         std::string * /*out*/) const {
+    return 0;
+  }
+
+  virtual DistanceImpl distance(const void * /*query*/,
+                                const IndexQueryMeta & /*qmeta*/) const {
+    return DistanceImpl{};
+  }
+
+  //! Convert an internal distance into the caller-facing score in place
+  //! (e.g. the InnerProduct kernels rank by the negated dot product).
+  virtual void normalize_score(float * /*score*/) const {}
+
+  //! Convert a caller-facing score threshold into the internal distance space.
+  virtual void denormalize_score(float * /*score*/) const {}
+
+  //! Whether internal distances differ from caller-facing scores.
+  virtual bool support_score_normalization() const {
+    return false;
+  }
+
+  //! Serialize quantizer parameters
+  virtual int serialize(std::string * /*out*/) const {
+    return 0;
+  }
+
+  //! Deserialize quantizer parameters
+  virtual int deserialize(std::string & /*in*/) {
+    return 0;
+  }
+
+  //! Deserialize quantizer parameters from a raw, possibly mmap-backed buffer
+  //! (zero-copy entry point for large payloads such as codebooks/matrices).
+  virtual int deserialize(const void * /*data*/, size_t /*len*/) {
+    return 0;
+  }
+
+  //! Adopt a codebook built outside this quantizer, on an already initialized
+  //! instance: `data` holds raw centroids in the quantizer's own in-memory
+  //! layout, which the caller has to match.  Used for codebooks persisted in a
+  //! foreign layout, e.g. by an index older than this serialization format.
+  virtual int import_codebook(const void * /*data*/, size_t /*len*/) {
+    return kErrUnsupported;
+  }
+
+ protected:
+  //! Subclasses must declare which QuantizeType they implement.
+  explicit Quantizer(QuantizeType type) : type_(type) {}
+
+  //! Map a metric name (e.g. "SquaredEuclidean", "Cosine",
+  //! "InnerProduct", "MipsSquaredEuclidean") to its MetricType.
+  static MetricType metric_from_name(const std::string &name) {
+    if (name == "SquaredEuclidean") {
+      return MetricType::kSquaredEuclidean;
+    }
+    if (name == "Cosine") {
+      return MetricType::kCosine;
+    }
+    if (name == "InnerProduct") {
+      return MetricType::kInnerProduct;
+    }
+    if (name == "MipsSquaredEuclidean") {
+      return MetricType::kMipsSquaredEuclidean;
+    }
+    return MetricType::kUnknown;
+  }
+
+  QuantizeType type_;
+  uint32_t extra_meta_size_{0};
+};
+
+}  // namespace turbo
+}  // namespace zvec

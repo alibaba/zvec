@@ -13,7 +13,6 @@
 // limitations under the License.
 #pragma once
 
-#include <execinfo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -198,7 +197,7 @@ struct Neighbors {
     data = hd->neighbors;
   }
 
-  size_t size(void) const {
+  size_t size() const {
     return cnt;
   }
 
@@ -230,7 +229,7 @@ struct HnswNeighborMeta {
 class HnswRabitqEntity {
  public:
   //! Constructor
-  HnswRabitqEntity() {}
+  HnswRabitqEntity() = default;
 
   //! Constructor
   HnswRabitqEntity(const HNSWHeader &hd) {
@@ -238,7 +237,7 @@ class HnswRabitqEntity {
   }
 
   //! Destructor
-  virtual ~HnswRabitqEntity() {}
+  virtual ~HnswRabitqEntity() = default;
 
   //! HnswRabitqEntity Pointerd;
   typedef std::shared_ptr<HnswRabitqEntity> Pointer;
@@ -434,7 +433,7 @@ class HnswRabitqEntity {
 
  public:
   //! Cleanup the entity
-  virtual int cleanup(void) {
+  virtual int cleanup() {
     header_.clear();
     return 0;
   }

@@ -27,15 +27,15 @@
 
 using namespace zvec::ailego;
 
-inline const char *IntelIntrinsics(void) {
+inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
-inline void MatrixTranspose(float *dst, const float *src, size_t M, size_t N) {
-  for (size_t n = 0; n < N * M; n++) {
-    size_t i = n / N;
-    size_t j = n % N;
-    dst[n] = src[M * j + i];
+inline void MatrixTranspose(float *dst, const float *src, size_t m, size_t n) {
+  for (size_t idx = 0; idx < n * m; idx++) {
+    size_t i = idx / n;
+    size_t j = idx % n;
+    dst[idx] = src[m * j + i];
   }
 }
 
@@ -97,7 +97,7 @@ TEST(DistanceMatrix, Cosine_General) {
 
 #if 0
 template <size_t M, size_t N>
-void TestCosineMatrix(void) {
+void TestCosineMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -293,7 +293,7 @@ TEST(DistanceMatrix, Cosine_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void CosineBenchmark(void) {
+void CosineBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;

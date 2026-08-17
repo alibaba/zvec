@@ -20,6 +20,7 @@
 #include <string>
 #include <zvec/ailego/pattern/singleton.h>
 #include <zvec/db/status.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
@@ -31,7 +32,7 @@ const std::string FILE_LOG_TYPE_NAME = "AppendLogger";
 const std::string DEFAULT_LOG_DIR = "./logs";
 const std::string DEFAULT_LOG_BASENAME = "zvec.log";
 
-class GlobalConfig : public ailego::Singleton<GlobalConfig> {
+class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   friend class ailego::Singleton<GlobalConfig>;
 
  public:
@@ -48,14 +49,14 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     LogConfig(LogLevel level) : level(level) {}
     virtual ~LogConfig() = default;
-    virtual std::string GetLoggerType() const = 0;
+    virtual std::string get_logger_type() const = 0;
   };
 
   // Console log configuration
   struct ConsoleLogConfig : LogConfig {
     ConsoleLogConfig(LogLevel level = LogLevel::kWarn) : LogConfig{level} {}
 
-    std::string GetLoggerType() const override {
+    std::string get_logger_type() const override {
       return CONSOLE_LOG_TYPE_NAME;
     }
   };
@@ -78,7 +79,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
           file_size{file_size},
           overdue_days(overdue_days) {}
 
-    std::string GetLoggerType() const override {
+    std::string get_logger_type() const override {
       return FILE_LOG_TYPE_NAME;
     }
   };
@@ -92,6 +93,8 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     // query
     uint32_t query_thread_count;
+    // CPU binding is opt-in at the DB layer.
+    bool query_thread_binding;
     float invert_to_forward_scan_ratio;
     float brute_force_by_keys_ratio;
     // Independent from brute_force_by_keys_ratio: per-candidate FTS cost
@@ -100,6 +103,8 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     // optimize
     uint32_t optimize_thread_count;
+    // CPU binding is opt-in at the DB layer.
+    bool optimize_thread_binding;
 
     // FTS jieba tokenizer default dict dir (lowest-priority fallback;
     // per-field config > ZVEC_JIEBA_DICT_DIR > this). Empty by default.
@@ -108,14 +113,14 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     ConfigData();
   };
 
-  // Initialize the configuration (can only be called once)
-  Status Initialize(const ConfigData &config);
+  // initialize the configuration (can only be called once)
+  Status initialize(const ConfigData &config);
 
-  Status Validate(const ConfigData &config) const;
+  Status validate(const ConfigData &config) const;
 
   // Set the process-wide default jieba dict dir. Thread-safe and decoupled
-  // from Initialize() so language SDKs can call it on module load.
-  // Initialize() with a non-empty config.jieba_dict_dir overrides this.
+  // from initialize() so language SDKs can call it on module load.
+  // initialize() with a non-empty config.jieba_dict_dir overrides this.
   void set_default_jieba_dict_dir(const std::string &dir);
 
   // Read-only accessors
@@ -126,7 +131,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
   }
 
   std::string log_type() const noexcept {
-    return config_.log_config->GetLoggerType();
+    return config_.log_config->get_logger_type();
   }
 
   LogLevel log_level() const noexcept {
@@ -165,6 +170,11 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     return config_.query_thread_count;
   }
 
+  //! Query thread binding
+  bool query_thread_binding() const noexcept {
+    return config_.query_thread_binding;
+  }
+
   //! Invert to forward scan ratio
   float invert_to_forward_scan_ratio() const noexcept {
     return config_.invert_to_forward_scan_ratio;
@@ -186,6 +196,11 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     return config_.optimize_thread_count;
   }
 
+  //! Optimize thread binding
+  bool optimize_thread_binding() const noexcept {
+    return config_.optimize_thread_binding;
+  }
+
   //! Effective jieba dict dir. Thread-safe.
   std::string jieba_dict_dir() const;
 
@@ -196,7 +211,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
   // Atomic flag to ensure initialization happens only once
   std::atomic<bool> initialized_{false};
 
-  // Guards config_ fields that may be written outside Initialize().
+  // Guards config_ fields that may be written outside initialize().
   mutable std::mutex mutex_;
 };
 

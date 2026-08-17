@@ -29,7 +29,7 @@ static void DoErrLogging() {
   LOG_ERROR("DoErrLogging: %d", ++err_log_count);
 }
 
-TEST(IndexLogger, General) {
+TEST(Logger, General) {
   ASSERT_TRUE(ailego::Factory<Logger>::Has("ConsoleLogger"));
 
   for (int i = 0; i < 10; ++i) {

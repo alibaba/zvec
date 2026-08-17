@@ -17,11 +17,12 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/export.h>
 
 namespace zvec::core_interface {
 
 // 索引的工厂类
-class IndexFactory {
+class ZVEC_CORE_API IndexFactory {
  public:
   static Index::Pointer CreateAndInitIndex(const BaseIndexParam &param);
 

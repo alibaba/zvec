@@ -16,16 +16,17 @@
 
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Memory Mapping File
  */
-class MMapFile {
+class ZVEC_AILEGO_API MMapFile {
  public:
   //! Constructor
-  MMapFile(void)
+  MMapFile()
       : read_only_(false), region_(nullptr), region_size_(0), offset_(0) {}
 
   //! Constructor
@@ -41,7 +42,7 @@ class MMapFile {
   }
 
   //! Destructor
-  ~MMapFile(void) {
+  ~MMapFile() {
     this->close();
   }
 
@@ -59,12 +60,12 @@ class MMapFile {
   }
 
   //! Test if the file is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (region_ != nullptr);
   }
 
   //! Retrieve non-zero if memory region is read only
-  bool read_only(void) const {
+  bool read_only() const {
     return read_only_;
   }
 
@@ -127,35 +128,37 @@ class MMapFile {
   }
 
   //! Close the memory mapping file
-  void close(void) {
-    File::MemoryUnmap(region_, region_size_);
+  void close() {
+    if (region_) {
+      File::MemoryUnmap(region_, region_size_);
+    }
     region_ = nullptr;
     region_size_ = 0;
     offset_ = 0;
   }
 
   //! Synchronize memory with physical storage
-  bool flush(void) {
+  bool flush() {
     return File::MemoryFlush(region_, region_size_);
   }
 
   //! Lock the memory region into RAM
-  bool lock(void) {
+  bool lock() {
     return File::MemoryLock(region_, region_size_);
   }
 
   //! Unlock the memory region in RAM
-  bool unlock(void) {
+  bool unlock() {
     return File::MemoryUnlock(region_, region_size_);
   }
 
   //! Warm up the memory region
-  void warmup(void) {
+  void warmup() {
     File::MemoryWarmup(region_, region_size_);
   }
 
   //! Reset the file
-  void reset(void) {
+  void reset() {
     offset_ = 0;
   }
 
@@ -226,25 +229,25 @@ class MMapFile {
   }
 
   //! Retrieve memory region of file
-  void *region(void) const {
+  void *region() const {
     return region_;
   }
 
   //! Retrieve region size of file
-  size_t size(void) const {
+  size_t size() const {
     return region_size_;
   }
 
   //! Retrieve offset of file
-  size_t offset(void) const {
+  size_t offset() const {
     return offset_;
   }
 
- private:
   //! Disable them
   MMapFile(const MMapFile &) = delete;
   MMapFile &operator=(const MMapFile &) = delete;
 
+ private:
   //! Members
   bool read_only_;
   void *region_;

@@ -16,16 +16,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <roaring.hh>
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
-#endif
-#include <roaring.hh>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
@@ -140,9 +138,8 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
-  // Leave row_id_filter null when there are no deletes or
-  // create_compaction_task with rebuild=false, so downstream merge
-  // can take a faster per-doc path that skips the filter callback entirely.
+  // An empty bitmap means forward rows were retained. Leave the filter null
+  // so vector merging can skip delete checks and reuse compatible indexes.
   std::shared_ptr<RowIdFilter> row_id_filter;
   if (!delete_row_id_bitmap.isEmpty()) {
     row_id_filter = std::make_shared<RowIdFilter>(delete_row_id_bitmap);
@@ -688,21 +685,29 @@ Status SegmentHelper::ReduceVectorIndex(
           output_segment_path, field->name(), vector_block_id);
 
       auto field_without_quantize = std::make_shared<FieldSchema>(*field);
-      field_without_quantize->set_index_params(
-          MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
+      field_without_quantize->set_index_params(MakeDefaultVectorIndexParams(
+          vector_index_params->metric_type(),
+          vector_index_params->use_flat_contiguous_memory(),
+          segment_detail::FlatStorageDataTypeForField(
+              field->data_type(), vector_index_params->flat_data_type())));
 
       VectorColumnIndexer::Ptr vector_indexer;
       s = MergeWithOptionalReuse(
           vector_index_path, *field_without_quantize,
           collect_merge_indexers(&Segment::get_vector_indexer), filter,
-          concurrency, &vector_indexer);
+          concurrency,
+          vector_index_params->type() == IndexType::IVF ? nullptr
+                                                        : &vector_indexer);
       CHECK_RETURN_STATUS(s);
 
-      // The training step (for RABITQ) and the subsequent quantize merge both
-      // rely on the raw provider held by the flat indexer, so its Close() is
-      // deferred until after the quantize indexer is written.
+      // IVF trains from the input segments' quantized indexers, not this new
+      // raw Flat. Flush and close it inside MergeWithOptionalReuse so its
+      // storage does not overlap the IVF training and dump working sets.
+      // HNSW_RABITQ training relies on the raw provider held by the flat
+      // indexer, so its Close() is deferred until after the quantize indexer
+      // is written.
       core::IndexProvider::Pointer raw_vector_provider;
-      if (vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+      if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
         raw_vector_provider = vector_indexer->create_index_provider();
       }
 
@@ -726,21 +731,24 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      // RABITQ requires raw fp32 vectors as input, because re-encoding the
-      // already-encoded quant indexers would produce garbage data. Other
-      // types require the quantized vectors as input.
+      // Per-record quantizers can concatenate the payloads produced during
+      // insert. Quantizers requiring full-dataset training must consume the
+      // raw Flat sources and train again for the merged segment.
       auto quant_merge_sources =
-          (vector_index_params->quantize_type() == QuantizeType::RABITQ)
-              ? collect_merge_indexers(&Segment::get_vector_indexer)
-              : collect_merge_indexers(&Segment::get_quant_vector_indexer);
+          segment_detail::CanReuseInsertTimeQuantizedVectors(
+              vector_index_params->quantize_type())
+              ? collect_merge_indexers(&Segment::get_quant_vector_indexer)
+              : collect_merge_indexers(&Segment::get_vector_indexer);
 
       s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
                                  quant_merge_sources, filter, concurrency,
                                  nullptr);
       CHECK_RETURN_STATUS(s);
 
-      s = vector_indexer->Close();
-      CHECK_RETURN_STATUS(s);
+      if (vector_indexer != nullptr) {
+        s = vector_indexer->close();
+        CHECK_RETURN_STATUS(s);
+      }
 
       new_block_meta.set_id(vector_quan_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX_QUANTIZE);
@@ -759,8 +767,8 @@ namespace {
 
 // Only the first indexer's file is reused as the merge base; the remaining
 // indexers are merged in via Merge(). Reuse is restricted to streaming
-// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ
-// fall back to the full-rebuild merge.
+// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ,
+// IVF_RABITQ fall back to the full-rebuild merge.
 bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                           const FieldSchema &output_field,
                           const IndexFilter::Ptr &filter) {
@@ -797,7 +805,7 @@ Status SegmentHelper::MergeWithOptionalReuse(
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
     merge_options.write_concurrency =
-        GlobalConfig::Instance().optimize_thread_count();
+        static_cast<uint32_t>(merge_options.pool->count());
   } else {
     merge_options.write_concurrency = concurrency;
   }
@@ -816,11 +824,11 @@ Status SegmentHelper::MergeWithOptionalReuse(
     if (FileHelper::CopyFile(first_indexer->index_file_path(),
                              output_index_path)) {
       // Open the copied file in-place (create_new=false).
-      s = vector_indexer->Open(vector_column_params::ReadOptions{true, false});
+      s = vector_indexer->open(vector_column_params::ReadOptions{true, false});
       CHECK_RETURN_STATUS(s);
 
       source_indexers.erase(source_indexers.begin());
-      s = vector_indexer->Merge(source_indexers, filter, merge_options);
+      s = vector_indexer->merge(source_indexers, filter, merge_options);
       CHECK_RETURN_STATUS(s);
       reused_base_index = true;
     } else {
@@ -831,19 +839,19 @@ Status SegmentHelper::MergeWithOptionalReuse(
   }
 
   if (!reused_base_index) {
-    s = vector_indexer->Open(vector_column_params::ReadOptions{true, true});
+    s = vector_indexer->open(vector_column_params::ReadOptions{true, true});
     CHECK_RETURN_STATUS(s);
 
-    s = vector_indexer->Merge(source_indexers, filter, merge_options);
+    s = vector_indexer->merge(source_indexers, filter, merge_options);
     CHECK_RETURN_STATUS(s);
   }
 
-  s = vector_indexer->Flush();
+  s = vector_indexer->flush();
   CHECK_RETURN_STATUS(s);
   if (merged_indexer != nullptr) {
     *merged_indexer = vector_indexer;
   } else {
-    s = vector_indexer->Close();
+    s = vector_indexer->close();
     CHECK_RETURN_STATUS(s);
   }
   return Status::OK();
@@ -868,9 +876,13 @@ Status SegmentHelper::PrepareQuantizeField(
 
 #if !RABITQ_SUPPORTED
   (void)raw_vector_provider;
-  return Status::NotSupported(
-      "RabitQ is not supported on this platform (Linux x86_64 only)");
+  return Status::NotSupported(core::kRabitqUnsupportedPlatform);
 #else
+  if (vector_index_params->type() == IndexType::IVF_RABITQ) {
+    *out_field = field_clone;
+    return Status::OK();
+  }
+
   if (raw_vector_provider == nullptr) {
     return Status::InvalidArgument(
         "raw_vector_provider is required for RABITQ training");
@@ -1113,7 +1125,7 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 Status SegmentHelper::ExecuteCreateVectorIndexTask(
     CreateVectorIndexTask &task) {
   if (task.column_to_build_vector_index_ == "") {
-    return task.input_segment_->create_all_vector_index(
+    return task.input_segment_->create_all_vector_indexes(
         task.concurrency_, &task.output_segment_meta_,
         &task.output_vector_indexers_, &task.output_quant_vector_indexers_);
   } else {

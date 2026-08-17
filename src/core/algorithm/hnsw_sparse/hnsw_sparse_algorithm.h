@@ -105,7 +105,7 @@ class HnswSparseAlgorithm {
   //! expand neighbors until group nums are reached
   void expand_neighbors_by_group(TopkHeap &topk, HnswSparseContext *ctx) const;
 
- private:
+ public:
   HnswSparseAlgorithm(const HnswSparseAlgorithm &) = delete;
   HnswSparseAlgorithm &operator=(const HnswSparseAlgorithm &) = delete;
 

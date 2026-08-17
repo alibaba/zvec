@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <memory>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_provider.h>
@@ -20,6 +21,9 @@
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
 namespace core {
 
 /*! Index Streamer
@@ -30,11 +34,25 @@ class IndexStreamer : public IndexRunner {
   typedef std::shared_ptr<IndexStreamer> Pointer;
 
   //! Destructor
-  ~IndexStreamer(void) override = default;
+  ~IndexStreamer() override = default;
 
-  //! Initialize the builder
+  //! Initialize the streamer
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {
+    return IndexError_NotImplemented;
+  }
+
+  //! Initialize the streamer with a quantizer for distance computation
+  virtual int init(
+      const IndexMeta & /*meta*/, const ailego::Params & /*params*/,
+      const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
+    return IndexError_NotImplemented;
+  }
+
+  //! Bind a provider which supplies the original vectors to build the
+  //! index from. Default implementation reports not implemented.
+  virtual int set_provider(IndexProvider::Pointer /*provider*/,
+                           const IndexMeta & /*provider_meta*/) {
     return IndexError_NotImplemented;
   }
 
@@ -45,10 +63,13 @@ class IndexStreamer : public IndexRunner {
   virtual int flush(uint64_t check_point) = 0;
 
   //! Close index
-  virtual int close(void) = 0;
+  virtual int close() = 0;
+
+  //! Persist converter/reformer parameters learned after opening a target.
+  virtual void merge_trained_meta(const IndexMeta & /*meta*/) {}
 
   //! Retrieve meta of index
-  virtual const IndexMeta &meta(void) const = 0;
+  virtual const IndexMeta &meta() const = 0;
 };
 
 }  // namespace core

@@ -26,16 +26,16 @@
 
 using namespace zvec::ailego;
 
-static inline const char *IntelIntrinsics(void) {
+static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
-static inline void MatrixTranspose(float *dst, const float *src, size_t M,
-                                   size_t N) {
-  for (size_t n = 0; n < N * M; n++) {
-    size_t i = n / N;
-    size_t j = n % N;
-    dst[n] = src[M * j + i];
+static inline void MatrixTranspose(float *dst, const float *src, size_t m,
+                                   size_t n) {
+  for (size_t idx = 0; idx < n * m; idx++) {
+    size_t i = idx / n;
+    size_t j = idx % n;
+    dst[idx] = src[m * j + i];
   }
 }
 
@@ -126,7 +126,7 @@ TEST(DistanceMatrix, SquaredEuclidean_General) {
 }
 
 template <size_t M, size_t N>
-void TestEuclideanMatrix(void) {
+void TestEuclideanMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -170,7 +170,7 @@ void TestEuclideanMatrix(void) {
 }
 
 template <size_t M, size_t N>
-void TestSquaredEuclideanMatrix(void) {
+void TestSquaredEuclideanMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -510,7 +510,7 @@ TEST(DistanceMatrix, SquaredEuclidean_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void EuclideanBenchmark(void) {
+void EuclideanBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;
@@ -594,7 +594,7 @@ void EuclideanBenchmark(void) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void SquaredEuclideanBenchmark(void) {
+void SquaredEuclideanBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;

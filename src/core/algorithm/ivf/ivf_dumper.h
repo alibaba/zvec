@@ -65,54 +65,54 @@ class IVFDumper {
       keys_.emplace_back(key);
     }
 
-    bool full(void) const {
+    bool full() const {
       return count_ == max_vec_count_;
     }
 
-    const void *data(void) const {
+    const void *data() const {
       return data_.data();
     }
 
-    void clear(void) {
+    void clear() {
       count_ = 0u;
       keys_.clear();
     }
 
-    bool empty(void) const {
+    bool empty() const {
       return count_ == 0u;
     }
 
-    size_t size(void) const {
+    size_t size() const {
       return count_;
     }
 
-    size_t capacity(void) const {
+    size_t capacity() const {
       return max_vec_count_;
     }
 
-    size_t align_size(void) const {
+    size_t align_size() const {
       return align_size_;
     }
 
-    size_t element_size(void) const {
+    size_t element_size() const {
       return element_size_;
     }
 
     //! Retrieve block data size
-    size_t bytes(void) const {
+    size_t bytes() const {
       return element_size_ * count_;
     }
 
     //! Retrieve max block size in bytes
-    size_t block_size(void) const {
+    size_t block_size() const {
       return data_.size();
     }
 
-    IndexMeta::MajorOrder major_order(void) const {
+    IndexMeta::MajorOrder major_order() const {
       return major_order_;
     }
 
-    const std::vector<uint64_t> &keys(void) const {
+    const std::vector<uint64_t> &keys() const {
       return keys_;
     }
 
@@ -196,7 +196,7 @@ class IVFDumper {
                           bool column_major);
 
   //! Finish dump the inverted vectors
-  int dump_inverted_vector_finished(void);
+  int dump_inverted_vector_finished();
 
   //! Dump the centroids index
   int dump_centroid_index(const void *data, size_t size);
@@ -209,12 +209,12 @@ class IVFDumper {
   int dump_original_vector(const void *data, size_t size);
 
   //! Retrieve total dumped size
-  size_t dumped_size(void) const {
+  size_t dumped_size() const {
     return dumped_size_;
   }
 
   //! Retrieve total dumped vector count
-  size_t dumped_count(void) const {
+  size_t dumped_count() const {
     return header_.total_vector_count;
   }
 
@@ -226,7 +226,7 @@ class IVFDumper {
   int check_dump_inverted_list(uint32_t inverted_list_id);
 
   //! Dump offsets segment
-  int dump_offsets_segment(void) const;
+  int dump_offsets_segment() const;
 
   //! Dump a segment
   int dump_segment(const std::string &segment_id, const void *data,
@@ -236,7 +236,7 @@ class IVFDumper {
   int dump_padding(size_t data_size, size_t *padding_size) const;
 
   //! Dump a vector block
-  int dump_block(void);
+  int dump_block();
 
  private:
   //! Constants

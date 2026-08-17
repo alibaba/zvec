@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <zvec/ailego/encoding/json/mod_json_plus.h>
 #include "tokenizer.h"
 
 namespace zvec::fts {
@@ -28,6 +29,15 @@ namespace zvec::fts {
 class TokenFilter {
  public:
   virtual ~TokenFilter() = default;
+
+  /*! Initialise the filter from a JSON configuration object.
+   *  Must be called once before filter().
+   *  \param config  JSON object containing filter-specific parameters.
+   *  \return        true on success, false on failure.
+   */
+  virtual bool init(const ailego::JsonObject & /*config*/) {
+    return true;
+  }
 
   /*! Filter/transform a list of tokens.
    *  \param tokens  input token list (may be modified in place)

@@ -60,6 +60,11 @@ class InvertedColumnIndexer {
   virtual ~InvertedColumnIndexer();
 
 
+  InvertedColumnIndexer(const InvertedColumnIndexer &) = delete;
+  InvertedColumnIndexer(InvertedColumnIndexer &&) = delete;
+  InvertedColumnIndexer &operator=(const InvertedColumnIndexer &) = delete;
+  InvertedColumnIndexer &operator=(InvertedColumnIndexer &&) = delete;
+
  protected:
   explicit InvertedColumnIndexer(const std::string &collection_name,
                                  const FieldSchema &field,
@@ -68,13 +73,7 @@ class InvertedColumnIndexer {
         field_(field),
         path_(context.db_path_),
         ctx_(context),
-        read_only_(read_only) {};
-
-  InvertedColumnIndexer(const InvertedColumnIndexer &) = delete;
-  InvertedColumnIndexer(InvertedColumnIndexer &&) = delete;
-  InvertedColumnIndexer &operator=(const InvertedColumnIndexer &) = delete;
-  InvertedColumnIndexer &operator=(InvertedColumnIndexer &&) = delete;
-
+        read_only_(read_only) {}
 
   // TODO： for ut, remove this
   InvertedColumnIndexer(RocksdbContext &ctx) : ctx_(ctx) {}
@@ -225,7 +224,7 @@ class InvertedColumnIndexer {
   }
 
 
-  inline const std::string ID() const {
+  inline const std::string id() const {
     return "InvertedColumnIndexer[collection:" + collection_name_ +
            "|field:" + field_.name() + "|path:'" + path_ + "']";
   }
@@ -273,7 +272,7 @@ class InvertedColumnIndexer {
   }
 
   inline std::string encode_reversed(const std::string &term) const {
-    return InvertedIndexCodec::Encode_Reversed(term);
+    return InvertedIndexCodec::encode_reversed(term);
   }
 
   inline int cmp(const char *s1, size_t s1_len, const char *s2,
@@ -289,7 +288,7 @@ class InvertedColumnIndexer {
 
   inline bool has_prefix(const char *value, size_t value_len,
                          const char *prefix, size_t prefix_len) const {
-    return InvertedIndexCodec::Has_Prefix(value, value_len, prefix, prefix_len);
+    return InvertedIndexCodec::has_prefix(value, value_len, prefix, prefix_len);
   }
 
   inline void update_max_id(uint32_t id) {
@@ -337,7 +336,8 @@ class InvertedColumnIndexer {
 
   Result<roaring_bitmap_t *> get_bitmap_like(std::string term) const;
 
-  Result<roaring_bitmap_t *> get_bitmap_prefix(const std::string &term) const;
+  Result<roaring_bitmap_t *> get_bitmap_prefix(
+      const std::string &term, const std::string &suffix = "") const;
 
   Result<roaring_bitmap_t *> get_bitmap_suffix(const std::string &term) const;
 

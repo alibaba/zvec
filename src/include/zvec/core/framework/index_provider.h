@@ -29,7 +29,7 @@ struct IndexProvider : public IndexHolder {
   typedef std::shared_ptr<IndexProvider> Pointer;
 
   //! Destructor
-  ~IndexProvider(void) override {}
+  ~IndexProvider() override = default;
 
   bool multipass() const override {
     return true;
@@ -45,8 +45,22 @@ struct IndexProvider : public IndexHolder {
     return IndexError_NotImplemented;
   }
 
+  //! Retrieve vectors using primary keys.
+  virtual int get_vectors(
+      const uint64_t *keys, uint32_t count,
+      std::vector<IndexStorage::MemoryBlock> &blocks) const {
+    blocks.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      int ret = get_vector(keys[i], blocks[i]);
+      if (ret != 0) {
+        return ret;
+      }
+    }
+    return 0;
+  }
+
   //! Retrieve the owner class
-  virtual const std::string &owner_class(void) const = 0;
+  virtual const std::string &owner_class() const = 0;
 };
 
 /*! Index SparseProvider
@@ -56,7 +70,7 @@ struct IndexSparseProvider : IndexSparseHolder {
   typedef std::shared_ptr<IndexSparseProvider> Pointer;
 
   //! Destructor
-  ~IndexSparseProvider(void) override {}
+  ~IndexSparseProvider() override = default;
 
   bool multipass() const override {
     return true;
@@ -69,7 +83,7 @@ struct IndexSparseProvider : IndexSparseHolder {
                                 std::string *sparse_values_buffer) const = 0;
 
   //! Retrieve the owner class
-  virtual const std::string &owner_class(void) const = 0;
+  virtual const std::string &owner_class() const = 0;
 };
 
 /*! Multi-Pass Numerical Index Provider
@@ -82,25 +96,25 @@ class MultiPassNumericalIndexProvider : public IndexProvider {
       : holder_(dim), owner_class_("MultiPassNumericalIndexProvider") {}
 
   //! Destructor
-  ~MultiPassNumericalIndexProvider(void) override {}
+  ~MultiPassNumericalIndexProvider() override = default;
 
   //! Retrieve count of elements in holder
-  size_t count(void) const override {
+  size_t count() const override {
     return holder_.count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return holder_.dimension();
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return holder_.element_size();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return holder_.create_iterator();
   }
 
@@ -125,7 +139,7 @@ class MultiPassNumericalIndexProvider : public IndexProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_class_;
   }
 
@@ -164,25 +178,25 @@ class MultiPassBinaryIndexProvider : public IndexProvider {
       : holder_(dim), owner_class_("MultiPassBinaryIndexProvider") {}
 
   //! Destructor
-  ~MultiPassBinaryIndexProvider(void) override {}
+  ~MultiPassBinaryIndexProvider() override = default;
 
   //! Retrieve count of elements in holder
-  size_t count(void) const override {
+  size_t count() const override {
     return holder_.count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return holder_.dimension();
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return holder_.element_size();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return holder_.create_iterator();
   }
 
@@ -207,7 +221,7 @@ class MultiPassBinaryIndexProvider : public IndexProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_class_;
   }
 
@@ -250,7 +264,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_BINARY32>
   using MultiPassBinaryIndexProvider::MultiPassBinaryIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_BINARY32;
   }
 };
@@ -264,7 +278,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_BINARY64>
   using MultiPassBinaryIndexProvider::MultiPassBinaryIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_BINARY64;
   }
 };
@@ -278,7 +292,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_FP16>
   using MultiPassNumericalIndexProvider::MultiPassNumericalIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -292,7 +306,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>
   using MultiPassNumericalIndexProvider::MultiPassNumericalIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -306,7 +320,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_FP64>
   using MultiPassNumericalIndexProvider::MultiPassNumericalIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -320,7 +334,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_INT8>
   using MultiPassNumericalIndexProvider::MultiPassNumericalIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -334,7 +348,7 @@ struct MultiPassIndexProvider<IndexMeta::DataType::DT_INT16>
   using MultiPassNumericalIndexProvider::MultiPassNumericalIndexProvider;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -357,108 +371,171 @@ inline IndexProvider::Pointer convert_holder_to_provider(
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_FP16>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const ailego::Float16 *data =
             static_cast<const ailego::Float16 *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<ailego::Float16> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(ailego::Float16));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_FP32: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const float *data = static_cast<const float *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<float> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(float));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_FP64: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_FP64>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const double *data = static_cast<const double *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<double> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(double));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_INT8: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_INT8>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const int8_t *data = static_cast<const int8_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<int8_t> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(int8_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_INT16: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_INT16>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const int16_t *data = static_cast<const int16_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<int16_t> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(int16_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_BINARY32: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_BINARY32>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const uint32_t *data = static_cast<const uint32_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         size_t binary_size = (dimension + 31) / 32;
         ailego::BinaryVector<uint32_t> vec(dimension);
         std::memcpy(vec.data(), data, binary_size * sizeof(uint32_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_BINARY64: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_BINARY64>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const uint64_t *data = static_cast<const uint64_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         size_t binary_size = (dimension + 63) / 64;
         ailego::BinaryVector<uint64_t> vec(dimension);
         std::memcpy(vec.data(), data, binary_size * sizeof(uint64_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     default:

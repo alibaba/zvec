@@ -223,7 +223,29 @@ uint32_t DisjunctionIterator::advance(uint32_t target) {
       iter->advance(target);
     }
   }
-  return next_doc();
+
+  // Bypass the WAND loop — advance() is a seek operation that must not
+  // apply competitive-score pruning.  When this DisjunctionIterator serves
+  // as a should clause, the caller (ConjunctionIterator::score()) relies on
+  // advance() returning target if it exists; WAND block-max pruning would
+  // incorrectly skip target and silently lose the should score.
+  resort_postings();
+
+  if (postings_.empty() || postings_[0]->cached_doc_id_ == NO_MORE_DOCS) {
+    cached_doc_id_ = NO_MORE_DOCS;
+    return NO_MORE_DOCS;
+  }
+
+  uint32_t doc = postings_[0]->cached_doc_id_;
+  for (size_t i = 0; i < postings_.size(); ++i) {
+    if (postings_[i]->cached_doc_id_ == doc) {
+      matching_iterators_.push_back(postings_[i]);
+    } else {
+      break;
+    }
+  }
+  cached_doc_id_ = doc;
+  return doc;
 }
 
 bool DisjunctionIterator::matches() {

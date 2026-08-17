@@ -41,25 +41,25 @@ class MMapFileStorage : public IndexStorage {
                                         segment->meta()->padding_size)) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment() override = default;
 
     //! Retrieve size of data
-    size_t data_size(void) const override {
+    size_t data_size() const override {
       return static_cast<size_t>(segment_->meta()->data_size);
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return segment_->meta()->data_crc;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return static_cast<size_t>(segment_->meta()->padding_size);
     }
 
     //! Retrieve capacity of segment
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return capacity_;
     }
 
@@ -136,12 +136,12 @@ class MMapFileStorage : public IndexStorage {
     }
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return shared_from_this();
     }
 
     //! Stable base data pointer — valid for the lifetime of the mmap.
-    const uint8_t *base_data(void) const override {
+    const uint8_t *base_data() const override {
       return (const uint8_t *)segment_->data();
     }
 
@@ -152,7 +152,7 @@ class MMapFileStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~MMapFileStorage(void) override {
+  ~MMapFileStorage() override {
     this->cleanup();
   }
 
@@ -170,7 +170,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Cleanup storage
-  int cleanup(void) override {
+  int cleanup() override {
     this->close_index();
     return 0;
   }
@@ -193,12 +193,12 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Flush storage
-  int flush(void) override {
+  int flush() override {
     return this->flush_index();
   }
 
   //! Close storage
-  int close(void) override {
+  int close() override {
     this->close_index();
     return 0;
   }
@@ -214,7 +214,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Retrieve check point of storage
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return mapping_.footer().check_point;
   }
 
@@ -233,7 +233,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return mapping_.magic();
   }
 
@@ -244,7 +244,7 @@ class MMapFileStorage : public IndexStorage {
 
  protected:
   //! Initialize index version segment
-  int init_version_segment(void) {
+  int init_version_segment() {
     size_t data_size = std::strlen(IndexVersion::Details());
     int error_code =
         this->append_segment(INDEX_VERSION_SEGMENT_NAME, data_size);
@@ -288,16 +288,16 @@ class MMapFileStorage : public IndexStorage {
     return 0;
   }
 
-  bool isHugePage(void) const override {
+  bool is_huge_page() const override {
     return mapping_.huge_page();
   }
 
-  bool is_dirty(void) const override {
+  bool is_dirty() const override {
     return index_dirty_ || mapping_.is_header_dirty();
   }
 
   //! Set the index file as dirty
-  void set_as_dirty(void) {
+  void set_as_dirty() {
     index_dirty_ = true;
   }
 
@@ -308,7 +308,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Flush index storage
-  int flush_index(void) {
+  int flush_index() {
     if (index_dirty_) {
       this->refresh_index(0);
     }
@@ -317,7 +317,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Close index storage
-  void close_index(void) {
+  void close_index() {
     if (index_dirty_) {
       this->refresh_index(0);
     }

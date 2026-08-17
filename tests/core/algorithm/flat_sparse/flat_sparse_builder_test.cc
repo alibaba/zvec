@@ -30,8 +30,8 @@ using namespace std;
 
 class FlatSparseBuilderTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   static std::string _dir;
   static shared_ptr<IndexMeta> _index_meta_ptr;
@@ -40,13 +40,13 @@ class FlatSparseBuilderTest : public testing::Test {
 std::string FlatSparseBuilderTest::_dir("FlatSparseBuilderTest/");
 shared_ptr<IndexMeta> FlatSparseBuilderTest::_index_meta_ptr;
 
-void FlatSparseBuilderTest::SetUp(void) {
+void FlatSparseBuilderTest::SetUp() {
   _index_meta_ptr.reset(new (nothrow) IndexMeta(IndexMeta::MetaType::MT_SPARSE,
                                                 IndexMeta::DataType::DT_FP32));
   _index_meta_ptr->set_metric("InnerProductSparse", 0, Params());
 }
 
-void FlatSparseBuilderTest::TearDown(void) {
+void FlatSparseBuilderTest::TearDown() {
   zvec::test_util::RemoveTestPath(_dir);
 }
 

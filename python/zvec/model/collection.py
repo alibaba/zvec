@@ -13,16 +13,20 @@
 # limitations under the License.
 from __future__ import annotations
 
+import contextlib
 import warnings
+from collections.abc import Iterator
 from typing import Optional, Union, overload
 
 from zvec._zvec import _Collection
+from zvec._zvec.param import _GroupByVectorQuery
 
 from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
+from ._validation import explain_utf8_conversion_error
 from .convert import convert_to_cpp_doc, convert_to_py_doc
-from .doc import Doc, DocList
+from .doc import Doc, DocList, GroupResult
 from .param import (
     AddColumnOption,
     AlterColumnOption,
@@ -34,12 +38,74 @@ from .param import (
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
+    IvfRabitqIndexParam,
     OptimizeOption,
 )
 from .param.query import Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
+
+
+def _require_positive_integer(value, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+class DocIterator(Iterator[Doc], contextlib.AbstractContextManager["DocIterator"]):
+    """Iterator over all documents in a collection.
+
+    Returned by :meth:`Collection.iter_docs`. Supports the iterator protocol,
+    explicit :meth:`close`, and the context-manager protocol (preferred):
+
+        with collection.iter_docs() as docs:
+            for doc in docs:
+                ...
+
+    Closing the iterator releases the collection's active-iterator slot;
+    while any iterator is open, schema changes, destroy and close are
+    rejected and optimize fails at its start, so
+    deterministic closing matters.
+    """
+
+    def __init__(self, core_iterator, schema):
+        self._core_iterator = core_iterator
+        self._schema = schema
+        self._closed = False
+
+    def __next__(self) -> Doc:
+        if self._closed:
+            raise StopIteration
+
+        try:
+            while True:
+                core_doc = next(self._core_iterator)
+                py_doc = convert_to_py_doc(core_doc, self._schema)
+                if py_doc is not None:
+                    return py_doc
+        except BaseException:
+            # StopIteration is a BaseException subclass, so this also covers
+            # normal exhaustion; always release the slot before propagating.
+            self.close()
+            raise
+
+    def close(self):
+        """Release the underlying iterator (idempotent)."""
+        if not self._closed:
+            self._closed = True
+            self._core_iterator.close()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # AbstractContextManager's default __exit__ does not release
+        # resources, so it must be overridden here.
+        self.close()
+        return False
+
+    def __del__(self):
+        # Best-effort fallback only; never rely on this for deterministic
+        # resource release -- use close() or a with-statement.
+        with contextlib.suppress(Exception):
+            self.close()
 
 
 class Collection:
@@ -53,6 +119,20 @@ class Collection:
 
     def __init__(self, obj: _Collection):
         self._obj = obj
+        self._schema = None
+        self._querier = None
+
+    def close(self) -> None:
+        """Close the collection and release its native resources.
+
+        Flushes pending writes and releases the collection's file lock so the
+        path can be reopened or removed, even if other references to this
+        collection still exist. Closing an already-closed collection is a
+        no-op.
+        """
+        if self._obj is not None:
+            self._obj.Close()
+        self._obj = None
         self._schema = None
         self._querier = None
 
@@ -110,6 +190,7 @@ class Collection:
         index_param: Union[
             HnswIndexParam,
             HnswRabitqIndexParam,
+            IvfRabitqIndexParam,
             IVFIndexParam,
             FlatIndexParam,
             InvertIndexParam,
@@ -119,13 +200,13 @@ class Collection:
     ) -> None:
         """Create an index on a field.
 
-        Vector index types (HNSW, IVF, FLAT) can only be applied to vector fields.
+        Vector index types (HNSW, HNSW_RABITQ, IVF, IVF_RABITQ, FLAT) can only be applied to vector fields.
         Inverted index (`InvertIndexParam`) is for scalar fields.
         FTS index (`FtsIndexParam`) is for full-text search on STRING fields.
 
         Args:
             field_name (str): Name of the field to index.
-            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
+            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
                 Index configuration.
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.
@@ -224,12 +305,21 @@ class Collection:
             >>> new_schema = FieldSchema(name="doc_id", dtype=DataType.INT64)
             >>> collection.alter_column("id", field_schema=new_schema)
         """
-        self._obj.AlterColumn(
-            old_name,
-            new_name or "",
-            field_schema._get_object() if field_schema else None,
-            option,
-        )
+        if new_name is not None and not isinstance(new_name, str):
+            raise TypeError("Invalid schema: new column name must be str")
+        if field_schema is not None and not isinstance(field_schema, FieldSchema):
+            raise TypeError("Invalid schema: field_schema must be a FieldSchema")
+        try:
+            self._obj.AlterColumn(
+                old_name,
+                "" if new_name is None else new_name,
+                field_schema._get_object() if field_schema is not None else None,
+                option,
+            )
+        except TypeError:
+            explain_utf8_conversion_error(old_name, "Invalid schema: column name")
+            explain_utf8_conversion_error(new_name, "Invalid schema: field name")
+            raise
         self._schema = CollectionSchema._from_core(self._obj.Schema())
         self._querier._schema = self._schema
 
@@ -372,6 +462,51 @@ class Collection:
             if (py_doc := convert_to_py_doc(core_doc, self.schema)) is not None
         }
 
+    # ========== Collection DQL-Iterator Methods ==========
+    def iter_docs(
+        self,
+        *,
+        output_fields: Optional[list[str]] = None,
+        include_vector: bool = True,
+    ) -> DocIterator:
+        """Iterate over all documents in the collection.
+
+        Streams documents one by one using an isolated snapshot taken at call
+        time: memory usage stays constant regardless of collection size, and
+        data written after the iterator is created is not visible.
+
+        Note: on a writable collection the snapshot seals the current writing
+        segment (each call may produce a new small segment); read-only
+        collections are scanned without any write.
+
+        While any iterator is open, schema changes
+        (create_index/drop_index/add_column/alter_column/drop_column) and
+        destroy raise an error, optimize fails at its start, and close
+        raises an error too (only releasing the collection outright waits
+        for open iterators); conversely iter_docs raises an
+        error while a maintenance operation (optimize, schema DDL, close
+        or destroy) is running. Flush, writes and queries are not
+        affected.
+        The iterator is closed automatically when exhausted, so prefer
+        the with-statement when iteration may end early.
+
+        Args:
+            output_fields (Optional[list[str]], optional): Scalar fields to
+                include. If None, all fields are returned. Defaults to None.
+            include_vector (bool, optional): Whether to include vector data in
+                each document. Defaults to True.
+
+        Returns:
+            DocIterator: An iterator yielding each document in the collection.
+
+        Examples:
+            >>> with collection.iter_docs(include_vector=False) as docs:
+            ...     for doc in docs:
+            ...         print(doc.id, doc.field("title"))
+        """
+        iterator = self._obj.CreateIterator(output_fields, include_vector)
+        return DocIterator(iterator, self.schema)
+
     # ========== Collection DQL-Query Methods ==========
 
     def query(
@@ -417,6 +552,7 @@ class Collection:
             ...     output_fields=["title", "url"]
             ... )
         """
+        _require_positive_integer(topk, "topk")
         if vectors is not None:
             warnings.warn(
                 "The 'vectors' parameter is deprecated and will be removed in a future version. "
@@ -437,3 +573,80 @@ class Collection:
             reranker=reranker,
         )
         return self._querier.execute(ctx, self._obj)
+
+    def group_by_query(
+        self,
+        query: Query,
+        group_by_field_name: str,
+        group_count=2,
+        topk_per_group=3,
+        *,
+        filter: Optional[str] = None,
+        include_vector: bool = False,
+        output_fields: Optional[list[str]] = None,
+    ) -> list[GroupResult]:
+        """Perform group-by vector search.
+
+        Groups results by a scalar field value, returning the top-k documents
+        within each group, ordered by similarity score.
+
+        Accepts a single vector Query. Full-text search is not supported.
+
+        Args:
+            query (Query): Vector query.
+            group_by_field_name (str): Scalar field used to group results.
+            group_count (int): Maximum number of groups to return.
+            topk_per_group (int): Maximum number of documents in each group.
+            filter (Optional[str]): Boolean expression used to filter candidates.
+            include_vector (bool): Whether returned documents include vectors.
+            output_fields (Optional[list[str]]): Scalar fields to return.
+
+        Returns:
+            list[GroupResult]: Grouped documents sorted by score.
+
+        Examples:
+            >>> results = collection.group_by_query(
+            ...     zvec.Query(
+            ...         field_name="embedding",
+            ...         vector=[0.1, 0.2, 0.3],
+            ...         param=zvec.HnswQueryParam(ef=300),
+            ...     ),
+            ...     group_by_field_name="category",
+            ...     group_count=5,
+            ...     topk_per_group=3,
+            ... )
+            >>> for group in results:
+            ...     print(group.group_by_value, len(group.docs))
+        """
+        query._validate()
+        if query.has_fts():
+            raise ValueError("Group by query does not support FTS")
+        if not query.has_vector() and not query.has_id():
+            raise ValueError("Group by query requires a vector or document id")
+        if not group_by_field_name:
+            raise ValueError("group_by_field_name cannot be empty")
+        _require_positive_integer(group_count, "group_count")
+        _require_positive_integer(topk_per_group, "topk_per_group")
+        cpp_query = _GroupByVectorQuery()
+        cpp_query.field_name = query.field_name
+        cpp_query.group_by_field_name = group_by_field_name
+        cpp_query.group_count = group_count
+        cpp_query.topk_per_group = topk_per_group
+        cpp_query.include_vector = include_vector
+        if filter:
+            cpp_query.filter = filter
+        if output_fields is not None:
+            cpp_query.output_fields = output_fields
+        if query.param:
+            cpp_query.query_params = query.param
+        self._querier.set_query_vector(query, cpp_query, self._obj)
+
+        raw_results = self._obj.GroupByQuery(cpp_query)
+
+        return [
+            GroupResult(
+                group_by_value=group.group_by_value,
+                docs=[convert_to_py_doc(doc, self.schema) for doc in group.docs],
+            )
+            for group in raw_results
+        ]

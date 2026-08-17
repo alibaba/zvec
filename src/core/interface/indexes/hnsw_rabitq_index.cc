@@ -15,20 +15,20 @@
 #include <memory>
 #include <string>
 #include <zvec/core/interface/index.h>
+#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "zvec/core/framework/index_error.h"
 
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
-#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #endif
 
 namespace zvec::core_interface {
 
-int HNSWRabitqIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int HNSWRabitqIndex::create_and_init_streamer(const BaseIndexParam &param) {
 #if !RABITQ_SUPPORTED
   (void)param;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   param_ = dynamic_cast<const HNSWRabitqIndexParam &>(param);
@@ -90,7 +90,7 @@ int HNSWRabitqIndex::_prepare_for_search(
 #if !RABITQ_SUPPORTED
   (void)search_param;
   (void)context;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   const auto &hnsw_search_param =
@@ -108,10 +108,15 @@ int HNSWRabitqIndex::_prepare_for_search(
     return core::IndexError_Runtime;
   }
 
+  // Set group state first so set_topk() derives the effective candidate count.
+  _set_group_by_on_context(search_param, context);
+
   context->set_topk(hnsw_search_param->topk);
   context->set_fetch_vector(hnsw_search_param->fetch_vector);
-  if (hnsw_search_param->filter) {
+  if (hnsw_search_param->filter && hnsw_search_param->filter->is_valid()) {
     context->set_filter(std::move(*hnsw_search_param->filter));
+  } else {
+    context->reset_filter();
   }
   if (hnsw_search_param->radius > 0.0f) {
     context->set_threshold(hnsw_search_param->radius);
@@ -121,6 +126,7 @@ int HNSWRabitqIndex::_prepare_for_search(
       std::max(1u, std::min(2048u, hnsw_search_param->ef_search));
   params.set(core::PARAM_HNSW_RABITQ_STREAMER_EF, real_search_ef);
   context->update(params);
+
   return 0;
 #endif  // RABITQ_SUPPORTED
 }
@@ -129,9 +135,13 @@ int HNSWRabitqIndex::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
 #if !RABITQ_SUPPORTED
   (void)search_param;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return -1;
 #else
+  if (search_param->refiner_param->scale_factor_ != 0) {
+    return Index::_get_coarse_search_topk(search_param);
+  }
+
   const auto &hnsw_search_param =
       std::dynamic_pointer_cast<HNSWRabitqQueryParam>(search_param);
 

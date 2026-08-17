@@ -281,7 +281,7 @@ class InnerProductMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -300,7 +300,7 @@ class InnerProductMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixDistanceHandle>(
@@ -324,7 +324,7 @@ class InnerProductMetric : public IndexMetric {
   }
 
   //! Retrieve sparse distance function for query
-  MatrixSparseDistance sparse_distance(void) const override {
+  MatrixSparseDistance sparse_distance() const override {
     return reinterpret_cast<MatrixSparseDistanceHandle>(
         ailego::MinusInnerProductSparseMatrix<float>::Compute);
   }
@@ -350,7 +350,7 @@ class InnerProductMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP32:
         return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
@@ -384,17 +384,17 @@ class InnerProductMetric : public IndexMetric {
   }
 
   //! Retrieve if it supports normalization
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return true;
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Retrieve query measure object of this index measure
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 
@@ -456,7 +456,7 @@ class InnerProductSparseMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -476,12 +476,12 @@ class InnerProductSparseMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     return nullptr;
   }
 
   //! Retrieve sparse distance function for query
-  MatrixSparseDistance sparse_distance(void) const override {
+  MatrixSparseDistance sparse_distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixSparseDistanceHandle>(
@@ -505,17 +505,17 @@ class InnerProductSparseMetric : public IndexMetric {
   }
 
   //! Retrieve if it supports normalization
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return true;
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Retrieve query measure object of this index measure
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 

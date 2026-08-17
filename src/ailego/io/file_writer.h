@@ -26,13 +26,13 @@ namespace ailego {
 class FileWriter {
  public:
   //! Constructor
-  FileWriter(void) {}
+  FileWriter() {}
 
   //! Constructor
   FileWriter(FileWriter &&rhs) : file_(std::move(rhs.file_)) {}
 
   //! Destructor
-  ~FileWriter(void) {}
+  ~FileWriter() {}
 
   //! Assignment
   FileWriter &operator=(FileWriter &&rhs) {
@@ -66,7 +66,7 @@ class FileWriter {
   }
 
   //! Test if the file is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return file_.is_valid();
   }
 
@@ -81,7 +81,7 @@ class FileWriter {
   }
 
   //! Close the local file
-  void close(void) {
+  void close() {
     file_.close();
   }
 
@@ -91,7 +91,7 @@ class FileWriter {
   }
 
   //! Synchronize memory with physical storage
-  bool flush(void) {
+  bool flush() {
     return file_.flush();
   }
 

@@ -15,15 +15,19 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_filter.h>
-#include <zvec/core/framework/index_groupby.h>
+#include <zvec/core/framework/index_group_by.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}
 namespace core {
 
 /*! Profiler
@@ -77,22 +81,22 @@ class IndexContext {
     }
 
     //! Retrieve count of documents filtered
-    size_t filtered_count(void) const {
+    size_t filtered_count() const {
       return filtered_count_;
     }
 
     //! Retrieve count of documents dist-calced
-    size_t dist_calced_count(void) const {
+    size_t dist_calced_count() const {
       return dist_calced_count_;
     }
 
     //! Retrieve count of documents filtered (mutable)
-    size_t *mutable_filtered_count(void) {
+    size_t *mutable_filtered_count() {
       return &filtered_count_;
     }
 
     //! Retrieve count of documents dist-calced (mutable)
-    size_t *mutable_dist_calced_count(void) {
+    size_t *mutable_dist_calced_count() {
       return &dist_calced_count_;
     }
 
@@ -110,14 +114,14 @@ class IndexContext {
   };
 
   //! Constructor
-  IndexContext() {}
+  IndexContext() = default;
 
   //! Constructor
   IndexContext(IndexMetric::Pointer index_metric)
       : index_metric_(std::move(index_metric)) {}
 
   //! Destructor
-  virtual ~IndexContext(void) {}
+  virtual ~IndexContext() = default;
 
   //! Set topk of search result
   virtual void set_topk(uint32_t topk) = 0;
@@ -139,7 +143,7 @@ class IndexContext {
   virtual void set_fetch_vector(bool /*enable*/) {}
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const = 0;
+  virtual const IndexDocumentList &result() const = 0;
 
   //! Retrieve search result with index
   virtual const IndexDocumentList &result(size_t /*index*/) const {
@@ -150,7 +154,7 @@ class IndexContext {
   virtual IndexDocumentList *mutable_result(size_t idx) = 0;
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const {
+  virtual const IndexGroupDocumentList &group_result() const {
     // to make it compile
     static const IndexGroupDocumentList empty_list{};
     return empty_list;
@@ -161,38 +165,48 @@ class IndexContext {
     return this->group_result();
   }
 
+  //! Retrieve mutable search group result
+  virtual IndexGroupDocumentList *mutable_group_result() {
+    return nullptr;
+  }
+
+  //! Retrieve mutable search group result with index
+  virtual IndexGroupDocumentList *mutable_group_result(size_t /*idx*/) {
+    return this->mutable_group_result();
+  }
+
   //! Update the parameters of context
   virtual int update(const ailego::Params & /*params*/) {
     return IndexError_NotImplemented;
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const {
+  virtual bool debug_mode() const {
     return false;
   }
 
   //! Retrieve debug information
-  virtual std::string debug_string(void) const {
+  virtual std::string debug_string() const {
     return std::string();
   }
 
   //! Retrieve magic number
-  virtual uint32_t magic(void) const {
+  virtual uint32_t magic() const {
     return 0;
   }
 
   //! Retrieve search filter
-  const IndexFilter &filter(void) const {
+  const IndexFilter &filter() const {
     return filter_;
   }
 
   //! Retrieve fetch vector
-  virtual bool fetch_vector(void) const {
+  virtual bool fetch_vector() const {
     return false;
   }
 
   //! Reset context
-  virtual void reset(void) {}
+  virtual void reset() {}
 
   //! Set the filter of context
   template <typename T>
@@ -201,12 +215,12 @@ class IndexContext {
   }
 
   //! Reset the filter of context
-  void reset_filter(void) {
+  void reset_filter() {
     filter_.reset();
   }
 
   //! Retrieve search groupby
-  const IndexGroupBy &group_by(void) const {
+  const IndexGroupBy &group_by() const {
     return group_by_;
   }
 
@@ -217,31 +231,93 @@ class IndexContext {
   }
 
   //! Reset the groupby of context
-  void reset_group_by(void) {
+  void reset_group_by() {
     group_by_.reset();
   }
 
   //! Set threshold for RNN
   void set_threshold(float val) {
-    if (index_metric_ && index_metric_->support_normalize()) {
-      index_metric_->denormalize(&val);
-    }
-
-    threshold_ = val;
+    raw_threshold_ = val;
+    threshold_set_ = true;
+    apply_threshold();
   }
 
-  //! Retrieve value of threshold for RNN
-  float threshold(void) const {
+  //! Retrieve threshold in the caller-facing metric space.
+  float raw_threshold() const {
+    return raw_threshold_;
+  }
+
+  //! Retrieve whether an RNN threshold was explicitly configured.
+  bool threshold_set() const {
+    return threshold_set_;
+  }
+
+  //! An explicitly configured threshold needs a live score converter.
+  bool threshold_is_valid() const {
+    return !threshold_set_ || !threshold_uses_quantizer_ ||
+           !index_quantizer_.expired();
+  }
+
+  //! Retrieve the internal threshold used by the search implementation.
+  float threshold() const {
     return threshold_;
   }
 
   //! Reset value of threshold for RNN
-  void reset_threshold(void) {
+  void reset_threshold() {
+    raw_threshold_ = std::numeric_limits<float>::max();
     threshold_ = std::numeric_limits<float>::max();
+    threshold_set_ = false;
   }
 
+  //! Retrieve reusable storage for a transformed query.
+  std::string *mutable_features() {
+    return &features_;
+  }
+
+ protected:
+  //! Replace the metric associated with this context and recompute any
+  //! configured threshold in the new metric's internal distance space.
+  void update_index_metric(IndexMetric::Pointer index_metric) {
+    index_quantizer_.reset();
+    threshold_uses_quantizer_ = false;
+    index_metric_ = std::move(index_metric);
+    if (threshold_set_) {
+      apply_threshold();
+    }
+  }
+
+  //! Select turbo score conversion instead of the legacy metric. A context
+  //! must not extend the lifetime of its owner's quantizer just for radius.
+  void update_index_quantizer(
+      const std::shared_ptr<turbo::Quantizer> &quantizer) {
+    index_metric_.reset();
+    index_quantizer_ = quantizer;
+    threshold_uses_quantizer_ = true;
+    if (threshold_set_) {
+      apply_threshold();
+    }
+  }
+
+  //! Copy common per-query options. Thresholds are copied in caller-facing
+  //! metric space so a pooled context can safely move between indexes that use
+  //! different internal score normalization.
+  void copy_common_query_options_from(const IndexContext &rhs) {
+    filter_ = rhs.filter_;
+    group_by_ = rhs.group_by_;
+    if (rhs.threshold_set_) {
+      set_threshold(rhs.raw_threshold_);
+    } else {
+      reset_threshold();
+    }
+  }
+
+ private:
+  void apply_threshold();
+
+ public:
   //! Generate a global magic number
-  static uint32_t GenerateMagic(void);
+  static uint32_t GenerateMagic();
 
   //! Profiler
   Profiler &profiler() {
@@ -252,8 +328,12 @@ class IndexContext {
   //! Members
   IndexFilter filter_{};
   IndexGroupBy group_by_{};
+  float raw_threshold_{std::numeric_limits<float>::max()};
   float threshold_{std::numeric_limits<float>::max()};
-
+  bool threshold_set_{false};
+  bool threshold_uses_quantizer_{false};
+  std::weak_ptr<turbo::Quantizer> index_quantizer_{};
+  std::string features_{};
 
   Profiler profiler_{};
 

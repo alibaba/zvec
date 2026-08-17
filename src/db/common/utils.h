@@ -14,8 +14,14 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+
 
 namespace zvec {
+
 std::string indent(int level);
+
+// Format a name for clearer display.
+std::string format_name(std::string_view value);
 
 }  // namespace zvec

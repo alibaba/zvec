@@ -16,13 +16,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Float Helper
  */
-struct FloatHelper {
+struct ZVEC_AILEGO_API FloatHelper {
   //! Convert FP16 to FP32
   static float ToFP32(uint16_t val);
 
@@ -52,13 +54,16 @@ struct FloatHelper {
   }
 };
 
-#if !defined(__aarch64__)
+// The `#else` branch below stores `Float16::value_` as `__fp16`, a GCC/Clang
+// extension MSVC lacks even on ARM64. Keep the uint16_t storage path there so
+// the wrapper still compiles. Must match the guard in float_helper.cc.
+#if !defined(AILEGO_ARM64_GNU_LIKE)
 /*! Half-Precision Floating Point
  */
 class Float16 {
  public:
   //! Constructor
-  Float16(void) : value_(0) {}
+  Float16() : value_(0) {}
 
   //! Constructor
   Float16(float val) : value_(FloatHelper::ToFP16(val)) {}
@@ -147,7 +152,7 @@ class Float16 {
 class Float16 {
  public:
   //! Constructor
-  Float16(void) : value_(0) {}
+  Float16() : value_(0) {}
 
   //! Constructor
   Float16(__fp16 val) : value_(val) {}
@@ -228,7 +233,7 @@ class Float16 {
  private:
   __fp16 value_;
 };
-#endif
+#endif  // !AILEGO_ARM64_GNU_LIKE
 
 // Check size of Float16
 static_assert(sizeof(Float16) == 2, "Float16 must be aligned with 2 bytes");

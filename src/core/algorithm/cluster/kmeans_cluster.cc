@@ -29,7 +29,7 @@ namespace core {
 class KmeansCluster : public IndexCluster {
  public:
   //! Constructor
-  KmeansCluster(void) {}
+  KmeansCluster() = default;
 
   //! Constructor
   KmeansCluster(size_t iters, bool batch)
@@ -39,16 +39,16 @@ class KmeansCluster : public IndexCluster {
   KmeansCluster(bool batch) : batch_(batch) {}
 
   //! Destructor
-  ~KmeansCluster(void) override {}
+  ~KmeansCluster() override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Cluster
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reset Cluster
-  int reset(void) override;
+  int reset() override;
 
   //! Update Cluster
   int update(const ailego::Params &params) override;
@@ -74,7 +74,7 @@ class KmeansCluster : public IndexCluster {
 
  protected:
   //! Test if it is valid
-  bool is_valid(void) const;
+  bool is_valid() const;
 
   //! Cluster once
   int clustering(IndexThreads *threads, IndexCluster::CentroidList &cents,
@@ -84,7 +84,7 @@ class KmeansCluster : public IndexCluster {
   void update_params(const ailego::Params &params);
 
   //! Init seeker
-  int init_seeker(void);
+  int init_seeker();
 
   //! Build seeker
   int build_seeker(const IndexCluster::CentroidList &cents);
@@ -169,11 +169,11 @@ class KmeansCentroidFeatures : public IndexFeatures {
         feature_dimension_(meta.dimension()),
         data_type_(meta.data_type()) {}
 
-  size_t count(void) const override {
+  size_t count() const override {
     return centroids_.size();
   }
 
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return feature_dimension_;
   }
 
@@ -181,11 +181,11 @@ class KmeansCentroidFeatures : public IndexFeatures {
     return centroids_[i].feature();
   }
 
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return data_type_;
   }
 
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return feature_size_;
   }
 
@@ -389,7 +389,7 @@ int KmeansCluster::init(const IndexMeta &meta, const ailego::Params &params) {
   return this->init_seeker();
 }
 
-int KmeansCluster::cleanup(void) {
+int KmeansCluster::cleanup() {
   features_.reset();
   shard_cluster_scores_.clear();
   shard_cluster_features_.clear();
@@ -400,7 +400,7 @@ int KmeansCluster::cleanup(void) {
   return 0;
 }
 
-int KmeansCluster::reset(void) {
+int KmeansCluster::reset() {
   features_.reset();
   shard_cluster_scores_.clear();
   shard_cluster_features_.clear();
@@ -602,7 +602,7 @@ int KmeansCluster::label(IndexThreads::Pointer threads,
   return 0;
 }
 
-bool KmeansCluster::is_valid(void) const {
+bool KmeansCluster::is_valid() const {
   if (!seeker_ || !features_ || !features_->count()) {
     return false;
   }
@@ -634,7 +634,7 @@ void KmeansCluster::update_params(const ailego::Params &params) {
   params.get(KMEANS_CLUSTER_PURGE_EMPTY, &purge_empty_);
 }
 
-int KmeansCluster::init_seeker(void) {
+int KmeansCluster::init_seeker() {
   seeker_.reset(new (std::nothrow) LinearSeeker);
   if (!seeker_) {
     LOG_ERROR("Failed to create linear seeker.");

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// NOLINTBEGIN
+
 #include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3589,3 +3591,5 @@ mod_json_string_t *mod_json_dump(mod_json_value_t *val) {
   }
   return str;
 }
+
+// NOLINTEND

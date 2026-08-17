@@ -35,12 +35,13 @@ class Bench {
         retrieval_mode_{retrieval_mode},
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(false);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
       pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -49,10 +50,10 @@ class Bench {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -159,13 +160,13 @@ class Bench {
     bench_result_.mark_start();
     auto start_time = Monotime::MilliSeconds();
     for (size_t i = 0; i < threads_; ++i) {
-      pool_->execute(this, &Bench<T>::start_bench, index, max_iter, &STOP_NOW);
+      pool_->execute(this, &Bench<T>::start_bench, index, max_iter, &stop_now);
     }
 
     while (!pool_->is_finished()) {
       this_thread::sleep_for(chrono::milliseconds(1));
       if (Monotime::MilliSeconds() - start_time > bench_secs_ * 1000) {
-        STOP_NOW = true;
+        stop_now = true;
       }
     }
 
@@ -206,13 +207,13 @@ class Bench {
           return;
         }
 
-        auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+        auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
         filter_ptr = std::make_shared<IndexFilter>();
-        filter_ptr->set(filterFunc);
+        filter_ptr->set(filter_func);
       }
 
-      auto query_param = query_param_->Clone();
+      auto query_param = query_param_->clone();
       query_param->filter = filter_ptr;
 
 
@@ -256,7 +257,7 @@ class Bench {
     query_data.vector = dense_query;
 
     core_interface::SearchResult search_result;
-    int ret = index->Search(query_data, query_param, &search_result);
+    int ret = index->search(query_data, query_param, &search_result);
     if (ret < 0) {
       return ret;
     }
@@ -285,7 +286,7 @@ class Bench {
       query_data.vector = dense_query;
 
       core_interface::SearchResult search_result;
-      int ret = index->Search(query_data, query_param, &search_result);
+      int ret = index->search(query_data, query_param, &search_result);
       if (ret < 0) {
         return ret;
       }
@@ -320,11 +321,11 @@ class Bench {
   BenchResult bench_result_;
   RetrievalMode retrieval_mode_{RM_UNDEFINED};
   FilterMode filter_mode_{FM_NONE};
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 
 template <typename T>
-bool Bench<T>::STOP_NOW = false;
+bool Bench<T>::stop_now = false;
 
 //------------------------------------------------------------
 // Sparse Bench
@@ -339,12 +340,13 @@ class SparseBench {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(false);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
       pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -353,10 +355,10 @@ class SparseBench {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -457,13 +459,13 @@ class SparseBench {
     auto start_time = Monotime::MilliSeconds();
     for (size_t i = 0; i < threads_; ++i) {
       pool_->execute(this, &SparseBench<T>::start_bench, index, max_iter,
-                     &STOP_NOW);
+                     &stop_now);
     }
 
     while (!pool_->is_finished()) {
       this_thread::sleep_for(chrono::milliseconds(1));
       if (Monotime::MilliSeconds() - start_time > bench_secs_ * 1000) {
-        STOP_NOW = true;
+        stop_now = true;
       }
     }
 
@@ -505,13 +507,13 @@ class SparseBench {
           return;
         }
 
-        auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+        auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
         filter_ptr = std::make_shared<IndexFilter>();
-        filter_ptr->set(filterFunc);
+        filter_ptr->set(filter_func);
       }
 
-      auto query_param = query_param_->Clone();
+      auto query_param = query_param_->clone();
       query_param->filter = filter_ptr;
 
       // Do knn_search
@@ -560,7 +562,7 @@ class SparseBench {
     query_data.vector = sparse_query;
 
     core_interface::SearchResult search_result;
-    int ret = index->Search(query_data, query_param, &search_result);
+    int ret = index->search(query_data, query_param, &search_result);
     if (ret < 0) {
       return ret;
     }
@@ -610,7 +612,7 @@ class SparseBench {
       query_data.vector = sparse_query;
 
       core_interface::SearchResult search_result;
-      int ret = index->Search(query_data, query_param, &search_result);
+      int ret = index->search(query_data, query_param, &search_result);
       if (ret < 0) {
         return ret;
       }
@@ -657,10 +659,10 @@ class SparseBench {
 
   FilterMode filter_mode_{FM_NONE};
   BenchResult bench_result_;
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 template <typename T>
-bool SparseBench<T>::STOP_NOW = false;
+bool SparseBench<T>::stop_now = false;
 
 bool check_config(YAML::Node &config_node) {
   auto common = config_node["IndexCommon"];
@@ -699,7 +701,7 @@ bool check_config(YAML::Node &config_node) {
   return true;
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: bench CONFIG.yaml [plugin file path]" << endl;
 }
 
@@ -815,18 +817,18 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["IndexCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {
+      {"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+      {"info", zvec::ailego::Logger::LEVEL_INFO},
+      {"warn", zvec::ailego::Logger::LEVEL_WARN},
+      {"error", zvec::ailego::Logger::LEVEL_ERROR},
+      {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
-  if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
-    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
   }
 
   // Calculate Bench
@@ -905,7 +907,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  index->Close();
+  index->close();
 
   return 0;
 }

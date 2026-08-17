@@ -54,7 +54,7 @@ std::vector<std::vector<uint64_t>> ComputeGroundTruthFallbackBruteForce(
       if (held_out_mode && doc_id == query_doc_ids[q]) {
         continue;
       }
-      auto doc = segment->Fetch(doc_id);
+      auto doc = segment->fetch(doc_id);
       if (!doc) {
         continue;
       }
@@ -339,7 +339,7 @@ TrainingDataCollector::CollectTrainingDataFromQueriesImpl(
           training_sessions[0]->BeginQuery(static_cast<int>(query_idx));
         }
 
-        auto search_result = indexers[0]->Search(vector_data, query_params);
+        auto search_result = indexers[0]->search(vector_data, query_params);
         if (!search_result.has_value()) {
           LOG_WARN("Search failed for query %zu: %s", query_idx,
                    search_result.error().message().c_str());
@@ -538,7 +538,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
                 -1);  // Warmup, don't collect training data
             query_params.query_params = omega_params;
 
-            static_cast<void>(indexers[0]->Search(vector_data, query_params));
+            static_cast<void>(indexers[0]->search(vector_data, query_params));
           }
         };
 
@@ -601,7 +601,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
           query_params.query_params = omega_params;
 
           // Search on first indexer (same as training searches)
-          auto search_result = indexers[0]->Search(vector_data, query_params);
+          auto search_result = indexers[0]->search(vector_data, query_params);
           if (search_result.has_value()) {
             auto &results = search_result.value();
             std::vector<uint64_t> result_ids;
@@ -687,7 +687,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   auto load_worker = [&](size_t start_idx, size_t end_idx) {
     for (size_t doc_idx = start_idx; doc_idx < end_idx && !load_error;
          ++doc_idx) {
-      auto doc = segment->Fetch(doc_idx);
+      auto doc = segment->fetch(doc_idx);
       if (!doc) {
         LOG_WARN("Failed to fetch document at index %zu", doc_idx);
         load_error = true;

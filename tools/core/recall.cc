@@ -36,12 +36,13 @@ class Recall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
-      pool_ = make_shared<ThreadPool>(threads_, true);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -53,10 +54,10 @@ class Recall {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -89,7 +90,8 @@ class Recall {
 
     if (batch_queries_.size() < threads_) {
       threads_ = batch_queries_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -116,7 +118,7 @@ class Recall {
 
     signal(SIGINT, stop);
     size_t i = 0;
-    for (; !STOP_NOW && i < batch_queries_.size();) {
+    for (; !stop_now && i < batch_queries_.size();) {
       if (pool_->pending_count() >= pool_->count()) {
         this_thread::sleep_for(chrono::microseconds(1));
         continue;
@@ -339,12 +341,12 @@ class Recall {
             return;
           }
 
-          auto filterFunc = [&](uint64_t key) {
+          auto filter_func = [&](uint64_t key) {
             return filter_cache.find(key);
           };
 
           filter_ptr = std::make_shared<IndexFilter>();
-          filter_ptr->set(filterFunc);
+          filter_ptr->set(filter_func);
         }
 
         core_interface::DenseVector dense_query;
@@ -358,7 +360,7 @@ class Recall {
         query_param->filter = filter_ptr;
 
         core_interface::SearchResult search_result;
-        int ret = index->Search(query_data, query_param, &search_result);
+        int ret = index->search(query_data, query_param, &search_result);
         if (ret < 0) {
           LOG_ERROR("Failed to linear search, ret=%d %s", ret,
                     IndexError::What(ret));
@@ -617,10 +619,10 @@ class Recall {
         return;
       }
 
-      auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+      auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
       filter_ptr = std::make_shared<core::IndexFilter>();
-      filter_ptr->set(filterFunc);
+      filter_ptr->set(filter_func);
     }
 
     core_interface::DenseVector dense_query;
@@ -629,7 +631,7 @@ class Recall {
     query_data.vector = dense_query;
 
     // query_param is required in the config, so it should not be nullptr
-    auto query_param_clone = query_param->Clone();
+    auto query_param_clone = query_param->clone();
     query_param_clone->topk = topk;
     query_param_clone->filter = filter_ptr;
     query_param_clone->is_linear = false;
@@ -637,7 +639,7 @@ class Recall {
     if (call_batch_api_) {
       size_t qnum = query.size() / dim_;
       // For batch search, we need to search each query separately
-      // since Index::Search doesn't support batch natively in the same way
+      // since Index::search doesn't support batch natively in the same way
       for (size_t i = 0; i < qnum; ++i) {
         size_t query_idx = idx * batch_count_ + i;
         if (query_idx >= linear_queries_.size()) {
@@ -652,7 +654,7 @@ class Recall {
 
         core_interface::SearchResult search_result;
         int ret =
-            index->Search(single_query_data, query_param_clone, &search_result);
+            index->search(single_query_data, query_param_clone, &search_result);
         if (ret < 0) {
           LOG_ERROR("Failed to knn_search batch, ret=%d %s", ret,
                     IndexError::What(ret));
@@ -663,7 +665,7 @@ class Recall {
       }
     } else {
       core_interface::SearchResult search_result;
-      int ret = index->Search(query_data, query_param_clone, &search_result);
+      int ret = index->search(query_data, query_param_clone, &search_result);
       if (ret < 0) {
         LOG_ERROR("Failed to knn_search, ret=%d %s", ret,
                   IndexError::What(ret));
@@ -708,7 +710,7 @@ class Recall {
 
   FilterMode filter_mode_{FM_NONE};
 
-  static bool STOP_NOW;
+  static bool stop_now;
 
   // Tag lists for filtering
   std::vector<std::vector<uint64_t>> id_to_tags_list_;
@@ -723,7 +725,7 @@ class Recall {
 };
 
 template <typename T>
-bool Recall<T>::STOP_NOW = false;
+bool Recall<T>::stop_now = false;
 
 //--------------------------------------------------
 // Sparse Recall
@@ -738,12 +740,13 @@ class SparseRecall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
-      pool_ = make_shared<ThreadPool>(threads_, true);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -755,10 +758,10 @@ class SparseRecall {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -820,7 +823,8 @@ class SparseRecall {
 
     if (batch_sparse_counts_.size() < threads_) {
       threads_ = batch_sparse_counts_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -849,7 +853,7 @@ class SparseRecall {
 
     signal(SIGINT, stop);
     size_t i = 0;
-    for (; !STOP_NOW && i < batch_sparse_counts_.size();) {
+    for (; !stop_now && i < batch_sparse_counts_.size();) {
       if (pool_->pending_count() >= pool_->count()) {
         this_thread::sleep_for(chrono::microseconds(1));
         continue;
@@ -997,12 +1001,12 @@ class SparseRecall {
             return;
           }
 
-          auto filterFunc = [&](uint64_t key) {
+          auto filter_func = [&](uint64_t key) {
             return filter_cache.find(key);
           };
 
           filter_ptr = std::make_shared<IndexFilter>();
-          filter_ptr->set(filterFunc);
+          filter_ptr->set(filter_func);
         }
 
         core_interface::SparseVector sparse_query;
@@ -1018,7 +1022,7 @@ class SparseRecall {
         query_param->filter = filter_ptr;
 
         core_interface::SearchResult search_result;
-        int ret = index->Search(query_data, query_param, &search_result);
+        int ret = index->search(query_data, query_param, &search_result);
         if (ret < 0) {
           LOG_ERROR("Failed to sparse linear search, ret=%d", ret);
           error.exchange(true);
@@ -1323,10 +1327,10 @@ class SparseRecall {
         return;
       }
 
-      auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+      auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
       filter_ptr = std::make_shared<core::IndexFilter>();
-      filter_ptr->set(filterFunc);
+      filter_ptr->set(filter_func);
     }
 
     core_interface::SparseVector sparse_query;
@@ -1336,7 +1340,7 @@ class SparseRecall {
     core_interface::VectorData query_data;
     query_data.vector = sparse_query;
 
-    auto query_param_clone = query_param->Clone();
+    auto query_param_clone = query_param->clone();
     query_param_clone->topk = topk;
     query_param_clone->filter = filter_ptr;
     query_param_clone->is_linear = true;
@@ -1359,7 +1363,7 @@ class SparseRecall {
 
         core_interface::SearchResult search_result;
         int ret =
-            index->Search(single_query_data, query_param_clone, &search_result);
+            index->search(single_query_data, query_param_clone, &search_result);
         if (ret < 0) {
           LOG_ERROR("Failed to sparse_knn_search batch, ret=%d %s", ret,
                     IndexError::What(ret));
@@ -1370,7 +1374,7 @@ class SparseRecall {
       }
     } else {
       core_interface::SearchResult search_result;
-      int ret = index->Search(query_data, query_param_clone, &search_result);
+      int ret = index->search(query_data, query_param_clone, &search_result);
       if (ret < 0) {
         LOG_ERROR("Failed to sparse_knn_search, ret=%d %s", ret,
                   IndexError::What(ret));
@@ -1431,11 +1435,11 @@ class SparseRecall {
     tag_key_list_ = tag_key_list;
   }
 
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 
 template <typename T>
-bool SparseRecall<T>::STOP_NOW = false;
+bool SparseRecall<T>::stop_now = false;
 
 bool check_config(YAML::Node &config_node) {
   auto common = config_node["IndexCommon"];
@@ -1472,7 +1476,7 @@ bool check_config(YAML::Node &config_node) {
   return true;
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: recall CONFIG.yaml [plugin file path]" << endl;
 }
 
@@ -1656,18 +1660,18 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["IndexCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {
+      {"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+      {"info", zvec::ailego::Logger::LEVEL_INFO},
+      {"warn", zvec::ailego::Logger::LEVEL_WARN},
+      {"error", zvec::ailego::Logger::LEVEL_ERROR},
+      {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
-  if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
-    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
   }
 
   // Calculate Recall
@@ -1779,7 +1783,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  index->Close();
+  index->close();
 
   cout << "Recall done." << endl;
 

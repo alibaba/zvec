@@ -34,24 +34,8 @@ echo "  Architecture: $ARCH"
 echo "  Build Type: $BUILD_TYPE"
 echo "  iOS Deployment Target: $IOS_DEPLOYMENT_TARGET"
 
-# step1: use host env to compile protoc
-echo "step1: building protoc for host..."
-
-git submodule foreach --recursive 'git stash --include-untracked'
-
-HOST_BUILD_DIR="build_host"
-mkdir -p $HOST_BUILD_DIR
-cd $HOST_BUILD_DIR
-
-cmake -DCMAKE_BUILD_TYPE="$BUILD_TYPE" ..
-make -j protoc
-PROTOC_EXECUTABLE=$CURRENT_DIR/$HOST_BUILD_DIR/bin/protoc
-cd $CURRENT_DIR
-
-echo "step1: Done!!!"
-
-# step2: cross build zvec for iOS
-echo "step2: building zvec for iOS..."
+# step1: cross build zvec for iOS
+echo "step1: building zvec for iOS..."
 
 # reset thirdparty directory
 git submodule foreach --recursive 'git stash --include-untracked'
@@ -79,7 +63,6 @@ cmake \
     -DBUILD_PYTHON_BINDINGS=OFF \
     -DBUILD_TOOLS=OFF \
     -DCMAKE_INSTALL_PREFIX="./install" \
-    -DGLOBAL_CC_PROTOBUF_PROTOC=$PROTOC_EXECUTABLE \
     -DIOS=ON \
     ../
 
@@ -87,11 +70,11 @@ echo "building..."
 CORE_COUNT=$(sysctl -n hw.ncpu)
 make -j$CORE_COUNT
 
-echo "step2: Done!!!"
+echo "step1: Done!!!"
 
-# step3: build and run all unit tests on simulator
+# step2: build and run all unit tests on simulator
 if [ "$PLATFORM" != "OS" ]; then
-  echo "step3: building and running unit tests on simulator..."
+  echo "step2: building and running unit tests on simulator..."
 
   make -j$CORE_COUNT unittest
 
@@ -163,7 +146,7 @@ sys.exit(1)
     exit 1
   fi
 
-  echo "step3: Done!!!"
+  echo "step2: Done!!!"
 else
   echo "Skipping tests (device build cannot run on simulator)"
 fi

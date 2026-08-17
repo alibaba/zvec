@@ -29,14 +29,14 @@ class IVFSearcher : public IndexSearcher {
   int init(const ailego::Params &parameters) override;
 
   //! Cleanup Searcher
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Load index from container
   int load(IndexStorage::Pointer container,
            IndexMetric::Pointer metric) override;
 
   //! Unload index
-  int unload(void) override;
+  int unload() override;
 
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -55,21 +55,21 @@ class IVFSearcher : public IndexSearcher {
                   uint32_t count, Context::Pointer &context) const override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override;
+  const Stats &stats() const override;
 
   //! Create a searcher context
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
   //! Create a new iterator
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Retrieve params of index
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 

@@ -35,14 +35,17 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🚀  **v0.5.0（2026 年 6 月 12 日）**
+> 🚀  **v0.7.0（2026 年 8 月 24 日）**
 >
-> - **全文检索（FTS）**：原生全文检索能力——可为任意字符串字段挂载 FTS 索引，使用自然语言或结构化表达式检索，无需外接搜索引擎。
-> - **混合检索**：在单次 `MultiQuery` 中融合全文与向量检索，跨稠密向量、稀疏向量、标量过滤与文本。
-> - **DiskANN 索引**：全新磁盘索引，将索引主体存于磁盘，大幅降低大规模数据集的内存占用。
-> - **生态与平台**：全新官方 [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDK、可视化工具 [Zvec Studio](https://github.com/zvec-ai/zvec-studio)，以及 RISC-V 架构支持。
+> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep)（`zg`）**：本地优先的工作区搜索，一个 CLI 统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
+> - **[ReMe](https://github.com/agentscope-ai/ReMe) 集成**：zvec 成为 ReMe（Agent 记忆管理套件）的文件存储后端，提供进程内 HNSW 向量检索。
+> - **DiskANN 生产化**：新增 **Linux ARM64 / macOS ARM64** 支持与 **io_uring** 异步 I/O 后端，自动回退到最优 I/O 方案，用户无需任何配置。
+> - **索引优化**：新增 **IVF-RaBitQ** 索引、**PQ-INT8** 量化器；RaBitQ 支持运行时 **AVX2 / AVX512** 指令集动态分发，同一套二进制可在不同 CPU 上自动选择最优路径。
+> - **部署体验优化**：动态库大幅瘦身（macOS arm64 C API 库 37→22 MB，**-40%**）；新增 **musl libc / Alpine Linux** 支持；每次发布自动提供 Linux（glibc/musl）、macOS、Windows、Android、iOS 的预编译 SDK。
+> - **DocIterator**：新增全集合文档流式遍历迭代器，覆盖 C++、C、Python。
+> - **全文检索**：新增 **N-gram 分词器**，更适合短语、代码、短文本等检索场景。
 >
-> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
@@ -59,18 +62,20 @@
 
 Zvec 提供多语言官方 SDK：
 
-- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 Python 3.10–3.14）
+- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.10–3.14）
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
 - **[Go](https://github.com/zvec-ai/zvec-go)**：高性能的 Go 绑定。
-- **[Rust](https://github.com/zvec-ai/zvec-rust)**：高性能的 Rust 绑定。
+- **[Rust](https://crates.io/crates/zvec-rust)**：`cargo add zvec-rust`
 - **[Dart/Flutter](https://pub.dev/packages/zvec)**：`flutter pub add zvec`
+
+想搜索代码或文档？试试 **[zvec-grep](https://github.com/zvec-ai/zvec-grep)**（`zg`）— 本地优先的搜索 CLI，统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
 
 想要图形界面？试试 **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**，零代码浏览数据与调试查询。
 
 ### ✅ 支持的平台
 
-- Linux (x86_64, ARM64)
-- macOS (ARM64)
+- Linux (x86_64, ARM64; glibc & musl)
+- macOS (ARM64, x86_64)
 - Windows (x86_64)
 
 ### 🛠️ 源码构建
@@ -99,7 +104,7 @@ collection.insert([
 
 # 向量相似度检索
 results = collection.query(
-    zvec.VectorQuery("embedding", vector=[0.4, 0.3, 0.3, 0.1]),
+    zvec.Query(field_name="embedding", vector=[0.4, 0.3, 0.3, 0.1]),
     topk=10
 )
 
@@ -121,7 +126,7 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 
 | 💬 钉钉群 | 📱 微信群 | 🎮 Discord | X (Twitter) |
 | :---: | :---: | :---: | :---: |
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=6" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v3" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | 扫码加入 | 扫码加入 | 点击加入 | 点击关注 |
 
 </div>

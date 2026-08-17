@@ -13,7 +13,8 @@
 ##  1.3. Build a C/C++ static or shared library
 ##    cc_library(
 ##        NAME <name>
-##        [STATIC] [SHARED] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED] [SRCS_NO_GLOB]
+##        [STATIC] [SHARED] [OBJECTS] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED]
+##        [SRCS_NO_GLOB]
 ##        SRCS <file1> [file2 ...]
 ##        [INCS dir1 ...]
 ##        [PUBINCS public_dir1 ...]
@@ -25,7 +26,10 @@
 ##        [DEPS target1 ...]
 ##        [PACKED_EXCLUDES pattern1 ...]
 ##        [VERSION <version>]
+##        [EXPORT_DEF <definition>]
 ##      )
+##    OBJECTS creates <name>_objects for a static library. EXPORT_DEF also
+##    creates <name>_export_objects from the same sources and build settings.
 ##
 ##  1.4. Build a C/C++ executable program
 ##    cc_binary(
@@ -615,23 +619,51 @@ endfunction()
 ## Add both shared and static library
 macro(_add_library _NAME _OPTION)
   add_library(${_NAME}_objects OBJECT ${_OPTION} ${ARGN})
-  add_library(
-      ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
-    )
-  if(IOS)
-    # iOS: create the main target as static too (no shared libs on iOS)
+  if(IOS OR (ANDROID AND ANDROID_STL STREQUAL "c++_static"))
+    # Mobile c++_static builds expose one archive under both target names so
+    # the C++ runtime is linked into an executable exactly once.
+    # Building a second, identical archive under the ${_NAME}_static name is
+    # not just wasteful, it breaks the build: giving both the same OUTPUT_NAME
+    # makes Ninja fail ("multiple rules generate ..."), while distinct names
+    # make targets that link both variants fail with duplicate symbols.
+    # A single archive exposed under both names avoids both problems.
     add_library(
         ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
       )
+    add_library(${_NAME}_static ALIAS ${_NAME})
   else()
+    add_library(
+        ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
     add_library(
         ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
       )
+    add_dependencies(${_NAME} ${_NAME}_static)
+    if(NOT MSVC)
+      set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
+    endif()
   endif()
-  add_dependencies(${_NAME} ${_NAME}_static)
-  if(NOT MSVC)
-    set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
+endmacro()
+
+## Check whether <name>_static is a target of its own rather than an alias of
+## <name> (see _add_library: mobile c++_static builds share one archive).
+function(_has_own_static_variant _RESULT _NAME)
+  set(${_RESULT} FALSE PARENT_SCOPE)
+  if(NOT TARGET ${_NAME}_static)
+    return()
   endif()
+  get_target_property(_ALIASED ${_NAME}_static ALIASED_TARGET)
+  if(NOT _ALIASED)
+    set(${_RESULT} TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
+## Add a static library backed by an object library.
+macro(_add_static_library_with_objects _NAME _OPTION)
+  add_library(${_NAME}_objects OBJECT ${_OPTION} ${ARGN})
+  add_library(
+      ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+    )
 endmacro()
 
 ## Link dependencies
@@ -754,7 +786,16 @@ function(_target_link_libraries _NAME)
     endif()
 
     if(NOT MSVC)
-      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
+      if(ANDROID AND ANDROID_STL STREQUAL "c++_static")
+        # Keep the target in the normal link graph so CMake can resolve its
+        # transitive dependencies, but force-load the archive exactly once via
+        # a link option. Wrapping the target directly in --whole-archive here
+        # lets CMake emit another transitive occurrence later; lld then loads
+        # the same objects twice and reports duplicate symbols.
+        list(APPEND LINK_LIBS ${LIB})
+        list(APPEND ANDROID_WHOLEARCHIVE_OPTS
+             -Wl,--whole-archive,$<TARGET_FILE:${LIB}>,--no-whole-archive)
+      elseif(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
         list(APPEND LINK_LIBS -Wl,--whole-archive ${LIB} -Wl,--no-whole-archive)
       else()
         list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
@@ -780,6 +821,9 @@ function(_target_link_libraries _NAME)
   endforeach()
 
   target_link_libraries(${_NAME} ${LINK_LIBS})
+  if(ANDROID_WHOLEARCHIVE_OPTS)
+    target_link_options(${_NAME} PRIVATE ${ANDROID_WHOLEARCHIVE_OPTS})
+  endif()
   if(MSVC_WHOLEARCHIVE_OPTS)
     target_link_options(${_NAME} PRIVATE ${MSVC_WHOLEARCHIVE_OPTS})
   endif()
@@ -877,7 +921,9 @@ function(_cc_target_properties)
   endif()
 
   if(CC_ARGS_LIBS)
-    if(NOT TARGET_LINKABLE)
+    if("${TARGET_TYPE}" STREQUAL "OBJECT_LIBRARY")
+      target_link_libraries(${CC_ARGS_NAME} PRIVATE ${CC_ARGS_LIBS})
+    elseif(NOT TARGET_LINKABLE)
       _targets_link_dependencies(${CC_ARGS_NAME} ${CC_ARGS_LIBS})
     else()
       if ("${TARGET_TYPE}" STREQUAL "EXECUTABLE")
@@ -918,9 +964,9 @@ endfunction()
 ## Build a C/C++ static or shared library
 function(cc_library)
   cmake_parse_arguments(
-      CC_ARGS
-      "STATIC;SHARED;EXCLUDE;PACKED;SRCS_NO_GLOB"
-      "NAME;VERSION"
+    CC_ARGS
+      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB"
+      "NAME;VERSION;EXPORT_DEF"
       "SRCS;INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;PACKED_EXCLUDES"
       ${ARGN}
   )
@@ -958,8 +1004,16 @@ function(cc_library)
     set(EXCLUDE_OPTION EXCLUDE_FROM_ALL)
   endif()
 
+  if(CC_ARGS_OBJECTS AND (NOT CC_ARGS_STATIC OR CC_ARGS_SHARED))
+    message(FATAL_ERROR "OBJECTS requires a static-only cc_library target")
+  endif()
+
   if(CC_ARGS_SHARED AND CC_ARGS_STATIC)
     _add_library(${CC_ARGS_NAME} "${EXCLUDE_OPTION}" ${SOURCE_FILES})
+  elseif(CC_ARGS_OBJECTS)
+    _add_static_library_with_objects(
+      ${CC_ARGS_NAME} "${EXCLUDE_OPTION}" ${SOURCE_FILES}
+    )
   elseif(CC_ARGS_SHARED)
     add_library(${CC_ARGS_NAME} SHARED ${EXCLUDE_OPTION} ${SOURCE_FILES})
   elseif(CC_ARGS_STATIC)
@@ -982,7 +1036,28 @@ function(cc_library)
     )
   endif()
 
-  if(TARGET ${CC_ARGS_NAME}_static)
+  if(CC_ARGS_EXPORT_DEF)
+    if(NOT CC_ARGS_OBJECTS)
+      message(FATAL_ERROR "EXPORT_DEF requires OBJECTS for ${CC_ARGS_NAME}")
+    endif()
+    add_library(
+      ${CC_ARGS_NAME}_export_objects OBJECT ${EXCLUDE_OPTION} ${SOURCE_FILES}
+    )
+    _cc_target_properties(
+        NAME "${CC_ARGS_NAME}_export_objects"
+        INCS "${CC_ARGS_INCS};${CC_ARGS_PUBINCS}"
+        DEFS "${CC_ARGS_DEFS};${CC_ARGS_EXPORT_DEF}"
+        LIBS "${CC_ARGS_LIBS}"
+        CFLAGS "${CC_ARGS_CFLAGS}"
+        CXXFLAGS "${CC_ARGS_CXXFLAGS}"
+        LDFLAGS "${CC_ARGS_LDFLAGS}"
+        DEPS "${CC_ARGS_DEPS}"
+        "${CC_ARGS_UNPARSED_ARGUMENTS}"
+    )
+  endif()
+
+  _has_own_static_variant(_CC_HAS_STATIC ${CC_ARGS_NAME})
+  if(_CC_HAS_STATIC)
     _cc_target_properties(
         NAME "${CC_ARGS_NAME}_static"
         INCS "${CC_ARGS_INCS}"
@@ -1460,7 +1535,7 @@ function(_find_protobuf _VERSION)
       "${protoc_INCLUDE_DIR}" CACHE STRING "Protobuf includes"
     )
   set(
-      CC_PROTOBUF_LIBS_${_VERSION} libprotobuf CACHE STRING "Protobuf libraries"
+      CC_PROTOBUF_LIBS_${_VERSION} libprotobuf-lite CACHE STRING "Protobuf libraries"
     )
 endfunction()
 
@@ -1579,7 +1654,8 @@ function(cc_proto_library)
       )
   endif()
 
-  if(TARGET ${CC_ARGS_NAME}_static)
+  _has_own_static_variant(_CC_PROTO_HAS_STATIC ${CC_ARGS_NAME})
+  if(_CC_PROTO_HAS_STATIC)
     _cc_target_properties(
         NAME "${CC_ARGS_NAME}_static"
         PUBINCS "${CPP_OUTPATH};${CC_PROTOBUF_INCS}"
@@ -1818,7 +1894,8 @@ function(cuda_library)
       )
   endif()
 
-  if(TARGET ${CUDA_ARGS_NAME}_static)
+  _has_own_static_variant(_CUDA_HAS_STATIC ${CUDA_ARGS_NAME})
+  if(_CUDA_HAS_STATIC)
     _cuda_target_properties(
         NAME "${CUDA_ARGS_NAME}_static"
         INCS "${CUDA_ARGS_INCS}"
@@ -2388,7 +2465,14 @@ endfunction()
 
 ## Retrieve a version string from GIT
 function(git_version _RESULT _SOURCES_DIR)
-  find_package(Git REQUIRED)
+  # Git is optional: source tarballs/zips have no repository at all, and such
+  # builds must not fail just because the version cannot be determined.
+  find_package(Git QUIET)
+
+  if(NOT Git_FOUND)
+    set(${_RESULT} "" PARENT_SCOPE)
+    return()
+  endif()
 
   if(NOT IS_ABSOLUTE ${_SOURCES_DIR})
     get_filename_component(_SOURCES_DIR ${_SOURCES_DIR} ABSOLUTE)

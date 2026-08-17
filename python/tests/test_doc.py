@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import json
 import math
 import pytest
 
@@ -82,6 +83,14 @@ class TestPyDoc:
         assert doc.id == "1"
         assert doc.vector("image") == [1, 2, 3]
         assert doc.vector("keys") == {1: 1.0, 2: 2.0, 3: 3.0}
+
+    def test_init_normalizes_numpy_vectors(self):
+        import numpy as np
+
+        doc = Doc(id="1", vectors={"dense": np.array([1, 2, 3])})
+
+        assert doc.vector("dense") == [1, 2, 3]
+        assert json.loads(repr(doc))["vectors"]["dense"] == [1, 2, 3]
 
 
 # ----------------------------

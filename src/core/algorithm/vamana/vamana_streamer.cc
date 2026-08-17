@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "vamana_streamer.h"
 #include <iostream>
+#include <limits>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "vamana_algorithm.h"
@@ -55,6 +56,8 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_SATURATE_GRAPH, &saturate_graph_);
   params.get(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY,
              &use_contiguous_memory_);
+  params.get(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
+             &two_pass_build_enabled_);
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -101,17 +104,25 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "docsSoftLimit=%zu maxDegree=%u searchListSize=%u alpha=%.2f "
       "maxOcclusionSize=%u ef=%u maxScanRatio=%.3f minScanLimit=%zu "
       "maxScanLimit=%zu bruteForceThreshold=%zu chunkSize=%zu "
-      "getVectorEnabled=%u forcePadding=%u",
+      "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, max_degree_,
       search_list_size_, alpha_, max_occlusion_size_, ef_, max_scan_ratio_,
       min_scan_limit_, max_scan_limit_, bruteforce_threshold_, chunk_size_,
-      get_vector_enabled_, force_padding_topk_enabled_);
+      get_vector_enabled_, force_padding_topk_enabled_,
+      two_pass_build_enabled_);
+
+  const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
+  build_finalized_.store(false);
+  stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
+  stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{1});
+  stats_.mutable_attributes()->set("vamana_initial_build_alpha",
+                                   initial_build_alpha);
 
   state_ = STATE_INITED;
   return 0;
 }
 
-int VamanaStreamer::cleanup(void) {
+int VamanaStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -140,6 +151,8 @@ int VamanaStreamer::cleanup(void) {
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
+  two_pass_build_enabled_ = false;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -154,7 +167,9 @@ int VamanaStreamer::setup_entity() {
   entity_->set_max_degree(max_degree_);
   entity_->set_search_list_size(search_list_size_);
   entity_->set_max_occlusion_size(max_occlusion_size_);
-  entity_->set_alpha(alpha_);
+  // Standard two-pass Vamana construction builds the initial graph with
+  // alpha=1.0, then revisits every node once with the configured target alpha.
+  entity_->set_alpha(two_pass_build_enabled_ ? 1.0f : alpha_);
   entity_->set_saturate_graph(saturate_graph_);
 
   int ret = entity_->init(docs_hard_limit_);
@@ -235,8 +250,8 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     auto metric_params = index_meta.metric_params();
     metric_params.merge(meta_.metric_params());
     meta_.set_metric(index_meta.metric_name(), 0, metric_params);
-    // Propagate reformer info from stored meta (needed for quantizers
-    // whose reformer params are computed during training, e.g. UniformInt8)
+    // Propagate reformer info from stored meta when the reformer params are
+    // only available after converter training.
     if (!index_meta.reformer_name().empty()) {
       meta_.set_reformer(index_meta.reformer_name(), 0,
                          index_meta.reformer_params());
@@ -261,6 +276,36 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     cleanup_on_error();
     return IndexError_InvalidArgument;
   }
+
+  add_distance_ = metric_->distance();
+  add_batch_distance_ = metric_->batch_distance();
+  const size_t extra_values_size = metric_->extra_values_size_per_vector();
+  if (extra_values_size != 0 && extra_values_size >= entity_->vector_size()) {
+    LOG_ERROR("Invalid Vamana vector layout, vector_size=%zu extra_size=%zu",
+              entity_->vector_size(), extra_values_size);
+    cleanup_on_error();
+    return IndexError_InvalidArgument;
+  }
+  search_distance_ = add_distance_;
+  search_batch_distance_ = add_batch_distance_;
+
+  const auto query_metric = metric_->query_metric();
+  if (query_metric && query_metric->distance() &&
+      query_metric->batch_distance()) {
+    const size_t query_extra_values_size =
+        query_metric->extra_values_size_per_vector();
+    if (query_extra_values_size != extra_values_size) {
+      LOG_ERROR(
+          "Vamana query metric layout mismatch, stored_extra_size=%zu "
+          "query_extra_size=%zu",
+          extra_values_size, query_extra_values_size);
+      cleanup_on_error();
+      return IndexError_InvalidArgument;
+    }
+    search_distance_ = query_metric->distance();
+    search_batch_distance_ = query_metric->batch_distance();
+  }
+  entity_->set_extra_values_size(extra_values_size);
 
   // Create algorithm based on entity storage mode
   switch (entity_->storage_mode()) {
@@ -302,7 +347,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int VamanaStreamer::close(void) {
+int VamanaStreamer::close() {
   LOG_INFO("VamanaStreamer close");
 
   stats_.clear();
@@ -328,6 +373,8 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
 
+  update_entry_point_to_medoid();
+
   meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
                      ailego::Params());
 
@@ -337,22 +384,117 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
     return ret;
   }
 
+  return entity_->dump(dumper);
+}
+
+void VamanaStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
+  if (!trained_meta.reformer_name().empty()) {
+    meta_.set_reformer(trained_meta.reformer_name(),
+                       trained_meta.reformer_revision(),
+                       trained_meta.reformer_params());
+  }
+  if (!trained_meta.converter_name().empty()) {
+    meta_.set_converter(trained_meta.converter_name(),
+                        trained_meta.converter_revision(),
+                        trained_meta.converter_params());
+  }
+}
+
+void VamanaStreamer::update_entry_point_to_medoid() {
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
   if (entity_->doc_cnt() > 0) {
+    uint32_t medoid_dim = meta_.dimension();
+    const bool packed_uint4 = meta_.metric_name() == "UniformUint4";
+    // UniformUint8 appends a squared norm to the encoded coordinates. It is
+    // distance metadata, not another four dimensions of the centroid.
+    constexpr uint32_t kUniformUint8TailBytes = sizeof(uint32_t);
+    if (meta_.metric_name() == "UniformUint8" &&
+        medoid_dim > kUniformUint8TailBytes) {
+      medoid_dim -= kUniformUint8TailBytes;
+    }
+    if (packed_uint4) {
+      if (medoid_dim > (std::numeric_limits<uint32_t>::max)() / 2U) {
+        LOG_ERROR("UniformUint4 medoid dimension overflow: %u", medoid_dim);
+        return;
+      }
+      // Each stored byte holds two coordinates. Zero-padded coordinates
+      // contribute zero to both the centroid and its squared distances.
+      medoid_dim *= 2U;
+    }
     node_id_t medoid = entity_->calculate_medoid(
-        meta_.dimension(), static_cast<uint32_t>(meta_.data_type()));
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()), packed_uint4);
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
       entity_->update_entry_point(medoid);
     }
   }
-
-  return entity_->dump(dumper);
 }
 
-IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
+int VamanaStreamer::finalize_build() {
+  if (!two_pass_build_enabled_) {
+    return 0;
+  }
+
+  shared_mutex_.lock();
+  AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
+  return finalize_build_locked();
+}
+
+int VamanaStreamer::finalize_build_locked() {
+  if (!two_pass_build_enabled_ || build_finalized_.load()) {
+    return 0;
+  }
+
+  update_entry_point_to_medoid();
+
+  // Reverse-link pruning reads the entity alpha, so publish the target value
+  // before starting the second pass. Persist it even for a degenerate graph.
+  entity_->set_alpha(alpha_);
+
+  if (entity_->doc_cnt() <= 1) {
+    stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
+    build_finalized_.store(true);
+    magic_ = IndexContext::GenerateMagic();
+    return 0;
+  }
+
+  VamanaEntity::Pointer entity_ref(entity_.get(), [](VamanaEntity *) {});
+  auto ctx =
+      std::make_unique<VamanaContext>(meta_.dimension(), metric_, entity_ref);
+  ctx->set_ef(ef_);
+  ctx->set_max_scan_limit(max_scan_limit_);
+  ctx->set_min_scan_limit(min_scan_limit_);
+  ctx->set_max_scan_ratio(max_scan_ratio_);
+  ctx->set_magic(magic_);
+  ctx->set_force_padding_topk(force_padding_topk_enabled_);
+  ctx->set_bruteforce_threshold(bruteforce_threshold_);
+
+  int ret = ctx->init(VamanaContext::kStreamerContext);
+  if (ret != 0) {
+    LOG_ERROR("Init Vamana refine context failed");
+    return ret;
+  }
+
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->update_dist_calculator_distance(add_distance_, add_batch_distance_);
+
+  LOG_INFO("Vamana two-pass second graph pass: alpha=%.2f", alpha_);
+  ret = alg_->refine_graph(ctx.get(), alpha_);
+  if (ret != 0) return ret;
+  if (ctx->error()) {
+    return IndexError_Runtime;
+  }
+
+  stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{1});
+  stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{2});
+  build_finalized_.store(true);
+  magic_ = IndexContext::GenerateMagic();
+  return 0;
+}
+
+IndexStreamer::Context::Pointer VamanaStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -390,7 +532,7 @@ IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer VamanaStreamer::create_provider(void) const {
+IndexProvider::Pointer VamanaStreamer::create_provider() const {
   LOG_DEBUG("VamanaStreamer create provider");
 
   auto entity = entity_->clone();
@@ -451,6 +593,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(add_distance_, add_batch_distance_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -483,6 +626,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
     return IndexError_Runtime;
   }
   (*stats_.mutable_added_count())++;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -522,6 +666,7 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(add_distance_, add_batch_distance_);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -553,6 +698,7 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
     return IndexError_Runtime;
   }
   (*stats_.mutable_added_count())++;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -584,8 +730,11 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->prepare_query_prefetch();
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
@@ -599,6 +748,52 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
+  return 0;
+}
+
+int VamanaStreamer::search_candidates_impl(const void *query,
+                                           const IndexQueryMeta &qmeta,
+                                           std::vector<uint64_t> &keys,
+                                           Context::Pointer &context) const {
+  keys.clear();
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) return ret;
+
+  VamanaContext *ctx = dynamic_cast<VamanaContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to VamanaContext failed");
+    return IndexError_Cast;
+  }
+  if (ctx->group_by().is_valid()) {
+    return IndexError_InvalidArgument;
+  }
+
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+    return IndexRunner::search_candidates_impl(query, qmeta, keys, context);
+  }
+
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) return ret;
+  }
+
+  ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->prepare_query_prefetch();
+  ctx->reset_query(query);
+  ret = alg_->search(ctx);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("Vamana search failed");
+    return ret;
+  }
+  ctx->topk_to_keys(keys);
+
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
   return 0;
 }
 
@@ -645,10 +840,12 @@ int VamanaStreamer::search_bf_impl(const void *query,
   }
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
   ctx->resize_results(count);
 
   const auto &filter = static_cast<IndexContext *>(ctx)->filter();
-  auto &topk = ctx->topk_heap();
+  auto &topk = ctx->search_heap().select<TopkHeap>();
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
@@ -686,15 +883,19 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
   ctx->resize_results(count);
 
-  auto &topk = ctx->topk_heap();
+  const auto &filter = static_cast<IndexContext *>(ctx)->filter();
+  auto &topk = ctx->search_heap().select<TopkHeap>();
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
     topk.clear();
     for (const auto &keys : p_keys) {
       for (auto key : keys) {
+        if (filter.is_valid() && filter(key)) continue;
         node_id_t id = entity_->get_id(key);
         if (id == kInvalidNodeId) continue;
         dist_t dist = ctx->dist_calculator().batch_dist(id);

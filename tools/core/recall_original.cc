@@ -20,6 +20,7 @@
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -76,12 +77,13 @@ class Recall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
-      pool_ = make_shared<ThreadPool>(threads_, true);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -93,10 +95,10 @@ class Recall {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -127,7 +129,8 @@ class Recall {
 
     if (batch_queries_.size() < threads_) {
       threads_ = batch_queries_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -156,7 +159,7 @@ class Recall {
 
     signal(SIGINT, stop);
     size_t i = 0;
-    for (; !STOP_NOW && i < batch_queries_.size();) {
+    for (; !stop_now && i < batch_queries_.size();) {
       if (pool_->pending_count() >= pool_->count()) {
         this_thread::sleep_for(chrono::microseconds(1));
         continue;
@@ -384,11 +387,11 @@ class Recall {
             return;
           }
 
-          auto filterFunc = [&](uint64_t key) {
+          auto filter_func = [&](uint64_t key) {
             return filter_cache.find(key);
           };
 
-          context->set_filter(filterFunc);
+          context->set_filter(filter_func);
         }
 
         context->set_topk(gt_count);
@@ -816,9 +819,9 @@ class Recall {
         return;
       }
 
-      auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+      auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
-      knn_context->set_filter(filterFunc);
+      knn_context->set_filter(filter_func);
     }
 
     if (call_batch_api_) {
@@ -884,11 +887,11 @@ class Recall {
 
   FilterMode filter_mode_{FM_NONE};
 
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 
 template <typename T>
-bool Recall<T>::STOP_NOW = false;
+bool Recall<T>::stop_now = false;
 
 //--------------------------------------------------
 // Sparse Recall
@@ -903,12 +906,13 @@ class SparseRecall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
-      pool_ = make_shared<ThreadPool>(threads_, true);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -920,10 +924,10 @@ class SparseRecall {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -985,7 +989,8 @@ class SparseRecall {
 
     if (batch_sparse_counts_.size() < threads_) {
       threads_ = batch_sparse_counts_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -1014,7 +1019,7 @@ class SparseRecall {
 
     signal(SIGINT, stop);
     size_t i = 0;
-    for (; !STOP_NOW && i < batch_sparse_counts_.size();) {
+    for (; !stop_now && i < batch_sparse_counts_.size();) {
       if (pool_->pending_count() >= pool_->count()) {
         this_thread::sleep_for(chrono::microseconds(1));
         continue;
@@ -1169,11 +1174,11 @@ class SparseRecall {
             return;
           }
 
-          auto filterFunc = [&](uint64_t key) {
+          auto filter_func = [&](uint64_t key) {
             return filter_cache.find(key);
           };
 
-          context->set_filter(filterFunc);
+          context->set_filter(filter_func);
         }
 
         int ret =
@@ -1531,9 +1536,9 @@ class SparseRecall {
         return;
       }
 
-      auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+      auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
-      knn_context->set_filter(filterFunc);
+      knn_context->set_filter(filter_func);
     }
 
     if (call_batch_api_) {
@@ -1605,11 +1610,11 @@ class SparseRecall {
   bool external_gt_file_enabled_{false};
 
   FilterMode filter_mode_{FM_NONE};
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 
 template <typename T>
-bool SparseRecall<T>::STOP_NOW = false;
+bool SparseRecall<T>::stop_now = false;
 
 bool prepare_params(YAML::Node &&config_params, Params &params) {
   cout << "Parse params as blow:" << endl;
@@ -1673,7 +1678,7 @@ bool check_config(YAML::Node &config_node) {
   return true;
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: recall CONFIG.yaml [plugin file path]" << endl;
 }
 
@@ -1872,17 +1877,17 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["SearcherCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", IndexLogger::LEVEL_DEBUG},
-                                {"info", IndexLogger::LEVEL_INFO},
-                                {"warn", IndexLogger::LEVEL_WARN},
-                                {"error", IndexLogger::LEVEL_ERROR},
-                                {"fatal", IndexLogger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {{"debug", Logger::LEVEL_DEBUG},
+                                    {"info", Logger::LEVEL_INFO},
+                                    {"warn", Logger::LEVEL_WARN},
+                                    {"error", Logger::LEVEL_ERROR},
+                                    {"fatal", Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
-  if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
   }
 
   // Calculate Recall
