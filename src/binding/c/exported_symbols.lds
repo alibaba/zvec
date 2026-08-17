@@ -379,8 +379,7 @@
     zvec_vector_query_set_topk;
     zvec_vector_query_set_vamana_params;
     zvec_write_results_free;
-     zvec_index_params_set_omega_training_params;
-    zvec_omega_query_params_t;
+    zvec_index_params_set_omega_training_params;
     zvec_query_params_omega_create;
     zvec_query_params_omega_destroy;
     zvec_query_params_omega_get_ef;
