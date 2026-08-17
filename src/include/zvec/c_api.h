@@ -791,14 +791,14 @@ typedef uint32_t zvec_io_backend_type_t;
 #define ZVEC_IO_BACKEND_TYPE_IO_URING \
   2 /**< io_uring via raw Linux kernel syscalls (zero dependency) */
 #define ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED \
-  3 /**< Windows overlapped I/O with per-request events */
+  3 /**< Windows overlapped I/O using per-context IOCP */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn disk reads.
  *
  * Linux selects the first usable backend in this order: io_uring, libaio,
  * then synchronous pread. macOS ARM64 uses synchronous pread. Windows uses
- * overlapped I/O with per-request events.
+ * unbuffered overlapped I/O with a per-context completion port.
  *
  * @return zvec_io_backend_type_t The loaded backend type
  *         ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO,

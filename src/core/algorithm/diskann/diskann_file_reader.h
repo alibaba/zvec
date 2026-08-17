@@ -24,6 +24,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
 #include <Windows.h>
 #endif
 
@@ -32,6 +35,7 @@
 #endif
 #include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 #include <zvec/ailego/io/io_backend.h>
@@ -49,8 +53,9 @@ namespace core {
 //
 // macOS uses a real context with type kPread so that the active backend can be
 // inspected and reported consistently instead of using an opaque placeholder.
-// Windows stores per-thread OVERLAPPED requests and events in the same context
-// abstraction.
+// Windows stores a private file handle, completion port, and stable OVERLAPPED
+// request slots in each thread context. Keeping completion ports private
+// prevents one search thread from consuming another thread's completions.
 // IOContext is a pointer to IoBackend, which preserves the existing
 // sentinel conventions: nullptr means uninitialised and (IOContext)-1 is
 // the invalid-handle sentinel returned by get_ctx() for unregistered
@@ -63,7 +68,12 @@ struct IoBackend {
   io_context_t aio_ctx{nullptr};
 #elif defined(_WIN32) || defined(_WIN64)
   std::vector<OVERLAPPED> reqs;
-  std::vector<HANDLE> events;
+  HANDLE file_handle{INVALID_HANDLE_VALUE};
+  HANDLE completion_port{nullptr};
+  std::wstring file_path;
+  uint32_t submitted_count{0};
+  uint32_t outstanding_count{0};
+  uint64_t generation{0};
 #endif
 };
 
@@ -98,6 +108,10 @@ struct PendingBatch {
 #if (defined(__linux) || defined(__linux__))
   std::vector<struct iocb> cbs;
   std::vector<struct iocb *> cb_ptrs;
+#elif defined(_WIN32) || defined(_WIN64)
+  std::vector<uint64_t> expected_lengths;
+  std::vector<uint8_t> completed;
+  uint64_t generation{0};
 #endif
   uint32_t n_submitted{0};
   uint32_t n_reaped{0};
@@ -167,8 +181,11 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 #else
 class WindowsAlignedFileReader : public AlignedFileReader {
  private:
-  HANDLE file_handle_{INVALID_HANDLE_VALUE};
+  std::wstring file_path_;
   IOContext bad_ctx{reinterpret_cast<IOContext>(-1)};
+
+  int prepare_io_ctx(IOContext &ctx);
+  void reset_io_ctx(IOContext &ctx);
 
  public:
   WindowsAlignedFileReader();

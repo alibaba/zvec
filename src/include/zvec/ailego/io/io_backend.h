@@ -36,13 +36,13 @@ enum class IOBackendType {
   kPread = 0,              // Synchronous pread(); no async I/O
   kLibAio = 1,             // libaio loaded at runtime via dlopen()
   kIoUring = 2,            // io_uring via raw kernel syscalls
-  kWindowsOverlapped = 3,  // Windows overlapped I/O with per-request events
+  kWindowsOverlapped = 3,  // Windows overlapped I/O using per-context IOCP
 };
 
 // Returns the currently active I/O backend type.
 // Triggers backend selection on first call. Linux tries io_uring, then libaio,
 // and finally synchronous pread. macOS ARM64 uses synchronous pread. Windows
-// uses overlapped I/O with per-request events.
+// uses unbuffered overlapped I/O with a per-context completion port.
 IOBackendType current_io_backend_type();
 
 // Returns a human-readable description of the currently active I/O backend.
