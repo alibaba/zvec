@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "algorithm/flat/flat_utility.h"
@@ -809,6 +810,101 @@ IndexHolder::Pointer convert_holder(const std::string &name,
   return converter->result();
 }
 
+// Quantize every vector of the holder with a turbo quantizer.  The output
+// holder stores the quantized datapoints; index_meta is updated to the
+// quantized layout.  Symmetric to convert_holder for IndexConverter.
+template <IndexMeta::DataType DT, typename T>
+IndexHolder::Pointer fill_quantized_holder(
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer,
+    const IndexHolder::Pointer &in_holder, uint32_t out_dim) {
+  auto out_holder = std::make_shared<MultiPassIndexHolder<DT>>(out_dim);
+  auto iter = in_holder->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Failed to create iterator for quantize");
+    return IndexHolder::Pointer();
+  }
+  ailego::NumericalVector<T> vec(out_dim);
+  for (; iter->is_valid(); iter->next()) {
+    quantizer->quantize_data(iter->data(), &vec[0]);
+    out_holder->emplace(iter->key(), vec);
+  }
+  return out_holder;
+}
+
+IndexHolder::Pointer quantize_holder(const std::string &name,
+                                     const ailego::Params &params,
+                                     VecsIndexHolder::Pointer &in_holder,
+                                     IndexMeta &index_meta) {
+  IndexHolder::Pointer cast_holder =
+      std::dynamic_pointer_cast<IndexHolder>(in_holder);
+  if (name.empty()) {
+    return cast_holder;
+  }
+
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer =
+      IndexFactory::CreateQuantizer(name);
+  if (!quantizer) {
+    LOG_ERROR("Failed to create quantizer %s", name.c_str());
+    return IndexHolder::Pointer();
+  }
+
+  int ret = quantizer->init(in_holder->index_meta(), params);
+  if (ret != 0) {
+    LOG_ERROR("Failed to init quantizer %d", ret);
+    return IndexHolder::Pointer();
+  }
+
+  if (quantizer->require_train()) {
+    ret = quantizer->train(cast_holder);
+    if (ret != 0) {
+      LOG_ERROR("Failed to train quantizer %d", ret);
+      return IndexHolder::Pointer();
+    }
+  }
+
+  // Output meta follows the converter convention: extra meta bytes (e.g.
+  // the trailing Cosine norm) are folded into an inflated dimension so the
+  // result stays a plain typed holder.
+  IndexMeta out_meta = quantizer->meta();
+  size_t code_bytes = quantizer->quantized_datapoint_vector_length();
+  uint32_t unit = out_meta.unit_size();
+  if (unit == 0 || code_bytes % unit != 0) {
+    LOG_ERROR("Quantized length %zu not aligned to unit size %u", code_bytes,
+              unit);
+    return IndexHolder::Pointer();
+  }
+  uint32_t out_dim = static_cast<uint32_t>(code_bytes / unit);
+  out_meta.set_extra_meta_size(0);
+  out_meta.set_meta(out_meta.data_type(), out_dim);
+
+  IndexHolder::Pointer result;
+  switch (out_meta.data_type()) {
+    case IndexMeta::DataType::DT_FP32:
+      result = fill_quantized_holder<IndexMeta::DataType::DT_FP32, float>(
+          quantizer, cast_holder, out_dim);
+      break;
+    case IndexMeta::DataType::DT_FP16:
+      result =
+          fill_quantized_holder<IndexMeta::DataType::DT_FP16, ailego::Float16>(
+              quantizer, cast_holder, out_dim);
+      break;
+    case IndexMeta::DataType::DT_INT8:
+      result = fill_quantized_holder<IndexMeta::DataType::DT_INT8, int8_t>(
+          quantizer, cast_holder, out_dim);
+      break;
+    default:
+      LOG_ERROR("Unsupported quantized data type %d",
+                static_cast<int>(out_meta.data_type()));
+      return IndexHolder::Pointer();
+  }
+  if (!result) {
+    return IndexHolder::Pointer();
+  }
+
+  index_meta = out_meta;
+  return result;
+}
+
 int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
   string build_file = config_common["BuildFile"].as<string>();
   VecsIndexSparseHolder::Pointer build_holder(new VecsIndexSparseHolder);
@@ -1040,6 +1136,26 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       return -1;
     }
   }
+
+  // Quantizer input: a turbo quantizer used as data transform, symmetric to
+  // the converter path.  Mutually exclusive with ConverterName.
+  string quantizer_name;
+  ailego::Params quantizer_params;
+  if (config_common["QuantizerName"] &&
+      !config_common["QuantizerName"].as<string>().empty()) {
+    quantizer_name = config_common["QuantizerName"].as<string>();
+    if (config_root["QuantizerParams"] &&
+        !prepare_params(config_root["QuantizerParams"], quantizer_params)) {
+      LOG_ERROR("Failed to prepare quantizer params");
+      return -1;
+    }
+  }
+  if (!converter_name.empty() && !quantizer_name.empty()) {
+    LOG_ERROR(
+        "ConverterName and QuantizerName are mutually exclusive, "
+        "configure only one of them");
+    return -1;
+  }
   IndexMeta::MajorOrder order = IndexMeta::MO_UNDEFINED;
   if (config_common["MajorOrder"]) {
     std::string order_str = config_common["MajorOrder"].as<string>();
@@ -1077,11 +1193,29 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
 
   IndexConverter::Pointer build_converter;
-  IndexHolder::Pointer cv_build_holder = convert_holder(
-      converter_name, converter_params, build_holder, meta, &build_converter);
-  if (!cv_build_holder) {
-    LOG_ERROR("Convert holder failed.");
-    return -1;
+  IndexHolder::Pointer cv_build_holder;
+  if (!quantizer_name.empty()) {
+    // Quantizer path: only supported with IndexBuilder classes.  The
+    // streamer path feeds raw vectors from the global holder and relies on
+    // reformer info in the meta, which a quantizer does not provide.
+    if (!builder) {
+      LOG_ERROR("QuantizerName is not supported with streamer class %s",
+                builder_class.c_str());
+      return -1;
+    }
+    cv_build_holder =
+        quantize_holder(quantizer_name, quantizer_params, build_holder, meta);
+    if (!cv_build_holder) {
+      LOG_ERROR("Quantize holder failed.");
+      return -1;
+    }
+  } else {
+    cv_build_holder = convert_holder(converter_name, converter_params,
+                                     build_holder, meta, &build_converter);
+    if (!cv_build_holder) {
+      LOG_ERROR("Convert holder failed.");
+      return -1;
+    }
   }
   meta.set_major_order(order);
   cout << IndexMetaHelper::to_string(meta) << endl;
@@ -1171,8 +1305,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
       // support fp16 convert
 
-      IndexHolder::Pointer cv_train_holder = convert_holder(
-          converter_name, converter_params, train_holder, meta, nullptr);
+      IndexHolder::Pointer cv_train_holder;
+      if (!quantizer_name.empty()) {
+        cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                          train_holder, meta);
+      } else {
+        cv_train_holder = convert_holder(converter_name, converter_params,
+                                         train_holder, meta, nullptr);
+      }
       if (!cv_train_holder) {
         LOG_ERROR("Convert train holder failed.");
         return -1;
@@ -1228,8 +1368,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     if (!metric_name.empty()) {
       train_holder->set_metric(metric_name, metric_params);
     }
-    IndexHolder::Pointer cv_train_holder = convert_holder(
-        converter_name, converter_params, train_holder, meta, nullptr);
+    IndexHolder::Pointer cv_train_holder;
+    if (!quantizer_name.empty()) {
+      cv_train_holder =
+          quantize_holder(quantizer_name, quantizer_params, train_holder, meta);
+    } else {
+      cv_train_holder = convert_holder(converter_name, converter_params,
+                                       train_holder, meta, nullptr);
+    }
     if (!cv_train_holder) {
       LOG_ERROR("Convert train holder failed.");
       return -1;

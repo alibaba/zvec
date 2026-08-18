@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_flow.h>
@@ -155,22 +156,36 @@ int IndexFlow::load_internal() {
     metric_ = query_metric;
   }
 
-  // Prepare reformer
+  // Prepare reformer / query quantizer
   if (!user_reformer_) {
     const std::string &reformer_name = meta_.reformer_name();
     if (!reformer_name.empty()) {
-      reformer_ = IndexFactory::CreateReformer(reformer_name);
-      if (!reformer_) {
-        LOG_ERROR("Failed to create a index reformer with name: %s",
-                  reformer_name.c_str());
-        return IndexError_NoExist;
-      }
-      ret = reformer_->init(meta_.reformer_params());
-      if (ret < 0) {
-        LOG_ERROR("Failed to initialize index reformer %s",
-                  reformer_name.c_str());
-        reformer_ = nullptr;
-        return ret;
+      if (IndexFactory::HasQuantizer(reformer_name)) {
+        query_quantizer_ = IndexFactory::CreateQuantizer(reformer_name);
+        if (!query_quantizer_) {
+          LOG_ERROR("Failed to create quantizer %s", reformer_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = query_quantizer_->init(meta_, meta_.reformer_params());
+        if (ret != 0) {
+          LOG_ERROR("Failed to init quantizer %s", reformer_name.c_str());
+          query_quantizer_.reset();
+          return ret;
+        }
+      } else {
+        reformer_ = IndexFactory::CreateReformer(reformer_name);
+        if (!reformer_) {
+          LOG_ERROR("Failed to create a index reformer with name: %s",
+                    reformer_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = reformer_->init(meta_.reformer_params());
+        if (ret < 0) {
+          LOG_ERROR("Failed to initialize index reformer %s",
+                    reformer_name.c_str());
+          reformer_ = nullptr;
+          return ret;
+        }
       }
     }
   } else {
@@ -267,7 +282,19 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    error_code = query_quantizer_->quantize(
+        query, qmeta, context->mutable_features(), &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      error_code = searcher_->search_bf_impl(
+          reinterpret_cast<const void *>(context->features().data()), new_qmeta,
+          context->searcher_context());
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, context->mutable_features(),
                                       &new_qmeta);
@@ -311,7 +338,19 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    error_code = query_quantizer_->quantize(
+        query, qmeta, context->mutable_features(), &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      error_code = searcher_->search_impl(
+          reinterpret_cast<const void *>(context->features().data()), new_qmeta,
+          context->searcher_context());
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, context->mutable_features(),
                                       &new_qmeta);
@@ -355,7 +394,28 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    std::string tmp;
+    error_code = query_quantizer_->quantize(query, qmeta, &tmp, &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      std::string *features = context->mutable_features();
+      features->resize(tmp.size() * count);
+      memcpy(&(*features)[0], tmp.data(), tmp.size());
+      for (uint32_t i = 1; i < count; ++i) {
+        query_quantizer_->quantize(
+            static_cast<const char *>(query) + i * qmeta.element_size(), qmeta,
+            &tmp, &new_qmeta);
+        memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+      }
+      error_code = searcher_->search_bf_impl(
+          reinterpret_cast<const void *>(features->data()), new_qmeta, count,
+          context->searcher_context());
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, count,
                                       context->mutable_features(), &new_qmeta);
@@ -410,7 +470,28 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (reformer_) {
+  if (query_quantizer_) {
+    IndexQueryMeta new_qmeta;
+    std::string tmp;
+    error_code = query_quantizer_->quantize(query, qmeta, &tmp, &new_qmeta);
+    if (error_code == 0) {
+      if (ailego_unlikely(!metric_->is_matched(meta_, new_qmeta))) {
+        return IndexError_Mismatch;
+      }
+      std::string *features = context->mutable_features();
+      features->resize(tmp.size() * count);
+      memcpy(&(*features)[0], tmp.data(), tmp.size());
+      for (uint32_t i = 1; i < count; ++i) {
+        query_quantizer_->quantize(
+            static_cast<const char *>(query) + i * qmeta.element_size(), qmeta,
+            &tmp, &new_qmeta);
+        memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+      }
+      error_code = searcher_->search_impl(
+          reinterpret_cast<const void *>(features->data()), new_qmeta, count,
+          context->searcher_context());
+    }
+  } else if (reformer_) {
     IndexQueryMeta new_qmeta;
     error_code = reformer_->transform(query, qmeta, count,
                                       context->mutable_features(), &new_qmeta);
