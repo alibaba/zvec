@@ -2050,7 +2050,8 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
   while (!ec && it != end) {
     std::error_code entry_ec;
     if (it->is_directory(entry_ec) && !entry_ec) {
-      std::string name = it->path().filename().u8string();
+      const std::string name =
+          ailego::FileHelper::PathToUtf8(it->path().filename());
 
       std::string stem = name;
       bool is_tmp = false;
@@ -2075,11 +2076,17 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
 
   for (const auto &name : orphan_names) {
     auto orphan_path = ailego::FileHelper::PathJoin(path_, name);
-    LOG_WARN("Removing segment directory left by an uncommitted operation: %s",
-             orphan_path.c_str());
-    if (!FileHelper::RemoveDirectory(orphan_path)) {
-      LOG_WARN("Failed to remove orphaned segment directory: %s",
-               orphan_path.c_str());
+    if (FileHelper::RemoveDirectory(orphan_path)) {
+      LOG_WARN(
+          "Recovery removed orphan segment directory not referenced by "
+          "manifest: path=%s",
+          orphan_path.c_str());
+    } else {
+      const auto error = ailego::FileHelper::GetLastErrorString();
+      LOG_WARN(
+          "Recovery failed to remove orphan segment directory not referenced "
+          "by manifest: path=%s, error=%s",
+          orphan_path.c_str(), error.c_str());
     }
   }
 }
