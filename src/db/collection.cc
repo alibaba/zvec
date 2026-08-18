@@ -72,66 +72,66 @@ class CollectionImpl : public Collection {
   ~CollectionImpl() override;
 
  private:
-  Status Open(const CollectionOptions &options);
+  Status open(const CollectionOptions &options);
 
  public:
-  Status Close() override;
+  Status close() override;
 
-  Status Destroy() override;
+  Status destroy() override;
 
-  Status Flush() override;
+  Status flush() override;
 
-  Result<std::string> Path() const override;
+  Result<std::string> path() const override;
 
-  Result<CollectionStats> Stats() const override;
+  Result<CollectionStats> stats() const override;
 
-  Result<CollectionSchema> Schema() const override;
+  Result<CollectionSchema> schema() const override;
 
-  Result<CollectionOptions> Options() const override;
+  Result<CollectionOptions> options() const override;
 
  public:
-  Status CreateIndex(const std::string &column_name,
-                     const IndexParams::Ptr &index_params,
-                     const CreateIndexOptions &options) override;
+  Status create_index(const std::string &column_name,
+                      const IndexParams::Ptr &index_params,
+                      const CreateIndexOptions &options) override;
 
-  Status DropIndex(const std::string &column_name) override;
+  Status drop_index(const std::string &column_name) override;
 
-  Status Optimize(const OptimizeOptions &options) override;
+  Status optimize(const OptimizeOptions &options) override;
 
-  Status AddColumn(const FieldSchema::Ptr &column_schema,
-                   const std::string &expression,
-                   const AddColumnOptions &options) override;
+  Status add_column(const FieldSchema::Ptr &column_schema,
+                    const std::string &expression,
+                    const AddColumnOptions &options) override;
 
-  Status DropColumn(const std::string &column_name) override;
+  Status drop_column(const std::string &column_name) override;
 
-  Status AlterColumn(
+  Status alter_column(
       const std::string &column_name, const std::string &rename,
       const FieldSchema::Ptr &new_column_schema = nullptr,
       const AlterColumnOptions &options = AlterColumnOptions()) override;
 
-  Result<WriteResults> Insert(std::vector<Doc> &docs) override;
+  Result<WriteResults> insert(std::vector<Doc> &docs) override;
 
-  Result<WriteResults> Upsert(std::vector<Doc> &docs) override;
+  Result<WriteResults> upsert(std::vector<Doc> &docs) override;
 
-  Result<WriteResults> Update(std::vector<Doc> &docs) override;
+  Result<WriteResults> update(std::vector<Doc> &docs) override;
 
-  Result<WriteResults> Delete(const std::vector<std::string> &pks) override;
+  Result<WriteResults> delete_(const std::vector<std::string> &pks) override;
 
-  Status DeleteByFilter(const std::string &filter) override;
+  Status delete_by_filter(const std::string &filter) override;
 
-  Result<DocPtrList> Query(const SearchQuery &query) const override;
+  Result<DocPtrList> query(const SearchQuery &query) const override;
 
-  Result<DocPtrList> Query(const MultiQuery &query) const override;
+  Result<DocPtrList> query(const MultiQuery &query) const override;
 
-  Result<GroupResults> GroupByQuery(
+  Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const override;
 
-  Result<DocPtrMap> Fetch(const std::vector<std::string> &pks,
+  Result<DocPtrMap> fetch(const std::vector<std::string> &pks,
                           const std::optional<std::vector<std::string>>
                               &output_fields = std::nullopt,
                           bool include_vector = true) const override;
 
-  Result<std::string> DebugGetHnswStorageMode(
+  Result<std::string> debug_get_hnsw_storage_mode(
       const std::string &column_name) const override;
 
  private:
@@ -232,8 +232,8 @@ class CollectionImpl : public Collection {
 
   bool destroyed_{false};
 
-  // Atomic because Path() is the one accessor that reads it without holding
-  // schema_handle_mtx_, while Close() writes it under the exclusive lock.
+  // Atomic because path() is the one accessor that reads it without holding
+  // schema_handle_mtx_, while close() writes it under the exclusive lock.
   std::atomic<bool> closed_{false};
 
   CollectionSchema::Ptr schema_;
@@ -242,9 +242,9 @@ class CollectionImpl : public Collection {
 
   mutable std::shared_mutex schema_handle_mtx_;
   mutable std::shared_mutex write_mtx_;
-  // Serializes maintenance operations (Optimize, schema DDL, Close and
-  // Destroy) without holding schema_handle_mtx_, so a maintenance
-  // operation waiting for a running Optimize never becomes a pending
+  // Serializes maintenance operations (optimize, schema DDL, close and
+  // destroy) without holding schema_handle_mtx_, so a maintenance
+  // operation waiting for a running optimize never becomes a pending
   // exclusive acquirer of the schema lock (which would block new readers).
   // Lock order: maintenance -> schema -> write -> SegmentManager; never
   // acquire maintenance_mtx_ after any of the others.
@@ -275,7 +275,7 @@ Result<Collection::Ptr> Collection::CreateAndOpen(
     const CollectionOptions &options) {
   auto collection = std::make_shared<CollectionImpl>(path, schema);
 
-  auto s = collection->Open(options);
+  auto s = collection->open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return collection;
@@ -285,7 +285,7 @@ Result<Collection::Ptr> Collection::Open(const std::string &path,
                                          const CollectionOptions &options) {
   auto collection = std::make_shared<CollectionImpl>(path);
 
-  auto s = collection->Open(options);
+  auto s = collection->open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return collection;
@@ -312,11 +312,11 @@ CollectionImpl::CollectionImpl(const std::string &path) : path_(path) {}
 
 CollectionImpl::~CollectionImpl() {
   if (!destroyed_ && !closed_) {
-    Close();
+    close();
   }
 }
 
-Status CollectionImpl::Open(const CollectionOptions &options) {
+Status CollectionImpl::open(const CollectionOptions &options) {
   options_ = options;
 
   if (schema_ != nullptr && options_.read_only_) {
@@ -339,7 +339,7 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
   return s;
 }
 
-Status CollectionImpl::Close() {
+Status CollectionImpl::close() {
   std::lock_guard maintenance_lock(maintenance_mtx_);
   std::lock_guard lock(schema_handle_mtx_);
 
@@ -377,7 +377,7 @@ Status CollectionImpl::close_unsafe() {
   return result;
 }
 
-Status CollectionImpl::Destroy() {
+Status CollectionImpl::destroy() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
@@ -396,12 +396,12 @@ Status CollectionImpl::Destroy() {
   return Status::OK();
 }
 
-Status CollectionImpl::Flush() {
+Status CollectionImpl::flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   // Only flushes the writing segment's WAL (no schema/segment-structure
   // change), so it needs neither maintenance_mtx_ nor exclusion from a
-  // running Optimize.
+  // running optimize.
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -417,14 +417,14 @@ Status CollectionImpl::flush_unsafe() {
   return writing_segment_->flush();
 }
 
-Result<std::string> CollectionImpl::Path() const {
+Result<std::string> CollectionImpl::path() const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   return path_;
 }
 
-Result<CollectionStats> CollectionImpl::Stats() const {
+Result<CollectionStats> CollectionImpl::stats() const {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
@@ -466,7 +466,7 @@ Result<CollectionStats> CollectionImpl::Stats() const {
   return stats;
 }
 
-Result<CollectionSchema> CollectionImpl::Schema() const {
+Result<CollectionSchema> CollectionImpl::schema() const {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
@@ -475,7 +475,7 @@ Result<CollectionSchema> CollectionImpl::Schema() const {
   return *schema_;
 }
 
-Result<CollectionOptions> CollectionImpl::Options() const {
+Result<CollectionOptions> CollectionImpl::options() const {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
@@ -484,9 +484,9 @@ Result<CollectionOptions> CollectionImpl::Options() const {
   return options_;
 }
 
-Status CollectionImpl::CreateIndex(const std::string &column_name,
-                                   const IndexParams::Ptr &index_params,
-                                   const CreateIndexOptions &options) {
+Status CollectionImpl::create_index(const std::string &column_name,
+                                    const IndexParams::Ptr &index_params,
+                                    const CreateIndexOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
@@ -496,7 +496,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   if (index_params == nullptr) {
-    return Status::InvalidArgument("CreateIndex: index_params is null");
+    return Status::InvalidArgument("create_index: index_params is null");
   }
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
@@ -517,7 +517,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   if (!field->is_vector_field() && field->index_params() != nullptr &&
       field->index_params()->type() != index_params->type()) {
     return Status::NotSupported(
-        "CreateIndex: column[", column_name, "] already has index type [",
+        "create_index: column[", column_name, "] already has index type [",
         IndexTypeCodeBook::AsString(field->index_params()->type()),
         "], cannot create index type [",
         IndexTypeCodeBook::AsString(index_params->type()),
@@ -555,7 +555,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
                                         index_params);
   } else {
     return Status::NotSupported(
-        "CreateIndex: index type [",
+        "create_index: index type [",
         IndexTypeCodeBook::AsString(index_params->type()),
         "] is not supported");
   }
@@ -676,7 +676,7 @@ Status CollectionImpl::execute_tasks(
   return Status::OK();
 }
 
-Status CollectionImpl::DropIndex(const std::string &column_name) {
+Status CollectionImpl::drop_index(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
@@ -725,7 +725,7 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
     tasks = build_drop_fts_index_task(persist_segments, column_name);
   } else {
     return Status::NotSupported(
-        "DropIndex: index type [",
+        "drop_index: index type [",
         IndexTypeCodeBook::AsString(field->index_params()->type()),
         "] on column[", column_name, "] is not supported");
   }
@@ -807,7 +807,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_drop_scalar_index_task(
   return tasks;
 }
 
-Status CollectionImpl::Optimize(const OptimizeOptions &options) {
+Status CollectionImpl::optimize(const OptimizeOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   // Serialize against other maintenance operations for the whole optimize.
@@ -1187,9 +1187,9 @@ Status CollectionImpl::validate(const std::string &column,
   return Status::OK();
 }
 
-Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
-                                 const std::string &expression,
-                                 const AddColumnOptions &options) {
+Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
+                                  const std::string &expression,
+                                  const AddColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
@@ -1263,7 +1263,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
   return Status::OK();
 }
 
-Status CollectionImpl::DropColumn(const std::string &column_name) {
+Status CollectionImpl::drop_column(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
@@ -1336,10 +1336,10 @@ Status CollectionImpl::DropColumn(const std::string &column_name) {
   return Status::OK();
 }
 
-Status CollectionImpl::AlterColumn(const std::string &column_name,
-                                   const std::string &rename,
-                                   const FieldSchema::Ptr &new_column_schema,
-                                   const AlterColumnOptions &options) {
+Status CollectionImpl::alter_column(const std::string &column_name,
+                                    const std::string &rename,
+                                    const FieldSchema::Ptr &new_column_schema,
+                                    const AlterColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
@@ -1423,15 +1423,15 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
   return Status::OK();
 }
 
-Result<WriteResults> CollectionImpl::Insert(std::vector<Doc> &docs) {
+Result<WriteResults> CollectionImpl::insert(std::vector<Doc> &docs) {
   return write_impl(docs, WriteMode::INSERT);
 }
 
-Result<WriteResults> CollectionImpl::Update(std::vector<Doc> &docs) {
+Result<WriteResults> CollectionImpl::update(std::vector<Doc> &docs) {
   return write_impl(docs, WriteMode::UPDATE);
 }
 
-Result<WriteResults> CollectionImpl::Upsert(std::vector<Doc> &docs) {
+Result<WriteResults> CollectionImpl::upsert(std::vector<Doc> &docs) {
   return write_impl(docs, WriteMode::UPSERT);
 }
 
@@ -1618,7 +1618,7 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
   return Status::OK();
 }
 
-Result<WriteResults> CollectionImpl::Delete(
+Result<WriteResults> CollectionImpl::delete_(
     const std::vector<std::string> &pks) {
   CHECK_READONLY_RETURN_STATUS_EXPECTED();
 
@@ -1638,7 +1638,7 @@ Result<WriteResults> CollectionImpl::Delete(
   return results;
 }
 
-Status CollectionImpl::DeleteByFilter(const std::string &filter) {
+Status CollectionImpl::delete_by_filter(const std::string &filter) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::shared_lock lock(schema_handle_mtx_);
@@ -1671,7 +1671,7 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
   return Status::OK();
 }
 
-Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
+Result<DocPtrList> CollectionImpl::query(const SearchQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
@@ -1703,7 +1703,7 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   return sql_engine_->execute(schema_, std::move(sanitized_query), segments);
 }
 
-Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
+Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
@@ -1796,7 +1796,7 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
                           query.topk);
 }
 
-Result<GroupResults> CollectionImpl::GroupByQuery(
+Result<GroupResults> CollectionImpl::group_by_query(
     const GroupByVectorQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
@@ -1826,7 +1826,7 @@ Result<GroupResults> CollectionImpl::GroupByQuery(
   return sql_engine_->execute_group_by(schema_, sanitized_query, segments);
 }
 
-Result<DocPtrMap> CollectionImpl::Fetch(
+Result<DocPtrMap> CollectionImpl::fetch(
     const std::vector<std::string> &pks,
     const std::optional<std::vector<std::string>> &output_fields,
     bool include_vector) const {
@@ -1862,7 +1862,7 @@ Result<DocPtrMap> CollectionImpl::Fetch(
   return results;
 }
 
-Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
+Result<std::string> CollectionImpl::debug_get_hnsw_storage_mode(
     const std::string &column_name) const {
   std::shared_lock lock(schema_handle_mtx_);
 
@@ -1872,7 +1872,7 @@ Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
   // Try all segments (including the writing one). The first segment that has
   // a fully-built HNSW index wins; if only a building segment exists we still
   // surface its current storage mode so that tests can observe the entity
-  // type right after Open().
+  // type right after open().
   auto segments = get_all_segments();
 
   for (const auto &segment : segments) {
