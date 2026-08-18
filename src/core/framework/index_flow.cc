@@ -405,15 +405,20 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
       std::string *features = context->mutable_features();
       features->resize(tmp.size() * count);
       memcpy(&(*features)[0], tmp.data(), tmp.size());
-      for (uint32_t i = 1; i < count; ++i) {
-        query_quantizer_->quantize(
+      for (uint32_t i = 1; i < count && error_code == 0; ++i) {
+        IndexQueryMeta qmeta_i;
+        error_code = query_quantizer_->quantize(
             static_cast<const char *>(query) + i * qmeta.element_size(), qmeta,
-            &tmp, &new_qmeta);
-        memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+            &tmp, &qmeta_i);
+        if (error_code == 0) {
+          memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+        }
       }
-      error_code = searcher_->search_bf_impl(
-          reinterpret_cast<const void *>(features->data()), new_qmeta, count,
-          context->searcher_context());
+      if (error_code == 0) {
+        error_code = searcher_->search_bf_impl(
+            reinterpret_cast<const void *>(features->data()), new_qmeta, count,
+            context->searcher_context());
+      }
     }
   } else if (reformer_) {
     IndexQueryMeta new_qmeta;
@@ -481,15 +486,20 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
       std::string *features = context->mutable_features();
       features->resize(tmp.size() * count);
       memcpy(&(*features)[0], tmp.data(), tmp.size());
-      for (uint32_t i = 1; i < count; ++i) {
-        query_quantizer_->quantize(
+      for (uint32_t i = 1; i < count && error_code == 0; ++i) {
+        IndexQueryMeta qmeta_i;
+        error_code = query_quantizer_->quantize(
             static_cast<const char *>(query) + i * qmeta.element_size(), qmeta,
-            &tmp, &new_qmeta);
-        memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+            &tmp, &qmeta_i);
+        if (error_code == 0) {
+          memcpy(&(*features)[i * tmp.size()], tmp.data(), tmp.size());
+        }
       }
-      error_code = searcher_->search_impl(
-          reinterpret_cast<const void *>(features->data()), new_qmeta, count,
-          context->searcher_context());
+      if (error_code == 0) {
+        error_code = searcher_->search_impl(
+            reinterpret_cast<const void *>(features->data()), new_qmeta, count,
+            context->searcher_context());
+      }
     }
   } else if (reformer_) {
     IndexQueryMeta new_qmeta;

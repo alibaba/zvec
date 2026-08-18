@@ -862,20 +862,28 @@ IndexHolder::Pointer quantize_holder(const std::string &name,
     }
   }
 
-  // Output meta follows the converter convention: extra meta bytes (e.g.
-  // the trailing Cosine norm) are folded into an inflated dimension so the
-  // result stays a plain typed holder.
+  // The output meta keeps the raw dimension; the record tail (e.g. scale,
+  // Cosine norm) is accounted by extra_meta_size.  The typed holder is
+  // allocated with the full encoded size in units.
   IndexMeta out_meta = quantizer->meta();
   size_t code_bytes = quantizer->quantized_datapoint_vector_length();
   uint32_t unit = out_meta.unit_size();
-  if (unit == 0 || code_bytes % unit != 0) {
-    LOG_ERROR("Quantized length %zu not aligned to unit size %u", code_bytes,
-              unit);
+  if (unit == 0 || code_bytes % unit != 0 ||
+      code_bytes != out_meta.element_size()) {
+    LOG_ERROR("Quantized length %zu mismatches meta element size %u",
+              code_bytes, out_meta.element_size());
     return IndexHolder::Pointer();
   }
   uint32_t out_dim = static_cast<uint32_t>(code_bytes / unit);
-  out_meta.set_extra_meta_size(0);
-  out_meta.set_meta(out_meta.data_type(), out_dim);
+
+  if (!quantizer->require_train()) {
+    out_meta.set_reformer(name, 0, params);
+  } else {
+    LOG_WARN(
+        "Quantizer %s requires training, query-side quantizer info is not "
+        "recorded in the index meta",
+        name.c_str());
+  }
 
   IndexHolder::Pointer result;
   switch (out_meta.data_type()) {
