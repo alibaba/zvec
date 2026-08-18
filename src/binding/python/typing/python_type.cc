@@ -147,9 +147,9 @@ Enumeration of supported I/O backend types for DiskAnn disk reads.
 
 - PREAD: Synchronous pread(); no async I/O.
 - LIBAIO: libaio loaded at runtime via dlopen().
- - IO_URING: io_uring via raw kernel syscalls (zero dependency).
- - WINDOWS_OVERLAPPED: Windows unbuffered overlapped I/O using per-context
-   I/O completion ports.
+- IO_URING: io_uring via raw kernel syscalls (zero dependency).
+- WINDOWS_OVERLAPPED: Windows unbuffered overlapped I/O using per-context
+  I/O completion ports.
 
 Examples:
     >>> from zvec.typing import IOBackendType

@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "diskann_file_reader.h"
-
-#if defined(__linux) || defined(__linux__)
-
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
@@ -27,6 +23,7 @@
 #include <limits>
 #include <vector>
 #include <gtest/gtest.h>
+#include "diskann_file_reader.h"
 
 namespace zvec {
 namespace core {
@@ -257,5 +254,3 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
 
   std::free(output);
 }
-
-#endif  // __linux__

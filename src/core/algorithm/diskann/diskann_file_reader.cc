@@ -91,7 +91,7 @@ void log_diskann_io_backend() {
 // arrived would allow the kernel to keep writing into buffers already returned
 // to the caller.
 static void close_windows_io_handles(IOContext ctx) {
-  if (ctx == nullptr || ctx == reinterpret_cast<IOContext>(-1)) {
+  if (ctx == nullptr) {
     return;
   }
 
@@ -194,7 +194,7 @@ int setup_io_ctx(IOContext &ctx) {
 }
 
 int destroy_io_ctx(IOContext &ctx) {
-  if (ctx == nullptr || ctx == reinterpret_cast<IOContext>(-1)) {
+  if (ctx == nullptr) {
     return 0;
   }
 
@@ -413,8 +413,8 @@ int execute_io_libaio(io_context_t &ctx, int fd,
 int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
 #if (defined(__linux) || defined(__linux__))
-  // Guard against null or sentinel contexts.
-  if (ctx == nullptr || ctx == (IOContext)-1) {
+  // A missing asynchronous context falls back to synchronous pread.
+  if (ctx == nullptr) {
     return execute_io_pread(fd, read_reqs);
   }
   // Dispatch based on the active backend.
@@ -767,10 +767,9 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
     return 0;
   }
 
-  // If this context has no async I/O backend (null/sentinel context or
-  // explicit pread backend), use synchronous pread.
-  if (ctx == nullptr || ctx == (IOContext)-1 ||
-      ctx->type == ailego::IOBackendType::kPread) {
+  // If this context has no async I/O backend (null context or explicit pread
+  // backend), use synchronous pread.
+  if (ctx == nullptr || ctx->type == ailego::IOBackendType::kPread) {
     int pread_ret = execute_io_pread(this->file_desc, read_reqs);
     if (pread_ret != 0) {
       return pread_ret;
@@ -1013,8 +1012,6 @@ int LinuxAlignedFileReader::get_completed(
 // context can only dequeue completion packets for requests submitted through
 // that context. PendingBatch keeps the expected lengths and completion bitmap
 // alive until every request has been harvested.
-WindowsAlignedFileReader::WindowsAlignedFileReader() = default;
-
 void WindowsAlignedFileReader::open(const std::string &fname) {
   file_path_.clear();
   const std::wstring wide_fname = ailego::FileHelper::Utf8ToWide(fname);
@@ -1024,13 +1021,12 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
     return;
   }
 
-  HANDLE probe =
-      ::CreateFileW(wide_fname.c_str(), GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    nullptr, OPEN_EXISTING,
-                    FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
-                        FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
-                    nullptr);
+  HANDLE probe = ::CreateFileW(
+      wide_fname.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING,
+      FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+      nullptr);
   if (probe == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to open file: %s (error=%lu)", fname.c_str(),
               ::GetLastError());
@@ -1046,7 +1042,7 @@ void WindowsAlignedFileReader::close() {
 }
 
 int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
-  if (ctx == nullptr || ctx == reinterpret_cast<IOContext>(-1) ||
+  if (ctx == nullptr ||
       ctx->type != ailego::IOBackendType::kWindowsOverlapped) {
     LOG_ERROR("Attempt to prepare an invalid Windows I/O context");
     return IndexError_Runtime;
@@ -1065,13 +1061,12 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   }
 
   close_windows_io_handles(ctx);
-  ctx->file_handle =
-      ::CreateFileW(file_path_.c_str(), GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    nullptr, OPEN_EXISTING,
-                    FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
-                        FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
-                    nullptr);
+  ctx->file_handle = ::CreateFileW(
+      file_path_.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING,
+      FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+      nullptr);
   if (ctx->file_handle == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to open DiskAnn file for IOCP (error=%lu)",
               ::GetLastError());
@@ -1096,8 +1091,7 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
 
 void WindowsAlignedFileReader::reset_io_ctx(IOContext &ctx) {
   close_windows_io_handles(ctx);
-  if (ctx != nullptr && ctx != reinterpret_cast<IOContext>(-1) &&
-      !file_path_.empty() && prepare_io_ctx(ctx) != 0) {
+  if (ctx != nullptr && !file_path_.empty() && prepare_io_ctx(ctx) != 0) {
     LOG_ERROR("Failed to recreate Windows DiskAnn IOCP context");
   }
 }
@@ -1237,9 +1231,8 @@ int WindowsAlignedFileReader::get_completed(
   if (batch.n_reaped >= batch.n_submitted) {
     return 0;
   }
-  if (ctx == nullptr || ctx == reinterpret_cast<IOContext>(-1) ||
-      ctx->completion_port == nullptr || batch.generation == 0 ||
-      batch.generation != ctx->generation ||
+  if (ctx == nullptr || ctx->completion_port == nullptr ||
+      batch.generation == 0 || batch.generation != ctx->generation ||
       batch.expected_lengths.size() != batch.n_submitted ||
       batch.completed.size() != batch.n_submitted ||
       ctx->outstanding_count != batch.n_submitted - batch.n_reaped) {

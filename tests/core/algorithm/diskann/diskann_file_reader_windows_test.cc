@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "diskann_file_reader.h"
-
-#if defined(_WIN32) || defined(_WIN64)
-
 #include <malloc.h>
 #include <algorithm>
 #include <atomic>
@@ -27,6 +23,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include "diskann_file_reader.h"
 
 using namespace zvec::core;
 
@@ -311,5 +308,3 @@ TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
 }
-
-#endif  // defined(_WIN32) || defined(_WIN64)

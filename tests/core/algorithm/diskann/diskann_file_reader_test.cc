@@ -13,9 +13,6 @@
 // limitations under the License.
 
 #include "diskann_file_reader.h"
-
-#if !defined(_WIN32) && !defined(_WIN64)
-
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
@@ -204,5 +201,3 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
   reader.close();
 }
 #endif
-
-#endif  // !defined(_WIN32) && !defined(_WIN64)

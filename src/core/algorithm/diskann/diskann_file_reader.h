@@ -163,9 +163,6 @@ class WindowsAlignedFileReader : public AlignedFileReader {
   void reset_io_ctx(IOContext &ctx);
 
  public:
-  WindowsAlignedFileReader();
-  ~WindowsAlignedFileReader() override = default;
-
   void open(const std::string &fname) override;
   void close() override;
 
