@@ -137,11 +137,55 @@ class DiskAnnUtil {
     }
   }
 
-  //! Construct and deserialize the quantizer persisted in `meta_buffer`,
-  //! picking the implementation from the meta buffer header instead of a
-  //! hardcoded type.
+  //! Derive the meta the quantizer is initialized with from the index meta,
+  //! mirroring the conversion done at build time: InnerProduct and Cosine
+  //! are trained/searched in SquaredEuclidean space.  Two Cosine layouts are
+  //! supported: the legacy one folds the stored norm into an inflated
+  //! dimension, while the new one keeps the raw dimension and accounts the
+  //! norm with extra_meta_size.
+  static int quantizer_init_meta(const IndexMeta &meta, IndexMeta *out) {
+    *out = meta;
+    if (meta.metric_name() == "InnerProduct") {
+      out->set_metric("SquaredEuclidean", 0, ailego::Params());
+    } else if (meta.metric_name() == "Cosine") {
+      out->set_metric("SquaredEuclidean", 0, ailego::Params());
+
+      if (meta.data_type() != IndexMeta::DataType::DT_FP32 &&
+          meta.data_type() != IndexMeta::DataType::DT_FP16) {
+        LOG_ERROR("Unsupported cosine data type: %u", meta.data_type());
+        return IndexError_Unsupported;
+      }
+
+      if (meta.extra_meta_size() > 0) {
+        // New layout: the dimension is already the raw one; drop the tail
+        // so element_size() covers the raw vector only, as in the legacy
+        // conversion below.
+        out->set_extra_meta_size(0);
+      } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+        if (meta.dimension() <= 1) {
+          LOG_ERROR("Invalid FP32 cosine dimension: %u", meta.dimension());
+          return IndexError_InvalidArgument;
+        }
+        out->set_dimension(meta.dimension() - 1);
+      } else {
+        if (meta.dimension() <= 2) {
+          LOG_ERROR("Invalid FP16 cosine dimension: %u", meta.dimension());
+          return IndexError_InvalidArgument;
+        }
+        out->set_dimension(meta.dimension() - 2);
+      }
+    }
+    return 0;
+  }
+
+  //! Construct the quantizer persisted in `meta_buffer`, picking the
+  //! implementation from the meta buffer header instead of a hardcoded type.
+  //! Contract: the quantizer is initialized with the meta derived from
+  //! `index_meta` before deserialize(), so the metric policy comes from the
+  //! meta instead of the default-constructed one.
   static turbo::Quantizer::Pointer create_quantizer_from_meta_buffer(
-      std::string &meta_buffer) {
+      std::string &meta_buffer, const IndexMeta &index_meta,
+      uint32_t chunk_num) {
     const char *name = quantizer_name_from_meta_buffer(meta_buffer);
     if (name == nullptr) {
       LOG_ERROR("Unsupported or corrupted quantizer meta buffer");
@@ -150,6 +194,16 @@ class DiskAnnUtil {
     auto quantizer = IndexFactory::CreateQuantizer(name);
     if (!quantizer) {
       LOG_ERROR("Create quantizer %s failed", name);
+      return turbo::Quantizer::Pointer();
+    }
+    IndexMeta init_meta;
+    if (quantizer_init_meta(index_meta, &init_meta) != 0) {
+      return turbo::Quantizer::Pointer();
+    }
+    ailego::Params params;
+    params.set("num_chunk", chunk_num);
+    if (quantizer->init(init_meta, params) != 0) {
+      LOG_ERROR("Quantizer %s init failed", name);
       return turbo::Quantizer::Pointer();
     }
     if (quantizer->deserialize(meta_buffer) != 0) {

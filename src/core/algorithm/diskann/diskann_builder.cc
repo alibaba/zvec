@@ -96,28 +96,9 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
 
   raw_meta_ = meta;
 
-  build_meta_ = meta;
-  if (meta.metric_name() == "InnerProduct") {
-    build_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
-  } else if (meta.metric_name() == "Cosine") {
-    build_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
-
-    if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
-      if (meta.dimension() <= 1) {
-        LOG_ERROR("Invalid FP32 cosine dimension: %u", meta.dimension());
-        return IndexError_InvalidArgument;
-      }
-      build_meta_.set_dimension(meta.dimension() - 1);
-    } else if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
-      if (meta.dimension() <= 2) {
-        LOG_ERROR("Invalid FP16 cosine dimension: %u", meta.dimension());
-        return IndexError_InvalidArgument;
-      }
-      build_meta_.set_dimension(meta.dimension() - 2);
-    } else {
-      LOG_ERROR("Unsupported cosine data type: %u", meta.data_type());
-      return IndexError_Unsupported;
-    }
+  int ret = DiskAnnUtil::quantizer_init_meta(meta, &build_meta_);
+  if (ret != 0) {
+    return ret;
   }
 
   metric_ = IndexFactory::CreateMetric(build_meta_.metric_name());
@@ -127,7 +108,7 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     return IndexError_NoExist;
   }
 
-  int ret = metric_->init(build_meta_, build_meta_.metric_params());
+  ret = metric_->init(build_meta_, build_meta_.metric_params());
   if (ret != 0) {
     LOG_ERROR("IndexMeasure init failed, ret=%d", ret);
     return ret;
