@@ -213,7 +213,7 @@ class Bench {
         filter_ptr->set(filterFunc);
       }
 
-      auto query_param = query_param_->Clone();
+      auto query_param = query_param_->clone();
       query_param->filter = filter_ptr;
 
 
@@ -257,7 +257,7 @@ class Bench {
     query_data.vector = dense_query;
 
     core_interface::SearchResult search_result;
-    int ret = index->Search(query_data, query_param, &search_result);
+    int ret = index->search(query_data, query_param, &search_result);
     if (ret < 0) {
       return ret;
     }
@@ -286,7 +286,7 @@ class Bench {
       query_data.vector = dense_query;
 
       core_interface::SearchResult search_result;
-      int ret = index->Search(query_data, query_param, &search_result);
+      int ret = index->search(query_data, query_param, &search_result);
       if (ret < 0) {
         return ret;
       }
@@ -513,7 +513,7 @@ class SparseBench {
         filter_ptr->set(filterFunc);
       }
 
-      auto query_param = query_param_->Clone();
+      auto query_param = query_param_->clone();
       query_param->filter = filter_ptr;
 
       // Do knn_search
@@ -562,7 +562,7 @@ class SparseBench {
     query_data.vector = sparse_query;
 
     core_interface::SearchResult search_result;
-    int ret = index->Search(query_data, query_param, &search_result);
+    int ret = index->search(query_data, query_param, &search_result);
     if (ret < 0) {
       return ret;
     }
@@ -612,7 +612,7 @@ class SparseBench {
       query_data.vector = sparse_query;
 
       core_interface::SearchResult search_result;
-      int ret = index->Search(query_data, query_param, &search_result);
+      int ret = index->search(query_data, query_param, &search_result);
       if (ret < 0) {
         return ret;
       }
@@ -906,7 +906,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  index->Close();
+  index->close();
 
   return 0;
 }

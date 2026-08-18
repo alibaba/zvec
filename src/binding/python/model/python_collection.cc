@@ -59,7 +59,7 @@ void ZVecPyCollection::Initialize(pybind11::module_ &m) {
   bind_dql_methods(collection);
   collection.def(py::pickle(
       [](const Collection &c) {
-        return py::make_tuple(c.Path(), c.Schema(), c.Options());
+        return py::make_tuple(c.path(), c.schema(), c.options());
       },
       [](py::tuple t) {
         if (t.size() != 3) {
@@ -103,21 +103,21 @@ void ZVecPyCollection::bind_ddl_methods(
   // bind collection properties
   col.def("Path",
           [](const Collection &self) {
-            auto ret = self.Path();
+            auto ret = self.path();
             return unwrap_expected(ret);
           })
       .def("Options",
            [](const Collection &self) {
-             auto ret = self.Options();
+             auto ret = self.options();
              return unwrap_expected(ret);
            })
       .def("Schema",
            [](const Collection &self) {
-             auto ret = self.Schema();
+             auto ret = self.schema();
              return unwrap_expected(ret);
            })
       .def("Stats", [](const Collection &self) {
-        auto ret = self.Stats();
+        auto ret = self.stats();
         return unwrap_expected(ret);
       });
 
@@ -127,7 +127,7 @@ void ZVecPyCollection::bind_ddl_methods(
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.Close();
+              status = self.close();
             }
             throw_if_error(status);
           })
@@ -136,7 +136,7 @@ void ZVecPyCollection::bind_ddl_methods(
              Status status;
              {
                py::gil_scoped_release release;
-               status = self.Destroy();
+               status = self.destroy();
              }
              throw_if_error(status);
            })
@@ -144,7 +144,7 @@ void ZVecPyCollection::bind_ddl_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.Flush();
+          status = self.flush();
         }
         throw_if_error(status);
       });
@@ -157,7 +157,7 @@ void ZVecPyCollection::bind_ddl_methods(
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.CreateIndex(column_name, index_options, options);
+              status = self.create_index(column_name, index_options, options);
             }
             throw_if_error(status);
           })
@@ -166,7 +166,7 @@ void ZVecPyCollection::bind_ddl_methods(
              Status status;
              {
                py::gil_scoped_release release;
-               status = self.DropIndex(column_name);
+               status = self.drop_index(column_name);
              }
              throw_if_error(status);
            })
@@ -174,7 +174,7 @@ void ZVecPyCollection::bind_ddl_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.Optimize(options);
+          status = self.optimize(options);
         }
         throw_if_error(status);
       });
@@ -186,7 +186,7 @@ void ZVecPyCollection::bind_ddl_methods(
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.AddColumn(column_schema, expression, options);
+              status = self.add_column(column_schema, expression, options);
             }
             throw_if_error(status);
           })
@@ -195,7 +195,7 @@ void ZVecPyCollection::bind_ddl_methods(
              Status status;
              {
                py::gil_scoped_release release;
-               status = self.DropColumn(column_name);
+               status = self.drop_column(column_name);
              }
              throw_if_error(status);
            })
@@ -206,8 +206,8 @@ void ZVecPyCollection::bind_ddl_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status =
-              self.AlterColumn(column_name, rename, new_column_schema, options);
+          status = self.alter_column(column_name, rename, new_column_schema,
+                                     options);
         }
         throw_if_error(status);
       });
@@ -221,7 +221,7 @@ void ZVecPyCollection::bind_dml_methods(
             Result<WriteResults> result;
             {
               py::gil_scoped_release release;
-              result = self.Insert(docs);
+              result = self.insert(docs);
             }
             return unwrap_expected(result);
           })
@@ -230,7 +230,7 @@ void ZVecPyCollection::bind_dml_methods(
              Result<WriteResults> result;
              {
                py::gil_scoped_release release;
-               result = self.Update(docs);
+               result = self.update(docs);
              }
              return unwrap_expected(result);
            })
@@ -239,7 +239,7 @@ void ZVecPyCollection::bind_dml_methods(
              Result<WriteResults> result;
              {
                py::gil_scoped_release release;
-               result = self.Upsert(docs);
+               result = self.upsert(docs);
              }
              return unwrap_expected(result);
            })
@@ -248,7 +248,7 @@ void ZVecPyCollection::bind_dml_methods(
              Result<WriteResults> result;
              {
                py::gil_scoped_release release;
-               result = self.Delete(pks);
+               result = self.delete_(pks);
              }
              return unwrap_expected(result);
            })
@@ -256,7 +256,7 @@ void ZVecPyCollection::bind_dml_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.DeleteByFilter(filter);
+          status = self.delete_by_filter(filter);
         }
         throw_if_error(status);
       });
@@ -269,7 +269,7 @@ void ZVecPyCollection::bind_dql_methods(
             Result<DocPtrList> result;
             {
               py::gil_scoped_release release;
-              result = self.Query(query);
+              result = self.query(query);
             }
             // return DocPtrList
             return unwrap_expected(result);
@@ -281,7 +281,7 @@ void ZVecPyCollection::bind_dql_methods(
             Result<DocPtrList> result;
             {
               py::gil_scoped_release release;
-              result = self.Query(query);
+              result = self.query(query);
             }
             // return DocPtrList
             return unwrap_expected(result);
@@ -292,7 +292,7 @@ void ZVecPyCollection::bind_dql_methods(
              Result<GroupResults> result;
              {
                py::gil_scoped_release release;
-               result = self.GroupByQuery(query);
+               result = self.group_by_query(query);
              }
              return unwrap_expected(result);
            })
@@ -304,7 +304,7 @@ void ZVecPyCollection::bind_dql_methods(
             Result<DocPtrMap> result;
             {
               py::gil_scoped_release release;
-              result = self.Fetch(pks, output_fields, include_vector);
+              result = self.fetch(pks, output_fields, include_vector);
             }
             // return DocPtrMap
             return unwrap_expected(result);
@@ -314,7 +314,7 @@ void ZVecPyCollection::bind_dql_methods(
       .def(
           "_debug_hnsw_storage_mode",
           [](const Collection &self, const std::string &column_name) {
-            const auto result = self.DebugGetHnswStorageMode(column_name);
+            const auto result = self.debug_get_hnsw_storage_mode(column_name);
             return unwrap_expected(result);
           },
           py::arg("column_name"),
