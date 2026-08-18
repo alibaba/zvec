@@ -592,12 +592,14 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
                      int list_size = 50, int pq_chunk_num = 0,
                      QuantizeType quantize_type = QuantizeType::UNDEFINED,
-                     QuantizerParam quantizer_param = {})
+                     QuantizerParam quantizer_param = {},
+                     int64_t cache_node_budget_bytes = 0)
       : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type,
                           quantizer_param),
         max_degree_{max_degree},
         list_size_{list_size},
-        pq_chunk_num_{pq_chunk_num} {}
+        pq_chunk_num_{pq_chunk_num},
+        cache_node_budget_bytes_{cache_node_budget_bytes} {}
 
   using OPtr = std::shared_ptr<DiskAnnIndexParams>;
 
@@ -605,7 +607,7 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<DiskAnnIndexParams>(
         metric_type_, max_degree_, list_size_, pq_chunk_num_, quantize_type_,
-        quantizer_param_);
+        quantizer_param_, cache_node_budget_bytes_);
   }
 
   std::string to_string() const override {
@@ -614,6 +616,7 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",max_degree:" << max_degree_
         << ",list_size:" << list_size_ << ", pq_chunk_num:" << pq_chunk_num_
+        << ",cache_node_budget_bytes:" << cache_node_budget_bytes_
         << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
@@ -643,6 +646,14 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
     pq_chunk_num_ = pq_chunk_num;
   }
 
+  int64_t cache_node_budget_bytes() const {
+    return cache_node_budget_bytes_;
+  }
+
+  void set_cache_node_budget_bytes(int64_t cache_node_budget_bytes) {
+    cache_node_budget_bytes_ = cache_node_budget_bytes;
+  }
+
   bool operator==(const IndexParams &other) const override {
     return type() == other.type() &&
            metric_type() ==
@@ -653,6 +664,9 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
                static_cast<const DiskAnnIndexParams &>(other).list_size_ &&
            pq_chunk_num_ ==
                static_cast<const DiskAnnIndexParams &>(other).pq_chunk_num_ &&
+           cache_node_budget_bytes_ ==
+               static_cast<const DiskAnnIndexParams &>(other)
+                   .cache_node_budget_bytes_ &&
            quantize_type() ==
                static_cast<const DiskAnnIndexParams &>(other).quantize_type() &&
            quantizer_param_ ==
@@ -663,6 +677,7 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   int max_degree_;
   int list_size_;
   int pq_chunk_num_;
+  int64_t cache_node_budget_bytes_;
 };
 
 /*

@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <zvec/core/framework/index_framework.h>
+#include "diskann_cache_budget.h"
 #include "diskann_context.h"
 #include "diskann_file_reader.h"
 #include "diskann_pq_table.h"
@@ -36,8 +37,25 @@ class DiskAnnIndexer {
   int init(DiskAnnSearcherEntity &entity);
   int load_cache_list(const std::vector<diskann_id_t> &node_list);
 
+  int configure_cache(uint32_t cache_node_num,
+                      uint64_t cache_node_budget_bytes);
+
   void cache_bfs_levels(uint64_t num_nodes_to_cache,
                         std::vector<diskann_id_t> &node_list);
+
+  uint32_t cache_node_count_for_budget(uint64_t budget_bytes) const {
+    return DiskAnnCacheBudget::ResolveNodeCount(
+        budget_bytes, doc_cnt_,
+        DiskAnnCacheBudget::EstimatedBytesPerNode(meta_, max_degree_));
+  }
+
+  uint64_t cache_payload_bytes_per_node() const {
+    return DiskAnnCacheBudget::PayloadBytesPerNode(meta_, max_degree_);
+  }
+
+  uint64_t cache_estimated_bytes_per_node() const {
+    return DiskAnnCacheBudget::EstimatedBytesPerNode(meta_, max_degree_);
+  }
 
   int cached_beam_search(DiskAnnContext *ctx);
   int cached_beam_search_by_group(DiskAnnContext *ctx);

@@ -544,6 +544,7 @@ struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {
   int max_degree = kDefaultDiskAnnMaxDegree;
   int list_size = kDefaultDiskAnnListSize;
   int pq_chunk_num = kDefaultDiskAnnPqChunkNum;
+  int64_t cache_node_budget_bytes = 0;
 
   // Constructors with delegation
   DiskAnnIndexParam() : BaseIndexParam(IndexType::kDiskAnn) {}

@@ -512,6 +512,8 @@ class ProximaEngineHelper {
         index_param_builder->WithMaxDegree(db_index_params->max_degree());
         index_param_builder->WithListSize(db_index_params->list_size());
         index_param_builder->WithPqChunkNum(db_index_params->pq_chunk_num());
+        index_param_builder->WithCacheNodeBudgetBytes(
+            db_index_params->cache_node_budget_bytes());
 
         return index_param_builder->Build();
       }

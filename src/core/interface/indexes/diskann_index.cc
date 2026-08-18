@@ -97,6 +97,10 @@ int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_.max_degree = std::min(100, param_.max_degree);
   param_.list_size = std::min(100, param_.list_size);
   param_.pq_chunk_num = std::min(1024, param_.pq_chunk_num);
+  if (param_.cache_node_budget_bytes < 0) {
+    LOG_ERROR("cache_node_budget_bytes must not be negative");
+    return core::IndexError_InvalidArgument;
+  }
 
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_DEGREE,
                             param_.max_degree);
@@ -104,6 +108,9 @@ int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                             param_.list_size);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM,
                             param_.pq_chunk_num);
+  proxima_index_params_.set(
+      core::PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
+      param_.cache_node_budget_bytes);
 
   builder_ = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("DiskAnnStreamer");

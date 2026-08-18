@@ -114,6 +114,37 @@ TEST(ConverterTest, IVFIndexParamsConversion) {
   EXPECT_EQ(pb_result.base().quantize_type(), proto::QT_INT4);
 }
 
+TEST(ConverterTest, DiskAnnIndexParamsConversion) {
+  constexpr uint64_t kBudgetBytes = 128ULL * 1024 * 1024;
+  proto::DiskAnnIndexParams diskann_pb;
+  auto *base_params = diskann_pb.mutable_base();
+  base_params->set_metric_type(proto::MT_L2);
+  base_params->set_quantize_type(proto::QT_FP16);
+  base_params->mutable_quantizer_param()->set_enable_rotate(true);
+  diskann_pb.set_max_degree(48);
+  diskann_pb.set_list_size(80);
+  diskann_pb.set_pq_chunk_num(16);
+  diskann_pb.set_cache_node_budget_bytes(kBudgetBytes);
+
+  auto diskann_params = ProtoConverter::FromPb(diskann_pb);
+  ASSERT_NE(nullptr, diskann_params);
+  EXPECT_EQ(MetricType::L2, diskann_params->metric_type());
+  EXPECT_EQ(48, diskann_params->max_degree());
+  EXPECT_EQ(80, diskann_params->list_size());
+  EXPECT_EQ(16, diskann_params->pq_chunk_num());
+  EXPECT_EQ(kBudgetBytes, diskann_params->cache_node_budget_bytes());
+  EXPECT_TRUE(diskann_params->quantizer_param().enable_rotate());
+
+  auto roundtrip_pb = ProtoConverter::ToPb(diskann_params.get());
+  EXPECT_EQ(kBudgetBytes, roundtrip_pb.cache_node_budget_bytes());
+  EXPECT_EQ(proto::MT_L2, roundtrip_pb.base().metric_type());
+  EXPECT_EQ(proto::QT_FP16, roundtrip_pb.base().quantize_type());
+  EXPECT_TRUE(roundtrip_pb.base().quantizer_param().enable_rotate());
+
+  proto::DiskAnnIndexParams legacy_pb;
+  EXPECT_EQ(0U, ProtoConverter::FromPb(legacy_pb)->cache_node_budget_bytes());
+}
+
 #if RABITQ_SUPPORTED
 TEST(ConverterTest, IvfRabitqIndexParamsConversion) {
   proto::IvfRabitqIndexParams ivf_rabitq_pb;

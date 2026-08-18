@@ -50,6 +50,34 @@ TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
+TEST(IndexInterface, DiskAnnParamJsonRoundTripPreservesCacheBudget) {
+  constexpr uint64_t kBudgetBytes = 128ULL * 1024 * 1024;
+  auto param = DiskAnnIndexParamBuilder()
+                   .WithMetricType(MetricType::kL2sq)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(768)
+                   .WithMaxDegree(48)
+                   .WithListSize(80)
+                   .WithPqChunkNum(16)
+                   .WithCacheNodeBudgetBytes(kBudgetBytes)
+                   .Build();
+
+  auto restored =
+      IndexFactory::DeserializeIndexParamFromJson(param->SerializeToJson());
+  auto diskann = std::dynamic_pointer_cast<DiskAnnIndexParam>(restored);
+  ASSERT_NE(nullptr, diskann);
+  EXPECT_EQ(48, diskann->max_degree);
+  EXPECT_EQ(80, diskann->list_size);
+  EXPECT_EQ(16, diskann->pq_chunk_num);
+  EXPECT_EQ(kBudgetBytes, diskann->cache_node_budget_bytes);
+}
+
+TEST(IndexInterface, DiskAnnParamJsonRejectsNegativeCacheConfiguration) {
+  auto negative_budget = IndexFactory::DeserializeIndexParamFromJson(
+      R"({"index_type":"kDiskAnn","cache_node_budget_bytes":-1})");
+  EXPECT_EQ(nullptr, negative_budget);
+}
+
 #if RABITQ_SUPPORTED
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
   auto make_param = [](int nlist, int sample_count) {

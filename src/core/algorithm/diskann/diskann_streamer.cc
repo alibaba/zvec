@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "diskann_streamer.h"
+#include <limits>
 #include <ailego/io/io_backend.h>
 #include "diskann_context.h"
 #include "diskann_index_provider.h"
@@ -52,12 +53,36 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
   params_ = search_params;
   list_size_ = 200;
   cache_nodes_num_ = 0;
+  cache_node_budget_bytes_ = 0;
 
   log_diskann_io_backend();
 
   params_.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
-  params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);
+  long long configured_cache_nodes = 0;
+  if (params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
+                  &configured_cache_nodes)) {
+    if (configured_cache_nodes < 0 ||
+        static_cast<unsigned long long>(configured_cache_nodes) >
+            std::numeric_limits<uint32_t>::max()) {
+      LOG_ERROR("cache_node_num must be in [0, UINT32_MAX]");
+      return IndexError_InvalidArgument;
+    }
+    cache_nodes_num_ = static_cast<uint32_t>(configured_cache_nodes);
+  }
+  long long configured_cache_budget = 0;
+  if (params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
+                  &configured_cache_budget)) {
+    if (configured_cache_budget < 0) {
+      LOG_ERROR("cache_node_budget_bytes must not be negative");
+      return IndexError_InvalidArgument;
+    }
+    cache_node_budget_bytes_ = static_cast<uint64_t>(configured_cache_budget);
+  }
   params_.get(PARAM_DISKANN_SEARCHER_BEAM_SIZE, &beam_size_);
+  if (cache_nodes_num_ != 0 && cache_node_budget_bytes_ != 0) {
+    LOG_ERROR("cache_node_num and cache_node_budget_bytes cannot both be set");
+    return IndexError_InvalidArgument;
+  }
   state_ = STATE_INITED;
   return 0;
 }
@@ -71,6 +96,7 @@ int DiskAnnStreamer::cleanup() {
   params_.clear();
   list_size_ = 200;
   cache_nodes_num_ = 0;
+  cache_node_budget_bytes_ = 0;
   state_ = STATE_INIT;
 
   LOG_INFO("End DiskAnnStreamer:cleanup");
@@ -122,19 +148,10 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return res;
   }
 
-  if (cache_nodes_num_ != 0) {
-    std::vector<diskann_id_t> node_list;
-    LOG_INFO("Caching %u nodes around medoid(s)", cache_nodes_num_);
-
-    diskann_indexer_->cache_bfs_levels(cache_nodes_num_, node_list);
-
-    ret = diskann_indexer_->load_cache_list(node_list);
-    if (ret != 0) {
-      return ret;
-    }
-
-    node_list.clear();
-    node_list.shrink_to_fit();
+  ret = diskann_indexer_->configure_cache(cache_nodes_num_,
+                                          cache_node_budget_bytes_);
+  if (ret != 0) {
+    return ret;
   }
 
   search_meta_ = meta_;

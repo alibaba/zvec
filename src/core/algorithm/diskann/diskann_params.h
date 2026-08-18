@@ -41,6 +41,8 @@ static const std::string PARAM_DISKANN_SEARCHER_LIST_SIZE(
     "zvec.diskann.searcher.list_size");
 static const std::string PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM(
     "zvec.diskann.searcher.cache_node_num");
+static const std::string PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES(
+    "zvec.diskann.searcher.cache_node_budget_bytes");
 static const std::string PARAM_DISKANN_SEARCHER_BEAM_SIZE(
     "zvec.diskann.searcher.beam_size");
 

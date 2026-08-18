@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
+#include "diskann_cache_budget.h"
 #include "diskann_holder.h"
 #include "diskann_params.h"
 
@@ -345,7 +346,10 @@ TEST_F(DiskAnnSearcherTest, TestNodeCache) {
   ASSERT_TRUE(searcher != nullptr);
 
   Params search_params;
-  search_params.set("zvec.diskann.searcher.cache_node_num", 32);
+  const uint64_t cache_budget =
+      DiskAnnCacheBudget::EstimatedBytesPerNode(*_index_meta_ptr, 32) * 32;
+  search_params.set("zvec.diskann.searcher.cache_node_budget_bytes",
+                    cache_budget);
   search_params.set("zvec.diskann.searcher.list_size", 500);
 
   ASSERT_EQ(0, searcher->init(search_params));

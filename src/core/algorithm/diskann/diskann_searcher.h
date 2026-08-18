@@ -151,6 +151,7 @@ class DiskAnnSearcher : public IndexSearcher {
 
   uint32_t list_size_{200};
   uint32_t cache_nodes_num_{0};
+  uint64_t cache_node_budget_bytes_{0};
 
   bool warm_up_{false};
   uint32_t beam_size_{2};

@@ -146,6 +146,7 @@ message DiskAnnIndexParams {
   int32 max_degree = 2;
   int32 list_size = 3;
   int32 pq_chunk_num = 4;
+  int64 cache_node_budget_bytes = 5;
 }
 
 message VamanaIndexParams {

@@ -15,6 +15,7 @@
 #include "diskann_indexer.h"
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <set>
 #include <tuple>
@@ -221,9 +222,39 @@ int DiskAnnIndexer::load_cache_list(
     return 0;
   }
 
-  neighbor_cache_buffer_.resize(num_cached_nodes * (max_degree_ + 1), 0);
+  const uint64_t neighbor_entries_per_node_u64 =
+      static_cast<uint64_t>(max_degree_) + 1;
+  if (neighbor_entries_per_node_u64 > std::numeric_limits<size_t>::max()) {
+    LOG_ERROR("DiskANN node cache neighbor stride overflow");
+    return IndexError_InvalidArgument;
+  }
+  const size_t neighbor_entries_per_node =
+      static_cast<size_t>(neighbor_entries_per_node_u64);
+  const size_t max_neighbor_entries =
+      std::numeric_limits<size_t>::max() / sizeof(diskann_id_t);
+  if (num_cached_nodes > max_neighbor_entries / neighbor_entries_per_node) {
+    LOG_ERROR("DiskANN node cache neighbor allocation size overflow");
+    return IndexError_InvalidArgument;
+  }
+  neighbor_cache_buffer_.resize(num_cached_nodes * neighbor_entries_per_node,
+                                0);
 
-  size_t coord_cache_buf_len = num_cached_nodes * aligned_dim_;
+  if (aligned_dim_ == 0 || aligned_dim_ > std::numeric_limits<size_t>::max() ||
+      num_cached_nodes > std::numeric_limits<size_t>::max() /
+                             static_cast<size_t>(aligned_dim_)) {
+    LOG_ERROR("DiskANN node cache coordinate allocation size overflow");
+    neighbor_cache_buffer_.clear();
+    return IndexError_InvalidArgument;
+  }
+  const size_t coord_cache_buf_len =
+      num_cached_nodes * static_cast<size_t>(aligned_dim_);
+  if (meta_.unit_size() != 0 &&
+      coord_cache_buf_len >
+          std::numeric_limits<size_t>::max() / meta_.unit_size()) {
+    LOG_ERROR("DiskANN node cache coordinate byte size overflow");
+    neighbor_cache_buffer_.clear();
+    return IndexError_InvalidArgument;
+  }
   DiskAnnUtil::alloc_aligned((void **)&coord_cache_buf_,
                              coord_cache_buf_len * meta_.unit_size(),
                              8 * meta_.unit_size());
@@ -264,9 +295,47 @@ int DiskAnnIndexer::load_cache_list(
     }
   }
 
-  LOG_INFO("Load Cache List Done");
+  LOG_INFO(
+      "Load Cache List Done: nodes=%zu payload_bytes=%llu "
+      "estimated_bytes=%llu",
+      num_cached_nodes,
+      static_cast<unsigned long long>(static_cast<uint64_t>(num_cached_nodes) *
+                                      cache_payload_bytes_per_node()),
+      static_cast<unsigned long long>(static_cast<uint64_t>(num_cached_nodes) *
+                                      cache_estimated_bytes_per_node()));
 
   return 0;
+}
+
+int DiskAnnIndexer::configure_cache(uint32_t cache_node_num,
+                                    uint64_t cache_node_budget_bytes) {
+  const bool budget_configured = cache_node_budget_bytes != 0;
+  if (budget_configured) {
+    cache_node_num = cache_node_count_for_budget(cache_node_budget_bytes);
+    LOG_INFO(
+        "DiskANN node-cache budget: budget_bytes=%llu "
+        "estimated_bytes_per_node=%llu payload_bytes_per_node=%llu "
+        "resolved_nodes=%u",
+        static_cast<unsigned long long>(cache_node_budget_bytes),
+        static_cast<unsigned long long>(cache_estimated_bytes_per_node()),
+        static_cast<unsigned long long>(cache_payload_bytes_per_node()),
+        cache_node_num);
+  }
+
+  if (cache_node_num == 0) {
+    if (budget_configured) {
+      LOG_WARN(
+          "DiskANN node cache disabled because the configured byte budget "
+          "cannot hold one node");
+    }
+    return 0;
+  }
+
+  std::vector<diskann_id_t> node_list;
+  LOG_INFO("Caching %u nodes around medoid(s)", cache_node_num);
+  cache_bfs_levels(cache_node_num, node_list);
+
+  return load_cache_list(node_list);
 }
 
 void DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
