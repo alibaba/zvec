@@ -3176,8 +3176,8 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   ASSERT_NE(collection, nullptr);
   ASSERT_TRUE(collection->flush().ok());
 
-  // Optimize persists the first batch, then a second batch refills the
-  // writing segment so the next Optimize switches it again.
+  // The first optimize persists the initial batch, then a second batch refills
+  // the writing segment so the next optimize switches it again.
   ASSERT_TRUE(collection->optimize(OptimizeOptions{0}).ok());
   ASSERT_TRUE(
       TestHelper::CollectionInsertDoc(collection, doc_count, 2 * doc_count)
