@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import contextlib
 import warnings
 from collections.abc import Iterator
 from typing import Optional, Union, overload
@@ -48,6 +49,67 @@ __all__ = ["Collection"]
 def _require_positive_integer(value, name: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+
+
+class DocIterator:
+    """Iterator over all documents in a collection.
+
+    Returned by :meth:`Collection.iter_docs`. Supports the iterator protocol,
+    explicit :meth:`close`, and the context-manager protocol (preferred):
+
+        with collection.iter_docs() as docs:
+            for doc in docs:
+                ...
+
+    Closing the iterator releases the collection's active-iterator slot;
+    while any iterator is open, schema changes and flush/close/destroy are
+    rejected, and optimize either fails or blocks until the iterators close,
+    so deterministic closing matters.
+    """
+
+    def __init__(self, core_iterator, schema):
+        self._core_iterator = core_iterator
+        self._schema = schema
+        self._closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+
+        try:
+            while True:
+                core_doc = next(self._core_iterator)
+                py_doc = convert_to_py_doc(core_doc, self._schema)
+                if py_doc is not None:
+                    return py_doc
+        except StopIteration:
+            self.close()
+            raise
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        """Release the underlying iterator (idempotent)."""
+        if not self._closed:
+            self._closed = True
+            self._core_iterator.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return False
+
+    def __del__(self):
+        # Best-effort fallback only; never rely on this for deterministic
+        # resource release -- use close() or a with-statement.
+        with contextlib.suppress(Exception):
+            self.close()
 
 
 class Collection:
@@ -395,6 +457,7 @@ class Collection:
             if (py_doc := convert_to_py_doc(core_doc, self.schema)) is not None
         }
 
+    # ========== Collection DQL-Iterator Methods ==========
     def iter_docs(
         self,
         *,
@@ -411,11 +474,14 @@ class Collection:
         segment (each call may produce a new small segment); read-only
         collections are scanned without any write.
 
-        The iterator holds the collection's schema lock (shared) until it is
-        exhausted or closed: while any iterator is open, schema changes
-        (create_index/drop_index/add_column/alter_column/drop_column),
-        optimize, flush, close and destroy raise an error. Concurrent writes and
-        queries are not affected.
+        While any iterator is open, schema changes
+        (create_index/drop_index/add_column/alter_column/drop_column), flush,
+        close and destroy raise an error, and optimize either raises an
+        error (when started while an iterator is open) or blocks until the
+        iterators close (when it is already compacting). Concurrent writes
+        and queries are not affected. The iterator is closed automatically
+        when exhausted, so prefer the with-statement when iteration may end
+        early.
 
         Args:
             output_fields (Optional[list[str]], optional): Scalar fields to
@@ -423,25 +489,16 @@ class Collection:
             include_vector (bool, optional): Whether to include vector data in
                 each document. Defaults to True.
 
-        Yields:
-            Doc: Each document in the collection.
+        Returns:
+            DocIterator: An iterator yielding each document in the collection.
 
         Examples:
-            >>> for doc in collection.iter_docs(include_vector=False):
-            ...     print(doc.id, doc.field("title"))
+            >>> with collection.iter_docs(include_vector=False) as docs:
+            ...     for doc in docs:
+            ...         print(doc.id, doc.field("title"))
         """
         iterator = self._obj.CreateIterator(output_fields, include_vector)
-
-        def generate():
-            try:
-                for core_doc in iterator:
-                    py_doc = convert_to_py_doc(core_doc, self.schema)
-                    if py_doc is not None:
-                        yield py_doc
-            finally:
-                iterator.close()
-
-        return generate()
+        return DocIterator(iterator, self.schema)
 
     # ========== Collection DQL-Query Methods ==========
 

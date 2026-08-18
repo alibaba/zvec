@@ -145,18 +145,47 @@ def test_iter_docs_output_fields(iter_collection):
 
 
 def test_iter_docs_early_close_releases_lock(iter_collection):
-    """Closing the generator early releases the schema lock (finally path)."""
+    """Closing the iterator early releases the active-iterator slot."""
     iter_collection.insert(_make_docs(10))
     iter_collection.flush()
 
-    gen = iter_collection.iter_docs()
-    next(gen)  # consume one doc, iterator stays open
-    # Exclusive operations are rejected while the generator is alive.
+    it = iter_collection.iter_docs()
+    next(it)  # consume one doc, iterator stays open
+    # Exclusive operations are rejected while the iterator is open.
     with pytest.raises(Exception):
         iter_collection.flush()
 
-    gen.close()  # triggers the generator's finally: iterator.close()
-    # The schema lock is released; exclusive operations succeed again.
+    it.close()  # explicit close releases the slot
+    # Exclusive operations succeed again; close is idempotent.
+    iter_collection.flush()
+    it.close()
+
+
+def test_iter_docs_context_manager(iter_collection):
+    """with-statement closes the iterator, even on early break."""
+    iter_collection.insert(_make_docs(10))
+    iter_collection.flush()
+
+    # Full traversal inside a with-block.
+    count = 0
+    with iter_collection.iter_docs(include_vector=False) as docs:
+        for doc in docs:
+            assert doc.field("id") is not None
+            count += 1
+    assert count == 10
+    iter_collection.flush()  # slot released after exhaustion
+
+    # Early break: leaving the with-block must release the slot.
+    with iter_collection.iter_docs(include_vector=False) as docs:
+        for doc in docs:
+            break
+    iter_collection.flush()
+
+    # Exceptions inside the block must not leak the slot either.
+    with pytest.raises(RuntimeError):
+        with iter_collection.iter_docs(include_vector=False) as docs:
+            for doc in docs:
+                raise RuntimeError("boom")
     iter_collection.flush()
 
 
