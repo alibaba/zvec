@@ -3174,15 +3174,15 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   auto collection = TestHelper::CreateCollectionWithDoc(
       col_path, *schema, options, 0, doc_count, false);
   ASSERT_NE(collection, nullptr);
-  ASSERT_TRUE(collection->Flush().ok());
+  ASSERT_TRUE(collection->flush().ok());
 
-  // Optimize persists the first batch, then a second batch refills the
-  // writing segment so the next Optimize switches it again.
-  ASSERT_TRUE(collection->Optimize(OptimizeOptions{0}).ok());
+  // The first optimize persists the initial batch, then a second batch refills
+  // the writing segment so the next optimize switches it again.
+  ASSERT_TRUE(collection->optimize(OptimizeOptions{0}).ok());
   ASSERT_TRUE(
       TestHelper::CollectionInsertDoc(collection, doc_count, 2 * doc_count)
           .ok());
-  ASSERT_TRUE(collection->Flush().ok());
+  ASSERT_TRUE(collection->flush().ok());
   collection.reset();
 
   // Read the manifest to learn the referenced segment ids and the id the
@@ -3243,14 +3243,14 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
 
   // Without the cleanup this fails: the writing-segment switch allocates
   // next_id and finds the orphaned directory already on disk.
-  ASSERT_TRUE(collection->Optimize(OptimizeOptions{0}).ok());
+  ASSERT_TRUE(collection->optimize(OptimizeOptions{0}).ok());
 
-  auto stats_result = collection->Stats();
+  auto stats_result = collection->stats();
   ASSERT_TRUE(stats_result.has_value());
   ASSERT_EQ(stats_result.value().doc_count, (uint64_t)(2 * doc_count));
   for (int i : {0, doc_count - 1, doc_count, 2 * doc_count - 1}) {
     auto expect_doc = TestHelper::CreateDoc(i, *schema);
-    auto fetched = collection->Fetch({expect_doc.pk()});
+    auto fetched = collection->fetch({expect_doc.pk()});
     ASSERT_TRUE(fetched.has_value());
     ASSERT_EQ(fetched.value().count(expect_doc.pk()), 1);
     auto doc = fetched.value()[expect_doc.pk()];
@@ -3263,7 +3263,7 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   auto field_schema =
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
   ASSERT_TRUE(
-      collection->AddColumn(field_schema, "int32", AddColumnOptions()).ok());
+      collection->add_column(field_schema, "int32", AddColumnOptions()).ok());
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
