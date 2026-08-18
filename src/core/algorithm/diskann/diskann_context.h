@@ -47,7 +47,8 @@ class DiskAnnContext : public IndexContext,
     kUnknownContext = 0,
     kSearcherContext = 1,
     kBuilderContext = 2,
-    kReducerContext = 3
+    kReducerContext = 3,
+    kFetchContext = 4
   };
 
   //! Construct

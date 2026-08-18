@@ -217,7 +217,13 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   auto storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, storage->open(path, false));
+  std::weak_ptr<zvec::ailego::File> searcher_cached_file = storage->file();
+  ASSERT_FALSE(searcher_cached_file.expired());
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+  // FileReadStorage and all of its segments share this ordinary cached file
+  // handle. DiskAnn must release every one of those references after loading
+  // so that only its aligned asynchronous reader remains active on Windows.
+  EXPECT_TRUE(searcher_cached_file.expired());
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
@@ -326,7 +332,11 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   auto streamer_storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, streamer_storage->open(path, false));
+  std::weak_ptr<zvec::ailego::File> streamer_cached_file =
+      streamer_storage->file();
+  ASSERT_FALSE(streamer_cached_file.expired());
   ASSERT_EQ(0, streamer->open(streamer_storage));
+  EXPECT_TRUE(streamer_cached_file.expired());
 
   auto streamer_ctx = streamer->create_context();
   ASSERT_NE(streamer_ctx, nullptr);
@@ -968,6 +978,62 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   EXPECT_EQ(IndexError_NoExist,
             searcher->get_vector(42, linearCtx, missing_vector));
   EXPECT_TRUE(missing_vector.empty());
+
+  // A DiskAnn provider reads through the aligned index reader rather than a
+  // FileReadStorage segment. It and its iterator therefore remain usable
+  // after their source streamer is closed.
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("DiskAnnStreamer");
+  ASSERT_NE(streamer, nullptr);
+  ASSERT_EQ(0, streamer->init(*_index_meta_ptr, search_params));
+  auto streamer_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(streamer_storage, nullptr);
+  ASSERT_EQ(0, streamer_storage->open(path, false));
+  std::weak_ptr<zvec::ailego::File> provider_cached_file =
+      streamer_storage->file();
+  ASSERT_FALSE(provider_cached_file.expired());
+  ASSERT_EQ(0, streamer->open(streamer_storage));
+  ASSERT_TRUE(provider_cached_file.expired());
+
+  auto provider = streamer->create_provider();
+  ASSERT_NE(provider, nullptr);
+  EXPECT_TRUE(provider_cached_file.expired());
+  EXPECT_EQ(doc_cnt, provider->count());
+  EXPECT_EQ(dim, provider->dimension());
+  EXPECT_EQ(IndexMeta::DataType::DT_FP32, provider->data_type());
+  EXPECT_EQ(_index_meta_ptr->element_size(), provider->element_size());
+
+  float provider_value = 0.0f;
+  auto provider_iterator = provider->create_iterator();
+  ASSERT_NE(provider_iterator, nullptr);
+  ASSERT_TRUE(provider_iterator->is_valid());
+  EXPECT_EQ(key_for_id(0), provider_iterator->key());
+  float iterator_value = 0.0f;
+
+  // Neither object has performed vector I/O yet. Their first lazy context and
+  // aligned file handle must still be creatable after the streamer closes.
+  ASSERT_EQ(0, streamer->close());
+
+  const void *provider_vector = provider->get_vector(key_for_id(17));
+  ASSERT_NE(provider_vector, nullptr);
+  std::memcpy(&provider_value, provider_vector, sizeof(provider_value));
+  EXPECT_EQ(17.0f, provider_value);
+  provider.reset();
+
+  const void *iterator_vector = provider_iterator->data();
+  ASSERT_NE(iterator_vector, nullptr);
+  std::memcpy(&iterator_value, iterator_vector, sizeof(iterator_value));
+  EXPECT_EQ(0.0f, iterator_value);
+  provider_iterator->next();
+  ASSERT_TRUE(provider_iterator->is_valid());
+  EXPECT_EQ(key_for_id(1), provider_iterator->key());
+  iterator_vector = provider_iterator->data();
+  ASSERT_NE(iterator_vector, nullptr);
+  std::memcpy(&iterator_value, iterator_vector, sizeof(iterator_value));
+  EXPECT_EQ(1.0f, iterator_value);
+
+  provider_iterator.reset();
+  streamer.reset();
 
   // Cached nodes keep their coordinates and adjacency lists in separate
   // buffers. Fetching a cached vector must read the coordinate cache rather

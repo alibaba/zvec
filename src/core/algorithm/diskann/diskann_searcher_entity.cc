@@ -18,6 +18,17 @@ namespace zvec {
 namespace core {
 
 void DiskAnnSearcherEntity::clear() {
+  release_storage();
+  pq_table_.reset();
+  key_buffer_.reset();
+  key_mapping_buffer_.reset();
+  entrypoints_.clear();
+  meta_.clear();
+  meta_header_ = {};
+  pq_meta_ = {};
+}
+
+void DiskAnnSearcherEntity::release_storage() {
   storage_.reset();
   meta_segment_.reset();
   pq_meta_segment_.reset();
@@ -26,68 +37,35 @@ void DiskAnnSearcherEntity::clear() {
   key_segment_.reset();
   key_mapping_segment_.reset();
   entrypoint_segment_.reset();
-  pq_table_.reset();
-  key_buffer_.clear();
-  key_mapping_buffer_.clear();
-  entrypoints_.clear();
-  meta_.clear();
-  meta_header_ = {};
-  pq_meta_ = {};
 }
 
 const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
-  auto meta_segment = meta_segment_->clone();
-  if (ailego_unlikely(!meta_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnMetaSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto pq_meta_segment = pq_meta_segment_->clone();
-  if (ailego_unlikely(!pq_meta_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnPqMetaSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto pq_data_segment = pq_data_segment_->clone();
-  if (ailego_unlikely(!pq_data_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnPqDataSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto vector_segment = vector_segment_->clone();
-  if (ailego_unlikely(!vector_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnVectorSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto key_segment = key_segment_->clone();
-  if (ailego_unlikely(!key_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnKeySegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto key_mapping_segment = key_mapping_segment_->clone();
-  if (ailego_unlikely(!key_mapping_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnKeyMappingSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto entrypoint_segment = entrypoint_segment_->clone();
-  if (ailego_unlikely(!entrypoint_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnEntryPointSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  DiskAnnSearcherEntity *entity = new (std::nothrow) DiskAnnSearcherEntity(
-      meta_header_, pq_meta_, meta_segment, pq_meta_segment, pq_data_segment,
-      vector_segment, key_segment, key_mapping_segment, entrypoint_segment,
-      num_threads_, list_size_, cache_nodes_num_, warm_up_, beam_size_, meta_,
-      pq_table_, key_buffer_, key_mapping_buffer_, entrypoints_);
+  std::unique_ptr<DiskAnnSearcherEntity> entity(new (std::nothrow)
+                                                    DiskAnnSearcherEntity());
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("DiskAnnSearcherEntity new failed");
+    return DiskAnnEntity::Pointer();
   }
 
-  return DiskAnnEntity::Pointer(entity);
+  try {
+    entity->meta_header_ = meta_header_;
+    entity->pq_meta_ = pq_meta_;
+    entity->num_threads_ = num_threads_;
+    entity->list_size_ = list_size_;
+    entity->cache_nodes_num_ = cache_nodes_num_;
+    entity->warm_up_ = warm_up_;
+    entity->beam_size_ = beam_size_;
+    entity->meta_ = meta_;
+    entity->pq_table_ = pq_table_;
+    entity->key_buffer_ = key_buffer_;
+    entity->key_mapping_buffer_ = key_mapping_buffer_;
+    entity->entrypoints_ = entrypoints_;
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to clone in-memory DiskAnn entity");
+    return DiskAnnEntity::Pointer();
+  }
+
+  return DiskAnnEntity::Pointer(entity.release());
 }
 
 int DiskAnnSearcherEntity::load(const IndexMeta &meta,
@@ -298,8 +276,14 @@ int DiskAnnSearcherEntity::load_key_segment() {
     return IndexError_ReadData;
   }
 
-  key_buffer_.resize(key_data_len);
-  memcpy(&(key_buffer_[0]), data, key_data_len);
+  try {
+    auto key_buffer = std::make_shared<std::string>(key_data_len, '\0');
+    memcpy(&(*key_buffer)[0], data, key_data_len);
+    key_buffer_ = std::move(key_buffer);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to allocate DiskAnn key buffer");
+    return IndexError_NoMemory;
+  }
 
   return 0;
 }
@@ -359,8 +343,15 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
     return IndexError_ReadData;
   }
 
-  key_mapping_buffer_.resize(key_mapping_data_len);
-  memcpy(&(key_mapping_buffer_[0]), data, key_mapping_data_len);
+  try {
+    auto key_mapping_buffer =
+        std::make_shared<std::string>(key_mapping_data_len, '\0');
+    memcpy(&(*key_mapping_buffer)[0], data, key_mapping_data_len);
+    key_mapping_buffer_ = std::move(key_mapping_buffer);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to allocate DiskAnn key mapping buffer");
+    return IndexError_NoMemory;
+  }
 
   return 0;
 }
@@ -368,10 +359,10 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
 //! Get vector local id by key
 diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
   const diskann_id_t *key_mapping_data_ptr =
-      reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_.data());
+      reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_->data());
 
   const diskann_key_t *key_data_ptr =
-      reinterpret_cast<const diskann_key_t *>(key_buffer_.data());
+      reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
 
   //! Do binary search
   diskann_id_t start = 0UL;
@@ -397,7 +388,7 @@ diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
 
 diskann_key_t DiskAnnSearcherEntity::get_key(diskann_id_t id) const {
   const diskann_key_t *key_data_ptr =
-      reinterpret_cast<const diskann_key_t *>(key_buffer_.data());
+      reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
 
   return key_data_ptr[id];
 }

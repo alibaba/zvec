@@ -13,34 +13,53 @@
 // limitations under the License.
 #pragma once
 
+#include <mutex>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
-#include "diskann_entity.h"
+#include "diskann_context.h"
+#include "diskann_indexer.h"
 
 namespace zvec {
 namespace core {
 
-//! IndexProvider implementation backed by a DiskAnn entity.
+//! IndexProvider implementation backed by a DiskAnn indexer.
 //!
 //! Used by ``MixedStreamerReducer`` during segment merge: the reducer needs
 //! to walk every vector held by a source DiskAnn streamer and feed it into
-//! the merge target. Vectors are read on demand from the entity's on-disk
-//! vector segment via ``DiskAnnEntity::get_vector(id)``.
+//! the merge target. Vectors are read on demand through the same aligned file
+//! reader used by DiskAnn search. The provider owns the indexer, its in-memory
+//! entity and independent I/O contexts, so it remains valid after its source
+//! streamer is closed.
 class DiskAnnIndexProvider : public IndexProvider {
  public:
-  DiskAnnIndexProvider(const IndexMeta &meta,
+  DiskAnnIndexProvider(const IndexMeta &meta, const IndexMeta &search_meta,
+                       const IndexMetric::Pointer &measure,
                        const DiskAnnEntity::Pointer &entity,
+                       const DiskAnnIndexer::Pointer &indexer,
                        const std::string &owner)
-      : meta_(meta), entity_(entity), owner_class_(owner) {}
+      : meta_(meta),
+        search_meta_(search_meta),
+        measure_(measure),
+        entity_(entity),
+        indexer_(indexer),
+        owner_class_(owner) {}
 
   DiskAnnIndexProvider(const DiskAnnIndexProvider &) = delete;
   DiskAnnIndexProvider &operator=(const DiskAnnIndexProvider &) = delete;
 
  public:
   IndexProvider::Iterator::Pointer create_iterator() override {
-    return IndexProvider::Iterator::Pointer(new (std::nothrow)
-                                                Iterator(entity_));
+    std::unique_ptr<Iterator> iterator(new (std::nothrow) Iterator(
+        meta_, search_meta_, measure_, entity_, indexer_));
+    if (!iterator || !iterator->ready()) {
+      return nullptr;
+    }
+    return IndexProvider::Iterator::Pointer(iterator.release());
+  }
+
+  bool ready() const {
+    return measure_ && entity_ && indexer_;
   }
 
   size_t count(void) const override {
@@ -60,11 +79,25 @@ class DiskAnnIndexProvider : public IndexProvider {
   }
 
   const void *get_vector(uint64_t key) const override {
-    diskann_id_t id = entity_->get_id(static_cast<diskann_key_t>(key));
+    if (!ready()) {
+      return nullptr;
+    }
+
+    const diskann_id_t id = indexer_->get_id(static_cast<diskann_key_t>(key));
     if (id == kInvalidId) {
       return nullptr;
     }
-    return entity_->get_vector(id);
+
+    // IndexProvider pointers remain valid until the next get_vector() call.
+    // Serialize the shared lightweight fetch context so its IOCP state and
+    // result buffer are never mutated by two requests at once.
+    std::lock_guard<std::mutex> lock(fetch_mutex_);
+    FetchState *state = get_fetch_state();
+    if (!state ||
+        indexer_->get_vector(id, state->context, state->buffer) != 0) {
+      return nullptr;
+    }
+    return state->buffer.data();
   }
 
   const std::string &owner_class(void) const override {
@@ -72,15 +105,70 @@ class DiskAnnIndexProvider : public IndexProvider {
   }
 
  private:
+  struct FetchState {
+    IndexContext::Pointer context;
+    std::string buffer;
+  };
+
+  static IndexContext::Pointer create_fetch_context(
+      const IndexMeta &meta, const IndexMeta &search_meta,
+      const IndexMetric::Pointer &measure,
+      const DiskAnnEntity::Pointer &entity) {
+    if (!measure || !entity) {
+      return nullptr;
+    }
+
+    std::unique_ptr<DiskAnnContext> context(
+        new (std::nothrow) DiskAnnContext(search_meta, measure, entity));
+    if (!context ||
+        context->init(DiskAnnContext::kFetchContext, entity->max_degree(),
+                      entity->pq_chunk_num(), search_meta.element_size(),
+                      meta.element_size()) != 0) {
+      return nullptr;
+    }
+    return IndexContext::Pointer(context.release());
+  }
+
+  FetchState *get_fetch_state() const {
+    if (!fetch_state_) {
+      IndexContext::Pointer context =
+          create_fetch_context(meta_, search_meta_, measure_, entity_);
+      if (!context) {
+        return nullptr;
+      }
+      fetch_state_.reset(new (std::nothrow) FetchState{std::move(context), {}});
+    }
+    return fetch_state_.get();
+  }
+
   class Iterator : public IndexProvider::Iterator {
    public:
-    explicit Iterator(const DiskAnnEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U) {
+    Iterator(const IndexMeta &meta, const IndexMeta &search_meta,
+             const IndexMetric::Pointer &measure,
+             const DiskAnnEntity::Pointer &entity,
+             const DiskAnnIndexer::Pointer &indexer)
+        : entity_(entity),
+          indexer_(indexer),
+          context_(create_fetch_context(meta, search_meta, measure, entity)),
+          cur_id_(0U) {
       cur_id_ = next_valid_id(0U);
     }
 
+    bool ready() const {
+      return entity_ && indexer_ && context_;
+    }
+
     const void *data(void) const override {
-      return entity_->get_vector(cur_id_);
+      if (!is_valid() || !ready()) {
+        return nullptr;
+      }
+      if (!data_loaded_) {
+        if (indexer_->get_vector(cur_id_, context_, vector_buffer_) != 0) {
+          return nullptr;
+        }
+        data_loaded_ = true;
+      }
+      return vector_buffer_.data();
     }
 
     bool is_valid(void) const override {
@@ -93,6 +181,8 @@ class DiskAnnIndexProvider : public IndexProvider {
 
     void next(void) override {
       cur_id_ = next_valid_id(cur_id_ + 1);
+      data_loaded_ = false;
+      vector_buffer_.clear();
     }
 
    private:
@@ -108,12 +198,21 @@ class DiskAnnIndexProvider : public IndexProvider {
     }
 
     DiskAnnEntity::Pointer entity_;
+    DiskAnnIndexer::Pointer indexer_;
+    mutable IndexContext::Pointer context_;
+    mutable std::string vector_buffer_;
+    mutable bool data_loaded_{false};
     diskann_id_t cur_id_;
   };
 
   IndexMeta meta_;
+  IndexMeta search_meta_;
+  IndexMetric::Pointer measure_;
   DiskAnnEntity::Pointer entity_;
+  DiskAnnIndexer::Pointer indexer_;
   std::string owner_class_;
+  mutable std::mutex fetch_mutex_;
+  mutable std::unique_ptr<FetchState> fetch_state_;
 };
 
 }  // namespace core

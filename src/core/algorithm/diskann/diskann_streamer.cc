@@ -501,8 +501,14 @@ IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider(void) const {
     LOG_ERROR("Failed to clone DiskAnn entity for provider");
     return nullptr;
   }
-  return IndexProvider::Pointer(new (std::nothrow) DiskAnnIndexProvider(
-      meta_, entity, "DiskAnnStreamer"));
+  std::unique_ptr<DiskAnnIndexProvider> provider(new (
+      std::nothrow) DiskAnnIndexProvider(meta_, search_meta_, measure_, entity,
+                                         diskann_indexer_, "DiskAnnStreamer"));
+  if (!provider || !provider->ready()) {
+    LOG_ERROR("Failed to initialize DiskAnn provider dependencies");
+    return nullptr;
+  }
+  return IndexProvider::Pointer(provider.release());
 }
 
 IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {

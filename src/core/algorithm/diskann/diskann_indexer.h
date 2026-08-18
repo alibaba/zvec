@@ -117,9 +117,8 @@ class DiskAnnIndexer {
   int cache_bfs_levels(uint64_t num_nodes_to_cache, CacheLoadState &state);
   void reset_cache_storage();
 
-  DiskAnnSearcherEntity *entity_;
+  DiskAnnEntity::Pointer entity_{};
 
-  IndexStorage::Pointer storage_{};
   IndexMeta meta_;
 
   uint32_t max_degree_{0};

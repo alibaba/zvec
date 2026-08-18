@@ -39,11 +39,13 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
   element_size_ = element_size;
   pq_chunk_num_ = pq_chunk_num;
 
-  DiskAnnUtil::alloc_aligned((void **)&query_, element_size_, 32);
-  DiskAnnUtil::alloc_aligned((void **)&query_rotated_, element_size_, 32);
-  if (!query_ || !query_rotated_) {
-    LOG_ERROR("Failed to allocate DiskAnn query buffers");
-    return IndexError_NoMemory;
+  if (type != kFetchContext) {
+    DiskAnnUtil::alloc_aligned((void **)&query_, element_size_, 32);
+    DiskAnnUtil::alloc_aligned((void **)&query_rotated_, element_size_, 32);
+    if (!query_ || !query_rotated_) {
+      LOG_ERROR("Failed to allocate DiskAnn query buffers");
+      return IndexError_NoMemory;
+    }
   }
 
   int ret;
@@ -98,6 +100,23 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
       }
       break;
 
+    case kFetchContext:
+      DiskAnnUtil::alloc_aligned(
+          (void **)&sector_buffer_,
+          DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,
+          DiskAnnUtil::kSectorSize);
+      if (!sector_buffer_) {
+        LOG_ERROR("Failed to allocate DiskAnn fetch buffer");
+        return IndexError_NoMemory;
+      }
+
+      ret = setup_io_ctx(io_ctx_);
+      if (ret != 0) {
+        LOG_ERROR("setup fetch io ctx error, ret=%d", ret);
+        return ret;
+      }
+      break;
+
     default:
       LOG_ERROR("Init context failed");
       return IndexError_Runtime;
@@ -107,6 +126,7 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
 }
 
 DiskAnnContext::~DiskAnnContext() {
+  visit_filter_.destroy();
   DiskAnnUtil::free_aligned(query_);
   DiskAnnUtil::free_aligned(query_rotated_);
   DiskAnnUtil::free_aligned(pq_table_dist_buffer_);
@@ -114,7 +134,7 @@ DiskAnnContext::~DiskAnnContext() {
   DiskAnnUtil::free_aligned(coord_buffer_);
   DiskAnnUtil::free_aligned(sector_buffer_);
 
-  if (type_ == kSearcherContext) {
+  if (type_ == kSearcherContext || type_ == kFetchContext) {
     destroy_io_ctx(io_ctx_);
   }
 }
@@ -146,6 +166,7 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
       return IndexError_NotImplemented;
 
     case kSearcherContext:
+    case kFetchContext:
       break;
 
     case kReducerContext:

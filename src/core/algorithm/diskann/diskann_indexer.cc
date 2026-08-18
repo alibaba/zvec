@@ -38,24 +38,38 @@ DiskAnnIndexer::~DiskAnnIndexer() {
 }
 
 int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
-  entity_ = &entity;
   beam_width_ = entity.beam_size();
 
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
+  if (!storage || !vector_segment) {
+    LOG_ERROR("DiskAnn storage or vector segment is missing");
+    return IndexError_InvalidFormat;
+  }
 
   pq_table_ = entity.get_pq_table();
+  entity_ = entity.clone();
+  if (!entity_) {
+    LOG_ERROR("Failed to clone in-memory DiskAnn entity");
+    return IndexError_NoMemory;
+  }
 
   index_segment_offset_ = vector_segment->data_offset();
 
-  reader_.reset(new PlatformAlignedFileReader());
+  const auto file_path = storage->file_path();
+  int ret = storage->cleanup();
+  entity.release_storage();
+  vector_segment.reset();
+  storage.reset();
+  if (ret != 0) {
+    LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
+    return ret;
+  }
 
-  auto file_path = storage->file_path();
+  reader_.reset(new PlatformAlignedFileReader());
   reader_->open(file_path);
 
-  storage->cleanup();
-
-  int ret = setup_io_ctx(init_ctx_);
+  ret = setup_io_ctx(init_ctx_);
   if (ret != 0) {
     LOG_ERROR("setup io ctx error");
     return ret;
