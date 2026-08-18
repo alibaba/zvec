@@ -156,36 +156,38 @@ int IndexFlow::load_internal() {
     metric_ = query_metric;
   }
 
-  // Prepare reformer / query quantizer
+  // Prepare query quantizer
+  const std::string &quantizer_name = meta_.quantizer_name();
+  if (!quantizer_name.empty()) {
+    query_quantizer_ = IndexFactory::CreateQuantizer(quantizer_name);
+    if (!query_quantizer_) {
+      LOG_ERROR("Failed to create quantizer %s", quantizer_name.c_str());
+      return IndexError_NoExist;
+    }
+    ret = query_quantizer_->init(meta_, meta_.quantizer_params());
+    if (ret != 0) {
+      LOG_ERROR("Failed to init quantizer %s", quantizer_name.c_str());
+      query_quantizer_.reset();
+      return ret;
+    }
+  }
+
+  // Prepare reformer
   if (!user_reformer_) {
     const std::string &reformer_name = meta_.reformer_name();
     if (!reformer_name.empty()) {
-      if (IndexFactory::HasQuantizer(reformer_name)) {
-        query_quantizer_ = IndexFactory::CreateQuantizer(reformer_name);
-        if (!query_quantizer_) {
-          LOG_ERROR("Failed to create quantizer %s", reformer_name.c_str());
-          return IndexError_NoExist;
-        }
-        ret = query_quantizer_->init(meta_, meta_.reformer_params());
-        if (ret != 0) {
-          LOG_ERROR("Failed to init quantizer %s", reformer_name.c_str());
-          query_quantizer_.reset();
-          return ret;
-        }
-      } else {
-        reformer_ = IndexFactory::CreateReformer(reformer_name);
-        if (!reformer_) {
-          LOG_ERROR("Failed to create a index reformer with name: %s",
-                    reformer_name.c_str());
-          return IndexError_NoExist;
-        }
-        ret = reformer_->init(meta_.reformer_params());
-        if (ret < 0) {
-          LOG_ERROR("Failed to initialize index reformer %s",
-                    reformer_name.c_str());
-          reformer_ = nullptr;
-          return ret;
-        }
+      reformer_ = IndexFactory::CreateReformer(reformer_name);
+      if (!reformer_) {
+        LOG_ERROR("Failed to create a index reformer with name: %s",
+                  reformer_name.c_str());
+        return IndexError_NoExist;
+      }
+      ret = reformer_->init(meta_.reformer_params());
+      if (ret < 0) {
+        LOG_ERROR("Failed to initialize index reformer %s",
+                  reformer_name.c_str());
+        reformer_ = nullptr;
+        return ret;
       }
     }
   } else {

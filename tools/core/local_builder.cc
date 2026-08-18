@@ -877,7 +877,7 @@ IndexHolder::Pointer quantize_holder(const std::string &name,
   uint32_t out_dim = static_cast<uint32_t>(code_bytes / unit);
 
   if (!quantizer->require_train()) {
-    out_meta.set_reformer(name, 0, params);
+    out_meta.set_quantizer(name, 0, params);
   } else {
     LOG_WARN(
         "Quantizer %s requires training, query-side quantizer info is not "
