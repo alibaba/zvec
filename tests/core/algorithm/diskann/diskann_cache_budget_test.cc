@@ -51,6 +51,12 @@ TEST(DiskAnnCacheBudgetTest, ResolvesFloorAndExistingTenPercentCap) {
   constexpr uint64_t kBytesPerNode = 2048;
   constexpr uint64_t kDocCount = 10000;
 
+  EXPECT_EQ(DiskAnnCacheBudget::MaxNodeCount(0), 0u);
+  EXPECT_EQ(DiskAnnCacheBudget::MaxNodeCount(1), 1u);
+  EXPECT_EQ(DiskAnnCacheBudget::MaxNodeCount(14), 1u);
+  EXPECT_EQ(DiskAnnCacheBudget::MaxNodeCount(15), 2u);
+  EXPECT_EQ(DiskAnnCacheBudget::MaxNodeCount(kDocCount), 1000u);
+
   EXPECT_EQ(DiskAnnCacheBudget::ResolveNodeCount(100 * kBytesPerNode, kDocCount,
                                                  kBytesPerNode),
             100u);

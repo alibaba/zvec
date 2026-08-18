@@ -54,6 +54,20 @@ class DiskAnnCacheBudget {
     return PayloadBytesPerNode(meta, max_degree) + map_bookkeeping;
   }
 
+  static uint64_t MaxNodeCount(uint64_t doc_count) {
+    if (doc_count == 0) {
+      return 0;
+    }
+
+    // Preserve the existing static-cache safety cap: at most 10% of the
+    // index, rounded to the nearest node (and at least one for a non-empty
+    // index). Keep the arithmetic integral so very large document counts do
+    // not lose precision through a floating-point conversion.
+    const uint64_t rounded_ten_percent =
+        doc_count / 10 + (doc_count % 10 >= 5 ? 1 : 0);
+    return std::max<uint64_t>(1, rounded_ten_percent);
+  }
+
   static uint32_t ResolveNodeCount(uint64_t budget_bytes, uint64_t doc_count,
                                    uint64_t estimated_bytes_per_node) {
     if (budget_bytes == 0 || doc_count == 0 || estimated_bytes_per_node == 0) {
@@ -61,11 +75,7 @@ class DiskAnnCacheBudget {
     }
 
     const uint64_t budget_nodes = budget_bytes / estimated_bytes_per_node;
-    // Keep the existing static-cache safety cap: at most 10% of the index,
-    // rounded to the nearest node (and at least one for a non-empty index).
-    const uint64_t rounded_ten_percent =
-        doc_count / 10 + (doc_count % 10 >= 5 ? 1 : 0);
-    const uint64_t ten_percent = std::max<uint64_t>(1, rounded_ten_percent);
+    const uint64_t ten_percent = MaxNodeCount(doc_count);
     const uint64_t addressable_nodes =
         static_cast<uint64_t>(std::numeric_limits<size_t>::max()) /
         estimated_bytes_per_node;

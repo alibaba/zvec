@@ -20,6 +20,8 @@
 namespace zvec {
 namespace core {
 
+class DiskAnnCacheTestPeer;
+
 class DiskAnnSearcher : public IndexSearcher {
  public:
   using ContextPointer = IndexSearcher::Context::Pointer;
@@ -163,6 +165,8 @@ class DiskAnnSearcher : public IndexSearcher {
 
   Stats stats_;
   State state_{STATE_INIT};
+
+  friend class DiskAnnCacheTestPeer;
 };
 
 }  // namespace core

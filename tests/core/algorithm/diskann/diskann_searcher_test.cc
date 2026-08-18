@@ -28,11 +28,113 @@
 #include "diskann_params.h"
 #include "diskann_util.h"
 
+namespace zvec {
+namespace core {
+
+class DiskAnnCacheTestPeer {
+ public:
+  static std::shared_ptr<AlignedFileReader> reader(DiskAnnSearcher *searcher) {
+    return searcher->diskann_indexer_->reader_;
+  }
+
+  static void set_reader(DiskAnnSearcher *searcher,
+                         std::shared_ptr<AlignedFileReader> reader) {
+    searcher->diskann_indexer_->reader_ = std::move(reader);
+  }
+
+  static int configure_cache(DiskAnnSearcher *searcher,
+                             uint32_t cache_node_num) {
+    return searcher->diskann_indexer_->configure_cache(cache_node_num, 0);
+  }
+
+  static size_t coordinate_cache_size(const DiskAnnSearcher *searcher) {
+    return searcher->diskann_indexer_->coord_cache_.size();
+  }
+
+  static size_t neighbor_cache_size(const DiskAnnSearcher *searcher) {
+    return searcher->diskann_indexer_->neighbor_cache_.size();
+  }
+
+  static size_t selected_nodes(const DiskAnnSearcher *searcher) {
+    return searcher->diskann_indexer_->cache_preload_stats_.selected_nodes;
+  }
+
+  static size_t bfs_reused_nodes(const DiskAnnSearcher *searcher) {
+    return searcher->diskann_indexer_->cache_preload_stats_.bfs_reused_nodes;
+  }
+
+  static size_t final_attempted_nodes(const DiskAnnSearcher *searcher) {
+    return searcher->diskann_indexer_->cache_preload_stats_
+        .final_attempted_nodes;
+  }
+};
+
+}  // namespace core
+}  // namespace zvec
+
 using namespace zvec::core;
 using namespace zvec::ailego;
 using namespace std;
 
 constexpr size_t static dim = 64;
+
+namespace {
+
+class CountingAlignedFileReader final : public AlignedFileReader {
+ public:
+  explicit CountingAlignedFileReader(std::shared_ptr<AlignedFileReader> reader)
+      : reader_(std::move(reader)) {}
+
+  IOContext &get_ctx() override {
+    return reader_->get_ctx();
+  }
+
+  void register_thread() override {
+    reader_->register_thread();
+  }
+
+  void deregister_thread() override {
+    reader_->deregister_thread();
+  }
+
+  void deregister_all_threads() override {
+    reader_->deregister_all_threads();
+  }
+
+  void open(const std::string &fname) override {
+    reader_->open(fname);
+  }
+
+  void close() override {
+    reader_->close();
+  }
+
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
+           bool async = false) override {
+    requested_reads_ += read_reqs.size();
+    return reader_->read(read_reqs, ctx, async);
+  }
+
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override {
+    return reader_->submit(batch, read_reqs, ctx);
+  }
+
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override {
+    return reader_->get_completed(batch, ctx, min_completed, completed_indices);
+  }
+
+  size_t requested_reads() const {
+    return requested_reads_;
+  }
+
+ private:
+  std::shared_ptr<AlignedFileReader> reader_;
+  size_t requested_reads_{0};
+};
+
+}  // namespace
 
 class DiskAnnSearcherTest : public testing::Test {
  protected:
@@ -347,7 +449,7 @@ TEST_F(DiskAnnSearcherTest, TestNodeCache) {
   ASSERT_TRUE(searcher != nullptr);
 
   Params search_params;
-  constexpr uint64_t kCacheNodes = 2 * DiskAnnUtil::kMaxSectorReadNum + 3;
+  constexpr uint32_t kCacheNodes = 2 * DiskAnnUtil::kMaxSectorReadNum + 3;
   const uint64_t cache_budget =
       DiskAnnCacheBudget::EstimatedBytesPerNode(*_index_meta_ptr, 32) *
       kCacheNodes;
@@ -360,6 +462,30 @@ TEST_F(DiskAnnSearcherTest, TestNodeCache) {
   auto storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, storage->open(path, false));
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+
+  // Count all reads made by a second cache build. BFS-expanded nodes are
+  // written directly into their final cache slots, so every selected node is
+  // requested from the underlying reader at most once across BFS and the
+  // final preload pass.
+  auto *diskann_searcher = dynamic_cast<DiskAnnSearcher *>(searcher.get());
+  ASSERT_NE(nullptr, diskann_searcher);
+  auto counting_reader = std::make_shared<CountingAlignedFileReader>(
+      DiskAnnCacheTestPeer::reader(diskann_searcher));
+  DiskAnnCacheTestPeer::set_reader(diskann_searcher, counting_reader);
+  ASSERT_EQ(
+      0, DiskAnnCacheTestPeer::configure_cache(diskann_searcher, kCacheNodes));
+  EXPECT_EQ(kCacheNodes,
+            DiskAnnCacheTestPeer::coordinate_cache_size(diskann_searcher));
+  EXPECT_EQ(kCacheNodes,
+            DiskAnnCacheTestPeer::neighbor_cache_size(diskann_searcher));
+  EXPECT_EQ(kCacheNodes,
+            DiskAnnCacheTestPeer::selected_nodes(diskann_searcher));
+  EXPECT_GT(DiskAnnCacheTestPeer::bfs_reused_nodes(diskann_searcher), 0U);
+  EXPECT_EQ(kCacheNodes,
+            DiskAnnCacheTestPeer::bfs_reused_nodes(diskann_searcher) +
+                DiskAnnCacheTestPeer::final_attempted_nodes(diskann_searcher));
+  EXPECT_EQ(kCacheNodes, counting_reader->requested_reads());
+
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 

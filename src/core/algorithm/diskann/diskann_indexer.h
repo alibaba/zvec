@@ -25,6 +25,8 @@
 namespace zvec {
 namespace core {
 
+class DiskAnnCacheTestPeer;
+
 class DiskAnnIndexer {
  public:
   typedef std::shared_ptr<DiskAnnIndexer> Pointer;
@@ -35,13 +37,9 @@ class DiskAnnIndexer {
 
  public:
   int init(DiskAnnSearcherEntity &entity);
-  int load_cache_list(const std::vector<diskann_id_t> &node_list);
 
   int configure_cache(uint32_t cache_node_num,
                       uint64_t cache_node_budget_bytes);
-
-  void cache_bfs_levels(uint64_t num_nodes_to_cache,
-                        std::vector<diskann_id_t> &node_list);
 
   uint32_t cache_node_count_for_budget(uint64_t budget_bytes) const {
     return DiskAnnCacheBudget::ResolveNodeCount(
@@ -87,6 +85,38 @@ class DiskAnnIndexer {
   void populate_group_topk_heaps(DiskAnnContext *ctx);
 
  private:
+  struct CacheSlot {
+    diskann_id_t id{0};
+    uint32_t neighbor_count{0};
+    bool loaded{false};
+  };
+
+  struct CacheLoadState {
+    size_t capacity{0};
+    std::vector<CacheSlot> slots;
+  };
+
+  struct CachePreloadStats {
+    size_t capacity_nodes{0};
+    size_t selected_nodes{0};
+    size_t loaded_nodes{0};
+    size_t failed_nodes{0};
+    size_t bfs_attempted_nodes{0};
+    size_t bfs_reused_nodes{0};
+    size_t bfs_batches{0};
+    size_t final_attempted_nodes{0};
+    size_t final_success_nodes{0};
+    size_t final_batches{0};
+    uint64_t bfs_elapsed_ms{0};
+    uint64_t final_elapsed_ms{0};
+  };
+
+  uint32_t effective_cache_node_count(uint32_t requested_nodes) const;
+  int prepare_cache_storage(size_t capacity, CacheLoadState &state);
+  int load_cache_list(CacheLoadState &state);
+  int cache_bfs_levels(uint64_t num_nodes_to_cache, CacheLoadState &state);
+  void reset_cache_storage();
+
   DiskAnnSearcherEntity *entity_;
 
   IndexStorage::Pointer storage_{};
@@ -107,7 +137,7 @@ class DiskAnnIndexer {
   diskann_id_t medoid_;
   std::vector<diskann_id_t> entrypoints_;
 
-  std::shared_ptr<PlatformAlignedFileReader> reader_{nullptr};
+  std::shared_ptr<AlignedFileReader> reader_{nullptr};
 
   PQTable::Pointer pq_table_;
 
@@ -118,11 +148,14 @@ class DiskAnnIndexer {
 
   std::map<diskann_id_t, void *> coord_cache_;
   std::map<diskann_id_t, std::pair<uint32_t, diskann_id_t *>> neighbor_cache_;
+  CachePreloadStats cache_preload_stats_{};
 
   uint32_t beam_width_{2};
   uint32_t io_limit_{std::numeric_limits<uint32_t>::max()};
 
   uint64_t doc_cnt_{0};
+
+  friend class DiskAnnCacheTestPeer;
 };
 
 }  // namespace core
