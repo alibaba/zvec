@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "avx2/fp32/distance.h"
+#include "avx2/fp32/inner_product.h"
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
 #include "scalar/fp32/inner_product.h"
-#include "scalar/fp32/squared_euclidean.h"
 
 namespace zvec::turbo::avx2 {
 
@@ -49,23 +48,6 @@ float dot_product(const float *a, const float *b, size_t dim) {
   return sum;
 }
 
-float squared_euclidean(const float *a, const float *b, size_t dim) {
-  __m256 accumulator = _mm256_setzero_ps();
-  size_t i = 0;
-  for (; i + 8 <= dim; i += 8) {
-    const __m256 diff =
-        _mm256_sub_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i));
-    accumulator = _mm256_add_ps(accumulator, _mm256_mul_ps(diff, diff));
-  }
-
-  float sum = horizontal_sum(accumulator);
-  for (; i < dim; ++i) {
-    const float diff = a[i] - b[i];
-    sum += diff * diff;
-  }
-  return sum;
-}
-
 }  // namespace
 #endif
 
@@ -84,39 +66,6 @@ void inner_product_fp32_batch_distance_avx2(const void *const *vectors,
                                             size_t dim, float *distances) {
   for (size_t i = 0; i < n; ++i) {
     inner_product_fp32_distance_avx2(vectors[i], query, dim, &distances[i]);
-  }
-}
-
-void squared_euclidean_fp32_distance_avx2(const void *a, const void *b,
-                                          size_t dim, float *distance) {
-#if defined(__AVX2__)
-  *distance = squared_euclidean(static_cast<const float *>(a),
-                                static_cast<const float *>(b), dim);
-#else
-  scalar::squared_euclidean_fp32_distance(a, b, dim, distance);
-#endif
-}
-
-void squared_euclidean_fp32_batch_distance_avx2(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim, float *distances) {
-  for (size_t i = 0; i < n; ++i) {
-    squared_euclidean_fp32_distance_avx2(vectors[i], query, dim, &distances[i]);
-  }
-}
-
-void cosine_fp32_distance_avx2(const void *a, const void *b, size_t dim,
-                               float *distance) {
-  inner_product_fp32_distance_avx2(a, b, dim, distance);
-  *distance += 1.0f;
-}
-
-void cosine_fp32_batch_distance_avx2(const void *const *vectors,
-                                     const void *query, size_t n, size_t dim,
-                                     float *distances) {
-  inner_product_fp32_batch_distance_avx2(vectors, query, n, dim, distances);
-  for (size_t i = 0; i < n; ++i) {
-    distances[i] += 1.0f;
   }
 }
 

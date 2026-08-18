@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "avx2/fp16/distance.h"
+#include "avx2/fp16/squared_euclidean.h"
 #if defined(__AVX2__) && defined(__F16C__)
 #include <immintrin.h>
 #endif
 #include <zvec/ailego/utility/float_helper.h>
-#include "scalar/fp16/inner_product.h"
 #include "scalar/fp16/squared_euclidean.h"
 
 namespace zvec::turbo::avx2 {
@@ -32,25 +31,6 @@ inline float horizontal_sum(__m256 value) {
   sum = _mm_hadd_ps(sum, sum);
   sum = _mm_hadd_ps(sum, sum);
   return _mm_cvtss_f32(sum);
-}
-
-float dot_product(const ailego::Float16 *a, const ailego::Float16 *b,
-                  size_t dim) {
-  __m256 accumulator = _mm256_setzero_ps();
-  size_t i = 0;
-  for (; i + 8 <= dim; i += 8) {
-    const __m256 lhs = _mm256_cvtph_ps(
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + i)));
-    const __m256 rhs = _mm256_cvtph_ps(
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + i)));
-    accumulator = _mm256_add_ps(accumulator, _mm256_mul_ps(lhs, rhs));
-  }
-
-  float sum = horizontal_sum(accumulator);
-  for (; i < dim; ++i) {
-    sum += static_cast<float>(a[i]) * static_cast<float>(b[i]);
-  }
-  return sum;
 }
 
 float squared_euclidean(const ailego::Float16 *a, const ailego::Float16 *b,
@@ -77,24 +57,6 @@ float squared_euclidean(const ailego::Float16 *a, const ailego::Float16 *b,
 }  // namespace
 #endif
 
-void inner_product_fp16_distance_avx2(const void *a, const void *b, size_t dim,
-                                      float *distance) {
-#if defined(__AVX2__) && defined(__F16C__)
-  *distance = -dot_product(static_cast<const ailego::Float16 *>(a),
-                           static_cast<const ailego::Float16 *>(b), dim);
-#else
-  scalar::inner_product_fp16_distance(a, b, dim, distance);
-#endif
-}
-
-void inner_product_fp16_batch_distance_avx2(const void *const *vectors,
-                                            const void *query, size_t n,
-                                            size_t dim, float *distances) {
-  for (size_t i = 0; i < n; ++i) {
-    inner_product_fp16_distance_avx2(vectors[i], query, dim, &distances[i]);
-  }
-}
-
 void squared_euclidean_fp16_distance_avx2(const void *a, const void *b,
                                           size_t dim, float *distance) {
 #if defined(__AVX2__) && defined(__F16C__)
@@ -110,21 +72,6 @@ void squared_euclidean_fp16_batch_distance_avx2(const void *const *vectors,
                                                 size_t dim, float *distances) {
   for (size_t i = 0; i < n; ++i) {
     squared_euclidean_fp16_distance_avx2(vectors[i], query, dim, &distances[i]);
-  }
-}
-
-void cosine_fp16_distance_avx2(const void *a, const void *b, size_t dim,
-                               float *distance) {
-  inner_product_fp16_distance_avx2(a, b, dim, distance);
-  *distance += 1.0f;
-}
-
-void cosine_fp16_batch_distance_avx2(const void *const *vectors,
-                                     const void *query, size_t n, size_t dim,
-                                     float *distances) {
-  inner_product_fp16_batch_distance_avx2(vectors, query, n, dim, distances);
-  for (size_t i = 0; i < n; ++i) {
-    distances[i] += 1.0f;
   }
 }
 

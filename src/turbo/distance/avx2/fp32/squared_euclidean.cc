@@ -1,0 +1,73 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "avx2/fp32/squared_euclidean.h"
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+#include "scalar/fp32/squared_euclidean.h"
+
+namespace zvec::turbo::avx2 {
+
+#if defined(__AVX2__)
+namespace {
+
+inline float horizontal_sum(__m256 value) {
+  const __m128 high = _mm256_extractf128_ps(value, 1);
+  const __m128 low = _mm256_castps256_ps128(value);
+  __m128 sum = _mm_add_ps(low, high);
+  sum = _mm_hadd_ps(sum, sum);
+  sum = _mm_hadd_ps(sum, sum);
+  return _mm_cvtss_f32(sum);
+}
+
+float squared_euclidean(const float *a, const float *b, size_t dim) {
+  __m256 accumulator = _mm256_setzero_ps();
+  size_t i = 0;
+  for (; i + 8 <= dim; i += 8) {
+    const __m256 diff =
+        _mm256_sub_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i));
+    accumulator = _mm256_add_ps(accumulator, _mm256_mul_ps(diff, diff));
+  }
+
+  float sum = horizontal_sum(accumulator);
+  for (; i < dim; ++i) {
+    const float diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return sum;
+}
+
+}  // namespace
+#endif
+
+void squared_euclidean_fp32_distance_avx2(const void *a, const void *b,
+                                          size_t dim, float *distance) {
+#if defined(__AVX2__)
+  *distance = squared_euclidean(static_cast<const float *>(a),
+                                static_cast<const float *>(b), dim);
+#else
+  scalar::squared_euclidean_fp32_distance(a, b, dim, distance);
+#endif
+}
+
+void squared_euclidean_fp32_batch_distance_avx2(const void *const *vectors,
+                                                const void *query, size_t n,
+                                                size_t dim, float *distances) {
+  for (size_t i = 0; i < n; ++i) {
+    squared_euclidean_fp32_distance_avx2(vectors[i], query, dim, &distances[i]);
+  }
+}
+
+}  // namespace zvec::turbo::avx2

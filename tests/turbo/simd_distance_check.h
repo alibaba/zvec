@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Shared helper for the per-quantizer SIMD distance tests. It verifies that
+// the AVX2/AVX512 distance kernels produce the same results as the scalar
+// kernels for every metric across a range of dimensions.
+
+#pragma once
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -24,55 +30,41 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
 
-namespace {
+namespace turbo_test {
 
-using zvec::core::IndexFactory;
-using zvec::core::IndexMeta;
-using zvec::turbo::CpuArchType;
-using zvec::turbo::DataType;
-using zvec::turbo::MetricType;
-using zvec::turbo::QuantizeType;
-
-struct QuantizerCase {
-  const char *factory_name;
-  DataType data_type;
-  QuantizeType quantize_type;
-  bool requires_even_dimension;
-};
-
-const char *metric_name(MetricType metric) {
+inline const char *metric_name(zvec::turbo::MetricType metric) {
   switch (metric) {
-    case MetricType::kSquaredEuclidean:
+    case zvec::turbo::MetricType::kSquaredEuclidean:
       return "SquaredEuclidean";
-    case MetricType::kCosine:
+    case zvec::turbo::MetricType::kCosine:
       return "Cosine";
-    case MetricType::kInnerProduct:
+    case zvec::turbo::MetricType::kInnerProduct:
       return "InnerProduct";
     default:
       return "Unknown";
   }
 }
 
-size_t kernel_dimension(const QuantizerCase &test_case,
-                        const zvec::turbo::Quantizer &quantizer,
-                        size_t original_dim) {
-  if (test_case.data_type == DataType::kInt8) {
+inline size_t kernel_dimension(zvec::turbo::DataType data_type,
+                               const zvec::turbo::Quantizer &quantizer,
+                               size_t original_dim) {
+  if (data_type == zvec::turbo::DataType::kInt8) {
     return quantizer.quantized_datapoint_vector_length();
   }
-  if (test_case.data_type == DataType::kInt4) {
+  if (data_type == zvec::turbo::DataType::kInt4) {
     return quantizer.quantized_datapoint_vector_length() * 2;
   }
   return original_dim;
 }
 
-void expect_near(float actual, float expected) {
+inline void expect_simd_near(float actual, float expected) {
   const float tolerance = 1.0e-4f * std::max(1.0f, std::abs(expected));
   EXPECT_NEAR(actual, expected, tolerance);
 }
 
-void check_arch(const zvec::turbo::DistanceKernels &scalar,
-                const zvec::turbo::DistanceKernels &simd,
-                const std::vector<std::string> &encoded, size_t dim) {
+inline void check_arch(const zvec::turbo::DistanceKernels &scalar,
+                       const zvec::turbo::DistanceKernels &simd,
+                       const std::vector<std::string> &encoded, size_t dim) {
   if (!simd.dist) {
     return;
   }
@@ -83,7 +75,7 @@ void check_arch(const zvec::turbo::DistanceKernels &scalar,
     float actual = 0.0f;
     scalar.dist(encoded[i].data(), encoded[0].data(), dim, &expected);
     simd.dist(encoded[i].data(), encoded[0].data(), dim, &actual);
-    expect_near(actual, expected);
+    expect_simd_near(actual, expected);
   }
 
   std::vector<const void *> candidates(encoded.size() - 1);
@@ -97,22 +89,25 @@ void check_arch(const zvec::turbo::DistanceKernels &scalar,
   simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
              actual.data());
   for (size_t i = 0; i < candidates.size(); ++i) {
-    expect_near(actual[i], expected[i]);
+    expect_simd_near(actual[i], expected[i]);
   }
 }
 
-void check_case(const QuantizerCase &test_case, MetricType metric,
-                size_t original_dim) {
-  SCOPED_TRACE(testing::Message() << "quantizer=" << test_case.factory_name
+inline void check_simd_distance_case(const char *factory_name,
+                                     zvec::turbo::DataType data_type,
+                                     zvec::turbo::QuantizeType quantize_type,
+                                     zvec::turbo::MetricType metric,
+                                     size_t original_dim) {
+  SCOPED_TRACE(testing::Message() << "quantizer=" << factory_name
                                   << ", metric=" << metric_name(metric)
                                   << ", dim=" << original_dim);
 
-  IndexMeta meta;
-  meta.set_meta(IndexMeta::DataType::DT_FP32,
+  zvec::core::IndexMeta meta;
+  meta.set_meta(zvec::core::IndexMeta::DataType::DT_FP32,
                 static_cast<uint32_t>(original_dim));
   meta.set_metric(metric_name(metric), 0, zvec::ailego::Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer(test_case.factory_name);
+  auto quantizer = zvec::core::IndexFactory::CreateQuantizer(factory_name);
   ASSERT_TRUE(quantizer);
   ASSERT_EQ(0, quantizer->init(meta, zvec::ailego::Params()));
 
@@ -132,50 +127,46 @@ void check_case(const QuantizerCase &test_case, MetricType metric,
     quantizer->quantize_data(raw[i].data(), encoded[i].data());
   }
 
-  const size_t dim = kernel_dimension(test_case, *quantizer, original_dim);
+  const size_t dim = kernel_dimension(data_type, *quantizer, original_dim);
   const auto scalar = zvec::turbo::get_distance_kernels(
-      metric, test_case.data_type, test_case.quantize_type,
-      CpuArchType::kScalar);
+      metric, data_type, quantize_type, zvec::turbo::CpuArchType::kScalar);
   ASSERT_TRUE(scalar.dist);
   ASSERT_TRUE(scalar.batch);
 
   check_arch(scalar,
-             zvec::turbo::get_distance_kernels(metric, test_case.data_type,
-                                               test_case.quantize_type,
-                                               CpuArchType::kAVX2),
+             zvec::turbo::get_distance_kernels(metric, data_type, quantize_type,
+                                               zvec::turbo::CpuArchType::kAVX2),
              encoded, dim);
-  check_arch(scalar,
-             zvec::turbo::get_distance_kernels(metric, test_case.data_type,
-                                               test_case.quantize_type,
-                                               CpuArchType::kAVX512),
-             encoded, dim);
+  check_arch(
+      scalar,
+      zvec::turbo::get_distance_kernels(metric, data_type, quantize_type,
+                                        zvec::turbo::CpuArchType::kAVX512),
+      encoded, dim);
 }
 
-TEST(TurboSimdDistance, MatchesScalarForAllQuantizersAndMetrics) {
-  const QuantizerCase cases[] = {
-      {"Fp32Quantizer", DataType::kFp32, QuantizeType::kFp32, false},
-      {"Fp16Quantizer", DataType::kFp16, QuantizeType::kFp16, false},
-      {"Int8Quantizer", DataType::kInt8, QuantizeType::kRecord, false},
-      {"Int4Quantizer", DataType::kInt4, QuantizeType::kRecord, true},
-  };
-  const MetricType metrics[] = {
-      MetricType::kSquaredEuclidean,
-      MetricType::kCosine,
-      MetricType::kInnerProduct,
+// Verify that the AVX2/AVX512 kernels of `factory_name` match the scalar
+// kernels for all metrics across a range of dimensions.
+inline void check_simd_matches_scalar(const char *factory_name,
+                                      zvec::turbo::DataType data_type,
+                                      zvec::turbo::QuantizeType quantize_type,
+                                      bool requires_even_dimension) {
+  const zvec::turbo::MetricType metrics[] = {
+      zvec::turbo::MetricType::kSquaredEuclidean,
+      zvec::turbo::MetricType::kCosine,
+      zvec::turbo::MetricType::kInnerProduct,
   };
   const size_t dimensions[] = {2,  7,  8,  15, 16, 17,  31,
                                32, 33, 63, 64, 65, 126, 130};
 
-  for (const auto &test_case : cases) {
-    for (MetricType metric : metrics) {
-      for (size_t dim : dimensions) {
-        if (test_case.requires_even_dimension && (dim & 1U) != 0) {
-          continue;
-        }
-        check_case(test_case, metric, dim);
+  for (zvec::turbo::MetricType metric : metrics) {
+    for (size_t dim : dimensions) {
+      if (requires_even_dimension && (dim & 1U) != 0) {
+        continue;
       }
+      check_simd_distance_case(factory_name, data_type, quantize_type, metric,
+                               dim);
     }
   }
 }
 
-}  // namespace
+}  // namespace turbo_test

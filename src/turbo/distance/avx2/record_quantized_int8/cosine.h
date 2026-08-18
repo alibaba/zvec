@@ -18,19 +18,9 @@
 
 namespace zvec::turbo::avx2 {
 
-void inner_product_int4_distance_avx2(const void *a, const void *b, size_t dim,
-                                      float *distance);
-void inner_product_int4_batch_distance_avx2(const void *const *vectors,
-                                            const void *query, size_t n,
-                                            size_t dim, float *distances);
-void squared_euclidean_int4_distance_avx2(const void *a, const void *b,
-                                          size_t dim, float *distance);
-void squared_euclidean_int4_batch_distance_avx2(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim, float *distances);
-void cosine_int4_distance_avx2(const void *a, const void *b, size_t dim,
+void cosine_int8_distance_avx2(const void *a, const void *b, size_t dim,
                                float *distance);
-void cosine_int4_batch_distance_avx2(const void *const *vectors,
+void cosine_int8_batch_distance_avx2(const void *const *vectors,
                                      const void *query, size_t n, size_t dim,
                                      float *distances);
 

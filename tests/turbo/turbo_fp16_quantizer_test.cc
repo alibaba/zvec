@@ -21,6 +21,7 @@
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
 #include "zvec/core/framework/index_factory.h"
+#include "simd_distance_check.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -255,4 +256,9 @@ TEST(Fp16Quantizer, ScoreSquaredEuclidean) {
     EXPECT_NEAR(d, expected, 1e-2) << "i=" << i;
     EXPECT_NEAR(results[i - 1], expected, 1e-2) << "i=" << i;
   }
+}
+
+TEST(Fp16Quantizer, SimdDistanceMatchesScalar) {
+  turbo_test::check_simd_matches_scalar("Fp16Quantizer", turbo::DataType::kFp16,
+                                        turbo::QuantizeType::kFp16, false);
 }
