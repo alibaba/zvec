@@ -3174,15 +3174,15 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   auto collection = TestHelper::CreateCollectionWithDoc(
       col_path, *schema, options, 0, doc_count, false);
   ASSERT_NE(collection, nullptr);
-  ASSERT_TRUE(collection->Flush().ok());
+  ASSERT_TRUE(collection->flush().ok());
 
-  // Optimize persists the first batch, then a second batch refills the
-  // writing segment so the next Optimize switches it again.
-  ASSERT_TRUE(collection->Optimize(OptimizeOptions{0}).ok());
+  // The first optimize persists the initial batch, then a second batch refills
+  // the writing segment so the next optimize switches it again.
+  ASSERT_TRUE(collection->optimize(OptimizeOptions{0}).ok());
   ASSERT_TRUE(
       TestHelper::CollectionInsertDoc(collection, doc_count, 2 * doc_count)
           .ok());
-  ASSERT_TRUE(collection->Flush().ok());
+  ASSERT_TRUE(collection->flush().ok());
   collection.reset();
 
   // Read the manifest to learn the referenced segment ids and the id the
