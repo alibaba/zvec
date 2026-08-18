@@ -432,7 +432,7 @@ bool zvec_config_log_is_file_type(const zvec_log_config_t *config) {
   }
   auto *cpp_config =
       reinterpret_cast<const zvec::GlobalConfig::LogConfig *>(config);
-  return cpp_config->GetLoggerType() == zvec::FILE_LOG_TYPE_NAME;
+  return cpp_config->get_logger_type() == zvec::FILE_LOG_TYPE_NAME;
 }
 
 inline const zvec::GlobalConfig::FileLogConfig* file_config_from_config(const zvec_log_config_t *config) {
@@ -564,7 +564,7 @@ zvec_log_type_t zvec_config_data_get_log_type(const zvec_config_data_t *config) 
     return ZVEC_LOG_TYPE_CONSOLE;
   }
 
-  if (cpp_config->log_config->GetLoggerType() == zvec::FILE_LOG_TYPE_NAME) {
+  if (cpp_config->log_config->get_logger_type() == zvec::FILE_LOG_TYPE_NAME) {
     return ZVEC_LOG_TYPE_FILE;
   }
   return ZVEC_LOG_TYPE_CONSOLE;
@@ -723,7 +723,7 @@ zvec_error_code_t zvec_initialize(const zvec_config_data_t *config) {
       }
 
       // Initialize global configuration
-      auto status = zvec::GlobalConfig::Instance().Initialize(cpp_config);
+      auto status = zvec::GlobalConfig::Instance().initialize(cpp_config);
       if (!status.ok()) {
         set_last_error(status.message());
         return ZVEC_ERROR_INTERNAL_ERROR;
@@ -4848,14 +4848,8 @@ zvec_error_code_t zvec_collection_close(zvec_collection_t *collection) {
 
   ZVEC_TRY_RETURN_ERROR(
       "Exception occurred",
-      auto *ptr = reinterpret_cast<std::shared_ptr<zvec::Collection> *>(
-          collection);
-      // Close() is rejected (PermissionDenied) while an iterator is open;
-      // surface that failure instead of silently dropping the handle and
-      // destroying a collection whose schema lock is still held.
-      auto status = (*ptr)->Close();
-      if (!status.ok()) { return status_to_error_code(status); }
-      delete ptr; return ZVEC_OK;)
+      delete reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+      return ZVEC_OK;)
 }
 
 zvec_error_code_t zvec_collection_destroy(zvec_collection_t *collection) {
@@ -4868,7 +4862,7 @@ zvec_error_code_t zvec_collection_destroy(zvec_collection_t *collection) {
       "Exception occurred",
       auto &coll =
           *reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = coll->Destroy();
+      zvec::Status status = coll->destroy();
       if (!status.ok()) { set_last_error(status.message()); }
 
       return status_to_error_code(status);)
@@ -4884,7 +4878,7 @@ zvec_error_code_t zvec_collection_flush(zvec_collection_t *collection) {
       "Exception occurred",
       auto &coll =
           *reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = coll->Flush();
+      zvec::Status status = coll->flush();
 
       if (!status.ok()) { set_last_error(status.message()); }
 
@@ -4902,7 +4896,7 @@ zvec_error_code_t zvec_collection_get_schema(const zvec_collection_t *collection
       "Exception occurred",
       auto &coll = *reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
           collection);
-      auto result = coll->Schema();
+      auto result = coll->schema();
 
       zvec_error_code_t error_code = handle_expected_result(result);
       if (error_code == ZVEC_OK) {
@@ -4928,7 +4922,7 @@ zvec_error_code_t zvec_collection_get_options(const zvec_collection_t *collectio
       auto collection_ptr =
           reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
               collection);
-      auto result = (*collection_ptr)->Options();
+      auto result = (*collection_ptr)->options();
 
       if (!result.has_value()) {
         set_last_error("Failed to get collection option: " +
@@ -4955,7 +4949,7 @@ zvec_error_code_t zvec_collection_get_stats(const zvec_collection_t *collection,
       auto collection_ptr =
           reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
               collection);
-      auto result = (*collection_ptr)->Stats();
+      auto result = (*collection_ptr)->stats();
 
       if (!result.has_value()) {
         set_last_error("Failed to get collection stats: " +
@@ -6794,7 +6788,7 @@ zvec_error_code_t zvec_collection_create_index(
     auto *cpp_params =
         reinterpret_cast<const zvec::IndexParams *>(index_params);
     auto index_params_ptr = cpp_params->clone();
-    auto status = (*coll_ptr)->CreateIndex(field_name_str, index_params_ptr);
+    auto status = (*coll_ptr)->create_index(field_name_str, index_params_ptr);
     return status_to_error_code(status);)
 }
 
@@ -6816,7 +6810,7 @@ zvec_error_code_t zvec_collection_drop_index(zvec_collection_t *collection,
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->DropIndex(column_name);
+      zvec::Status status = (*coll_ptr)->drop_index(column_name);
       if (!status.ok()) { set_last_error(status.message()); }
 
       return status_to_error_code(status);)
@@ -6837,7 +6831,7 @@ zvec_error_code_t zvec_collection_optimize(zvec_collection_t *collection) {
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->Optimize();
+      zvec::Status status = (*coll_ptr)->optimize();
       if (!status.ok()) { set_last_error(status.message()); }
 
       return status_to_error_code(status);)
@@ -6875,7 +6869,7 @@ zvec_error_code_t zvec_collection_add_column(zvec_collection_t *collection,
           std::make_shared<zvec::FieldSchema>(*cpp_schema);
 
       std::string expr = expression ? expression : "";
-      zvec::Status status = (*coll_ptr)->AddColumn(schema, expr);
+      zvec::Status status = (*coll_ptr)->add_column(schema, expr);
 
       if (!status.ok()) { set_last_error(status.message()); }
 
@@ -6900,7 +6894,7 @@ zvec_error_code_t zvec_collection_drop_column(zvec_collection_t *collection,
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->DropColumn(column_name);
+      zvec::Status status = (*coll_ptr)->drop_column(column_name);
 
       if (!status.ok()) { set_last_error(status.message()); }
 
@@ -6933,7 +6927,7 @@ zvec_error_code_t zvec_collection_alter_column(
       }
 
       zvec::Status status =
-          (*coll_ptr)->AlterColumn(column_name, rename, schema);
+          (*coll_ptr)->alter_column(column_name, rename, schema);
       if (!status.ok()) { set_last_error(status.message()); }
 
       return status_to_error_code(status);)
@@ -6963,7 +6957,7 @@ zvec_error_code_t zvec_collection_insert(zvec_collection_t *collection,
       std::vector<zvec::Doc> internal_docs =
           convert_zvec_docs_to_internal(docs, doc_count);
 
-      auto result = (*coll_ptr)->Insert(internal_docs);
+      auto result = (*coll_ptr)->insert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7008,7 +7002,7 @@ zvec_error_code_t zvec_collection_insert_with_results(zvec_collection_t *collect
           convert_zvec_docs_to_internal(docs, doc_count);
       std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
 
-      auto result = (*coll_ptr)->Insert(internal_docs);
+      auto result = (*coll_ptr)->insert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -7036,7 +7030,7 @@ zvec_error_code_t zvec_collection_update(zvec_collection_t *collection,
       std::vector<zvec::Doc> internal_docs =
           convert_zvec_docs_to_internal(docs, doc_count);
 
-      auto result = (*coll_ptr)->Update(internal_docs);
+      auto result = (*coll_ptr)->update(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7078,7 +7072,7 @@ zvec_error_code_t zvec_collection_update_with_results(zvec_collection_t *collect
           convert_zvec_docs_to_internal(docs, doc_count);
       std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
 
-      auto result = (*coll_ptr)->Update(internal_docs);
+      auto result = (*coll_ptr)->update(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -7106,7 +7100,7 @@ zvec_error_code_t zvec_collection_upsert(zvec_collection_t *collection,
       std::vector<zvec::Doc> internal_docs =
           convert_zvec_docs_to_internal(docs, doc_count);
 
-      auto result = (*coll_ptr)->Upsert(internal_docs);
+      auto result = (*coll_ptr)->upsert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7148,7 +7142,7 @@ zvec_error_code_t zvec_collection_upsert_with_results(zvec_collection_t *collect
           convert_zvec_docs_to_internal(docs, doc_count);
       std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
 
-      auto result = (*coll_ptr)->Upsert(internal_docs);
+      auto result = (*coll_ptr)->upsert(internal_docs);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -7180,7 +7174,7 @@ zvec_error_code_t zvec_collection_delete(zvec_collection_t *collection,
         }
       }
 
-      auto result = (*coll_ptr)->Delete(primary_keys);
+      auto result = (*coll_ptr)->delete_(primary_keys);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7227,7 +7221,7 @@ zvec_error_code_t zvec_collection_delete_with_results(zvec_collection_t *collect
         }
       }
 
-      auto result = (*coll_ptr)->Delete(primary_keys);
+      auto result = (*coll_ptr)->delete_(primary_keys);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code != ZVEC_OK) { return error_code; }
@@ -7248,7 +7242,7 @@ zvec_error_code_t zvec_collection_delete_by_filter(zvec_collection_t *collection
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-      auto status = (*coll_ptr)->DeleteByFilter(filter); if (!status.ok()) {
+      auto status = (*coll_ptr)->delete_by_filter(filter); if (!status.ok()) {
         set_last_error(status.message());
         return status_to_error_code(status);
       } 
@@ -7405,7 +7399,7 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
       auto *internal_query =
           reinterpret_cast<const zvec::SearchQuery *>(query);
 
-      auto result = (*coll_ptr)->Query(*internal_query);
+      auto result = (*coll_ptr)->query(*internal_query);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7440,7 +7434,7 @@ zvec_error_code_t zvec_collection_multi_query(
       auto *internal_query =
           reinterpret_cast<const zvec::MultiQuery *>(query);
 
-      auto result = (*coll_ptr)->Query(*internal_query);
+      auto result = (*coll_ptr)->query(*internal_query);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {
@@ -7509,7 +7503,7 @@ zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
       }
 
       // Call C++ fetch method
-      auto result = (*coll_ptr)->Fetch(pk_vector, cpp_output_fields, include_vector);
+      auto result = (*coll_ptr)->fetch(pk_vector, cpp_output_fields, include_vector);
       if (!result.has_value()) {
         set_last_error("Failed to fetch documents: " +
                         result.error().message());
@@ -7517,7 +7511,7 @@ zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
       }
 
       auto doc_map = result.value();
-      auto schema_result = (*coll_ptr)->Schema();
+      auto schema_result = (*coll_ptr)->schema();
       if (schema_result.has_value()) {
         normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
       } 
@@ -7602,7 +7596,7 @@ zvec_error_code_t zvec_collection_create_iterator(
             *reinterpret_cast<const zvec::IteratorOptions *>(options);
       }
 
-      auto result = (*coll_ptr)->CreateIterator(iter_options);
+      auto result = (*coll_ptr)->create_iterator(iter_options);
       if (!result.has_value()) {
         zvec_error_code_t code = status_to_error_code(result.error());
         SET_LAST_ERROR(code, "Failed to create iterator: " +
@@ -7629,7 +7623,7 @@ zvec_error_code_t zvec_doc_iterator_next(zvec_doc_iterator_t *iter,
       auto iter_ptr =
           reinterpret_cast<std::shared_ptr<zvec::DocIterator> *>(iter);
 
-      auto result = (*iter_ptr)->Next();
+      auto result = (*iter_ptr)->next();
       if (!result.has_value()) {
         zvec_error_code_t code = status_to_error_code(result.error());
         SET_LAST_ERROR(code,

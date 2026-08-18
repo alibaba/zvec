@@ -80,7 +80,7 @@ int parse_and_load_index_param(
     storage_options.create_new = false;
     storage_options.read_only = true;
 
-    int ret = index->Open(index_dir, storage_options);
+    int ret = index->open(index_dir, storage_options);
     if (0 != ret) {
       LOG_ERROR("Index open failed with ret %d", ret);
       return -1;
@@ -166,7 +166,7 @@ int parse_and_load_index_param(
           storage_options.read_only = true;
 
           int ret =
-              reference_index->Open(reference_index_path, storage_options);
+              reference_index->open(reference_index_path, storage_options);
           if (0 != ret) {
             LOG_ERROR("Index open failed with ret %d", ret);
             return -1;

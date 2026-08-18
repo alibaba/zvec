@@ -36,34 +36,47 @@ struct DocIterator::Impl {
   // current_reader is declared LAST so Arrow file handles are released
   // before the kept-alive segments are destroyed (important on Windows).
   // The collection must outlive the iterator (release_slot refers to it).
+  ~Impl() {
+    if (release_slot) {
+      release_slot();
+    }
+  }
 
-  // Decrements the collection's active-iterator count on Close; injected by
-  // CollectionImpl::CreateIterator.
+  // Decrements the collection's active-iterator count; injected by
+  // CollectionImpl::create_iterator and called from the destructor above.
   std::function<void()> release_slot;
 
+  // Snapshot taken at creation time.
   std::vector<Segment::Ptr> segments;  // keep Segment alive
   DeleteStore::Ptr delete_store;       // keep delete bitmap alive
   CollectionSchema::Ptr schema;
-  // Kept so segment readers can be opened lazily, one segment at a time.
+
+  // Inputs for opening segment readers lazily, one segment at a time.
   std::vector<std::string> iterator_columns;
   IndexFilter::Ptr filter;
-  size_t current_segment_index{0};
   bool include_vector{false};
-  // Column indices resolved once per segment reader by ResolveReaderColumns.
+
+  // Traversal state.
+  size_t current_segment_index{0};
+  // Column indices resolved once per segment reader by
+  // resolve_reader_columns.
   int uid_col{-1};
   int gdoc_col{-1};
   int row_id_col{-1};
   std::vector<std::pair<const FieldSchema *, int>> forward_cols;
-  // Batch currently being materialized. A Parquet scan returns a whole row
-  // group per ReadNext (up to ~1M rows), so docs are materialized from it in
-  // bounded windows of at most kMaxRecordBatchNumRows rows.
+
+  // Windowed materialization of the current batch. A Parquet scan returns
+  // a whole row group per ReadNext (up to ~1M rows), so docs are
+  // materialized from it in bounded windows of at most
+  // kMaxRecordBatchNumRows rows.
   std::shared_ptr<arrow::RecordBatch> current_batch;
   int64_t batch_offset{0};  // first row of the next window in current_batch
   std::vector<Doc::Ptr> batch_docs;
   size_t current_row{0};
-  // First failure; sticky so a caller ignoring it cannot keep iterating over
-  // a partially filled window.
+  // First failure; sticky so a caller ignoring it cannot keep iterating
+  // over a partially filled window.
   Status error{Status::OK()};
+
   // Reader for the current segment only (opened lazily, at most one open).
   RecordBatchReaderPtr current_reader;
 };

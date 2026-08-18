@@ -34,20 +34,19 @@ FilteringReader::FilteringReader(
 
 arrow::Status FilteringReader::ReadNext(
     std::shared_ptr<arrow::RecordBatch> *batch) {
+  // Loop-invariant checks: no filter means batches pass through untouched,
+  // and the delete-key column was resolved and validated at construction.
+  if (!filter_) {
+    return inner_reader_->ReadNext(batch);
+  }
+  if (!schema_error_.ok()) {
+    return schema_error_;
+  }
+
   while (true) {
     ARROW_RETURN_NOT_OK(inner_reader_->ReadNext(batch));
     if (!*batch) {
       return arrow::Status::OK();
-    }
-
-    // No filter → return as-is
-    if (!filter_) {
-      return arrow::Status::OK();
-    }
-
-    // Column index resolved and validated at construction.
-    if (!schema_error_.ok()) {
-      return schema_error_;
     }
     auto *gdoc_array = static_cast<const arrow::UInt64Array *>(
         (*batch)->column(gdoc_col_).get());

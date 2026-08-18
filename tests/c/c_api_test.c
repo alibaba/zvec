@@ -6552,9 +6552,9 @@ void test_iterator_basic(void) {
   TEST_END();
 }
 
-// Exclusive operations return ZVEC_ERROR_FAILED_PRECONDITION while an
-// iterator is open, and succeed again after the iterator is closed.
-void test_iterator_lock_rejection(void) {
+// Flush is unaffected by open iterators, and closing the iterator handle
+// only releases the handle itself.
+void test_iterator_concurrent_semantics(void) {
   TEST_START();
   char dir[] = "./zvec_test_c_iter_lockrej";
   zvec_test_delete_dir(dir);
@@ -6578,10 +6578,10 @@ void test_iterator_lock_rejection(void) {
   TEST_ASSERT(err == ZVEC_OK && doc != NULL);
   zvec_doc_destroy(doc);
 
+  // flush is not blocked by open iterators, and closing the handle only
+  // releases the handle itself (the collection is closed later).
   err = zvec_collection_flush(collection);
-  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
-  err = zvec_collection_close(collection);
-  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
+  TEST_ASSERT(err == ZVEC_OK);
 
   zvec_doc_iterator_close(iter);
 
@@ -6817,7 +6817,7 @@ int main(void) {
 
   // Document iterator tests
   test_iterator_basic();
-  test_iterator_lock_rejection();
+  test_iterator_concurrent_semantics();
   test_iterator_exclude_vector();
   test_iterator_output_fields();
   test_iterator_empty();

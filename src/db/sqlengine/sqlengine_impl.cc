@@ -431,29 +431,6 @@ Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
                       const FieldSchema &field_schema,
                       DocPtrList::iterator doc_it) {
   switch (field_schema.data_type()) {
-    case DataType::BINARY:
-    case DataType::STRING:
-    case DataType::BOOL:
-    case DataType::INT32:
-    case DataType::INT64:
-    case DataType::UINT32:
-    case DataType::UINT64:
-    case DataType::FLOAT:
-    case DataType::DOUBLE:
-    case DataType::ARRAY_BINARY:
-    case DataType::ARRAY_STRING:
-    case DataType::ARRAY_BOOL:
-    case DataType::ARRAY_INT32:
-    case DataType::ARRAY_INT64:
-    case DataType::ARRAY_UINT32:
-    case DataType::ARRAY_UINT64:
-    case DataType::ARRAY_FLOAT:
-    case DataType::ARRAY_DOUBLE:
-      // Scalar/array fields: shared column-level conversion (dispatches the
-      // type and checks null_count once per column; see
-      // doc_field_converter.h).
-      return ConvertArrowColumnToDocFields(chunk.get(), field_schema, doc_it);
-
     case DataType::VECTOR_FP32:
       return fill_doc_vector<float>((arrow::BinaryArray *)chunk.get(),
                                     field_schema.name(),
@@ -497,9 +474,10 @@ Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
           (arrow::StructArray *)chunk.get(), field_schema.name(), doc_it);
 
     default:
-      return Status::InvalidArgument("Unsupported data type for field [",
-                                     field_schema.name(),
-                                     "]: data_type=", field_schema.data_type());
+      // Scalar/array fields: shared column-level conversion (dispatches the
+      // type and checks null_count once per column; see
+      // doc_field_converter.h). Unsupported types fail inside it.
+      return ConvertArrowColumnToDocFields(chunk.get(), field_schema, doc_it);
   }
   return Status::OK();
 }

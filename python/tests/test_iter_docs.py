@@ -153,7 +153,7 @@ def test_iter_docs_early_close_releases_lock(iter_collection):
     next(it)  # consume one doc, iterator stays open
     # Exclusive operations are rejected while the iterator is open.
     with pytest.raises(Exception):
-        iter_collection.flush()
+        iter_collection.destroy()
 
     it.close()  # explicit close releases the slot
     # Exclusive operations succeed again; close is idempotent.
@@ -222,8 +222,9 @@ def test_iter_docs_isolation(iter_collection):
     assert first is not None
 
     # Insert more docs after the iterator started. Writes are allowed while
-    # the iterator is open; flush is not (the iterator holds the schema
-    # lock), and the new docs are invisible to the snapshot either way.
+    # the iterator is open; exclusive schema operations are not (the
+    # active-iterator count rejects them), and the new docs are invisible
+    # to the snapshot either way.
     iter_collection.insert(
         [
             Doc(
@@ -235,7 +236,7 @@ def test_iter_docs_isolation(iter_collection):
         ]
     )
     with pytest.raises(RuntimeError):
-        iter_collection.flush()
+        iter_collection.destroy()
 
     # Count remaining from the original snapshot (should be 9, total 10).
     remaining = sum(1 for _ in it)

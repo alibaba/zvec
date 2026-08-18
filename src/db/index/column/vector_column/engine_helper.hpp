@@ -352,14 +352,14 @@ class ProximaEngineHelper {
     auto index_param_builder = std::make_shared<IndexParamBuilderType>();
 
     // db will ensure the id is consecutive
-    index_param_builder->WithUseIDMap(false);
+    index_param_builder->with_use_id_map(false);
 
-    index_param_builder->WithIsSparse(field_schema.is_sparse_vector())
-        .WithDimension(field_schema.dimension());
+    index_param_builder->with_is_sparse(field_schema.is_sparse_vector())
+        .with_dimension(field_schema.dimension());
     if (auto data_type_result =
             convert_to_engine_data_type(field_schema.data_type());
         data_type_result.has_value()) {
-      index_param_builder->WithDataType(data_type_result.value());
+      index_param_builder->with_data_type(data_type_result.value());
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported data type"));
@@ -367,7 +367,7 @@ class ProximaEngineHelper {
     if (auto metric_type_result =
             convert_to_engine_metric_type(db_index_params->metric_type());
         metric_type_result.has_value()) {
-      index_param_builder->WithMetricType(metric_type_result.value());
+      index_param_builder->with_metric_type(metric_type_result.value());
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported metric type"));
@@ -375,13 +375,13 @@ class ProximaEngineHelper {
     if (auto quantize_type =
             convert_to_engine_quantize_type(db_index_params->quantize_type());
         quantize_type.has_value()) {
-      index_param_builder->WithQuantizerParam(
+      index_param_builder->with_quantizer_param(
           core_interface::QuantizerParam::Create(quantize_type.value()));
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported quantize type"));
     }
-    index_param_builder->WithEnableRotate(db_index_params->enable_rotate());
+    index_param_builder->with_enable_rotate(db_index_params->enable_rotate());
     return index_param_builder;
   }
 
@@ -404,7 +404,7 @@ class ProximaEngineHelper {
               Status::InvalidArgument("failed to build index param: " +
                                       index_param_builder.error().message()));
         }
-        return index_param_builder.value()->Build();
+        return index_param_builder.value()->build();
       }
 
       case IndexType::HNSW: {
@@ -421,13 +421,13 @@ class ProximaEngineHelper {
 
         auto db_index_params = dynamic_cast<const HnswIndexParams *>(
             field_schema.index_params().get());
-        index_param_builder->WithM(db_index_params->m());
-        index_param_builder->WithEFConstruction(
+        index_param_builder->with_m(db_index_params->m());
+        index_param_builder->with_ef_construction(
             db_index_params->ef_construction());
-        index_param_builder->WithUseContiguousMemory(
+        index_param_builder->with_use_contiguous_memory(
             db_index_params->use_contiguous_memory());
 
-        return index_param_builder->Build();
+        return index_param_builder->build();
       }
 
       case IndexType::HNSW_RABITQ: {
@@ -443,17 +443,17 @@ class ProximaEngineHelper {
 
         auto db_index_params = dynamic_cast<const HnswRabitqIndexParams *>(
             field_schema.index_params().get());
-        index_param_builder->WithM(db_index_params->m());
-        index_param_builder->WithEFConstruction(
+        index_param_builder->with_m(db_index_params->m());
+        index_param_builder->with_ef_construction(
             db_index_params->ef_construction());
-        index_param_builder->WithTotalBits(db_index_params->total_bits());
-        index_param_builder->WithNumClusters(db_index_params->num_clusters());
-        index_param_builder->WithSampleCount(db_index_params->sample_count());
-        index_param_builder->WithProvider(
+        index_param_builder->with_total_bits(db_index_params->total_bits());
+        index_param_builder->with_num_clusters(db_index_params->num_clusters());
+        index_param_builder->with_sample_count(db_index_params->sample_count());
+        index_param_builder->with_provider(
             db_index_params->raw_vector_provider());
-        index_param_builder->WithReformer(db_index_params->rabitq_reformer());
+        index_param_builder->with_reformer(db_index_params->rabitq_reformer());
 
-        return index_param_builder->Build();
+        return index_param_builder->build();
       }
 
       case IndexType::IVF: {
@@ -468,11 +468,11 @@ class ProximaEngineHelper {
 
         auto db_index_params = dynamic_cast<const IVFIndexParams *>(
             field_schema.index_params().get());
-        index_param_builder->WithNList(db_index_params->n_list());
-        index_param_builder->WithNiters(db_index_params->n_iters());
-        index_param_builder->WithUseSoar(db_index_params->use_soar());
+        index_param_builder->with_n_list(db_index_params->n_list());
+        index_param_builder->with_n_iters(db_index_params->n_iters());
+        index_param_builder->with_use_soar(db_index_params->use_soar());
 
-        return index_param_builder->Build();
+        return index_param_builder->build();
       }
 
       case IndexType::IVF_RABITQ: {
@@ -488,11 +488,11 @@ class ProximaEngineHelper {
 
         auto db_index_params = dynamic_cast<const IvfRabitqIndexParams *>(
             field_schema.index_params().get());
-        index_param_builder->WithNlist(db_index_params->nlist());
-        index_param_builder->WithTotalBits(db_index_params->total_bits());
-        index_param_builder->WithSampleCount(db_index_params->sample_count());
+        index_param_builder->with_n_list(db_index_params->nlist());
+        index_param_builder->with_total_bits(db_index_params->total_bits());
+        index_param_builder->with_sample_count(db_index_params->sample_count());
 
-        return index_param_builder->Build();
+        return index_param_builder->build();
       }
 
       case IndexType::DISKANN: {
@@ -509,11 +509,11 @@ class ProximaEngineHelper {
 
         auto db_index_params = dynamic_cast<const DiskAnnIndexParams *>(
             field_schema.index_params().get());
-        index_param_builder->WithMaxDegree(db_index_params->max_degree());
-        index_param_builder->WithListSize(db_index_params->list_size());
-        index_param_builder->WithPqChunkNum(db_index_params->pq_chunk_num());
+        index_param_builder->with_max_degree(db_index_params->max_degree());
+        index_param_builder->with_list_size(db_index_params->list_size());
+        index_param_builder->with_pq_chunk_num(db_index_params->pq_chunk_num());
 
-        return index_param_builder->Build();
+        return index_param_builder->build();
       }
 
       case IndexType::VAMANA: {
@@ -530,15 +530,15 @@ class ProximaEngineHelper {
 
         auto db_index_params = dynamic_cast<const VamanaIndexParams *>(
             field_schema.index_params().get());
-        index_param_builder->WithMaxDegree(db_index_params->max_degree());
-        index_param_builder->WithSearchListSize(
+        index_param_builder->with_max_degree(db_index_params->max_degree());
+        index_param_builder->with_search_list_size(
             db_index_params->search_list_size());
-        index_param_builder->WithAlpha(db_index_params->alpha());
-        index_param_builder->WithSaturateGraph(
+        index_param_builder->with_alpha(db_index_params->alpha());
+        index_param_builder->with_saturate_graph(
             db_index_params->saturate_graph());
-        index_param_builder->WithUseContiguousMemory(
+        index_param_builder->with_use_contiguous_memory(
             db_index_params->use_contiguous_memory());
-        index_param_builder->WithTwoPassBuild(
+        index_param_builder->with_two_pass_build(
             db_index_params->two_pass_build());
         // db_index_params->use_id_map() is intentionally ignored here:
         // db ensures id is consecutive (see _build_common_index_param), so
@@ -546,7 +546,7 @@ class ProximaEngineHelper {
         // builder. The flag is preserved on the db-side params for schema
         // round-trip / introspection only.
 
-        return index_param_builder->Build();
+        return index_param_builder->build();
       }
 
       default:

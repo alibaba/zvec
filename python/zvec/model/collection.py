@@ -51,7 +51,7 @@ def _require_positive_integer(value, name: str) -> None:
         raise ValueError(f"{name} must be a positive integer")
 
 
-class DocIterator:
+class DocIterator(Iterator[Doc], contextlib.AbstractContextManager["DocIterator"]):
     """Iterator over all documents in a collection.
 
     Returned by :meth:`Collection.iter_docs`. Supports the iterator protocol,
@@ -62,9 +62,9 @@ class DocIterator:
                 ...
 
     Closing the iterator releases the collection's active-iterator slot;
-    while any iterator is open, schema changes and flush/close/destroy are
-    rejected, and optimize either fails or blocks until the iterators close,
-    so deterministic closing matters.
+    while any iterator is open, schema changes and destroy are rejected,
+    close waits for the iterators, and optimize either fails or waits, so
+    deterministic closing matters.
     """
 
     def __init__(self, core_iterator, schema):
@@ -72,10 +72,7 @@ class DocIterator:
         self._schema = schema
         self._closed = False
 
-    def __iter__(self):
-        return self
-
-    def __next__(self):
+    def __next__(self) -> Doc:
         if self._closed:
             raise StopIteration
 
@@ -85,10 +82,9 @@ class DocIterator:
                 py_doc = convert_to_py_doc(core_doc, self._schema)
                 if py_doc is not None:
                     return py_doc
-        except StopIteration:
-            self.close()
-            raise
         except BaseException:
+            # StopIteration is a BaseException subclass, so this also covers
+            # normal exhaustion; always release the slot before propagating.
             self.close()
             raise
 
@@ -98,10 +94,9 @@ class DocIterator:
             self._closed = True
             self._core_iterator.close()
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(self, exc_type, exc_value, traceback):
+        # AbstractContextManager's default __exit__ does not release
+        # resources, so it must be overridden here.
         self.close()
         return False
 
@@ -463,7 +458,7 @@ class Collection:
         *,
         output_fields: Optional[list[str]] = None,
         include_vector: bool = True,
-    ) -> Iterator[Doc]:
+    ) -> DocIterator:
         """Iterate over all documents in the collection.
 
         Streams documents one by one using an isolated snapshot taken at call
@@ -475,13 +470,12 @@ class Collection:
         collections are scanned without any write.
 
         While any iterator is open, schema changes
-        (create_index/drop_index/add_column/alter_column/drop_column), flush,
-        close and destroy raise an error, and optimize either raises an
-        error (when started while an iterator is open) or blocks until the
-        iterators close (when it is already compacting). Concurrent writes
-        and queries are not affected. The iterator is closed automatically
-        when exhausted, so prefer the with-statement when iteration may end
-        early.
+        (create_index/drop_index/add_column/alter_column/drop_column) and
+        destroy raise an error, close waits for the iterators to close, and
+        optimize either raises an error (seal phase) or waits for the
+        iterators to close (commit phase). Flush, writes and queries are
+        not affected. The iterator is closed automatically when exhausted,
+        so prefer the with-statement when iteration may end early.
 
         Args:
             output_fields (Optional[list[str]], optional): Scalar fields to

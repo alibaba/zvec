@@ -38,9 +38,9 @@ class ZVEC_API DocIterator {
   // !has_value() → error
   // has_value() && value() == nullptr → EOF
   // has_value() && value() != nullptr → success
-  Result<Doc::Ptr> Next();
+  Result<Doc::Ptr> next();
 
-  void Close();
+  void close();
 
   ~DocIterator();
 

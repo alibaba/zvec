@@ -174,7 +174,7 @@ TEST_F(CrashRecoveryTest, BasicInsertAndReopen) {
   auto result = Collection::Open(dir_path_, options_);
   ASSERT_TRUE(result.has_value());
   auto collection = result.value();
-  ASSERT_EQ(collection->Stats().value().doc_count, 5000)
+  ASSERT_EQ(collection->stats().value().doc_count, 5000)
       << "Document count mismatch";
 }
 
@@ -194,7 +194,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->Stats().value().doc_count};
+  uint64_t doc_count{collection->stats().value().doc_count};
   ASSERT_GT(doc_count, 800)
       << "Document count is too low after 5s of insertion and recovery";
 
@@ -202,7 +202,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
     const auto expected_doc = CreateTestDoc(doc_id, 0);
     std::vector<std::string> pks{};
     pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
+    if (auto res = collection->fetch(pks); res) {
       auto map = res.value();
       if (map.find(expected_doc.pk()) == map.end()) {
         FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
@@ -234,19 +234,19 @@ TEST_F(CrashRecoveryTest, OptimizeAfterCrashRecoveryPersistsReplayedData) {
         << "Failed to reopen collection after crash recovery";
     auto collection = result.value();
 
-    recovered_doc_count = collection->Stats().value().doc_count;
+    recovered_doc_count = collection->stats().value().doc_count;
     ASSERT_GT(recovered_doc_count, 0)
         << "No documents were recovered from the WAL";
 
-    auto status = collection->Optimize();
+    auto status = collection->optimize();
     ASSERT_TRUE(status.ok()) << status.message();
-    ASSERT_EQ(collection->Stats().value().doc_count, recovered_doc_count);
+    ASSERT_EQ(collection->stats().value().doc_count, recovered_doc_count);
   }
 
   auto result = Collection::Open(dir_path_, options_);
   ASSERT_TRUE(result.has_value())
       << "Failed to reopen collection after optimizing recovered data";
-  ASSERT_EQ(result.value()->Stats().value().doc_count, recovered_doc_count)
+  ASSERT_EQ(result.value()->stats().value().doc_count, recovered_doc_count)
       << "Optimize discarded documents restored from the WAL";
 }
 
@@ -265,7 +265,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
     auto result = Collection::Open(dir_path_, options_);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
-    ASSERT_EQ(collection->Stats().value().doc_count, 5000)
+    ASSERT_EQ(collection->stats().value().doc_count, 5000)
         << "Document count mismatch";
   }
 
@@ -275,7 +275,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->Stats().value().doc_count};
+  uint64_t doc_count{collection->stats().value().doc_count};
   ASSERT_GT(doc_count, 6000)
       << "Document count is too low after 5s of insertion and recovery";
 
@@ -288,7 +288,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
     }
     std::vector<std::string> pks{};
     pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
+    if (auto res = collection->fetch(pks); res) {
       auto map = res.value();
       if (map.find(expected_doc.pk()) == map.end()) {
         FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
@@ -318,7 +318,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
     auto result = Collection::Open(dir_path_, options_);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
-    ASSERT_EQ(collection->Stats().value().doc_count, 18000)
+    ASSERT_EQ(collection->stats().value().doc_count, 18000)
         << "Document count mismatch";
   }
 
@@ -328,14 +328,14 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->Stats().value().doc_count};
+  uint64_t doc_count{collection->stats().value().doc_count};
   ASSERT_EQ(doc_count, 18000) << "Document count mismatch after crash recovery";
 
   // Verify docs before the update range are untouched
   for (int doc_id = 0; doc_id < 3000; doc_id++) {
     Doc expected_doc = CreateTestDoc(doc_id, 0);
     std::vector<std::string> pks{expected_doc.pk()};
-    auto res = collection->Fetch(pks);
+    auto res = collection->fetch(pks);
     ASSERT_TRUE(res.has_value())
         << "Failed to fetch doc[" << expected_doc.pk() << "]";
     auto map = res.value();
@@ -354,7 +354,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
   for (int doc_id = 3000; doc_id < 15000; doc_id++) {
     std::string pk = "pk_" + std::to_string(doc_id);
     std::vector<std::string> pks{pk};
-    auto res = collection->Fetch(pks);
+    auto res = collection->fetch(pks);
     ASSERT_TRUE(res.has_value()) << "Failed to fetch doc[" << pk << "]";
     auto map = res.value();
     ASSERT_NE(map.find(pk), map.end())
@@ -406,7 +406,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
     auto result = Collection::Open(dir_path_, options_);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
-    ASSERT_EQ(collection->Stats().value().doc_count, 18000)
+    ASSERT_EQ(collection->stats().value().doc_count, 18000)
         << "Document count mismatch";
   }
 
@@ -416,7 +416,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->Stats().value().doc_count};
+  uint64_t doc_count{collection->stats().value().doc_count};
   ASSERT_LT(doc_count, 18000)
       << "No deletes appear to have been applied before the crash";
   ASSERT_GT(doc_count, 6000)
@@ -426,7 +426,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
     auto expected_doc = CreateTestDoc(doc_id, 0);
     std::vector<std::string> pks{};
     pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
+    if (auto res = collection->fetch(pks); res) {
       auto map = res.value();
       auto it = map.find(expected_doc.pk());
       ASSERT_NE(it, map.end())

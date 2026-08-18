@@ -26,8 +26,8 @@ namespace {
 
 // Resolve and validate column indices from the reader's schema, once per
 // segment reader (the schema is stable across all its batches).
-Status ResolveReaderColumns(DocIterator::Impl *impl,
-                            const arrow::Schema &schema) {
+Status resolve_reader_columns(DocIterator::Impl *impl,
+                              const arrow::Schema &schema) {
   impl->uid_col = schema.GetFieldIndex(USER_ID);
   if (impl->uid_col < 0 ||
       schema.field(impl->uid_col)->type()->id() != arrow::Type::STRING) {
@@ -63,7 +63,7 @@ Status ResolveReaderColumns(DocIterator::Impl *impl,
 // window (not the batch) bounds doc memory: a Parquet scan returns a whole
 // row group per ReadNext (up to ~1M rows), so materializing a full batch at
 // once would spike memory.
-Status MaterializeWindow(DocIterator::Impl *impl, int64_t begin, int64_t end) {
+Status materialize_window(DocIterator::Impl *impl, int64_t begin, int64_t end) {
   const auto &batch = *impl->current_batch;
   int64_t num_rows = end - begin;
   impl->batch_docs.clear();
@@ -125,25 +125,16 @@ Status MaterializeWindow(DocIterator::Impl *impl, int64_t begin, int64_t end) {
 DocIterator::DocIterator(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
 DocIterator::~DocIterator() {
-  Close();
+  close();
 }
 
-void DocIterator::Close() {
-  if (!impl_) {
-    return;
-  }
-  // Release the active-iterator slot first (takes the collection's
-  // exclusive schema lock), then tear down resources. Member declaration
-  // order guarantees safe teardown of the rest: current_reader is declared
-  // last, so Arrow file handles are released before the kept-alive segments
-  // are destroyed.
-  if (impl_->release_slot) {
-    impl_->release_slot();
-  }
+void DocIterator::close() {
+  // Idempotent: teardown (slot release, then resources in reverse
+  // declaration order) lives in ~Impl, see doc_iterator_internal.h.
   impl_.reset();
 }
 
-Result<Doc::Ptr> DocIterator::Next() {
+Result<Doc::Ptr> DocIterator::next() {
   if (!impl_) {
     return tl::make_unexpected(Status::InternalError("Iterator is closed"));
   }
@@ -170,9 +161,10 @@ Result<Doc::Ptr> DocIterator::Next() {
           }
           impl_->current_reader =
               FilteringReader::Make(std::move(scalar_reader), impl_->filter);
-          auto rs = ResolveReaderColumns(impl_.get(),
-                                         *impl_->current_reader->schema());
+          auto rs = resolve_reader_columns(impl_.get(),
+                                           *impl_->current_reader->schema());
           if (!rs.ok()) {
+            impl_->error = rs;
             return tl::make_unexpected(rs);
           }
         }
@@ -203,7 +195,7 @@ Result<Doc::Ptr> DocIterator::Next() {
     int64_t begin = impl_->batch_offset;
     int64_t end = std::min(begin + kMaxRecordBatchNumRows,
                            impl_->current_batch->num_rows());
-    auto ms = MaterializeWindow(impl_.get(), begin, end);
+    auto ms = materialize_window(impl_.get(), begin, end);
     if (!ms.ok()) {
       // Sticky failure: drop the partial window and keep returning the error
       // instead of handing out incomplete docs.

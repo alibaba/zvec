@@ -55,60 +55,60 @@ class ZVEC_API Collection {
   virtual ~Collection();
 
  public:
-  virtual Status Close() = 0;
+  virtual Status close() = 0;
 
-  virtual Status Destroy() = 0;
+  virtual Status destroy() = 0;
 
-  virtual Status Flush() = 0;
+  virtual Status flush() = 0;
 
-  virtual Result<std::string> Path() const = 0;
+  virtual Result<std::string> path() const = 0;
 
-  virtual Result<CollectionStats> Stats() const = 0;
+  virtual Result<CollectionStats> stats() const = 0;
 
-  virtual Result<CollectionSchema> Schema() const = 0;
+  virtual Result<CollectionSchema> schema() const = 0;
 
-  virtual Result<CollectionOptions> Options() const = 0;
+  virtual Result<CollectionOptions> options() const = 0;
 
  public:
-  virtual Status CreateIndex(
+  virtual Status create_index(
       const std::string &column_name, const IndexParams::Ptr &index_params,
       const CreateIndexOptions &options = CreateIndexOptions{0}) = 0;
 
-  virtual Status DropIndex(const std::string &column_name) = 0;
+  virtual Status drop_index(const std::string &column_name) = 0;
 
-  virtual Status Optimize(const OptimizeOptions &options = OptimizeOptions{
+  virtual Status optimize(const OptimizeOptions &options = OptimizeOptions{
                               0}) = 0;
 
-  virtual Status AddColumn(const FieldSchema::Ptr &column_schema,
-                           const std::string &expression,
-                           const AddColumnOptions &options = AddColumnOptions{
-                               0}) = 0;
+  virtual Status add_column(const FieldSchema::Ptr &column_schema,
+                            const std::string &expression,
+                            const AddColumnOptions &options = AddColumnOptions{
+                                0}) = 0;
 
-  virtual Status DropColumn(const std::string &column_name) = 0;
+  virtual Status drop_column(const std::string &column_name) = 0;
 
-  virtual Status AlterColumn(
+  virtual Status alter_column(
       const std::string &column_name, const std::string &rename,
       const FieldSchema::Ptr &new_column_schema = nullptr,
       const AlterColumnOptions &options = AlterColumnOptions{0}) = 0;
 
-  virtual Result<WriteResults> Insert(std::vector<Doc> &docs) = 0;
+  virtual Result<WriteResults> insert(std::vector<Doc> &docs) = 0;
 
-  virtual Result<WriteResults> Upsert(std::vector<Doc> &docs) = 0;
+  virtual Result<WriteResults> upsert(std::vector<Doc> &docs) = 0;
 
-  virtual Result<WriteResults> Update(std::vector<Doc> &docs) = 0;
+  virtual Result<WriteResults> update(std::vector<Doc> &docs) = 0;
 
-  virtual Result<WriteResults> Delete(const std::vector<std::string> &pks) = 0;
+  virtual Result<WriteResults> delete_(const std::vector<std::string> &pks) = 0;
 
-  virtual Status DeleteByFilter(const std::string &filter) = 0;
+  virtual Status delete_by_filter(const std::string &filter) = 0;
 
-  virtual Result<DocPtrList> Query(const SearchQuery &query) const = 0;
+  virtual Result<DocPtrList> query(const SearchQuery &query) const = 0;
 
-  virtual Result<DocPtrList> Query(const MultiQuery &query) const = 0;
+  virtual Result<DocPtrList> query(const MultiQuery &query) const = 0;
 
-  virtual Result<GroupResults> GroupByQuery(
+  virtual Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const = 0;
 
-  virtual Result<DocPtrMap> Fetch(const std::vector<std::string> &pks,
+  virtual Result<DocPtrMap> fetch(const std::vector<std::string> &pks,
                                   const std::optional<std::vector<std::string>>
                                       &output_fields = std::nullopt,
                                   bool include_vector = true) const = 0;
@@ -117,13 +117,14 @@ class ZVEC_API Collection {
   // On writable collections this seals the current writing segment; read-only
   // collections are scanned without any write.
   //
-  // While any iterator is open, schema changes (CreateIndex/DropIndex/
-  // AddColumn/AlterColumn/DropColumn), Flush, Close and Destroy return an
-  // error, and Optimize either fails or blocks until the iterators close.
-  // Concurrent writes and queries are not affected.
+  // While any iterator is open, schema changes (create_index/drop_index/
+  // add_column/alter_column/drop_column) and destroy return an error,
+  // close waits for the iterators to close, and optimize either fails
+  // (seal phase) or waits (commit phase). Flush, writes and queries are
+  // not affected.
   // The collection must outlive its iterators: keep the Collection handle
   // alive and close every iterator before releasing it.
-  virtual Result<DocIterator::Ptr> CreateIterator(
+  virtual Result<DocIterator::Ptr> create_iterator(
       const IteratorOptions &options = {}) = 0;
 
  public:
@@ -132,7 +133,7 @@ class ZVEC_API Collection {
   //! "contiguous"}. Returns an error Status when the column does not exist,
   //! has no index, or the index is not an HNSW index. Intended for
   //! introspection and testing; not part of the stable public API.
-  virtual Result<std::string> DebugGetHnswStorageMode(
+  virtual Result<std::string> debug_get_hnsw_storage_mode(
       const std::string &column_name) const = 0;
 };
 
