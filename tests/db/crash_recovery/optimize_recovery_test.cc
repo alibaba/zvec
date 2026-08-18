@@ -153,14 +153,14 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
       for (int i = 0; i < batch_size; i++) {
         docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
       }
-      auto write_result = collection->Insert(docs);
+      auto write_result = collection->insert(docs);
       ASSERT_TRUE(write_result);
       for (auto &s : write_result.value()) {
         ASSERT_TRUE(s.ok());
       }
     }
 
-    ASSERT_EQ(collection->Stats()->doc_count, num_batches * batch_size);
+    ASSERT_EQ(collection->stats()->doc_count, num_batches * batch_size);
     collection.reset();
   }
 
@@ -172,13 +172,13 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
         << "Failed to reopen collection after crash. "
            "Recovery mechanism may be broken.";
     auto collection = result.value();
-    uint64_t doc_count{collection->Stats().value().doc_count};
+    uint64_t doc_count{collection->stats().value().doc_count};
     ASSERT_EQ(doc_count, num_batches * batch_size);
     for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
       Doc expected_doc = CreateTestDoc(doc_id, 0);
       std::vector<std::string> pks{};
       pks.emplace_back(expected_doc.pk());
-      if (auto res = collection->Fetch(pks); res) {
+      if (auto res = collection->fetch(pks); res) {
         auto map = res.value();
         if (map.find(expected_doc.pk()) == map.end()) {
           FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
@@ -198,7 +198,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
     query.target_.set_vector(std::string((const char *)feature.data(),
                                          feature.size() * sizeof(float)));
     query.target_.field_name_ = "dense_fp32_field";
-    auto query_result = collection->Query(query);
+    auto query_result = collection->query(query);
     ASSERT_TRUE(query_result);
     auto doc_list = query_result.value();
     ASSERT_EQ(doc_list.size(), 10);
@@ -210,7 +210,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
       for (int i = 0; i < batch_size; i++) {
         docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
       }
-      auto write_result = collection->Insert(docs);
+      auto write_result = collection->insert(docs);
       ASSERT_TRUE(write_result);
       for (auto &s : write_result.value()) {
         ASSERT_TRUE(s.ok());
@@ -227,13 +227,13 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->Stats().value().doc_count};
+  uint64_t doc_count{collection->stats().value().doc_count};
   ASSERT_EQ(doc_count, (num_batches + 500) * batch_size);
   for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
     Doc expected_doc = CreateTestDoc(doc_id, 0);
     std::vector<std::string> pks{};
     pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
+    if (auto res = collection->fetch(pks); res) {
       auto map = res.value();
       if (map.find(expected_doc.pk()) == map.end()) {
         FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
@@ -253,7 +253,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
   query.target_.set_vector(std::string((const char *)feature.data(),
                                        feature.size() * sizeof(float)));
   query.target_.field_name_ = "dense_fp32_field";
-  auto query_result = collection->Query(query);
+  auto query_result = collection->query(query);
   ASSERT_TRUE(query_result);
   auto doc_list = query_result.value();
   ASSERT_EQ(doc_list.size(), 10);

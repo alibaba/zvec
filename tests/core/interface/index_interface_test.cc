@@ -54,13 +54,13 @@ TEST(IndexInterface, IndexTypeKeepsExistingValues) {
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
   auto make_param = [](int nlist, int sample_count) {
     return IVFRabitqIndexParamBuilder()
-        .WithMetricType(MetricType::kInnerProduct)
-        .WithDataType(DataType::DT_FP32)
-        .WithDimension(64)
-        .WithNlist(nlist)
-        .WithTotalBits(7)
-        .WithSampleCount(sample_count)
-        .Build();
+        .with_metric_type(MetricType::kInnerProduct)
+        .with_data_type(DataType::DT_FP32)
+        .with_dimension(64)
+        .with_n_list(nlist)
+        .with_total_bits(7)
+        .with_sample_count(sample_count)
+        .build();
   };
 
   EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*make_param(0, 0)));
@@ -77,26 +77,26 @@ TEST(IndexInterface, IvfRabitqFetchUnsupported) {
   zvec::test_util::RemoveTestFiles(index_name);
 
   auto param = IVFRabitqIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithNlist(1)
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_n_list(1)
+                   .build();
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(
-      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
 
   std::vector<float> vector(kDimension, 1.0f);
   VectorData vector_data{DenseVector{vector.data()}};
-  ASSERT_EQ(0, index->Add(vector_data, 0));
+  ASSERT_EQ(0, index->add(vector_data, 0));
 
   VectorDataBuffer fetched;
-  EXPECT_EQ(zvec::core::IndexError_Unsupported, index->Fetch(0, &fetched));
-  ASSERT_EQ(0, index->Train());
-  EXPECT_EQ(zvec::core::IndexError_Unsupported, index->Fetch(0, &fetched));
+  EXPECT_EQ(zvec::core::IndexError_Unsupported, index->fetch(0, &fetched));
+  ASSERT_EQ(0, index->train());
+  EXPECT_EQ(zvec::core::IndexError_Unsupported, index->fetch(0, &fetched));
 
-  ASSERT_EQ(0, index->Close());
+  ASSERT_EQ(0, index->close());
   zvec::test_util::RemoveTestFiles(index_name);
 }
 
@@ -106,33 +106,33 @@ TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
   zvec::test_util::RemoveTestFiles(index_name);
 
   auto param = IVFRabitqIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithNlist(1)
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_n_list(1)
+                   .build();
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(
-      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
 
   std::vector<float> vector(kDimension, 1.0f);
   VectorData vector_data{DenseVector{vector.data()}};
-  ASSERT_EQ(0, index->Add(vector_data, 0));
-  ASSERT_EQ(0, index->Train());
+  ASSERT_EQ(0, index->add(vector_data, 0));
+  ASSERT_EQ(0, index->train());
 
   auto query_param = std::make_shared<IVFRabitqQueryParam>();
   query_param->topk = 1;
   query_param->fetch_vector = true;
   query_param->nprobe = 1;
   SearchResult result;
-  ASSERT_EQ(0, index->Search(vector_data, query_param, &result));
+  ASSERT_EQ(0, index->search(vector_data, query_param, &result));
   EXPECT_TRUE(result.reverted_vector_list_.empty());
   for (const auto &doc : result.doc_list_) {
     EXPECT_EQ(nullptr, doc.vector());
   }
 
-  ASSERT_EQ(0, index->Close());
+  ASSERT_EQ(0, index->close());
   zvec::test_util::RemoveTestFiles(index_name);
 }
 #endif
@@ -167,20 +167,20 @@ TEST(IndexInterface, General) {
     ASSERT_NE(nullptr, index);
 
 
-    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<float> vector(kDimension);
     vector[1] = 1.0f;
     vector[2] = 2.0f;
     VectorData vector_data;
     vector_data.vector = DenseVector{vector.data()};
-    ASSERT_TRUE(0 == index->Add(vector_data, 233));
-    ASSERT_TRUE(0 == index->Train());
+    ASSERT_TRUE(0 == index->add(vector_data, 233));
+    ASSERT_TRUE(0 == index->train());
 
     SearchResult result;
     VectorData query;
     query.vector = DenseVector{vector.data()};
-    index->Search(query, query_param, &result);
+    index->search(query, query_param, &result);
     ASSERT_EQ(1, result.doc_list_.size());
     ASSERT_EQ(233, result.doc_list_[0].key());
     ASSERT_FLOAT_EQ(5.0f, result.doc_list_[0].score());
@@ -203,86 +203,86 @@ TEST(IndexInterface, General) {
     vector[1] = 0;
     vector[2] = 0;
     VectorDataBuffer fetched_vector_data;
-    ASSERT_TRUE(0 == index->Fetch(233, &fetched_vector_data));
+    ASSERT_TRUE(0 == index->fetch(233, &fetched_vector_data));
     float *fetched_vector = reinterpret_cast<float *>(
         std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
             .data.data());
     ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
     ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles(index_name);
   };
 
 
   auto param = FlatIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .Build();
+                   .with_metric_type(MetricType::kInnerProduct)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .build();
   func(param,
        FlatQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
   func(FlatIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        FlatQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
 
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
   func(IVFIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithNList(10)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_n_list(10)
+           .build(),
        IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
   func(IVFIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithNList(10)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_n_list(10)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
 
   func(VamanaIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithMaxDegree(32)
-           .WithSearchListSize(100)
-           .WithAlpha(1.2f)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_max_degree(32)
+           .with_search_list_size(100)
+           .with_alpha(1.2f)
+           .build(),
        VamanaQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
@@ -292,14 +292,14 @@ TEST(IndexInterface, General) {
   // Vamana with topk > ef_search to exercise _get_coarse_search_topk branch
   // that picks max(topk, ef_search).
   func(VamanaIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithMaxDegree(32)
-           .WithSearchListSize(100)
-           .WithAlpha(1.2f)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_max_degree(32)
+           .with_search_list_size(100)
+           .with_alpha(1.2f)
+           .build(),
        VamanaQueryParamBuilder()
            .with_topk(100)
            .with_fetch_vector(true)
@@ -375,24 +375,24 @@ TEST(IndexInterface, ReopenRestoresUniformReformer) {
 
     auto param =
         HNSWIndexParamBuilder()
-            .WithMetricType(MetricType::kL2sq)
-            .WithDataType(DataType::DT_FP32)
-            .WithDimension(kDimension)
-            .WithIsSparse(false)
-            .WithM(16)
-            .WithEFConstruction(100)
-            .WithQuantizerParam(QuantizerParam(test_case.quantizer_type))
-            .Build();
+            .with_metric_type(MetricType::kL2sq)
+            .with_data_type(DataType::DT_FP32)
+            .with_dimension(kDimension)
+            .with_is_sparse(false)
+            .with_m(16)
+            .with_ef_construction(100)
+            .with_quantizer_param(QuantizerParam(test_case.quantizer_type))
+            .build();
     ReformerInspectableHNSWIndex index;
     ASSERT_EQ(0, index.InitForTest(*param));
 
     const std::vector<float> query(kDimension, 1.0f);
     ASSERT_NE(0, index.TransformForTest(query));
-    ASSERT_EQ(0, index.Open(test_case.index_name,
+    ASSERT_EQ(0, index.open(test_case.index_name,
                             {StorageOptions::StorageType::kMMAP,
                              /*create_new=*/false, /*read_only=*/true}));
     EXPECT_EQ(0, index.TransformForTest(query));
-    ASSERT_EQ(0, index.Close());
+    ASSERT_EQ(0, index.close());
 
     zvec::test_util::RemoveTestFiles(test_case.index_name);
   }
@@ -419,7 +419,7 @@ TEST(IndexInterface, CopyOnWrite) {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
       ASSERT_EQ(
-          0, index->Open(index_name, {StorageOptions::StorageType::kMMAP,
+          0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
                                       /*create_new=*/true, /*read_only=*/false,
                                       /*copy_on_write=*/false}));
 
@@ -429,10 +429,10 @@ TEST(IndexInterface, CopyOnWrite) {
         vecs.emplace_back(make_vec(i));
         VectorData vd;
         vd.vector = DenseVector{vecs.back().data()};
-        ASSERT_EQ(0, index->Add(vd, /*key=*/100 + i));
+        ASSERT_EQ(0, index->add(vd, /*key=*/100 + i));
       }
-      ASSERT_EQ(0, index->Train());
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->train());
+      ASSERT_EQ(0, index->close());
     }
 
     // Phase 2: reopen with COW mmap. Search and Fetch must succeed against
@@ -441,7 +441,7 @@ TEST(IndexInterface, CopyOnWrite) {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
       ASSERT_EQ(
-          0, index->Open(index_name, {StorageOptions::StorageType::kMMAP,
+          0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
                                       /*create_new=*/false, /*read_only=*/true,
                                       /*copy_on_write=*/true}));
 
@@ -450,17 +450,17 @@ TEST(IndexInterface, CopyOnWrite) {
         VectorData query;
         query.vector = DenseVector{target.data()};
         SearchResult result;
-        ASSERT_EQ(0, index->Search(query, query_param, &result));
+        ASSERT_EQ(0, index->search(query, query_param, &result));
         ASSERT_FALSE(result.doc_list_.empty());
         ASSERT_EQ(100u + i, result.doc_list_[0].key());
 
         VectorDataBuffer fetched;
-        ASSERT_EQ(0, index->Fetch(100 + i, &fetched));
+        ASSERT_EQ(0, index->fetch(100 + i, &fetched));
         auto *fetched_ptr = reinterpret_cast<const float *>(
             std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
         ASSERT_FLOAT_EQ(1.0f, fetched_ptr[i % kDimension]);
       }
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->close());
     }
 
     // Phase 3: reopen with shared mmap to confirm the file is intact after
@@ -469,7 +469,7 @@ TEST(IndexInterface, CopyOnWrite) {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
       ASSERT_EQ(
-          0, index->Open(index_name, {StorageOptions::StorageType::kMMAP,
+          0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
                                       /*create_new=*/false, /*read_only=*/true,
                                       /*copy_on_write=*/false}));
 
@@ -477,10 +477,10 @@ TEST(IndexInterface, CopyOnWrite) {
       VectorData query;
       query.vector = DenseVector{target.data()};
       SearchResult result;
-      ASSERT_EQ(0, index->Search(query, query_param, &result));
+      ASSERT_EQ(0, index->search(query, query_param, &result));
       ASSERT_FALSE(result.doc_list_.empty());
       ASSERT_EQ(113u, result.doc_list_[0].key());
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->close());
     }
 
     // Phase 4: repeated open/close under COW mmap must not lose entries.
@@ -488,7 +488,7 @@ TEST(IndexInterface, CopyOnWrite) {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
       ASSERT_EQ(
-          0, index->Open(index_name, {StorageOptions::StorageType::kMMAP,
+          0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
                                       /*create_new=*/false, /*read_only=*/true,
                                       /*copy_on_write=*/true}));
       uint32_t i = static_cast<uint32_t>(cycle * 5 + 2);
@@ -496,10 +496,10 @@ TEST(IndexInterface, CopyOnWrite) {
       VectorData query;
       query.vector = DenseVector{target.data()};
       SearchResult result;
-      ASSERT_EQ(0, index->Search(query, query_param, &result));
+      ASSERT_EQ(0, index->search(query, query_param, &result));
       ASSERT_FALSE(result.doc_list_.empty());
       ASSERT_EQ(100u + i, result.doc_list_[0].key());
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->close());
     }
 
     // Phase 5: open in COW mmap (writable MAP_PRIVATE with forced flush).
@@ -509,7 +509,7 @@ TEST(IndexInterface, CopyOnWrite) {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
       ASSERT_EQ(
-          0, index->Open(index_name, {StorageOptions::StorageType::kMMAP,
+          0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
                                       /*create_new=*/false, /*read_only=*/true,
                                       /*copy_on_write=*/true}));
 
@@ -517,10 +517,10 @@ TEST(IndexInterface, CopyOnWrite) {
       VectorData query;
       query.vector = DenseVector{target.data()};
       SearchResult result;
-      ASSERT_EQ(0, index->Search(query, query_param, &result));
+      ASSERT_EQ(0, index->search(query, query_param, &result));
       ASSERT_FALSE(result.doc_list_.empty());
       ASSERT_EQ(121u, result.doc_list_[0].key());
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->close());
     }
 
     // Phase 6: reopen with shared mmap to confirm Phase 5's open/close left
@@ -529,7 +529,7 @@ TEST(IndexInterface, CopyOnWrite) {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
       ASSERT_EQ(
-          0, index->Open(index_name, {StorageOptions::StorageType::kMMAP,
+          0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
                                       /*create_new=*/false, /*read_only=*/true,
                                       /*copy_on_write=*/false}));
       for (uint32_t i = 0; i < kNumVectors; ++i) {
@@ -537,31 +537,31 @@ TEST(IndexInterface, CopyOnWrite) {
         VectorData query;
         query.vector = DenseVector{target.data()};
         SearchResult result;
-        ASSERT_EQ(0, index->Search(query, query_param, &result));
+        ASSERT_EQ(0, index->search(query, query_param, &result));
         ASSERT_FALSE(result.doc_list_.empty());
         ASSERT_EQ(100u + i, result.doc_list_[0].key());
       }
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->close());
     }
 
     zvec::test_util::RemoveTestFiles(index_name);
   };
 
   func(FlatIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .build(),
        FlatQueryParamBuilder().with_topk(5).with_fetch_vector(false).build());
 
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(5)
            .with_fetch_vector(false)
@@ -569,14 +569,14 @@ TEST(IndexInterface, CopyOnWrite) {
            .build());
 
   func(VamanaIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithMaxDegree(32)
-           .WithSearchListSize(64)
-           .WithAlpha(1.2f)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_max_degree(32)
+           .with_search_list_size(64)
+           .with_alpha(1.2f)
+           .build(),
        VamanaQueryParamBuilder()
            .with_topk(5)
            .with_fetch_vector(false)
@@ -591,27 +591,27 @@ TEST(IndexInterface, CopyOnWrite) {
     const std::string persist_index{"test_cow_persist.index"};
     zvec::test_util::RemoveTestFiles(persist_index);
     auto persist_param = FlatIndexParamBuilder()
-                             .WithMetricType(MetricType::kInnerProduct)
-                             .WithDataType(DataType::DT_FP32)
-                             .WithDimension(kDimension)
-                             .WithIsSparse(false)
-                             .Build();
+                             .with_metric_type(MetricType::kInnerProduct)
+                             .with_data_type(DataType::DT_FP32)
+                             .with_dimension(kDimension)
+                             .with_is_sparse(false)
+                             .build();
     auto persist_query =
         FlatQueryParamBuilder().with_topk(5).with_fetch_vector(false).build();
 
     {
       auto index = IndexFactory::CreateAndInitIndex(*persist_param);
       ASSERT_NE(nullptr, index);
-      ASSERT_EQ(0, index->Open(persist_index,
+      ASSERT_EQ(0, index->open(persist_index,
                                {StorageOptions::StorageType::kMMAP,
                                 /*create_new=*/true, /*read_only=*/false,
                                 /*copy_on_write=*/false}));
       auto v0 = make_vec(0);
       VectorData vd;
       vd.vector = DenseVector{v0.data()};
-      ASSERT_EQ(0, index->Add(vd, /*key=*/500));
-      ASSERT_EQ(0, index->Train());
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->add(vd, /*key=*/500));
+      ASSERT_EQ(0, index->train());
+      ASSERT_EQ(0, index->close());
     }
 
     // Add a new vector through COW mmap and explicitly Flush so
@@ -619,16 +619,16 @@ TEST(IndexInterface, CopyOnWrite) {
     {
       auto index = IndexFactory::CreateAndInitIndex(*persist_param);
       ASSERT_NE(nullptr, index);
-      ASSERT_EQ(0, index->Open(persist_index,
+      ASSERT_EQ(0, index->open(persist_index,
                                {StorageOptions::StorageType::kMMAP,
                                 /*create_new=*/false, /*read_only=*/false,
                                 /*copy_on_write=*/true}));
       auto v1 = make_vec(1);
       VectorData vd;
       vd.vector = DenseVector{v1.data()};
-      ASSERT_EQ(0, index->Add(vd, /*key=*/501));
-      ASSERT_EQ(0, index->Flush());
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->add(vd, /*key=*/501));
+      ASSERT_EQ(0, index->flush());
+      ASSERT_EQ(0, index->close());
     }
 
     // Reopen with shared mmap: the entry written in COW mode must be durable
@@ -636,7 +636,7 @@ TEST(IndexInterface, CopyOnWrite) {
     {
       auto index = IndexFactory::CreateAndInitIndex(*persist_param);
       ASSERT_NE(nullptr, index);
-      ASSERT_EQ(0, index->Open(persist_index,
+      ASSERT_EQ(0, index->open(persist_index,
                                {StorageOptions::StorageType::kMMAP,
                                 /*create_new=*/false, /*read_only=*/true,
                                 /*copy_on_write=*/false}));
@@ -644,16 +644,16 @@ TEST(IndexInterface, CopyOnWrite) {
       VectorData query;
       query.vector = DenseVector{target.data()};
       SearchResult result;
-      ASSERT_EQ(0, index->Search(query, persist_query, &result));
+      ASSERT_EQ(0, index->search(query, persist_query, &result));
       ASSERT_FALSE(result.doc_list_.empty());
       ASSERT_EQ(501u, result.doc_list_[0].key());
 
       VectorDataBuffer fetched;
-      ASSERT_EQ(0, index->Fetch(501, &fetched));
+      ASSERT_EQ(0, index->fetch(501, &fetched));
       auto *fetched_ptr = reinterpret_cast<const float *>(
           std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
       ASSERT_FLOAT_EQ(1.0f, fetched_ptr[1 % kDimension]);
-      ASSERT_EQ(0, index->Close());
+      ASSERT_EQ(0, index->close());
     }
     zvec::test_util::RemoveTestFiles(persist_index);
   }
@@ -671,7 +671,7 @@ TEST(IndexInterface, BufferGeneral) {
     auto write_index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, write_index);
 
-    write_index->Open(real_index_name,
+    write_index->open(real_index_name,
                       {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<float> vector(kDimension);
@@ -679,18 +679,18 @@ TEST(IndexInterface, BufferGeneral) {
     vector[2] = 2.0f;
     VectorData vector_data;
     vector_data.vector = DenseVector{vector.data()};
-    ASSERT_TRUE(0 == write_index->Add(vector_data, 233));
-    write_index->Close();
+    ASSERT_TRUE(0 == write_index->add(vector_data, 233));
+    write_index->close();
 
     auto read_index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, read_index);
-    read_index->Open(real_index_name,
+    read_index->open(real_index_name,
                      {StorageOptions::StorageType::kBufferPool, false});
 
     SearchResult result;
     VectorData query;
     query.vector = DenseVector{vector.data()};
-    read_index->Search(query, query_param, &result);
+    read_index->search(query, query_param, &result);
     ASSERT_EQ(1, result.doc_list_.size());
     ASSERT_EQ(233, result.doc_list_[0].key());
     ASSERT_FLOAT_EQ(5.0f, result.doc_list_[0].score());
@@ -713,55 +713,55 @@ TEST(IndexInterface, BufferGeneral) {
     vector[1] = 0;
     vector[2] = 0;
     VectorDataBuffer fetched_vector_data;
-    ASSERT_TRUE(0 == read_index->Fetch(233, &fetched_vector_data));
+    ASSERT_TRUE(0 == read_index->fetch(233, &fetched_vector_data));
     float *fetched_vector = reinterpret_cast<float *>(
         std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
             .data.data());
     ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
     ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
     result.doc_list_.clear();
-    read_index->Close();
+    read_index->close();
     zvec::test_util::RemoveTestFiles(index_name + "*");
   };
 
 
   auto param = FlatIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .Build();
+                   .with_metric_type(MetricType::kInnerProduct)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .build();
   func(param,
        FlatQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
   func(FlatIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        FlatQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
 
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
@@ -781,7 +781,7 @@ TEST(IndexInterface, SparseGeneral) {
     ASSERT_NE(nullptr, index);
 
 
-    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<uint32_t> indices(kSparseCount);
     std::vector<float> values(kSparseCount);
@@ -792,13 +792,13 @@ TEST(IndexInterface, SparseGeneral) {
 
     VectorData vector_data{
         SparseVector{kSparseCount, indices.data(), values.data()}};
-    ASSERT_TRUE(0 == index->Add(vector_data, 233));
+    ASSERT_TRUE(0 == index->add(vector_data, 233));
 
 
     SearchResult result;
     VectorData query = {
         SparseVector{kSparseCount, indices.data(), values.data()}};
-    index->Search(query, query_param, &result);
+    index->search(query, query_param, &result);
     ASSERT_EQ(1, result.doc_list_.size());
     ASSERT_EQ(233, result.doc_list_[0].key());
     ASSERT_FLOAT_EQ(5.0f, result.doc_list_[0].score());
@@ -829,7 +829,7 @@ TEST(IndexInterface, SparseGeneral) {
     values[1] = 0;
     values[2] = 0;
     VectorDataBuffer fetched_vector_data;
-    ASSERT_TRUE(0 == index->Fetch(233, &fetched_vector_data));
+    ASSERT_TRUE(0 == index->fetch(233, &fetched_vector_data));
     const SparseVectorBuffer &sparse_vector_buffer =
         std::get<SparseVectorBuffer>(fetched_vector_data.vector_buffer);
     const uint32_t *fetched_indices =
@@ -841,43 +841,43 @@ TEST(IndexInterface, SparseGeneral) {
       ASSERT_EQ(i, fetched_indices[i]);
       ASSERT_EQ(i, fetched_values[i]);
     }
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles(index_name);
   };
 
 
   auto param = FlatIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithIsSparse(true)
-                   .Build();
+                   .with_metric_type(MetricType::kInnerProduct)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_is_sparse(true)
+                   .build();
   // func(param, FlatQueryParam{{.topk = 10, .fetch_vector = true}});
   func(FlatIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithIsSparse(true)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_is_sparse(true)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        FlatQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
 
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithIsSparse(true)
-           .WithEFConstruction(100)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_is_sparse(true)
+           .with_ef_construction(100)
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
   func(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithIsSparse(true)
-           .WithEFConstruction(100)
-           .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_is_sparse(true)
+           .with_ef_construction(100)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
        HNSWQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(true)
@@ -900,7 +900,7 @@ TEST(IndexInterface, Merge) {
     del_index_file_func(index_name);
     auto index = IndexFactory::CreateAndInitIndex(*param);
     if (index == nullptr ||
-        0 != index->Open(index_name,
+        0 != index->open(index_name,
                          {StorageOptions::StorageType::kMMAP, true})) {
       return nullptr;
     }
@@ -919,16 +919,16 @@ TEST(IndexInterface, Merge) {
     vector[1] = 1.0f;
     vector[2] = 123.0f;
     VectorData vector_data{DenseVector{vector.data()}};
-    ASSERT_TRUE(0 == index1->Add(vector_data, 0));
+    ASSERT_TRUE(0 == index1->add(vector_data, 0));
 
     vector[1] = 2.0f;
-    ASSERT_TRUE(0 == index2->Add(vector_data, 0));
+    ASSERT_TRUE(0 == index2->add(vector_data, 0));
     vector[1] = 3.0f;
-    ASSERT_TRUE(0 == index2->Add(vector_data, 1));
+    ASSERT_TRUE(0 == index2->add(vector_data, 1));
 
     {
       VectorDataBuffer fetched_vector_data;
-      ASSERT_TRUE(0 == index1->Fetch(0, &fetched_vector_data));
+      ASSERT_TRUE(0 == index1->fetch(0, &fetched_vector_data));
       float *fetched_vector = reinterpret_cast<float *>(
           std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
               .data.data());
@@ -937,7 +937,7 @@ TEST(IndexInterface, Merge) {
     }
     {
       VectorDataBuffer fetched_vector_data;
-      ASSERT_TRUE(0 == index2->Fetch(0, &fetched_vector_data));
+      ASSERT_TRUE(0 == index2->fetch(0, &fetched_vector_data));
       float *fetched_vector = reinterpret_cast<float *>(
           std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
               .data.data());
@@ -946,7 +946,7 @@ TEST(IndexInterface, Merge) {
     }
     {
       VectorDataBuffer fetched_vector_data;
-      ASSERT_TRUE(0 == index2->Fetch(1, &fetched_vector_data));
+      ASSERT_TRUE(0 == index2->fetch(1, &fetched_vector_data));
       float *fetched_vector = reinterpret_cast<float *>(
           std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
               .data.data());
@@ -960,11 +960,11 @@ TEST(IndexInterface, Merge) {
       MergeOptions merge_options;
       merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
       ASSERT_TRUE(
-          0 == index3->Merge({index1, index2}, IndexFilter(), merge_options));
-      ASSERT_TRUE(3 == index3->GetDocCount());
+          0 == index3->merge({index1, index2}, IndexFilter(), merge_options));
+      ASSERT_TRUE(3 == index3->get_doc_count());
       {
         VectorDataBuffer fetched_vector_data;
-        ASSERT_TRUE(0 == index3->Fetch(0, &fetched_vector_data));
+        ASSERT_TRUE(0 == index3->fetch(0, &fetched_vector_data));
         float *fetched_vector = reinterpret_cast<float *>(
             std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
                 .data.data());
@@ -973,14 +973,14 @@ TEST(IndexInterface, Merge) {
       }
       {
         VectorDataBuffer fetched_vector_data;
-        ASSERT_TRUE(0 == index3->Fetch(1, &fetched_vector_data));
+        ASSERT_TRUE(0 == index3->fetch(1, &fetched_vector_data));
         float *fetched_vector = reinterpret_cast<float *>(
             std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
                 .data.data());
         ASSERT_FLOAT_EQ(2.0f, fetched_vector[1]);
         ASSERT_FLOAT_EQ(123.0f, fetched_vector[2]);
       }
-      index3->Close();
+      index3->close();
       del_index_file_func(index_name + "3");
     }
 
@@ -993,23 +993,23 @@ TEST(IndexInterface, Merge) {
       MergeOptions merge_options;
       merge_options.write_concurrency = (std::numeric_limits<uint32_t>::max)();
       merge_options.pool = &pool;
-      ASSERT_TRUE(0 == index3->Merge({index1, index2}, filter, merge_options));
-      ASSERT_TRUE(2 == index3->GetDocCount());
+      ASSERT_TRUE(0 == index3->merge({index1, index2}, filter, merge_options));
+      ASSERT_TRUE(2 == index3->get_doc_count());
       {
         VectorDataBuffer fetched_vector_data;
-        ASSERT_TRUE(0 == index3->Fetch(0, &fetched_vector_data));
+        ASSERT_TRUE(0 == index3->fetch(0, &fetched_vector_data));
         float *fetched_vector = reinterpret_cast<float *>(
             std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
                 .data.data());
         ASSERT_FLOAT_EQ(2.0f, fetched_vector[1]);
         ASSERT_FLOAT_EQ(123.0f, fetched_vector[2]);
       }
-      index3->Close();
+      index3->close();
       del_index_file_func(index_name + "3");
     }
 
-    index1->Close();
-    index2->Close();
+    index1->close();
+    index2->close();
     del_index_file_func(index_name + "1");
     del_index_file_func(index_name + "2");
   };
@@ -1017,37 +1017,37 @@ TEST(IndexInterface, Merge) {
   // same index
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(kDimension)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
     func(param, param);
   }
   {
     auto param = HNSWIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(kDimension)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
     func(param, param);
   }
 
   // different index
   {
     auto param_flat = FlatIndexParamBuilder()
-                          .WithMetricType(MetricType::kInnerProduct)
-                          .WithDataType(DataType::DT_FP32)
-                          .WithDimension(kDimension)
-                          .WithIsSparse(false)
-                          .Build();
+                          .with_metric_type(MetricType::kInnerProduct)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .build();
     auto param_hnsw = HNSWIndexParamBuilder()
-                          .WithMetricType(MetricType::kInnerProduct)
-                          .WithDataType(DataType::DT_FP32)
-                          .WithDimension(kDimension)
-                          .WithIsSparse(false)
-                          .Build();
+                          .with_metric_type(MetricType::kInnerProduct)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .build();
     func(param_flat, param_hnsw);
     func(param_hnsw, param_flat);
   }
@@ -1066,15 +1066,15 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
   remove_files(target_name);
 
   auto source_param = FlatIndexParamBuilder()
-                          .WithMetricType(MetricType::kL2sq)
-                          .WithDataType(DataType::DT_FP32)
-                          .WithDimension(kDimension)
-                          .WithIsSparse(false)
-                          .Build();
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .build();
   auto source = IndexFactory::CreateAndInitIndex(*source_param);
   ASSERT_NE(nullptr, source);
   ASSERT_EQ(
-      0, source->Open(source_name, {StorageOptions::StorageType::kMMAP, true}));
+      0, source->open(source_name, {StorageOptions::StorageType::kMMAP, true}));
 
   std::vector<std::vector<float>> vectors(kVectorCount,
                                           std::vector<float>(kDimension));
@@ -1083,27 +1083,27 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
       vectors[i][d] = static_cast<float>((i * 17 + d * 13) % 101);
     }
     VectorData data{DenseVector{vectors[i].data()}};
-    ASSERT_EQ(0, source->Add(data, i));
+    ASSERT_EQ(0, source->add(data, i));
   }
 
   auto run_merge = [&](bool two_pass_build) {
     remove_files(target_name);
     auto target_param = VamanaIndexParamBuilder()
-                            .WithMetricType(MetricType::kL2sq)
-                            .WithDataType(DataType::DT_FP32)
-                            .WithDimension(kDimension)
-                            .WithIsSparse(false)
-                            .WithMaxDegree(16)
-                            .WithSearchListSize(32)
-                            .WithAlpha(1.5f)
-                            .WithTwoPassBuild(two_pass_build)
-                            .Build();
+                            .with_metric_type(MetricType::kL2sq)
+                            .with_data_type(DataType::DT_FP32)
+                            .with_dimension(kDimension)
+                            .with_is_sparse(false)
+                            .with_max_degree(16)
+                            .with_search_list_size(32)
+                            .with_alpha(1.5f)
+                            .with_two_pass_build(two_pass_build)
+                            .build();
     auto target = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, target);
-    ASSERT_EQ(0, target->Open(target_name,
+    ASSERT_EQ(0, target->open(target_name,
                               {StorageOptions::StorageType::kMMAP, true}));
-    ASSERT_EQ(0, target->Merge({source}, IndexFilter()));
-    ASSERT_EQ(kVectorCount, target->GetDocCount());
+    ASSERT_EQ(0, target->merge({source}, IndexFilter()));
+    ASSERT_EQ(kVectorCount, target->get_doc_count());
 
     const uint32_t expected_refine_passes = two_pass_build ? 1U : 0U;
     const uint32_t expected_build_passes = two_pass_build ? 2U : 1U;
@@ -1136,12 +1136,12 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
         "vamana_build_pass_count", &build_pass_count));
     EXPECT_EQ(expected_build_passes, build_pass_count);
 
-    ASSERT_EQ(0, target->Flush());
-    ASSERT_EQ(0, target->Close());
+    ASSERT_EQ(0, target->flush());
+    ASSERT_EQ(0, target->close());
 
     auto reopened = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, reopened);
-    ASSERT_EQ(0, reopened->Open(target_name,
+    ASSERT_EQ(0, reopened->open(target_name,
                                 {StorageOptions::StorageType::kMMAP, false}));
     auto query_param = VamanaQueryParamBuilder()
                            .with_topk(10)
@@ -1150,17 +1150,17 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
                            .build();
     VectorData query{DenseVector{vectors[7].data()}};
     SearchResult result;
-    ASSERT_EQ(0, reopened->Search(query, query_param, &result));
+    ASSERT_EQ(0, reopened->search(query, query_param, &result));
     ASSERT_FALSE(result.doc_list_.empty());
     EXPECT_TRUE(std::any_of(result.doc_list_.begin(), result.doc_list_.end(),
                             [](const auto &doc) { return doc.key() == 7U; }));
-    ASSERT_EQ(0, reopened->Close());
+    ASSERT_EQ(0, reopened->close());
   };
 
   run_merge(false);
   run_merge(true);
 
-  ASSERT_EQ(0, source->Close());
+  ASSERT_EQ(0, source->close());
   remove_files(source_name);
   remove_files(target_name);
 }
@@ -1169,58 +1169,58 @@ TEST(IndexInterface, Serialize) {
   {
     std::cout << "\n\n----flat index----" << std::endl;
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .WithQuantizerParam(QuantizerParam{QuantizerType::kFP16})
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .with_quantizer_param(QuantizerParam{QuantizerType::kFP16})
+                     .build();
 
-    std::cout << "flat index -- omit=true: " << param->SerializeToJson(true)
+    std::cout << "flat index -- omit=true: " << param->serialize_to_json(true)
               << std::endl;
-    std::cout << "omit=false: " << param->SerializeToJson() << std::endl;
+    std::cout << "omit=false: " << param->serialize_to_json() << std::endl;
 
     auto deserialized_param =
-        IndexFactory::DeserializeIndexParamFromJson(param->SerializeToJson());
+        IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json());
     ASSERT_NE(nullptr, deserialized_param.get());
 
 
     std::cout << "serialize then de then se:"
-              << deserialized_param->SerializeToJson() << std::endl;
+              << deserialized_param->serialize_to_json() << std::endl;
 
-    ASSERT_TRUE(deserialized_param->SerializeToJson() ==
-                param->SerializeToJson());
-    ASSERT_TRUE(deserialized_param->SerializeToJson(true) ==
-                param->SerializeToJson(true));
+    ASSERT_TRUE(deserialized_param->serialize_to_json() ==
+                param->serialize_to_json());
+    ASSERT_TRUE(deserialized_param->serialize_to_json(true) ==
+                param->serialize_to_json(true));
   }
 
   {
     std::cout << "\n\n----hnsw index----" << std::endl;
     auto param = HNSWIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .WithQuantizerParam(QuantizerParam{QuantizerType::kFP16})
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .with_quantizer_param(QuantizerParam{QuantizerType::kFP16})
+                     .build();
 
-    std::cout << "hnsw index -- omit=true: " << param->SerializeToJson(true)
+    std::cout << "hnsw index -- omit=true: " << param->serialize_to_json(true)
               << std::endl;
-    std::cout << "hnsw index -- omit=false: " << param->SerializeToJson()
+    std::cout << "hnsw index -- omit=false: " << param->serialize_to_json()
               << std::endl;
 
     auto deserialized_param =
-        IndexFactory::DeserializeIndexParamFromJson(param->SerializeToJson());
+        IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json());
     ASSERT_NE(nullptr, deserialized_param.get());
 
     std::cout << "serialize then de then se:"
-              << deserialized_param->SerializeToJson() << std::endl;
+              << deserialized_param->serialize_to_json() << std::endl;
 
 
-    ASSERT_TRUE(deserialized_param->SerializeToJson() ==
-                param->SerializeToJson());
-    ASSERT_TRUE(deserialized_param->SerializeToJson(true) ==
-                param->SerializeToJson(true));
+    ASSERT_TRUE(deserialized_param->serialize_to_json() ==
+                param->serialize_to_json());
+    ASSERT_TRUE(deserialized_param->serialize_to_json(true) ==
+                param->serialize_to_json(true));
   }
 
   {
@@ -1276,31 +1276,31 @@ TEST(IndexInterface, Serialize) {
   {
     std::cout << "\n\n----vamana index----" << std::endl;
     auto param = VamanaIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .WithMaxDegree(32)
-                     .WithSearchListSize(100)
-                     .WithAlpha(1.2f)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .with_max_degree(32)
+                     .with_search_list_size(100)
+                     .with_alpha(1.2f)
+                     .build();
 
-    std::cout << "vamana index -- omit=true: " << param->SerializeToJson(true)
+    std::cout << "vamana index -- omit=true: " << param->serialize_to_json(true)
               << std::endl;
-    std::cout << "vamana index -- omit=false: " << param->SerializeToJson()
+    std::cout << "vamana index -- omit=false: " << param->serialize_to_json()
               << std::endl;
 
     auto deserialized_param =
-        IndexFactory::DeserializeIndexParamFromJson(param->SerializeToJson());
+        IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json());
     ASSERT_NE(nullptr, deserialized_param.get());
 
     std::cout << "serialize then de then se:"
-              << deserialized_param->SerializeToJson() << std::endl;
+              << deserialized_param->serialize_to_json() << std::endl;
 
-    ASSERT_TRUE(deserialized_param->SerializeToJson() ==
-                param->SerializeToJson());
-    ASSERT_TRUE(deserialized_param->SerializeToJson(true) ==
-                param->SerializeToJson(true));
+    ASSERT_TRUE(deserialized_param->serialize_to_json() ==
+                param->serialize_to_json());
+    ASSERT_TRUE(deserialized_param->serialize_to_json(true) ==
+                param->serialize_to_json(true));
   }
 
   {
@@ -1312,7 +1312,7 @@ TEST(IndexInterface, Serialize) {
     param->dimension = 64;
     param->use_contiguous_memory = true;
 
-    auto json_str = param->SerializeToJson();
+    auto json_str = param->serialize_to_json();
     std::cout << "hnsw contiguous -- json: " << json_str << std::endl;
     ASSERT_TRUE(json_str.find("use_contiguous_memory") != std::string::npos);
 
@@ -1324,7 +1324,7 @@ TEST(IndexInterface, Serialize) {
     ASSERT_NE(nullptr, hnsw_param.get());
     ASSERT_TRUE(hnsw_param->use_contiguous_memory);
 
-    ASSERT_TRUE(deserialized_param->SerializeToJson() == json_str);
+    ASSERT_TRUE(deserialized_param->serialize_to_json() == json_str);
   }
 
   {
@@ -1340,7 +1340,7 @@ TEST(IndexInterface, Serialize) {
     param->use_contiguous_memory = true;
     param->two_pass_build = true;
 
-    auto json_str = param->SerializeToJson();
+    auto json_str = param->serialize_to_json();
     std::cout << "vamana contiguous -- json: " << json_str << std::endl;
     ASSERT_TRUE(json_str.find("use_contiguous_memory") != std::string::npos);
     ASSERT_TRUE(json_str.find("two_pass_build") != std::string::npos);
@@ -1357,7 +1357,7 @@ TEST(IndexInterface, Serialize) {
     ASSERT_EQ(200, vamana_param->search_list_size);
     ASSERT_FLOAT_EQ(1.5f, vamana_param->alpha);
 
-    ASSERT_TRUE(deserialized_param->SerializeToJson() == json_str);
+    ASSERT_TRUE(deserialized_param->serialize_to_json() == json_str);
   }
 
   {
@@ -1399,9 +1399,9 @@ TEST(IndexInterface, Failure) {
   {
     auto param =
         FlatIndexParamBuilder()
-            .WithMetricType(MetricType::kNone)  // L2 not supported for sparse
-            .WithDataType(DataType::DT_FP32)
-            .Build();
+            .with_metric_type(MetricType::kNone)  // L2 not supported for sparse
+            .with_data_type(DataType::DT_FP32)
+            .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_EQ(nullptr, index);
   }
@@ -1410,10 +1410,10 @@ TEST(IndexInterface, Failure) {
   {
     auto param =
         FlatIndexParamBuilder()
-            .WithMetricType(MetricType::kL2sq)  // L2 not supported for sparse
-            .WithDataType(DataType::DT_FP32)
-            .WithIsSparse(true)
-            .Build();
+            .with_metric_type(MetricType::kL2sq)  // L2 not supported for sparse
+            .with_data_type(DataType::DT_FP32)
+            .with_is_sparse(true)
+            .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_EQ(nullptr, index);
   }
@@ -1421,38 +1421,39 @@ TEST(IndexInterface, Failure) {
   // // Test unsupported quantizer type
   // {
   //   auto param = FlatIndexParamBuilder()
-  //                    .WithMetricType(MetricType::kInnerProduct)
-  //                    .WithDataType(DataType::DT_INT4)
-  //                    .WithDimension(64)
-  //                    .WithIsSparse(false)
-  //                    .WithQuantizerParam(
+  //                    .with_metric_type(MetricType::kInnerProduct)
+  //                    .with_data_type(DataType::DT_INT4)
+  //                    .with_dimension(64)
+  //                    .with_is_sparse(false)
+  //                    .with_quantizer_param(
   //                        QuantizerParam(QuantizerType::kInt8))  //
   //                        Unsupported
-  //                    .Build();
+  //                    .build();
   //   auto index = IndexFactory::CreateAndInitIndex(*param);
   //   ASSERT_EQ(nullptr, index);
   // }
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(true)
-                     .WithQuantizerParam(
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(true)
+                     .with_quantizer_param(
                          QuantizerParam(QuantizerType::kInt8))  // Unsupported
-                     .Build();
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_EQ(nullptr, index);
   }
 
   // Test unsupported data type for cosine metric
   {
-    auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kCosine)
-                     .WithDataType(DataType::DT_INT8)  // Unsupported for cosine
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .Build();
+    auto param =
+        FlatIndexParamBuilder()
+            .with_metric_type(MetricType::kCosine)
+            .with_data_type(DataType::DT_INT8)  // Unsupported for cosine
+            .with_dimension(64)
+            .with_is_sparse(false)
+            .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_EQ(nullptr, index);
   }
@@ -1460,32 +1461,32 @@ TEST(IndexInterface, Failure) {
   // Test invalid storage type
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
     StorageOptions invalid_storage;
     invalid_storage.type = StorageOptions::StorageType::kNone;  // Unsupported
-    int ret = index->Open("test.index", invalid_storage);
+    int ret = index->open("test.index", invalid_storage);
     ASSERT_NE(0, ret);
   }
 
   // Test invalid vector data type for dense operations
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     // Try to add sparse vector to dense index
     std::vector<uint32_t> indices = {0, 1, 2};
@@ -1493,74 +1494,74 @@ TEST(IndexInterface, Failure) {
     VectorData sparse_vector_data{
         SparseVector{3, indices.data(), values.data()}};
 
-    int ret = index->Add(sparse_vector_data, 1);
+    int ret = index->add(sparse_vector_data, 1);
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test invalid vector data type for sparse operations
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithIsSparse(true)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_is_sparse(true)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     // Try to add dense vector to sparse index
     std::vector<float> vector(64, 1.0f);
     VectorData dense_vector_data{DenseVector{vector.data()}};
 
-    int ret = index->Add(dense_vector_data, 1);
+    int ret = index->add(dense_vector_data, 1);
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test fetch non-existent document
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     VectorDataBuffer fetched_vector_data;
-    int ret = index->Fetch(999, &fetched_vector_data);  // Non-existent doc_id
+    int ret = index->fetch(999, &fetched_vector_data);  // Non-existent doc_id
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test search with invalid vector data
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     // Add a vector first
     std::vector<float> vector(64, 1.0f);
     VectorData vector_data{DenseVector{vector.data()}};
-    ASSERT_EQ(0, index->Add(vector_data, 1));
+    ASSERT_EQ(0, index->add(vector_data, 1));
 
     // Try to search with sparse vector in dense index
     std::vector<uint32_t> indices = {0, 1, 2};
@@ -1570,54 +1571,54 @@ TEST(IndexInterface, Failure) {
     SearchResult result;
     FlatQueryParam::Pointer query_param =
         FlatQueryParamBuilder().with_topk(10).with_fetch_vector(false).build();
-    int ret = index->Search(sparse_query, query_param, &result);
+    int ret = index->search(sparse_query, query_param, &result);
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test merge with invalid write concurrency
   {
     auto param1 = FlatIndexParamBuilder()
-                      .WithMetricType(MetricType::kInnerProduct)
-                      .WithDataType(DataType::DT_FP32)
-                      .WithDimension(64)
-                      .WithIsSparse(false)
-                      .Build();
+                      .with_metric_type(MetricType::kInnerProduct)
+                      .with_data_type(DataType::DT_FP32)
+                      .with_dimension(64)
+                      .with_is_sparse(false)
+                      .build();
     auto index1 = IndexFactory::CreateAndInitIndex(*param1);
     ASSERT_NE(nullptr, index1);
-    index1->Open("test1.index", {StorageOptions::StorageType::kMMAP, true});
+    index1->open("test1.index", {StorageOptions::StorageType::kMMAP, true});
 
     auto param2 = FlatIndexParamBuilder()
-                      .WithMetricType(MetricType::kInnerProduct)
-                      .WithDataType(DataType::DT_FP32)
-                      .WithDimension(64)
-                      .WithIsSparse(false)
-                      .Build();
+                      .with_metric_type(MetricType::kInnerProduct)
+                      .with_data_type(DataType::DT_FP32)
+                      .with_dimension(64)
+                      .with_is_sparse(false)
+                      .build();
     auto index2 = IndexFactory::CreateAndInitIndex(*param2);
     ASSERT_NE(nullptr, index2);
-    index2->Open("test2.index", {StorageOptions::StorageType::kMMAP, true});
+    index2->open("test2.index", {StorageOptions::StorageType::kMMAP, true});
 
     auto param3 = FlatIndexParamBuilder()
-                      .WithMetricType(MetricType::kInnerProduct)
-                      .WithDataType(DataType::DT_FP32)
-                      .WithDimension(64)
-                      .WithIsSparse(false)
-                      .Build();
+                      .with_metric_type(MetricType::kInnerProduct)
+                      .with_data_type(DataType::DT_FP32)
+                      .with_dimension(64)
+                      .with_is_sparse(false)
+                      .build();
     auto index3 = IndexFactory::CreateAndInitIndex(*param3);
     ASSERT_NE(nullptr, index3);
-    index3->Open("test3.index", {StorageOptions::StorageType::kMMAP, true});
+    index3->open("test3.index", {StorageOptions::StorageType::kMMAP, true});
 
     MergeOptions invalid_options;
     invalid_options.write_concurrency = 0;  // Invalid: must be > 0
 
-    int ret = index3->Merge({index1, index2}, IndexFilter(), invalid_options);
+    int ret = index3->merge({index1, index2}, IndexFilter(), invalid_options);
     ASSERT_NE(0, ret);
 
-    index1->Close();
-    index2->Close();
-    index3->Close();
+    index1->close();
+    index2->close();
+    index3->close();
     zvec::test_util::RemoveTestFiles("test1.index");
     zvec::test_util::RemoveTestFiles("test2.index");
     zvec::test_util::RemoveTestFiles("test3.index");
@@ -1626,22 +1627,22 @@ TEST(IndexInterface, Failure) {
   // Test Vamana search with ef_search == 0 (invalid, ef_search must be > 0)
   {
     auto param = VamanaIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .WithMaxDegree(32)
-                     .WithSearchListSize(100)
-                     .WithAlpha(1.2f)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .with_max_degree(32)
+                     .with_search_list_size(100)
+                     .with_alpha(1.2f)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<float> vector(64, 1.0f);
     VectorData vector_data{DenseVector{vector.data()}};
-    ASSERT_EQ(0, index->Add(vector_data, 1));
+    ASSERT_EQ(0, index->add(vector_data, 1));
 
     VectorData query{DenseVector{vector.data()}};
     auto query_param = VamanaQueryParamBuilder()
@@ -1650,32 +1651,32 @@ TEST(IndexInterface, Failure) {
                            .with_ef_search(0)
                            .build();
     SearchResult result;
-    int ret = index->Search(query, query_param, &result);
+    int ret = index->search(query, query_param, &result);
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test Vamana search with ef_search > 2048 (invalid upper bound)
   {
     auto param = VamanaIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .WithMaxDegree(32)
-                     .WithSearchListSize(100)
-                     .WithAlpha(1.2f)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .with_max_degree(32)
+                     .with_search_list_size(100)
+                     .with_alpha(1.2f)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<float> vector(64, 1.0f);
     VectorData vector_data{DenseVector{vector.data()}};
-    ASSERT_EQ(0, index->Add(vector_data, 1));
+    ASSERT_EQ(0, index->add(vector_data, 1));
 
     VectorData query{DenseVector{vector.data()}};
     auto query_param = VamanaQueryParamBuilder()
@@ -1684,10 +1685,10 @@ TEST(IndexInterface, Failure) {
                            .with_ef_search(4096)
                            .build();
     SearchResult result;
-    int ret = index->Search(query, query_param, &result);
+    int ret = index->search(query, query_param, &result);
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 
@@ -1695,22 +1696,22 @@ TEST(IndexInterface, Failure) {
   // VamanaQueryParam)
   {
     auto param = VamanaIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(64)
-                     .WithIsSparse(false)
-                     .WithMaxDegree(32)
-                     .WithSearchListSize(100)
-                     .WithAlpha(1.2f)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(64)
+                     .with_is_sparse(false)
+                     .with_max_degree(32)
+                     .with_search_list_size(100)
+                     .with_alpha(1.2f)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+    index->open("test.index", {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<float> vector(64, 1.0f);
     VectorData vector_data{DenseVector{vector.data()}};
-    ASSERT_EQ(0, index->Add(vector_data, 1));
+    ASSERT_EQ(0, index->add(vector_data, 1));
 
     VectorData query{DenseVector{vector.data()}};
     // Intentionally pass an HNSWQueryParam to a Vamana index
@@ -1720,10 +1721,10 @@ TEST(IndexInterface, Failure) {
                                  .with_ef_search(50)
                                  .build();
     SearchResult result;
-    int ret = index->Search(query, wrong_query_param, &result);
+    int ret = index->search(query, wrong_query_param, &result);
     ASSERT_NE(0, ret);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles("test.index");
   }
 }
@@ -1929,24 +1930,24 @@ TEST(IndexInterface, Score) {
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open(index_file_path, {StorageOptions::StorageType::kMMAP, true});
+    index->open(index_file_path, {StorageOptions::StorageType::kMMAP, true});
 
     VectorData vector_data1;
     vector_data1.vector = DenseVector{vector1.data()};
-    ASSERT_EQ(0, index->Add(vector_data1, kDocId1));
+    ASSERT_EQ(0, index->add(vector_data1, kDocId1));
 
     VectorData vector_data2;
     vector_data2.vector = DenseVector{vector2.data()};
-    ASSERT_EQ(0, index->Add(vector_data2, kDocId2));
+    ASSERT_EQ(0, index->add(vector_data2, kDocId2));
 
     SearchResult result;
     VectorData query;
     query.vector = DenseVector{query_vector.data()};
-    index->Search(query, query_param, &result);
+    index->search(query, query_param, &result);
 
     check_score(result, metric_type);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
@@ -1957,30 +1958,30 @@ TEST(IndexInterface, Score) {
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open(index_file_path, {StorageOptions::StorageType::kMMAP, true});
+    index->open(index_file_path, {StorageOptions::StorageType::kMMAP, true});
 
     VectorData vector_data1;
     vector_data1.vector =
         SparseVector{3, reinterpret_cast<const void *>(sparse_indices.data()),
                      vector1.data()};
-    ASSERT_EQ(0, index->Add(vector_data1, kDocId1));
+    ASSERT_EQ(0, index->add(vector_data1, kDocId1));
 
     VectorData vector_data2;
     vector_data2.vector =
         SparseVector{3, reinterpret_cast<const void *>(sparse_indices.data()),
                      vector2.data()};
-    ASSERT_EQ(0, index->Add(vector_data2, kDocId2));
+    ASSERT_EQ(0, index->add(vector_data2, kDocId2));
 
     SearchResult result;
     VectorData query;
     query.vector =
         SparseVector{3, reinterpret_cast<const void *>(sparse_indices.data()),
                      query_vector.data()};
-    index->Search(query, query_param, &result);
+    index->search(query, query_param, &result);
 
     check_score(result, metric_type);
 
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
@@ -1989,20 +1990,20 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test DenseVector, MetricType::kInnerProduct");
   dense_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kInnerProduct)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .Build(),
+          .with_metric_type(MetricType::kInnerProduct)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kInnerProduct);
   dense_func(HNSWIndexParamBuilder()
-                 .WithMetricType(MetricType::kInnerProduct)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithEFConstruction(100)
-                 .Build(),
+                 .with_metric_type(MetricType::kInnerProduct)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_ef_construction(100)
+                 .build(),
              HNSWQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2011,14 +2012,14 @@ TEST(IndexInterface, Score) {
              MetricType::kInnerProduct);
 
   dense_func(VamanaIndexParamBuilder()
-                 .WithMetricType(MetricType::kInnerProduct)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithMaxDegree(32)
-                 .WithSearchListSize(100)
-                 .WithAlpha(1.2f)
-                 .Build(),
+                 .with_metric_type(MetricType::kInnerProduct)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_max_degree(32)
+                 .with_search_list_size(100)
+                 .with_alpha(1.2f)
+                 .build(),
              VamanaQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2029,22 +2030,22 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test DenseVector, MetricType::kInnerProduct, QuantizerType::kFP16");
   dense_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kInnerProduct)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-          .Build(),
+          .with_metric_type(MetricType::kInnerProduct)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kInnerProduct);
   dense_func(HNSWIndexParamBuilder()
-                 .WithMetricType(MetricType::kInnerProduct)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithEFConstruction(100)
-                 .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-                 .Build(),
+                 .with_metric_type(MetricType::kInnerProduct)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_ef_construction(100)
+                 .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                 .build(),
              HNSWQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2055,20 +2056,20 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test DenseVector, MetricType::kCosine");
   dense_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kCosine)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .Build(),
+          .with_metric_type(MetricType::kCosine)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kCosine);
   dense_func(HNSWIndexParamBuilder()
-                 .WithMetricType(MetricType::kCosine)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithEFConstruction(100)
-                 .Build(),
+                 .with_metric_type(MetricType::kCosine)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_ef_construction(100)
+                 .build(),
              HNSWQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2079,22 +2080,22 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test DenseVector, MetricType::kCosine, QuantizerType::kFP16");
   dense_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kCosine)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-          .Build(),
+          .with_metric_type(MetricType::kCosine)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kCosine);
   dense_func(HNSWIndexParamBuilder()
-                 .WithMetricType(MetricType::kCosine)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithEFConstruction(100)
-                 .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-                 .Build(),
+                 .with_metric_type(MetricType::kCosine)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_ef_construction(100)
+                 .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                 .build(),
              HNSWQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2105,20 +2106,20 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test DenseVector, MetricType::kL2sq");
   dense_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kL2sq)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .Build(),
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kL2sq);
   dense_func(HNSWIndexParamBuilder()
-                 .WithMetricType(MetricType::kL2sq)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithEFConstruction(100)
-                 .Build(),
+                 .with_metric_type(MetricType::kL2sq)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_ef_construction(100)
+                 .build(),
              HNSWQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2129,22 +2130,22 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test DenseVector, MetricType::kL2sq, QuantizerType::kFP16");
   dense_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kL2sq)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-          .Build(),
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kL2sq);
   dense_func(HNSWIndexParamBuilder()
-                 .WithMetricType(MetricType::kL2sq)
-                 .WithDataType(DataType::DT_FP32)
-                 .WithDimension(kDimension)
-                 .WithIsSparse(false)
-                 .WithEFConstruction(100)
-                 .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-                 .Build(),
+                 .with_metric_type(MetricType::kL2sq)
+                 .with_data_type(DataType::DT_FP32)
+                 .with_dimension(kDimension)
+                 .with_is_sparse(false)
+                 .with_ef_construction(100)
+                 .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                 .build(),
              HNSWQueryParamBuilder()
                  .with_topk(kTopk)
                  .with_fetch_vector(true)
@@ -2155,18 +2156,18 @@ TEST(IndexInterface, Score) {
   LOG_INFO("Test SparseVector, MetricType::kInnerProduct");
   sparse_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kInnerProduct)
-          .WithDataType(DataType::DT_FP32)
-          .WithIsSparse(true)
-          .Build(),
+          .with_metric_type(MetricType::kInnerProduct)
+          .with_data_type(DataType::DT_FP32)
+          .with_is_sparse(true)
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kInnerProduct);
   sparse_func(HNSWIndexParamBuilder()
-                  .WithMetricType(MetricType::kInnerProduct)
-                  .WithDataType(DataType::DT_FP32)
-                  .WithIsSparse(true)
-                  .WithEFConstruction(100)
-                  .Build(),
+                  .with_metric_type(MetricType::kInnerProduct)
+                  .with_data_type(DataType::DT_FP32)
+                  .with_is_sparse(true)
+                  .with_ef_construction(100)
+                  .build(),
               HNSWQueryParamBuilder()
                   .with_topk(kTopk)
                   .with_fetch_vector(true)
@@ -2178,20 +2179,20 @@ TEST(IndexInterface, Score) {
       "Test SparseVector, MetricType::kInnerProduct, QuantizerType::kFP16");
   sparse_func(
       FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kInnerProduct)
-          .WithDataType(DataType::DT_FP32)
-          .WithIsSparse(true)
-          .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-          .Build(),
+          .with_metric_type(MetricType::kInnerProduct)
+          .with_data_type(DataType::DT_FP32)
+          .with_is_sparse(true)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+          .build(),
       FlatQueryParamBuilder().with_topk(kTopk).with_fetch_vector(true).build(),
       MetricType::kInnerProduct);
   sparse_func(HNSWIndexParamBuilder()
-                  .WithMetricType(MetricType::kInnerProduct)
-                  .WithDataType(DataType::DT_FP32)
-                  .WithIsSparse(true)
-                  .WithEFConstruction(100)
-                  .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-                  .Build(),
+                  .with_metric_type(MetricType::kInnerProduct)
+                  .with_data_type(DataType::DT_FP32)
+                  .with_is_sparse(true)
+                  .with_ef_construction(100)
+                  .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                  .build(),
               HNSWQueryParamBuilder()
                   .with_topk(kTopk)
                   .with_fetch_vector(true)
@@ -2212,25 +2213,25 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
-    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
 
     std::vector<float> vector(kDimension);
     vector[1] = 1.0f;
     vector[2] = 2.0f;
     VectorData vector_data;
     vector_data.vector = DenseVector{vector.data()};
-    ASSERT_TRUE(0 == index->Add(vector_data, 233));
-    ASSERT_TRUE(0 == index->Train());
+    ASSERT_TRUE(0 == index->add(vector_data, 233));
+    ASSERT_TRUE(0 == index->train());
 
     SearchResult result;
     VectorData query;
     query.vector = DenseVector{vector.data()};
-    index->Search(query, query_param, &result);
+    index->search(query, query_param, &result);
     ASSERT_EQ(1, result.doc_list_.size());
     ASSERT_EQ(233, result.doc_list_[0].key());
 
     // Fetch is meaningless for HNSWRabitq
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles(cleanup_pattern);
   };
 
@@ -2260,14 +2261,14 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
 
   // HNSWRabitq with default total_bits
   func(HNSWRabitqIndexParamBuilder()
-           .WithMetricType(MetricType::kL2sq)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .WithProvider(holder)
-           .WithReformer(index_reformer)
-           .Build(),
+           .with_metric_type(MetricType::kL2sq)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .with_provider(holder)
+           .with_reformer(index_reformer)
+           .build(),
        HNSWRabitqQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(false)
@@ -2276,14 +2277,14 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
 
   // HNSWRabitq with InnerProduct metric
   func(HNSWRabitqIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .WithProvider(holder)
-           .WithReformer(index_reformer)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .with_provider(holder)
+           .with_reformer(index_reformer)
+           .build(),
        HNSWRabitqQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(false)
@@ -2302,15 +2303,15 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
   ASSERT_EQ(converter2.to_reformer(&index_reformer2), 0);
 
   func(HNSWRabitqIndexParamBuilder()
-           .WithMetricType(MetricType::kL2sq)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .WithTotalBits(2)
-           .WithProvider(holder)
-           .WithReformer(index_reformer2)
-           .Build(),
+           .with_metric_type(MetricType::kL2sq)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .with_total_bits(2)
+           .with_provider(holder)
+           .with_reformer(index_reformer2)
+           .build(),
        HNSWRabitqQueryParamBuilder()
            .with_topk(10)
            .with_fetch_vector(false)
@@ -2342,7 +2343,7 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
         {
           auto index = IndexFactory::CreateAndInitIndex(*param);
           ASSERT_NE(nullptr, index);
-          ASSERT_EQ(0, index->Open(index_name,
+          ASSERT_EQ(0, index->open(index_name,
                                    {StorageOptions::StorageType::kMMAP, true}));
 
           std::vector<float> vec(kDimension);
@@ -2351,10 +2352,10 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
               vec[d] = static_cast<float>(i);
             }
             VectorData data{DenseVector{vec.data()}};
-            ASSERT_EQ(0, index->Add(data, i));
+            ASSERT_EQ(0, index->add(data, i));
           }
-          ASSERT_EQ(0, index->Train());
-          ASSERT_EQ(0, index->Close());
+          ASSERT_EQ(0, index->train());
+          ASSERT_EQ(0, index->close());
         }
 
         // Phase 2: reopen with same params (contiguous memory takes effect
@@ -2363,7 +2364,7 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
           auto index = IndexFactory::CreateAndInitIndex(*param);
           ASSERT_NE(nullptr, index);
           ASSERT_EQ(0,
-                    index->Open(index_name,
+                    index->open(index_name,
                                 {StorageOptions::StorageType::kMMAP, false}));
 
           std::vector<float> q(kDimension);
@@ -2373,11 +2374,11 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
             }
             VectorData query{DenseVector{q.data()}};
             SearchResult result;
-            ASSERT_EQ(0, index->Search(query, query_param, &result));
+            ASSERT_EQ(0, index->search(query, query_param, &result));
             ASSERT_GT(result.doc_list_.size(), 0UL);
             ASSERT_EQ(i, result.doc_list_[0].key());
           }
-          ASSERT_EQ(0, index->Close());
+          ASSERT_EQ(0, index->close());
         }
 
         zvec::test_util::RemoveTestFiles(index_name);
@@ -2385,14 +2386,14 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
 
   // HNSW + use_contiguous_memory=true
   build_then_search(HNSWIndexParamBuilder()
-                        .WithMetricType(MetricType::kL2sq)
-                        .WithDataType(DataType::DT_FP32)
-                        .WithDimension(kDimension)
-                        .WithIsSparse(false)
-                        .WithM(16)
-                        .WithEFConstruction(64)
-                        .WithUseContiguousMemory(true)
-                        .Build(),
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .with_m(16)
+                        .with_ef_construction(64)
+                        .with_use_contiguous_memory(true)
+                        .build(),
                     HNSWQueryParamBuilder()
                         .with_topk(kTopk)
                         .with_fetch_vector(false)
@@ -2401,14 +2402,14 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
 
   // HNSW + use_contiguous_memory=false (baseline, same harness)
   build_then_search(HNSWIndexParamBuilder()
-                        .WithMetricType(MetricType::kL2sq)
-                        .WithDataType(DataType::DT_FP32)
-                        .WithDimension(kDimension)
-                        .WithIsSparse(false)
-                        .WithM(16)
-                        .WithEFConstruction(64)
-                        .WithUseContiguousMemory(false)
-                        .Build(),
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .with_m(16)
+                        .with_ef_construction(64)
+                        .with_use_contiguous_memory(false)
+                        .build(),
                     HNSWQueryParamBuilder()
                         .with_topk(kTopk)
                         .with_fetch_vector(false)
@@ -2417,15 +2418,15 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
 
   // Vamana + use_contiguous_memory=true
   build_then_search(VamanaIndexParamBuilder()
-                        .WithMetricType(MetricType::kL2sq)
-                        .WithDataType(DataType::DT_FP32)
-                        .WithDimension(kDimension)
-                        .WithIsSparse(false)
-                        .WithMaxDegree(32)
-                        .WithSearchListSize(100)
-                        .WithAlpha(1.2f)
-                        .WithUseContiguousMemory(true)
-                        .Build(),
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .with_max_degree(32)
+                        .with_search_list_size(100)
+                        .with_alpha(1.2f)
+                        .with_use_contiguous_memory(true)
+                        .build(),
                     VamanaQueryParamBuilder()
                         .with_topk(kTopk)
                         .with_fetch_vector(false)
@@ -2434,15 +2435,15 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
 
   // Vamana + use_contiguous_memory=false (baseline, same harness)
   build_then_search(VamanaIndexParamBuilder()
-                        .WithMetricType(MetricType::kL2sq)
-                        .WithDataType(DataType::DT_FP32)
-                        .WithDimension(kDimension)
-                        .WithIsSparse(false)
-                        .WithMaxDegree(32)
-                        .WithSearchListSize(100)
-                        .WithAlpha(1.2f)
-                        .WithUseContiguousMemory(false)
-                        .Build(),
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .with_max_degree(32)
+                        .with_search_list_size(100)
+                        .with_alpha(1.2f)
+                        .with_use_contiguous_memory(false)
+                        .build(),
                     VamanaQueryParamBuilder()
                         .with_topk(kTopk)
                         .with_fetch_vector(false)
@@ -2481,23 +2482,23 @@ TEST(IndexInterface, ExternalVectorEndToEnd) {
   zvec::test_util::RemoveTestFiles(index_name + "*");
 
   auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithEFConstruction(100)
-                   .WithUseExternalVector(true)
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_ef_construction(100)
+                   .with_use_external_vector(true)
+                   .build();
 
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
 
-  index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+  index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     VectorData vector_data;
     vector_data.vector = DenseVector{all_vectors.data() + i * kDimension};
-    int ret = index->AddWithSource(vector_data, i, source);
+    int ret = index->add_with_source(vector_data, i, source);
     ASSERT_EQ(0, ret) << "AddWithSource failed for doc_id=" << i;
   }
 
@@ -2510,7 +2511,7 @@ TEST(IndexInterface, ExternalVectorEndToEnd) {
   VectorData query;
   query.vector = DenseVector{all_vectors.data()};
   SearchResult result;
-  int ret = index->SearchWithSource(query, query_param, source, &result);
+  int ret = index->search_with_source(query, query_param, source, &result);
   ASSERT_EQ(0, ret);
   ASSERT_GE(result.doc_list_.size(), 1u);
   ASSERT_EQ(0u, result.doc_list_[0].key());
@@ -2519,26 +2520,26 @@ TEST(IndexInterface, ExternalVectorEndToEnd) {
   VectorData query2;
   query2.vector = DenseVector{all_vectors.data() + 50 * kDimension};
   SearchResult result2;
-  ret = index->SearchWithSource(query2, query_param, source, &result2);
+  ret = index->search_with_source(query2, query_param, source, &result2);
   ASSERT_EQ(0, ret);
   ASSERT_GE(result2.doc_list_.size(), 1u);
   ASSERT_EQ(50u, result2.doc_list_[0].key());
   ASSERT_FLOAT_EQ(0.0f, result2.doc_list_[0].score());
 
-  index->Close();
+  index->close();
 
   auto index2 = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index2);
-  index2->Open(index_name, {StorageOptions::StorageType::kMMAP, false});
+  index2->open(index_name, {StorageOptions::StorageType::kMMAP, false});
 
   SearchResult result3;
-  ret = index2->SearchWithSource(query, query_param, source, &result3);
+  ret = index2->search_with_source(query, query_param, source, &result3);
   ASSERT_EQ(0, ret);
   ASSERT_GE(result3.doc_list_.size(), 1u);
   ASSERT_EQ(0u, result3.doc_list_[0].key());
   ASSERT_FLOAT_EQ(0.0f, result3.doc_list_[0].score());
 
-  index2->Close();
+  index2->close();
   zvec::test_util::RemoveTestFiles(index_name + "*");
 }
 
@@ -2557,22 +2558,22 @@ TEST(IndexInterface, ExternalVectorInnerProduct) {
   zvec::test_util::RemoveTestFiles(index_name + "*");
 
   auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithEFConstruction(100)
-                   .WithUseExternalVector(true)
-                   .Build();
+                   .with_metric_type(MetricType::kInnerProduct)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_ef_construction(100)
+                   .with_use_external_vector(true)
+                   .build();
 
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
-  index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+  index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     VectorData vector_data;
     vector_data.vector = DenseVector{all_vectors.data() + i * kDimension};
-    ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
+    ASSERT_EQ(0, index->add_with_source(vector_data, i, source));
   }
 
   std::vector<float> query_vec(kDimension, 0.0f);
@@ -2587,12 +2588,12 @@ TEST(IndexInterface, ExternalVectorInnerProduct) {
                          .build();
 
   SearchResult result;
-  ASSERT_EQ(0, index->SearchWithSource(query, query_param, source, &result));
+  ASSERT_EQ(0, index->search_with_source(query, query_param, source, &result));
   ASSERT_EQ(1u, result.doc_list_.size());
   ASSERT_EQ(0u, result.doc_list_[0].key());
   ASSERT_FLOAT_EQ(1.0f, result.doc_list_[0].score());
 
-  index->Close();
+  index->close();
   zvec::test_util::RemoveTestFiles(index_name + "*");
 }
 
@@ -2649,22 +2650,22 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
   zvec::test_util::RemoveTestFiles(index_name + "*");
 
   auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithM(16)
-                   .WithEFConstruction(200)
-                   .WithUseExternalVector(true)
-                   .Build();
+                   .with_metric_type(MetricType::kInnerProduct)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_m(16)
+                   .with_ef_construction(200)
+                   .with_use_external_vector(true)
+                   .build();
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(
-      0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     VectorData vector_data{DenseVector{all_vectors.data() + i * kDimension}};
-    ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
+    ASSERT_EQ(0, index->add_with_source(vector_data, i, source));
   }
 
   auto query_param = HNSWQueryParamBuilder()
@@ -2674,7 +2675,7 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
                          .build();
   VectorData query{DenseVector{query_vector.data()}};
   SearchResult result;
-  ASSERT_EQ(0, index->SearchWithSource(query, query_param, source, &result));
+  ASSERT_EQ(0, index->search_with_source(query, query_param, source, &result));
   ASSERT_EQ(kTopk, result.doc_list_.size());
 
   uint32_t recall_count = 0;
@@ -2695,7 +2696,7 @@ TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
   }
   EXPECT_GE(recall_count, 18u);
 
-  index->Close();
+  index->close();
   zvec::test_util::RemoveTestFiles(index_name + "*");
 }
 
@@ -2710,58 +2711,58 @@ TEST(IndexInterface, IsDirty) {
     {
       auto index = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, index);
-      ASSERT_FALSE(index->IsDirty());
+      ASSERT_FALSE(index->is_dirty());
     }
 
     // Create the index file: dirty from initial metadata writes
     {
       auto index = IndexFactory::CreateAndInitIndex(*param);
-      index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
-      ASSERT_TRUE(index->IsDirty());
-      ASSERT_EQ(0, index->Flush());
-      ASSERT_FALSE(index->IsDirty());
-      index->Close();
+      index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
+      ASSERT_TRUE(index->is_dirty());
+      ASSERT_EQ(0, index->flush());
+      ASSERT_FALSE(index->is_dirty());
+      index->close();
     }
 
     // Reopen existing file: should be clean
     auto index = IndexFactory::CreateAndInitIndex(*param);
-    index->Open(index_name, {StorageOptions::StorageType::kMMAP, false});
-    ASSERT_FALSE(index->IsDirty());
+    index->open(index_name, {StorageOptions::StorageType::kMMAP, false});
+    ASSERT_FALSE(index->is_dirty());
 
     // Add a vector: should become dirty
     std::vector<float> vec(kDimension, 1.0f);
     VectorData vd;
     vd.vector = DenseVector{vec.data()};
-    ASSERT_EQ(0, index->Add(vd, 1));
-    ASSERT_TRUE(index->IsDirty());
+    ASSERT_EQ(0, index->add(vd, 1));
+    ASSERT_TRUE(index->is_dirty());
 
     // Flush: should become clean
-    ASSERT_EQ(0, index->Flush());
-    ASSERT_FALSE(index->IsDirty());
+    ASSERT_EQ(0, index->flush());
+    ASSERT_FALSE(index->is_dirty());
 
     // Add another vector: dirty again
-    ASSERT_EQ(0, index->Add(vd, 2));
-    ASSERT_TRUE(index->IsDirty());
+    ASSERT_EQ(0, index->add(vd, 2));
+    ASSERT_TRUE(index->is_dirty());
 
     // Close flushes implicitly, verify no crash
-    index->Close();
+    index->close();
     zvec::test_util::RemoveTestFiles(index_name);
   };
 
   test(FlatIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .Build());
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .build());
 
   test(HNSWIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithEFConstruction(100)
-           .Build());
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_ef_construction(100)
+           .build());
 }
 
 TEST(IndexInterface, IsDirtyBufferPool) {
@@ -2773,45 +2774,45 @@ TEST(IndexInterface, IsDirtyBufferPool) {
   // First create and populate the index with MMAP storage
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(kDimension)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
     std::vector<float> vec(kDimension, 1.0f);
     VectorData vd;
     vd.vector = DenseVector{vec.data()};
-    ASSERT_EQ(0, index->Add(vd, 1));
-    index->Close();
+    ASSERT_EQ(0, index->add(vd, 1));
+    index->close();
   }
 
   // Reopen with BufferPool storage in writable mode
   {
     auto param = FlatIndexParamBuilder()
-                     .WithMetricType(MetricType::kInnerProduct)
-                     .WithDataType(DataType::DT_FP32)
-                     .WithDimension(kDimension)
-                     .WithIsSparse(false)
-                     .Build();
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->Open(index_name, {StorageOptions::StorageType::kBufferPool, true});
+    index->open(index_name, {StorageOptions::StorageType::kBufferPool, true});
 
-    ASSERT_FALSE(index->IsDirty());
+    ASSERT_FALSE(index->is_dirty());
 
     std::vector<float> vec(kDimension, 2.0f);
     VectorData vd;
     vd.vector = DenseVector{vec.data()};
-    ASSERT_EQ(0, index->Add(vd, 2));
-    ASSERT_TRUE(index->IsDirty());
+    ASSERT_EQ(0, index->add(vd, 2));
+    ASSERT_TRUE(index->is_dirty());
 
-    ASSERT_EQ(0, index->Flush());
-    ASSERT_FALSE(index->IsDirty());
+    ASSERT_EQ(0, index->flush());
+    ASSERT_FALSE(index->is_dirty());
 
-    index->Close();
+    index->close();
   }
 
   zvec::test_util::RemoveTestFiles(index_name);
@@ -2820,17 +2821,17 @@ TEST(IndexInterface, IsDirtyBufferPool) {
 TEST(IndexInterface, BuilderSetsAllBaseFields) {
   auto param =
       FlatIndexParamBuilder()
-          .WithVersion(42)
-          .WithIndexType(IndexType::kFlat)
-          .WithMetricType(MetricType::kInnerProduct)
-          .WithDimension(128)
-          .WithDataType(DataType::DT_FP32)
-          .WithIsSparse(true)
-          .WithUseIDMap(false)
-          .WithUseExternalVector(true)
-          .WithPreprocessParam(PreprocessorParam(PreprocessorType::kPCA))
-          .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
-          .Build();
+          .with_version(42)
+          .with_index_type(IndexType::kFlat)
+          .with_metric_type(MetricType::kInnerProduct)
+          .with_dimension(128)
+          .with_data_type(DataType::DT_FP32)
+          .with_is_sparse(true)
+          .with_use_id_map(false)
+          .with_use_external_vector(true)
+          .with_preprocess_param(PreprocessorParam(PreprocessorType::kPCA))
+          .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+          .build();
 
   ASSERT_NE(nullptr, param);
   EXPECT_EQ(42, param->version);
@@ -2847,9 +2848,9 @@ TEST(IndexInterface, BuilderSetsAllBaseFields) {
 
 TEST(IndexInterface, QuantizerParamDefaultIsNull) {
   auto param = FlatIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDimension(64)
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_dimension(64)
+                   .build();
 
   ASSERT_NE(nullptr, param);
   EXPECT_EQ(nullptr, param->quantizer_param);
@@ -2857,10 +2858,10 @@ TEST(IndexInterface, QuantizerParamDefaultIsNull) {
 
 TEST(IndexInterface, QuantizerParamPqFields) {
   auto param = FlatIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDimension(128)
-                   .WithQuantizerParam(PqQuantizerParam(16, 8))
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_dimension(128)
+                   .with_quantizer_param(PqQuantizerParam(16, 8))
+                   .build();
 
   ASSERT_NE(nullptr, param);
   ASSERT_NE(nullptr, param->quantizer_param);
@@ -2875,9 +2876,9 @@ TEST(IndexInterface, QuantizerParamPqFields) {
 
   // enable_rotate is a common field, setting it keeps the concrete type
   auto rotated_param = FlatIndexParamBuilder()
-                           .WithQuantizerParam(PqQuantizerParam(16, 8))
-                           .WithEnableRotate(true)
-                           .Build();
+                           .with_quantizer_param(PqQuantizerParam(16, 8))
+                           .with_enable_rotate(true)
+                           .build();
   ASSERT_NE(nullptr, rotated_param->quantizer_param);
   EXPECT_TRUE(rotated_param->quantizer_param->enable_rotate);
   EXPECT_NE(nullptr, std::dynamic_pointer_cast<PqQuantizerParam>(
@@ -2886,19 +2887,20 @@ TEST(IndexInterface, QuantizerParamPqFields) {
 
 TEST(IndexInterface, QuantizerParamPqJsonRoundTrip) {
   auto param = FlatIndexParamBuilder()
-                   .WithIndexType(IndexType::kFlat)
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDimension(128)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithQuantizerParam(PqQuantizerParam(32, 4))
-                   .Build();
+                   .with_index_type(IndexType::kFlat)
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_dimension(128)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_quantizer_param(PqQuantizerParam(32, 4))
+                   .build();
 
   auto deserialized_param =
-      IndexFactory::DeserializeIndexParamFromJson(param->SerializeToJson());
+      IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json());
   ASSERT_NE(nullptr, deserialized_param);
-  EXPECT_EQ(param->SerializeToJson(), deserialized_param->SerializeToJson());
-  EXPECT_EQ(param->SerializeToJson(true),
-            deserialized_param->SerializeToJson(true));
+  EXPECT_EQ(param->serialize_to_json(),
+            deserialized_param->serialize_to_json());
+  EXPECT_EQ(param->serialize_to_json(true),
+            deserialized_param->serialize_to_json(true));
 
   auto pq_param = std::dynamic_pointer_cast<PqQuantizerParam>(
       deserialized_param->quantizer_param);
@@ -2926,12 +2928,12 @@ TEST(IndexInterface, QuantizerParamLegacyJsonCompat) {
 
 TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
   HNSWIndexParamBuilder builder;
-  auto &ref = builder.WithVersion(1)
-                  .WithMetricType(MetricType::kL2sq)
-                  .WithDimension(64)
-                  .WithM(16)
-                  .WithEFConstruction(200);
-  auto param = ref.Build();
+  auto &ref = builder.with_version(1)
+                  .with_metric_type(MetricType::kL2sq)
+                  .with_dimension(64)
+                  .with_m(16)
+                  .with_ef_construction(200);
+  auto param = ref.build();
 
   ASSERT_NE(nullptr, param);
   EXPECT_EQ(1, param->version);
