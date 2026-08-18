@@ -80,7 +80,7 @@ class DiskAnnCacheBudget {
         static_cast<uint64_t>(std::numeric_limits<size_t>::max()) /
         estimated_bytes_per_node;
     const uint64_t resolved =
-        std::min({budget_nodes, doc_count, ten_percent, addressable_nodes,
+        std::min({budget_nodes, ten_percent, addressable_nodes,
                   static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())});
     return static_cast<uint32_t>(resolved);
   }

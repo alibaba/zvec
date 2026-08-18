@@ -36,7 +36,7 @@ class DiskAnnIndexer {
   ~DiskAnnIndexer();
 
  public:
-  int init(DiskAnnSearcherEntity &entity);
+  int init(DiskAnnSearcherEntity &entity, uint32_t beam_width);
 
   int configure_cache(uint32_t cache_node_num,
                       uint64_t cache_node_budget_bytes);
@@ -96,21 +96,6 @@ class DiskAnnIndexer {
     std::vector<CacheSlot> slots;
   };
 
-  struct CachePreloadStats {
-    size_t capacity_nodes{0};
-    size_t selected_nodes{0};
-    size_t loaded_nodes{0};
-    size_t failed_nodes{0};
-    size_t bfs_attempted_nodes{0};
-    size_t bfs_reused_nodes{0};
-    size_t bfs_batches{0};
-    size_t final_attempted_nodes{0};
-    size_t final_success_nodes{0};
-    size_t final_batches{0};
-    uint64_t bfs_elapsed_ms{0};
-    uint64_t final_elapsed_ms{0};
-  };
-
   uint32_t effective_cache_node_count(uint32_t requested_nodes) const;
   int prepare_cache_storage(size_t capacity, CacheLoadState &state);
   int load_cache_list(CacheLoadState &state);
@@ -126,7 +111,6 @@ class DiskAnnIndexer {
   uint32_t max_node_size_{0};
   uint64_t pq_chunk_num_{0};
   uint64_t disk_bytes_per_point_{0};
-  uint64_t aligned_dim_{0};
   uint64_t index_segment_offset_{0};
   uint64_t sector_num_per_node_{0};
 
@@ -147,8 +131,6 @@ class DiskAnnIndexer {
 
   std::map<diskann_id_t, void *> coord_cache_;
   std::map<diskann_id_t, std::pair<uint32_t, diskann_id_t *>> neighbor_cache_;
-  CachePreloadStats cache_preload_stats_{};
-
   uint32_t beam_width_{2};
   uint32_t io_limit_{std::numeric_limits<uint32_t>::max()};
 

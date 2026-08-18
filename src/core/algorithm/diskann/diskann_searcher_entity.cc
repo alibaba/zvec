@@ -50,11 +50,6 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
   try {
     entity->meta_header_ = meta_header_;
     entity->pq_meta_ = pq_meta_;
-    entity->num_threads_ = num_threads_;
-    entity->list_size_ = list_size_;
-    entity->cache_nodes_num_ = cache_nodes_num_;
-    entity->warm_up_ = warm_up_;
-    entity->beam_size_ = beam_size_;
     entity->meta_ = meta_;
     entity->pq_table_ = pq_table_;
     entity->key_buffer_ = key_buffer_;
@@ -391,63 +386,6 @@ diskann_key_t DiskAnnSearcherEntity::get_key(diskann_id_t id) const {
       reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
 
   return key_data_ptr[id];
-}
-
-const void *DiskAnnSearcherEntity::get_vector(diskann_id_t id) const {
-  if (!vector_segment_) {
-    LOG_ERROR("Vector segment is null");
-    return nullptr;
-  }
-
-  uint64_t sector_offset =
-      DiskAnnUtil::get_node_sector(node_per_sector(), max_node_size(),
-                                   DiskAnnUtil::kSectorSize, id) *
-      DiskAnnUtil::kSectorSize;
-  uint64_t within_sector_offset =
-      (node_per_sector() == 0 ? 0 : (id % node_per_sector()) * max_node_size());
-  uint64_t total_offset = sector_offset + within_sector_offset;
-
-  size_t read_size = meta_.element_size();
-  const void *vec;
-  if (ailego_unlikely(vector_segment_->read(total_offset, &vec, read_size) !=
-                      read_size)) {
-    LOG_ERROR("Read vector from segment failed, id: %u, offset: %llu", id,
-              (unsigned long long)total_offset);
-    return nullptr;
-  }
-
-  return vec;
-}
-
-std::pair<uint32_t, const diskann_id_t *> DiskAnnSearcherEntity::get_neighbors(
-    diskann_id_t id) const {
-  if (!vector_segment_) {
-    return std::make_pair(0, nullptr);
-  }
-
-  uint64_t read_sector_offset =
-      DiskAnnUtil::get_node_sector(node_per_sector(), max_node_size(),
-                                   DiskAnnUtil::kSectorSize, id) *
-      DiskAnnUtil::kSectorSize;
-  uint64_t node_vec_offset =
-      read_sector_offset +
-      (node_per_sector() == 0 ? 0 : (id % node_per_sector()) * max_node_size());
-
-  const void *data;
-  if (ailego_unlikely(
-          vector_segment_->read(node_vec_offset, &data, max_node_size()) !=
-          max_node_size())) {
-    LOG_ERROR("Read neighbors from segment failed");
-    return {0, nullptr};
-  }
-
-  const uint8_t *data_ptr = reinterpret_cast<const uint8_t *>(data);
-  const diskann_id_t *node_neighbor =
-      reinterpret_cast<const diskann_id_t *>(data_ptr + meta_.element_size());
-
-  auto neighbor_num = *node_neighbor;
-
-  return std::make_pair(neighbor_num, node_neighbor + 1);
 }
 
 }  // namespace core

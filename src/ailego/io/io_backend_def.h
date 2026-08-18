@@ -124,10 +124,6 @@ class IOBackend {
     return available() == IOBackendType::kIoUring;
   }
 
-  bool is_windows_overlapped() {
-    return available() == IOBackendType::kWindowsOverlapped;
-  }
-
   // Returns the cached backend type without triggering the probe.
   IOBackendType type() const {
     return type_.load(std::memory_order_acquire);

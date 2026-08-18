@@ -54,19 +54,6 @@ class DiskAnnCacheTestPeer {
   static size_t neighbor_cache_size(const DiskAnnSearcher *searcher) {
     return searcher->diskann_indexer_->neighbor_cache_.size();
   }
-
-  static size_t selected_nodes(const DiskAnnSearcher *searcher) {
-    return searcher->diskann_indexer_->cache_preload_stats_.selected_nodes;
-  }
-
-  static size_t bfs_reused_nodes(const DiskAnnSearcher *searcher) {
-    return searcher->diskann_indexer_->cache_preload_stats_.bfs_reused_nodes;
-  }
-
-  static size_t final_attempted_nodes(const DiskAnnSearcher *searcher) {
-    return searcher->diskann_indexer_->cache_preload_stats_
-        .final_attempted_nodes;
-  }
 };
 
 }  // namespace core
@@ -84,22 +71,6 @@ class CountingAlignedFileReader final : public AlignedFileReader {
  public:
   explicit CountingAlignedFileReader(std::shared_ptr<AlignedFileReader> reader)
       : reader_(std::move(reader)) {}
-
-  IOContext &get_ctx() override {
-    return reader_->get_ctx();
-  }
-
-  void register_thread() override {
-    reader_->register_thread();
-  }
-
-  void deregister_thread() override {
-    reader_->deregister_thread();
-  }
-
-  void deregister_all_threads() override {
-    reader_->deregister_all_threads();
-  }
 
   void open(const std::string &fname) override {
     reader_->open(fname);
@@ -488,12 +459,6 @@ TEST_F(DiskAnnSearcherTest, TestNodeCache) {
             DiskAnnCacheTestPeer::coordinate_cache_size(diskann_searcher));
   EXPECT_EQ(kCacheNodes,
             DiskAnnCacheTestPeer::neighbor_cache_size(diskann_searcher));
-  EXPECT_EQ(kCacheNodes,
-            DiskAnnCacheTestPeer::selected_nodes(diskann_searcher));
-  EXPECT_GT(DiskAnnCacheTestPeer::bfs_reused_nodes(diskann_searcher), 0U);
-  EXPECT_EQ(kCacheNodes,
-            DiskAnnCacheTestPeer::bfs_reused_nodes(diskann_searcher) +
-                DiskAnnCacheTestPeer::final_attempted_nodes(diskann_searcher));
   EXPECT_EQ(kCacheNodes, counting_reader->requested_reads());
 
   auto ctx = searcher->create_context();

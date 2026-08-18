@@ -664,72 +664,10 @@ LinuxAlignedFileReader::LinuxAlignedFileReader() {
 }
 
 LinuxAlignedFileReader::~LinuxAlignedFileReader() {
-  deregister_all_threads();
   if (file_desc >= 0) {
     ::close(file_desc);
     file_desc = -1;
   }
-}
-
-IOContext &LinuxAlignedFileReader::get_ctx() {
-  std::unique_lock<std::mutex> lk(ctx_mut);
-  auto it = ctx_map.find(std::this_thread::get_id());
-  if (it == ctx_map.end()) {
-    LOG_ERROR("bad thread access; returning invalid IOContext");
-    return this->bad_ctx;
-  } else {
-    return it->second;
-  }
-}
-
-void LinuxAlignedFileReader::register_thread() {
-  auto thread_id = std::this_thread::get_id();
-  std::unique_lock<std::mutex> lk(ctx_mut);
-  if (ctx_map.find(thread_id) != ctx_map.end()) {
-    LOG_ERROR("multiple calls to register_thread from the same thread");
-    return;
-  }
-
-  IOContext ctx = nullptr;
-  int ret = setup_io_ctx(ctx);
-  if (ret != 0) {
-    LOG_ERROR("setup_io_ctx failed; returned: %d", ret);
-    lk.unlock();
-    return;
-  }
-  if (ctx != nullptr) {
-    LOG_INFO("allocating ctx: %p", static_cast<void *>(ctx));
-  }
-  ctx_map[thread_id] = ctx;
-  lk.unlock();
-}
-
-void LinuxAlignedFileReader::deregister_thread() {
-  auto thread_id = std::this_thread::get_id();
-  IOContext ctx;
-
-  {
-    std::lock_guard<std::mutex> lk(ctx_mut);
-    auto it = ctx_map.find(thread_id);
-    if (it == ctx_map.end()) {
-      LOG_ERROR("deregister_thread: thread not registered");
-      return;
-    }
-    ctx = it->second;
-    ctx_map.erase(it);
-  }
-
-  // Keep teardown outside the lock; async backends may block in syscalls.
-  destroy_io_ctx(ctx);
-  LOG_INFO("returned ctx from thread");
-}
-
-void LinuxAlignedFileReader::deregister_all_threads() {
-  std::unique_lock<std::mutex> lk(ctx_mut);
-  for (auto x = ctx_map.begin(); x != ctx_map.end(); x++) {
-    destroy_io_ctx(x->second);
-  }
-  ctx_map.clear();
 }
 
 void LinuxAlignedFileReader::open(const std::string &fname) {
@@ -1071,74 +1009,11 @@ int LinuxAlignedFileReader::get_completed(
 
 #else  // Windows
 
-// Windows uses one file handle and one I/O completion port per IOContext.
-// Contexts are thread-owned, so a search thread can only dequeue completion
-// packets for requests it submitted. PendingBatch keeps the expected lengths
-// and completion bitmap alive until every request has been harvested.
+// Windows uses one file handle and one I/O completion port per IOContext, so a
+// context can only dequeue completion packets for requests submitted through
+// that context. PendingBatch keeps the expected lengths and completion bitmap
+// alive until every request has been harvested.
 WindowsAlignedFileReader::WindowsAlignedFileReader() = default;
-
-WindowsAlignedFileReader::~WindowsAlignedFileReader() {
-  deregister_all_threads();
-  close();
-}
-
-IOContext &WindowsAlignedFileReader::get_ctx() {
-  std::lock_guard<std::mutex> lock(ctx_mut);
-  auto it = ctx_map.find(std::this_thread::get_id());
-  if (it == ctx_map.end()) {
-    LOG_ERROR("bad thread access; returning invalid IOContext");
-    return bad_ctx;
-  }
-  return it->second;
-}
-
-void WindowsAlignedFileReader::register_thread() {
-  auto thread_id = std::this_thread::get_id();
-  IOContext ctx = nullptr;
-  int ret = setup_io_ctx(ctx);
-  if (ret != 0) {
-    LOG_ERROR("setup_io_ctx failed; returned: %d", ret);
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(ctx_mut);
-  if (ctx_map.find(thread_id) != ctx_map.end()) {
-    LOG_ERROR("multiple calls to register_thread from the same thread");
-    destroy_io_ctx(ctx);
-    return;
-  }
-  ctx_map[thread_id] = ctx;
-}
-
-void WindowsAlignedFileReader::deregister_thread() {
-  IOContext ctx = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(ctx_mut);
-    auto it = ctx_map.find(std::this_thread::get_id());
-    if (it == ctx_map.end()) {
-      LOG_ERROR("deregister_thread: thread not registered");
-      return;
-    }
-    ctx = it->second;
-    ctx_map.erase(it);
-  }
-  destroy_io_ctx(ctx);
-}
-
-void WindowsAlignedFileReader::deregister_all_threads() {
-  std::vector<IOContext> contexts;
-  {
-    std::lock_guard<std::mutex> lock(ctx_mut);
-    contexts.reserve(ctx_map.size());
-    for (const auto &entry : ctx_map) {
-      contexts.push_back(entry.second);
-    }
-    ctx_map.clear();
-  }
-  for (IOContext &ctx : contexts) {
-    destroy_io_ctx(ctx);
-  }
-}
 
 void WindowsAlignedFileReader::open(const std::string &fname) {
   file_path_.clear();

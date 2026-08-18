@@ -142,9 +142,8 @@ TEST(DiskAnnFileReaderWindowsTest, ConcurrentContextsKeepCompletionsIsolated) {
   for (size_t thread_index = 0; thread_index < kThreadCount; ++thread_index) {
     workers.emplace_back([&, thread_index]() {
       bool success = true;
-      reader.register_thread();
-      IOContext &ctx = reader.get_ctx();
-      if (ctx == nullptr || ctx == reinterpret_cast<IOContext>(-1)) {
+      IOContext ctx = nullptr;
+      if (setup_io_ctx(ctx) != 0 || ctx == nullptr) {
         success = false;
       }
 
@@ -201,7 +200,9 @@ TEST(DiskAnnFileReaderWindowsTest, ConcurrentContextsKeepCompletionsIsolated) {
         }
       }
 
-      reader.deregister_thread();
+      if (destroy_io_ctx(ctx) != 0 || ctx != nullptr) {
+        success = false;
+      }
       if (!success) {
         failures.fetch_add(1, std::memory_order_relaxed);
       }
@@ -219,14 +220,16 @@ TEST(DiskAnnFileReaderWindowsTest, ConcurrentContextsKeepCompletionsIsolated) {
   EXPECT_EQ(failures.load(), 0U);
 }
 
-TEST(DiskAnnFileReaderWindowsTest, DeregisterDrainsOutstandingBatch) {
+TEST(DiskAnnFileReaderWindowsTest, DestroyContextDrainsOutstandingBatch) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
 
   WindowsAlignedFileReader reader;
   reader.open(file.path());
-  reader.register_thread();
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
 
   AlignedBuffer output = make_aligned_buffer(kPageSize * MAX_IO_DEPTH);
   ASSERT_NE(output, nullptr);
@@ -238,21 +241,23 @@ TEST(DiskAnnFileReaderWindowsTest, DeregisterDrainsOutstandingBatch) {
                           output.get() + i * kPageSize);
   }
 
-  IOContext &ctx = reader.get_ctx();
   PendingBatch batch;
   ASSERT_EQ(reader.submit(batch, requests, ctx), 0);
   ASSERT_EQ(ctx->outstanding_count, batch.n_submitted);
 
   // This must cancel and reap the batch before it destroys the OVERLAPPED
   // slots or lets the caller release output.
-  reader.deregister_thread();
+  ASSERT_EQ(destroy_io_ctx(ctx), 0);
+  ASSERT_EQ(ctx, nullptr);
 
-  reader.register_thread();
-  IOContext &replacement_ctx = reader.get_ctx();
+  IOContext replacement_ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(replacement_ctx), 0);
+  ASSERT_NE(replacement_ctx, nullptr);
   std::vector<AlignedRead> one_read{{0, kPageSize, output.get()}};
   ASSERT_EQ(reader.read(one_read, replacement_ctx, false), 0);
   EXPECT_TRUE(verify_page(output.get(), 0));
-  reader.deregister_thread();
+  EXPECT_EQ(destroy_io_ctx(replacement_ctx), 0);
+  EXPECT_EQ(replacement_ctx, nullptr);
 }
 
 TEST(DiskAnnFileReaderWindowsTest, RejectsMisalignedUnbufferedRead) {
@@ -262,17 +267,19 @@ TEST(DiskAnnFileReaderWindowsTest, RejectsMisalignedUnbufferedRead) {
 
   WindowsAlignedFileReader reader;
   reader.open(file.path());
-  reader.register_thread();
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
 
   AlignedBuffer output = make_aligned_buffer(kPageSize * 2);
   ASSERT_NE(output, nullptr);
   std::vector<AlignedRead> requests{{0, kPageSize, output.get() + 1}};
 
-  IOContext &ctx = reader.get_ctx();
   PendingBatch batch;
   EXPECT_EQ(reader.submit(batch, requests, ctx), IndexError_InvalidArgument);
   EXPECT_EQ(ctx->outstanding_count, 0U);
-  reader.deregister_thread();
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
 }
 
 TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {
@@ -282,12 +289,12 @@ TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {
 
   WindowsAlignedFileReader reader;
   reader.open(file.path());
-  reader.register_thread();
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
 
   AlignedBuffer output = make_aligned_buffer(kPageSize);
   ASSERT_NE(output, nullptr);
-  IOContext &ctx = reader.get_ctx();
-
   std::vector<AlignedRead> short_request{
       {kPageCount * kPageSize, kPageSize, output.get()}};
   PendingBatch short_batch;
@@ -301,7 +308,8 @@ TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {
   std::vector<AlignedRead> valid_request{{0, kPageSize, output.get()}};
   EXPECT_EQ(reader.read(valid_request, ctx, false), 0);
   EXPECT_TRUE(verify_page(output.get(), 0));
-  reader.deregister_thread();
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
 }
 
 #endif  // defined(_WIN32) || defined(_WIN64)

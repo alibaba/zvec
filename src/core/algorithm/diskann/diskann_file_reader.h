@@ -33,10 +33,7 @@
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>
 #endif
-#include <map>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
@@ -54,12 +51,9 @@ namespace core {
 // macOS uses a real context with type kPread so that the active backend can be
 // inspected and reported consistently instead of using an opaque placeholder.
 // Windows stores a private file handle, completion port, and stable OVERLAPPED
-// request slots in each thread context. Keeping completion ports private
-// prevents one search thread from consuming another thread's completions.
-// IOContext is a pointer to IoBackend, which preserves the existing
-// sentinel conventions: nullptr means uninitialised and (IOContext)-1 is
-// the invalid-handle sentinel returned by get_ctx() for unregistered
-// threads.
+// request slots in each I/O context. Keeping completion ports private prevents
+// one context from consuming another context's completions.
+// IOContext is a pointer to IoBackend; nullptr means uninitialised.
 struct IoBackend {
   ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
@@ -118,18 +112,8 @@ struct PendingBatch {
 };
 
 class AlignedFileReader {
- protected:
-  std::map<std::thread::id, IOContext> ctx_map;
-  std::mutex ctx_mut;
-
  public:
-  virtual IOContext &get_ctx() = 0;
-
   virtual ~AlignedFileReader() {}
-
-  virtual void register_thread() = 0;
-  virtual void deregister_thread() = 0;
-  virtual void deregister_all_threads() = 0;
 
   virtual void open(const std::string &fname) = 0;
   virtual void close() = 0;
@@ -152,19 +136,12 @@ class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
 
-  IOContext bad_ctx = (IOContext)-1;
-
  public:
   LinuxAlignedFileReader();
   LinuxAlignedFileReader(int file_desc);
   ~LinuxAlignedFileReader();
 
  public:
-  IOContext &get_ctx();
-
-  void register_thread();
-  void deregister_thread();
-  void deregister_all_threads();
   void open(const std::string &fname);
   void close();
 
@@ -181,19 +158,14 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 class WindowsAlignedFileReader : public AlignedFileReader {
  private:
   std::wstring file_path_;
-  IOContext bad_ctx{reinterpret_cast<IOContext>(-1)};
 
   int prepare_io_ctx(IOContext &ctx);
   void reset_io_ctx(IOContext &ctx);
 
  public:
   WindowsAlignedFileReader();
-  ~WindowsAlignedFileReader() override;
+  ~WindowsAlignedFileReader() override = default;
 
-  IOContext &get_ctx() override;
-  void register_thread() override;
-  void deregister_thread() override;
-  void deregister_all_threads() override;
   void open(const std::string &fname) override;
   void close() override;
 

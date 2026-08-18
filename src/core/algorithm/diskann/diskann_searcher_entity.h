@@ -60,20 +60,8 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
     return entrypoints_;
   }
 
-  uint32_t beam_size() const {
-    return beam_size_;
-  }
-
-  void set_beam_size(uint32_t beam_size) {
-    beam_size_ = beam_size;
-  }
-
-  std::pair<uint32_t, const diskann_id_t *> get_neighbors(
-      diskann_id_t id) const override;
-
   diskann_id_t get_id(diskann_key_t key) const override;
   diskann_key_t get_key(diskann_id_t id) const override;
-  const void *get_vector(diskann_id_t id) const override;
 
  private:
   IndexStorage::Pointer storage_{};
@@ -85,13 +73,6 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   SegmentPointer key_segment_{nullptr};
   SegmentPointer key_mapping_segment_{nullptr};
   SegmentPointer entrypoint_segment_{nullptr};
-
-  uint32_t num_threads_{1};
-  uint32_t list_size_{200};
-  uint32_t cache_nodes_num_{0};
-
-  bool warm_up_{false};
-  uint32_t beam_size_{2};
 
   IndexMeta meta_;
 
