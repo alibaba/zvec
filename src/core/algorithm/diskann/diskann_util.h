@@ -29,6 +29,13 @@ class DiskAnnUtil {
   static constexpr uint64_t kSectorSize = 4096;
   static constexpr uint64_t kMaxSectorReadNum = 128;
 
+  static constexpr uint64_t cache_load_batch_size(
+      uint64_t sector_num_per_node) {
+    return sector_num_per_node == 0 || sector_num_per_node > kMaxSectorReadNum
+               ? 1
+               : kMaxSectorReadNum / sector_num_per_node;
+  }
+
  public:
   static inline size_t div_round_up(size_t x, size_t y) {
     return (x / y + (x % y != 0));

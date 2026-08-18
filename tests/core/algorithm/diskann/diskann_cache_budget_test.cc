@@ -17,8 +17,17 @@
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_factory.h>
 #include "diskann_params.h"
+#include "diskann_util.h"
 
 using namespace zvec::core;
+
+TEST(DiskAnnCachePreloadTest, BoundsBatchByScratchBufferCapacity) {
+  EXPECT_EQ(DiskAnnUtil::cache_load_batch_size(0), 1u);
+  EXPECT_EQ(DiskAnnUtil::cache_load_batch_size(1), 128u);
+  EXPECT_EQ(DiskAnnUtil::cache_load_batch_size(2), 64u);
+  EXPECT_EQ(DiskAnnUtil::cache_load_batch_size(128), 1u);
+  EXPECT_EQ(DiskAnnUtil::cache_load_batch_size(129), 1u);
+}
 
 TEST(DiskAnnCacheBudgetTest, AccountsForVectorTypeAndCacheBookkeeping) {
   IndexMeta fp32_meta(IndexMeta::DataType::DT_FP32, 768);
@@ -77,6 +86,41 @@ TEST(DiskAnnCacheBudgetTest, RejectsConflictingNodeCountAndByteBudget) {
   params.set(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
              static_cast<uint64_t>(1024 * 1024));
   EXPECT_EQ(IndexError_InvalidArgument, searcher->init(params));
+}
+
+TEST(DiskAnnCacheBudgetTest, FailedReinitKeepsPreviousValidConfiguration) {
+  zvec::ailego::Params valid;
+  valid.set(PARAM_DISKANN_SEARCHER_LIST_SIZE, 321);
+  valid.set(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, 7);
+
+  zvec::ailego::Params conflicting;
+  conflicting.set(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, 8);
+  conflicting.set(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
+                  static_cast<long long>(1024));
+
+  auto searcher = IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(searcher, nullptr);
+  ASSERT_EQ(0, searcher->init(valid));
+  ASSERT_EQ(IndexError_InvalidArgument, searcher->init(conflicting));
+  uint32_t list_size = 0;
+  long long cache_nodes = 0;
+  EXPECT_TRUE(
+      searcher->params().get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size));
+  EXPECT_TRUE(searcher->params().get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
+                                     &cache_nodes));
+  EXPECT_EQ(list_size, 321u);
+  EXPECT_EQ(cache_nodes, 7);
+  EXPECT_FALSE(
+      searcher->params().has(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES));
+
+  auto streamer = IndexFactory::CreateStreamer("DiskAnnStreamer");
+  ASSERT_NE(streamer, nullptr);
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, 8);
+  IndexMeta conflicting_meta(IndexMeta::DataType::DT_FP32, 16);
+  ASSERT_EQ(0, streamer->init(meta, valid));
+  ASSERT_EQ(IndexError_InvalidArgument,
+            streamer->init(conflicting_meta, conflicting));
+  EXPECT_EQ(streamer->meta().dimension(), 8u);
 }
 
 TEST(DiskAnnCacheBudgetTest, RejectsNegativeCacheConfiguration) {

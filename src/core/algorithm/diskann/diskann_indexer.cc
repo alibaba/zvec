@@ -144,6 +144,7 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
     std::vector<void *> &coord_buffers,
     std::vector<std::pair<uint32_t, diskann_id_t *>> &neighbor_buffers) {
   std::vector<AlignedRead> read_reqs;
+  read_reqs.reserve(node_ids.size());
   std::vector<bool> retval(node_ids.size(), true);
   if (node_ids.empty()) {
     return retval;
@@ -216,8 +217,14 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
 int DiskAnnIndexer::load_cache_list(
     const std::vector<diskann_id_t> &node_list) {
   LOG_INFO("Loading the cache list into memory");
+  ailego::ElapsedTime load_timer;
 
-  size_t num_cached_nodes = node_list.size();
+  // DiskANN stores nodes in ID order. Sorting the selected hot nodes keeps
+  // preload reads in physical order without changing the cached key set.
+  std::vector<diskann_id_t> cache_node_ids(node_list);
+  std::sort(cache_node_ids.begin(), cache_node_ids.end());
+
+  const size_t num_cached_nodes = cache_node_ids.size();
   if (num_cached_nodes == 0) {
     return 0;
   }
@@ -264,23 +271,36 @@ int DiskAnnIndexer::load_cache_list(
     return IndexError_NoMemory;
   }
 
-  memset(coord_cache_buf_, 0, coord_cache_buf_len * meta_.unit_size());
+  const size_t batch_size = static_cast<size_t>(
+      DiskAnnUtil::cache_load_batch_size(sector_num_per_node_));
+  const size_t num_blocks =
+      DiskAnnUtil::div_round_up(num_cached_nodes, batch_size);
+  size_t loaded_nodes = 0;
+  size_t failed_nodes = 0;
 
-  constexpr size_t BLOCK_SIZE = 8;
-  size_t num_blocks = DiskAnnUtil::div_round_up(num_cached_nodes, BLOCK_SIZE);
+  std::vector<diskann_id_t> nodes_to_read;
+  std::vector<void *> coord_buffers;
+  std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers;
+  nodes_to_read.reserve(batch_size);
+  coord_buffers.reserve(batch_size);
+  neighbor_buffers.reserve(batch_size);
+
   for (size_t block = 0; block < num_blocks; block++) {
-    size_t start_idx = block * BLOCK_SIZE;
-    size_t end_idx = std::min(num_cached_nodes, (block + 1) * BLOCK_SIZE);
+    const size_t start_idx = block * batch_size;
+    const size_t end_idx = std::min(num_cached_nodes, (block + 1) * batch_size);
 
-    std::vector<diskann_id_t> nodes_to_read;
-    std::vector<void *> coord_buffers;
-    std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers;
+    nodes_to_read.clear();
+    coord_buffers.clear();
+    neighbor_buffers.clear();
+    nodes_to_read.insert(nodes_to_read.end(),
+                         cache_node_ids.begin() + start_idx,
+                         cache_node_ids.begin() + end_idx);
     for (size_t node_idx = start_idx; node_idx < end_idx; node_idx++) {
-      nodes_to_read.push_back(node_list[node_idx]);
       coord_buffers.push_back(reinterpret_cast<uint8_t *>(coord_cache_buf_) +
                               node_idx * meta_.element_size());
       neighbor_buffers.emplace_back(
-          0, neighbor_cache_buffer_.data() + node_idx * (max_degree_ + 1));
+          0,
+          neighbor_cache_buffer_.data() + node_idx * neighbor_entries_per_node);
     }
 
     auto read_status =
@@ -288,17 +308,30 @@ int DiskAnnIndexer::load_cache_list(
 
     for (size_t i = 0; i < read_status.size(); i++) {
       if (read_status[i] == true) {
-        coord_cache_.insert(std::make_pair(nodes_to_read[i], coord_buffers[i]));
-        neighbor_cache_.insert(
-            std::make_pair(nodes_to_read[i], neighbor_buffers[i]));
+        coord_cache_.emplace_hint(coord_cache_.end(), nodes_to_read[i],
+                                  coord_buffers[i]);
+        neighbor_cache_.emplace_hint(neighbor_cache_.end(), nodes_to_read[i],
+                                     neighbor_buffers[i]);
+        ++loaded_nodes;
+      } else {
+        ++failed_nodes;
       }
     }
   }
 
+  if (failed_nodes != 0) {
+    LOG_WARN(
+        "DiskANN node cache preload completed with read failures: "
+        "requested_nodes=%zu loaded_nodes=%zu failed_nodes=%zu",
+        num_cached_nodes, loaded_nodes, failed_nodes);
+  }
+
   LOG_INFO(
-      "Load Cache List Done: nodes=%zu payload_bytes=%llu "
-      "estimated_bytes=%llu",
-      num_cached_nodes,
+      "Load Cache List Done: requested_nodes=%zu loaded_nodes=%zu "
+      "failed_nodes=%zu batch_nodes=%zu batches=%zu elapsed_ms=%llu "
+      "payload_bytes=%llu estimated_bytes=%llu",
+      num_cached_nodes, loaded_nodes, failed_nodes, batch_size, num_blocks,
+      static_cast<unsigned long long>(load_timer.milli_seconds()),
       static_cast<unsigned long long>(static_cast<uint64_t>(num_cached_nodes) *
                                       cache_payload_bytes_per_node()),
       static_cast<unsigned long long>(static_cast<uint64_t>(num_cached_nodes) *

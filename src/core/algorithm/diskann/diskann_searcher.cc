@@ -47,38 +47,46 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
     return IndexError_NoReady;
   }
 
-  params_ = search_params;
-  list_size_ = 200;
-  cache_nodes_num_ = 0;
-  cache_node_budget_bytes_ = 0;
   log_diskann_io_backend();
 
-  params_.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
+  uint32_t list_size = 200;
+  uint32_t cache_nodes_num = 0;
+  uint64_t cache_node_budget_bytes = 0;
+  uint32_t beam_size = 2;
+  search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
   long long configured_cache_nodes = 0;
-  if (params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
-                  &configured_cache_nodes)) {
+  if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
+                        &configured_cache_nodes)) {
     if (configured_cache_nodes < 0 ||
         static_cast<unsigned long long>(configured_cache_nodes) >
             std::numeric_limits<uint32_t>::max()) {
       LOG_ERROR("cache_node_num must be in [0, UINT32_MAX]");
       return IndexError_InvalidArgument;
     }
-    cache_nodes_num_ = static_cast<uint32_t>(configured_cache_nodes);
+    cache_nodes_num = static_cast<uint32_t>(configured_cache_nodes);
   }
   long long configured_cache_budget = 0;
-  if (params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
-                  &configured_cache_budget)) {
+  if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
+                        &configured_cache_budget)) {
     if (configured_cache_budget < 0) {
       LOG_ERROR("cache_node_budget_bytes must not be negative");
       return IndexError_InvalidArgument;
     }
-    cache_node_budget_bytes_ = static_cast<uint64_t>(configured_cache_budget);
+    cache_node_budget_bytes = static_cast<uint64_t>(configured_cache_budget);
   }
-  params_.get(PARAM_DISKANN_SEARCHER_BEAM_SIZE, &beam_size_);
-  if (cache_nodes_num_ != 0 && cache_node_budget_bytes_ != 0) {
+  search_params.get(PARAM_DISKANN_SEARCHER_BEAM_SIZE, &beam_size);
+  if (cache_nodes_num != 0 && cache_node_budget_bytes != 0) {
     LOG_ERROR("cache_node_num and cache_node_budget_bytes cannot both be set");
     return IndexError_InvalidArgument;
   }
+
+  // Commit only after every value has been validated. A failed re-init must
+  // leave either the previous valid configuration or STATE_INIT untouched.
+  params_ = search_params;
+  list_size_ = list_size;
+  cache_nodes_num_ = cache_nodes_num;
+  cache_node_budget_bytes_ = cache_node_budget_bytes;
+  beam_size_ = beam_size;
   state_ = STATE_INITED;
   return 0;
 }
