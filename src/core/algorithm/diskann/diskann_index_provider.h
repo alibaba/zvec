@@ -33,13 +33,12 @@ namespace core {
 //! streamer is closed.
 class DiskAnnIndexProvider : public IndexProvider {
  public:
-  DiskAnnIndexProvider(const IndexMeta &meta, const IndexMeta &search_meta,
+  DiskAnnIndexProvider(const IndexMeta &meta,
                        const IndexMetric::Pointer &measure,
                        const DiskAnnEntity::Pointer &entity,
                        const DiskAnnIndexer::Pointer &indexer,
                        const std::string &owner)
       : meta_(meta),
-        search_meta_(search_meta),
         measure_(measure),
         entity_(entity),
         indexer_(indexer),
@@ -50,8 +49,8 @@ class DiskAnnIndexProvider : public IndexProvider {
 
  public:
   IndexProvider::Iterator::Pointer create_iterator() override {
-    std::unique_ptr<Iterator> iterator(new (std::nothrow) Iterator(
-        meta_, search_meta_, measure_, entity_, indexer_));
+    std::unique_ptr<Iterator> iterator(
+        new (std::nothrow) Iterator(meta_, measure_, entity_, indexer_));
     if (!iterator || !iterator->ready()) {
       return nullptr;
     }
@@ -111,19 +110,17 @@ class DiskAnnIndexProvider : public IndexProvider {
   };
 
   static IndexContext::Pointer create_fetch_context(
-      const IndexMeta &meta, const IndexMeta &search_meta,
-      const IndexMetric::Pointer &measure,
+      const IndexMeta &meta, const IndexMetric::Pointer &measure,
       const DiskAnnEntity::Pointer &entity) {
     if (!measure || !entity) {
       return nullptr;
     }
 
     std::unique_ptr<DiskAnnContext> context(
-        new (std::nothrow) DiskAnnContext(search_meta, measure, entity));
+        new (std::nothrow) DiskAnnContext(meta, measure, entity));
     if (!context ||
         context->init(DiskAnnContext::kFetchContext, entity->max_degree(),
-                      entity->pq_chunk_num(), search_meta.element_size(),
-                      meta.element_size()) != 0) {
+                      entity->pq_chunk_num(), meta.element_size()) != 0) {
       return nullptr;
     }
     return IndexContext::Pointer(context.release());
@@ -132,7 +129,7 @@ class DiskAnnIndexProvider : public IndexProvider {
   FetchState *get_fetch_state() const {
     if (!fetch_state_) {
       IndexContext::Pointer context =
-          create_fetch_context(meta_, search_meta_, measure_, entity_);
+          create_fetch_context(meta_, measure_, entity_);
       if (!context) {
         return nullptr;
       }
@@ -143,13 +140,12 @@ class DiskAnnIndexProvider : public IndexProvider {
 
   class Iterator : public IndexProvider::Iterator {
    public:
-    Iterator(const IndexMeta &meta, const IndexMeta &search_meta,
-             const IndexMetric::Pointer &measure,
+    Iterator(const IndexMeta &meta, const IndexMetric::Pointer &measure,
              const DiskAnnEntity::Pointer &entity,
              const DiskAnnIndexer::Pointer &indexer)
         : entity_(entity),
           indexer_(indexer),
-          context_(create_fetch_context(meta, search_meta, measure, entity)),
+          context_(create_fetch_context(meta, measure, entity)),
           cur_id_(0U) {
       cur_id_ = next_valid_id(0U);
     }
@@ -206,7 +202,6 @@ class DiskAnnIndexProvider : public IndexProvider {
   };
 
   IndexMeta meta_;
-  IndexMeta search_meta_;
   IndexMetric::Pointer measure_;
   DiskAnnEntity::Pointer entity_;
   DiskAnnIndexer::Pointer indexer_;

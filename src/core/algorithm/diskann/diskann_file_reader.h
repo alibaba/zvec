@@ -71,7 +71,6 @@ struct IoBackend {
   HANDLE file_handle{INVALID_HANDLE_VALUE};
   HANDLE completion_port{nullptr};
   std::wstring file_path;
-  uint32_t submitted_count{0};
   uint32_t outstanding_count{0};
   uint64_t generation{0};
 #endif

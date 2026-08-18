@@ -19,7 +19,6 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include <ailego/io/io_backend.h>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>

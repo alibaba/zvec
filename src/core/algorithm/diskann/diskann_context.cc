@@ -29,8 +29,7 @@ DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
       entity_{entity} {}
 
 int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
-                         uint32_t pq_chunk_num, uint32_t element_size,
-                         uint32_t disk_element_size) {
+                         uint32_t pq_chunk_num, uint32_t element_size) {
   if (!entity_ || element_size == 0) {
     LOG_ERROR("Invalid DiskAnn context parameters");
     return IndexError_InvalidArgument;
@@ -80,9 +79,7 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
           (void **)&pq_coord_buffer_,
           static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
           256);
-      DiskAnnUtil::alloc_aligned(
-          (void **)&coord_buffer_,
-          disk_element_size > 0 ? disk_element_size : element_size_, 256);
+      DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
       DiskAnnUtil::alloc_aligned(
           (void **)&sector_buffer_,
           DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,

@@ -22,7 +22,6 @@
 #include <variant>
 #include <vector>
 #include <ailego/io/file_lock.h>
-#include <ailego/io/io_backend.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
@@ -134,8 +133,6 @@ class CollectionImpl : public Collection {
 
   Result<std::string> DebugGetHnswStorageMode(
       const std::string &column_name) const override;
-
-  Result<std::string> DebugGetIoBackendType() const override;
 
  private:
   void prepare_schema();
@@ -1908,11 +1905,6 @@ Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
 
   return tl::make_unexpected(
       Status::NotFound("No HNSW index found for column '", column_name, "'"));
-}
-
-Result<std::string> CollectionImpl::DebugGetIoBackendType() const {
-  auto type = ailego::IOBackend::Instance().available();
-  return std::string(ailego::IOBackendTypeName(type));
 }
 
 Status CollectionImpl::recovery() {

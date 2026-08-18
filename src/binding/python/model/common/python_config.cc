@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "python_config.h"
-#include <ailego/io/io_backend.h>
 #include <pybind11/stl.h>
 #include <zvec/ailego/io/io_backend.h>
 

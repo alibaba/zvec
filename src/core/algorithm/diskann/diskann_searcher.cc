@@ -14,7 +14,6 @@
 
 #include "diskann_searcher.h"
 #include <limits>
-#include <ailego/io/io_backend.h>
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 #include "diskann_params.h"
@@ -155,7 +154,6 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     return ret;
   }
 
-  search_meta_ = meta_;
   if (measure) {
     measure_ = std::move(measure);
   } else {
@@ -206,8 +204,8 @@ int DiskAnnSearcher::update_context(DiskAnnContext *ctx) const {
     return IndexError_Runtime;
   }
 
-  return ctx->update_context(DiskAnnContext::kSearcherContext, search_meta_,
-                             measure_, entity, magic_);
+  return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
+                             entity, magic_);
 }
 
 int DiskAnnSearcher::ensure_compatible_context(ContextPointer &context,
@@ -440,16 +438,15 @@ IndexSearcher::Context::Pointer DiskAnnSearcher::create_context() const {
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx = new (std::nothrow)
-      DiskAnnContext(search_meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx =
+      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();
   }
   if (ailego_unlikely(ctx->init(
           DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), search_meta_.element_size(),
-          meta_.element_size())) != 0) {
+          search_ctx_entity->pq_chunk_num(), meta_.element_size())) != 0) {
     LOG_ERROR("Init DiskAnn Context failed");
     delete ctx;
 

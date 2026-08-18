@@ -15,7 +15,7 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c)
 # dependency for dlopen/dlsym/dlclose. macOS ARM64 uses pread and needs no
 # extra I/O backend library. Windows overlapped I/O is built in and likewise
 # needs no extra backend library.
-set(CORE_KNN_DISKANN_LIBS core_framework core_knn_cluster)
+set(CORE_KNN_DISKANN_LIBS zvec_ailego core_framework core_knn_cluster)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$")
     list(APPEND CORE_KNN_DISKANN_LIBS ${CMAKE_DL_LIBS})
@@ -42,17 +42,4 @@ if(MSVC)
     # windows.h min/max macros collide with std::min/std::max and
     # numeric_limits<T>::max()/min() (error C4003).
     target_compile_definitions(core_knn_diskann_objects PRIVATE NOMINMAX)
-    target_compile_definitions(core_knn_diskann PRIVATE NOMINMAX)
 endif()
-
-# Ensure the Windows shared-library target links all dependencies explicitly.
-foreach(_dep zvec_ailego core_framework core_knn_cluster)
-    if(TARGET ${_dep})
-        target_include_directories(core_knn_diskann PRIVATE
-            $<TARGET_PROPERTY:${_dep},INTERFACE_INCLUDE_DIRECTORIES>)
-        add_dependencies(core_knn_diskann ${_dep})
-        if(MSVC)
-            target_link_libraries(core_knn_diskann ${_dep})
-        endif()
-    endif()
-endforeach()

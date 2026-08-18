@@ -15,7 +15,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <ailego/io/io_backend.h>
 #include <zvec/core/interface/index.h>
 #if DISKANN_SUPPORTED
 #include "algorithm/diskann/diskann_params.h"
@@ -356,19 +355,5 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
 }
 
 #endif  // DISKANN_SUPPORTED
-
-ailego::IOBackendType DiskAnnIndex::io_backend_type() const {
-  auto &backend = ailego::IOBackend::Instance();
-  ailego::IOBackendType type = backend.available();
-#if defined(__linux) || defined(__linux__)
-  if (type == ailego::IOBackendType::kPread) {
-    LOG_WARN(
-        "Only synchronous pread() is available. Install libaio "
-        "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
-        "for async I/O support — performance will be degraded without it.");
-  }
-#endif
-  return type;
-}
 
 }  // namespace zvec::core_interface

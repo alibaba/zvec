@@ -14,7 +14,6 @@
 
 #include "diskann_streamer.h"
 #include <limits>
-#include <ailego/io/io_backend.h>
 #include "diskann_context.h"
 #include "diskann_index_provider.h"
 #include "diskann_indexer.h"
@@ -161,7 +160,6 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return ret;
   }
 
-  search_meta_ = meta_;
   measure_ = IndexFactory::CreateMetric(meta_.metric_name());
   if (!measure_) {
     LOG_ERROR("CreateMetric failed, name: %s", meta_.metric_name().c_str());
@@ -214,8 +212,8 @@ int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
     return IndexError_Runtime;
   }
 
-  return ctx->update_context(DiskAnnContext::kSearcherContext, search_meta_,
-                             measure_, entity, magic_);
+  return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
+                             entity, magic_);
 }
 
 int DiskAnnStreamer::ensure_compatible_context(ContextPointer &context,
@@ -501,9 +499,9 @@ IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider(void) const {
     LOG_ERROR("Failed to clone DiskAnn entity for provider");
     return nullptr;
   }
-  std::unique_ptr<DiskAnnIndexProvider> provider(new (
-      std::nothrow) DiskAnnIndexProvider(meta_, search_meta_, measure_, entity,
-                                         diskann_indexer_, "DiskAnnStreamer"));
+  std::unique_ptr<DiskAnnIndexProvider> provider(
+      new (std::nothrow) DiskAnnIndexProvider(
+          meta_, measure_, entity, diskann_indexer_, "DiskAnnStreamer"));
   if (!provider || !provider->ready()) {
     LOG_ERROR("Failed to initialize DiskAnn provider dependencies");
     return nullptr;
@@ -522,16 +520,15 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx = new (std::nothrow)
-      DiskAnnContext(search_meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx =
+      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();
   }
   if (ailego_unlikely(ctx->init(
           DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), search_meta_.element_size(),
-          meta_.element_size())) != 0) {
+          search_ctx_entity->pq_chunk_num(), meta_.element_size())) != 0) {
     LOG_ERROR("Init DiskAnn Context failed");
     delete ctx;
 

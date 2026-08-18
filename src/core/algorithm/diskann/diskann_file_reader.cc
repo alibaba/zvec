@@ -142,7 +142,6 @@ static void close_windows_io_handles(IOContext ctx) {
     ctx->completion_port = nullptr;
   }
   ctx->file_path.clear();
-  ctx->submitted_count = 0;
   ctx->outstanding_count = 0;
 }
 #endif
@@ -201,7 +200,6 @@ int destroy_io_ctx(IOContext &ctx) {
 
 #if defined(_WIN32) || defined(_WIN64)
   close_windows_io_handles(ctx);
-  ctx->reqs.clear();
 #elif defined(__linux) || defined(__linux__)
   if (ctx->type == ailego::IOBackendType::kIoUring) {
     ctx->ring.teardown();
@@ -1314,7 +1312,7 @@ int WindowsAlignedFileReader::submit(PendingBatch &batch,
   if (ret != 0) {
     return ret;
   }
-  if (ctx->outstanding_count != 0 || ctx->submitted_count != 0) {
+  if (ctx->outstanding_count != 0) {
     LOG_ERROR("Windows I/O context already has an active batch");
     return IndexError_Runtime;
   }
@@ -1340,7 +1338,6 @@ int WindowsAlignedFileReader::submit(PendingBatch &batch,
                              static_cast<DWORD>(req.len), nullptr, &request);
     if (!queued && ::GetLastError() != ERROR_IO_PENDING) {
       LOG_ERROR("Error queuing IOCP read %zu (error=%lu)", i, ::GetLastError());
-      ctx->submitted_count = issued_count;
       ctx->outstanding_count = issued_count;
       reset_io_ctx(ctx);
       batch.expected_lengths.clear();
@@ -1351,7 +1348,6 @@ int WindowsAlignedFileReader::submit(PendingBatch &batch,
 
     batch.expected_lengths.push_back(req.len);
     ++issued_count;
-    ctx->submitted_count = issued_count;
     ctx->outstanding_count = issued_count;
   }
 
@@ -1462,9 +1458,6 @@ int WindowsAlignedFileReader::get_completed(
     }
   }
 
-  if (ctx->outstanding_count == 0) {
-    ctx->submitted_count = 0;
-  }
   return static_cast<int>(completed_indices.size());
 }
 
