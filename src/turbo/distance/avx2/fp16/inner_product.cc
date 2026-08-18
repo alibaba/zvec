@@ -15,62 +15,43 @@
 #include "avx2/fp16/inner_product.h"
 #if defined(__AVX2__) && defined(__F16C__)
 #include <immintrin.h>
+#include <cstdint>
 #endif
 #include <zvec/ailego/utility/float_helper.h>
-#include "scalar/fp16/inner_product.h"
+#include "avx2/fp16/inner_product_common.h"
 
 namespace zvec::turbo::avx2 {
 
-#if defined(__AVX2__) && defined(__F16C__)
-namespace {
-
-inline float horizontal_sum(__m256 value) {
-  const __m128 high = _mm256_extractf128_ps(value, 1);
-  const __m128 low = _mm256_castps256_ps128(value);
-  __m128 sum = _mm_add_ps(low, high);
-  sum = _mm_hadd_ps(sum, sum);
-  sum = _mm_hadd_ps(sum, sum);
-  return _mm_cvtss_f32(sum);
-}
-
-float dot_product(const ailego::Float16 *a, const ailego::Float16 *b,
-                  size_t dim) {
-  __m256 accumulator = _mm256_setzero_ps();
-  size_t i = 0;
-  for (; i + 8 <= dim; i += 8) {
-    const __m256 lhs = _mm256_cvtph_ps(
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + i)));
-    const __m256 rhs = _mm256_cvtph_ps(
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + i)));
-    accumulator = _mm256_add_ps(accumulator, _mm256_mul_ps(lhs, rhs));
-  }
-
-  float sum = horizontal_sum(accumulator);
-  for (; i < dim; ++i) {
-    sum += static_cast<float>(a[i]) * static_cast<float>(b[i]);
-  }
-  return sum;
-}
-
-}  // namespace
-#endif
-
+// Compute inner product distance between a single quantized FP16
+// vector pair.
 void inner_product_fp16_distance_avx2(const void *a, const void *b, size_t dim,
                                       float *distance) {
 #if defined(__AVX2__) && defined(__F16C__)
-  *distance = -dot_product(static_cast<const ailego::Float16 *>(a),
-                           static_cast<const ailego::Float16 *>(b), dim);
+  const ailego::Float16 *lhs = reinterpret_cast<const ailego::Float16 *>(a);
+  const ailego::Float16 *rhs = reinterpret_cast<const ailego::Float16 *>(b);
+
+  ACCUM_FP16_1X1_AVX(lhs, rhs, dim, distance, 0ull, NEGATE_FP32_GENERAL)
 #else
-  scalar::inner_product_fp16_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 
+// Batch version of inner_product_fp16_distance_avx2.
 void inner_product_fp16_batch_distance_avx2(const void *const *vectors,
                                             const void *query, size_t n,
                                             size_t dim, float *distances) {
-  for (size_t i = 0; i < n; ++i) {
-    inner_product_fp16_distance_avx2(vectors[i], query, dim, &distances[i]);
-  }
+#if defined(__AVX2__) && defined(__F16C__)
+  inner_product_fp16_batch_avx2(vectors, query, n, dim, distances);
+#else
+  (void)vectors;
+  (void)query;
+  (void)n;
+  (void)dim;
+  (void)distances;
+#endif
 }
 
 }  // namespace zvec::turbo::avx2

@@ -16,7 +16,6 @@
 #include <cstdint>
 #include "avx2/record_quantized_int8/common.h"
 #include "common/record_quantized_distance.h"
-#include "scalar/record_quantized_int8/cosine.h"
 
 namespace zvec::turbo::avx2 {
 
@@ -34,7 +33,10 @@ void cosine_int8_distance_avx2(const void *a, const void *b, size_t dim,
   *distance = distance_internal::record_minus_inner_product(
       a, b, original_dim, original_dim, raw_ip);
 #else
-  scalar::cosine_int8_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 

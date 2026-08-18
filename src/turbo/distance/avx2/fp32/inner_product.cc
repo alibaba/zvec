@@ -16,7 +16,6 @@
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
-#include "scalar/fp32/inner_product.h"
 
 namespace zvec::turbo::avx2 {
 
@@ -57,7 +56,10 @@ void inner_product_fp32_distance_avx2(const void *a, const void *b, size_t dim,
   *distance = -dot_product(static_cast<const float *>(a),
                            static_cast<const float *>(b), dim);
 #else
-  scalar::inner_product_fp32_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 

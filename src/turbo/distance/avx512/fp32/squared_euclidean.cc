@@ -16,7 +16,6 @@
 #if defined(__AVX512F__)
 #include <immintrin.h>
 #endif
-#include "scalar/fp32/squared_euclidean.h"
 
 namespace zvec::turbo::avx512 {
 
@@ -49,7 +48,10 @@ void squared_euclidean_fp32_distance_avx512(const void *a, const void *b,
   *distance = squared_euclidean(static_cast<const float *>(a),
                                 static_cast<const float *>(b), dim);
 #else
-  scalar::squared_euclidean_fp32_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 

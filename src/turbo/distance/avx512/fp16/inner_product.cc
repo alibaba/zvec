@@ -17,7 +17,6 @@
 #include <immintrin.h>
 #endif
 #include <zvec/ailego/utility/float_helper.h>
-#include "scalar/fp16/inner_product.h"
 
 namespace zvec::turbo::avx512 {
 
@@ -52,7 +51,10 @@ void inner_product_fp16_distance_avx512(const void *a, const void *b,
   *distance = -dot_product(static_cast<const ailego::Float16 *>(a),
                            static_cast<const ailego::Float16 *>(b), dim);
 #else
-  scalar::inner_product_fp16_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 

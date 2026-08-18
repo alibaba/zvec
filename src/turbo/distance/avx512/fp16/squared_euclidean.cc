@@ -17,7 +17,6 @@
 #include <immintrin.h>
 #endif
 #include <zvec/ailego/utility/float_helper.h>
-#include "scalar/fp16/squared_euclidean.h"
 
 namespace zvec::turbo::avx512 {
 
@@ -54,7 +53,10 @@ void squared_euclidean_fp16_distance_avx512(const void *a, const void *b,
   *distance = squared_euclidean(static_cast<const ailego::Float16 *>(a),
                                 static_cast<const ailego::Float16 *>(b), dim);
 #else
-  scalar::squared_euclidean_fp16_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 

@@ -16,7 +16,6 @@
 #include <cstdint>
 #include "avx2/record_quantized_int4/common.h"
 #include "common/record_quantized_distance.h"
-#include "scalar/record_quantized_int4/inner_product.h"
 
 namespace zvec::turbo::avx2 {
 
@@ -35,7 +34,10 @@ void inner_product_int4_distance_avx2(const void *a, const void *b, size_t dim,
   *distance = distance_internal::record_minus_inner_product(
       a, b, original_dim, tail_offset, raw_ip);
 #else
-  scalar::inner_product_int4_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 

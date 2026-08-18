@@ -16,7 +16,6 @@
 #include <cstdint>
 #include "avx512/record_quantized_int4/common.h"
 #include "common/record_quantized_distance.h"
-#include "scalar/record_quantized_int4/squared_euclidean.h"
 
 namespace zvec::turbo::avx512 {
 
@@ -35,7 +34,10 @@ void squared_euclidean_int4_distance_avx512(const void *a, const void *b,
   *distance = distance_internal::record_squared_euclidean(a, b, original_dim,
                                                           tail_offset, raw_ip);
 #else
-  scalar::squared_euclidean_int4_distance(a, b, dim, distance);
+  (void)a;
+  (void)b;
+  (void)dim;
+  (void)distance;
 #endif
 }
 
