@@ -26,6 +26,7 @@
 #include "diskann_cache_budget.h"
 #include "diskann_holder.h"
 #include "diskann_params.h"
+#include "diskann_streamer.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -53,6 +54,18 @@ class DiskAnnCacheTestPeer {
 
   static size_t neighbor_cache_size(const DiskAnnSearcher *searcher) {
     return searcher->diskann_indexer_->neighbor_cache_.size();
+  }
+};
+
+class DiskAnnStreamerTestPeer {
+ public:
+  static std::shared_ptr<AlignedFileReader> reader(DiskAnnStreamer *streamer) {
+    return streamer->diskann_indexer_->reader_;
+  }
+
+  static void set_reader(DiskAnnStreamer *streamer,
+                         std::shared_ptr<AlignedFileReader> reader) {
+    streamer->diskann_indexer_->reader_ = std::move(reader);
   }
 };
 
@@ -103,6 +116,40 @@ class CountingAlignedFileReader final : public AlignedFileReader {
  private:
   std::shared_ptr<AlignedFileReader> reader_;
   size_t requested_reads_{0};
+};
+
+class FailingAlignedFileReader final : public AlignedFileReader {
+ public:
+  explicit FailingAlignedFileReader(std::shared_ptr<AlignedFileReader> reader)
+      : reader_(std::move(reader)) {}
+
+  void open(const std::string &fname) override {
+    reader_->open(fname);
+  }
+
+  void close() override {
+    reader_->close();
+  }
+
+  int read(std::vector<AlignedRead> & /*read_reqs*/, IOContext & /*ctx*/,
+           bool /*async*/ = false) override {
+    return IndexError_ReadData;
+  }
+
+  int submit(PendingBatch & /*batch*/,
+             std::vector<AlignedRead> & /*read_reqs*/,
+             IOContext & /*ctx*/) override {
+    return IndexError_ReadData;
+  }
+
+  int get_completed(PendingBatch & /*batch*/, IOContext & /*ctx*/,
+                    int /*min_completed*/,
+                    std::vector<uint32_t> & /*completed_indices*/) override {
+    return IndexError_ReadData;
+  }
+
+ private:
+  std::shared_ptr<AlignedFileReader> reader_;
 };
 
 }  // namespace
@@ -393,9 +440,12 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   // I/O failures from the indexer must be propagated by the streamer instead
   // of being converted into a successful search with incomplete results.
-  std::error_code truncate_error;
-  std::filesystem::resize_file(path, 0, truncate_error);
-  ASSERT_FALSE(truncate_error) << truncate_error.message();
+  auto *diskann_streamer = dynamic_cast<DiskAnnStreamer *>(streamer.get());
+  ASSERT_NE(diskann_streamer, nullptr);
+  DiskAnnStreamerTestPeer::set_reader(
+      diskann_streamer,
+      std::make_shared<FailingAlignedFileReader>(
+          DiskAnnStreamerTestPeer::reader(diskann_streamer)));
   EXPECT_NE(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
 
   // Closing/unloading releases the index and makes all query entry points
@@ -1059,14 +1109,17 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   }
   ASSERT_EQ(0, cached_searcher->unload());
 
-  std::error_code truncate_error;
-  std::filesystem::resize_file(path, 0, truncate_error);
-  ASSERT_FALSE(truncate_error) << truncate_error.message();
-  std::string vector_after_truncate;
+  auto *diskann_searcher = dynamic_cast<DiskAnnSearcher *>(searcher.get());
+  ASSERT_NE(diskann_searcher, nullptr);
+  DiskAnnCacheTestPeer::set_reader(
+      diskann_searcher,
+      std::make_shared<FailingAlignedFileReader>(
+          DiskAnnCacheTestPeer::reader(diskann_searcher)));
+  std::string vector_after_failure;
   EXPECT_EQ(IndexError_Runtime,
             searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,
-                                 vector_after_truncate));
-  EXPECT_TRUE(vector_after_truncate.empty());
+                                 vector_after_failure));
+  EXPECT_TRUE(vector_after_failure.empty());
 }
 
 TEST_F(DiskAnnSearcherTest, TestFp16Entrypoint) {

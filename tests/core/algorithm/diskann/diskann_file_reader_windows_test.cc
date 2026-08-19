@@ -358,7 +358,7 @@ TEST(DiskAnnFileReaderWindowsTest, RejectsMisalignedUnbufferedRead) {
   EXPECT_EQ(ctx, nullptr);
 }
 
-TEST(DiskAnnFileReaderWindowsTest, OpenContextPreventsIndexReplacement) {
+TEST(DiskAnnFileReaderWindowsTest, OpenContextAllowsIndexDeletion) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
@@ -374,8 +374,13 @@ TEST(DiskAnnFileReaderWindowsTest, OpenContextPreventsIndexReplacement) {
   std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
   ASSERT_EQ(reader.read(request, ctx, false), 0);
 
-  EXPECT_FALSE(::DeleteFileW(file.wide_path()));
-  EXPECT_EQ(::GetLastError(), ERROR_SHARING_VIOLATION);
+  // Search contexts may outlive the searcher because callers and the
+  // high-level context pool retain them. They must not keep a closed index
+  // path locked against deletion or atomic replacement. The open handle still
+  // owns the old file contents until the context is destroyed.
+  ASSERT_TRUE(::DeleteFileW(file.wide_path()));
+  EXPECT_EQ(reader.read(request, ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0));
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
 }

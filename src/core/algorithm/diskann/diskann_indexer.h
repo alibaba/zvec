@@ -26,6 +26,7 @@ namespace zvec {
 namespace core {
 
 class DiskAnnCacheTestPeer;
+class DiskAnnStreamerTestPeer;
 
 class DiskAnnIndexer {
  public:
@@ -138,6 +139,7 @@ class DiskAnnIndexer {
   uint64_t doc_cnt_{0};
 
   friend class DiskAnnCacheTestPeer;
+  friend class DiskAnnStreamerTestPeer;
 };
 
 }  // namespace core

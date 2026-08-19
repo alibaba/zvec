@@ -87,6 +87,12 @@ void log_diskann_io_backend() {
 }
 
 #if defined(_WIN32) || defined(_WIN64)
+// Contexts can outlive their searcher in the shared context pool. Allow an
+// index path to be deleted or atomically replaced while such a context keeps
+// the old file alive, but keep in-place writes blocked while reads are active.
+static constexpr DWORD kDiskAnnFileShareMode =
+    FILE_SHARE_READ | FILE_SHARE_DELETE;
+
 // Cancel and reap every request that may still reference caller-owned buffers.
 // Closing the file or completion port before the cancellation packets have
 // arrived would allow the kernel to keep writing into buffers already returned
@@ -1047,7 +1053,7 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
   absolute_path.resize(path_length);
 
   HANDLE probe = ::CreateFileW(
-      absolute_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+      absolute_path.c_str(), GENERIC_READ, kDiskAnnFileShareMode, nullptr,
       OPEN_EXISTING,
       FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
       nullptr);
@@ -1086,7 +1092,8 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
 
   close_windows_io_handles(ctx);
   ctx->file_handle = ::CreateFileW(
-      file_path_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      file_path_.c_str(), GENERIC_READ, kDiskAnnFileShareMode, nullptr,
+      OPEN_EXISTING,
       FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
       nullptr);
   if (ctx->file_handle == INVALID_HANDLE_VALUE) {
