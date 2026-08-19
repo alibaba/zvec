@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #include <chrono>
+#include <condition_variable>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <gtest/gtest.h>
 #include <zvec/ailego/parallel/thread_queue.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -23,50 +25,91 @@ using namespace zvec;
 using namespace zvec::ailego;
 
 TEST(ThreadQueue, General) {
+  // Keep static: MSVC otherwise requires kTaskCount in the predicate capture.
+  static constexpr int kTaskCount = 1000;
+  std::mutex count_mutex;
+  std::condition_variable count_cond;
+  int count = 0;
   ThreadQueue queue;
 
   std::this_thread::sleep_for(
       std::chrono::microseconds(std::rand() % 1000 + 1));
   queue.wake();
 
-  int count = 0;
-  for (int i = 0; i < 1000; ++i) {
-    queue[0].execute([&count, i]() {
-      EXPECT_EQ(i, count);
-      ++count;
+  for (int i = 0; i < kTaskCount; ++i) {
+    queue[0].execute([&, i]() {
+      bool completed;
+      {
+        std::lock_guard<std::mutex> lock(count_mutex);
+        EXPECT_EQ(i, count);
+        completed = (++count == kTaskCount);
+      }
+      if (completed) {
+        count_cond.notify_one();
+      }
       // std::cout << count << std::endl;
     });
   }
-  std::this_thread::sleep_for(std::chrono::microseconds(20000));
-  EXPECT_EQ(1000, count);
+
+  bool completed;
+  int completed_count;
+  {
+    std::unique_lock<std::mutex> lock(count_mutex);
+    completed = count_cond.wait_for(lock, std::chrono::seconds(10),
+                                    [&count]() { return count == kTaskCount; });
+    completed_count = count;
+  }
+
+  EXPECT_TRUE(completed) << "Timed out waiting for ThreadQueue tasks";
+  EXPECT_EQ(kTaskCount, completed_count);
 
   queue.stop();
   queue.wait_stop();
 }
 
 TEST(ThreadQueue, MutliThread) {
+  // Keep static: MSVC otherwise requires kTaskCount in the predicate capture.
+  static constexpr unsigned int kTaskCount = 10000u;
+  std::mutex count_mutex;
+  std::condition_variable count_cond;
+  unsigned int count = 0u;
   ThreadQueue queue;
 
   std::this_thread::sleep_for(
       std::chrono::microseconds(std::rand() % 1000 + 1));
   queue.wake();
 
-  std::atomic_uint count{0};
-  for (int i = 0; i < 10000; ++i) {
-    queue.execute(std::rand(), [&count]() {
-      ++count;
+  for (unsigned int i = 0u; i < kTaskCount; ++i) {
+    queue.execute(std::rand(), [&]() {
+      bool completed;
+      {
+        std::lock_guard<std::mutex> lock(count_mutex);
+        completed = (++count == kTaskCount);
+      }
+      if (completed) {
+        count_cond.notify_one();
+      }
       // std::cout << count << std::endl;
     });
   }
-  std::this_thread::sleep_for(std::chrono::microseconds(20000));
 
-  EXPECT_EQ(10000u, count);
+  bool completed;
+  unsigned int completed_count;
+  {
+    std::unique_lock<std::mutex> lock(count_mutex);
+    completed = count_cond.wait_for(lock, std::chrono::seconds(10),
+                                    [&count]() { return count == kTaskCount; });
+    completed_count = count;
+  }
+
+  EXPECT_TRUE(completed) << "Timed out waiting for ThreadQueue tasks";
+  EXPECT_EQ(kTaskCount, completed_count);
   queue.stop();
   queue.wait_stop();
 }
 
 TEST(ThreadQueue, MultiThreadWithHighPriority) {
-// TODO(windows): add it back
+  // TODO(windows): add it back
   GTEST_SKIP();
   ThreadQueue queue;
 

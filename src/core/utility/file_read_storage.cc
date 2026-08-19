@@ -291,7 +291,7 @@ class FileReadStorage : public IndexStorage {
 
   int flush(void) override {
     // Read-only storage — nothing to flush. Return success so that
-    // generic Index::Flush() works on read-only-backed indexes (e.g.
+    // generic Index::flush() works on read-only-backed indexes (e.g.
     // DiskAnn after build/dump). Mirrors MMapFileReadStorage::flush().
     return 0;
   }

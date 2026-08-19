@@ -53,7 +53,7 @@ Status VectorColumnIndexer::CreateProximaIndex(
           ? core_interface::StorageOptions::StorageType::kMMAP
           : core_interface::StorageOptions::StorageType::kBufferPool;
 
-  if (0 != index->Open(this->index_file_path(),
+  if (0 != index->open(this->index_file_path(),
                        {storage_type, read_options.create_new,
                         read_options.read_only})) {
     return Status::InternalError("Failed to open index");
@@ -67,7 +67,7 @@ Status VectorColumnIndexer::Flush() {
     return Status::InvalidArgument("Index not opened");
   }
 
-  if (0 != index->Flush()) {
+  if (0 != index->flush()) {
     return Status::InternalError("Failed to flush index");
   }
   return Status::OK();
@@ -79,7 +79,7 @@ Status VectorColumnIndexer::Close() {
     return Status::InvalidArgument("Index not opened");
   }
 
-  if (0 != index->Close()) {
+  if (0 != index->close()) {
     return Status::InternalError("Failed to close index");
   }
   index.reset();
@@ -126,7 +126,7 @@ Status VectorColumnIndexer::Merge(
     return Status::InvalidArgument("Failed to convert filter");
   }
   if (0 !=
-      index->Merge(engine_indexers, *engine_filter,
+      index->merge(engine_indexers, *engine_filter,
                    {merge_options.write_concurrency, merge_options.pool})) {
     return Status::InternalError("Failed to merge index");
   }
@@ -141,7 +141,7 @@ Status VectorColumnIndexer::Insert(
 
   auto engine_vector_data =
       ProximaEngineHelper::convert_to_engine_vector(vector_data, is_sparse_);
-  if (0 != index->Add(engine_vector_data.value(), doc_id)) {
+  if (0 != index->add(engine_vector_data.value(), doc_id)) {
     return Status::InternalError("Failed to add vector to index");
   }
   return Status::OK();
@@ -155,7 +155,7 @@ Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
 
   auto vector_data_buffer = core_interface::VectorDataBuffer();
 
-  if (0 != index->Fetch(doc_id, &vector_data_buffer)) {
+  if (0 != index->fetch(doc_id, &vector_data_buffer)) {
     return tl::make_unexpected(
         Status::InternalError("Failed to fetch vector from index"));
   }
@@ -192,7 +192,7 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
   } else {
     engine_query_param->bf_pks = nullptr;
   }
-  if (0 != index->Search(engine_vector_data.value(),
+  if (0 != index->search(engine_vector_data.value(),
                          std::move(engine_query_param), &search_result)) {
     return tl::make_unexpected(
         Status::InternalError("Failed to search vector"));

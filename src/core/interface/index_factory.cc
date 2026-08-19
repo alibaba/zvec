@@ -92,7 +92,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
   switch (index_type) {
     case IndexType::kFlat: {
       FlatIndexParam::Pointer param = std::make_shared<FlatIndexParam>();
-      if (!param->DeserializeFromJson(json_str)) {
+      if (!param->deserialize_from_json(json_str)) {
         LOG_ERROR("Failed to deserialize flat index param");
         return nullptr;
       }
@@ -100,7 +100,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
     }
     case IndexType::kHNSW: {
       HNSWIndexParam::Pointer param = std::make_shared<HNSWIndexParam>();
-      if (!param->DeserializeFromJson(json_str)) {
+      if (!param->deserialize_from_json(json_str)) {
         LOG_ERROR("Failed to deserialize hnsw index param");
         return nullptr;
       }
@@ -108,7 +108,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
     }
     case IndexType::kIVF: {
       IVFIndexParam::Pointer param = std::make_shared<IVFIndexParam>();
-      if (!param->DeserializeFromJson(json_str)) {
+      if (!param->deserialize_from_json(json_str)) {
         LOG_ERROR("Failed to deserialize hnsw index param");
         return nullptr;
       }
@@ -117,7 +117,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
     case IndexType::kHNSWRabitq: {
       HNSWRabitqIndexParam::Pointer param =
           std::make_shared<HNSWRabitqIndexParam>();
-      if (!param->DeserializeFromJson(json_str)) {
+      if (!param->deserialize_from_json(json_str)) {
         LOG_ERROR("Failed to deserialize hnsqrabitq index param");
         return nullptr;
       }
@@ -126,7 +126,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
     case IndexType::kIVFRabitq: {
       IVFRabitqIndexParam::Pointer param =
           std::make_shared<IVFRabitqIndexParam>();
-      if (!param->DeserializeFromJson(json_str)) {
+      if (!param->deserialize_from_json(json_str)) {
         LOG_ERROR("Failed to deserialize ivf_rabitq index param");
         return nullptr;
       }
@@ -134,7 +134,7 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
     }
     case IndexType::kVamana: {
       VamanaIndexParam::Pointer param = std::make_shared<VamanaIndexParam>();
-      if (!param->DeserializeFromJson(json_str)) {
+      if (!param->deserialize_from_json(json_str)) {
         LOG_ERROR("Failed to deserialize vamana index param");
         return nullptr;
       }
