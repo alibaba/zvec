@@ -109,7 +109,7 @@ DEFINE_string(default_operator, "or",
 DEFINE_string(mode, "raw",
               "Execution mode: 'raw' (default) operates directly on RocksDB "
               "via FtsColumnIndexer; 'db' operates through "
-              "the zvec Collection API (CreateAndOpen / Insert / Query).");
+              "the zvec Collection API (CreateAndOpen / insert / query).");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -778,7 +778,7 @@ static int do_build_db() {
               << " entries failed to parse." << std::endl;
   }
 
-  // Insert in batches via Collection::Insert
+  // Insert in batches via Collection::insert
   const size_t batch_size = 1000;
   uint64_t total_indexed = 0;
   uint64_t total_failed = 0;
@@ -798,7 +798,7 @@ static int do_build_db() {
       doc.set<std::string>(FLAGS_field, entry.content);
       docs.push_back(std::move(doc));
     }
-    auto insert_result = collection->Insert(docs);
+    auto insert_result = collection->insert(docs);
     if (!insert_result.has_value()) {
       fprintf(stderr, "WARN: Batch insert failed at offset[%zu]: %s\n", offset,
               insert_result.error().message().c_str());
@@ -815,7 +815,7 @@ static int do_build_db() {
   uint64_t build_ms = timer.milli_seconds();
 
   // Flush collection
-  auto flush_status = collection->Flush();
+  auto flush_status = collection->flush();
   if (!flush_status.ok()) {
     fprintf(stderr, "WARN: Collection flush failed: %s\n",
             flush_status.message().c_str());
@@ -825,7 +825,7 @@ static int do_build_db() {
   // BitPacked format (with inline tf/doc_len payloads).  Without this step
   // the immutable reader path falls back to tf=1/doc_len=1 because the
   // side CFs (_tf/_doc_len/_max_tf) are not opened for read-only segments.
-  auto optimize_status = collection->Optimize();
+  auto optimize_status = collection->optimize();
   if (!optimize_status.ok()) {
     fprintf(stderr, "WARN: Collection optimize failed: %s\n",
             optimize_status.message().c_str());
@@ -1245,7 +1245,7 @@ static int do_search() {
 }
 
 // ---------------------------------------------------------------------------
-// SEARCH MODE (db): use zvec Collection::Query(Fts)
+// SEARCH MODE (db): use zvec Collection::query(Fts)
 // ---------------------------------------------------------------------------
 static int do_search_db() {
   const int num_threads = std::max(1, FLAGS_threads);
@@ -1352,7 +1352,7 @@ static int do_search_db() {
       std::vector<std::string> retrieved_corpus_ids;
       {
         zvec::ailego::ElapsedTime query_timer;
-        auto query_result = collection->Query(vq);
+        auto query_result = collection->query(vq);
         elapsed_us = query_timer.micro_seconds();
 
         if (query_result.has_value()) {

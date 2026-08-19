@@ -45,9 +45,9 @@ std::string HNSWIndex::storage_mode() const {
   return "";
 }
 
-int HNSWIndex::AddWithSource(const VectorData &vector_data,
-                             const uint32_t doc_id,
-                             const core::VectorSource &src) {
+int HNSWIndex::add_with_source(const VectorData &vector_data,
+                               const uint32_t doc_id,
+                               const core::VectorSource &src) {
   auto &context = acquire_context();
   if (!context) {
     LOG_ERROR("Failed to acquire context for AddWithSource");
@@ -56,10 +56,10 @@ int HNSWIndex::AddWithSource(const VectorData &vector_data,
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
   }
-  return Index::Add(vector_data, doc_id);
+  return Index::add(vector_data, doc_id);
 }
 
-int HNSWIndex::SearchWithSource(
+int HNSWIndex::search_with_source(
     const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
     const core::VectorSource &src, SearchResult *result) {
   auto &context = acquire_context();
@@ -70,7 +70,7 @@ int HNSWIndex::SearchWithSource(
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
   }
-  return Index::Search(query, search_param, result);
+  return Index::search(query, search_param, result);
 }
 
 int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
