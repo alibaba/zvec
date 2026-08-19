@@ -121,7 +121,82 @@ bool verify_page(const uint8_t *buffer, size_t page) {
   });
 }
 
+class ScopedCurrentDirectory {
+ public:
+  ScopedCurrentDirectory() {
+    const DWORD capacity = ::GetCurrentDirectoryW(0, nullptr);
+    if (capacity == 0) {
+      return;
+    }
+    original_.resize(capacity, L'\0');
+    const DWORD length =
+        ::GetCurrentDirectoryW(capacity, original_.data());
+    if (length == 0 || length >= capacity) {
+      original_.clear();
+      return;
+    }
+    original_.resize(length);
+  }
+
+  ~ScopedCurrentDirectory() {
+    restore();
+  }
+
+  bool valid() const {
+    return !original_.empty();
+  }
+
+  bool change_to(const std::wstring &directory) {
+    return ::SetCurrentDirectoryW(directory.c_str()) != FALSE;
+  }
+
+  bool restore() {
+    if (original_.empty()) {
+      return false;
+    }
+    return ::SetCurrentDirectoryW(original_.c_str()) != FALSE;
+  }
+
+ private:
+  std::wstring original_;
+};
+
 }  // namespace
+
+TEST(DiskAnnFileReaderWindowsTest,
+     RelativePathSurvivesWorkingDirectoryChange) {
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+
+  const std::wstring full_path(file.wide_path());
+  const size_t separator = full_path.find_last_of(L"\\/");
+  ASSERT_NE(separator, std::wstring::npos);
+  const std::wstring directory = full_path.substr(0, separator);
+  const std::wstring filename = full_path.substr(separator + 1);
+
+  ScopedCurrentDirectory current_directory;
+  ASSERT_TRUE(current_directory.valid());
+  ASSERT_TRUE(current_directory.change_to(directory));
+
+  WindowsAlignedFileReader reader;
+  reader.open(zvec::ailego::FileHelper::WideToUtf8(filename));
+
+  // prepare_io_ctx() opens the actual IOCP handle.  Moving away from the
+  // directory used by open() must not change which file it resolves.
+  ASSERT_TRUE(current_directory.restore());
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
+  EXPECT_EQ(reader.read(request, ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0));
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
+}
 
 TEST(DiskAnnFileReaderWindowsTest, ConcurrentContextsKeepCompletionsIsolated) {
   constexpr size_t kThreadCount = 8;

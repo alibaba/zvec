@@ -23,6 +23,7 @@
 #include <mutex>
 #include <new>
 #include <thread>
+#include <utility>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/ailego/logger/logger.h>
@@ -1028,8 +1029,26 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
     return;
   }
 
+  const DWORD path_capacity =
+      ::GetFullPathNameW(wide_fname.c_str(), 0, nullptr, nullptr);
+  if (path_capacity == 0) {
+    LOG_ERROR("Failed to resolve absolute DiskAnn file path: %s (error=%lu)",
+              fname.c_str(), ::GetLastError());
+    return;
+  }
+  std::wstring absolute_path(path_capacity, L'\0');
+  const DWORD path_length = ::GetFullPathNameW(
+      wide_fname.c_str(), path_capacity, absolute_path.data(), nullptr);
+  if (path_length == 0 || path_length >= path_capacity) {
+    LOG_ERROR("Failed to resolve absolute DiskAnn file path: %s (error=%lu)",
+              fname.c_str(), ::GetLastError());
+    return;
+  }
+  absolute_path.resize(path_length);
+
   HANDLE probe = ::CreateFileW(
-      wide_fname.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      absolute_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+      OPEN_EXISTING,
       FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
       nullptr);
   if (probe == INVALID_HANDLE_VALUE) {
@@ -1038,7 +1057,7 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
     return;
   }
   ::CloseHandle(probe);
-  file_path_ = wide_fname;
+  file_path_ = std::move(absolute_path);
   LOG_INFO("Opened file: %s", fname.c_str());
 }
 

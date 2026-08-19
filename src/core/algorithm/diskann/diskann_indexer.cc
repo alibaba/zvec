@@ -47,6 +47,18 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
     return IndexError_InvalidFormat;
   }
   auto cached_file = storage->file();
+#if defined(_WIN32) || defined(_WIN64)
+  // Windows DiskAnn must be able to close the single buffered handle before
+  // opening its unbuffered IOCP handles.  FileReadStorage's
+  // alone_file_handle mode gives every Segment an independent handle, which
+  // cannot be closed through IndexStorage and may be retained by the caller.
+  if (!cached_file) {
+    LOG_ERROR(
+        "DiskAnn on Windows requires FileReadStorage with "
+        "proxima.file.read_storage.alone_file_handle disabled");
+    return IndexError_InvalidArgument;
+  }
+#endif
 
   max_node_size_ = entity.max_node_size();
   sector_num_per_node_ =

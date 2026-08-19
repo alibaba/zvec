@@ -185,6 +185,27 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   ASSERT_EQ(0, searcher->init(search_params));
 
+#if defined(_WIN32) || defined(_WIN64)
+  // Independent FileReadStorage segments can outlive the storage and keep
+  // buffered handles open.  Windows DiskAnn must reject that configuration
+  // before opening its unbuffered IOCP handles.
+  auto independent_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(independent_storage, nullptr);
+  Params independent_storage_params;
+  independent_storage_params.set(
+      "proxima.file.read_storage.alone_file_handle", true);
+  ASSERT_EQ(0, independent_storage->init(independent_storage_params));
+  ASSERT_EQ(0, independent_storage->open(path, false));
+  auto retained_independent_segment = independent_storage->get(
+      DiskAnnEntity::kDiskAnnVectorSegmentId);
+  ASSERT_NE(retained_independent_segment, nullptr);
+  ASSERT_EQ(nullptr, independent_storage->file());
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->load(independent_storage, IndexMetric::Pointer()));
+  retained_independent_segment.reset();
+  independent_storage.reset();
+#endif
+
   auto storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, storage->open(path, false));
   auto retained_cached_file = storage->file();
