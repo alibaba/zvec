@@ -238,13 +238,10 @@ class CollectionImpl : public Collection {
   Status execute_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
 
  private:
-  //! Rejects while iterators are open. Called lock-free before taking
-  //! maintenance_mtx_ (fail-fast breaks the deadlock where optimize holds
-  //! it while waiting for iterators; a thread holding an iterator always
-  //! sees its own count) and under schema_handle_mtx_ exclusively (the
-  //! authoritative check).
+  //! Rejects while iterators are open; caller holds schema_handle_mtx_
+  //! exclusively, under which the count only changes.
   Status check_no_active_iterators(const char *operation) const {
-    if (active_iterators_.load(std::memory_order_acquire) > 0) {
+    if (active_iterators_ > 0) {
       return Status::FailedPrecondition(
           operation,
           " is not allowed while iterators are open; "
@@ -253,8 +250,7 @@ class CollectionImpl : public Collection {
     return Status::OK();
   }
 
-  // Decrements active_iterators_ under the exclusive schema lock; called
-  // by DocIterator on Close/destruction via Impl::release_slot.
+  // Called via Impl::release_slot when an iterator is closed or destroyed.
   void decrement_active_iterators();
 
   Status handle_upsert(Doc &doc);
@@ -285,10 +281,9 @@ class CollectionImpl : public Collection {
   CollectionOptions options_;
 
   mutable std::shared_mutex schema_handle_mtx_;
-  // Only mutated under schema_handle_mtx_ (exclusive); atomic so the
-  // pre-check above can read it lock-free.
-  std::atomic<int> active_iterators_{0};
-  // Signalled on decrement; close() and optimize's commit wait on it.
+  // Number of open iterators, guarded by schema_handle_mtx_ (exclusive).
+  int active_iterators_{0};
+  // Signalled on decrement; close() waits on it for iterators to drain.
   std::condition_variable_any iterator_cv_;
   mutable std::shared_mutex write_mtx_;
   // Serializes maintenance operations (optimize, schema DDL, close and
@@ -389,27 +384,21 @@ Status CollectionImpl::open(const CollectionOptions &options) {
 }
 
 Status CollectionImpl::close() {
-  if (active_iterators_.load(std::memory_order_acquire) > 0) {
-    // Logged before taking maintenance_mtx_ (a running optimize holds it
-    // for its whole run), so a blocked close() stays observable.
-    LOG_WARN(
-        "close() called while %d iterator(s) are open; it will wait for "
-        "them to close",
-        active_iterators_.load(std::memory_order_acquire));
-  }
-
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
   std::unique_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
-  // close() also runs from the destructor, where returning an error would
-  // leak resources, so never reject here: wait for open iterators to
-  // release their slots instead.
-  iterator_cv_.wait(lock, [&] {
-    return active_iterators_.load(std::memory_order_acquire) == 0;
-  });
+  // Never reject: close() also runs from the destructor, where an error
+  // would leak resources. Wait for open iterators instead.
+  if (active_iterators_ > 0) {
+    LOG_WARN(
+        "close() called while %d iterator(s) are open; waiting for "
+        "them to close",
+        active_iterators_);
+    iterator_cv_.wait(lock, [&] { return active_iterators_ == 0; });
+  }
 
   // closing twice is a no-op
   if (closed_) {
@@ -445,8 +434,6 @@ Status CollectionImpl::close_unsafe() {
 
 Status CollectionImpl::destroy() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-
-  CHECK_RETURN_STATUS(check_no_active_iterators("destroy"));
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
@@ -563,8 +550,6 @@ Status CollectionImpl::create_index(const std::string &column_name,
                                     const IndexParams::Ptr &index_params,
                                     const CreateIndexOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-
-  CHECK_RETURN_STATUS(check_no_active_iterators("create_index"));
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
@@ -757,8 +742,6 @@ Status CollectionImpl::execute_tasks(
 
 Status CollectionImpl::drop_index(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-
-  CHECK_RETURN_STATUS(check_no_active_iterators("drop_index"));
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
@@ -983,15 +966,10 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   // indexers — they all hold the shared schema lock — so in-place
   // reload_vector_index() is safe.
   {
-    // The index artifacts are already built, so discard is not an option:
-    // wait for open iterators to close instead of failing. close()/destroy()
-    // cannot run concurrently with optimize (both need maintenance_mtx_,
-    // which optimize holds throughout), so no closed/destroyed check is
-    // needed here.
+    // No iterator wait: phase 1 rejects open iterators and create_iterator
+    // is rejected while optimize holds maintenance_mtx_, so the count is
+    // zero here.
     std::unique_lock schema_lock(schema_handle_mtx_);
-    iterator_cv_.wait(schema_lock, [&] {
-      return active_iterators_.load(std::memory_order_acquire) == 0;
-    });
     std::lock_guard write_lock(write_mtx_);
 
     Version new_version = version_manager_->get_current_version();
@@ -1285,8 +1263,6 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
                                   const AddColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  CHECK_RETURN_STATUS(check_no_active_iterators("add_column"));
-
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
   std::unique_lock lock(schema_handle_mtx_);
@@ -1362,8 +1338,6 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
 
 Status CollectionImpl::drop_column(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-
-  CHECK_RETURN_STATUS(check_no_active_iterators("drop_column"));
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
@@ -1442,8 +1416,6 @@ Status CollectionImpl::alter_column(const std::string &column_name,
                                     const FieldSchema::Ptr &new_column_schema,
                                     const AlterColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-
-  CHECK_RETURN_STATUS(check_no_active_iterators("alter_column"));
 
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
@@ -2400,11 +2372,10 @@ Result<std::vector<std::string>> CollectionImpl::build_iterator_columns(
 
 Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
     const IteratorOptions &options) {
-  // The caller (create_iterator) holds schema_handle_mtx_ exclusively while
-  // registering the iterator; the snapshot below isolates what the
-  // active-iterator count does not block — concurrent writes and deletes —
-  // by fixing the segment list and cloning the delete store atomically
-  // under write_mtx_.
+  // Caller holds schema_handle_mtx_ exclusively. The snapshot below
+  // isolates concurrent writes and deletes (which the iterator count does
+  // not block) by fixing segments and cloning the delete store under
+  // write_mtx_.
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
@@ -2447,8 +2418,15 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
 
 Result<DocIterator::Ptr> CollectionImpl::create_iterator(
     const IteratorOptions &options) {
-  // Exclusive so the counter increment is serialized with the exclusive
-  // operations that read it. The collection must outlive its iterators.
+  // Iterators and maintenance operations are mutually exclusive (see the
+  // contract in collection.h); fail fast instead of blocking here.
+  std::unique_lock maintenance_lock(maintenance_mtx_, std::try_to_lock);
+  if (!maintenance_lock.owns_lock()) {
+    return tl::make_unexpected(Status::FailedPrecondition(
+        "create_iterator is not allowed while a maintenance operation "
+        "(optimize, schema DDL or close) is running; retry later"));
+  }
+
   std::unique_lock schema_lock(schema_handle_mtx_);
 
   auto impl_result = prepare_iterate(options);
@@ -2456,7 +2434,7 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
     return tl::make_unexpected(impl_result.error());
   }
   auto impl = std::move(impl_result.value());
-  active_iterators_.fetch_add(1, std::memory_order_acq_rel);
+  ++active_iterators_;
   impl->release_slot = [this] { decrement_active_iterators(); };
 
   return std::make_shared<DocIterator>(std::move(impl));
@@ -2464,7 +2442,7 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
 
 void CollectionImpl::decrement_active_iterators() {
   std::unique_lock lock(schema_handle_mtx_);
-  active_iterators_.fetch_sub(1, std::memory_order_acq_rel);
+  --active_iterators_;
   iterator_cv_.notify_all();
 }
 

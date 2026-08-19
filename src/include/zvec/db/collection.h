@@ -113,17 +113,13 @@ class ZVEC_API Collection {
                                       &output_fields = std::nullopt,
                                   bool include_vector = true) const = 0;
 
-  // Create a document iterator over an isolated snapshot taken at call time.
-  // On writable collections this seals the current writing segment; read-only
-  // collections are scanned without any write.
-  //
-  // While any iterator is open, schema changes (create_index/drop_index/
-  // add_column/alter_column/drop_column) and destroy return an error,
-  // close waits for the iterators to close, and optimize either fails
-  // (seal phase) or waits (commit phase). Flush, writes and queries are
-  // not affected.
-  // The collection must outlive its iterators: keep the Collection handle
-  // alive and close every iterator before releasing it.
+  // Create a document iterator over an isolated snapshot taken at call time
+  // (on writable collections this seals the current writing segment).
+  // While any iterator is open, schema DDL (create/drop index,
+  // add/alter/drop column) and destroy return an error, close waits for
+  // the iterators, and optimize fails at its start; conversely this call
+  // fails while a maintenance operation is running. Flush, writes and
+  // queries are not affected. The collection must outlive its iterators.
   virtual Result<DocIterator::Ptr> create_iterator(
       const IteratorOptions &options = {}) = 0;
 

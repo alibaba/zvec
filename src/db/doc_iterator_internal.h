@@ -43,7 +43,7 @@ struct DocIterator::Impl {
   }
 
   // Decrements the collection's active-iterator count; injected by
-  // CollectionImpl::create_iterator and called from the destructor above.
+  // create_iterator, called from the destructor above.
   std::function<void()> release_slot;
 
   // Snapshot taken at creation time.
@@ -65,10 +65,8 @@ struct DocIterator::Impl {
   int row_id_col{-1};
   std::vector<std::pair<const FieldSchema *, int>> forward_cols;
 
-  // Windowed materialization of the current batch. A Parquet scan returns
-  // a whole row group per ReadNext (up to ~1M rows), so docs are
-  // materialized from it in bounded windows of at most
-  // kMaxRecordBatchNumRows rows.
+  // Windowed materialization of the current batch (see materialize_window
+  // in doc_iterator.cc for the window rationale).
   std::shared_ptr<arrow::RecordBatch> current_batch;
   int64_t batch_offset{0};  // first row of the next window in current_batch
   std::vector<Doc::Ptr> batch_docs;

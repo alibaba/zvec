@@ -22,17 +22,14 @@ namespace zvec {
 
 class ZVEC_API DocIterator {
  public:
-  // Pimpl: the implementation holds Arrow types (RecordBatchReader,
-  // RecordBatch). Only a forward declaration is exposed here; the definition
-  // lives in an internal header (src/db/doc_iterator_internal.h), so external
-  // code cannot construct or inspect it.
+  // Pimpl: Impl holds Arrow types and is defined only in an internal
+  // header (src/db/doc_iterator_internal.h).
   struct Impl;
 
   using Ptr = std::shared_ptr<DocIterator>;
 
-  // Constructed only by the collection implementation (which can build an
-  // Impl via the internal header). Public so std::make_shared can be used;
-  // external code cannot call it because Impl is incomplete here.
+  // Public only so the collection implementation can use std::make_shared;
+  // Impl is incomplete here, so external code cannot call this.
   explicit DocIterator(std::unique_ptr<Impl> impl);
 
   // !has_value() → error

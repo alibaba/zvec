@@ -19,10 +19,8 @@
 
 namespace zvec {
 
-// Wraps a RecordBatchReader and filters out deleted rows.
-// Uses IndexFilter (from DeleteStore::make_filter()) to check each row's
-// _zvec_g_doc_id_ against the delete bitmap.
-// System columns are preserved (DocIterator extracts PK from them).
+// Wraps a RecordBatchReader and filters out deleted rows, checked by each
+// row's _zvec_g_doc_id_ against the IndexFilter delete bitmap.
 class FilteringReader : public arrow::RecordBatchReader {
  public:
   static std::shared_ptr<FilteringReader> Make(
@@ -31,8 +29,8 @@ class FilteringReader : public arrow::RecordBatchReader {
     return std::make_shared<FilteringReader>(std::move(inner_reader), filter);
   }
 
-  // The reader schema is stable for its whole lifetime: the constructor
-  // resolves and validates the delete-key column once instead of per batch.
+  // Resolves and validates the delete-key column once at construction
+  // (the reader schema is stable for its whole lifetime).
   FilteringReader(std::shared_ptr<arrow::RecordBatchReader> inner_reader,
                   const IndexFilter::Ptr &filter);
 

@@ -60,7 +60,6 @@ TEST_F(IteratorTest, BasicIteration) {
   ASSERT_TRUE(result.has_value()) << result.error().message();
   auto collection = std::move(result.value());
 
-  // Insert 100 docs
   const int N = 100;
   std::vector<Doc> docs;
   for (int i = 0; i < N; i++) {
@@ -69,15 +68,12 @@ TEST_F(IteratorTest, BasicIteration) {
   auto insert_result = collection->insert(docs);
   ASSERT_TRUE(insert_result.has_value());
 
-  // Flush to ensure all docs are in persist segments
   collection->flush();
 
-  // Create iterator
   auto iter_result = collection->create_iterator();
   ASSERT_TRUE(iter_result.has_value()) << iter_result.error().message();
   auto iter = iter_result.value();
 
-  // Iterate and collect PKs + verify scalar fields
   std::set<std::string> pks;
   int count = 0;
   while (true) {
@@ -115,12 +111,10 @@ TEST_F(IteratorTest, EmptyCollection) {
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  // No docs inserted, just create iterator
   auto iter_result = collection->create_iterator();
   ASSERT_TRUE(iter_result.has_value());
   auto iter = iter_result.value();
 
-  // Next should return EOF immediately
   auto r = iter->next();
   ASSERT_TRUE(r.has_value());
   EXPECT_EQ(r.value(), nullptr) << "Expected EOF on empty collection";
@@ -139,7 +133,6 @@ TEST_F(IteratorTest, DeletedDocsFiltered) {
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  // Insert 50 docs
   const int N = 50;
   std::vector<Doc> docs;
   std::vector<std::string> pks_to_delete;
@@ -153,18 +146,15 @@ TEST_F(IteratorTest, DeletedDocsFiltered) {
   auto insert_result = collection->insert(docs);
   ASSERT_TRUE(insert_result.has_value());
 
-  // Delete every other doc
   auto delete_result = collection->delete_(pks_to_delete);
   ASSERT_TRUE(delete_result.has_value());
 
   collection->flush();
 
-  // Create iterator
   auto iter_result = collection->create_iterator();
   ASSERT_TRUE(iter_result.has_value());
   auto iter = iter_result.value();
 
-  // Iterate
   std::set<std::string> deleted_set(pks_to_delete.begin(), pks_to_delete.end());
   int count = 0;
   while (true) {
@@ -180,7 +170,6 @@ TEST_F(IteratorTest, DeletedDocsFiltered) {
     count++;
   }
 
-  // Should have N - deleted_count docs
   EXPECT_EQ(count, N - static_cast<int>(pks_to_delete.size()));
 
   iter->close();
@@ -197,7 +186,6 @@ TEST_F(IteratorTest, CloseThenNext) {
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  // Insert a few docs
   std::vector<Doc> docs;
   for (int i = 0; i < 5; i++) {
     docs.push_back(TestHelper::CreateDoc(i, *schema));
@@ -211,10 +199,8 @@ TEST_F(IteratorTest, CloseThenNext) {
   ASSERT_TRUE(iter_result.has_value());
   auto iter = iter_result.value();
 
-  // Close iterator
   iter->close();
 
-  // Next() after Close should return error
   auto r = iter->next();
   EXPECT_FALSE(r.has_value()) << "Expected error after Close()";
 
@@ -232,7 +218,6 @@ TEST_F(IteratorTest, IncludeVector) {
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  // Insert 10 docs
   const int N = 10;
   std::vector<Doc> docs;
   for (int i = 0; i < N; i++) {
@@ -242,7 +227,6 @@ TEST_F(IteratorTest, IncludeVector) {
   ASSERT_TRUE(insert_result.has_value());
   collection->flush();
 
-  // Create iterator with include_vector=true (default)
   IteratorOptions iter_opts;
   iter_opts.include_vector_ = true;
   auto iter_result = collection->create_iterator(iter_opts);
@@ -323,8 +307,8 @@ TEST_F(IteratorTest, ExcludeVector) {
   collection->destroy();
 }
 
-// Scalar type mapping — every scalar/array Arrow type extracted
-// correctly. CreateNormalSchema covers 8 base types + 8 array types.
+// Scalar type mapping — every scalar/array Arrow type in CreateNormalSchema
+// (8 base types + 8 array types).
 TEST_F(IteratorTest, OutputFieldsSelection) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -602,8 +586,8 @@ TEST_F(IteratorTest, ConcurrentInsertNotVisible) {
   collection->destroy();
 }
 
-// Concurrency — while an iterator is open, Optimize is rejected (seal
-// phase) and succeeds after it is closed.
+// Concurrency — optimize is rejected while an iterator is open and
+// succeeds after it is closed.
 TEST_F(IteratorTest, OptimizeRejectedWhileIteratorOpen) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -660,9 +644,8 @@ TEST_F(IteratorTest, OptimizeRejectedWhileIteratorOpen) {
   collection->destroy();
 }
 
-// Schema changes are rejected while an iterator is open (flush is not —
-// it only touches the writing segment) and succeed again after it is
-// closed.
+// Schema changes are rejected while an iterator is open (flush is not)
+// and succeed again after it is closed.
 TEST_F(IteratorTest, DdlRejectedWhileIteratorOpen) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -711,11 +694,9 @@ TEST_F(IteratorTest, DdlRejectedWhileIteratorOpen) {
   collection->destroy();
 }
 
-// Regression for the deadlock without the lock-free pre-check: optimize
-// holds maintenance_mtx_ and its commit phase waits for open iterators,
-// while the iterator's thread calling DDL blocks on maintenance_mtx_ --
-// a cycle. The pre-check must make the DDL fail fast instead.
-TEST_F(IteratorTest, DdlFailsFastWhileOptimizeWaitsForIterator) {
+// create_iterator is rejected while optimize runs instead of blocking on
+// maintenance_mtx_ (iterators and maintenance ops are mutually exclusive).
+TEST_F(IteratorTest, CreateIteratorRejectedWhileOptimizeRunning) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;
@@ -724,8 +705,7 @@ TEST_F(IteratorTest, DdlFailsFastWhileOptimizeWaitsForIterator) {
   ASSERT_TRUE(result.has_value());
   auto collection = std::move(result.value());
 
-  // Large enough that compaction outlasts the sleep below. Two flushed
-  // chunks give optimize more than one segment to compact.
+  // Two flushed chunks give optimize more than one segment to compact.
   const int N = 10000;
   for (int base = 0; base < N; base += N / 2) {
     for (int batch = 0; batch < N / 2; batch += 1000) {
@@ -737,8 +717,6 @@ TEST_F(IteratorTest, DdlFailsFastWhileOptimizeWaitsForIterator) {
     collection->flush();
   }
 
-  // No iterator yet, so optimize's seal phase passes; run it in the
-  // background and open an iterator while it compacts.
   std::atomic<bool> optimize_done{false};
   std::atomic<bool> optimize_ok{false};
   std::thread optimizer([&] {
@@ -746,29 +724,21 @@ TEST_F(IteratorTest, DdlFailsFastWhileOptimizeWaitsForIterator) {
     optimize_done.store(true);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  auto iter_result = collection->create_iterator();
-  ASSERT_TRUE(iter_result.has_value());
-  auto iter = iter_result.value();
 
-  // optimize holds maintenance_mtx_ for its whole run, so while it is
-  // still active the DDL calls below must fail fast via the pre-check
-  // instead of blocking on the lock (which would hang: optimize's commit
-  // waits for exactly this iterator). If optimize finished early on a
-  // fast machine, they still fail via the authoritative check.
+  // While optimize is still running, create_iterator must fail fast
+  // instead of blocking on maintenance_mtx_. If optimize finished early
+  // on a fast machine, the admission window simply never opened.
   if (!optimize_done.load()) {
-    LOG_INFO("deadlock window active: optimize still holds maintenance_mtx_");
-    auto index_params = std::make_shared<HnswIndexParams>(MetricType::IP);
-    EXPECT_FALSE(collection->create_index("dense_fp32", index_params).ok());
-    EXPECT_FALSE(collection->destroy().ok());
+    LOG_INFO("admission window active: optimize still holds maintenance_mtx_");
+    EXPECT_FALSE(collection->create_iterator().has_value());
   }
 
-  // Closing the iterator lets optimize's commit phase finish.
-  iter->close();
   optimizer.join();
   ASSERT_TRUE(optimize_ok.load());
 
-  auto index_params = std::make_shared<HnswIndexParams>(MetricType::IP);
-  ASSERT_TRUE(collection->create_index("dense_fp32", index_params).ok());
+  auto iter_result = collection->create_iterator();
+  ASSERT_TRUE(iter_result.has_value());
+  iter_result.value()->close();
   collection->destroy();
 }
 
@@ -791,11 +761,8 @@ TEST_F(IteratorTest, CloseWaitsForIteratorsDestroyRejected) {
 
   auto iter = collection->create_iterator().value();
 
-  // destroy() still rejects while an iterator is open.
   EXPECT_FALSE(collection->destroy().ok());
 
-  // close() never rejects (it also runs from the destructor): it logs and
-  // waits for open iterators instead.
   std::atomic<bool> close_done{false};
   std::thread closer([&] {
     ASSERT_TRUE(collection->close().ok());
@@ -838,8 +805,7 @@ TEST_F(IteratorTest, CloseThenCreateIteratorRejected) {
   EXPECT_FALSE(iter_result.has_value());
 }
 
-// Releasing the iterator (destructor, no explicit close) must release the
-// active-iterator slot just like close() does.
+// Destroying an unclosed iterator releases the active-iterator slot too.
 TEST_F(IteratorTest, IteratorResetReleasesLock) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -905,8 +871,7 @@ TEST_F(IteratorTest, MultipleIteratorsShareTheLock) {
   collection->destroy();
 }
 
-// Performance — iterate 100k docs; memory should stay bounded (one
-// batch at a time). Reports elapsed time; asserts correctness of the count.
+// Performance — iterate 100k docs; reports elapsed time, asserts count.
 TEST_F(IteratorTest, Performance100k) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -957,10 +922,8 @@ TEST_F(IteratorTest, Performance100k) {
   collection->destroy();
 }
 
-// Windowed materialization on the Parquet forward store: one Parquet
-// ReadNext returns a whole row group (10000 rows here — far more than the
-// 4096-row materialization window), so this traversal exercises several
-// windows within a single Arrow batch.
+// Windowed materialization on the Parquet store: one ReadNext returns a
+// 10000-row row group, spanning several 4096-row windows.
 TEST_F(IteratorTest, ParquetLargeRowGroupWindowedMaterialization) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -1012,14 +975,12 @@ TEST_F(IteratorTest, ParquetLargeRowGroupWindowedMaterialization) {
   collection->destroy();
 }
 
-// Read-only collection iteration — reopen an existing collection in
-// read-only mode and verify the full traversal works WITHOUT flushing (the
-// read-only path reads the writing segment directly instead of flushing).
+// Read-only collection iteration — must work without flushing (the
+// read-only path reads the writing segment directly).
 TEST_F(IteratorTest, ReadOnlyCollectionIteration) {
   auto schema = TestHelper::CreateNormalSchema();
   const int N = 50;
 
-  // 1. Create + insert + flush, then close in writable mode.
   {
     CollectionOptions options;
     options.read_only_ = false;
@@ -1035,14 +996,12 @@ TEST_F(IteratorTest, ReadOnlyCollectionIteration) {
     collection->flush();
   }  // writable collection closed (dtor flushes + releases lock)
 
-  // 2. Reopen the same collection in read-only mode.
   CollectionOptions ro_options;
   ro_options.read_only_ = true;
   auto ro_result = Collection::Open(iter_test_path, ro_options);
   ASSERT_TRUE(ro_result.has_value()) << ro_result.error().message();
   auto ro_collection = std::move(ro_result.value());
 
-  // 3. Iterate: must succeed (no disk write) and return every doc.
   auto iter_result = ro_collection->create_iterator();
   ASSERT_TRUE(iter_result.has_value()) << iter_result.error().message();
   auto iter = iter_result.value();

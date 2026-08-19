@@ -59,10 +59,9 @@ Status resolve_reader_columns(DocIterator::Impl *impl,
   return Status::OK();
 }
 
-// Materialize rows [begin, end) of the current batch column by column. The
-// window (not the batch) bounds doc memory: a Parquet scan returns a whole
-// row group per ReadNext (up to ~1M rows), so materializing a full batch at
-// once would spike memory.
+// Materialize rows [begin, end) of the current batch column by column.
+// Windows (not batches) bound doc memory, because a Parquet ReadNext
+// returns a whole row group (up to ~1M rows).
 Status materialize_window(DocIterator::Impl *impl, int64_t begin, int64_t end) {
   const auto &batch = *impl->current_batch;
   int64_t num_rows = end - begin;
@@ -197,8 +196,7 @@ Result<Doc::Ptr> DocIterator::next() {
                            impl_->current_batch->num_rows());
     auto ms = materialize_window(impl_.get(), begin, end);
     if (!ms.ok()) {
-      // Sticky failure: drop the partial window and keep returning the error
-      // instead of handing out incomplete docs.
+      // Sticky failure: never hand out a partially filled window.
       impl_->batch_docs.clear();
       impl_->error = ms;
       return tl::make_unexpected(ms);
