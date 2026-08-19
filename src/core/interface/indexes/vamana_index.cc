@@ -20,9 +20,9 @@
 
 namespace zvec::core_interface {
 
-int VamanaIndex::Merge(const std::vector<Index::Pointer> &indexes,
+int VamanaIndex::merge(const std::vector<Index::Pointer> &indexes,
                        const IndexFilter &filter, const MergeOptions &options) {
-  int ret = Index::Merge(indexes, filter, options);
+  int ret = Index::merge(indexes, filter, options);
   if (ret != 0 || indexes.empty() || !param_.two_pass_build) {
     return ret;
   }

@@ -106,7 +106,7 @@ class VectorColumnIndexer {
     if (index == nullptr) {
       return -1;
     }
-    return index->GetDocCount();
+    return index->get_doc_count();
   }
 
   //! Debug-only accessor for the underlying core_interface Index.

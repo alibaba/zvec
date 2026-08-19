@@ -156,16 +156,20 @@ void pq_adc_int8_batch_distance_neon(const void **candidates_v,
 
     size_t m = 0;
     for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
-      const float *tab = lut + m * kNumCentroids;
+      // Each chunk position has its own 256-entry LUT row.
+      const float *tab0 = lut + (m + 0) * kNumCentroids;
+      const float *tab1 = lut + (m + 1) * kNumCentroids;
+      const float *tab2 = lut + (m + 2) * kNumCentroids;
+      const float *tab3 = lut + (m + 3) * kNumCentroids;
 
-      float32x4_t d0 = {tab[c0[m + 0]], tab[c0[m + 1]], tab[c0[m + 2]],
-                        tab[c0[m + 3]]};
-      float32x4_t d1 = {tab[c1[m + 0]], tab[c1[m + 1]], tab[c1[m + 2]],
-                        tab[c1[m + 3]]};
-      float32x4_t d2 = {tab[c2[m + 0]], tab[c2[m + 1]], tab[c2[m + 2]],
-                        tab[c2[m + 3]]};
-      float32x4_t d3 = {tab[c3[m + 0]], tab[c3[m + 1]], tab[c3[m + 2]],
-                        tab[c3[m + 3]]};
+      float32x4_t d0 = {tab0[c0[m + 0]], tab1[c0[m + 1]], tab2[c0[m + 2]],
+                        tab3[c0[m + 3]]};
+      float32x4_t d1 = {tab0[c1[m + 0]], tab1[c1[m + 1]], tab2[c1[m + 2]],
+                        tab3[c1[m + 3]]};
+      float32x4_t d2 = {tab0[c2[m + 0]], tab1[c2[m + 1]], tab2[c2[m + 2]],
+                        tab3[c2[m + 3]]};
+      float32x4_t d3 = {tab0[c3[m + 0]], tab1[c3[m + 1]], tab2[c3[m + 2]],
+                        tab3[c3[m + 3]]};
 
       acc0 = vaddq_f32(acc0, d0);
       acc1 = vaddq_f32(acc1, d1);

@@ -49,14 +49,14 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     LogConfig(LogLevel level) : level(level) {}
     virtual ~LogConfig() = default;
-    virtual std::string GetLoggerType() const = 0;
+    virtual std::string get_logger_type() const = 0;
   };
 
   // Console log configuration
   struct ConsoleLogConfig : LogConfig {
     ConsoleLogConfig(LogLevel level = LogLevel::kWarn) : LogConfig{level} {}
 
-    std::string GetLoggerType() const override {
+    std::string get_logger_type() const override {
       return CONSOLE_LOG_TYPE_NAME;
     }
   };
@@ -79,7 +79,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
           file_size{file_size},
           overdue_days(overdue_days) {}
 
-    std::string GetLoggerType() const override {
+    std::string get_logger_type() const override {
       return FILE_LOG_TYPE_NAME;
     }
   };
@@ -113,14 +113,14 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
     ConfigData();
   };
 
-  // Initialize the configuration (can only be called once)
-  Status Initialize(const ConfigData &config);
+  // initialize the configuration (can only be called once)
+  Status initialize(const ConfigData &config);
 
-  Status Validate(const ConfigData &config) const;
+  Status validate(const ConfigData &config) const;
 
   // Set the process-wide default jieba dict dir. Thread-safe and decoupled
-  // from Initialize() so language SDKs can call it on module load.
-  // Initialize() with a non-empty config.jieba_dict_dir overrides this.
+  // from initialize() so language SDKs can call it on module load.
+  // initialize() with a non-empty config.jieba_dict_dir overrides this.
   void set_default_jieba_dict_dir(const std::string &dir);
 
   // Read-only accessors
@@ -131,7 +131,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   }
 
   std::string log_type() const noexcept {
-    return config_.log_config->GetLoggerType();
+    return config_.log_config->get_logger_type();
   }
 
   LogLevel log_level() const noexcept {
@@ -211,7 +211,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   // Atomic flag to ensure initialization happens only once
   std::atomic<bool> initialized_{false};
 
-  // Guards config_ fields that may be written outside Initialize().
+  // Guards config_ fields that may be written outside initialize().
   mutable std::mutex mutex_;
 };
 
