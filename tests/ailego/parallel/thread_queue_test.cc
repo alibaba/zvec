@@ -55,7 +55,7 @@ TEST(ThreadQueue, General) {
   {
     std::unique_lock<std::mutex> lock(count_mutex);
     completed = count_cond.wait_for(lock, std::chrono::seconds(10),
-                                    [&count]() { return count == kTaskCount; });
+                                    [&]() { return count == kTaskCount; });
     completed_count = count;
   }
 
@@ -96,7 +96,7 @@ TEST(ThreadQueue, MutliThread) {
   {
     std::unique_lock<std::mutex> lock(count_mutex);
     completed = count_cond.wait_for(lock, std::chrono::seconds(10),
-                                    [&count]() { return count == kTaskCount; });
+                                    [&]() { return count == kTaskCount; });
     completed_count = count;
   }
 

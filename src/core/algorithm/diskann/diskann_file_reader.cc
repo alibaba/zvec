@@ -1142,6 +1142,13 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     return ret;
   }
 
+  std::vector<uint32_t> completed;
+  try {
+    completed.reserve(MAX_IO_DEPTH);
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  }
+
   for (size_t start = 0; start < read_reqs.size(); start += MAX_IO_DEPTH) {
     const size_t count =
         std::min<size_t>(read_reqs.size() - start, MAX_IO_DEPTH);
@@ -1153,12 +1160,6 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       return ret;
     }
 
-    std::vector<uint32_t> completed;
-    try {
-      completed.reserve(MAX_IO_DEPTH);
-    } catch (const std::bad_alloc &) {
-      return IndexError_NoMemory;
-    }
     while (batch.n_reaped < batch.n_submitted) {
       ret = get_completed(batch, ctx, 1, completed);
       if (ret < 0) {
