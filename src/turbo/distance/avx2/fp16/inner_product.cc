@@ -13,7 +13,8 @@
 // limitations under the License.
 
 #include "avx2/fp16/inner_product.h"
-#if defined(__AVX2__) && defined(__F16C__)
+// MSVC never defines __F16C__; /arch:AVX2 implies F16C intrinsics are usable.
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
 #include <immintrin.h>
 #include <cstdint>
 #endif
@@ -26,7 +27,7 @@ namespace zvec::turbo::avx2 {
 // vector pair.
 void inner_product_fp16_distance_avx2(const void *a, const void *b, size_t dim,
                                       float *distance) {
-#if defined(__AVX2__) && defined(__F16C__)
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
   const ailego::Float16 *lhs = reinterpret_cast<const ailego::Float16 *>(a);
   const ailego::Float16 *rhs = reinterpret_cast<const ailego::Float16 *>(b);
 
@@ -43,7 +44,7 @@ void inner_product_fp16_distance_avx2(const void *a, const void *b, size_t dim,
 void inner_product_fp16_batch_distance_avx2(const void *const *vectors,
                                             const void *query, size_t n,
                                             size_t dim, float *distances) {
-#if defined(__AVX2__) && defined(__F16C__)
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
   inner_product_fp16_batch_avx2(vectors, query, n, dim, distances);
 #else
   (void)vectors;

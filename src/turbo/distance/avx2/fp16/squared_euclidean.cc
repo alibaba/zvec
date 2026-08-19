@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "avx2/fp16/squared_euclidean.h"
-#if defined(__AVX2__) && defined(__F16C__)
+// MSVC never defines __F16C__; MSVC arch flags imply F16C intrinsics are
+// usable.
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
 #include <immintrin.h>
 #include <array>
 #include <zvec/ailego/internal/platform.h>
@@ -22,7 +24,7 @@
 
 namespace zvec::turbo::avx2 {
 
-#if defined(__AVX2__) && defined(__F16C__)
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
 namespace {
 
 inline float horizontal_sum(__m256 value) {
@@ -164,7 +166,7 @@ void squared_euclidean_batch(const void *const *vectors, const void *query,
 
 void squared_euclidean_fp16_distance_avx2(const void *a, const void *b,
                                           size_t dim, float *distance) {
-#if defined(__AVX2__) && defined(__F16C__)
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
   *distance = squared_euclidean(static_cast<const ailego::Float16 *>(a),
                                 static_cast<const ailego::Float16 *>(b), dim);
 #else
@@ -178,7 +180,7 @@ void squared_euclidean_fp16_distance_avx2(const void *a, const void *b,
 void squared_euclidean_fp16_batch_distance_avx2(const void *const *vectors,
                                                 const void *query, size_t n,
                                                 size_t dim, float *distances) {
-#if defined(__AVX2__) && defined(__F16C__)
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
   squared_euclidean_batch(vectors, query, n, dim, distances);
 #else
   (void)vectors;

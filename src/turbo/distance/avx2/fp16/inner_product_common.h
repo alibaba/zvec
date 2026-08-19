@@ -14,7 +14,8 @@
 
 #pragma once
 
-#if defined(__AVX2__) && defined(__F16C__)
+// MSVC never defines __F16C__; /arch:AVX2 implies F16C intrinsics are usable.
+#if defined(__AVX2__) && (defined(__F16C__) || defined(_MSC_VER))
 
 #include <immintrin.h>
 #include <array>

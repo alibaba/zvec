@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "avx512/fp16/inner_product.h"
-#if defined(__AVX512F__) && defined(__F16C__)
+// MSVC never defines __F16C__; MSVC arch flags imply F16C intrinsics are
+// usable.
+#if defined(__AVX512F__) && (defined(__F16C__) || defined(_MSC_VER))
 #include <immintrin.h>
 #include <array>
 #include <zvec/ailego/internal/platform.h>
@@ -22,7 +24,7 @@
 
 namespace zvec::turbo::avx512 {
 
-#if defined(__AVX512F__) && defined(__F16C__)
+#if defined(__AVX512F__) && (defined(__F16C__) || defined(_MSC_VER))
 namespace {
 
 float dot_product(const ailego::Float16 *a, const ailego::Float16 *b,
@@ -149,7 +151,7 @@ void inner_product_batch(const void *const *vectors, const void *query,
 
 void inner_product_fp16_distance_avx512(const void *a, const void *b,
                                         size_t dim, float *distance) {
-#if defined(__AVX512F__) && defined(__F16C__)
+#if defined(__AVX512F__) && (defined(__F16C__) || defined(_MSC_VER))
   *distance = -dot_product(static_cast<const ailego::Float16 *>(a),
                            static_cast<const ailego::Float16 *>(b), dim);
 #else
@@ -163,7 +165,7 @@ void inner_product_fp16_distance_avx512(const void *a, const void *b,
 void inner_product_fp16_batch_distance_avx512(const void *const *vectors,
                                               const void *query, size_t n,
                                               size_t dim, float *distances) {
-#if defined(__AVX512F__) && defined(__F16C__)
+#if defined(__AVX512F__) && (defined(__F16C__) || defined(_MSC_VER))
   inner_product_batch(vectors, query, n, dim, distances);
 #else
   (void)vectors;
