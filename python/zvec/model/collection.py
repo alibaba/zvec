@@ -473,8 +473,9 @@ class Collection:
         (create_index/drop_index/add_column/alter_column/drop_column) and
         destroy raise an error, close waits for the iterators to close,
         and optimize fails at its start; conversely iter_docs raises an
-        error while a maintenance operation (optimize, schema DDL or
-        close) is running. Flush, writes and queries are not affected.
+        error while a maintenance operation (optimize, schema DDL, close
+        or destroy) is running. Flush, writes and queries are not
+        affected.
         The iterator is closed automatically when exhausted, so prefer
         the with-statement when iteration may end early.
 

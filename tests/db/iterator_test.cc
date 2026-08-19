@@ -307,8 +307,7 @@ TEST_F(IteratorTest, ExcludeVector) {
   collection->destroy();
 }
 
-// Scalar type mapping — every scalar/array Arrow type in CreateNormalSchema
-// (8 base types + 8 array types).
+// Only the requested output fields are materialized.
 TEST_F(IteratorTest, OutputFieldsSelection) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -390,6 +389,8 @@ TEST_F(IteratorTest, InvalidOutputFieldsRejected) {
   collection->destroy();
 }
 
+// Scalar type mapping — every scalar/array Arrow type in CreateNormalSchema
+// (8 base types + 8 array types).
 TEST_F(IteratorTest, ScalarTypeMapping) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
@@ -730,7 +731,13 @@ TEST_F(IteratorTest, CreateIteratorRejectedWhileOptimizeRunning) {
   // on a fast machine, the admission window simply never opened.
   if (!optimize_done.load()) {
     LOG_INFO("admission window active: optimize still holds maintenance_mtx_");
-    EXPECT_FALSE(collection->create_iterator().has_value());
+    auto r = collection->create_iterator();
+    if (r.has_value()) {
+      // Optimize finished between the check above and this call.
+      r.value()->close();
+    } else {
+      EXPECT_EQ(r.error().code(), StatusCode::FAILED_PRECONDITION);
+    }
   }
 
   optimizer.join();
@@ -765,7 +772,7 @@ TEST_F(IteratorTest, CloseWaitsForIteratorsDestroyRejected) {
 
   std::atomic<bool> close_done{false};
   std::thread closer([&] {
-    ASSERT_TRUE(collection->close().ok());
+    EXPECT_TRUE(collection->close().ok());
     close_done.store(true);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -806,7 +813,7 @@ TEST_F(IteratorTest, CloseThenCreateIteratorRejected) {
 }
 
 // Destroying an unclosed iterator releases the active-iterator slot too.
-TEST_F(IteratorTest, IteratorResetReleasesLock) {
+TEST_F(IteratorTest, IteratorResetReleasesSlot) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;
@@ -831,7 +838,7 @@ TEST_F(IteratorTest, IteratorResetReleasesLock) {
   collection->destroy();
 }
 
-TEST_F(IteratorTest, MultipleIteratorsShareTheLock) {
+TEST_F(IteratorTest, MultipleIteratorsCoexist) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;

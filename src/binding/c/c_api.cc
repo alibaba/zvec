@@ -7645,7 +7645,7 @@ zvec_error_code_t zvec_doc_iterator_next(zvec_doc_iterator_t *iter,
 void zvec_doc_iterator_close(zvec_doc_iterator_t *iter) {
   if (iter) {
     // Deleting the shared_ptr wrapper releases the DocIterator (whose
-    // destructor calls Close() and releases segments/delete_store).
+    // destructor calls close() and releases segments/delete_store).
     delete reinterpret_cast<std::shared_ptr<zvec::DocIterator> *>(iter);
   }
 }

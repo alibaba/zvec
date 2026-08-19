@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include <atomic>
-#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -22,7 +22,6 @@
 #include <set>
 #include <shared_mutex>
 #include <string>
-#include <thread>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -2424,7 +2423,8 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
   if (!maintenance_lock.owns_lock()) {
     return tl::make_unexpected(Status::FailedPrecondition(
         "create_iterator is not allowed while a maintenance operation "
-        "(optimize, schema DDL or close) is running; retry later"));
+        "(optimize, schema DDL, close or destroy) is running; "
+        "retry later"));
   }
 
   std::unique_lock schema_lock(schema_handle_mtx_);
@@ -2434,8 +2434,11 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
     return tl::make_unexpected(impl_result.error());
   }
   auto impl = std::move(impl_result.value());
-  ++active_iterators_;
+  // Assign before incrementing: the assignment can throw (std::function
+  // heap allocation), and a count bump without a working release_slot
+  // would never drain.
   impl->release_slot = [this] { decrement_active_iterators(); };
+  ++active_iterators_;
 
   return std::make_shared<DocIterator>(std::move(impl));
 }

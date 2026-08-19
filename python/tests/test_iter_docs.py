@@ -144,7 +144,7 @@ def test_iter_docs_output_fields(iter_collection):
     assert count == 10
 
 
-def test_iter_docs_early_close_releases_lock(iter_collection):
+def test_iter_docs_early_close_releases_slot(iter_collection):
     """Closing the iterator early releases the active-iterator slot."""
     iter_collection.insert(_make_docs(10))
     iter_collection.flush()
@@ -270,7 +270,7 @@ def test_iter_docs_snapshot_at_call_time(iter_collection):
 
 
 def test_iter_docs_is_generator(iter_collection):
-    """iter_docs returns a lazy generator (constant memory)."""
+    """iter_docs returns a lazy iterator (constant memory)."""
     iter_collection.insert(_make_docs(5))
     iter_collection.flush()
 

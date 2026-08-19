@@ -6583,6 +6583,11 @@ void test_iterator_concurrent_semantics(void) {
   err = zvec_collection_flush(collection);
   TEST_ASSERT(err == ZVEC_OK);
 
+  // destroy is rejected with FAILED_PRECONDITION while the iterator is
+  // open, and succeeds after it is closed.
+  err = zvec_collection_destroy(collection);
+  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
+
   zvec_doc_iterator_close(iter);
 
   err = zvec_collection_flush(collection);
