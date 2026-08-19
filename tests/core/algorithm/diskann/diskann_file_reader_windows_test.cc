@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
 
@@ -313,7 +314,11 @@ TEST(DiskAnnFileReaderWindowsTest, DestroyContextDrainsOutstandingBatch) {
   std::vector<AlignedRead> requests;
   requests.reserve(MAX_IO_DEPTH);
   for (size_t i = 0; i < MAX_IO_DEPTH; ++i) {
-    requests.emplace_back(i * kPageSize, kPageSize,
+    // A zero-byte ReadFile normally completes synchronously. Because the
+    // reader does not opt into FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, teardown
+    // must still dequeue its completion packet along with pending reads.
+    const size_t length = i == 0 ? 0 : kPageSize;
+    requests.emplace_back(i * kPageSize, length,
                           output.get() + i * kPageSize);
   }
 
@@ -358,7 +363,8 @@ TEST(DiskAnnFileReaderWindowsTest, RejectsMisalignedUnbufferedRead) {
   EXPECT_EQ(ctx, nullptr);
 }
 
-TEST(DiskAnnFileReaderWindowsTest, OpenContextAllowsIndexDeletion) {
+TEST(DiskAnnFileReaderWindowsTest,
+     ReleaseCompletedContextDropsFileHandleAndCanReadAgain) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
@@ -373,14 +379,69 @@ TEST(DiskAnnFileReaderWindowsTest, OpenContextAllowsIndexDeletion) {
   ASSERT_NE(output, nullptr);
   std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
   ASSERT_EQ(reader.read(request, ctx, false), 0);
+  EXPECT_NE(ctx->file_handle, INVALID_HANDLE_VALUE);
+  EXPECT_NE(ctx->completion_port, nullptr);
+  reader.release_io_ctx(ctx);
+  EXPECT_EQ(ctx->file_handle, INVALID_HANDLE_VALUE);
+  EXPECT_EQ(ctx->completion_port, nullptr);
+  EXPECT_EQ(ctx->outstanding_count, 0U);
 
-  // Search contexts may outlive the searcher because callers and the
-  // high-level context pool retain them. They must not keep a closed index
-  // path locked against deletion or atomic replacement. The open handle still
-  // owns the old file contents until the context is destroyed.
+  // Search contexts may outlive the reader because the high-level context pool
+  // retains them. Releasing at the complete operation boundary must drop the
+  // private context handle. The reader's stable handle still owns the old
+  // contents and can lazily prepare this same context again after deletion.
   ASSERT_TRUE(::DeleteFileW(file.wide_path()));
   EXPECT_EQ(reader.read(request, ctx, false), 0);
   EXPECT_TRUE(verify_page(output.get(), 0));
+  reader.release_io_ctx(ctx);
+  EXPECT_EQ(ctx->file_handle, INVALID_HANDLE_VALUE);
+  EXPECT_EQ(ctx->completion_port, nullptr);
+  EXPECT_EQ(ctx->outstanding_count, 0U);
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(DiskAnnFileReaderWindowsTest,
+     OpenFromHandleSurvivesPathReplacementBeforeHandoff) {
+  constexpr uint8_t kReplacementBias = 97;
+
+  TemporaryFile original;
+  TemporaryFile replacement;
+  ASSERT_TRUE(original.valid());
+  ASSERT_TRUE(replacement.valid());
+  ASSERT_TRUE(original.write_pages());
+  ASSERT_TRUE(replacement.write_pages(kReplacementBias));
+
+  // This buffered handle represents FileReadStorage, which has already
+  // supplied metadata from the original file.
+  zvec::ailego::File source;
+  ASSERT_TRUE(source.open(original.path(), true, false));
+
+  ASSERT_TRUE(::MoveFileExW(replacement.wide_path(), original.wide_path(),
+                            MOVEFILE_REPLACE_EXISTING |
+                                MOVEFILE_WRITE_THROUGH));
+
+  WindowsAlignedFileReader original_reader;
+  ASSERT_EQ(original_reader.open_from_handle(original.path(),
+                                             source.native_handle()),
+            0);
+  source.close();
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
+
+  std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
+  ASSERT_EQ(original_reader.read(request, ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0));
+
+  WindowsAlignedFileReader replacement_reader;
+  replacement_reader.open(original.path());
+  ASSERT_EQ(replacement_reader.read(request, ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0, kReplacementBias));
+
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
 }

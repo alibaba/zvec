@@ -200,6 +200,10 @@ class DiskAnnContext : public IndexContext,
     return io_ctx_;
   }
 
+  ContextType context_type() const {
+    return static_cast<ContextType>(type_);
+  }
+
   inline void resize_results(size_t size) {
     if (group_by_search()) {
       group_results_.resize(size);

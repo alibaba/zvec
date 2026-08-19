@@ -27,6 +27,36 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+// DiskAnnContext instances are pooled above the indexer and can therefore
+// outlive the reader that prepared their lazy Windows file handle. Keep that
+// handle across all I/O batches in one logical operation, then release it on
+// every return path (including exceptions). POSIX readers intentionally keep
+// their backend queue resources for reuse.
+class IOContextReleaseGuard {
+ public:
+  IOContextReleaseGuard(AlignedFileReader &reader, IOContext &ctx,
+                        bool enabled = true)
+      : reader_(reader), ctx_(ctx), enabled_(enabled) {}
+
+  ~IOContextReleaseGuard() {
+    if (enabled_) {
+      reader_.release_io_ctx(ctx_);
+    }
+  }
+
+  IOContextReleaseGuard(const IOContextReleaseGuard &) = delete;
+  IOContextReleaseGuard &operator=(const IOContextReleaseGuard &) = delete;
+
+ private:
+  AlignedFileReader &reader_;
+  IOContext &ctx_;
+  bool enabled_;
+};
+
+}  // namespace
+
 DiskAnnIndexer::DiskAnnIndexer(const IndexMeta &meta) {
   meta_ = meta;
 }
@@ -79,7 +109,35 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   index_segment_offset_ = vector_segment->data_offset();
 
   const auto file_path = storage->file_path();
-  int ret = storage->cleanup();
+  int ret = 0;
+  reader_.reset(new PlatformAlignedFileReader());
+#if defined(_WIN32) || defined(_WIN64)
+  // Capture the exact file object that supplied the in-memory metadata before
+  // releasing FileReadStorage. Reopening file_path after cleanup could bind
+  // graph reads to a replacement file while PQ/keys still belong to the old
+  // one.
+  ret = static_cast<WindowsAlignedFileReader *>(reader_.get())
+            ->open_from_handle(file_path, cached_file->native_handle());
+#else
+  if (cached_file) {
+    // POSIX atomic replacement leaves an open descriptor bound to the old
+    // inode. Duplicate that descriptor before cleanup so graph reads use the
+    // same file object that supplied the in-memory metadata.
+    ret = static_cast<LinuxAlignedFileReader *>(reader_.get())
+              ->open_from_handle(file_path, cached_file->native_handle());
+  } else {
+    // Preserve support for FileReadStorage's alone_file_handle mode. Its
+    // Segment abstraction does not expose a descriptor, so retain the
+    // origin/main ordering and bind the path before releasing the storage.
+    reader_->open(file_path);
+  }
+#endif
+  if (ret != 0) {
+    LOG_ERROR("Failed to capture DiskAnn index file, ret=%d", ret);
+    return ret;
+  }
+
+  ret = storage->cleanup();
   entity.release_storage();
   // cleanup() releases the storage's shared_ptr, but callers may still retain
   // the File object or one of its Segments. Close the shared native handle
@@ -95,9 +153,6 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
     LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
     return ret;
   }
-
-  reader_.reset(new PlatformAlignedFileReader());
-  reader_->open(file_path);
 
   ret = setup_io_ctx(init_ctx_);
   if (ret != 0) {
@@ -652,6 +707,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   };
 
   IOContext &io_ctx = ctx->io_ctx();
+  IOContextReleaseGuard release_guard(*reader_, io_ctx);
   void *aligned_query_raw = ctx->query();
 
   void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
@@ -802,6 +858,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   };
 
   IOContext &io_ctx = ctx->io_ctx();
+  IOContextReleaseGuard release_guard(*reader_, io_ctx);
   void *aligned_query_raw = ctx->query();
 
   void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
@@ -944,6 +1001,12 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
   auto &stats = ctx->query_stats();
 
   IOContext &io_ctx = ctx->io_ctx();
+  // Search contexts are owned by an external pool and may outlive this index.
+  // Fetch contexts, however, are owned by the provider/iterator that also owns
+  // the reader; retaining their private handle avoids reopening it per vector.
+  IOContextReleaseGuard release_guard(
+      *reader_, io_ctx,
+      ctx->context_type() == DiskAnnContext::kSearcherContext);
 
   uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
 
@@ -1019,6 +1082,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
 }
 
 int DiskAnnIndexer::knn_search(DiskAnnContext *ctx) {
+  IOContextReleaseGuard release_guard(*reader_, ctx->io_ctx());
   int ret = cached_beam_search(ctx);
   if (ret != 0) {
     return ret;

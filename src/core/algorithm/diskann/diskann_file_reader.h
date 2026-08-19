@@ -139,6 +139,11 @@ class AlignedFileReader {
   virtual int get_completed(PendingBatch &batch, IOContext &ctx,
                             int min_completed,
                             std::vector<uint32_t> &completed_indices) = 0;
+
+  // Release any lazy per-context file resources at an operation boundary.
+  // POSIX backends keep their process-local queue resources for reuse; Windows
+  // overrides this to close private file and completion-port handles.
+  virtual void release_io_ctx(IOContext &ctx) = 0;
 };
 
 // POSIX reader implementation. Linux selects io_uring, libaio, or pread;
@@ -151,20 +156,24 @@ class LinuxAlignedFileReader : public AlignedFileReader {
  public:
   LinuxAlignedFileReader();
   LinuxAlignedFileReader(int file_desc);
-  ~LinuxAlignedFileReader();
+  ~LinuxAlignedFileReader() override;
 
  public:
-  void open(const std::string &fname);
-  void close();
+  void open(const std::string &fname) override;
+  // Duplicate an already-open descriptor so metadata and graph reads stay on
+  // the same file object even if fname is atomically replaced.
+  int open_from_handle(const std::string &fname, int source_fd);
+  void close() override;
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-           bool async = false);
+           bool async = false) override;
 
   int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
-             IOContext &ctx);
+             IOContext &ctx) override;
 
   int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
-                    std::vector<uint32_t> &completed_indices);
+                    std::vector<uint32_t> &completed_indices) override;
+  void release_io_ctx(IOContext & /*ctx*/) override {}
 };
 #else
 class WindowsAlignedFileReader : public AlignedFileReader {
@@ -180,6 +189,10 @@ class WindowsAlignedFileReader : public AlignedFileReader {
   ~WindowsAlignedFileReader() override;
 
   void open(const std::string &fname) override;
+  // Capture the same file object as an already-open buffered handle. This is
+  // used while loading an index so metadata and later graph reads cannot come
+  // from different files if fname is atomically replaced between the two.
+  int open_from_handle(const std::string &fname, HANDLE source_handle);
   void close() override;
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
@@ -188,6 +201,7 @@ class WindowsAlignedFileReader : public AlignedFileReader {
              IOContext &ctx) override;
   int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
                     std::vector<uint32_t> &completed_indices) override;
+  void release_io_ctx(IOContext &ctx) override;
 };
 #endif
 

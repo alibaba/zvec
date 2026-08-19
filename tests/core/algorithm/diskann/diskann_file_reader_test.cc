@@ -167,6 +167,47 @@ TEST(DiskAnnFileReaderTest, ReadBeforeOpenReturnsError) {
   EXPECT_NE(reader.read(requests, ctx, false), 0);
 }
 
+TEST(DiskAnnFileReaderTest,
+     OpenFromHandleSurvivesPathReplacementBeforeHandoff) {
+  TemporaryFile original;
+  TemporaryFile replacement;
+  ASSERT_GE(original.fd(), 0);
+  ASSERT_GE(replacement.fd(), 0);
+
+  std::vector<uint8_t> original_data(kPageSize, 0x3a);
+  std::vector<uint8_t> replacement_data(kPageSize, 0xc7);
+  ASSERT_TRUE(original.write_all(original_data.data(), original_data.size()));
+  ASSERT_TRUE(
+      replacement.write_all(replacement_data.data(), replacement_data.size()));
+
+  // The original descriptor represents FileReadStorage after it supplied
+  // metadata. Replace the path first to prove the handoff follows the open
+  // file object rather than resolving the path again.
+  ASSERT_EQ(::rename(replacement.path(), original.path()), 0);
+
+  LinuxAlignedFileReader original_reader;
+  ASSERT_EQ(original_reader.open_from_handle(original.path(), original.fd()),
+            0);
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{{0, kPageSize, output.get()}};
+  IOContext ctx{};
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+
+  ASSERT_EQ(original_reader.read(requests, ctx, false), 0);
+  EXPECT_EQ(std::memcmp(output.get(), original_data.data(), kPageSize), 0);
+
+  LinuxAlignedFileReader replacement_reader;
+  replacement_reader.open(original.path());
+  ASSERT_EQ(replacement_reader.read(requests, ctx, false), 0);
+  EXPECT_EQ(std::memcmp(output.get(), replacement_data.data(), kPageSize), 0);
+
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  original_reader.close();
+  replacement_reader.close();
+}
+
 #if defined(__APPLE__) || defined(__MACH__)
 TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
   TemporaryFile file;

@@ -110,6 +110,10 @@ class CountingAlignedFileReader final : public AlignedFileReader {
     return reader_->get_completed(batch, ctx, min_completed, completed_indices);
   }
 
+  void release_io_ctx(IOContext &ctx) override {
+    reader_->release_io_ctx(ctx);
+  }
+
   size_t requested_reads() const {
     return requested_reads_;
   }
@@ -152,6 +156,10 @@ class ContextTrackingAlignedFileReader final : public AlignedFileReader {
     return reader_->get_completed(batch, ctx, min_completed, completed_indices);
   }
 
+  void release_io_ctx(IOContext &ctx) override {
+    reader_->release_io_ctx(ctx);
+  }
+
   size_t context_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return contexts_.size();
@@ -191,6 +199,10 @@ class FailingAlignedFileReader final : public AlignedFileReader {
                     int /*min_completed*/,
                     std::vector<uint32_t> & /*completed_indices*/) override {
     return IndexError_ReadData;
+  }
+
+  void release_io_ctx(IOContext &ctx) override {
+    reader_->release_io_ctx(ctx);
   }
 
  private:
@@ -1094,6 +1106,8 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
 
   auto provider = streamer->create_provider();
   ASSERT_NE(provider, nullptr);
+  auto second_provider = streamer->create_provider();
+  ASSERT_NE(second_provider, nullptr);
   EXPECT_TRUE(provider_cached_file.expired());
   EXPECT_EQ(doc_cnt, provider->count());
   EXPECT_EQ(dim, provider->dimension());
@@ -1151,6 +1165,27 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   // transient worker threads call get_vector(). Only result bytes are local
   // to each thread.
   EXPECT_EQ(1U, tracking_reader->context_count());
+
+  // Providers also need independent result bytes on the same thread. Keep the
+  // first provider's pointer live while a second provider fetches a different
+  // vector; a function-level TLS string shared by all providers overwrites it.
+  const void *second_provider_vector =
+      second_provider->get_vector(key_for_id(63));
+  ASSERT_NE(second_provider_vector, nullptr);
+  float second_provider_value = -1.0f;
+  std::memcpy(&second_provider_value, second_provider_vector,
+              sizeof(second_provider_value));
+  EXPECT_EQ(63.0f, second_provider_value);
+
+  float retained_provider_value = -1.0f;
+  std::memcpy(&retained_provider_value, provider_vector,
+              sizeof(retained_provider_value));
+  EXPECT_EQ(17.0f, retained_provider_value);
+  // Each provider still owns exactly one heavyweight fetch context, rather
+  // than retaining one for every historical worker thread.
+  EXPECT_EQ(2U, tracking_reader->context_count());
+
+  second_provider.reset();
   provider.reset();
 
   const void *iterator_vector = provider_iterator->data();

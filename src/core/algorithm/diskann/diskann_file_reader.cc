@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -88,9 +89,9 @@ void log_diskann_io_backend() {
 }
 
 #if defined(_WIN32) || defined(_WIN64)
-// Contexts can outlive their searcher in the shared context pool. Allow an
-// index path to be deleted or atomically replaced while such a context keeps
-// the old file alive, but keep in-place writes blocked while reads are active.
+// The reader's stable handle owns the selected file object across lazy I/O
+// batches. Allow its path to be deleted or atomically replaced, but keep
+// in-place writes blocked while reads are active.
 static constexpr DWORD kDiskAnnFileShareMode =
     FILE_SHARE_READ | FILE_SHARE_DELETE;
 
@@ -123,11 +124,24 @@ static void close_windows_io_handles(IOContext ctx) {
     return;
   }
 
-  const bool has_active_requests =
-      std::any_of(ctx->active_requests.begin(), ctx->active_requests.end(),
-                  [](uint8_t active) { return active != 0; });
-  if (ctx->file_handle != INVALID_HANDLE_VALUE &&
-      (ctx->outstanding_count != 0 || has_active_requests)) {
+  size_t active_remaining = static_cast<size_t>(std::count_if(
+      ctx->active_requests.begin(), ctx->active_requests.end(),
+      [](uint8_t active) { return active != 0; }));
+  // The branches below are internal-state failures, not ordinary I/O errors.
+  // Returning after one of them could free an OVERLAPPED or destination
+  // buffer that the kernel still owns, so fail closed instead of risking UAF.
+  if (active_remaining != ctx->outstanding_count) {
+    LOG_FATAL(
+        "DiskAnn Windows I/O context lost track of outstanding requests");
+    std::abort();
+  }
+  if (active_remaining != 0) {
+    if (ctx->file_handle == INVALID_HANDLE_VALUE ||
+        ctx->completion_port == nullptr) {
+      LOG_FATAL(
+          "Cannot drain DiskAnn overlapped requests without valid handles");
+      std::abort();
+    }
     if (!::CancelIoEx(ctx->file_handle, nullptr)) {
       DWORD error = ::GetLastError();
       if (error != ERROR_NOT_FOUND) {
@@ -136,33 +150,56 @@ static void close_windows_io_handles(IOContext ctx) {
       }
     }
 
-    // Wait on the OVERLAPPED objects themselves instead of relying on the
-    // completion port during teardown. Once GetOverlappedResult returns a
-    // terminal status, the kernel no longer references either the OVERLAPPED
-    // slot or its caller-owned destination buffer. Completion packets may
-    // remain queued, but it is then safe to close the port and discard them.
-    for (size_t i = 0; i < ctx->active_requests.size(); ++i) {
-      if (ctx->active_requests[i] == 0) {
-        continue;
+    // A file associated with an IOCP does not publish the final OVERLAPPED
+    // status until its completion packet is dequeued. Polling
+    // GetOverlappedResult() here can therefore return ERROR_IO_INCOMPLETE
+    // forever. The completion port is private to this context, so drain it
+    // until every active slot has produced its terminal packet.
+    while (active_remaining != 0) {
+      OVERLAPPED_ENTRY entries[MAX_IO_DEPTH]{};
+      ULONG removed = 0;
+      const ULONG max_entries = static_cast<ULONG>(
+          std::min<size_t>(active_remaining, MAX_IO_DEPTH));
+      if (!::GetQueuedCompletionStatusEx(ctx->completion_port, entries,
+                                         max_entries, &removed, INFINITE,
+                                         FALSE) ||
+          removed == 0) {
+        LOG_FATAL(
+            "GetQueuedCompletionStatusEx failed while draining DiskAnn I/O "
+            "(error=%lu)",
+            ::GetLastError());
+        std::abort();
       }
 
-      DWORD bytes_transferred = 0;
-      BOOL completed = FALSE;
-      DWORD error = ERROR_SUCCESS;
-      do {
-        completed = ::GetOverlappedResult(ctx->file_handle, &ctx->reqs[i],
-                                          &bytes_transferred, FALSE);
-        error = completed ? ERROR_SUCCESS : ::GetLastError();
-        if (!completed && error == ERROR_IO_INCOMPLETE) {
-          ::Sleep(1);
+      for (ULONG i = 0; i < removed; ++i) {
+        if (entries[i].lpCompletionKey !=
+            reinterpret_cast<ULONG_PTR>(ctx)) {
+          LOG_FATAL(
+              "DiskAnn teardown received a completion for another context");
+          std::abort();
         }
-      } while (!completed && error == ERROR_IO_INCOMPLETE);
 
-      if (!completed && error != ERROR_OPERATION_ABORTED) {
-        LOG_WARN("DiskAnn overlapped request %zu completed with error=%lu", i,
-                 error);
+        const uintptr_t address =
+            reinterpret_cast<uintptr_t>(entries[i].lpOverlapped);
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(ctx->reqs.data());
+        const uintptr_t span = ctx->reqs.size() * sizeof(OVERLAPPED);
+        if (address < begin || address >= begin + span ||
+            (address - begin) % sizeof(OVERLAPPED) != 0) {
+          LOG_FATAL("DiskAnn teardown received an unknown OVERLAPPED request");
+          std::abort();
+        }
+
+        const size_t index = (address - begin) / sizeof(OVERLAPPED);
+        if (ctx->active_requests[index] == 0) {
+          LOG_FATAL("DiskAnn teardown received a duplicate completion");
+          std::abort();
+        }
+        ctx->active_requests[index] = 0;
+        --active_remaining;
+        if (ctx->outstanding_count != 0) {
+          --ctx->outstanding_count;
+        }
       }
-      ctx->active_requests[i] = 0;
     }
     ctx->outstanding_count = 0;
   }
@@ -706,6 +743,48 @@ LinuxAlignedFileReader::~LinuxAlignedFileReader() {
   }
 }
 
+static int duplicate_file_descriptor(int source_fd) {
+#if defined(F_DUPFD_CLOEXEC)
+  return ::fcntl(source_fd, F_DUPFD_CLOEXEC, 0);
+#else
+  int duplicate_fd = ::dup(source_fd);
+  if (duplicate_fd >= 0 &&
+      ::fcntl(duplicate_fd, F_SETFD, FD_CLOEXEC) == -1) {
+    const int saved_errno = errno;
+    ::close(duplicate_fd);
+    errno = saved_errno;
+    return -1;
+  }
+  return duplicate_fd;
+#endif
+}
+
+#if defined(__APPLE__) || defined(__MACH__)
+static void configure_macos_reader(int file_desc, const std::string &fname) {
+  // macOS has no O_DIRECT. F_NOCACHE is its closest per-file equivalent: it
+  // asks the kernel to minimize caching for I/O through this descriptor. This
+  // is advisory rather than a guarantee that every read reaches the device.
+  // Disable read-ahead as well because DiskAnn performs random reads.
+  //
+  // Do not mmap the entire index and call msync(MS_INVALIDATE) here. That does
+  // not provide a reliable global cache eviction guarantee and makes open time
+  // and virtual-address usage scale with the size of the index.
+  if (::fcntl(file_desc, F_NOCACHE, 1) == -1) {
+    LOG_WARN(
+        "fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
+        "the page cache",
+        fname.c_str(), errno, ::strerror(errno));
+  } else {
+    LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s", fname.c_str());
+  }
+
+  if (::fcntl(file_desc, F_RDAHEAD, 0) == -1) {
+    LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)",
+             fname.c_str(), errno, ::strerror(errno));
+  }
+}
+#endif
+
 void LinuxAlignedFileReader::open(const std::string &fname) {
   int flags = O_RDONLY;
 
@@ -733,32 +812,51 @@ void LinuxAlignedFileReader::open(const std::string &fname) {
   }
 
 #if defined(__APPLE__) || defined(__MACH__)
-  // macOS has no O_DIRECT. F_NOCACHE is its closest per-file equivalent: it
-  // asks the kernel to minimize caching for I/O through this descriptor. This
-  // is advisory rather than a guarantee that every read reaches the device.
-  // Disable read-ahead as well because DiskAnn performs random reads.
-  //
-  // Do not mmap the entire index and call msync(MS_INVALIDATE) here. That does
-  // not provide a reliable global cache eviction guarantee and makes open time
-  // and virtual-address usage scale with the size of the index.
   if (this->file_desc != -1) {
-    if (::fcntl(this->file_desc, F_NOCACHE, 1) == -1) {
-      LOG_WARN(
-          "fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
-          "the page cache",
-          fname.c_str(), errno, ::strerror(errno));
-    } else {
-      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s", fname.c_str());
-    }
-
-    if (::fcntl(this->file_desc, F_RDAHEAD, 0) == -1) {
-      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)",
-               fname.c_str(), errno, ::strerror(errno));
-    }
+    configure_macos_reader(this->file_desc, fname);
   }
 #endif
 
   LOG_INFO("Opened file : %s", fname.c_str());
+}
+
+int LinuxAlignedFileReader::open_from_handle(const std::string &fname,
+                                             int source_fd) {
+  close();
+  if (source_fd < 0) {
+    LOG_ERROR("Cannot capture DiskAnn file from an invalid descriptor");
+    return IndexError_InvalidArgument;
+  }
+
+  int duplicate_fd = duplicate_file_descriptor(source_fd);
+  if (duplicate_fd < 0) {
+    LOG_ERROR("Failed to duplicate DiskAnn file descriptor for %s "
+              "(errno=%d: %s)",
+              fname.c_str(), errno, ::strerror(errno));
+    return IndexError_OpenFile;
+  }
+
+#if defined(__linux__) || defined(__linux)
+  // dup() keeps the same open file description and therefore the same inode.
+  // Enable direct I/O after metadata loading has completed. The source
+  // descriptor is closed immediately after this handoff, so the shared status
+  // flag cannot affect later FileReadStorage reads. Filesystems that reject
+  // O_DIRECT retain the buffered descriptor, matching open()'s fallback.
+  const int status_flags = ::fcntl(duplicate_fd, F_GETFL);
+  if (status_flags == -1 ||
+      ::fcntl(duplicate_fd, F_SETFL, status_flags | O_DIRECT) == -1) {
+    LOG_WARN(
+        "enabling O_DIRECT on captured file failed for %s (errno=%d: %s); "
+        "falling back to buffered I/O",
+        fname.c_str(), errno, ::strerror(errno));
+  }
+#elif defined(__APPLE__) || defined(__MACH__)
+  configure_macos_reader(duplicate_fd, fname);
+#endif
+
+  file_desc = duplicate_fd;
+  LOG_INFO("Captured open DiskAnn file object: %s", fname.c_str());
+  return 0;
 }
 
 void LinuxAlignedFileReader::close() {
@@ -1052,13 +1150,13 @@ WindowsAlignedFileReader::~WindowsAlignedFileReader() {
   close();
 }
 
-void WindowsAlignedFileReader::open(const std::string &fname) {
-  close();
+static bool resolve_windows_file_path(const std::string &fname,
+                                      std::wstring &absolute_path) {
   const std::wstring wide_fname = ailego::FileHelper::Utf8ToWide(fname);
   if (wide_fname.empty()) {
     LOG_ERROR("Failed to convert DiskAnn file path from UTF-8: %s",
               fname.c_str());
-    return;
+    return false;
   }
 
   const DWORD path_capacity =
@@ -1066,17 +1164,27 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
   if (path_capacity == 0) {
     LOG_ERROR("Failed to resolve absolute DiskAnn file path: %s (error=%lu)",
               fname.c_str(), ::GetLastError());
-    return;
+    return false;
   }
-  std::wstring absolute_path(path_capacity, L'\0');
+  absolute_path.assign(path_capacity, L'\0');
   const DWORD path_length = ::GetFullPathNameW(
       wide_fname.c_str(), path_capacity, absolute_path.data(), nullptr);
   if (path_length == 0 || path_length >= path_capacity) {
     LOG_ERROR("Failed to resolve absolute DiskAnn file path: %s (error=%lu)",
               fname.c_str(), ::GetLastError());
-    return;
+    absolute_path.clear();
+    return false;
   }
   absolute_path.resize(path_length);
+  return true;
+}
+
+void WindowsAlignedFileReader::open(const std::string &fname) {
+  close();
+  std::wstring absolute_path;
+  if (!resolve_windows_file_path(fname, absolute_path)) {
+    return;
+  }
 
   HANDLE stable_file_handle = ::CreateFileW(
       absolute_path.c_str(), GENERIC_READ, kDiskAnnFileShareMode, nullptr,
@@ -1096,6 +1204,43 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
   file_path_ = std::move(absolute_path);
   file_identity_ = file_identity;
   LOG_INFO("Opened file: %s", fname.c_str());
+}
+
+int WindowsAlignedFileReader::open_from_handle(const std::string &fname,
+                                               HANDLE source_handle) {
+  close();
+  if (source_handle == INVALID_HANDLE_VALUE || source_handle == nullptr) {
+    LOG_ERROR("Cannot capture DiskAnn file from an invalid source handle");
+    return IndexError_InvalidArgument;
+  }
+
+  std::wstring absolute_path;
+  if (!resolve_windows_file_path(fname, absolute_path)) {
+    return IndexError_InvalidArgument;
+  }
+
+  // ReOpenFile refers to the same underlying file object even if fname has
+  // already been renamed or replaced. Keep this buffered stable handle until
+  // the reader closes; private unbuffered IOCP handles are derived lazily.
+  HANDLE stable_file_handle = ::ReOpenFile(
+      source_handle, GENERIC_READ, kDiskAnnFileShareMode, 0);
+  if (stable_file_handle == INVALID_HANDLE_VALUE) {
+    LOG_ERROR("Failed to capture DiskAnn file object (error=%lu)",
+              ::GetLastError());
+    return IndexError_Runtime;
+  }
+  const uint64_t file_identity = next_windows_file_identity();
+  if (file_identity == 0) {
+    ::CloseHandle(stable_file_handle);
+    LOG_ERROR("Exhausted DiskAnn Windows file identities");
+    return IndexError_Runtime;
+  }
+
+  stable_file_handle_ = stable_file_handle;
+  file_path_ = std::move(absolute_path);
+  file_identity_ = file_identity;
+  LOG_INFO("Captured open DiskAnn file object: %s", fname.c_str());
+  return 0;
 }
 
 void WindowsAlignedFileReader::close() {
@@ -1165,9 +1310,10 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
 
 void WindowsAlignedFileReader::reset_io_ctx(IOContext &ctx) {
   close_windows_io_handles(ctx);
-  if (ctx != nullptr && !file_path_.empty() && prepare_io_ctx(ctx) != 0) {
-    LOG_ERROR("Failed to recreate Windows DiskAnn IOCP context");
-  }
+}
+
+void WindowsAlignedFileReader::release_io_ctx(IOContext &ctx) {
+  close_windows_io_handles(ctx);
 }
 
 static int validate_windows_read_requests(

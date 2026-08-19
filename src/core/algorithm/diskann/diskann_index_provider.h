@@ -13,7 +13,10 @@
 // limitations under the License.
 #pragma once
 
+#include <list>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -32,6 +35,18 @@ namespace core {
 //! entity and independent I/O contexts, so it remains valid after its source
 //! streamer is closed.
 class DiskAnnIndexProvider : public IndexProvider {
+ private:
+  struct ResultBufferOwner {};
+
+  struct ThreadResultBuffer {
+    explicit ThreadResultBuffer(
+        const std::shared_ptr<ResultBufferOwner> &buffer_owner)
+        : owner(buffer_owner) {}
+
+    std::weak_ptr<ResultBufferOwner> owner;
+    std::string data;
+  };
+
  public:
   DiskAnnIndexProvider(const IndexMeta &meta,
                        const IndexMetric::Pointer &measure,
@@ -42,7 +57,13 @@ class DiskAnnIndexProvider : public IndexProvider {
         measure_(measure),
         entity_(entity),
         indexer_(indexer),
-        owner_class_(owner) {}
+        owner_class_(owner) {
+    try {
+      result_buffer_owner_ = std::make_shared<ResultBufferOwner>();
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR("Failed to allocate DiskAnn provider result-buffer owner");
+    }
+  }
 
   DiskAnnIndexProvider(const DiskAnnIndexProvider &) = delete;
   DiskAnnIndexProvider &operator=(const DiskAnnIndexProvider &) = delete;
@@ -58,7 +79,7 @@ class DiskAnnIndexProvider : public IndexProvider {
   }
 
   bool ready() const {
-    return measure_ && entity_ && indexer_;
+    return measure_ && entity_ && indexer_ && result_buffer_owner_;
   }
 
   size_t count(void) const override {
@@ -88,21 +109,28 @@ class DiskAnnIndexProvider : public IndexProvider {
     }
 
     // Serialize the heavyweight I/O context, but keep only the returned bytes
-    // in thread-local storage. A fetch on another thread therefore cannot
-    // invalidate this pointer, and no per-thread file/context resources are
-    // retained by the provider after a worker exits. The returned pointer is
-    // valid until this thread's next DiskAnn provider fetch or thread exit.
-    static thread_local std::string vector_buffer;
-    std::lock_guard<std::mutex> lock(fetch_mutex_);
-    if (!fetch_context_) {
-      fetch_context_ =
-          DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
-    }
-    if (!fetch_context_ ||
-        indexer_->get_vector(id, fetch_context_, vector_buffer) != 0) {
+    // in thread-local storage. Buffers are isolated by provider lifetime, so a
+    // fetch through another provider or on another thread cannot invalidate
+    // this pointer. Expired providers are pruned lazily without retaining any
+    // per-thread file/context resources. The returned pointer is valid until
+    // this thread's next fetch through this provider, provider destruction, or
+    // thread exit.
+    try {
+      std::string &vector_buffer = thread_result_buffer(result_buffer_owner_);
+      std::lock_guard<std::mutex> lock(fetch_mutex_);
+      if (!fetch_context_) {
+        fetch_context_ =
+            DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
+      }
+      if (!fetch_context_ ||
+          indexer_->get_vector(id, fetch_context_, vector_buffer) != 0) {
+        return nullptr;
+      }
+      return vector_buffer.data();
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR("Failed to allocate DiskAnn provider vector buffer");
       return nullptr;
     }
-    return vector_buffer.data();
   }
 
   const std::string &owner_class(void) const override {
@@ -110,6 +138,28 @@ class DiskAnnIndexProvider : public IndexProvider {
   }
 
  private:
+  static std::string &thread_result_buffer(
+      const std::shared_ptr<ResultBufferOwner> &owner) {
+    // A list keeps every live provider's string object stable when another
+    // provider first fetches on this thread. Only the vector bytes are kept in
+    // TLS; heavyweight DiskAnnContext and file handles remain provider-owned.
+    static thread_local std::list<ThreadResultBuffer> buffers;
+    for (auto it = buffers.begin(); it != buffers.end();) {
+      std::shared_ptr<ResultBufferOwner> entry_owner = it->owner.lock();
+      if (!entry_owner) {
+        it = buffers.erase(it);
+        continue;
+      }
+      if (entry_owner.get() == owner.get()) {
+        return it->data;
+      }
+      ++it;
+    }
+
+    buffers.emplace_back(owner);
+    return buffers.back().data;
+  }
+
   class Iterator : public IndexProvider::Iterator {
    public:
     Iterator(const IndexMeta &meta, const IndexMetric::Pointer &measure,
@@ -178,6 +228,7 @@ class DiskAnnIndexProvider : public IndexProvider {
   DiskAnnEntity::Pointer entity_;
   DiskAnnIndexer::Pointer indexer_;
   std::string owner_class_;
+  std::shared_ptr<ResultBufferOwner> result_buffer_owner_;
   mutable std::mutex fetch_mutex_;
   mutable IndexContext::Pointer fetch_context_;
 };
