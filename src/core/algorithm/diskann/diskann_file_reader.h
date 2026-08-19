@@ -76,7 +76,7 @@ struct IoBackend {
   HANDLE file_handle{INVALID_HANDLE_VALUE};
   HANDLE completion_port{nullptr};
   std::wstring file_path;
-  uint64_t file_generation{0};
+  uint64_t file_identity{0};
   uint32_t outstanding_count{0};
   uint64_t generation{0};
 #endif
@@ -171,7 +171,7 @@ class WindowsAlignedFileReader : public AlignedFileReader {
  private:
   std::wstring file_path_;
   HANDLE stable_file_handle_{INVALID_HANDLE_VALUE};
-  uint64_t file_generation_{0};
+  uint64_t file_identity_{0};
 
   int prepare_io_ctx(IOContext &ctx);
   void reset_io_ctx(IOContext &ctx);

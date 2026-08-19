@@ -14,6 +14,7 @@
 
 #include "diskann_file_reader.h"
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -93,6 +94,26 @@ void log_diskann_io_backend() {
 static constexpr DWORD kDiskAnnFileShareMode =
     FILE_SHARE_READ | FILE_SHARE_DELETE;
 
+// An IOContext may be reused with different reader instances. Assign every
+// successfully opened file object a process-wide identity so two readers for
+// the same path cannot accidentally share an IOCP handle to stale contents.
+static std::atomic<uint64_t> g_next_windows_file_identity{1};
+
+static uint64_t next_windows_file_identity() {
+  uint64_t identity =
+      g_next_windows_file_identity.load(std::memory_order_relaxed);
+  while (identity != 0) {
+    const uint64_t next =
+        identity == std::numeric_limits<uint64_t>::max() ? 0 : identity + 1;
+    if (g_next_windows_file_identity.compare_exchange_weak(
+            identity, next, std::memory_order_relaxed,
+            std::memory_order_relaxed)) {
+      return identity;
+    }
+  }
+  return 0;
+}
+
 // Cancel and reap every request that may still reference caller-owned buffers.
 // Closing the file or completion port before the cancellation packets have
 // arrived would allow the kernel to keep writing into buffers already returned
@@ -156,7 +177,7 @@ static void close_windows_io_handles(IOContext ctx) {
     ctx->completion_port = nullptr;
   }
   ctx->file_path.clear();
-  ctx->file_generation = 0;
+  ctx->file_identity = 0;
   ctx->active_requests.fill(0);
   ctx->outstanding_count = 0;
 }
@@ -1065,11 +1086,15 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
               ::GetLastError());
     return;
   }
+  const uint64_t file_identity = next_windows_file_identity();
+  if (file_identity == 0) {
+    ::CloseHandle(stable_file_handle);
+    LOG_ERROR("Exhausted DiskAnn Windows file identities");
+    return;
+  }
   stable_file_handle_ = stable_file_handle;
   file_path_ = std::move(absolute_path);
-  if (++file_generation_ == 0) {
-    ++file_generation_;
-  }
+  file_identity_ = file_identity;
   LOG_INFO("Opened file: %s", fname.c_str());
 }
 
@@ -1079,6 +1104,7 @@ void WindowsAlignedFileReader::close() {
     stable_file_handle_ = INVALID_HANDLE_VALUE;
   }
   file_path_.clear();
+  file_identity_ = 0;
 }
 
 int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
@@ -1093,7 +1119,7 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   }
   if (ctx->file_handle != INVALID_HANDLE_VALUE &&
       ctx->completion_port != nullptr && ctx->file_path == file_path_ &&
-      ctx->file_generation == file_generation_) {
+      ctx->file_identity == file_identity_) {
     return 0;
   }
   if (ctx->outstanding_count != 0) {
@@ -1128,7 +1154,7 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   }
   try {
     ctx->file_path = file_path_;
-    ctx->file_generation = file_generation_;
+    ctx->file_identity = file_identity_;
   } catch (const std::bad_alloc &) {
     LOG_ERROR("Failed to store the Windows DiskAnn file path");
     close_windows_io_handles(ctx);

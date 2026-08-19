@@ -386,7 +386,7 @@ TEST(DiskAnnFileReaderWindowsTest, OpenContextAllowsIndexDeletion) {
 }
 
 TEST(DiskAnnFileReaderWindowsTest,
-     LazyContextKeepsOriginalFileAfterAtomicReplacement) {
+     ReusedContextTracksFileObjectAfterAtomicReplacement) {
   constexpr uint8_t kReplacementBias = 83;
 
   TemporaryFile original;
@@ -398,12 +398,12 @@ TEST(DiskAnnFileReaderWindowsTest,
 
   WindowsAlignedFileReader original_reader;
   original_reader.open(original.path());
-  IOContext original_ctx = nullptr;
-  ASSERT_EQ(setup_io_ctx(original_ctx), 0);
-  ASSERT_NE(original_ctx, nullptr);
+  IOContext shared_ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(shared_ctx), 0);
+  ASSERT_NE(shared_ctx, nullptr);
 
   // The context has not performed I/O yet. Replacing the path must not make
-  // its first lazy read observe bytes from a different index generation.
+  // its first lazy read observe bytes from a different file object.
   ASSERT_TRUE(::MoveFileExW(replacement.wide_path(), original.wide_path(),
                             MOVEFILE_REPLACE_EXISTING |
                                 MOVEFILE_WRITE_THROUGH));
@@ -411,21 +411,23 @@ TEST(DiskAnnFileReaderWindowsTest,
   AlignedBuffer output = make_aligned_buffer(kPageSize);
   ASSERT_NE(output, nullptr);
   std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
-  ASSERT_EQ(original_reader.read(request, original_ctx, false), 0);
+  ASSERT_EQ(original_reader.read(request, shared_ctx, false), 0);
   EXPECT_TRUE(verify_page(output.get(), 0));
 
   WindowsAlignedFileReader replacement_reader;
   replacement_reader.open(original.path());
-  IOContext replacement_ctx = nullptr;
-  ASSERT_EQ(setup_io_ctx(replacement_ctx), 0);
-  ASSERT_NE(replacement_ctx, nullptr);
-  ASSERT_EQ(replacement_reader.read(request, replacement_ctx, false), 0);
+  // Reuse the context that is currently bound to original_reader. The path is
+  // unchanged, so the readers' file identities must force an IOCP rebind.
+  ASSERT_EQ(replacement_reader.read(request, shared_ctx, false), 0);
   EXPECT_TRUE(verify_page(output.get(), 0, kReplacementBias));
 
-  EXPECT_EQ(destroy_io_ctx(replacement_ctx), 0);
-  EXPECT_EQ(replacement_ctx, nullptr);
-  EXPECT_EQ(destroy_io_ctx(original_ctx), 0);
-  EXPECT_EQ(original_ctx, nullptr);
+  // Switching back must likewise restore the original file object rather than
+  // reuse the replacement reader's handle solely because the paths match.
+  ASSERT_EQ(original_reader.read(request, shared_ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0));
+
+  EXPECT_EQ(destroy_io_ctx(shared_ctx), 0);
+  EXPECT_EQ(shared_ctx, nullptr);
 }
 
 TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -116,6 +117,50 @@ class CountingAlignedFileReader final : public AlignedFileReader {
  private:
   std::shared_ptr<AlignedFileReader> reader_;
   size_t requested_reads_{0};
+};
+
+class ContextTrackingAlignedFileReader final : public AlignedFileReader {
+ public:
+  explicit ContextTrackingAlignedFileReader(
+      std::shared_ptr<AlignedFileReader> reader)
+      : reader_(std::move(reader)) {}
+
+  void open(const std::string &fname) override {
+    reader_->open(fname);
+  }
+
+  void close() override {
+    reader_->close();
+  }
+
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
+           bool async = false) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      contexts_.insert(ctx);
+    }
+    return reader_->read(read_reqs, ctx, async);
+  }
+
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override {
+    return reader_->submit(batch, read_reqs, ctx);
+  }
+
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override {
+    return reader_->get_completed(batch, ctx, min_completed, completed_indices);
+  }
+
+  size_t context_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return contexts_.size();
+  }
+
+ private:
+  std::shared_ptr<AlignedFileReader> reader_;
+  mutable std::mutex mutex_;
+  std::set<IOContext> contexts_;
 };
 
 class FailingAlignedFileReader final : public AlignedFileReader {
@@ -229,6 +274,7 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   Params search_params;
   search_params.set("zvec.diskann.searcher.list_size", 500);
+  search_params.set("zvec.diskann.searcher.cache_node_num", 0);
 
   ASSERT_EQ(0, searcher->init(search_params));
 
@@ -1040,6 +1086,12 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_EQ(0, streamer->open(streamer_storage));
   ASSERT_TRUE(provider_cached_file.expired());
 
+  auto *diskann_streamer = dynamic_cast<DiskAnnStreamer *>(streamer.get());
+  ASSERT_NE(diskann_streamer, nullptr);
+  auto tracking_reader = std::make_shared<ContextTrackingAlignedFileReader>(
+      DiskAnnStreamerTestPeer::reader(diskann_streamer));
+  DiskAnnStreamerTestPeer::set_reader(diskann_streamer, tracking_reader);
+
   auto provider = streamer->create_provider();
   ASSERT_NE(provider, nullptr);
   EXPECT_TRUE(provider_cached_file.expired());
@@ -1095,6 +1147,10 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   second_fetch.join();
   EXPECT_EQ(31.0f, first_thread_value);
   EXPECT_EQ(47.0f, second_thread_value);
+  // The provider owns one heavyweight fetch context regardless of how many
+  // transient worker threads call get_vector(). Only result bytes are local
+  // to each thread.
+  EXPECT_EQ(1U, tracking_reader->context_count());
   provider.reset();
 
   const void *iterator_vector = provider_iterator->data();
