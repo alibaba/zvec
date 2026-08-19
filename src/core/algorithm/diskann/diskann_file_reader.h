@@ -178,6 +178,8 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 #else
 class WindowsAlignedFileReader : public AlignedFileReader {
  private:
+  friend class WindowsAlignedFileReaderTestPeer;
+
   std::wstring file_path_;
   HANDLE stable_file_handle_{INVALID_HANDLE_VALUE};
   uint64_t file_identity_{0};

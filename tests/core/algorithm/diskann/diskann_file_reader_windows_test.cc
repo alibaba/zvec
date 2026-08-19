@@ -26,6 +26,19 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
 
+namespace zvec {
+namespace core {
+
+class WindowsAlignedFileReaderTestPeer {
+ public:
+  static HANDLE stable_file_handle(const WindowsAlignedFileReader &reader) {
+    return reader.stable_file_handle_;
+  }
+};
+
+}  // namespace core
+}  // namespace zvec
+
 using namespace zvec::core;
 
 namespace {
@@ -122,6 +135,20 @@ bool verify_page(const uint8_t *buffer, size_t page, uint8_t bias = 0) {
   });
 }
 
+DWORD issue_misaligned_read(HANDLE handle) {
+  LARGE_INTEGER offset{};
+  if (!::SetFilePointerEx(handle, offset, nullptr, FILE_BEGIN)) {
+    return ::GetLastError();
+  }
+  uint8_t byte = 0;
+  DWORD bytes_read = 0;
+  ::SetLastError(ERROR_SUCCESS);
+  if (::ReadFile(handle, &byte, 1, &bytes_read, nullptr)) {
+    return ERROR_SUCCESS;
+  }
+  return ::GetLastError();
+}
+
 class ScopedCurrentDirectory {
  public:
   ScopedCurrentDirectory() {
@@ -163,6 +190,20 @@ class ScopedCurrentDirectory {
 };
 
 }  // namespace
+
+TEST(DiskAnnFileReaderWindowsTest, OpenKeepsStableHandleUnbuffered) {
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+
+  WindowsAlignedFileReader reader;
+  reader.open(file.path());
+
+  HANDLE stable_handle =
+      WindowsAlignedFileReaderTestPeer::stable_file_handle(reader);
+  ASSERT_NE(stable_handle, INVALID_HANDLE_VALUE);
+  EXPECT_EQ(issue_misaligned_read(stable_handle), ERROR_INVALID_PARAMETER);
+}
 
 TEST(DiskAnnFileReaderWindowsTest,
      RelativePathSurvivesWorkingDirectoryChange) {
@@ -425,6 +466,10 @@ TEST(DiskAnnFileReaderWindowsTest,
   ASSERT_EQ(original_reader.open_from_handle(original.path(),
                                              source.native_handle()),
             0);
+  HANDLE stable_handle =
+      WindowsAlignedFileReaderTestPeer::stable_file_handle(original_reader);
+  ASSERT_NE(stable_handle, INVALID_HANDLE_VALUE);
+  EXPECT_EQ(issue_misaligned_read(stable_handle), ERROR_INVALID_PARAMETER);
   source.close();
 
   AlignedBuffer output = make_aligned_buffer(kPageSize);

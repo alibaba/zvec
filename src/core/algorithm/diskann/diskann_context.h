@@ -196,6 +196,10 @@ class DiskAnnContext : public IndexContext,
     return sector_buffer_;
   }
 
+  inline size_t sector_buffer_size() const {
+    return sector_buffer_size_;
+  }
+
   inline IOContext &io_ctx() {
     return io_ctx_;
   }
@@ -356,6 +360,8 @@ class DiskAnnContext : public IndexContext,
     }
   }
 
+  int resize_fetch_sector_buffer(const DiskAnnEntity::Pointer &entity);
+
  private:
   constexpr static uint32_t kInvalidMgic = -1U;
 
@@ -387,6 +393,7 @@ class DiskAnnContext : public IndexContext,
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};
   void *sector_buffer_{nullptr};
+  size_t sector_buffer_size_{0};
 
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};

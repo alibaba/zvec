@@ -14,6 +14,7 @@
 
 #include "diskann_streamer.h"
 #include <limits>
+#include <ailego/pattern/defer.h>
 #include "diskann_context.h"
 #include "diskann_index_provider.h"
 #include "diskann_indexer.h"
@@ -260,6 +261,7 @@ int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -314,6 +316,7 @@ int DiskAnnStreamer::search_bf_impl(const void *query,
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -374,6 +377,7 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;

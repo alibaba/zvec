@@ -45,6 +45,45 @@ DiskAnnContext::Pointer DiskAnnContext::create_fetch_context(
   return context;
 }
 
+int DiskAnnContext::resize_fetch_sector_buffer(
+    const DiskAnnEntity::Pointer &entity) {
+  if (!entity) {
+    LOG_ERROR("Cannot size a DiskAnn fetch buffer without an entity");
+    return IndexError_InvalidArgument;
+  }
+
+  const uint64_t sector_num_per_node =
+      entity->node_per_sector() > 0
+          ? 1
+          : DiskAnnUtil::div_round_up(entity->max_node_size(),
+                                       DiskAnnUtil::kSectorSize);
+  if (sector_num_per_node == 0 ||
+      sector_num_per_node > DiskAnnUtil::kMaxSectorReadNum) {
+    LOG_ERROR("Invalid DiskAnn fetch sector count: %lu",
+              static_cast<unsigned long>(sector_num_per_node));
+    return IndexError_InvalidArgument;
+  }
+
+  const size_t required_size = static_cast<size_t>(sector_num_per_node) *
+                               DiskAnnUtil::kSectorSize;
+  if (sector_buffer_ != nullptr && sector_buffer_size_ == required_size) {
+    return 0;
+  }
+
+  void *replacement = nullptr;
+  DiskAnnUtil::alloc_aligned(&replacement, required_size,
+                             DiskAnnUtil::kSectorSize);
+  if (!replacement) {
+    LOG_ERROR("Failed to allocate DiskAnn fetch buffer");
+    return IndexError_NoMemory;
+  }
+
+  DiskAnnUtil::free_aligned(sector_buffer_);
+  sector_buffer_ = replacement;
+  sector_buffer_size_ = required_size;
+  return 0;
+}
+
 int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
                          uint32_t pq_chunk_num, uint32_t element_size) {
   if (!entity_ || element_size == 0) {
@@ -97,9 +136,10 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
           static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
           256);
       DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
+      sector_buffer_size_ = static_cast<size_t>(
+          DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize);
       DiskAnnUtil::alloc_aligned(
-          (void **)&sector_buffer_,
-          DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,
+          (void **)&sector_buffer_, sector_buffer_size_,
           DiskAnnUtil::kSectorSize);
       if (!pq_table_dist_buffer_ || !pq_coord_buffer_ || !coord_buffer_ ||
           !sector_buffer_) {
@@ -115,13 +155,9 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
       break;
 
     case kFetchContext:
-      DiskAnnUtil::alloc_aligned(
-          (void **)&sector_buffer_,
-          DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,
-          DiskAnnUtil::kSectorSize);
-      if (!sector_buffer_) {
-        LOG_ERROR("Failed to allocate DiskAnn fetch buffer");
-        return IndexError_NoMemory;
+      ret = resize_fetch_sector_buffer(entity_);
+      if (ret != 0) {
+        return ret;
       }
 
       ret = setup_io_ctx(io_ctx_);
@@ -183,8 +219,15 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
       return IndexError_NotImplemented;
 
     case kSearcherContext:
-    case kFetchContext:
       break;
+
+    case kFetchContext: {
+      const int ret = resize_fetch_sector_buffer(entity);
+      if (ret != 0) {
+        return ret;
+      }
+      break;
+    }
 
     case kReducerContext:
       break;

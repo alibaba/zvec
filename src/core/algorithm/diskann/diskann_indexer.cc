@@ -76,6 +76,45 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
     LOG_ERROR("DiskAnn storage or vector segment is missing");
     return IndexError_InvalidFormat;
   }
+
+  const uint64_t stored_max_node_size = entity.max_node_size();
+  if (stored_max_node_size == 0 ||
+      stored_max_node_size > (std::numeric_limits<uint32_t>::max)() ||
+      stored_max_node_size < sizeof(uint32_t) ||
+      meta_.element_size() > stored_max_node_size - sizeof(uint32_t)) {
+    LOG_ERROR("Invalid DiskAnn node size: node=%llu vector=%u",
+              static_cast<unsigned long long>(stored_max_node_size),
+              static_cast<unsigned>(meta_.element_size()));
+    return IndexError_InvalidFormat;
+  }
+
+  const uint64_t stored_max_degree = entity.max_degree();
+  const uint64_t neighbor_bytes =
+      stored_max_node_size - sizeof(uint32_t) - meta_.element_size();
+  if (stored_max_degree > (std::numeric_limits<uint32_t>::max)() ||
+      stored_max_degree > neighbor_bytes / sizeof(diskann_id_t)) {
+    LOG_ERROR(
+        "Invalid DiskAnn node capacity: node=%llu vector=%u degree=%llu",
+        static_cast<unsigned long long>(stored_max_node_size),
+        static_cast<unsigned>(meta_.element_size()),
+        static_cast<unsigned long long>(stored_max_degree));
+    return IndexError_InvalidFormat;
+  }
+
+  const uint64_t expected_node_per_sector =
+      stored_max_node_size <= DiskAnnUtil::kSectorSize
+          ? DiskAnnUtil::kSectorSize / stored_max_node_size
+          : 0;
+  if (entity.node_per_sector() != expected_node_per_sector) {
+    LOG_ERROR(
+        "Invalid DiskAnn node layout: node=%llu nodes_per_sector=%llu "
+        "expected=%llu",
+        static_cast<unsigned long long>(stored_max_node_size),
+        static_cast<unsigned long long>(entity.node_per_sector()),
+        static_cast<unsigned long long>(expected_node_per_sector));
+    return IndexError_InvalidFormat;
+  }
+
   auto cached_file = storage->file();
 #if defined(_WIN32) || defined(_WIN64)
   // Windows DiskAnn must be able to close the single buffered handle before
@@ -90,7 +129,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   }
 #endif
 
-  max_node_size_ = entity.max_node_size();
+  max_node_size_ = static_cast<uint32_t>(stored_max_node_size);
   sector_num_per_node_ =
       DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
   if (sector_num_per_node_ == 0 ||
@@ -175,7 +214,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 
   doc_cnt_ = entity.doc_cnt();
 
-  max_degree_ = entity.max_degree();
+  max_degree_ = static_cast<uint32_t>(stored_max_degree);
 
   centroid_stride_ = DiskAnnUtil::round_up(meta_.element_size(), 32);
   DiskAnnUtil::alloc_aligned(&centroid_data_,
@@ -707,7 +746,6 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   };
 
   IOContext &io_ctx = ctx->io_ctx();
-  IOContextReleaseGuard release_guard(*reader_, io_ctx);
   void *aligned_query_raw = ctx->query();
 
   void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
@@ -858,7 +896,6 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   };
 
   IOContext &io_ctx = ctx->io_ctx();
-  IOContextReleaseGuard release_guard(*reader_, io_ctx);
   void *aligned_query_raw = ctx->query();
 
   void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
@@ -997,6 +1034,10 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
                                std::string &vector) {
   DiskAnnContext *ctx = dynamic_cast<DiskAnnContext *>(context.get());
+  if (ctx == nullptr) {
+    LOG_ERROR("get_vector: invalid DiskAnn context");
+    return IndexError_InvalidArgument;
+  }
 
   auto &stats = ctx->query_stats();
 
@@ -1014,6 +1055,24 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       node_per_sector_ > 0
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
+  const size_t sector_read_size =
+      static_cast<size_t>(sector_num_per_node) * DiskAnnUtil::kSectorSize;
+  const size_t node_offset =
+      node_per_sector_ == 0
+          ? 0
+          : static_cast<size_t>(id % node_per_sector_) * max_node_size_;
+  if (sector_num_per_node == 0 || sector_buffer == nullptr ||
+      sector_read_size > ctx->sector_buffer_size() ||
+      node_offset > sector_read_size ||
+      meta_.element_size() > sector_read_size - node_offset) {
+    LOG_ERROR(
+        "get_vector: invalid sector buffer range, read=%zu offset=%zu "
+        "vector=%u available=%zu",
+        sector_read_size, node_offset,
+        static_cast<unsigned>(meta_.element_size()),
+        ctx->sector_buffer_size());
+    return IndexError_InvalidArgument;
+  }
 
   ailego::ElapsedTime query_timer;
   ailego::ElapsedTime io_timer;
@@ -1051,7 +1110,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
             DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
                                          DiskAnnUtil::kSectorSize, id) *
                 DiskAnnUtil::kSectorSize,
-        sector_num_per_node * DiskAnnUtil::kSectorSize,
+        sector_read_size,
         frontier_neighbor.second);
 
     stats.disk_page_reads++;
@@ -1067,8 +1126,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       return IndexError_Runtime;
     }
 
-    uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
-        node_per_sector_, max_node_size_, frontier_neighbor.second, id);
+    uint8_t *node_disk_buf = frontier_neighbor.second + node_offset;
 
     void *node_fp_coords = node_disk_buf;
 
@@ -1082,7 +1140,6 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
 }
 
 int DiskAnnIndexer::knn_search(DiskAnnContext *ctx) {
-  IOContextReleaseGuard release_guard(*reader_, ctx->io_ctx());
   int ret = cached_beam_search(ctx);
   if (ret != 0) {
     return ret;
@@ -1096,6 +1153,12 @@ int DiskAnnIndexer::knn_search(DiskAnnContext *ctx) {
   }
 
   return 0;
+}
+
+void DiskAnnIndexer::release_io_ctx(DiskAnnContext *ctx) {
+  if (reader_ && ctx) {
+    reader_->release_io_ctx(ctx->io_ctx());
+  }
 }
 
 int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {

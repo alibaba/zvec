@@ -65,6 +65,9 @@ class DiskAnnIndexer {
   int linear_search(DiskAnnContext *ctx);
   int keys_search(const std::vector<diskann_key_t> &keys, DiskAnnContext *ctx);
 
+  //! Release lazy per-context reader resources at a public operation boundary.
+  void release_io_ctx(DiskAnnContext *ctx);
+
   int get_vector(diskann_id_t id, IndexContext::Pointer &context,
                  std::string &vector);
 

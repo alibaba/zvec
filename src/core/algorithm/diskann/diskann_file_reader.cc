@@ -94,6 +94,10 @@ void log_diskann_io_backend() {
 // in-place writes blocked while reads are active.
 static constexpr DWORD kDiskAnnFileShareMode =
     FILE_SHARE_READ | FILE_SHARE_DELETE;
+// Every handle kept beside an IOCP handle must bypass the system cache. A
+// buffered handle to the same file object substantially degrades 4 KiB random
+// reads even when the actual ReadFile calls use a separate unbuffered handle.
+static constexpr DWORD kDiskAnnStableHandleFlags = FILE_FLAG_NO_BUFFERING;
 
 // An IOContext may be reused with different reader instances. Assign every
 // successfully opened file object a process-wide identity so two readers for
@@ -1188,7 +1192,8 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
 
   HANDLE stable_file_handle = ::CreateFileW(
       absolute_path.c_str(), GENERIC_READ, kDiskAnnFileShareMode, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, nullptr);
+      OPEN_EXISTING, FILE_ATTRIBUTE_READONLY | kDiskAnnStableHandleFlags,
+      nullptr);
   if (stable_file_handle == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to open file: %s (error=%lu)", fname.c_str(),
               ::GetLastError());
@@ -1220,10 +1225,12 @@ int WindowsAlignedFileReader::open_from_handle(const std::string &fname,
   }
 
   // ReOpenFile refers to the same underlying file object even if fname has
-  // already been renamed or replaced. Keep this buffered stable handle until
-  // the reader closes; private unbuffered IOCP handles are derived lazily.
+  // already been renamed or replaced. Keep this stable handle unbuffered too:
+  // an ordinary buffered handle beside the private unbuffered IOCP handles can
+  // severely reduce random-read throughput.
   HANDLE stable_file_handle = ::ReOpenFile(
-      source_handle, GENERIC_READ, kDiskAnnFileShareMode, 0);
+      source_handle, GENERIC_READ, kDiskAnnFileShareMode,
+      kDiskAnnStableHandleFlags);
   if (stable_file_handle == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to capture DiskAnn file object (error=%lu)",
               ::GetLastError());

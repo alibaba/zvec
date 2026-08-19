@@ -26,6 +26,8 @@
 namespace zvec {
 namespace core {
 
+class DiskAnnProviderTestPeer;
+
 //! IndexProvider implementation backed by a DiskAnn indexer.
 //!
 //! Used by ``MixedStreamerReducer`` during segment merge: the reducer needs
@@ -35,6 +37,8 @@ namespace core {
 //! entity and independent I/O contexts, so it remains valid after its source
 //! streamer is closed.
 class DiskAnnIndexProvider : public IndexProvider {
+  friend class DiskAnnProviderTestPeer;
+
  private:
   struct ResultBufferOwner {};
 
@@ -165,15 +169,16 @@ class DiskAnnIndexProvider : public IndexProvider {
     Iterator(const IndexMeta &meta, const IndexMetric::Pointer &measure,
              const DiskAnnEntity::Pointer &entity,
              const DiskAnnIndexer::Pointer &indexer)
-        : entity_(entity),
+        : meta_(meta),
+          measure_(measure),
+          entity_(entity),
           indexer_(indexer),
-          context_(DiskAnnContext::create_fetch_context(meta, measure, entity)),
           cur_id_(0U) {
       cur_id_ = next_valid_id(0U);
     }
 
     bool ready() const {
-      return entity_ && indexer_ && context_;
+      return meta_.element_size() > 0 && measure_ && entity_ && indexer_;
     }
 
     const void *data(void) const override {
@@ -181,6 +186,15 @@ class DiskAnnIndexProvider : public IndexProvider {
         return nullptr;
       }
       if (!data_loaded_) {
+        // Context setup owns aligned I/O scratch space and platform resources;
+        // iterators that are only inspected should not pay that cost.
+        if (!context_) {
+          context_ =
+              DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
+        }
+        if (!context_) {
+          return nullptr;
+        }
         if (indexer_->get_vector(cur_id_, context_, vector_buffer_) != 0) {
           return nullptr;
         }
@@ -204,6 +218,8 @@ class DiskAnnIndexProvider : public IndexProvider {
     }
 
    private:
+    friend class DiskAnnProviderTestPeer;
+
     //! Skip ids that map to ``kInvalidKey`` (deleted / never populated slots).
     diskann_id_t next_valid_id(diskann_id_t start_id) const {
       const auto total = static_cast<diskann_id_t>(entity_->doc_cnt());
@@ -215,6 +231,8 @@ class DiskAnnIndexProvider : public IndexProvider {
       return total;
     }
 
+    IndexMeta meta_;
+    IndexMetric::Pointer measure_;
     DiskAnnEntity::Pointer entity_;
     DiskAnnIndexer::Pointer indexer_;
     mutable IndexContext::Pointer context_;
