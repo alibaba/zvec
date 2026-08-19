@@ -42,7 +42,7 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
   GlobalConfig::ConfigData config;
 
   // Test initialization with default config
-  auto status = GlobalConfig::Instance().Initialize(config);
+  auto status = GlobalConfig::Instance().initialize(config);
   ASSERT_TRUE(status.ok()) << "Initialization failed: " << status.message();
 
   // Verify default values
@@ -67,7 +67,7 @@ TEST_F(ConfigTest, InitializeWithCustomConsoleLogConfig) {
   config.query_thread_count = 4;
   config.optimize_thread_count = 2;
 
-  auto status = GlobalConfig::Instance().Initialize(config);
+  auto status = GlobalConfig::Instance().initialize(config);
   // First initialization should succeed
   if (status.code() == StatusCode::INVALID_ARGUMENT &&
       status.message().find("already initialized") != std::string::npos) {
@@ -85,7 +85,7 @@ TEST_F(ConfigTest, InitializeWithCustomFileLogConfig) {
   config.query_thread_count = 8;
   config.optimize_thread_count = 4;
 
-  auto status = GlobalConfig::Instance().Initialize(config);
+  auto status = GlobalConfig::Instance().initialize(config);
   // First initialization should succeed
   if (status.code() == StatusCode::INVALID_ARGUMENT &&
       status.message().find("already initialized") != std::string::npos) {
@@ -97,12 +97,12 @@ TEST_F(ConfigTest, InitializeWithCustomFileLogConfig) {
 TEST_F(ConfigTest, DoubleInitializationSilentlyFails) {
   GlobalConfig::ConfigData config;
 
-  auto status1 = GlobalConfig::Instance().Initialize(config);
+  auto status1 = GlobalConfig::Instance().initialize(config);
   // If first initialization failed due to already being initialized
   if (status1.code() == StatusCode::INVALID_ARGUMENT &&
       status1.message().find("already initialized") != std::string::npos) {
     // Try again with a fresh config
-    auto status2 = GlobalConfig::Instance().Initialize(config);
+    auto status2 = GlobalConfig::Instance().initialize(config);
     ASSERT_FALSE(status2.ok());
     ASSERT_EQ(status2.code(), StatusCode::INVALID_ARGUMENT);
     ASSERT_NE(status2.message().find("already initialized"), std::string::npos);
@@ -111,7 +111,7 @@ TEST_F(ConfigTest, DoubleInitializationSilentlyFails) {
     ASSERT_TRUE(status1.ok());
 
     // The second initialization is allowed but becomes a no-op
-    auto status2 = GlobalConfig::Instance().Initialize(config);
+    auto status2 = GlobalConfig::Instance().initialize(config);
     ASSERT_TRUE(status2.ok());
   }
 }
@@ -122,7 +122,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidMemoryLimit) {
 
   GlobalConfig
       config_instance;  // Create a local instance for testing validation
-  auto status = config_instance.Validate(config);
+  auto status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find("memory_limit_bytes must be greater than"),
@@ -134,7 +134,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidQueryThreadCount) {
   config.query_thread_count = 0;  // Invalid value
 
   GlobalConfig config_instance;
-  auto status = config_instance.Validate(config);
+  auto status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find("query_thread_count must be greater than 0"),
@@ -147,7 +147,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidRatios) {
   // Test invalid invert_to_forward_scan_ratio
   config.invert_to_forward_scan_ratio = -0.1f;
   GlobalConfig config_instance;
-  auto status = config_instance.Validate(config);
+  auto status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find(
@@ -157,7 +157,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidRatios) {
   // Test invalid brute_force_by_keys_ratio
   config.invert_to_forward_scan_ratio = 0.9f;  // Reset to valid value
   config.brute_force_by_keys_ratio = 1.5f;     // Invalid value
-  status = config_instance.Validate(config);
+  status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find(
@@ -167,7 +167,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidRatios) {
   // Test invalid fts_brute_force_by_keys_ratio
   config.brute_force_by_keys_ratio = 0.1f;       // Reset to valid value
   config.fts_brute_force_by_keys_ratio = -0.5f;  // Invalid value
-  status = config_instance.Validate(config);
+  status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find(
@@ -184,7 +184,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
   config.log_config = file_config;
 
   GlobalConfig config_instance;
-  auto status = config_instance.Validate(config);
+  auto status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find("log_dir cannot be empty"),
@@ -193,7 +193,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
   // Test with empty basename
   file_config->dir = "/tmp/logs";
   file_config->basename = "";
-  status = config_instance.Validate(config);
+  status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find("log_file basename cannot be empty"),
@@ -202,7 +202,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
   // Test with invalid file size
   file_config->basename = "test.log";
   file_config->file_size = 0;
-  status = config_instance.Validate(config);
+  status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find("log file_size must be greater than"),
@@ -211,7 +211,7 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
   // Test with invalid overdue days
   file_config->file_size = 1024;
   file_config->overdue_days = 0;
-  status = config_instance.Validate(config);
+  status = config_instance.validate(config);
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find("log_overdue_days must be greater than 0"),
@@ -230,18 +230,18 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
   auto console_config = std::make_shared<GlobalConfig::ConsoleLogConfig>();
   auto file_config = std::make_shared<GlobalConfig::FileLogConfig>();
 
-  ASSERT_EQ(console_config->GetLoggerType(), CONSOLE_LOG_TYPE_NAME);
-  ASSERT_EQ(file_config->GetLoggerType(), FILE_LOG_TYPE_NAME);
+  ASSERT_EQ(console_config->get_logger_type(), CONSOLE_LOG_TYPE_NAME);
+  ASSERT_EQ(file_config->get_logger_type(), FILE_LOG_TYPE_NAME);
 }
 
 // jieba_dict_dir is the only ConfigData field that can be written outside
-// of Initialize() — language SDKs call set_default_jieba_dict_dir() at
+// of initialize() — language SDKs call set_default_jieba_dict_dir() at
 // module-load to register the dict path they bundled. The setter is
-// independent of the Initialize() one-shot lifecycle.
+// independent of the initialize() one-shot lifecycle.
 TEST_F(ConfigTest, JiebaDictDirSetterIsIndependentOfInitialize) {
   auto saved = GlobalConfig::Instance().jieba_dict_dir();
 
-  // Setter works regardless of whether Initialize was called.
+  // Setter works regardless of whether initialize was called.
   GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-A");
   ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-A");
 

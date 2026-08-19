@@ -62,7 +62,7 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   return 0;
 }
 
-int IVFIndex::Open(const std::string &file_path,
+int IVFIndex::open(const std::string &file_path,
                    StorageOptions storage_options) {
   ailego::Params storage_params;
   file_path_ = file_path;
@@ -137,7 +137,7 @@ int IVFIndex::GenerateHolder() {
                               converter_, &holder_);
 }
 
-int IVFIndex::Add(const VectorData &vector, uint32_t doc_id) {
+int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
   if (is_trained_) {
     LOG_ERROR("this IVF index is trained");
     return core::IndexError_Runtime;
@@ -161,7 +161,7 @@ int IVFIndex::Add(const VectorData &vector, uint32_t doc_id) {
   return 0;
 }
 
-int IVFIndex::Train() {
+int IVFIndex::train() {
   GenerateHolder();
   builder_->train(holder_);
   builder_->build(holder_);
@@ -238,9 +238,9 @@ int IVFIndex::_prepare_for_search(
   return 0;
 }
 
-int IVFIndex::Merge(const std::vector<Index::Pointer> &indexes,
+int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
                     const IndexFilter &filter, const MergeOptions &options) {
-  int pre_ret = Index::Merge(indexes, filter, options);
+  int pre_ret = Index::merge(indexes, filter, options);
   if (pre_ret != 0) {
     return pre_ret;
   }

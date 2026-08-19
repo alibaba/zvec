@@ -446,13 +446,13 @@ Status TestHelper::CollectionInsertDoc(const Collection::Ptr &collection,
   if (!collection) {
     return Status::InvalidArgument("collection is nullptr");
   }
-  auto schema = collection->Schema().value();
+  auto schema = collection->schema().value();
   auto make_doc = [&](uint64_t doc_id) -> Doc {
     return nullable ? CreateDocNull(doc_id, schema) : CreateDoc(doc_id, schema);
   };
   auto exec_write = [&](std::vector<Doc> &docs) -> Status {
     Result<WriteResults> result =
-        upsert ? collection->Upsert(docs) : collection->Insert(docs);
+        upsert ? collection->upsert(docs) : collection->insert(docs);
 
     if (!result.has_value()) {
       LOG_ERROR("Failed to %s docs (count=%zu), error: %s.",

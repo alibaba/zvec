@@ -79,15 +79,15 @@ TEST_F(Utf8CollectionTest, CreateInsertFlushReopen) {
   ASSERT_TRUE(ailego::FileHelper::IsExist(kUtf8Dir.c_str()));
 
   auto col = std::move(result).value();
-  ASSERT_EQ(col->Path(), kUtf8Dir);
+  ASSERT_EQ(col->path(), kUtf8Dir);
 
   const int kDocCount = 10;
   auto s = TestHelper::CollectionInsertDoc(col, 0, kDocCount);
   ASSERT_TRUE(s.ok()) << s.message();
 
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
-  auto stats = col->Stats().value();
+  auto stats = col->stats().value();
   ASSERT_EQ(stats.doc_count, kDocCount);
 
   col.reset();
@@ -96,7 +96,7 @@ TEST_F(Utf8CollectionTest, CreateInsertFlushReopen) {
   auto reopen = Collection::Open(kUtf8Dir, opts);
   ASSERT_TRUE(reopen.has_value()) << reopen.error().message();
   auto col2 = std::move(reopen).value();
-  auto stats2 = col2->Stats().value();
+  auto stats2 = col2->stats().value();
   ASSERT_EQ(stats2.doc_count, kDocCount);
 }
 
@@ -112,13 +112,13 @@ TEST_F(Utf8CollectionTest, Issue665MixedUnicodePath) {
   auto col = std::move(result).value();
   auto insert_status = TestHelper::CollectionInsertDoc(col, 0, 3);
   ASSERT_TRUE(insert_status.ok()) << insert_status.message();
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
   col.reset();
 
   auto reopen = Collection::Open(kIssueUtf8Dir, opts);
   ASSERT_TRUE(reopen.has_value()) << reopen.error().message();
   auto reopened_col = std::move(reopen).value();
-  auto stats = reopened_col->Stats();
+  auto stats = reopened_col->stats();
   ASSERT_TRUE(stats.has_value()) << stats.error().message();
   ASSERT_EQ(stats.value().doc_count, 3);
 }
@@ -136,7 +136,7 @@ TEST_F(Utf8CollectionTest, CreateAndDestroy) {
   ASSERT_TRUE(result.has_value());
 
   auto col = std::move(result).value();
-  ASSERT_EQ(col->Destroy(), Status::OK());
+  ASSERT_EQ(col->destroy(), Status::OK());
   ASSERT_FALSE(ailego::FileHelper::IsExist(kUtf8Dir.c_str()));
 }
 
@@ -158,7 +158,7 @@ TEST_F(Utf8CollectionTest, NoDirGarble) {
   const int kDocCount = 5;
   auto s = TestHelper::CollectionInsertDoc(col, 0, kDocCount);
   ASSERT_TRUE(s.ok()) << s.message();
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
   // --- Check parent directory via FindFirstFileW ---
   {

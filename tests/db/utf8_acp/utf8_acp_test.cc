@@ -157,24 +157,24 @@ TEST_F(Utf8AcpTest, CollectionWorkflowIsAcpIndependent) {
 
     auto status = TestHelper::CollectionInsertDoc(collection, 0, kDocCount);
     ASSERT_TRUE(status.ok()) << status.message();
-    ASSERT_TRUE(collection->Flush().ok());
+    ASSERT_TRUE(collection->flush().ok());
     collection.reset();
 
     auto reopened = Collection::Open(dir, options);
     ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
     auto collection2 = std::move(reopened).value();
-    ASSERT_EQ(collection2->Stats().value().doc_count, kDocCount);
+    ASSERT_EQ(collection2->stats().value().doc_count, kDocCount);
 
     status =
         TestHelper::CollectionInsertDoc(collection2, kDocCount, kDocCount * 2);
     ASSERT_TRUE(status.ok()) << status.message();
-    ASSERT_TRUE(collection2->Flush().ok());
-    ASSERT_EQ(collection2->Stats().value().doc_count, kDocCount * 2);
+    ASSERT_TRUE(collection2->flush().ok());
+    ASSERT_EQ(collection2->stats().value().doc_count, kDocCount * 2);
 
-    auto schema_value = collection2->Schema().value();
+    auto schema_value = collection2->schema().value();
     for (int i = 0; i < kDocCount * 2; ++i) {
       auto expected = TestHelper::CreateDoc(i, schema_value);
-      auto fetched = collection2->Fetch({expected.pk()});
+      auto fetched = collection2->fetch({expected.pk()});
       ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
       ASSERT_EQ(fetched.value().count(expected.pk()), 1u)
           << "missing doc " << i;
