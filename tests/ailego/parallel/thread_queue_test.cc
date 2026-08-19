@@ -25,7 +25,7 @@ using namespace zvec;
 using namespace zvec::ailego;
 
 TEST(ThreadQueue, General) {
-  static constexpr int kTaskCount = 1000;
+  constexpr int kTaskCount = 1000;
   std::mutex count_mutex;
   std::condition_variable count_cond;
   int count = 0;
@@ -67,7 +67,7 @@ TEST(ThreadQueue, General) {
 }
 
 TEST(ThreadQueue, MutliThread) {
-  static constexpr unsigned int kTaskCount = 10000u;
+  constexpr unsigned int kTaskCount = 10000u;
   std::mutex count_mutex;
   std::condition_variable count_cond;
   unsigned int count = 0u;
