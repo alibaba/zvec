@@ -166,7 +166,7 @@ class DiskAnnStreamer : public IndexStreamer {
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
 
-  // Fetches share the expensive I/O context, while returned MemoryBlocks own
+  // Fetches share a lightweight I/O context, while returned MemoryBlocks own
   // independent copies so their lifetime does not depend on this buffer.
   mutable std::mutex fetch_mutex_;
   mutable ContextPointer fetch_ctx_{};

@@ -14,6 +14,7 @@
 
 #include "diskann_context.h"
 #include <chrono>
+#include <new>
 #include "diskann_params.h"
 #include "diskann_pq_table.h"
 #include "diskann_util.h"
@@ -27,6 +28,22 @@ DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
     : IndexContext(measure),
       dc_(entity.get(), measure, meta.dimension()),
       entity_{entity} {}
+
+DiskAnnContext::Pointer DiskAnnContext::create_fetch_context(
+    const IndexMeta &meta, const IndexMetric::Pointer &measure,
+    const DiskAnnEntity::Pointer &entity) {
+  if (!measure || !entity) {
+    return nullptr;
+  }
+
+  Pointer context(new (std::nothrow) DiskAnnContext(meta, measure, entity));
+  if (!context ||
+      context->init(kFetchContext, entity->max_degree(), entity->pq_chunk_num(),
+                    meta.element_size()) != 0) {
+    return nullptr;
+  }
+  return context;
+}
 
 int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
                          uint32_t pq_chunk_num, uint32_t element_size) {

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/hash/crc32c.h>
@@ -67,6 +68,54 @@ enum RetrievalMode { RM_UNDEFINED = 0, RM_DENSE = 1, RM_SPARSE = 2 };
 
 enum FilterMode { FM_UNDEFINED = 0, FM_NONE = 1, FM_TAG = 2 };
 
+using RecallOutputFiles = vector<pair<fstream *, fstream *>>;
+
+void close_recall_output_files(RecallOutputFiles *files) {
+  for (const auto &fs : *files) {
+    fs.first->close();
+    fs.second->close();
+    delete fs.first;
+    delete fs.second;
+  }
+  files->clear();
+}
+
+bool open_recall_output_files(const string &output, size_t threads,
+                              RecallOutputFiles *files) {
+  if (output.empty()) {
+    return true;
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(output, ec);
+  if (ec) {
+    cerr << "Failed to create output directory [" << output
+         << "]: " << ec.message() << endl;
+    return false;
+  }
+  if (!std::filesystem::is_directory(output, ec)) {
+    cerr << "Invalid output directory [" << output
+         << "]: " << (ec ? ec.message() : "path is not a directory") << endl;
+    return false;
+  }
+
+  cout << "logs output to : " << output << endl;
+  for (size_t i = 0; i < threads; ++i) {
+    std::unique_ptr<fstream> fs_k(new fstream());
+    fs_k->open(output + "/t" + to_string(i) + ".knn", ios::out);
+    std::unique_ptr<fstream> fs_l(new fstream());
+    fs_l->open(output + "/t" + to_string(i) + ".linear", ios::out);
+    if (!fs_k->is_open() || !fs_l->is_open()) {
+      cerr << "Failed to open recall output files in [" << output << "]"
+           << endl;
+      close_recall_output_files(files);
+      return false;
+    }
+    files->emplace_back(fs_k.release(), fs_l.release());
+  }
+  return true;
+}
+
 template <typename T>
 class Recall {
  public:
@@ -103,7 +152,7 @@ class Recall {
          << flush;
   }
 
-  void run_dense(Flow *flower, const string &recall_tops, size_t gt_count) {
+  bool run_dense(Flow *flower, const string &recall_tops, size_t gt_count) {
     StringHelper::Split(recall_tops, ",", &topk_ids_);
     std::sort(topk_ids_.begin(), topk_ids_.end());
 
@@ -123,7 +172,7 @@ class Recall {
 
       if (!load_gt_dense(flower, gt_count)) {
         cerr << "Load ground truth file failed!" << endl;
-        return;
+        return false;
       }
     }
 
@@ -136,29 +185,9 @@ class Recall {
     }
 
     // Prepare file handler
-    vector<pair<fstream *, fstream *>> output_fs;
-    if (!output_.empty()) {
-      std::error_code ec;
-      std::filesystem::create_directories(output_, ec);
-      if (ec) {
-        cerr << "Failed to create output directory [" << output_
-             << "]: " << ec.message() << endl;
-        return;
-      }
-      if (!std::filesystem::is_directory(output_, ec)) {
-        cerr << "Invalid output directory [" << output_
-             << "]: " << (ec ? ec.message() : "path is not a directory")
-             << endl;
-        return;
-      }
-      cout << "logs output to : " << output_ << endl;
-      for (size_t i = 0; i < threads_; ++i) {
-        fstream *fs_k = new fstream();
-        fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
-        fstream *fs_l = new fstream();
-        fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
-        output_fs.push_back(make_pair(fs_k, fs_l));
-      }
+    RecallOutputFiles output_fs;
+    if (!open_recall_output_files(output_, threads_, &output_fs)) {
+      return false;
     }
 
     signal(SIGINT, stop);
@@ -177,17 +206,13 @@ class Recall {
     }
     pool_->wait_finish();
 
-    for (auto fs : output_fs) {
-      fs.first->close();
-      fs.second->close();
-      delete fs.first;
-      delete fs.second;
-    }
+    close_recall_output_files(&output_fs);
     cout << "Process query: " << i << endl;
     for (auto it : recall_res_) {
       cout << "Recall@" << it.first << ": "
            << it.second / linear_queries_.size() << endl;
     }
+    return true;
   }
 
   bool load_query(const std::string &query_file, const std::string &first_sep,
@@ -966,7 +991,7 @@ class SparseRecall {
     return 0;
   }
 
-  void run_sparse(SparseFlow *flower, const string &recall_tops,
+  bool run_sparse(SparseFlow *flower, const string &recall_tops,
                   size_t gt_count) {
     StringHelper::Split(recall_tops, ",", &topk_ids_);
     std::sort(topk_ids_.begin(), topk_ids_.end());
@@ -987,7 +1012,7 @@ class SparseRecall {
 
       if (!load_gt_sparse(flower, gt_count)) {
         cerr << "Load ground truth file failed!" << endl;
-        return;
+        return false;
       }
     }
 
@@ -1000,29 +1025,9 @@ class SparseRecall {
     }
 
     // Prepare file handler
-    vector<pair<fstream *, fstream *>> output_fs;
-    if (!output_.empty()) {
-      std::error_code ec;
-      std::filesystem::create_directories(output_, ec);
-      if (ec) {
-        cerr << "Failed to create output directory [" << output_
-             << "]: " << ec.message() << endl;
-        return;
-      }
-      if (!std::filesystem::is_directory(output_, ec)) {
-        cerr << "Invalid output directory [" << output_
-             << "]: " << (ec ? ec.message() : "path is not a directory")
-             << endl;
-        return;
-      }
-      cout << "logs output to : " << output_ << endl;
-      for (size_t i = 0; i < threads_; ++i) {
-        fstream *fs_k = new fstream();
-        fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
-        fstream *fs_l = new fstream();
-        fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
-        output_fs.push_back(make_pair(fs_k, fs_l));
-      }
+    RecallOutputFiles output_fs;
+    if (!open_recall_output_files(output_, threads_, &output_fs)) {
+      return false;
     }
 
     signal(SIGINT, stop);
@@ -1041,17 +1046,13 @@ class SparseRecall {
     }
     pool_->wait_finish();
 
-    for (auto fs : output_fs) {
-      fs.first->close();
-      fs.second->close();
-      delete fs.first;
-      delete fs.second;
-    }
+    close_recall_output_files(&output_fs);
     cout << "Process query: " << i << endl;
     for (auto it : recall_res_) {
       cout << "Recall@" << it.first << ": "
            << it.second / linear_queries_.size() << endl;
     }
+    return true;
   }
 
   bool load_query(const std::string &query_file, const std::string &first_sep,
@@ -1720,9 +1721,8 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (load_index(flower, index_dir)) {
-      recall.run_dense(&flower, top_k, gt_count);
-    } else {
+    if (!load_index(flower, index_dir) ||
+        !recall.run_dense(&flower, top_k, gt_count)) {
       return -1;
     }
   } else if (query_type == "int8") {
@@ -1739,9 +1739,8 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (load_index(flower, index_dir)) {
-      recall.run_dense(&flower, top_k, gt_count);
-    } else {
+    if (!load_index(flower, index_dir) ||
+        !recall.run_dense(&flower, top_k, gt_count)) {
       return -1;
     }
   } else if (query_type == "binary") {
@@ -1758,9 +1757,8 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (load_index(flower, index_dir)) {
-      recall.run_dense(&flower, top_k, gt_count);
-    } else {
+    if (!load_index(flower, index_dir) ||
+        !recall.run_dense(&flower, top_k, gt_count)) {
       return -1;
     }
   } else if (query_type == "binary64") {
@@ -1777,13 +1775,13 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (load_index(flower, index_dir)) {
-      recall.run_dense(&flower, top_k, gt_count);
-    } else {
+    if (!load_index(flower, index_dir) ||
+        !recall.run_dense(&flower, top_k, gt_count)) {
       return -1;
     }
   } else {
     cerr << "Can not recognize type: " << query_type << endl;
+    return -1;
   }
 
   return 0;
@@ -1820,13 +1818,13 @@ int recall_sparse(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (load_sparse_index(flower, index_dir)) {
-      recall.run_sparse(&flower, top_k, gt_count);
-    } else {
+    if (!load_sparse_index(flower, index_dir) ||
+        !recall.run_sparse(&flower, top_k, gt_count)) {
       return -1;
     }
   } else {
     cerr << "Can not recognize type: " << query_type << endl;
+    return -1;
   }
 
   return 0;
@@ -2028,12 +2026,15 @@ int main(int argc, char *argv[]) {
     }
 
     string index_dir = config_common["IndexPath"].as<string>();
-    recall_sparse(query_type, thread_count, batch_count, top_k, gt_count,
-                  query_file, first_sep, second_sep, ground_truth_file,
-                  ground_truth_first_sep, ground_truth_second_sep, flower,
-                  index_dir, log_dir, filter_mode);
+    ret = recall_sparse(query_type, thread_count, batch_count, top_k, gt_count,
+                        query_file, first_sep, second_sep, ground_truth_file,
+                        ground_truth_first_sep, ground_truth_second_sep, flower,
+                        index_dir, log_dir, filter_mode);
 
     flower.unload();
+    if (ret != 0) {
+      return ret;
+    }
 
     cout << "Recall done." << endl;
   } else {
@@ -2085,10 +2086,10 @@ int main(int argc, char *argv[]) {
 
     string index_dir = config_common["IndexPath"].as<string>();
     if (retrieval_mode == RM_DENSE) {
-      recall_dense(query_type, thread_count, batch_count, top_k, gt_count,
-                   query_file, first_sep, second_sep, ground_truth_file,
-                   ground_truth_first_sep, ground_truth_second_sep, flower,
-                   index_dir, log_dir, filter_mode);
+      ret = recall_dense(query_type, thread_count, batch_count, top_k, gt_count,
+                         query_file, first_sep, second_sep, ground_truth_file,
+                         ground_truth_first_sep, ground_truth_second_sep,
+                         flower, index_dir, log_dir, filter_mode);
     } else {
       std::string mode = retrieval_mode == 1 ? "Dense" : "Sparse";
       cerr << "unsupported retrieval mode: " << mode << endl;
@@ -2098,6 +2099,9 @@ int main(int argc, char *argv[]) {
 
     // Cleanup
     flower.unload();
+    if (ret != 0) {
+      return ret;
+    }
 
     cout << "Recall done." << endl;
   }

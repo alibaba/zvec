@@ -451,20 +451,12 @@ int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
 
   std::lock_guard<std::mutex> lock(fetch_mutex_);
   if (!fetch_ctx_) {
-    fetch_ctx_ = create_context();
+    const DiskAnnEntity::Pointer fetch_entity = entity_.clone();
+    fetch_ctx_ =
+        DiskAnnContext::create_fetch_context(meta_, measure_, fetch_entity);
     if (!fetch_ctx_) {
-      LOG_ERROR("Failed to create context for get_vector_by_id");
+      LOG_ERROR("Failed to create fetch context for get_vector_by_id");
       return IndexError_Runtime;
-    }
-  } else {
-    auto *ctx = dynamic_cast<DiskAnnContext *>(fetch_ctx_.get());
-    if (!ctx) {
-      LOG_ERROR("Cast fetch context to DiskAnnContext failed");
-      return IndexError_Cast;
-    }
-    int ret = ensure_compatible_context(fetch_ctx_, ctx);
-    if (ret != 0) {
-      return ret;
     }
   }
 

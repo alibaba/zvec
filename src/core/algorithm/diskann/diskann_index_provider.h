@@ -109,27 +109,10 @@ class DiskAnnIndexProvider : public IndexProvider {
     std::string buffer;
   };
 
-  static IndexContext::Pointer create_fetch_context(
-      const IndexMeta &meta, const IndexMetric::Pointer &measure,
-      const DiskAnnEntity::Pointer &entity) {
-    if (!measure || !entity) {
-      return nullptr;
-    }
-
-    std::unique_ptr<DiskAnnContext> context(
-        new (std::nothrow) DiskAnnContext(meta, measure, entity));
-    if (!context ||
-        context->init(DiskAnnContext::kFetchContext, entity->max_degree(),
-                      entity->pq_chunk_num(), meta.element_size()) != 0) {
-      return nullptr;
-    }
-    return IndexContext::Pointer(context.release());
-  }
-
   FetchState *get_fetch_state() const {
     if (!fetch_state_) {
       IndexContext::Pointer context =
-          create_fetch_context(meta_, measure_, entity_);
+          DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
       if (!context) {
         return nullptr;
       }
@@ -145,7 +128,7 @@ class DiskAnnIndexProvider : public IndexProvider {
              const DiskAnnIndexer::Pointer &indexer)
         : entity_(entity),
           indexer_(indexer),
-          context_(create_fetch_context(meta, measure, entity)),
+          context_(DiskAnnContext::create_fetch_context(meta, measure, entity)),
           cur_id_(0U) {
       cur_id_ = next_valid_id(0U);
     }

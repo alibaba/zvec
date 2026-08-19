@@ -58,6 +58,11 @@ class DiskAnnContext : public IndexContext,
   //! Destructor
   virtual ~DiskAnnContext();
 
+  //! Create a lightweight context for reading vectors by id.
+  static Pointer create_fetch_context(const IndexMeta &meta,
+                                      const IndexMetric::Pointer &measure,
+                                      const DiskAnnEntity::Pointer &entity);
+
  public:
   //! Init
   int init(ContextType type, uint32_t graph_degree, uint32_t pq_chunk_num,
