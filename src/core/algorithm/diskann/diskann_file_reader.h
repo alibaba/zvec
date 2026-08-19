@@ -29,6 +29,15 @@
 #define _WIN32_WINNT 0x0600
 #endif
 #include <Windows.h>
+
+// Do not leak Win32's function-like aliases into headers included below.
+// They otherwise rewrite qualified names such as FileHelper::DeleteFile().
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
 #endif
 
 #if !defined(_WIN32) && !defined(_WIN64)
