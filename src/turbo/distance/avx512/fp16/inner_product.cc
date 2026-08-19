@@ -15,6 +15,8 @@
 #include "avx512/fp16/inner_product.h"
 #if defined(__AVX512F__) && defined(__F16C__)
 #include <immintrin.h>
+#include <array>
+#include <zvec/ailego/internal/platform.h>
 #endif
 #include <zvec/ailego/utility/float_helper.h>
 
@@ -42,6 +44,106 @@ float dot_product(const ailego::Float16 *a, const ailego::Float16 *b,
   return sum;
 }
 
+// One-to-many inner product kernel: the query block is converted from FP16
+// to FP32 once per iteration and reused across all `dp_batch` vectors.
+template <size_t dp_batch>
+void inner_product_batch_impl(
+    const ailego::Float16 *query, const ailego::Float16 *const *ptrs,
+    std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
+    size_t dimensionality, float *results) {
+  __m512 accs[dp_batch];
+  for (size_t i = 0; i < dp_batch; ++i) {
+    accs[i] = _mm512_setzero_ps();
+  }
+
+  size_t dim = 0;
+  for (; dim + 32 <= dimensionality; dim += 32) {
+    const __m512i q =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + dim));
+    const __m512 q1 = _mm512_cvtph_ps(_mm512_castsi512_si256(q));
+    const __m512 q2 = _mm512_cvtph_ps(_mm512_extracti64x4_epi64(q, 1));
+
+    __m512 data_regs_1[dp_batch];
+    __m512 data_regs_2[dp_batch];
+    for (size_t i = 0; i < dp_batch; ++i) {
+      const __m512i m =
+          _mm512_loadu_si512(reinterpret_cast<const __m512i *>(ptrs[i] + dim));
+      data_regs_1[i] = _mm512_cvtph_ps(_mm512_castsi512_si256(m));
+      data_regs_2[i] = _mm512_cvtph_ps(_mm512_extracti64x4_epi64(m, 1));
+    }
+
+    if (prefetch_ptrs[0]) {
+      for (size_t i = 0; i < dp_batch; ++i) {
+        ailego_prefetch(prefetch_ptrs[i] + dim);
+      }
+    }
+
+    for (size_t i = 0; i < dp_batch; ++i) {
+      accs[i] = _mm512_fmadd_ps(q1, data_regs_1[i], accs[i]);
+      accs[i] = _mm512_fmadd_ps(q2, data_regs_2[i], accs[i]);
+    }
+  }
+
+  if (dim + 16 <= dimensionality) {
+    const __m512 q = _mm512_cvtph_ps(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(query + dim)));
+    for (size_t i = 0; i < dp_batch; ++i) {
+      const __m512 data = _mm512_cvtph_ps(
+          _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ptrs[i] + dim)));
+      accs[i] = _mm512_fmadd_ps(q, data, accs[i]);
+    }
+    dim += 16;
+  }
+
+  float res[dp_batch];
+  for (size_t i = 0; i < dp_batch; ++i) {
+    res[i] = _mm512_reduce_add_ps(accs[i]);
+  }
+
+  for (; dim < dimensionality; ++dim) {
+    const float q = static_cast<float>(query[dim]);
+    for (size_t i = 0; i < dp_batch; ++i) {
+      res[i] += q * static_cast<float>(ptrs[i][dim]);
+    }
+  }
+
+  for (size_t i = 0; i < dp_batch; ++i) {
+    results[i] = -res[i];
+  }
+}
+
+// Dispatch batched inner product over all `n` vectors with prefetching.
+void inner_product_batch(const void *const *vectors, const void *query,
+                         size_t n, size_t dim, float *distances) {
+  static constexpr size_t batch_size = 2;
+  static constexpr size_t prefetch_step = 2;
+  const ailego::Float16 *typed_query =
+      static_cast<const ailego::Float16 *>(query);
+  size_t i = 0;
+  for (; i + batch_size <= n; i += batch_size) {
+    std::array<const ailego::Float16 *, batch_size> prefetch_ptrs;
+    for (size_t j = 0; j < batch_size; ++j) {
+      if (i + j + batch_size * prefetch_step < n) {
+        prefetch_ptrs[j] = static_cast<const ailego::Float16 *>(
+            vectors[i + j + batch_size * prefetch_step]);
+      } else {
+        prefetch_ptrs[j] = nullptr;
+      }
+    }
+    inner_product_batch_impl<batch_size>(
+        typed_query,
+        reinterpret_cast<const ailego::Float16 *const *>(&vectors[i]),
+        prefetch_ptrs, dim, distances + i);
+  }
+  for (; i < n; i++) {
+    std::array<const ailego::Float16 *, 1> prefetch_ptrs{nullptr};
+    inner_product_batch_impl<1>(
+        typed_query,
+        reinterpret_cast<const ailego::Float16 *const *>(&vectors[i]),
+        prefetch_ptrs, dim, distances + i);
+  }
+}
+
 }  // namespace
 #endif
 
@@ -61,9 +163,15 @@ void inner_product_fp16_distance_avx512(const void *a, const void *b,
 void inner_product_fp16_batch_distance_avx512(const void *const *vectors,
                                               const void *query, size_t n,
                                               size_t dim, float *distances) {
-  for (size_t i = 0; i < n; ++i) {
-    inner_product_fp16_distance_avx512(vectors[i], query, dim, &distances[i]);
-  }
+#if defined(__AVX512F__) && defined(__F16C__)
+  inner_product_batch(vectors, query, n, dim, distances);
+#else
+  (void)vectors;
+  (void)query;
+  (void)n;
+  (void)dim;
+  (void)distances;
+#endif
 }
 
 }  // namespace zvec::turbo::avx512

@@ -44,9 +44,26 @@ void cosine_int4_distance_avx2(const void *a, const void *b, size_t dim,
 void cosine_int4_batch_distance_avx2(const void *const *vectors,
                                      const void *query, size_t n, size_t dim,
                                      float *distances) {
-  for (size_t i = 0; i < n; ++i) {
-    cosine_int4_distance_avx2(vectors[i], query, dim, &distances[i]);
+#if defined(__AVX2__)
+  constexpr size_t kTailUnits = 40;
+  if (dim <= kTailUnits) {
+    return;
   }
+  const size_t original_dim = dim - kTailUnits;
+  const size_t tail_offset = original_dim >> 1;
+  internal::raw_inner_product_batch(
+      vectors, static_cast<const uint8_t *>(query), n, original_dim, distances);
+  for (size_t i = 0; i < n; ++i) {
+    distances[i] = distance_internal::record_minus_inner_product(
+        vectors[i], query, original_dim, tail_offset, distances[i]);
+  }
+#else
+  (void)vectors;
+  (void)query;
+  (void)n;
+  (void)dim;
+  (void)distances;
+#endif
 }
 
 }  // namespace zvec::turbo::avx2

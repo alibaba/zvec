@@ -44,9 +44,26 @@ void inner_product_int4_distance_avx512(const void *a, const void *b,
 void inner_product_int4_batch_distance_avx512(const void *const *vectors,
                                               const void *query, size_t n,
                                               size_t dim, float *distances) {
-  for (size_t i = 0; i < n; ++i) {
-    inner_product_int4_distance_avx512(vectors[i], query, dim, &distances[i]);
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+  constexpr size_t kTailUnits = 32;
+  if (dim <= kTailUnits) {
+    return;
   }
+  const size_t original_dim = dim - kTailUnits;
+  const size_t tail_offset = original_dim >> 1;
+  internal::raw_inner_product_batch(
+      vectors, static_cast<const uint8_t *>(query), n, original_dim, distances);
+  for (size_t i = 0; i < n; ++i) {
+    distances[i] = distance_internal::record_minus_inner_product(
+        vectors[i], query, original_dim, tail_offset, distances[i]);
+  }
+#else
+  (void)vectors;
+  (void)query;
+  (void)n;
+  (void)dim;
+  (void)distances;
+#endif
 }
 
 }  // namespace zvec::turbo::avx512
