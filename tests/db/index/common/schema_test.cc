@@ -1068,6 +1068,18 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationParameters) {
 }
 #endif
 
+TEST(FieldSchemaTest, DiskAnnRejectsNegativeCacheBudget) {
+  auto index_params = std::make_shared<DiskAnnIndexParams>(
+      MetricType::L2, 32, 50, 0, QuantizeType::UNDEFINED, QuantizerParam{}, -1);
+  FieldSchema field("vector_field", DataType::VECTOR_FP32, 128, false,
+                    index_params);
+
+  auto status = field.validate();
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("cache_node_budget_bytes"),
+            std::string::npos);
+}
+
 TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
   // Test unsupported data types with HNSW_RABITQ index
 

@@ -37,6 +37,9 @@ TEST(IOBackend, ConcurrentProbeReturnsStableType) {
   for (IOBackendType type : results) {
     EXPECT_EQ(type, results[0]);
   }
+#if defined(_WIN32) || defined(_WIN64)
+  EXPECT_EQ(results[0], IOBackendType::kWindowsOverlapped);
+#endif
   std::string description = current_io_backend_description();
   EXPECT_FALSE(description.empty());
   const char *backend_name = "";

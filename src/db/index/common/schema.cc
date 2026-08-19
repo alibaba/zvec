@@ -218,6 +218,19 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
+        auto diskann_params =
+            std::dynamic_pointer_cast<DiskAnnIndexParams>(index_params_);
+        if (!diskann_params) {
+          return Status::InvalidArgument(
+              "schema validate failed: DISKANN index requires "
+              "DiskAnnIndexParams");
+        }
+        if (diskann_params->cache_node_budget_bytes() < 0) {
+          return Status::InvalidArgument(
+              "schema validate failed: DiskAnn cache_node_budget_bytes must "
+              "be greater than or equal to 0");
+        }
+
         // The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
         // single source of truth for platform eligibility — it is also used by
@@ -232,11 +245,9 @@ Status FieldSchema::validate() const {
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
             "Linux (x86_64/ARM64), macOS (ARM64), and Windows "
-            "(x86/x86_64).");
+            "(x86_64).");
 #endif
       }
-
-
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         auto iter = quantize_type_map.find(data_type_);
         if (iter == quantize_type_map.end()) {

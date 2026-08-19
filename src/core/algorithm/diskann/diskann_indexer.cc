@@ -18,9 +18,11 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <set>
 #include <tuple>
 #include <unordered_set>
+#include <zvec/ailego/io/file.h>
 
 namespace zvec {
 namespace core {
@@ -37,14 +39,22 @@ DiskAnnIndexer::~DiskAnnIndexer() {
   reset_cache_storage();
 }
 
-int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity, uint32_t beam_width) {
-  beam_width_ = beam_width;
-
+int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
   if (!storage || !vector_segment) {
     LOG_ERROR("DiskAnn storage or vector segment is missing");
     return IndexError_InvalidFormat;
+  }
+  auto cached_file = storage->file();
+
+  max_node_size_ = entity.max_node_size();
+  sector_num_per_node_ =
+      DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
+  if (sector_num_per_node_ == 0 ||
+      beam_width_ > DiskAnnUtil::kMaxSectorReadNum / sector_num_per_node_) {
+    LOG_ERROR("DiskAnn node size exceeds the search buffer capacity");
+    return IndexError_InvalidArgument;
   }
 
   pq_table_ = entity.get_pq_table();
@@ -59,7 +69,15 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity, uint32_t beam_width) {
   const auto file_path = storage->file_path();
   int ret = storage->cleanup();
   entity.release_storage();
+  // cleanup() releases the storage's shared_ptr, but callers may still retain
+  // the File object or one of its Segments. Close the shared native handle
+  // itself so such references cannot keep a buffered Windows handle alive
+  // beside DiskAnn's unbuffered overlapped handles.
+  if (cached_file) {
+    cached_file->close();
+  }
   vector_segment.reset();
+  cached_file.reset();
   storage.reset();
   if (ret != 0) {
     LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
@@ -75,7 +93,6 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity, uint32_t beam_width) {
     return ret;
   }
 
-  max_node_size_ = entity.max_node_size();
   disk_bytes_per_point_ = meta_.element_size();
 
   node_per_sector_ = entity.node_per_sector();
@@ -92,19 +109,6 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity, uint32_t beam_width) {
   doc_cnt_ = entity.doc_cnt();
 
   max_degree_ = entity.max_degree();
-
-  sector_num_per_node_ =
-      DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  if (beam_width_ == 0 || sector_num_per_node_ == 0 ||
-      beam_width_ > DiskAnnUtil::kMaxSectorReadNum / sector_num_per_node_) {
-    LOG_ERROR(
-        "Invalid beam size %u: beam_size * sectors_per_node must be in "
-        "[1, %lu]",
-        beam_width_, (unsigned long)DiskAnnUtil::kMaxSectorReadNum);
-
-    return IndexError_InvalidArgument;
-  }
-  LOG_INFO("DiskAnn search beam size: %u", beam_width_);
 
   centroid_stride_ = DiskAnnUtil::round_up(meta_.element_size(), 32);
   DiskAnnUtil::alloc_aligned(&centroid_data_,
@@ -1019,6 +1023,31 @@ int DiskAnnIndexer::knn_search(DiskAnnContext *ctx) {
 }
 
 int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
+  int error_code = IndexError_Runtime;
+  try {
+    return cached_beam_search_impl(ctx);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("cached_beam_search: memory allocation failed");
+    error_code = IndexError_NoMemory;
+  } catch (const std::exception &e) {
+    LOG_ERROR("cached_beam_search: unexpected exception: %s", e.what());
+  } catch (...) {
+    LOG_ERROR("cached_beam_search: unknown exception");
+  }
+
+  // An exception may occur after an asynchronous batch has been submitted.
+  // Recreate the context only after destroy_io_ctx has cancelled and waited
+  // for all requests, so the caller can safely reuse or destroy this context.
+  IOContext &io_ctx = ctx->io_ctx();
+  destroy_io_ctx(io_ctx);
+  if (setup_io_ctx(io_ctx) != 0) {
+    LOG_ERROR("cached_beam_search: failed to recreate I/O context");
+  }
+  ctx->set_error(true);
+  return error_code;
+}
+
+int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   auto &stats = ctx->query_stats();
   auto &dc = ctx->dist_calculator();
   auto &topk_heap = ctx->topk_heap();

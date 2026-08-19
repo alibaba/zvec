@@ -95,7 +95,11 @@ static void close_windows_io_handles(IOContext ctx) {
     return;
   }
 
-  if (ctx->file_handle != INVALID_HANDLE_VALUE && ctx->outstanding_count != 0) {
+  const bool has_active_requests =
+      std::any_of(ctx->active_requests.begin(), ctx->active_requests.end(),
+                  [](uint8_t active) { return active != 0; });
+  if (ctx->file_handle != INVALID_HANDLE_VALUE &&
+      (ctx->outstanding_count != 0 || has_active_requests)) {
     if (!::CancelIoEx(ctx->file_handle, nullptr)) {
       DWORD error = ::GetLastError();
       if (error != ERROR_NOT_FOUND) {
@@ -104,35 +108,38 @@ static void close_windows_io_handles(IOContext ctx) {
       }
     }
 
-    while (ctx->outstanding_count != 0 && ctx->completion_port != nullptr) {
-      OVERLAPPED_ENTRY entries[MAX_IO_DEPTH]{};
-      ULONG removed = 0;
-      const ULONG max_entries = static_cast<ULONG>(std::min<uint32_t>(
-          ctx->outstanding_count, static_cast<uint32_t>(MAX_IO_DEPTH)));
-      if (!::GetQueuedCompletionStatusEx(ctx->completion_port, entries,
-                                         max_entries, &removed, INFINITE,
-                                         FALSE) ||
-          removed == 0) {
-        LOG_ERROR("Failed to drain DiskAnn IOCP (error=%lu)", ::GetLastError());
-        break;
+    // Wait on the OVERLAPPED objects themselves instead of relying on the
+    // completion port during teardown. Once GetOverlappedResult returns a
+    // terminal status, the kernel no longer references either the OVERLAPPED
+    // slot or its caller-owned destination buffer. Completion packets may
+    // remain queued, but it is then safe to close the port and discard them.
+    for (size_t i = 0; i < ctx->active_requests.size(); ++i) {
+      if (ctx->active_requests[i] == 0) {
+        continue;
       }
 
-      if (removed >= ctx->outstanding_count) {
-        ctx->outstanding_count = 0;
-      } else {
-        ctx->outstanding_count -= removed;
+      DWORD bytes_transferred = 0;
+      BOOL completed = FALSE;
+      DWORD error = ERROR_SUCCESS;
+      do {
+        completed = ::GetOverlappedResult(ctx->file_handle, &ctx->reqs[i],
+                                          &bytes_transferred, FALSE);
+        error = completed ? ERROR_SUCCESS : ::GetLastError();
+        if (!completed && error == ERROR_IO_INCOMPLETE) {
+          ::Sleep(1);
+        }
+      } while (!completed && error == ERROR_IO_INCOMPLETE);
+
+      if (!completed && error != ERROR_OPERATION_ABORTED) {
+        LOG_WARN("DiskAnn overlapped request %zu completed with error=%lu", i,
+                 error);
       }
+      ctx->active_requests[i] = 0;
     }
+    ctx->outstanding_count = 0;
   }
 
   if (ctx->file_handle != INVALID_HANDLE_VALUE) {
-    if (ctx->outstanding_count != 0) {
-      // This branch indicates a broken completion-port invariant. Keep the
-      // diagnostic explicit: returning caller buffers while I/O is still live
-      // is unsafe, so this should never be treated as a normal fallback.
-      LOG_ERROR("Closing DiskAnn file with %u I/O requests not reaped",
-                ctx->outstanding_count);
-    }
     ::CloseHandle(ctx->file_handle);
     ctx->file_handle = INVALID_HANDLE_VALUE;
   }
@@ -142,6 +149,7 @@ static void close_windows_io_handles(IOContext ctx) {
     ctx->completion_port = nullptr;
   }
   ctx->file_path.clear();
+  ctx->active_requests.fill(0);
   ctx->outstanding_count = 0;
 }
 #endif
@@ -156,7 +164,6 @@ int setup_io_ctx(IOContext &ctx) {
   ctx->type = selected;
 
 #if defined(_WIN32) || defined(_WIN64)
-  ctx->reqs.resize(MAX_IO_DEPTH);
   log_diskann_io_backend(ctx->type);
   return 0;
 #elif defined(__linux) || defined(__linux__)
@@ -1022,9 +1029,7 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
   }
 
   HANDLE probe = ::CreateFileW(
-      wide_fname.c_str(), GENERIC_READ,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_EXISTING,
+      wide_fname.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
       FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
       nullptr);
   if (probe == INVALID_HANDLE_VALUE) {
@@ -1062,9 +1067,7 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
 
   close_windows_io_handles(ctx);
   ctx->file_handle = ::CreateFileW(
-      file_path_.c_str(), GENERIC_READ,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_EXISTING,
+      file_path_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
       FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
       nullptr);
   if (ctx->file_handle == INVALID_HANDLE_VALUE) {
@@ -1085,7 +1088,13 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
     LOG_WARN("SetFileCompletionNotificationModes failed (error=%lu)",
              ::GetLastError());
   }
-  ctx->file_path = file_path_;
+  try {
+    ctx->file_path = file_path_;
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to store the Windows DiskAnn file path");
+    close_windows_io_handles(ctx);
+    return IndexError_NoMemory;
+  }
   return 0;
 }
 
@@ -1145,6 +1154,11 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     }
 
     std::vector<uint32_t> completed;
+    try {
+      completed.reserve(MAX_IO_DEPTH);
+    } catch (const std::bad_alloc &) {
+      return IndexError_NoMemory;
+    }
     while (batch.n_reaped < batch.n_submitted) {
       ret = get_completed(batch, ctx, 1, completed);
       if (ret < 0) {
@@ -1191,10 +1205,19 @@ int WindowsAlignedFileReader::submit(PendingBatch &batch,
     ++ctx->generation;
   }
   batch.generation = ctx->generation;
-  batch.expected_lengths.reserve(read_reqs.size());
-  batch.completed.assign(read_reqs.size(), 0);
+  try {
+    batch.expected_lengths.reserve(read_reqs.size());
+    batch.completed.assign(read_reqs.size(), 0);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to allocate Windows IOCP batch metadata");
+    batch.expected_lengths.clear();
+    batch.completed.clear();
+    batch.generation = 0;
+    return IndexError_NoMemory;
+  }
 
   uint32_t issued_count = 0;
+  ctx->active_requests.fill(0);
   for (size_t i = 0; i < read_reqs.size(); ++i) {
     ctx->reqs[i] = OVERLAPPED{};
 
@@ -1216,6 +1239,7 @@ int WindowsAlignedFileReader::submit(PendingBatch &batch,
     }
 
     batch.expected_lengths.push_back(req.len);
+    ctx->active_requests[i] = 1;
     ++issued_count;
     ctx->outstanding_count = issued_count;
   }
@@ -1242,6 +1266,17 @@ int WindowsAlignedFileReader::get_completed(
     return IndexError_Runtime;
   }
 
+  if (completed_indices.capacity() < ctx->outstanding_count) {
+    try {
+      completed_indices.reserve(ctx->outstanding_count);
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR("Failed to allocate Windows IOCP completion metadata");
+      reset_io_ctx(ctx);
+      batch.n_reaped = batch.n_submitted;
+      return IndexError_NoMemory;
+    }
+  }
+
   const uint32_t remaining = batch.n_submitted - batch.n_reaped;
   const uint32_t target = std::min<uint32_t>(
       remaining, static_cast<uint32_t>(std::max(min_completed, 1)));
@@ -1264,13 +1299,6 @@ int WindowsAlignedFileReader::get_completed(
 
     bool completion_error = false;
     for (ULONG i = 0; i < removed; ++i) {
-      if (ctx->outstanding_count == 0) {
-        LOG_ERROR("IOCP returned more completions than the active batch");
-        completion_error = true;
-      } else {
-        --ctx->outstanding_count;
-      }
-
       if (entries[i].lpCompletionKey != reinterpret_cast<ULONG_PTR>(ctx)) {
         LOG_ERROR("IOCP returned a completion for a different context");
         completion_error = true;
@@ -1297,10 +1325,19 @@ int WindowsAlignedFileReader::get_completed(
         continue;
       }
 
+      if (ctx->active_requests[index] == 0 || ctx->outstanding_count == 0) {
+        LOG_ERROR("IOCP returned an inactive or excess completion");
+        completion_error = true;
+        continue;
+      }
+
       DWORD bytes_transferred = 0;
+      bool terminal = true;
       if (!::GetOverlappedResult(ctx->file_handle, &ctx->reqs[index],
                                  &bytes_transferred, FALSE)) {
-        LOG_ERROR("IOCP read %u failed (error=%lu)", index, ::GetLastError());
+        DWORD error = ::GetLastError();
+        terminal = error != ERROR_IO_INCOMPLETE;
+        LOG_ERROR("IOCP read %u failed (error=%lu)", index, error);
         completion_error = true;
       } else if (static_cast<uint64_t>(bytes_transferred) !=
                  batch.expected_lengths[index]) {
@@ -1311,8 +1348,12 @@ int WindowsAlignedFileReader::get_completed(
         completion_error = true;
       }
 
-      batch.completed[index] = 1;
-      ++batch.n_reaped;
+      if (terminal) {
+        ctx->active_requests[index] = 0;
+        --ctx->outstanding_count;
+        batch.completed[index] = 1;
+        ++batch.n_reaped;
+      }
       if (!completion_error) {
         completed_indices.push_back(index);
       }

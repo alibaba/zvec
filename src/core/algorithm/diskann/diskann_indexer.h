@@ -36,7 +36,7 @@ class DiskAnnIndexer {
   ~DiskAnnIndexer();
 
  public:
-  int init(DiskAnnSearcherEntity &entity, uint32_t beam_width);
+  int init(DiskAnnSearcherEntity &entity);
 
   int configure_cache(uint32_t cache_node_num,
                       uint64_t cache_node_budget_bytes);
@@ -101,6 +101,7 @@ class DiskAnnIndexer {
   int load_cache_list(CacheLoadState &state);
   int cache_bfs_levels(uint64_t num_nodes_to_cache, CacheLoadState &state);
   void reset_cache_storage();
+  int cached_beam_search_impl(DiskAnnContext *ctx);
 
   DiskAnnEntity::Pointer entity_{};
 

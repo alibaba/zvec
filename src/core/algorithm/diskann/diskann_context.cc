@@ -123,6 +123,13 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
 }
 
 DiskAnnContext::~DiskAnnContext() {
+  // The sector buffer may still be the destination of an overlapped read if a
+  // query exits early. Cancel and wait for every request before releasing any
+  // memory that the I/O context can reference.
+  if (type_ == kSearcherContext || type_ == kFetchContext) {
+    destroy_io_ctx(io_ctx_);
+  }
+
   visit_filter_.destroy();
   DiskAnnUtil::free_aligned(query_);
   DiskAnnUtil::free_aligned(query_rotated_);
@@ -130,10 +137,6 @@ DiskAnnContext::~DiskAnnContext() {
   DiskAnnUtil::free_aligned(pq_coord_buffer_);
   DiskAnnUtil::free_aligned(coord_buffer_);
   DiskAnnUtil::free_aligned(sector_buffer_);
-
-  if (type_ == kSearcherContext || type_ == kFetchContext) {
-    destroy_io_ctx(io_ctx_);
-  }
 }
 
 int DiskAnnContext::update(const ailego::Params &params) {

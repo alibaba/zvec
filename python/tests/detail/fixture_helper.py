@@ -8,10 +8,7 @@ DISKANN_SUPPORTED = (
         and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
     )
     or (platform.system() == "Darwin" and platform.machine() in ("aarch64", "arm64"))
-    or (
-        platform.system() == "Windows"
-        and platform.machine() in ("x86_64", "AMD64", "i686", "i386")
-    )
+    or (platform.system() == "Windows" and platform.machine() in ("x86_64", "AMD64"))
 )
 
 from typing import Any, Generator
@@ -34,7 +31,7 @@ def _ensure_diskann_runtime_or_reason() -> str | None:
     if not DISKANN_SUPPORTED:
         _DISKANN_PRELOAD_REASON = (
             "DiskAnn is supported on Linux (x86_64/ARM64), macOS ARM64, "
-            "and Windows x86/x86_64"
+            "and Windows x86_64"
         )
         return _DISKANN_PRELOAD_REASON
     _DISKANN_PRELOAD_REASON = None

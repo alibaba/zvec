@@ -16,7 +16,7 @@
 Mirrors ``test_collection_hnsw_rabitq.py`` but targets the DiskAnn index.
 
 DiskAnn must be built for Linux (x86_64/ARM64), macOS ARM64, or Windows
-x86/x86_64. Other platforms are skipped wholesale. Linux selects io_uring,
+x86_64. Other platforms are skipped wholesale. Linux selects io_uring,
 libaio, or pread; macOS uses pread; Windows uses overlapped I/O.
 """
 
@@ -38,14 +38,10 @@ pytestmark = pytest.mark.skipif(
             and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
         )
         or (sys.platform == "darwin" and platform.machine() in ("aarch64", "arm64"))
-        or (
-            sys.platform == "win32"
-            and platform.machine() in ("x86_64", "AMD64", "i686", "i386")
-        )
+        or (sys.platform == "win32" and platform.machine() in ("x86_64", "AMD64"))
     ),
     reason=(
-        "DiskAnn is supported on Linux (x86_64/ARM64), macOS ARM64, "
-        "and Windows x86/x86_64"
+        "DiskAnn is supported on Linux (x86_64/ARM64), macOS ARM64, and Windows x86_64"
     ),
 )
 

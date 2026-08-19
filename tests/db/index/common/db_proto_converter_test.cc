@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <zvec/db/schema.h>
 #include "db/index/common/proto_converter.h"
 #include "db/index/common/type_helper.h"
 
@@ -143,6 +144,15 @@ TEST(ConverterTest, DiskAnnIndexParamsConversion) {
 
   proto::DiskAnnIndexParams legacy_pb;
   EXPECT_EQ(0U, ProtoConverter::FromPb(legacy_pb)->cache_node_budget_bytes());
+
+  proto::DiskAnnIndexParams invalid_pb;
+  invalid_pb.mutable_base()->set_metric_type(proto::MT_L2);
+  invalid_pb.set_cache_node_budget_bytes(-1);
+  auto invalid_params = ProtoConverter::FromPb(invalid_pb);
+  ASSERT_NE(nullptr, invalid_params);
+  FieldSchema invalid_field("vector_field", DataType::VECTOR_FP32, 128, false,
+                            invalid_params);
+  EXPECT_FALSE(invalid_field.validate().ok());
 }
 
 #if RABITQ_SUPPORTED

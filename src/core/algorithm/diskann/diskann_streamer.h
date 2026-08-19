@@ -162,7 +162,6 @@ class DiskAnnStreamer : public IndexStreamer {
   uint32_t cache_nodes_num_{0};
   uint64_t cache_node_budget_bytes_{0};
 
-  uint32_t beam_size_{2};
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};

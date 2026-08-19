@@ -51,7 +51,6 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
   uint32_t list_size = 200;
   uint32_t cache_nodes_num = 0;
   uint64_t cache_node_budget_bytes = 0;
-  uint32_t beam_size = 2;
   search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
   long long configured_cache_nodes = 0;
   if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
@@ -73,7 +72,6 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
     }
     cache_node_budget_bytes = static_cast<uint64_t>(configured_cache_budget);
   }
-  search_params.get(PARAM_DISKANN_SEARCHER_BEAM_SIZE, &beam_size);
   if (cache_nodes_num != 0 && cache_node_budget_bytes != 0) {
     LOG_ERROR("cache_node_num and cache_node_budget_bytes cannot both be set");
     return IndexError_InvalidArgument;
@@ -85,7 +83,6 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
   list_size_ = list_size;
   cache_nodes_num_ = cache_nodes_num;
   cache_node_budget_bytes_ = cache_node_budget_bytes;
-  beam_size_ = beam_size;
   state_ = STATE_INITED;
   return 0;
 }
@@ -142,7 +139,7 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
 
   diskann_indexer_ = std::make_shared<DiskAnnIndexer>(meta_);
 
-  int res = diskann_indexer_->init(entity_, beam_size_);
+  int res = diskann_indexer_->init(entity_);
   if (res != 0) {
     return res;
   }

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <sys/stat.h>
 #include <signal.h>
 #include <filesystem>
 #include <iomanip>
@@ -141,16 +140,24 @@ class Recall {
     if (!output_.empty()) {
       std::error_code ec;
       std::filesystem::create_directories(output_, ec);
-      struct stat sb;
-      if (stat(output_.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
-        cout << "logs output to : " << output_ << endl;
-        for (size_t i = 0; i < threads_; ++i) {
-          fstream *fs_k = new fstream();
-          fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
-          fstream *fs_l = new fstream();
-          fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
-          output_fs.push_back(make_pair(fs_k, fs_l));
-        }
+      if (ec) {
+        cerr << "Failed to create output directory [" << output_
+             << "]: " << ec.message() << endl;
+        return;
+      }
+      if (!std::filesystem::is_directory(output_, ec)) {
+        cerr << "Invalid output directory [" << output_
+             << "]: " << (ec ? ec.message() : "path is not a directory")
+             << endl;
+        return;
+      }
+      cout << "logs output to : " << output_ << endl;
+      for (size_t i = 0; i < threads_; ++i) {
+        fstream *fs_k = new fstream();
+        fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
+        fstream *fs_l = new fstream();
+        fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
+        output_fs.push_back(make_pair(fs_k, fs_l));
       }
     }
 
@@ -997,16 +1004,24 @@ class SparseRecall {
     if (!output_.empty()) {
       std::error_code ec;
       std::filesystem::create_directories(output_, ec);
-      struct stat sb;
-      if (stat(output_.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
-        cout << "logs output to : " << output_ << endl;
-        for (size_t i = 0; i < threads_; ++i) {
-          fstream *fs_k = new fstream();
-          fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
-          fstream *fs_l = new fstream();
-          fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
-          output_fs.push_back(make_pair(fs_k, fs_l));
-        }
+      if (ec) {
+        cerr << "Failed to create output directory [" << output_
+             << "]: " << ec.message() << endl;
+        return;
+      }
+      if (!std::filesystem::is_directory(output_, ec)) {
+        cerr << "Invalid output directory [" << output_
+             << "]: " << (ec ? ec.message() : "path is not a directory")
+             << endl;
+        return;
+      }
+      cout << "logs output to : " << output_ << endl;
+      for (size_t i = 0; i < threads_; ++i) {
+        fstream *fs_k = new fstream();
+        fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
+        fstream *fs_l = new fstream();
+        fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
+        output_fs.push_back(make_pair(fs_k, fs_l));
       }
     }
 

@@ -16,6 +16,7 @@
 #define MAX_IO_DEPTH 128
 
 #include <fcntl.h>
+#include <array>
 
 #if (defined(__linux) || defined(__linux__))
 #include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
@@ -61,7 +62,8 @@ struct IoBackend {
   IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
 #elif defined(_WIN32) || defined(_WIN64)
-  std::vector<OVERLAPPED> reqs;
+  std::array<OVERLAPPED, MAX_IO_DEPTH> reqs{};
+  std::array<uint8_t, MAX_IO_DEPTH> active_requests{};
   HANDLE file_handle{INVALID_HANDLE_VALUE};
   HANDLE completion_port{nullptr};
   std::wstring file_path;

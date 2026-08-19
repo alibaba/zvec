@@ -63,6 +63,10 @@ class TemporaryFile {
     return path_.c_str();
   }
 
+  const wchar_t *wide_path() const {
+    return wide_path_;
+  }
+
   bool write_pages() const {
     if (!valid()) {
       return false;
@@ -275,6 +279,28 @@ TEST(DiskAnnFileReaderWindowsTest, RejectsMisalignedUnbufferedRead) {
   PendingBatch batch;
   EXPECT_EQ(reader.submit(batch, requests, ctx), IndexError_InvalidArgument);
   EXPECT_EQ(ctx->outstanding_count, 0U);
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(DiskAnnFileReaderWindowsTest, OpenContextPreventsIndexReplacement) {
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+
+  WindowsAlignedFileReader reader;
+  reader.open(file.path());
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
+  ASSERT_EQ(reader.read(request, ctx, false), 0);
+
+  EXPECT_FALSE(::DeleteFileW(file.wide_path()));
+  EXPECT_EQ(::GetLastError(), ERROR_SHARING_VIOLATION);
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
 }

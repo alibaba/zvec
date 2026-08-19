@@ -182,18 +182,27 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   Params search_params;
   search_params.set("zvec.diskann.searcher.list_size", 500);
-  search_params.set(PARAM_DISKANN_SEARCHER_BEAM_SIZE, 4);
 
   ASSERT_EQ(0, searcher->init(search_params));
 
   auto storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, storage->open(path, false));
-  std::weak_ptr<zvec::ailego::File> searcher_cached_file = storage->file();
-  ASSERT_FALSE(searcher_cached_file.expired());
+  auto retained_cached_file = storage->file();
+  ASSERT_NE(retained_cached_file, nullptr);
+  ASSERT_TRUE(retained_cached_file->is_valid());
+  auto retained_segment = storage->get(DiskAnnEntity::kDiskAnnVectorSegmentId);
+  ASSERT_NE(retained_segment, nullptr);
+  std::weak_ptr<zvec::ailego::File> searcher_cached_file = retained_cached_file;
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
   // FileReadStorage and all of its segments share this ordinary cached file
-  // handle. DiskAnn must release every one of those references after loading
-  // so that only its aligned asynchronous reader remains active on Windows.
+  // handle. DiskAnn must close that shared native handle even if a caller
+  // retains a Segment reference, then use only its aligned asynchronous reader.
+  EXPECT_FALSE(retained_cached_file->is_valid());
+  retained_cached_file.reset();
+  EXPECT_FALSE(searcher_cached_file.expired());
+  uint8_t closed_file_byte = 0;
+  EXPECT_EQ(0U, retained_segment->fetch(0, &closed_file_byte, 1));
+  retained_segment.reset();
   EXPECT_TRUE(searcher_cached_file.expired());
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
