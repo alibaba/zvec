@@ -36,7 +36,7 @@ FlatQueryParam &FlatQueryParam::operator=(const FlatQueryParam &) = default;
 FlatQueryParam &FlatQueryParam::operator=(FlatQueryParam &&) noexcept = default;
 FlatQueryParam::~FlatQueryParam() = default;
 
-BaseIndexQueryParam::Pointer FlatQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer FlatQueryParam::clone() const {
   return std::make_shared<FlatQueryParam>(*this);
 }
 
@@ -47,7 +47,7 @@ HNSWQueryParam &HNSWQueryParam::operator=(const HNSWQueryParam &) = default;
 HNSWQueryParam &HNSWQueryParam::operator=(HNSWQueryParam &&) noexcept = default;
 HNSWQueryParam::~HNSWQueryParam() = default;
 
-BaseIndexQueryParam::Pointer HNSWQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer HNSWQueryParam::clone() const {
   return std::make_shared<HNSWQueryParam>(*this);
 }
 
@@ -62,7 +62,7 @@ HNSWRabitqQueryParam &HNSWRabitqQueryParam::operator=(
     HNSWRabitqQueryParam &&) noexcept = default;
 HNSWRabitqQueryParam::~HNSWRabitqQueryParam() = default;
 
-BaseIndexQueryParam::Pointer HNSWRabitqQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer HNSWRabitqQueryParam::clone() const {
   return std::make_shared<HNSWRabitqQueryParam>(*this);
 }
 
@@ -76,7 +76,7 @@ IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
     IVFRabitqQueryParam &&) noexcept = default;
 IVFRabitqQueryParam::~IVFRabitqQueryParam() = default;
 
-BaseIndexQueryParam::Pointer IVFRabitqQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer IVFRabitqQueryParam::clone() const {
   return std::make_shared<IVFRabitqQueryParam>(*this);
 }
 
@@ -87,10 +87,10 @@ IVFQueryParam &IVFQueryParam::operator=(const IVFQueryParam &) = default;
 IVFQueryParam &IVFQueryParam::operator=(IVFQueryParam &&) noexcept = default;
 IVFQueryParam::~IVFQueryParam() = default;
 
-BaseIndexQueryParam::Pointer IVFQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer IVFQueryParam::clone() const {
   auto cloned_this = std::make_shared<IVFQueryParam>(*this);
-  cloned_this->l1QueryParam = l1QueryParam ? l1QueryParam->Clone() : nullptr;
-  cloned_this->l2QueryParam = l2QueryParam ? l2QueryParam->Clone() : nullptr;
+  cloned_this->l1QueryParam = l1QueryParam ? l1QueryParam->clone() : nullptr;
+  cloned_this->l2QueryParam = l2QueryParam ? l2QueryParam->clone() : nullptr;
   return cloned_this;
 }
 
@@ -103,7 +103,7 @@ DiskAnnQueryParam &DiskAnnQueryParam::operator=(DiskAnnQueryParam &&) noexcept =
     default;
 DiskAnnQueryParam::~DiskAnnQueryParam() = default;
 
-BaseIndexQueryParam::Pointer DiskAnnQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer DiskAnnQueryParam::clone() const {
   return std::make_shared<DiskAnnQueryParam>(*this);
 }
 
@@ -137,7 +137,7 @@ IVFIndexParam &IVFIndexParam::operator=(const IVFIndexParam &) = default;
 IVFIndexParam &IVFIndexParam::operator=(IVFIndexParam &&) = default;
 IVFIndexParam::~IVFIndexParam() = default;
 
-BaseIndexQueryParam::Pointer VamanaQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer VamanaQueryParam::clone() const {
   return std::make_shared<VamanaQueryParam>(*this);
 }
 
@@ -211,7 +211,7 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
   }
 
   // if (preprocess_param) {
-  //   json.set("preprocess_param", preprocess_param->SerializeToJson());
+  //   json.set("preprocess_param", preprocess_param->serialize_to_json());
   // }
   if (quantizer_param) {
     if (!omit_empty_value || quantizer_param->type != QuantizerType::kNone) {
@@ -224,11 +224,11 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
                  QuantizerParam().SerializeToJsonObject(false));
   }
   // if (refiner_param) {
-  //   json.set("refiner_param", refiner_param->SerializeToJson());
+  //   json.set("refiner_param", refiner_param->serialize_to_json());
   // }
   // if (default_query_param) {
   //   json.set("default_query_param",
-  //   default_query_param->SerializeToJson());
+  //   default_query_param->serialize_to_json());
   // }
   return json_obj;
 }

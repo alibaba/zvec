@@ -106,13 +106,13 @@ enum class QuantizerType {
 };
 
 struct ZVEC_CORE_API SerializableBase {
-  std::string SerializeToJson(bool omit_empty_value = false) const {
+  std::string serialize_to_json(bool omit_empty_value = false) const {
     return zvec::ailego::JsonValue(SerializeToJsonObject(omit_empty_value))
         .as_json_string()
         .as_stl_string();
   }
 
-  bool DeserializeFromJson(const std::string &json_str) {
+  bool deserialize_from_json(const std::string &json_str) {
     ailego::JsonValue json_value;
     if (!json_value.parse(json_str)) {
       return false;
@@ -141,7 +141,7 @@ struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
   virtual ~QuantizerParam() = default;
 
   //! Duplicate the param object, keeping the concrete type
-  virtual Pointer Clone() const {
+  virtual Pointer clone() const {
     return std::make_shared<QuantizerParam>(*this);
   }
 
@@ -167,7 +167,7 @@ struct PqQuantizerParam : public QuantizerParam {
         num_chunk(chunks),
         num_bits(bits) {}
 
-  QuantizerParam::Pointer Clone() const override {
+  QuantizerParam::Pointer clone() const override {
     return std::make_shared<PqQuantizerParam>(*this);
   }
 
@@ -230,7 +230,7 @@ class ZVEC_CORE_API BaseIndexQueryParam {
   RefinerParam::Pointer refiner_param = nullptr;
   std::shared_ptr<GroupByParam> group_by_param = nullptr;
 
-  virtual Pointer Clone() const = 0;
+  virtual Pointer clone() const = 0;
 };
 
 struct ZVEC_CORE_API FlatQueryParam : public BaseIndexQueryParam {
@@ -243,7 +243,7 @@ struct ZVEC_CORE_API FlatQueryParam : public BaseIndexQueryParam {
   FlatQueryParam &operator=(FlatQueryParam &&) noexcept;
   ~FlatQueryParam() override;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
@@ -260,7 +260,7 @@ struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
   uint32_t prefetch_offset = kDefaultPrefetchOffset;
   uint32_t prefetch_lines = kDefaultPrefetchLines;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 struct ZVEC_CORE_API HNSWRabitqQueryParam : public BaseIndexQueryParam {
@@ -275,7 +275,7 @@ struct ZVEC_CORE_API HNSWRabitqQueryParam : public BaseIndexQueryParam {
 
   uint32_t ef_search = kDefaultHnswEfSearch;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
@@ -292,7 +292,7 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
 
   using Pointer = std::shared_ptr<IVFQueryParam>;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 struct ZVEC_CORE_API DiskAnnQueryParam : public BaseIndexQueryParam {
@@ -309,7 +309,7 @@ struct ZVEC_CORE_API DiskAnnQueryParam : public BaseIndexQueryParam {
   // recall at the cost of latency.
   uint32_t list_size = kDefaultDiskAnnListSize;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 // --- Construction Parameters ---
@@ -465,7 +465,7 @@ struct ZVEC_CORE_API VamanaQueryParam : public BaseIndexQueryParam {
   uint32_t prefetch_offset = kDefaultPrefetchOffset;
   uint32_t prefetch_lines = kDefaultPrefetchLines;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 struct ZVEC_CORE_API HNSWRabitqIndexParam : public BaseIndexParam {
@@ -535,7 +535,7 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
 
   uint32_t nprobe = kDefaultIvfRabitqNprobe;
 
-  BaseIndexQueryParam::Pointer Clone() const override;
+  BaseIndexQueryParam::Pointer clone() const override;
 };
 
 struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {

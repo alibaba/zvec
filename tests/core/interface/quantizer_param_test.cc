@@ -21,8 +21,8 @@ namespace {
 TEST(QuantizerParam, SerializesCanonicalUniformNames) {
   QuantizerParam uint7(QuantizerType::kUniformUint7);
   QuantizerParam uint8(QuantizerType::kUniformUint8);
-  EXPECT_NE(std::string::npos, uint7.SerializeToJson().find("kUniformUint7"));
-  EXPECT_NE(std::string::npos, uint8.SerializeToJson().find("kUniformUint8"));
+  EXPECT_NE(std::string::npos, uint7.serialize_to_json().find("kUniformUint7"));
+  EXPECT_NE(std::string::npos, uint8.serialize_to_json().find("kUniformUint8"));
 }
 
 }  // namespace

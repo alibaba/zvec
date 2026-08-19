@@ -197,7 +197,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
     }
 
     // initialize (contains validate)
-    Status status = GlobalConfig::Instance().Initialize(data);
+    Status status = GlobalConfig::Instance().initialize(data);
     if (!status.ok()) {
       throw std::runtime_error("Initialization failed: " + status.message());
     }

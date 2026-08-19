@@ -23,7 +23,7 @@ const std::string kIndexPath{"diskann-core-example.index"};
 int Fail(const std::string &message, const Index::Pointer &index = nullptr) {
   std::cerr << message << std::endl;
   if (index) {
-    index->Close();
+    index->close();
   }
   std::filesystem::remove(kIndexPath);
   return EXIT_FAILURE;
@@ -35,33 +35,33 @@ int main() {
   std::filesystem::remove(kIndexPath);
 
   auto param = DiskAnnIndexParamBuilder()
-                   .WithMetricType(MetricType::kL2sq)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithMaxDegree(32)
-                   .WithListSize(64)
-                   .WithPqChunkNum(0)
-                   .Build();
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_max_degree(32)
+                   .with_list_size(64)
+                   .with_pq_chunk_num(0)
+                   .build();
   auto index = IndexFactory::CreateAndInitIndex(*param);
   if (!index) {
     return Fail("Failed to create the DiskANN index.");
   }
 
-  int ret = index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true});
+  int ret = index->open(kIndexPath, {StorageOptions::StorageType::kMMAP, true});
   if (ret != 0) {
     return Fail("Failed to open the DiskANN index.", index);
   }
 
   for (uint32_t key = 0; key < kDocCount; ++key) {
     std::vector<float> values(kDimension, static_cast<float>(key));
-    ret = index->Add(VectorData{DenseVector{values.data()}}, key);
+    ret = index->add(VectorData{DenseVector{values.data()}}, key);
     if (ret != 0) {
       return Fail("Failed to add a vector to the DiskANN index.", index);
     }
   }
 
-  if (index->Train() != 0) {
+  if (index->train() != 0) {
     return Fail("Failed to build the DiskANN index.", index);
   }
 
@@ -72,7 +72,7 @@ int main() {
   query_param->list_size = 64;
 
   SearchResult result;
-  if (index->Search(query, query_param, &result) != 0) {
+  if (index->search(query, query_param, &result) != 0) {
     return Fail("Failed to query the DiskANN index.", index);
   }
 
@@ -83,7 +83,7 @@ int main() {
     return Fail("DiskANN query did not return the expected document.", index);
   }
 
-  if (index->Close() != 0) {
+  if (index->close() != 0) {
     return Fail("Failed to close the DiskANN index.");
   }
   std::filesystem::remove(kIndexPath);

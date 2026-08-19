@@ -101,19 +101,19 @@ int main(int argc, char **argv) {
             << std::endl;
 
   // Print initial stats
-  std::cout << "Initial stats: " << collection->Stats()->to_string_formatted()
+  std::cout << "Initial stats: " << collection->stats()->to_string_formatted()
             << std::endl;
 
-  auto s = collection->Optimize(zvec::OptimizeOptions{2});
+  auto s = collection->optimize(zvec::OptimizeOptions{2});
   if (s.ok()) {
     std::cout << "Optimize completed successfully" << std::endl;
     // Print final stats
-    std::cout << "Final stats: " << collection->Stats()->to_string_formatted()
+    std::cout << "Final stats: " << collection->stats()->to_string_formatted()
               << std::endl;
 #ifdef __ANDROID__
     // On Android with c++_static STL, static destructors of glog/gflags
     // crash during process teardown.  Use _exit() to skip them.
-    collection->Flush();
+    collection->flush();
     collection.reset();
     sync();
     std::cout.flush();
