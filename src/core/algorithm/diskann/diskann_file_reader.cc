@@ -156,6 +156,7 @@ static void close_windows_io_handles(IOContext ctx) {
     ctx->completion_port = nullptr;
   }
   ctx->file_path.clear();
+  ctx->file_generation = 0;
   ctx->active_requests.fill(0);
   ctx->outstanding_count = 0;
 }
@@ -1026,8 +1027,12 @@ int LinuxAlignedFileReader::get_completed(
 // context can only dequeue completion packets for requests submitted through
 // that context. PendingBatch keeps the expected lengths and completion bitmap
 // alive until every request has been harvested.
+WindowsAlignedFileReader::~WindowsAlignedFileReader() {
+  close();
+}
+
 void WindowsAlignedFileReader::open(const std::string &fname) {
-  file_path_.clear();
+  close();
   const std::wstring wide_fname = ailego::FileHelper::Utf8ToWide(fname);
   if (wide_fname.empty()) {
     LOG_ERROR("Failed to convert DiskAnn file path from UTF-8: %s",
@@ -1052,22 +1057,27 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
   }
   absolute_path.resize(path_length);
 
-  HANDLE probe = ::CreateFileW(
+  HANDLE stable_file_handle = ::CreateFileW(
       absolute_path.c_str(), GENERIC_READ, kDiskAnnFileShareMode, nullptr,
-      OPEN_EXISTING,
-      FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
-      nullptr);
-  if (probe == INVALID_HANDLE_VALUE) {
+      OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, nullptr);
+  if (stable_file_handle == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to open file: %s (error=%lu)", fname.c_str(),
               ::GetLastError());
     return;
   }
-  ::CloseHandle(probe);
+  stable_file_handle_ = stable_file_handle;
   file_path_ = std::move(absolute_path);
+  if (++file_generation_ == 0) {
+    ++file_generation_;
+  }
   LOG_INFO("Opened file: %s", fname.c_str());
 }
 
 void WindowsAlignedFileReader::close() {
+  if (stable_file_handle_ != INVALID_HANDLE_VALUE) {
+    ::CloseHandle(stable_file_handle_);
+    stable_file_handle_ = INVALID_HANDLE_VALUE;
+  }
   file_path_.clear();
 }
 
@@ -1077,12 +1087,13 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
     LOG_ERROR("Attempt to prepare an invalid Windows I/O context");
     return IndexError_Runtime;
   }
-  if (file_path_.empty()) {
+  if (file_path_.empty() || stable_file_handle_ == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Attempt to read before opening a DiskAnn file");
     return IndexError_Runtime;
   }
   if (ctx->file_handle != INVALID_HANDLE_VALUE &&
-      ctx->completion_port != nullptr && ctx->file_path == file_path_) {
+      ctx->completion_port != nullptr && ctx->file_path == file_path_ &&
+      ctx->file_generation == file_generation_) {
     return 0;
   }
   if (ctx->outstanding_count != 0) {
@@ -1091,13 +1102,14 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   }
 
   close_windows_io_handles(ctx);
-  ctx->file_handle = ::CreateFileW(
-      file_path_.c_str(), GENERIC_READ, kDiskAnnFileShareMode, nullptr,
-      OPEN_EXISTING,
-      FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
-      nullptr);
+  // Derive each private IOCP handle from the file object captured by open().
+  // Reopening the path here could bind a lazy context to a replacement index
+  // while the indexer still holds metadata for the original one.
+  ctx->file_handle = ::ReOpenFile(
+      stable_file_handle_, GENERIC_READ, kDiskAnnFileShareMode,
+      FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED);
   if (ctx->file_handle == INVALID_HANDLE_VALUE) {
-    LOG_ERROR("Failed to open DiskAnn file for IOCP (error=%lu)",
+    LOG_ERROR("Failed to reopen DiskAnn file object for IOCP (error=%lu)",
               ::GetLastError());
     return IndexError_Runtime;
   }
@@ -1116,6 +1128,7 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   }
   try {
     ctx->file_path = file_path_;
+    ctx->file_generation = file_generation_;
   } catch (const std::bad_alloc &) {
     LOG_ERROR("Failed to store the Windows DiskAnn file path");
     close_windows_io_handles(ctx);

@@ -32,8 +32,8 @@ namespace {
 constexpr size_t kPageSize = 4096;
 constexpr size_t kPageCount = 256;
 
-uint8_t page_value(size_t page) {
-  return static_cast<uint8_t>((page * 37 + 11) & 0xff);
+uint8_t page_value(size_t page, uint8_t bias = 0) {
+  return static_cast<uint8_t>((page * 37 + 11 + bias) & 0xff);
 }
 
 class TemporaryFile {
@@ -67,7 +67,7 @@ class TemporaryFile {
     return wide_path_;
   }
 
-  bool write_pages() const {
+  bool write_pages(uint8_t bias = 0) const {
     if (!valid()) {
       return false;
     }
@@ -80,7 +80,7 @@ class TemporaryFile {
 
     std::vector<uint8_t> contents(kPageSize * kPageCount);
     for (size_t page = 0; page < kPageCount; ++page) {
-      std::memset(contents.data() + page * kPageSize, page_value(page),
+      std::memset(contents.data() + page * kPageSize, page_value(page, bias),
                   kPageSize);
     }
 
@@ -115,9 +115,9 @@ AlignedBuffer make_aligned_buffer(size_t size) {
   return AlignedBuffer(buffer);
 }
 
-bool verify_page(const uint8_t *buffer, size_t page) {
-  return std::all_of(buffer, buffer + kPageSize, [page](uint8_t value) {
-    return value == page_value(page);
+bool verify_page(const uint8_t *buffer, size_t page, uint8_t bias = 0) {
+  return std::all_of(buffer, buffer + kPageSize, [page, bias](uint8_t value) {
+    return value == page_value(page, bias);
   });
 }
 
@@ -383,6 +383,49 @@ TEST(DiskAnnFileReaderWindowsTest, OpenContextAllowsIndexDeletion) {
   EXPECT_TRUE(verify_page(output.get(), 0));
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(DiskAnnFileReaderWindowsTest,
+     LazyContextKeepsOriginalFileAfterAtomicReplacement) {
+  constexpr uint8_t kReplacementBias = 83;
+
+  TemporaryFile original;
+  TemporaryFile replacement;
+  ASSERT_TRUE(original.valid());
+  ASSERT_TRUE(replacement.valid());
+  ASSERT_TRUE(original.write_pages());
+  ASSERT_TRUE(replacement.write_pages(kReplacementBias));
+
+  WindowsAlignedFileReader original_reader;
+  original_reader.open(original.path());
+  IOContext original_ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(original_ctx), 0);
+  ASSERT_NE(original_ctx, nullptr);
+
+  // The context has not performed I/O yet. Replacing the path must not make
+  // its first lazy read observe bytes from a different index generation.
+  ASSERT_TRUE(::MoveFileExW(replacement.wide_path(), original.wide_path(),
+                            MOVEFILE_REPLACE_EXISTING |
+                                MOVEFILE_WRITE_THROUGH));
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
+  ASSERT_EQ(original_reader.read(request, original_ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0));
+
+  WindowsAlignedFileReader replacement_reader;
+  replacement_reader.open(original.path());
+  IOContext replacement_ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(replacement_ctx), 0);
+  ASSERT_NE(replacement_ctx, nullptr);
+  ASSERT_EQ(replacement_reader.read(request, replacement_ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0, kReplacementBias));
+
+  EXPECT_EQ(destroy_io_ctx(replacement_ctx), 0);
+  EXPECT_EQ(replacement_ctx, nullptr);
+  EXPECT_EQ(destroy_io_ctx(original_ctx), 0);
+  EXPECT_EQ(original_ctx, nullptr);
 }
 
 TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {

@@ -1063,6 +1063,38 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_NE(provider_vector, nullptr);
   std::memcpy(&provider_value, provider_vector, sizeof(provider_value));
   EXPECT_EQ(17.0f, provider_value);
+
+  // A returned pointer must not be overwritten by a concurrent fetch on a
+  // different thread. Coordinate the calls so this deterministically catches
+  // providers that share one result buffer globally.
+  std::atomic<bool> first_fetch_ready{false};
+  std::atomic<bool> second_fetch_done{false};
+  float first_thread_value = -1.0f;
+  float second_thread_value = -1.0f;
+  std::thread first_fetch([&]() {
+    const void *value = provider->get_vector(key_for_id(31));
+    first_fetch_ready.store(true, std::memory_order_release);
+    while (!second_fetch_done.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    if (value != nullptr) {
+      std::memcpy(&first_thread_value, value, sizeof(first_thread_value));
+    }
+  });
+  std::thread second_fetch([&]() {
+    while (!first_fetch_ready.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    const void *value = provider->get_vector(key_for_id(47));
+    if (value != nullptr) {
+      std::memcpy(&second_thread_value, value, sizeof(second_thread_value));
+    }
+    second_fetch_done.store(true, std::memory_order_release);
+  });
+  first_fetch.join();
+  second_fetch.join();
+  EXPECT_EQ(31.0f, first_thread_value);
+  EXPECT_EQ(47.0f, second_thread_value);
   provider.reset();
 
   const void *iterator_vector = provider_iterator->data();

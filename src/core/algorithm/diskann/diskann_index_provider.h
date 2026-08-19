@@ -13,7 +13,9 @@
 // limitations under the License.
 #pragma once
 
+#include <map>
 #include <mutex>
+#include <thread>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -87,10 +89,8 @@ class DiskAnnIndexProvider : public IndexProvider {
       return nullptr;
     }
 
-    // IndexProvider pointers remain valid until the next get_vector() call.
-    // Serialize the shared lightweight fetch context so its IOCP state and
-    // result buffer are never mutated by two requests at once.
-    std::lock_guard<std::mutex> lock(fetch_mutex_);
+    // Keep the fetch context and returned buffer private to the calling
+    // thread, so another thread cannot invalidate the pointer after return.
     FetchState *state = get_fetch_state();
     if (!state ||
         indexer_->get_vector(id, state->context, state->buffer) != 0) {
@@ -110,15 +110,30 @@ class DiskAnnIndexProvider : public IndexProvider {
   };
 
   FetchState *get_fetch_state() const {
-    if (!fetch_state_) {
-      IndexContext::Pointer context =
-          DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
-      if (!context) {
-        return nullptr;
-      }
-      fetch_state_.reset(new (std::nothrow) FetchState{std::move(context), {}});
+    const std::thread::id thread_id = std::this_thread::get_id();
+    std::lock_guard<std::mutex> lock(fetch_states_mutex_);
+    const auto existing = fetch_states_.find(thread_id);
+    if (existing != fetch_states_.end()) {
+      return existing->second.get();
     }
-    return fetch_state_.get();
+
+    IndexContext::Pointer context =
+        DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
+    if (!context) {
+      return nullptr;
+    }
+    std::unique_ptr<FetchState> state(
+        new (std::nothrow) FetchState{std::move(context), {}});
+    if (!state) {
+      return nullptr;
+    }
+    FetchState *result = state.get();
+    try {
+      fetch_states_.emplace(thread_id, std::move(state));
+    } catch (const std::bad_alloc &) {
+      return nullptr;
+    }
+    return result;
   }
 
   class Iterator : public IndexProvider::Iterator {
@@ -189,8 +204,8 @@ class DiskAnnIndexProvider : public IndexProvider {
   DiskAnnEntity::Pointer entity_;
   DiskAnnIndexer::Pointer indexer_;
   std::string owner_class_;
-  mutable std::mutex fetch_mutex_;
-  mutable std::unique_ptr<FetchState> fetch_state_;
+  mutable std::mutex fetch_states_mutex_;
+  mutable std::map<std::thread::id, std::unique_ptr<FetchState>> fetch_states_;
 };
 
 }  // namespace core
