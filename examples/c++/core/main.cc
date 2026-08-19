@@ -19,7 +19,7 @@ Index::Pointer create_index(const BaseIndexParam::Pointer &param,
     return nullptr;
   }
 
-  int ret = index->Open(
+  int ret = index->open(
       index_name, StorageOptions{StorageOptions::StorageType::kMMAP, true});
   if (ret != 0) {
     std::cout << "Failed to open index." << std::endl;
@@ -30,14 +30,14 @@ Index::Pointer create_index(const BaseIndexParam::Pointer &param,
     std::vector<float> vector(kDimension, i / 10.0f + 0.1f);
     VectorData vector_data;
     vector_data.vector = DenseVector{vector.data()};
-    ret = index->Add(vector_data, i);
+    ret = index->add(vector_data, i);
     if (ret != 0) {
       std::cout << "Failed to add to index." << std::endl;
       return nullptr;
     }
   }
 
-  ret = index->Train();
+  ret = index->train();
   if (ret != 0) {
     std::cout << "Failed to train index." << std::endl;
     return nullptr;
@@ -50,13 +50,13 @@ int main() {
   std::filesystem::remove(index_name);
 
   auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .Build();
+                   .with_metric_type(MetricType::kInnerProduct)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .build();
   auto index = create_index(param, 1);
-  std::cout << "index stats: " << index->GetDocCount() << std::endl;
+  std::cout << "index stats: " << index->get_doc_count() << std::endl;
 
   // query
   auto query_param = HNSWQueryParamBuilder()
@@ -69,7 +69,7 @@ int main() {
   VectorData query;
   std::vector<float> vector(kDimension, 0.1f);
   query.vector = DenseVector{vector.data()};
-  int ret = index->Search(query, query_param, &result);
+  int ret = index->search(query, query_param, &result);
   if (ret != 0) {
     std::cout << "Failed to search index." << std::endl;
     return -1;
