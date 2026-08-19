@@ -69,10 +69,12 @@ namespace zvec::turbo::avx2 {
       break;                                                                 \
     }                                                                        \
     case 4: {                                                                \
+      /* _mm_set_epi64 takes MMX __m64 operands, which MSVC x64 does not     \
+         support; _mm_set_epi64x is the portable 64-bit-lane equivalent. */  \
       __m256 ymm_lhs = _mm256_cvtph_ps(                                      \
-          _mm_set_epi64((__m64)(_MASK), *((const __m64 *)(lhs))));           \
+          _mm_set_epi64x((long long)(_MASK), *((const long long *)(lhs))));  \
       __m256 ymm_rhs = _mm256_cvtph_ps(                                      \
-          _mm_set_epi64((__m64)(_MASK), *((const __m64 *)(rhs))));           \
+          _mm_set_epi64x((long long)(_MASK), *((const long long *)(rhs))));  \
       _PROC(ymm_lhs, ymm_rhs, _RES##_0_0)                                    \
       break;                                                                 \
     }                                                                        \
