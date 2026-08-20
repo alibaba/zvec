@@ -217,7 +217,17 @@ int IndexFlow::load_internal() {
                 name.c_str());
       return IndexError_NoExist;
     }
-    ret = searcher_->init(meta_.searcher_params());
+    // Pass the query quantizer into the searcher so it can compute
+    // distances with the quantizer; fall back to the plain init for
+    // searchers without quantizer support.
+    if (query_quantizer_) {
+      ret = searcher_->init(meta_.searcher_params(), query_quantizer_);
+      if (ret == IndexError_NotImplemented) {
+        ret = searcher_->init(meta_.searcher_params());
+      }
+    } else {
+      ret = searcher_->init(meta_.searcher_params());
+    }
     if (ret < 0) {
       LOG_ERROR("Failed to initialize index searcher %s", name.c_str());
       searcher_ = nullptr;

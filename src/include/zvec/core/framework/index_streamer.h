@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <memory>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_provider.h>
@@ -20,6 +21,9 @@
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
 namespace core {
 
 /*! Index Streamer
@@ -35,6 +39,13 @@ class IndexStreamer : public IndexRunner {
   //! Initialize the builder
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {
+    return IndexError_NotImplemented;
+  }
+
+  //! Initialize the builder with a quantizer for distance computation
+  virtual int init(
+      const IndexMeta & /*meta*/, const ailego::Params & /*params*/,
+      const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
     return IndexError_NotImplemented;
   }
 
