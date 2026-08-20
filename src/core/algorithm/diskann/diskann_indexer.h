@@ -15,7 +15,6 @@
 
 #include <cstdint>
 #include <zvec/core/framework/index_framework.h>
-#include "diskann_cache_budget.h"
 #include "diskann_context.h"
 #include "diskann_file_reader.h"
 #include "diskann_pq_table.h"
@@ -39,22 +38,7 @@ class DiskAnnIndexer {
  public:
   int init(DiskAnnSearcherEntity &entity);
 
-  int configure_cache(uint32_t cache_node_num,
-                      uint64_t cache_node_budget_bytes);
-
-  uint32_t cache_node_count_for_budget(uint64_t budget_bytes) const {
-    return DiskAnnCacheBudget::ResolveNodeCount(
-        budget_bytes, doc_cnt_,
-        DiskAnnCacheBudget::EstimatedBytesPerNode(meta_, max_degree_));
-  }
-
-  uint64_t cache_payload_bytes_per_node() const {
-    return DiskAnnCacheBudget::PayloadBytesPerNode(meta_, max_degree_);
-  }
-
-  uint64_t cache_estimated_bytes_per_node() const {
-    return DiskAnnCacheBudget::EstimatedBytesPerNode(meta_, max_degree_);
-  }
+  int configure_cache(uint32_t cache_node_num);
 
   int cached_beam_search(DiskAnnContext *ctx);
   int cached_beam_search_by_group(DiskAnnContext *ctx);

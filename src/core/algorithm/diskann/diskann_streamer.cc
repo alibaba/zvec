@@ -53,7 +53,6 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
 
   uint32_t list_size = 200;
   uint32_t cache_nodes_num = 0;
-  uint64_t cache_node_budget_bytes = 0;
   search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
   long long configured_cache_nodes = 0;
   if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
@@ -66,19 +65,6 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
     }
     cache_nodes_num = static_cast<uint32_t>(configured_cache_nodes);
   }
-  long long configured_cache_budget = 0;
-  if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_BUDGET_BYTES,
-                        &configured_cache_budget)) {
-    if (configured_cache_budget < 0) {
-      LOG_ERROR("cache_node_budget_bytes must not be negative");
-      return IndexError_InvalidArgument;
-    }
-    cache_node_budget_bytes = static_cast<uint64_t>(configured_cache_budget);
-  }
-  if (cache_nodes_num != 0 && cache_node_budget_bytes != 0) {
-    LOG_ERROR("cache_node_num and cache_node_budget_bytes cannot both be set");
-    return IndexError_InvalidArgument;
-  }
 
   // Commit only after every value has been validated. A failed re-init must
   // leave either the previous valid configuration or STATE_INIT untouched.
@@ -86,7 +72,6 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
   params_ = search_params;
   list_size_ = list_size;
   cache_nodes_num_ = cache_nodes_num;
-  cache_node_budget_bytes_ = cache_node_budget_bytes;
   state_ = STATE_INITED;
   return 0;
 }
@@ -100,7 +85,6 @@ int DiskAnnStreamer::cleanup() {
   params_.clear();
   list_size_ = 200;
   cache_nodes_num_ = 0;
-  cache_node_budget_bytes_ = 0;
   state_ = STATE_INIT;
 
   LOG_INFO("End DiskAnnStreamer:cleanup");
@@ -151,8 +135,7 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return res;
   }
 
-  ret = diskann_indexer_->configure_cache(cache_nodes_num_,
-                                          cache_node_budget_bytes_);
+  ret = diskann_indexer_->configure_cache(cache_nodes_num_);
   if (ret != 0) {
     return ret;
   }

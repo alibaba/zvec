@@ -1157,26 +1157,6 @@ ZVEC_EXPORT int ZVEC_CALL
 zvec_index_params_get_diskann_pq_chunk_num(const zvec_index_params_t *params);
 
 /**
- * @brief Set the DiskANN static node-cache byte budget
- * @param params Index parameters (must be DiskANN type)
- * @param cache_node_budget_bytes Nominal per-physical-index byte budget in
- * [0, INT64_MAX]; this is not a process-wide hard limit; 0 disables node cache
- * @return ZVEC_OK on success, error code on failure
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_index_params_set_diskann_cache_node_budget_bytes(
-    zvec_index_params_t *params, uint64_t cache_node_budget_bytes);
-
-/**
- * @brief Get the DiskANN static node-cache byte budget
- * @param params Index parameters (must not be NULL)
- * @return Byte budget, or 0 on error
- */
-ZVEC_EXPORT uint64_t ZVEC_CALL
-zvec_index_params_get_diskann_cache_node_budget_bytes(
-    const zvec_index_params_t *params);
-
-/**
  * @brief Set IVF specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers

@@ -23,7 +23,6 @@ from zvec import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
-    DiskAnnIndexParam,
     FlatIndexParam,
     HnswIndexParam,
     IvfRabitqIndexParam,
@@ -180,37 +179,6 @@ class TestIVFIndexParam:
             match_pattern = r"can't set attribute"
         with pytest.raises(AttributeError, match=match_pattern):
             setattr(param, attr, getattr(param, attr))
-
-
-# ----------------------------
-# DiskANN Index Param Test Case
-# ----------------------------
-class TestDiskAnnIndexParam:
-    def test_cache_node_budget(self):
-        import pickle
-
-        budget = 128 * 1024 * 1024
-        param = DiskAnnIndexParam(cache_node_budget_bytes=budget)
-        assert param.cache_node_budget_bytes == budget
-        assert param.to_dict()["cache_node_budget_bytes"] == budget
-        assert "cache_node_budget_bytes" in repr(param)
-
-        restored = pickle.loads(pickle.dumps(param))
-        assert restored.cache_node_budget_bytes == budget
-
-    def test_cache_node_budget_default(self):
-        assert DiskAnnIndexParam().cache_node_budget_bytes == 0
-
-    def test_cache_node_budget_rejects_negative_value(self):
-        with pytest.raises(ValueError, match="must not be negative"):
-            DiskAnnIndexParam(cache_node_budget_bytes=-1)
-
-    @pytest.mark.parametrize("legacy_state_size", [5, 6])
-    def test_legacy_pickle_state_defaults_cache_budget(self, legacy_state_size):
-        state = [MetricType.IP, 100, 50, 0, QuantizeType.UNDEFINED, False]
-        restored = DiskAnnIndexParam.__new__(DiskAnnIndexParam)
-        restored.__setstate__(tuple(state[:legacy_state_size]))
-        assert restored.cache_node_budget_bytes == 0
 
 
 # ----------------------------

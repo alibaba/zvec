@@ -390,7 +390,12 @@ void DiskAnnIndexer::reset_cache_storage() {
 
 uint32_t DiskAnnIndexer::effective_cache_node_count(
     uint32_t requested_nodes) const {
-  const uint64_t max_nodes = DiskAnnCacheBudget::MaxNodeCount(doc_cnt_);
+  uint64_t max_nodes = 0;
+  if (doc_cnt_ != 0) {
+    max_nodes =
+        doc_cnt_ / 10 + (doc_cnt_ % 10 >= 5 ? static_cast<uint64_t>(1) : 0);
+    max_nodes = std::max<uint64_t>(1, max_nodes);
+  }
   const uint32_t effective_nodes =
       static_cast<uint32_t>(std::min<uint64_t>(requested_nodes, max_nodes));
   if (effective_nodes != requested_nodes) {
@@ -556,29 +561,10 @@ int DiskAnnIndexer::load_cache_list(CacheLoadState &state) {
   return 0;
 }
 
-int DiskAnnIndexer::configure_cache(uint32_t cache_node_num,
-                                    uint64_t cache_node_budget_bytes) {
-  const bool budget_configured = cache_node_budget_bytes != 0;
-  if (budget_configured) {
-    cache_node_num = cache_node_count_for_budget(cache_node_budget_bytes);
-    LOG_INFO(
-        "DiskANN node-cache budget: budget_bytes=%llu "
-        "estimated_bytes_per_node=%llu payload_bytes_per_node=%llu "
-        "resolved_nodes=%u",
-        static_cast<unsigned long long>(cache_node_budget_bytes),
-        static_cast<unsigned long long>(cache_estimated_bytes_per_node()),
-        static_cast<unsigned long long>(cache_payload_bytes_per_node()),
-        cache_node_num);
-  }
-
+int DiskAnnIndexer::configure_cache(uint32_t cache_node_num) {
   cache_node_num = effective_cache_node_count(cache_node_num);
   if (cache_node_num == 0) {
     reset_cache_storage();
-    if (budget_configured) {
-      LOG_WARN(
-          "DiskANN node cache disabled because the configured byte budget "
-          "or index size resolves to zero cache nodes");
-    }
     return 0;
   }
 
@@ -604,15 +590,10 @@ int DiskAnnIndexer::configure_cache(uint32_t cache_node_num,
   const size_t loaded_nodes = coord_cache_.size();
   LOG_INFO(
       "Load Cache List Done: requested_nodes=%u selected_nodes=%zu "
-      "loaded_nodes=%zu failed_nodes=%zu elapsed_ms=%llu payload_bytes=%llu "
-      "estimated_bytes=%llu",
+      "loaded_nodes=%zu failed_nodes=%zu elapsed_ms=%llu",
       cache_node_num, selected_nodes, loaded_nodes,
       selected_nodes - loaded_nodes,
-      static_cast<unsigned long long>(cache_timer.milli_seconds()),
-      static_cast<unsigned long long>(static_cast<uint64_t>(cache_node_num) *
-                                      cache_payload_bytes_per_node()),
-      static_cast<unsigned long long>(static_cast<uint64_t>(cache_node_num) *
-                                      cache_estimated_bytes_per_node()));
+      static_cast<unsigned long long>(cache_timer.milli_seconds()));
   return 0;
 }
 

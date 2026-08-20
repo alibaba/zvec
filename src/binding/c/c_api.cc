@@ -24,7 +24,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -1843,56 +1842,6 @@ int zvec_index_params_get_diskann_pq_chunk_num(
     return 0;
   }
   return diskann_params->pq_chunk_num();
-}
-
-zvec_error_code_t zvec_index_params_set_diskann_cache_node_budget_bytes(
-    zvec_index_params_t *params, uint64_t cache_node_budget_bytes) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not DiskANN index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
-  auto *diskann_params = dynamic_cast<zvec::DiskAnnIndexParams *>(cpp_params);
-  if (!diskann_params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not DiskANN index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  if (cache_node_budget_bytes >
-      static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "DiskANN cache node budget exceeds INT64_MAX");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  diskann_params->set_cache_node_budget_bytes(
-      static_cast<int64_t>(cache_node_budget_bytes));
-  return ZVEC_OK;
-}
-
-uint64_t zvec_index_params_get_diskann_cache_node_budget_bytes(
-    const zvec_index_params_t *params) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not DiskANN index type");
-    return 0;
-  }
-  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  auto *diskann_params =
-      dynamic_cast<const zvec::DiskAnnIndexParams *>(cpp_params);
-  if (!diskann_params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not DiskANN index type");
-    return 0;
-  }
-  const int64_t cache_node_budget_bytes =
-      diskann_params->cache_node_budget_bytes();
-  if (cache_node_budget_bytes < 0) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "DiskANN cache node budget must not be negative");
-    return 0;
-  }
-  return static_cast<uint64_t>(cache_node_budget_bytes);
 }
 
 /**

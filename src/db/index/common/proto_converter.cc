@@ -190,7 +190,7 @@ DiskAnnIndexParams::OPtr ProtoConverter::FromPb(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()),
       params_pb.max_degree(), params_pb.list_size(), params_pb.pq_chunk_num(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
-      QuantizerParam(enable_rotate), params_pb.cache_node_budget_bytes());
+      QuantizerParam(enable_rotate));
 }
 
 proto::DiskAnnIndexParams ProtoConverter::ToPb(
@@ -205,7 +205,6 @@ proto::DiskAnnIndexParams ProtoConverter::ToPb(
   params_pb.set_max_degree(params->max_degree());
   params_pb.set_list_size(params->list_size());
   params_pb.set_pq_chunk_num(params->pq_chunk_num());
-  params_pb.set_cache_node_budget_bytes(params->cache_node_budget_bytes());
   return params_pb;
 }
 

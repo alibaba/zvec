@@ -163,23 +163,24 @@ TEST(IndexParamsTest, IVFIndexParams) {
   EXPECT_EQ(params.n_list(), 64);
 }
 
-TEST(IndexParamsTest, DiskAnnIndexParamsCacheBudget) {
-  constexpr uint64_t kBudgetBytes = 128ULL * 1024 * 1024;
+TEST(IndexParamsTest, DiskAnnIndexParams) {
   DiskAnnIndexParams params(MetricType::L2, 48, 80, 16, QuantizeType::FP16,
-                            QuantizerParam(true), kBudgetBytes);
+                            QuantizerParam(true));
 
   EXPECT_EQ(IndexType::DISKANN, params.type());
-  EXPECT_EQ(kBudgetBytes, params.cache_node_budget_bytes());
-  EXPECT_NE(std::string::npos,
-            params.to_string().find("cache_node_budget_bytes:134217728"));
+  EXPECT_EQ(MetricType::L2, params.metric_type());
+  EXPECT_EQ(48, params.max_degree());
+  EXPECT_EQ(80, params.list_size());
+  EXPECT_EQ(16, params.pq_chunk_num());
+  EXPECT_EQ(QuantizeType::FP16, params.quantize_type());
+  EXPECT_TRUE(params.quantizer_param().enable_rotate());
 
   auto cloned = params.clone();
   auto *cloned_diskann = dynamic_cast<DiskAnnIndexParams *>(cloned.get());
   ASSERT_NE(nullptr, cloned_diskann);
-  EXPECT_EQ(kBudgetBytes, cloned_diskann->cache_node_budget_bytes());
   EXPECT_EQ(params, *cloned_diskann);
 
-  cloned_diskann->set_cache_node_budget_bytes(kBudgetBytes / 2);
+  cloned_diskann->set_list_size(40);
   EXPECT_NE(params, *cloned_diskann);
 }
 

@@ -159,9 +159,6 @@ class DiskAnnIndexParam(VectorIndexParam):
             Clamped to the range [1, 1024]. Default is 0.
         quantize_type (QuantizeType): Optional quantization type for vector
             compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``.
-        cache_node_budget_bytes (int): Nominal per-physical-index memory budget
-            for caching hot graph nodes. It is not a process-wide hard memory
-            limit. ``0`` disables the cache. Default is 0.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -170,8 +167,7 @@ class DiskAnnIndexParam(VectorIndexParam):
         ...     max_degree=100,
         ...     list_size=50,
         ...     pq_chunk_num=8,
-        ...     quantize_type=QuantizeType.FP16,
-        ...     cache_node_budget_bytes=128 * 1024 * 1024
+        ...     quantize_type=QuantizeType.FP16
         ... )
         >>> print(params.max_degree)
         100
@@ -186,7 +182,6 @@ class DiskAnnIndexParam(VectorIndexParam):
         pq_chunk_num: typing.SupportsInt = 0,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
-        cache_node_budget_bytes: typing.SupportsInt = 0,
     ) -> None:
         """
 
@@ -205,10 +200,6 @@ class DiskAnnIndexParam(VectorIndexParam):
                 Defaults to QuantizeType.UNDEFINED.
             quantizer_param (QuantizerParam, optional): Quantizer configuration.
                 Defaults to QuantizerParam().
-            cache_node_budget_bytes (int, optional): Nominal
-                per-physical-index memory budget for the hot node cache. It is
-                not a process-wide hard memory limit. ``0`` disables it.
-                Defaults to 0.
         """
 
     def __repr__(self) -> str: ...
@@ -229,10 +220,6 @@ class DiskAnnIndexParam(VectorIndexParam):
     @property
     def pq_chunk_num(self) -> int:
         """int: Number of PQ chunks for product quantization."""
-
-    @property
-    def cache_node_budget_bytes(self) -> int:
-        """int: Nominal per-physical-index hot node cache byte budget."""
 
 class DiskAnnQueryParam(QueryParam):
     """

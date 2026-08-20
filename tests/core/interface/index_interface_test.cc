@@ -50,8 +50,7 @@ TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
-TEST(IndexInterface, DiskAnnParamJsonRoundTripPreservesCacheBudget) {
-  constexpr uint64_t kBudgetBytes = 128ULL * 1024 * 1024;
+TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   auto param = DiskAnnIndexParamBuilder()
                    .with_metric_type(MetricType::kL2sq)
                    .with_data_type(DataType::DT_FP32)
@@ -59,7 +58,6 @@ TEST(IndexInterface, DiskAnnParamJsonRoundTripPreservesCacheBudget) {
                    .with_max_degree(48)
                    .with_list_size(80)
                    .with_pq_chunk_num(16)
-                   .with_cache_node_budget_bytes(kBudgetBytes)
                    .build();
 
   auto restored =
@@ -69,13 +67,6 @@ TEST(IndexInterface, DiskAnnParamJsonRoundTripPreservesCacheBudget) {
   EXPECT_EQ(48, diskann->max_degree);
   EXPECT_EQ(80, diskann->list_size);
   EXPECT_EQ(16, diskann->pq_chunk_num);
-  EXPECT_EQ(kBudgetBytes, diskann->cache_node_budget_bytes);
-}
-
-TEST(IndexInterface, DiskAnnParamJsonRejectsNegativeCacheConfiguration) {
-  auto negative_budget = IndexFactory::DeserializeIndexParamFromJson(
-      R"({"index_type":"kDiskAnn","cache_node_budget_bytes":-1})");
-  EXPECT_EQ(nullptr, negative_budget);
 }
 
 #if RABITQ_SUPPORTED

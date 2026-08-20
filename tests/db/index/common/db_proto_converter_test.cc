@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
-#include <zvec/db/schema.h>
 #include "db/index/common/proto_converter.h"
 #include "db/index/common/type_helper.h"
 
@@ -116,7 +115,6 @@ TEST(ConverterTest, IVFIndexParamsConversion) {
 }
 
 TEST(ConverterTest, DiskAnnIndexParamsConversion) {
-  constexpr uint64_t kBudgetBytes = 128ULL * 1024 * 1024;
   proto::DiskAnnIndexParams diskann_pb;
   auto *base_params = diskann_pb.mutable_base();
   base_params->set_metric_type(proto::MT_L2);
@@ -125,7 +123,6 @@ TEST(ConverterTest, DiskAnnIndexParamsConversion) {
   diskann_pb.set_max_degree(48);
   diskann_pb.set_list_size(80);
   diskann_pb.set_pq_chunk_num(16);
-  diskann_pb.set_cache_node_budget_bytes(kBudgetBytes);
 
   auto diskann_params = ProtoConverter::FromPb(diskann_pb);
   ASSERT_NE(nullptr, diskann_params);
@@ -133,26 +130,16 @@ TEST(ConverterTest, DiskAnnIndexParamsConversion) {
   EXPECT_EQ(48, diskann_params->max_degree());
   EXPECT_EQ(80, diskann_params->list_size());
   EXPECT_EQ(16, diskann_params->pq_chunk_num());
-  EXPECT_EQ(kBudgetBytes, diskann_params->cache_node_budget_bytes());
+  EXPECT_EQ(QuantizeType::FP16, diskann_params->quantize_type());
   EXPECT_TRUE(diskann_params->quantizer_param().enable_rotate());
 
   auto roundtrip_pb = ProtoConverter::ToPb(diskann_params.get());
-  EXPECT_EQ(kBudgetBytes, roundtrip_pb.cache_node_budget_bytes());
   EXPECT_EQ(proto::MT_L2, roundtrip_pb.base().metric_type());
   EXPECT_EQ(proto::QT_FP16, roundtrip_pb.base().quantize_type());
+  EXPECT_EQ(48, roundtrip_pb.max_degree());
+  EXPECT_EQ(80, roundtrip_pb.list_size());
+  EXPECT_EQ(16, roundtrip_pb.pq_chunk_num());
   EXPECT_TRUE(roundtrip_pb.base().quantizer_param().enable_rotate());
-
-  proto::DiskAnnIndexParams legacy_pb;
-  EXPECT_EQ(0U, ProtoConverter::FromPb(legacy_pb)->cache_node_budget_bytes());
-
-  proto::DiskAnnIndexParams invalid_pb;
-  invalid_pb.mutable_base()->set_metric_type(proto::MT_L2);
-  invalid_pb.set_cache_node_budget_bytes(-1);
-  auto invalid_params = ProtoConverter::FromPb(invalid_pb);
-  ASSERT_NE(nullptr, invalid_params);
-  FieldSchema invalid_field("vector_field", DataType::VECTOR_FP32, 128, false,
-                            invalid_params);
-  EXPECT_FALSE(invalid_field.validate().ok());
 }
 
 #if RABITQ_SUPPORTED

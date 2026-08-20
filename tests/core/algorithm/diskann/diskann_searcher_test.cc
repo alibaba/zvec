@@ -25,7 +25,6 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
-#include "diskann_cache_budget.h"
 #include "diskann_holder.h"
 #include "diskann_index_provider.h"
 #include "diskann_params.h"
@@ -48,7 +47,7 @@ class DiskAnnCacheTestPeer {
 
   static int configure_cache(DiskAnnSearcher *searcher,
                              uint32_t cache_node_num) {
-    return searcher->diskann_indexer_->configure_cache(cache_node_num, 0);
+    return searcher->diskann_indexer_->configure_cache(cache_node_num);
   }
 
   static size_t coordinate_cache_size(const DiskAnnSearcher *searcher) {
@@ -711,11 +710,7 @@ TEST_F(DiskAnnSearcherTest, TestNodeCache) {
 
   Params search_params;
   constexpr uint32_t kCacheNodes = 2 * DiskAnnUtil::kMaxSectorReadNum + 3;
-  const uint64_t cache_budget =
-      DiskAnnCacheBudget::EstimatedBytesPerNode(*_index_meta_ptr, 32) *
-      kCacheNodes;
-  search_params.set("zvec.diskann.searcher.cache_node_budget_bytes",
-                    cache_budget);
+  search_params.set("zvec.diskann.searcher.cache_node_num", kCacheNodes);
   search_params.set("zvec.diskann.searcher.list_size", 500);
 
   ASSERT_EQ(0, searcher->init(search_params));

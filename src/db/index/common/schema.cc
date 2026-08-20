@@ -218,19 +218,6 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
-        auto diskann_params =
-            std::dynamic_pointer_cast<DiskAnnIndexParams>(index_params_);
-        if (!diskann_params) {
-          return Status::InvalidArgument(
-              "schema validate failed: DISKANN index requires "
-              "DiskAnnIndexParams");
-        }
-        if (diskann_params->cache_node_budget_bytes() < 0) {
-          return Status::InvalidArgument(
-              "schema validate failed: DiskAnn cache_node_budget_bytes must "
-              "be greater than or equal to 0");
-        }
-
         // The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
         // single source of truth for platform eligibility — it is also used by
