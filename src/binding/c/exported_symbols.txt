@@ -8,6 +8,7 @@ _zvec_collection_alter_column
 _zvec_collection_close
 _zvec_collection_create_and_open
 _zvec_collection_create_index
+_zvec_collection_create_iterator
 _zvec_collection_delete
 _zvec_collection_delete_by_filter
 _zvec_collection_delete_with_results
@@ -118,6 +119,8 @@ _zvec_doc_has_field
 _zvec_doc_has_field_value
 _zvec_doc_is_empty
 _zvec_doc_is_field_null
+_zvec_doc_iterator_close
+_zvec_doc_iterator_next
 _zvec_doc_memory_usage
 _zvec_doc_merge
 _zvec_doc_remove_field
@@ -232,6 +235,10 @@ _zvec_initialize
 _zvec_int64_array_create
 _zvec_int64_array_destroy
 _zvec_is_initialized
+_zvec_iterator_options_create
+_zvec_iterator_options_destroy
+_zvec_iterator_options_set_include_vector
+_zvec_iterator_options_set_output_fields
 _zvec_malloc
 _zvec_metric_type_to_string
 _zvec_multi_query_add_sub_query
