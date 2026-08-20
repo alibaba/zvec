@@ -20,7 +20,8 @@
 namespace zvec {
 
 // Wraps a RecordBatchReader and filters out deleted rows, checked by each
-// row's _zvec_g_doc_id_ against the IndexFilter delete bitmap.
+// row's _zvec_g_doc_id_ against the IndexFilter delete bitmap. The filter
+// must be non-null; callers with nothing to filter skip the wrapper.
 class FilteringReader : public arrow::RecordBatchReader {
  public:
   static std::shared_ptr<FilteringReader> Make(
@@ -29,8 +30,9 @@ class FilteringReader : public arrow::RecordBatchReader {
     return std::make_shared<FilteringReader>(std::move(inner_reader), filter);
   }
 
-  // When a filter is present, resolves and validates the delete-key column
-  // once at construction (the reader schema is stable for its lifetime).
+  // `filter` must be non-null. Resolves and validates the delete-key
+  // column once at construction (the reader schema is stable for its
+  // lifetime).
   FilteringReader(std::shared_ptr<arrow::RecordBatchReader> inner_reader,
                   const IndexFilter::Ptr &filter);
 

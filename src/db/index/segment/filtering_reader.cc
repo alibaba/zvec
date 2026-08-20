@@ -22,27 +22,21 @@ FilteringReader::FilteringReader(
     std::shared_ptr<arrow::RecordBatchReader> inner_reader,
     const IndexFilter::Ptr &filter)
     : inner_reader_(std::move(inner_reader)), filter_(filter) {
-  // The delete-key column is only needed when actually filtering; a
-  // filter-less reader passes batches through untouched.
-  if (filter_) {
-    const auto &s = *inner_reader_->schema();
-    gdoc_col_ = s.GetFieldIndex(GLOBAL_DOC_ID);
-    if (gdoc_col_ < 0 ||
-        s.field(gdoc_col_)->type()->id() != arrow::Type::UINT64) {
-      schema_error_ = arrow::Status::FromArgs(
-          arrow::StatusCode::ExecutionError,
-          "FilteringReader is missing the uint64 global doc id column");
-    }
+  // `filter` must be non-null: callers that have nothing to filter read
+  // the inner reader directly instead of wrapping it.
+  const auto &s = *inner_reader_->schema();
+  gdoc_col_ = s.GetFieldIndex(GLOBAL_DOC_ID);
+  if (gdoc_col_ < 0 ||
+      s.field(gdoc_col_)->type()->id() != arrow::Type::UINT64) {
+    schema_error_ = arrow::Status::FromArgs(
+        arrow::StatusCode::ExecutionError,
+        "FilteringReader is missing the uint64 global doc id column");
   }
 }
 
 arrow::Status FilteringReader::ReadNext(
     std::shared_ptr<arrow::RecordBatch> *batch) {
-  // Loop-invariant checks: no filter means batches pass through untouched,
-  // and the delete-key column was resolved and validated at construction.
-  if (!filter_) {
-    return inner_reader_->ReadNext(batch);
-  }
+  // The delete-key column was resolved and validated at construction.
   if (!schema_error_.ok()) {
     return schema_error_;
   }

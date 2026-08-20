@@ -158,8 +158,14 @@ Result<Doc::Ptr> DocIterator::next() {
                 Status::InternalError("Segment::scan failed during iteration");
             return tl::make_unexpected(impl_->error);
           }
-          impl_->current_reader =
-              FilteringReader::Make(std::move(scalar_reader), impl_->filter);
+          // Deleted rows are filtered only when the snapshot's delete
+          // bitmap is non-empty; otherwise read the segment as-is.
+          if (impl_->filter) {
+            impl_->current_reader =
+                FilteringReader::Make(std::move(scalar_reader), impl_->filter);
+          } else {
+            impl_->current_reader = std::move(scalar_reader);
+          }
           auto rs = resolve_reader_columns(impl_.get(),
                                            *impl_->current_reader->schema());
           if (!rs.ok()) {

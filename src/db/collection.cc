@@ -2462,8 +2462,6 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
 void CollectionImpl::decrement_active_iterators() {
   std::unique_lock lock(schema_handle_mtx_);
   --active_iterators_;
-  // The only waited-for condition (close_internal) is count == 0, which
-  // can only become true on this transition, so notify exactly there.
   if (active_iterators_ == 0) {
     iterator_cv_.notify_all();
   }
