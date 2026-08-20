@@ -749,9 +749,8 @@ TEST_F(IteratorTest, CreateIteratorRejectedWhileOptimizeRunning) {
   collection->destroy();
 }
 
-// destroy is rejected while an iterator is open; close waits for open
-// iterators instead of rejecting (it also runs from the destructor).
-TEST_F(IteratorTest, CloseWaitsForIteratorsDestroyRejected) {
+// The public close() and destroy() fail fast while an iterator is open.
+TEST_F(IteratorTest, CloseAndDestroyRejectedWhileIteratorOpen) {
   auto schema = TestHelper::CreateNormalSchema();
   CollectionOptions options;
   options.read_only_ = false;
@@ -768,17 +767,10 @@ TEST_F(IteratorTest, CloseWaitsForIteratorsDestroyRejected) {
 
   auto iter = collection->create_iterator().value();
 
+  EXPECT_FALSE(collection->close().ok());
   EXPECT_FALSE(collection->destroy().ok());
 
-  std::atomic<bool> close_done{false};
-  std::thread closer([&] {
-    EXPECT_TRUE(collection->close().ok());
-    close_done.store(true);
-  });
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  EXPECT_FALSE(close_done.load());  // still waiting for the iterator
-
-  // The iterator keeps working while close() is waiting.
+  // The full snapshot stays readable.
   int count = 0;
   while (true) {
     auto r = iter->next();
@@ -789,8 +781,55 @@ TEST_F(IteratorTest, CloseWaitsForIteratorsDestroyRejected) {
   EXPECT_EQ(count, N);
   iter->close();
 
-  closer.join();
-  EXPECT_TRUE(close_done.load());
+  // After the iterator is closed, destroy succeeds.
+  ASSERT_TRUE(collection->destroy().ok());
+}
+
+// The destructor cannot report errors, so unlike the public close() it
+// waits for open iterators instead of rejecting.
+TEST_F(IteratorTest, DestructorWaitsForIterators) {
+  auto schema = TestHelper::CreateNormalSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(iter_test_path, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto collection = std::move(result.value());
+
+  const int N = 100;
+  std::vector<Doc> docs;
+  for (int i = 0; i < N; i++) docs.push_back(TestHelper::CreateDoc(i, *schema));
+  ASSERT_TRUE(collection->insert(docs).has_value());
+  collection->flush();
+
+  auto iter = collection->create_iterator().value();
+
+  std::atomic<bool> destroyed{false};
+  std::thread destroyer([&] {
+    collection.reset();  // last reference -> destructor waits
+    destroyed.store(true);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_FALSE(destroyed.load());  // still waiting for the iterator
+
+  // The iterator keeps working while the destructor is waiting.
+  int count = 0;
+  while (true) {
+    auto r = iter->next();
+    ASSERT_TRUE(r.has_value()) << r.error().message();
+    if (r.value() == nullptr) break;
+    count++;
+  }
+  EXPECT_EQ(count, N);
+  iter->close();
+
+  destroyer.join();
+  EXPECT_TRUE(destroyed.load());
+
+  // The destructor closed (but did not destroy) the collection.
+  auto reopened = Collection::Open(iter_test_path, options);
+  ASSERT_TRUE(reopened.has_value());
+  reopened.value()->destroy();
 }
 
 TEST_F(IteratorTest, CloseThenCreateIteratorRejected) {

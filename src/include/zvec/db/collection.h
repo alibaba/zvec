@@ -116,10 +116,11 @@ class ZVEC_API Collection {
   // Create a document iterator over an isolated snapshot taken at call time
   // (on writable collections this seals the current writing segment).
   // While any iterator is open, schema DDL (create/drop index,
-  // add/alter/drop column) and destroy return an error, close waits for
-  // the iterators, and optimize fails at its start; conversely this call
-  // fails while a maintenance operation is running. Flush, writes and
-  // queries are not affected. The collection must outlive its iterators.
+  // add/alter/drop column), destroy and close return an error (only the
+  // destructor path waits for open iterators), and optimize fails at its
+  // start; conversely this call fails while a maintenance operation is
+  // running. Flush, writes and queries are not affected. The collection
+  // must outlive its iterators.
   virtual Result<DocIterator::Ptr> create_iterator(
       const IteratorOptions &options = {}) = 0;
 

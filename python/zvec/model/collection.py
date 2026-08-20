@@ -62,8 +62,8 @@ class DocIterator(Iterator[Doc], contextlib.AbstractContextManager["DocIterator"
                 ...
 
     Closing the iterator releases the collection's active-iterator slot;
-    while any iterator is open, schema changes and destroy are rejected,
-    close waits for the iterators and optimize fails at its start, so
+    while any iterator is open, schema changes, destroy and close are
+    rejected and optimize fails at its start, so
     deterministic closing matters.
     """
 
@@ -471,8 +471,9 @@ class Collection:
 
         While any iterator is open, schema changes
         (create_index/drop_index/add_column/alter_column/drop_column) and
-        destroy raise an error, close waits for the iterators to close,
-        and optimize fails at its start; conversely iter_docs raises an
+        destroy raise an error, optimize fails at its start, and close
+        raises an error too (only releasing the collection outright waits
+        for open iterators); conversely iter_docs raises an
         error while a maintenance operation (optimize, schema DDL, close
         or destroy) is running. Flush, writes and queries are not
         affected.

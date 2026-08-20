@@ -3862,10 +3862,11 @@ zvec_iterator_options_set_include_vector(zvec_iterator_options_t *options,
  * seals the current writing segment (each call may produce a new small
  * segment); read-only collections are scanned without any write.
  * While any iterator is open, schema changes (create/drop index,
- * add/alter/drop column) and destroy return an error, close waits for the
- * iterators to close, and optimize fails at its start; conversely this
- * call fails while a maintenance operation (optimize, schema DDL, close
- * or destroy) is running. Flush, writes and queries are not affected.
+ * add/alter/drop column), destroy and close return an error (only the
+ * destructor path waits for open iterators), and optimize fails at its
+ * start; conversely this call fails while a maintenance operation
+ * (optimize, schema DDL, close or destroy) is running. Flush, writes and
+ * queries are not affected.
  * The collection must outlive its iterators: close every iterator
  * (zvec_doc_iterator_close) before calling zvec_collection_close() or
  * destroying the collection.

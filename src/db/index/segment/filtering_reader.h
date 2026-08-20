@@ -29,8 +29,8 @@ class FilteringReader : public arrow::RecordBatchReader {
     return std::make_shared<FilteringReader>(std::move(inner_reader), filter);
   }
 
-  // Resolves and validates the delete-key column once at construction
-  // (the reader schema is stable for its whole lifetime).
+  // When a filter is present, resolves and validates the delete-key column
+  // once at construction (the reader schema is stable for its lifetime).
   FilteringReader(std::shared_ptr<arrow::RecordBatchReader> inner_reader,
                   const IndexFilter::Ptr &filter);
 

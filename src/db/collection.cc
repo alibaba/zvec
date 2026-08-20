@@ -147,6 +147,8 @@ class CollectionImpl : public Collection {
  private:
   void prepare_schema();
 
+  Status close_internal();
+  Status close_locked();
   Status close_unsafe();
 
   Status flush_unsafe();
@@ -282,7 +284,7 @@ class CollectionImpl : public Collection {
   mutable std::shared_mutex schema_handle_mtx_;
   // Number of open iterators, guarded by schema_handle_mtx_ (exclusive).
   int active_iterators_{0};
-  // Signalled on decrement; close() waits on it for iterators to drain.
+  // Signalled when the count reaches zero; close_internal waits on it.
   std::condition_variable_any iterator_cv_;
   mutable std::shared_mutex write_mtx_;
   // Serializes maintenance operations (optimize, schema DDL, close and
@@ -355,7 +357,7 @@ CollectionImpl::CollectionImpl(const std::string &path) : path_(path) {}
 
 CollectionImpl::~CollectionImpl() {
   if (!destroyed_ && !closed_) {
-    close();
+    close_internal();
   }
 }
 
@@ -386,18 +388,32 @@ Status CollectionImpl::close() {
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
   std::unique_lock lock(schema_handle_mtx_);
+  CHECK_RETURN_STATUS(check_no_active_iterators("close"));
 
-  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  return close_locked();
+}
 
-  // Never reject: close() also runs from the destructor, where an error
-  // would leak resources. Wait for open iterators instead.
+// Used only from the destructor, which cannot report errors: waiting is
+// the only way to still release resources when iterators are open.
+Status CollectionImpl::close_internal() {
+  std::lock_guard maintenance_lock(maintenance_mtx_);
+
+  std::unique_lock lock(schema_handle_mtx_);
+
   if (active_iterators_ > 0) {
     LOG_WARN(
-        "close() called while %d iterator(s) are open; waiting for "
-        "them to close",
+        "the collection is being destroyed while %d iterator(s) are "
+        "open; waiting for them to close",
         active_iterators_);
     iterator_cv_.wait(lock, [&] { return active_iterators_ == 0; });
   }
+
+  return close_locked();
+}
+
+// Requires maintenance_mtx_ and schema_handle_mtx_ (exclusive).
+Status CollectionImpl::close_locked() {
+  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   // closing twice is a no-op
   if (closed_) {
@@ -2446,7 +2462,11 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
 void CollectionImpl::decrement_active_iterators() {
   std::unique_lock lock(schema_handle_mtx_);
   --active_iterators_;
-  iterator_cv_.notify_all();
+  // The only waited-for condition (close_internal) is count == 0, which
+  // can only become true on this transition, so notify exactly there.
+  if (active_iterators_ == 0) {
+    iterator_cv_.notify_all();
+  }
 }
 
 }  // namespace zvec

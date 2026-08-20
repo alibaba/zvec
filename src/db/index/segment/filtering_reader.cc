@@ -22,13 +22,17 @@ FilteringReader::FilteringReader(
     std::shared_ptr<arrow::RecordBatchReader> inner_reader,
     const IndexFilter::Ptr &filter)
     : inner_reader_(std::move(inner_reader)), filter_(filter) {
-  const auto &s = *inner_reader_->schema();
-  gdoc_col_ = s.GetFieldIndex(GLOBAL_DOC_ID);
-  if (gdoc_col_ < 0 ||
-      s.field(gdoc_col_)->type()->id() != arrow::Type::UINT64) {
-    schema_error_ = arrow::Status::FromArgs(
-        arrow::StatusCode::ExecutionError,
-        "FilteringReader is missing the uint64 global doc id column");
+  // The delete-key column is only needed when actually filtering; a
+  // filter-less reader passes batches through untouched.
+  if (filter_) {
+    const auto &s = *inner_reader_->schema();
+    gdoc_col_ = s.GetFieldIndex(GLOBAL_DOC_ID);
+    if (gdoc_col_ < 0 ||
+        s.field(gdoc_col_)->type()->id() != arrow::Type::UINT64) {
+      schema_error_ = arrow::Status::FromArgs(
+          arrow::StatusCode::ExecutionError,
+          "FilteringReader is missing the uint64 global doc id column");
+    }
   }
 }
 
