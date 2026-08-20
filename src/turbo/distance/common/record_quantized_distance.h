@@ -19,6 +19,11 @@
 
 namespace zvec::turbo::distance_internal {
 
+// These helpers are compiled into TUs built with different /arch flags
+// (scalar, AVX2, AVX512). They must be `static` so each TU keeps its own
+// copy; a shared COMDAT copy could be the AVX512-encoded one, crashing
+// AVX2/scalar callers on CPUs without AVX512.
+
 struct RecordMeta {
   float scale;
   float bias;
@@ -26,16 +31,18 @@ struct RecordMeta {
   float squared_sum;
 };
 
-inline RecordMeta load_record_meta(const void *record, size_t tail_offset) {
+static inline RecordMeta load_record_meta(const void *record,
+                                          size_t tail_offset) {
   RecordMeta meta;
   std::memcpy(&meta, static_cast<const char *>(record) + tail_offset,
               sizeof(meta));
   return meta;
 }
 
-inline float record_minus_inner_product(const void *a, const void *b,
-                                        size_t original_dim, size_t tail_offset,
-                                        float raw_ip) {
+static inline float record_minus_inner_product(const void *a, const void *b,
+                                               size_t original_dim,
+                                               size_t tail_offset,
+                                               float raw_ip) {
   const RecordMeta m = load_record_meta(a, tail_offset);
   const RecordMeta q = load_record_meta(b, tail_offset);
 
@@ -44,9 +51,9 @@ inline float record_minus_inner_product(const void *a, const void *b,
            static_cast<float>(original_dim) * q.bias * m.bias);
 }
 
-inline float record_squared_euclidean(const void *a, const void *b,
-                                      size_t original_dim, size_t tail_offset,
-                                      float raw_ip) {
+static inline float record_squared_euclidean(const void *a, const void *b,
+                                             size_t original_dim,
+                                             size_t tail_offset, float raw_ip) {
   const RecordMeta m = load_record_meta(a, tail_offset);
   const RecordMeta q = load_record_meta(b, tail_offset);
   const float query_sum = q.scale * q.sum;
