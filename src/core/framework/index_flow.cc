@@ -258,6 +258,9 @@ int IndexFlow::unload(void) {
     }
     reformer_ = nullptr;
   }
+  if (query_quantizer_) {
+    query_quantizer_.reset();
+  }
   if (metric_) {
     int ret = metric_->cleanup();
     if (ret < 0) {
