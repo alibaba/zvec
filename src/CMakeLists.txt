@@ -143,6 +143,30 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         endif()
     endif()
 
+    # Restrict exported symbols to zvec's own public C++ API (namespace zvec,
+    # which includes nested zvec::ailego / zvec::core / zvec::turbo /
+    # zvec::reranker). All third-party symbols (arrow, rocksdb, parquet,
+    # antlr4) are hidden, and unreferenced code is dead-stripped to
+    # reduce the shared library size. The public C++ headers never expose
+    # third-party types, so hiding them is safe for external C++ consumers.
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        if(APPLE)
+            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.txt)
+            target_link_options(${TARGET_NAME} PRIVATE
+                "-Wl,-exported_symbols_list,${_ZVEC_ALLIN_EXPORTS}"
+                "-Wl,-dead_strip")
+            set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
+                LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
+        elseif(UNIX)
+            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.lds)
+            target_link_options(${TARGET_NAME} PRIVATE
+                "-Wl,--version-script,${_ZVEC_ALLIN_EXPORTS}"
+                "-Wl,--gc-sections")
+            set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
+                LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
+        endif()
+    endif()
+
     target_include_directories(${TARGET_NAME}
         PUBLIC
             $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/src/generated>

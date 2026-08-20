@@ -18,7 +18,6 @@
 #include <gtest/gtest.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/meta.h"
-#include "proto/zvec.pb.h"
 #include "zvec/db/schema.h"
 
 namespace zvec {
@@ -89,15 +88,47 @@ TEST_F(VersionManagerTest, VersionLoadSave) {
 
   CollectionSchema schema;
   schema.set_name("test_collection");
-  version.set_schema(schema);
 
+  // A vector field carrying HNSW index parameters.
+  auto vector_field = std::make_shared<FieldSchema>();
+  vector_field->set_name("vector_field");
+  vector_field->set_data_type(DataType::VECTOR_FP32);
+  vector_field->set_dimension(128);
+  vector_field->set_index_params(
+      std::make_shared<HnswIndexParams>(MetricType::IP, 32, 200));
+  schema.add_field(vector_field);
+
+  // A scalar field with an inverted index.
+  auto scalar_field = std::make_shared<FieldSchema>();
+  scalar_field->set_name("title");
+  scalar_field->set_data_type(DataType::STRING);
+  scalar_field->set_index_params(
+      std::make_shared<InvertIndexParams>(true, true));
+  schema.add_field(scalar_field);
+
+  version.set_schema(schema);
+  version.set_enable_mmap(true);
+
+  // Persisted segment with two blocks and an indexed vector field.
   auto segment_meta = std::make_shared<SegmentMeta>(1);
   segment_meta->set_id(1);
-  version.add_persisted_segment_meta(segment_meta);
+  segment_meta->add_persisted_block(
+      BlockMeta(1, BlockType::SCALAR, 0, 99, 100, {"vector_field", "title"}));
+  segment_meta->add_persisted_block(
+      BlockMeta(2, BlockType::VECTOR_INDEX, 0, 99));
+  segment_meta->add_indexed_vector_field("vector_field");
+  EXPECT_TRUE(version.add_persisted_segment_meta(segment_meta).ok());
+
+  // Writing segment with an in-flight forward block.
+  auto writing_meta = std::make_shared<SegmentMeta>(2);
+  writing_meta->set_id(2);
+  writing_meta->set_writing_forward_block(
+      BlockMeta(10, BlockType::SCALAR, 100, 149, 50, {"vector_field"}));
+  version.reset_writing_segment_meta(writing_meta);
 
   version.set_id_map_path_suffix(100);
   version.set_delete_snapshot_path_suffix(200);
-  version.set_next_segment_id(2);
+  version.set_next_segment_id(3);
 
   // Save version
   EXPECT_TRUE(Version::Save(manifest_path, version).ok());
@@ -108,10 +139,49 @@ TEST_F(VersionManagerTest, VersionLoadSave) {
 
   // Verify loaded version matches original
   EXPECT_EQ(loaded_version.schema().name(), "test_collection");
-  EXPECT_EQ(loaded_version.persisted_segment_metas().size(), 1);
+  EXPECT_TRUE(loaded_version.enable_mmap());
+  const auto loaded_fields = loaded_version.schema().fields();
+  ASSERT_EQ(loaded_fields.size(), 2u);
+
+  const auto &loaded_vector_field = loaded_fields[0];
+  EXPECT_EQ(loaded_vector_field->name(), "vector_field");
+  EXPECT_EQ(loaded_vector_field->data_type(), DataType::VECTOR_FP32);
+  EXPECT_EQ(loaded_vector_field->dimension(), 128u);
+  ASSERT_NE(loaded_vector_field->index_params(), nullptr);
+  EXPECT_EQ(*loaded_vector_field->index_params(),
+            HnswIndexParams(MetricType::IP, 32, 200));
+
+  const auto &loaded_scalar_field = loaded_fields[1];
+  EXPECT_EQ(loaded_scalar_field->name(), "title");
+  EXPECT_EQ(loaded_scalar_field->data_type(), DataType::STRING);
+  ASSERT_NE(loaded_scalar_field->index_params(), nullptr);
+  EXPECT_EQ(*loaded_scalar_field->index_params(),
+            InvertIndexParams(true, true));
+
+  ASSERT_EQ(loaded_version.persisted_segment_metas().size(), 1u);
+  const auto loaded_segments = loaded_version.persisted_segment_metas();
+  ASSERT_EQ(loaded_segments.size(), 1u);
+  const auto &loaded_segment = loaded_segments[0];
+  EXPECT_EQ(loaded_segment->id(), 1u);
+  ASSERT_EQ(loaded_segment->persisted_blocks().size(), 2u);
+  EXPECT_EQ(
+      loaded_segment->persisted_blocks()[0],
+      BlockMeta(1, BlockType::SCALAR, 0, 99, 100, {"vector_field", "title"}));
+  EXPECT_EQ(loaded_segment->persisted_blocks()[1],
+            BlockMeta(2, BlockType::VECTOR_INDEX, 0, 99));
+  EXPECT_TRUE(loaded_segment->vector_indexed("vector_field"));
+
+  ASSERT_NE(loaded_version.writing_segment_meta(), nullptr);
+  EXPECT_EQ(loaded_version.writing_segment_meta()->id(), 2u);
+  ASSERT_TRUE(
+      loaded_version.writing_segment_meta()->has_writing_forward_block());
+  EXPECT_EQ(
+      loaded_version.writing_segment_meta()->writing_forward_block().value(),
+      BlockMeta(10, BlockType::SCALAR, 100, 149, 50, {"vector_field"}));
+
   EXPECT_EQ(loaded_version.id_map_path_suffix(), 100);
   EXPECT_EQ(loaded_version.delete_snapshot_path_suffix(), 200);
-  EXPECT_EQ(loaded_version.next_segment_id(), 2);
+  EXPECT_EQ(loaded_version.next_segment_id(), 3);
 }
 
 // Test VersionManager creation and recovery
@@ -254,27 +324,23 @@ TEST_F(VersionManagerTest, ErrorConditions) {
   EXPECT_FALSE(version_manager->remove_persisted_segment_meta(999).ok());
 }
 
-// Test conversion between protobuf and internal schema
+// Test that a schema round-trips through a Version object.
 TEST_F(VersionManagerTest, SchemaConversion) {
-  // Create protobuf schema
-  zvec::proto::CollectionSchema pb_schema;
-  pb_schema.set_name("test_collection");
-
-  auto pb_field = pb_schema.add_fields();
-  pb_field->set_name("vector_field");
-  pb_field->set_data_type(zvec::proto::DataType::DT_VECTOR_FP32);
-  pb_field->set_dimension(128);
-
-  // Convert to internal schema (this would be done in the Load method)
   CollectionSchema internal_schema;
-  internal_schema.set_name(pb_schema.name());
-  // In a real implementation, fields would be converted here
+  internal_schema.set_name("test_collection");
 
-  // Test that we can set and retrieve the schema
+  auto field = std::make_shared<FieldSchema>();
+  field->set_name("vector_field");
+  field->set_data_type(DataType::VECTOR_FP32);
+  field->set_dimension(128);
+  internal_schema.add_field(field);
+
   Version version;
   version.set_schema(internal_schema);
 
   EXPECT_EQ(version.schema().name(), "test_collection");
+  ASSERT_EQ(version.schema().fields().size(), 1u);
+  EXPECT_EQ(version.schema().fields()[0]->dimension(), 128u);
 }
 
 // Test SegmentMeta functionality
