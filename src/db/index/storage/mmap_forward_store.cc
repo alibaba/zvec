@@ -378,7 +378,7 @@ ExecBatchPtr MmapForwardStore::FetchParquet(
     scalars.emplace_back(std::move(scalar_result.ValueOrDie()));
   }
 
-  return std::make_shared<arrow::ExecBatch>(std::move(scalars), 1);
+  return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
 }
 
 TablePtr MmapForwardStore::FetchIPC(const std::vector<std::string> &columns,
@@ -460,7 +460,7 @@ ExecBatchPtr MmapForwardStore::FetchIPC(const std::vector<std::string> &columns,
     }
   }
 
-  return std::make_shared<arrow::ExecBatch>(std::move(scalars), 1);
+  return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
 }
 
 int MmapForwardStore::FindRowGroupForRow(int64_t row) {

@@ -25,7 +25,8 @@ using namespace zvec;
 using namespace zvec::ailego;
 
 TEST(ThreadQueue, General) {
-  constexpr int kTaskCount = 1000;
+  // Keep static: MSVC otherwise requires kTaskCount in the predicate capture.
+  static constexpr int kTaskCount = 1000;
   std::mutex count_mutex;
   std::condition_variable count_cond;
   int count = 0;
@@ -67,7 +68,8 @@ TEST(ThreadQueue, General) {
 }
 
 TEST(ThreadQueue, MutliThread) {
-  constexpr unsigned int kTaskCount = 10000u;
+  // Keep static: MSVC otherwise requires kTaskCount in the predicate capture.
+  static constexpr unsigned int kTaskCount = 10000u;
   std::mutex count_mutex;
   std::condition_variable count_cond;
   unsigned int count = 0u;

@@ -22,7 +22,6 @@
 #include <arrow/api.h>
 #include <arrow/chunked_array.h>
 #include <arrow/compute/api.h>
-#include <arrow/dataset/api.h>
 #include <arrow/filesystem/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
