@@ -317,7 +317,7 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
   EXPECT_EQ(filter_cond->op_name(), "and");
   EXPECT_FALSE(filter_cond->left());
 
-  // ((name=3) or (name in (1, 2, 3))) or (category not in ("a", "b", "c"))
+  // (name in (3, 1, 2)) or (category not in ("a", "b", "c"))
   auto right = std::dynamic_pointer_cast<QueryNode>(filter_cond->right());
   EXPECT_TRUE(right);
   EXPECT_EQ(right->op_name(), "or");
@@ -336,31 +336,19 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
   EXPECT_EQ(right_const->op_name(), "LIST_VALUE");
   EXPECT_EQ(right_const->text(), "NOT (a, b, c)");
 
-  // (name=3) or (name in (1, 2, 3))
-  auto left = std::dynamic_pointer_cast<QueryNode>(right->left());
-  ASSERT_TRUE(left);
-  EXPECT_EQ(left->op_name(), "or");
-  auto or1 = std::dynamic_pointer_cast<QueryNode>(left->left());
-  EXPECT_EQ(or1->op_name(), "=");
-  auto id1 = std::dynamic_pointer_cast<QueryIDNode>(or1->left());
-  ASSERT_TRUE(id1);
-  EXPECT_EQ(id1->op_name(), "ID");
-  EXPECT_EQ(id1->value(), "name");
-  auto const1 = std::dynamic_pointer_cast<QueryConstantNode>(or1->right());
-  ASSERT_TRUE(const1);
-  EXPECT_EQ(const1->op_name(), "INT_VALUE");
-  EXPECT_EQ(const1->value(), "3");
-
-  auto or2 = std::dynamic_pointer_cast<QueryNode>(left->right());
-  EXPECT_EQ(or2->op_name(), " in ");
-  auto id2 = std::dynamic_pointer_cast<QueryIDNode>(or2->left());
-  ASSERT_TRUE(id2);
-  EXPECT_EQ(id2->op_name(), "ID");
-  EXPECT_EQ(id2->value(), "name");
-  auto const2 = std::dynamic_pointer_cast<QueryListNode>(or2->right());
-  ASSERT_TRUE(const2);
-  EXPECT_EQ(const2->op_name(), "LIST_VALUE");
-  EXPECT_EQ(const2->text(), "(1, 2, 3)");
+  // name in (3, 1, 2); the set rewrite preserves first-occurrence order.
+  auto name_filter = std::dynamic_pointer_cast<QueryNode>(right->left());
+  ASSERT_TRUE(name_filter);
+  EXPECT_EQ(name_filter->op_name(), " in ");
+  auto name_key = std::dynamic_pointer_cast<QueryIDNode>(name_filter->left());
+  ASSERT_TRUE(name_key);
+  EXPECT_EQ(name_key->op_name(), "ID");
+  EXPECT_EQ(name_key->value(), "name");
+  auto name_values =
+      std::dynamic_pointer_cast<QueryListNode>(name_filter->right());
+  ASSERT_TRUE(name_values);
+  EXPECT_EQ(name_values->op_name(), "LIST_VALUE");
+  EXPECT_EQ(name_values->text(), "(3, 1, 2)");
 }
 
 
