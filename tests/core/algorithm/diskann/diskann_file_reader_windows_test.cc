@@ -15,8 +15,10 @@
 #include <malloc.h>
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <memory>
 #include <string>
 #include <thread>
@@ -144,6 +146,60 @@ bool verify_page(const uint8_t *buffer, size_t page, uint8_t bias = 0) {
   return std::all_of(buffer, buffer + kPageSize, [page, bias](uint8_t value) {
     return value == page_value(page, bias);
   });
+}
+
+DWORD replace_open_file_atomically(const wchar_t *replacement_path,
+                                    const wchar_t *target_path) {
+  // diskann_file_reader.h targets Windows Vista, whose SDK view predates the
+  // extended rename declarations. These values and this layout are the Win10
+  // FILE_RENAME_INFO_EX ABI used by FileRenameInfoEx.
+  constexpr auto kFileRenameInfoEx =
+      static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+  constexpr DWORD kReplaceIfExists = 0x00000001;
+  constexpr DWORD kPosixSemantics = 0x00000002;
+  struct ExtendedFileRenameInfo {
+    DWORD flags;
+    HANDLE root_directory;
+    DWORD file_name_length;
+    WCHAR file_name[MAX_PATH];
+  };
+  static_assert(offsetof(ExtendedFileRenameInfo, root_directory) ==
+                offsetof(FILE_RENAME_INFO, RootDirectory));
+  static_assert(offsetof(ExtendedFileRenameInfo, file_name_length) ==
+                offsetof(FILE_RENAME_INFO, FileNameLength));
+  static_assert(offsetof(ExtendedFileRenameInfo, file_name) ==
+                offsetof(FILE_RENAME_INFO, FileName));
+
+  HANDLE replacement_handle = ::CreateFileW(
+      replacement_path, DELETE | SYNCHRONIZE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (replacement_handle == INVALID_HANDLE_VALUE) {
+    return ::GetLastError();
+  }
+
+  const size_t target_path_length = std::wcslen(target_path);
+  if (target_path_length >= MAX_PATH) {
+    ::CloseHandle(replacement_handle);
+    return ERROR_FILENAME_EXCED_RANGE;
+  }
+
+  const size_t target_path_bytes =
+      target_path_length * sizeof(target_path[0]);
+  ExtendedFileRenameInfo rename_info{};
+  rename_info.flags = kReplaceIfExists | kPosixSemantics;
+  rename_info.root_directory = nullptr;
+  rename_info.file_name_length = static_cast<DWORD>(target_path_bytes);
+  std::memcpy(rename_info.file_name, target_path, target_path_bytes);
+
+  // POSIX rename semantics keep existing handles bound to the old file object
+  // while new opens of the target path observe the replacement.
+  const BOOL renamed = ::SetFileInformationByHandle(
+      replacement_handle, kFileRenameInfoEx, &rename_info,
+      static_cast<DWORD>(sizeof(rename_info)));
+  const DWORD error = renamed ? ERROR_SUCCESS : ::GetLastError();
+  ::CloseHandle(replacement_handle);
+  return error;
 }
 
 DWORD issue_misaligned_read(HANDLE handle) {
@@ -495,9 +551,9 @@ TEST(DiskAnnFileReaderWindowsTest,
   zvec::ailego::File source;
   ASSERT_TRUE(source.open(original.path(), true, false));
 
-  ASSERT_TRUE(::MoveFileExW(replacement.wide_path(), original.wide_path(),
-                            MOVEFILE_REPLACE_EXISTING |
-                                MOVEFILE_WRITE_THROUGH));
+  ASSERT_EQ(replace_open_file_atomically(replacement.wide_path(),
+                                         original.wide_path()),
+            ERROR_SUCCESS);
 
   WindowsAlignedFileReader original_reader;
   ASSERT_EQ(original_reader.open_from_handle(original.path(),
@@ -547,9 +603,9 @@ TEST(DiskAnnFileReaderWindowsTest,
 
   // The context has not performed I/O yet. Replacing the path must not make
   // its first lazy read observe bytes from a different file object.
-  ASSERT_TRUE(::MoveFileExW(replacement.wide_path(), original.wide_path(),
-                            MOVEFILE_REPLACE_EXISTING |
-                                MOVEFILE_WRITE_THROUGH));
+  ASSERT_EQ(replace_open_file_atomically(replacement.wide_path(),
+                                         original.wide_path()),
+            ERROR_SUCCESS);
 
   AlignedBuffer output = make_aligned_buffer(kPageSize);
   ASSERT_NE(output, nullptr);
