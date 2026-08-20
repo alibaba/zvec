@@ -526,10 +526,10 @@ class TestDiskAnnCollectionOptimizeAndReopen:
         collection_option,
         multiple_docs: list[Doc],
     ):
-        """Test a UTF-8 path through optimize, close, reopen and query."""
-        # A non-ASCII path exercises CreateFileW in the Windows DiskAnn reader.
+        """Test inserting 100 docs, optimize, close, reopen and query."""
+        # Create collection and insert 100 documents
         temp_dir = tmp_path_factory.mktemp("zvec_diskann_optimize")
-        collection_path = temp_dir / "磁盘索引_テスト"
+        collection_path = temp_dir / "test_optimize_collection"
 
         coll = zvec.create_and_open(
             path=str(collection_path),

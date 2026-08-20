@@ -52,13 +52,24 @@ uint8_t page_value(size_t page, uint8_t bias = 0) {
 
 class TemporaryFile {
  public:
-  TemporaryFile() {
+  explicit TemporaryFile(bool unicode_path = false) {
     wchar_t temp_dir[MAX_PATH]{};
     DWORD length = ::GetTempPathW(MAX_PATH, temp_dir);
     if (length == 0 || length >= static_cast<DWORD>(MAX_PATH) ||
         ::GetTempFileNameW(temp_dir, L"zvr", 0, wide_path_) == 0) {
       wide_path_[0] = L'\0';
       return;
+    }
+
+    if (unicode_path) {
+      std::wstring unicode_wide_path = wide_path_;
+      unicode_wide_path += L"_磁盘索引_テスト";
+      if (unicode_wide_path.size() >= static_cast<size_t>(MAX_PATH) ||
+          !::DeleteFileW(wide_path_)) {
+        return;
+      }
+      std::copy(unicode_wide_path.begin(), unicode_wide_path.end(), wide_path_);
+      wide_path_[unicode_wide_path.size()] = L'\0';
     }
     path_ = zvec::ailego::FileHelper::WideToUtf8(wide_path_);
   }
@@ -203,6 +214,32 @@ TEST(DiskAnnFileReaderWindowsTest, OpenKeepsStableHandleUnbuffered) {
       WindowsAlignedFileReaderTestPeer::stable_file_handle(reader);
   ASSERT_NE(stable_handle, INVALID_HANDLE_VALUE);
   EXPECT_EQ(issue_misaligned_read(stable_handle), ERROR_INVALID_PARAMETER);
+}
+
+TEST(DiskAnnFileReaderWindowsTest, OpenSupportsUtf8Path) {
+  TemporaryFile file(/*unicode_path=*/true);
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+
+  // Exercise the UTF-8 to UTF-16 conversion used by open() before CreateFileW.
+  WindowsAlignedFileReader reader;
+  reader.open(file.path());
+
+  HANDLE stable_handle =
+      WindowsAlignedFileReaderTestPeer::stable_file_handle(reader);
+  ASSERT_NE(stable_handle, INVALID_HANDLE_VALUE);
+
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> request{{0, kPageSize, output.get()}};
+  EXPECT_EQ(reader.read(request, ctx, false), 0);
+  EXPECT_TRUE(verify_page(output.get(), 0));
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
 }
 
 TEST(DiskAnnFileReaderWindowsTest,
