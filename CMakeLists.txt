@@ -39,6 +39,9 @@ if(MSVC)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror=return-type")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror=return-type")
+    # Fine-grained dead code elimination: place each function/data in its own section
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
@@ -64,6 +67,21 @@ endif()
 
 if(NOT DEFINED PROJECT_ROOT_DIR OR NOT PROJECT_ROOT_DIR)
     set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Root directory of the project" FORCE)
+endif()
+
+# LTO (Link-Time Optimization) — helps on Linux with --gc-sections but may
+# increase size on macOS due to aggressive inlining.  Default OFF; enable
+# explicitly with -DZVEC_ENABLE_LTO=ON when targeting Linux.
+option(ZVEC_ENABLE_LTO "Enable Link-Time Optimization for Release builds" OFF)
+if(ZVEC_ENABLE_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_OUTPUT)
+    if(IPO_SUPPORTED)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO enabled for Release build")
+    else()
+        message(STATUS "LTO not supported: ${IPO_OUTPUT}")
+    endif()
 endif()
 
 message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
@@ -164,7 +182,7 @@ cc_directories(src)
 
 cc_directories(tests)
 
-add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
+add_custom_target(clang_tidy_deps DEPENDS ARROW.BUILD glog gflags Lz4.BUILD)
 
 if(BUILD_TOOLS)
     cc_directories(tools)
