@@ -42,6 +42,9 @@ set(WITH_CORE_TOOLS OFF CACHE BOOL "build with ldb and sst_dump" FORCE)
 set(WITH_TOOLS OFF CACHE BOOL "build with tools" FORCE)
 set(WITH_LZ4 ON CACHE BOOL "build with lz4" FORCE)
 set(USE_RTTI ON CACHE BOOL "build with RTTI" FORCE)
+set(WITH_TRACE_TOOLS OFF CACHE BOOL "Disable trace tools to reduce binary size" FORCE)
+set(WITH_IOSTATS_CONTEXT OFF CACHE BOOL "Disable IO stats context to reduce binary size" FORCE)
+set(WITH_PERF_CONTEXT OFF CACHE BOOL "Disable perf context to reduce binary size" FORCE)
 set(WITH_WINDOWS_UTF8_FILENAMES ON CACHE BOOL "use UTF8 as characterset for opening files, regardles of the system code page" FORCE)
 # TODO(windows): verify
 set(ROCKSDB_SKIP_THIRDPARTY ON CACHE BOOL "skip thirdparty.inc" FORCE)
@@ -69,6 +72,18 @@ endif()
 
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})
+# thirdparty/ builds with -Os for size, but RocksDB sits on hot paths
+# (insert id-map, inverted-index scans) where -Os costs up to ~20%.
+# Restore the Release defaults for this subtree to match upstream main.
+if(MSVC)
+    string(REPLACE "/O1" "/O2" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/O1" "/O2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string(REPLACE "/Ob1" "/Ob2" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/Ob1" "/Ob2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+else()
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+endif()
 add_subdirectory(rocksdb-8.1.1)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
