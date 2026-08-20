@@ -322,8 +322,7 @@ jobs:
         shell: bash
 
   # Cross-compile for Android (arm64-v8a) with the runner's preinstalled NDK.
-  # Mirrors scripts/build_android.sh: build a host protoc first, then
-  # cross-compile with the NDK toolchain.
+  # Mirrors scripts/build_android.sh (post-#627: no protobuf/protoc needed).
   build-android:
     name: Build (android-arm64)
     runs-on: ubuntu-24.04
@@ -359,33 +358,19 @@ jobs:
             cmake==3.30.0 \
             ninja==1.11.1
 
-      - name: Build host protoc
-        shell: bash
-        run: |
-          cmake -S . -B build_host -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build_host --target protoc --parallel "$(nproc)"
-
-      - name: Reset third-party submodules
-        shell: bash
-        run: |
-          # The host configure patches thirdparty sources in-tree; reset them
-          # so the Android toolchain can apply its patches cleanly.
-          git submodule foreach --recursive 'git checkout -- . && git clean -fd' || true
-
       - name: Configure CMake (Android)
         shell: bash
         run: |
           NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
           echo "Using NDK: $NDK"
-          # c++_shared is required because the SDK ships multiple .so files
-          # (https://developer.android.com/ndk/guides/cpp-support).
+          # c++_static matches scripts/build_android.sh since #627: the
+          # slimmed libraries are self-contained, no shared libc++ needed.
           cmake -S . -B build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_NDK="$NDK" \
             -DANDROID_ABI="$ZVEC_ANDROID_ABI" \
             -DANDROID_NATIVE_API_LEVEL="$ZVEC_ANDROID_API_LEVEL" \
-            -DANDROID_STL=c++_shared \
+            -DANDROID_STL=c++_static \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
             -DBUILD_TOOLS=OFF \
@@ -396,8 +381,7 @@ jobs:
             -DBUILD_ZVEC_AILEGO_SHARED=ON \
             -DENABLE_NATIVE=OFF \
             -DAUTO_DETECT_ARCH=OFF \
-            -DENABLE_WERROR=OFF \
-            -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc"
+            -DENABLE_WERROR=OFF
 
       - name: Build and install SDK
         shell: bash
@@ -408,7 +392,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          find build build_host -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) | while read -r f; do
+          find build -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) | while read -r f; do
             echo "===== $f ====="
             tail -80 "$f"
           done
@@ -420,10 +404,6 @@ jobs:
           cp -R "$ZVEC_INSTALL_DIR"/. "$ZVEC_DIST_DIR"/.
           # Ship shared libraries only (same policy as desktop platforms).
           rm -f "$ZVEC_DIST_DIR"/lib/*.a
-          # Bundle libc++_shared.so so apps can package it alongside the SDK.
-          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
-          cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
-            "$ZVEC_DIST_DIR/lib/"
 
       - name: Smoke-test staged SDK (link only)
         shell: bash
@@ -487,13 +467,6 @@ jobs:
             cmake==3.30.0 \
             ninja==1.11.1
 
-      - name: Build host protoc
-        shell: bash
-        run: |
-          cmake -S . -B build_host -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build_host --target protoc --parallel "$(sysctl -n hw.ncpu)"
-
       - name: Build SDK for device and simulator
         shell: bash
         run: |
@@ -516,8 +489,7 @@ jobs:
               -DBUILD_ZVEC_SHARED=ON \
               -DBUILD_ZVEC_CORE_SHARED=ON \
               -DBUILD_ZVEC_AILEGO_SHARED=ON \
-              -DENABLE_WERROR=OFF \
-              -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc"
+              -DENABLE_WERROR=OFF
             cmake --build "build_ios_${slice}" --target install --parallel "$NPROC"
           }
           build_slice device iphoneos
@@ -527,7 +499,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          find build_host build_ios_* -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) 2>/dev/null | while read -r f; do
+          find build_ios_* -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) 2>/dev/null | while read -r f; do
             echo "===== $f ====="
             tail -80 "$f"
           done
