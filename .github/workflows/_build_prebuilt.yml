@@ -2,10 +2,33 @@ name: Build Prebuilt Libraries
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag used to stamp the SDK version (e.g., v0.3.0)'
+        required: false
+        default: ''
+        type: string
   workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag used to stamp the SDK version (e.g., v0.3.0)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
+
+# Checkouts in this workflow are shallow and tag-less, so `git describe` in
+# cmake/version.cmake cannot recover the release version and would fall back
+# to v0.0.0. Callers (release.yml) therefore pass the release tag, which is
+# injected into every configure step below via -DOVERRIDE_GIT_DESCRIBE.
+# Stays empty on ad-hoc runs, keeping the v0.0.0 fallback.
+#
+# ZVEC_VERSION_DEFINE is deliberately left unquoted in the configure steps:
+# an empty value must expand to zero words.
+env:
+  ZVEC_VERSION_DEFINE: ${{ inputs.tag != '' && format('-DOVERRIDE_GIT_DESCRIBE={0}', inputs.tag) || '' }}
 
 jobs:
   build:
@@ -132,7 +155,8 @@ jobs:
             -DBUILD_ZVEC_SHARED=ON \
             -DBUILD_ZVEC_CORE_SHARED=ON \
             -DBUILD_ZVEC_AILEGO_SHARED=ON \
-            -DENABLE_WERROR=OFF
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
 
       - name: Build and install SDK
         shell: bash
@@ -263,7 +287,8 @@ jobs:
             -DBUILD_ZVEC_SHARED=ON \
             -DBUILD_ZVEC_CORE_SHARED=ON \
             -DBUILD_ZVEC_AILEGO_SHARED=ON \
-            -DENABLE_WERROR=OFF
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
         shell: bash
 
       - name: Build and install SDK
@@ -383,7 +408,8 @@ jobs:
             -DBUILD_ZVEC_AILEGO_SHARED=ON \
             -DENABLE_NATIVE=OFF \
             -DAUTO_DETECT_ARCH=OFF \
-            -DENABLE_WERROR=OFF
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
 
       - name: Build and install SDK
         shell: bash
@@ -491,7 +517,8 @@ jobs:
               -DBUILD_ZVEC_SHARED=ON \
               -DBUILD_ZVEC_CORE_SHARED=ON \
               -DBUILD_ZVEC_AILEGO_SHARED=ON \
-              -DENABLE_WERROR=OFF
+              -DENABLE_WERROR=OFF \
+              $ZVEC_VERSION_DEFINE
             cmake --build "build_ios_${slice}" --target install --parallel "$NPROC"
           }
           build_slice device iphoneos

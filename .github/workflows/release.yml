@@ -23,6 +23,10 @@ jobs:
   build-prebuilt:
     name: Build Prebuilt Libraries
     uses: ./.github/workflows/_build_prebuilt.yml
+    with:
+      # Tag pushes take the tag from the ref; manual dispatch takes it from
+      # the input (github.ref_name would be a branch name there).
+      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
   # Step 2: Create release and upload prebuilt libraries
   release:
