@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 #include <zvec/db/query_params.h>
 #include "db/sqlengine/common/generic_node.h"
@@ -233,6 +234,9 @@ class QueryConstantNode : public QueryNode {
   QueryConstantNode(const std::string &m_value);
 
   std::string value();
+  std::string_view value_view() const {
+    return value_;
+  }
   std::string text() const override;
 
   void set_text(std::string new_val) override;
