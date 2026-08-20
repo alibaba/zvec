@@ -56,6 +56,16 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
   return 0;
 }
 
+int DiskAnnSearcher::init(const ailego::Params &search_params,
+                          const turbo::Quantizer::Pointer &quantizer) {
+  int ret = init(search_params);
+  if (ret != 0) {
+    return ret;
+  }
+  data_quantizer_ = quantizer;
+  return 0;
+}
+
 void DiskAnnSearcher::print_debug_info() {}
 
 int DiskAnnSearcher::cleanup() {
@@ -63,6 +73,7 @@ int DiskAnnSearcher::cleanup() {
 
   unload();
   params_.clear();
+  data_quantizer_.reset();
   list_size_ = 200;
   cache_nodes_num_ = 0;
   state_ = STATE_INIT;
@@ -195,7 +206,7 @@ int DiskAnnSearcher::update_context(DiskAnnContext *ctx) const {
   }
 
   return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
-                             entity, magic_);
+                             entity, magic_, data_quantizer_);
 }
 
 int DiskAnnSearcher::ensure_compatible_context(ContextPointer &context,
@@ -428,8 +439,8 @@ IndexSearcher::Context::Pointer DiskAnnSearcher::create_context() const {
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx =
-      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx = new (std::nothrow)
+      DiskAnnContext(meta_, measure_, search_ctx_entity, data_quantizer_);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();

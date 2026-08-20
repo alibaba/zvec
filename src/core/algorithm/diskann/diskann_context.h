@@ -52,7 +52,8 @@ class DiskAnnContext : public IndexContext,
 
   //! Construct
   DiskAnnContext(const IndexMeta &meta, const IndexMetric::Pointer &measure,
-                 const DiskAnnEntity::Pointer &entity);
+                 const DiskAnnEntity::Pointer &entity,
+                 const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Destructor
   virtual ~DiskAnnContext();
@@ -65,7 +66,8 @@ class DiskAnnContext : public IndexContext,
   //! Update context, the context may be shared by different searcher/streamer
   int update_context(ContextType type, const IndexMeta &meta,
                      const IndexMetric::Pointer &measure,
-                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num);
+                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num,
+                     const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Retrieve search result
   const IndexDocumentList &result(void) const override {

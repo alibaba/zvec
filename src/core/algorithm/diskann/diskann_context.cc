@@ -22,9 +22,10 @@ namespace core {
 
 DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
                                const IndexMetric::Pointer &measure,
-                               const DiskAnnEntity::Pointer &entity)
+                               const DiskAnnEntity::Pointer &entity,
+                               const turbo::Quantizer::Pointer &data_quantizer)
     : IndexContext(measure),
-      dc_(entity.get(), meta, measure),
+      dc_(entity.get(), meta, measure, data_quantizer),
       entity_{entity} {}
 
 int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
@@ -112,10 +113,10 @@ int DiskAnnContext::update(const ailego::Params &params) {
   return 0;
 }
 
-int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
-                                   const IndexMetric::Pointer &measure,
-                                   const DiskAnnEntity::Pointer &entity,
-                                   uint32_t magic_num) {
+int DiskAnnContext::update_context(
+    ContextType type, const IndexMeta &meta,
+    const IndexMetric::Pointer &measure, const DiskAnnEntity::Pointer &entity,
+    uint32_t magic_num, const turbo::Quantizer::Pointer &data_quantizer) {
   if (ailego_unlikely(type != type_)) {
     LOG_ERROR(
         "DiskAnnContext does not support shared by different type, "
@@ -144,7 +145,7 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
 
   entity_ = entity;
   update_index_metric(measure);
-  dc_.update(entity_.get(), meta, measure);
+  dc_.update(entity_.get(), meta, measure, data_quantizer);
   magic_ = magic_num;
 
   return 0;

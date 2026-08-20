@@ -942,6 +942,154 @@ TEST_F(DiskAnnSearcherTest, TestFp16Entrypoint) {
   }
 }
 
+TEST_F(DiskAnnSearcherTest, TestExternalDataQuantizer) {
+  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, dim);
+  fp16_meta.set_metric("SquaredEuclidean", 0, Params());
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dim);
+  constexpr size_t doc_cnt = 2000;
+  for (size_t i = 0; i < doc_cnt; ++i) {
+    NumericalVector<Float16> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = static_cast<float>(i) / 10.0f;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 100);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 2);
+
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+  ASSERT_EQ(0, builder->init(fp16_meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+
+  const string path = _dir + "/TestExternalDataQuantizer";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.list_size", 200);
+
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dim);
+  NumericalVector<Float16> query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    query[j] = 123.1f;
+  }
+  const size_t topk = 10;
+
+  // Baseline: default init path (quantizer selected internally).
+  IndexSearcher::Pointer baseline_searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(baseline_searcher, nullptr);
+  ASSERT_EQ(0, baseline_searcher->init(search_params));
+  auto baseline_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, baseline_storage->open(path, false));
+  ASSERT_EQ(0,
+            baseline_searcher->load(baseline_storage, IndexMetric::Pointer()));
+  auto baseline_ctx = baseline_searcher->create_context();
+  ASSERT_NE(baseline_ctx, nullptr);
+  baseline_ctx->set_topk(topk);
+  ASSERT_EQ(
+      0, baseline_searcher->search_bf_impl(query.data(), qmeta, baseline_ctx));
+  ASSERT_EQ(topk, baseline_ctx->result().size());
+
+  // Externally constructed and initialized data quantizer.
+  auto ext_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_NE(ext_quantizer, nullptr);
+  ASSERT_EQ(0, ext_quantizer->init(fp16_meta, fp16_meta.metric_params()));
+
+  // The quantizer is injected through the base-class init overload.
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(searcher, nullptr);
+  ASSERT_EQ(0, searcher->init(search_params, ext_quantizer));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+
+  // Every context's DistCalculator must share the injected instance rather
+  // than creating its own through the factory.
+  const long ref_before_ctx = ext_quantizer.use_count();
+  auto ctx = searcher->create_context();
+  ASSERT_NE(ctx, nullptr);
+  EXPECT_GT(ext_quantizer.use_count(), ref_before_ctx);
+
+  // Full-precision distance goes through the injected quantizer; the exact
+  // results must match the internally selected FP16 path bit for bit.
+  ctx->set_topk(topk);
+  ASSERT_EQ(0, searcher->search_bf_impl(query.data(), qmeta, ctx));
+  ASSERT_EQ(topk, ctx->result().size());
+  for (size_t i = 0; i < topk; ++i) {
+    EXPECT_EQ(baseline_ctx->result()[i].key(), ctx->result()[i].key());
+    EXPECT_FLOAT_EQ(baseline_ctx->result()[i].score(),
+                    ctx->result()[i].score());
+  }
+
+  // The graph search path must stay functional with the injected quantizer.
+  ASSERT_EQ(0, searcher->search_impl(query.data(), qmeta, ctx));
+  ASSERT_EQ(topk, ctx->result().size());
+  for (size_t i = 1; i < topk; ++i) {
+    EXPECT_LE(ctx->result()[i - 1].score(), ctx->result()[i].score());
+  }
+
+  // The streamer mirrors the searcher-side overload with the Hnsw-style
+  // (meta, params, quantizer) signature.
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("DiskAnnStreamer");
+  ASSERT_NE(streamer, nullptr);
+  ASSERT_EQ(0, streamer->init(fp16_meta, search_params, ext_quantizer));
+
+  auto streamer_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, streamer_storage->open(path, false));
+  ASSERT_EQ(0, streamer->open(streamer_storage));
+
+  const long ref_before_streamer_ctx = ext_quantizer.use_count();
+  auto streamer_ctx = streamer->create_context();
+  ASSERT_NE(streamer_ctx, nullptr);
+  EXPECT_GT(ext_quantizer.use_count(), ref_before_streamer_ctx);
+
+  streamer_ctx->set_topk(topk);
+  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, streamer_ctx));
+  ASSERT_EQ(topk, streamer_ctx->result().size());
+  for (size_t i = 0; i < topk; ++i) {
+    EXPECT_EQ(baseline_ctx->result()[i].key(), streamer_ctx->result()[i].key());
+  }
+  ASSERT_EQ(0, streamer->close());
+
+  // An uninitialized external quantizer has no valid distance function; the
+  // calculator must fall back to the internal selection instead of failing.
+  auto raw_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_NE(raw_quantizer, nullptr);
+  IndexSearcher::Pointer fallback_searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(fallback_searcher, nullptr);
+  ASSERT_EQ(0, fallback_searcher->init(search_params, raw_quantizer));
+
+  auto fallback_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, fallback_storage->open(path, false));
+  ASSERT_EQ(0,
+            fallback_searcher->load(fallback_storage, IndexMetric::Pointer()));
+  auto fallback_ctx = fallback_searcher->create_context();
+  ASSERT_NE(fallback_ctx, nullptr);
+  fallback_ctx->set_topk(topk);
+  ASSERT_EQ(
+      0, fallback_searcher->search_bf_impl(query.data(), qmeta, fallback_ctx));
+  ASSERT_EQ(topk, fallback_ctx->result().size());
+  for (size_t i = 0; i < topk; ++i) {
+    EXPECT_EQ(baseline_ctx->result()[i].key(), fallback_ctx->result()[i].key());
+  }
+}
+
 TEST_F(DiskAnnSearcherTest, TestRnnSearch) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
   ASSERT_NE(builder, nullptr);

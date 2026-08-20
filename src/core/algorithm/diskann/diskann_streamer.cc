@@ -60,6 +60,17 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
   return 0;
 }
 
+int DiskAnnStreamer::init(const IndexMeta &meta,
+                          const ailego::Params &search_params,
+                          const turbo::Quantizer::Pointer &quantizer) {
+  int ret = init(meta, search_params);
+  if (ret != 0) {
+    return ret;
+  }
+  data_quantizer_ = quantizer;
+  return 0;
+}
+
 void DiskAnnStreamer::print_debug_info() {}
 
 int DiskAnnStreamer::cleanup() {
@@ -67,6 +78,7 @@ int DiskAnnStreamer::cleanup() {
 
   unload();
   params_.clear();
+  data_quantizer_.reset();
   list_size_ = 200;
   cache_nodes_num_ = 0;
   state_ = STATE_INIT;
@@ -204,7 +216,7 @@ int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
   }
 
   return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
-                             entity, magic_);
+                             entity, magic_, data_quantizer_);
 }
 
 int DiskAnnStreamer::ensure_compatible_context(ContextPointer &context,
@@ -505,8 +517,8 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx =
-      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx = new (std::nothrow)
+      DiskAnnContext(meta_, measure_, search_ctx_entity, data_quantizer_);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();

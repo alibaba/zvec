@@ -33,6 +33,13 @@ class DiskAnnSearcher : public IndexSearcher {
   DiskAnnSearcher(const DiskAnnSearcher &) = delete;
   DiskAnnSearcher &operator=(const DiskAnnSearcher &) = delete;
 
+  //! Initialize Searcher with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller; it takes precedence
+  //! over the internal factory selection for full-precision distance
+  //! (graph rerank / linear search).
+  int init(const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
+
  protected:
   //! Initialize Searcher
   int init(const ailego::Params &params) override;
@@ -157,6 +164,10 @@ class DiskAnnSearcher : public IndexSearcher {
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
+
+  //! Externally constructed quantizer for full-precision distance, forwarded
+  //! to every context's DistCalculator (may be empty).
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   uint32_t magic_{0U};
 

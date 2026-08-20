@@ -23,6 +23,12 @@
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
+}  // namespace zvec
+
+namespace zvec {
 namespace core {
 
 /*! Index Searcher
@@ -39,7 +45,18 @@ class IndexSearcher : public IndexRunner {
   ~IndexSearcher() override = default;
 
   //! Initialize Searcher
-  virtual int init(const ailego::Params & /*params*/) = 0;
+  virtual int init(const ailego::Params & /*params*/) {
+    return IndexError_NotImplemented;
+  }
+
+  //! Initialize Searcher with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller. Default implementation
+  //! reports not implemented.
+  virtual int init(
+      const ailego::Params & /*params*/,
+      const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
+    return IndexError_NotImplemented;
+  }
 
   //! Retrieve meta of index
   virtual const IndexMeta &meta(void) const = 0;

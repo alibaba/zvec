@@ -32,18 +32,20 @@ class DistCalculator {
  public:
   //! Constructor
   DistCalculator(const DiskAnnEntity *entity, const IndexMeta &meta,
-                 const IndexMetric::Pointer &measure)
+                 const IndexMetric::Pointer &measure,
+                 const turbo::Quantizer::Pointer &data_quantizer = nullptr)
       : entity_(entity),
         query_(nullptr),
         dim_(meta.dimension()),
         compare_cnt_(0) {
-    bind_distance(meta, measure);
+    bind_distance(meta, measure, data_quantizer);
   }
 
   void update(const DiskAnnEntity *entity, const IndexMeta &meta,
-              const IndexMetric::Pointer &measure) {
+              const IndexMetric::Pointer &measure,
+              const turbo::Quantizer::Pointer &data_quantizer = nullptr) {
     entity_ = entity;
-    bind_distance(meta, measure);
+    bind_distance(meta, measure, data_quantizer);
     dim_ = meta.dimension();
   }
 
@@ -165,9 +167,25 @@ class DistCalculator {
   DistCalculator(const DistCalculator &) = delete;
   DistCalculator &operator=(const DistCalculator &) = delete;
 
-  void bind_distance(const IndexMeta &meta,
-                     const IndexMetric::Pointer &measure) {
+  void bind_distance(const IndexMeta &meta, const IndexMetric::Pointer &measure,
+                     const turbo::Quantizer::Pointer &external_quantizer) {
     data_quantizer_.reset();
+
+    // An externally constructed quantizer (already initialized by the caller)
+    // takes precedence over the internal factory selection below.
+    if (external_quantizer) {
+      turbo::DistanceImpl impl =
+          external_quantizer->distance("", IndexQueryMeta());
+      if (impl.valid()) {
+        data_quantizer_ = external_quantizer;
+        distance_ = [func = impl.func(),
+                     quant_dim = static_cast<size_t>(data_quantizer_->dim())](
+                        const void *m, const void *q, size_t /*dim*/,
+                        float *out) { func(m, q, quant_dim, out); };
+        return;
+      }
+      LOG_WARN("External data quantizer has no valid distance, falling back");
+    }
 
     const char *name = nullptr;
     // FP32 stays on the SIMD-optimized ailego metric: the turbo FP32
