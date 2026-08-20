@@ -874,6 +874,10 @@ class TestCollectionOpen:
         # Shared variables to collect results from threads
         results = []
         errors = []
+        # Successful opens must stay alive until every thread has tried:
+        # closing inside the thread would release the LOCK file early and let
+        # a later-starting thread legitimately acquire it.
+        opened = []
 
         # Lock for thread-safe operations
         lock = threading.Lock()
@@ -887,9 +891,7 @@ class TestCollectionOpen:
                 collection_path_result = coll.path
                 with lock:
                     results.append((thread_id, collection_path_result))
-                # Close the collection if opened successfully
-                if hasattr(coll, "close") and coll is not None:
-                    coll.close()
+                    opened.append(coll)
             except Exception as e:
                 with lock:
                     errors.append((thread_id, str(e)))
@@ -912,6 +914,10 @@ class TestCollectionOpen:
         assert len(errors) == 4, (
             f"Expected exactly four failures, but got {len(errors)}"
         )
+
+        # Release the lock held by the successful open before further checks.
+        for coll in opened:
+            coll.close()
 
         # Additional verification: check that the successful open has a valid collection
         _, successful_collection_path = results[0]

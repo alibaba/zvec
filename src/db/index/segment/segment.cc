@@ -25,8 +25,6 @@
 #include <unordered_set>
 #include <ailego/parallel/multi_thread_list.h>
 #include <ailego/pattern/defer.h>
-#include <arrow/dataset/dataset.h>
-#include <arrow/dataset/scanner.h>
 #include <arrow/ipc/reader.h>
 #include <arrow/table.h>
 #include <arrow/util/iterator.h>
@@ -3220,14 +3218,14 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
     }
     auto expr = p_result.ValueOrDie();
 
-    auto result = ReadBlocksAsDataset(scalar_blocks, path_, segment_meta_->id(),
-                                      !options_.enable_mmap_);
+    auto result = ReadBlocksAsTable(scalar_blocks, path_, segment_meta_->id(),
+                                    !options_.enable_mmap_);
     if (!result.ok()) {
       return Status::InternalError(result.status().message());
     }
-    auto dataset = std::move(result).ValueOrDie();
-    auto eval_result = EvaluateExpressionWithDataset(
-        dataset, column_schema->name(), expr, expected_type);
+    auto table = std::move(result).ValueOrDie();
+    auto eval_result = EvaluateExpressionOnTable(table, column_schema->name(),
+                                                 expr, expected_type);
     if (!eval_result.ok()) {
       return Status::InternalError("evaluate expression failed:",
                                    eval_result.status().message());
@@ -3366,16 +3364,17 @@ Status SegmentImpl::alter_column(const std::string &column_name,
     }
   }
 
-  auto result = ReadBlocksAsDataset(
-      filter_column_blocks, path_, segment_meta_->id(), !options_.enable_mmap_);
+  auto result = ReadBlocksAsTable(filter_column_blocks, path_,
+                                  segment_meta_->id(), !options_.enable_mmap_);
   if (!result.ok()) {
     return Status::InternalError(result.status().message());
   }
-  auto dataset = std::move(result).ValueOrDie();
+  auto table = std::move(result).ValueOrDie();
 
-  arrow::Expression expr = arrow::compute::field_ref(old_field_schema->name());
-  auto eval_result = EvaluateExpressionWithDataset(
-      dataset, new_column_name, expr, new_arrow_field->type());
+  arrow::compute::Expression expr =
+      arrow::compute::field_ref(old_field_schema->name());
+  auto eval_result = EvaluateExpressionOnTable(table, new_column_name, expr,
+                                               new_arrow_field->type());
   if (!eval_result.ok()) {
     return Status::InternalError("evaluate expression failed:",
                                  eval_result.status().message());
