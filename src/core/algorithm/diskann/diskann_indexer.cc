@@ -93,11 +93,10 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
       stored_max_node_size - sizeof(uint32_t) - meta_.element_size();
   if (stored_max_degree > (std::numeric_limits<uint32_t>::max)() ||
       stored_max_degree > neighbor_bytes / sizeof(diskann_id_t)) {
-    LOG_ERROR(
-        "Invalid DiskAnn node capacity: node=%llu vector=%u degree=%llu",
-        static_cast<unsigned long long>(stored_max_node_size),
-        static_cast<unsigned>(meta_.element_size()),
-        static_cast<unsigned long long>(stored_max_degree));
+    LOG_ERROR("Invalid DiskAnn node capacity: node=%llu vector=%u degree=%llu",
+              static_cast<unsigned long long>(stored_max_node_size),
+              static_cast<unsigned>(meta_.element_size()),
+              static_cast<unsigned long long>(stored_max_degree));
     return IndexError_InvalidFormat;
   }
 
@@ -151,6 +150,18 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   int ret = 0;
   reader_.reset(new PlatformAlignedFileReader());
 #if defined(_WIN32) || defined(_WIN64)
+  // Drop every Segment reference created by entity.load() before checking the
+  // File control block. Without an external alias, only cached_file and the
+  // FileReadStorage itself remain as owners.
+  entity.release_storage();
+  vector_segment.reset();
+  if (cached_file.use_count() != 2) {
+    LOG_ERROR(
+        "DiskAnn on Windows cannot load while the caller retains the "
+        "FileReadStorage file or one of its segments");
+    return IndexError_InvalidArgument;
+  }
+
   // Capture the exact file object that supplied the in-memory metadata before
   // releasing FileReadStorage. Reopening file_path after cleanup could bind
   // graph reads to a replacement file while PQ/keys still belong to the old
@@ -160,8 +171,8 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 #else
   if (cached_file) {
     // POSIX atomic replacement leaves an open descriptor bound to the old
-    // inode. Duplicate that descriptor before cleanup so graph reads use the
-    // same file object that supplied the in-memory metadata.
+    // inode. Capture an independent descriptor before cleanup so graph reads
+    // use the same file object that supplied the in-memory metadata.
     ret = static_cast<LinuxAlignedFileReader *>(reader_.get())
               ->open_from_handle(file_path, cached_file->native_handle());
   } else {
@@ -177,21 +188,34 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   }
 
   ret = storage->cleanup();
+#if !defined(_WIN32) && !defined(_WIN64)
   entity.release_storage();
-  // cleanup() releases the storage's shared_ptr, but callers may still retain
-  // the File object or one of its Segments. Close the shared native handle
-  // itself so such references cannot keep a buffered Windows handle alive
-  // beside DiskAnn's unbuffered overlapped handles.
-  if (cached_file) {
-    cached_file->close();
-  }
   vector_segment.reset();
-  cached_file.reset();
+#endif
   storage.reset();
   if (ret != 0) {
+    reader_->close();
     LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
     return ret;
   }
+
+#if defined(_WIN32) || defined(_WIN64)
+  // Windows cannot keep an ordinary buffered alias to this file object beside
+  // DiskAnn's unbuffered handles without a severe random-read regression. The
+  // preflight check above avoids consuming the storage on an ordinary
+  // ownership error. Check again after cleanup so an unexpected remaining
+  // owner cannot make the successful load retain a buffered handle.
+  if (cached_file.use_count() != 1) {
+    reader_->close();
+    LOG_ERROR(
+        "DiskAnn on Windows cannot load while the caller retains the "
+        "FileReadStorage file or one of its segments");
+    return IndexError_InvalidArgument;
+  }
+#endif
+  // Releasing the last internal reference closes the buffered source handle.
+  // POSIX caller-owned aliases remain valid; Windows has rejected them above.
+  cached_file.reset();
 
   ret = setup_io_ctx(init_ctx_);
   if (ret != 0) {
@@ -1069,8 +1093,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
         "get_vector: invalid sector buffer range, read=%zu offset=%zu "
         "vector=%u available=%zu",
         sector_read_size, node_offset,
-        static_cast<unsigned>(meta_.element_size()),
-        ctx->sector_buffer_size());
+        static_cast<unsigned>(meta_.element_size()), ctx->sector_buffer_size());
     return IndexError_InvalidArgument;
   }
 
@@ -1110,8 +1133,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
             DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
                                          DiskAnnUtil::kSectorSize, id) *
                 DiskAnnUtil::kSectorSize,
-        sector_read_size,
-        frontier_neighbor.second);
+        sector_read_size, frontier_neighbor.second);
 
     stats.disk_page_reads++;
     stats.io_num++;

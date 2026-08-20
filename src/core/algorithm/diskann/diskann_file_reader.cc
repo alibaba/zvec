@@ -33,6 +33,7 @@
 #include <zvec/ailego/utility/file_helper.h>
 #endif
 #if defined(__APPLE__) || defined(__MACH__)
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -128,15 +129,14 @@ static void close_windows_io_handles(IOContext ctx) {
     return;
   }
 
-  size_t active_remaining = static_cast<size_t>(std::count_if(
-      ctx->active_requests.begin(), ctx->active_requests.end(),
-      [](uint8_t active) { return active != 0; }));
+  size_t active_remaining = static_cast<size_t>(
+      std::count_if(ctx->active_requests.begin(), ctx->active_requests.end(),
+                    [](uint8_t active) { return active != 0; }));
   // The branches below are internal-state failures, not ordinary I/O errors.
   // Returning after one of them could free an OVERLAPPED or destination
   // buffer that the kernel still owns, so fail closed instead of risking UAF.
   if (active_remaining != ctx->outstanding_count) {
-    LOG_FATAL(
-        "DiskAnn Windows I/O context lost track of outstanding requests");
+    LOG_FATAL("DiskAnn Windows I/O context lost track of outstanding requests");
     std::abort();
   }
   if (active_remaining != 0) {
@@ -162,8 +162,8 @@ static void close_windows_io_handles(IOContext ctx) {
     while (active_remaining != 0) {
       OVERLAPPED_ENTRY entries[MAX_IO_DEPTH]{};
       ULONG removed = 0;
-      const ULONG max_entries = static_cast<ULONG>(
-          std::min<size_t>(active_remaining, MAX_IO_DEPTH));
+      const ULONG max_entries =
+          static_cast<ULONG>(std::min<size_t>(active_remaining, MAX_IO_DEPTH));
       if (!::GetQueuedCompletionStatusEx(ctx->completion_port, entries,
                                          max_entries, &removed, INFINITE,
                                          FALSE) ||
@@ -176,8 +176,7 @@ static void close_windows_io_handles(IOContext ctx) {
       }
 
       for (ULONG i = 0; i < removed; ++i) {
-        if (entries[i].lpCompletionKey !=
-            reinterpret_cast<ULONG_PTR>(ctx)) {
+        if (entries[i].lpCompletionKey != reinterpret_cast<ULONG_PTR>(ctx)) {
           LOG_FATAL(
               "DiskAnn teardown received a completion for another context");
           std::abort();
@@ -752,8 +751,7 @@ static int duplicate_file_descriptor(int source_fd) {
   return ::fcntl(source_fd, F_DUPFD_CLOEXEC, 0);
 #else
   int duplicate_fd = ::dup(source_fd);
-  if (duplicate_fd >= 0 &&
-      ::fcntl(duplicate_fd, F_SETFD, FD_CLOEXEC) == -1) {
+  if (duplicate_fd >= 0 && ::fcntl(duplicate_fd, F_SETFD, FD_CLOEXEC) == -1) {
     const int saved_errno = errno;
     ::close(duplicate_fd);
     errno = saved_errno;
@@ -763,7 +761,70 @@ static int duplicate_file_descriptor(int source_fd) {
 #endif
 }
 
+#if defined(__linux__) || defined(__linux)
+static int reopen_file_descriptor_with_direct_io(int source_fd) {
+  // dup()/F_DUPFD_CLOEXEC shares one open-file description with source_fd, so
+  // changing O_DIRECT through F_SETFL would also change the caller's buffered
+  // FileReadStorage handle. Reopening the procfs descriptor gives DiskAnn an
+  // independent open-file description while still referring to the exact
+  // inode captured during metadata loading (including an unlinked/replaced
+  // file). Some restricted environments do not mount procfs; callers fall
+  // back to a buffered duplicate in that case.
+  char fd_path[64];
+  const int path_length =
+      std::snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", source_fd);
+  if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(fd_path)) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  int flags = O_RDONLY | O_DIRECT | O_LARGEFILE;
+#if defined(O_CLOEXEC)
+  flags |= O_CLOEXEC;
+#endif
+  return ::open(fd_path, flags);
+}
+#endif
+
 #if defined(__APPLE__) || defined(__MACH__)
+static int reopen_macos_file_descriptor(const std::string &fname,
+                                        int source_fd) {
+  int flags = O_RDONLY;
+#if defined(O_CLOEXEC)
+  flags |= O_CLOEXEC;
+#endif
+  int reopened_fd = ::open(fname.c_str(), flags);
+  if (reopened_fd < 0) {
+    return -1;
+  }
+
+#if !defined(O_CLOEXEC)
+  if (::fcntl(reopened_fd, F_SETFD, FD_CLOEXEC) == -1) {
+    const int saved_errno = errno;
+    ::close(reopened_fd);
+    errno = saved_errno;
+    return -1;
+  }
+#endif
+
+  struct stat source_stat {};
+  struct stat reopened_stat {};
+  if (::fstat(source_fd, &source_stat) == -1 ||
+      ::fstat(reopened_fd, &reopened_stat) == -1) {
+    const int saved_errno = errno;
+    ::close(reopened_fd);
+    errno = saved_errno;
+    return -1;
+  }
+  if (source_stat.st_dev != reopened_stat.st_dev ||
+      source_stat.st_ino != reopened_stat.st_ino) {
+    ::close(reopened_fd);
+    errno = ESTALE;
+    return -1;
+  }
+  return reopened_fd;
+}
+
 static void configure_macos_reader(int file_desc, const std::string &fname) {
   // macOS has no O_DIRECT. F_NOCACHE is its closest per-file equivalent: it
   // asks the kernel to minimize caching for I/O through this descriptor. This
@@ -783,8 +844,8 @@ static void configure_macos_reader(int file_desc, const std::string &fname) {
   }
 
   if (::fcntl(file_desc, F_RDAHEAD, 0) == -1) {
-    LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)",
-             fname.c_str(), errno, ::strerror(errno));
+    LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)", fname.c_str(),
+             errno, ::strerror(errno));
   }
 }
 #endif
@@ -832,30 +893,53 @@ int LinuxAlignedFileReader::open_from_handle(const std::string &fname,
     return IndexError_InvalidArgument;
   }
 
-  int duplicate_fd = duplicate_file_descriptor(source_fd);
+  int duplicate_fd = -1;
+  bool has_independent_file_description = false;
+#if defined(__linux__) || defined(__linux)
+  duplicate_fd = reopen_file_descriptor_with_direct_io(source_fd);
   if (duplicate_fd < 0) {
-    LOG_ERROR("Failed to duplicate DiskAnn file descriptor for %s "
-              "(errno=%d: %s)",
-              fname.c_str(), errno, ::strerror(errno));
+    const int direct_errno = errno;
+    duplicate_fd = duplicate_file_descriptor(source_fd);
+    if (duplicate_fd >= 0) {
+      LOG_WARN(
+          "opening an independent O_DIRECT descriptor failed for %s "
+          "(errno=%d: %s); falling back to a buffered duplicate",
+          fname.c_str(), direct_errno, ::strerror(direct_errno));
+    }
+  } else {
+    has_independent_file_description = true;
+  }
+#elif defined(__APPLE__) || defined(__MACH__)
+  duplicate_fd = reopen_macos_file_descriptor(fname, source_fd);
+  if (duplicate_fd < 0) {
+    const int reopen_errno = errno;
+    duplicate_fd = duplicate_file_descriptor(source_fd);
+    if (duplicate_fd >= 0) {
+      LOG_WARN(
+          "opening an independent macOS descriptor failed for %s "
+          "(errno=%d: %s); falling back to a buffered duplicate",
+          fname.c_str(), reopen_errno, ::strerror(reopen_errno));
+    }
+  } else {
+    has_independent_file_description = true;
+  }
+#else
+  duplicate_fd = duplicate_file_descriptor(source_fd);
+#endif
+  if (duplicate_fd < 0) {
+    LOG_ERROR(
+        "Failed to duplicate DiskAnn file descriptor for %s "
+        "(errno=%d: %s)",
+        fname.c_str(), errno, ::strerror(errno));
     return IndexError_OpenFile;
   }
 
-#if defined(__linux__) || defined(__linux)
-  // dup() keeps the same open file description and therefore the same inode.
-  // Enable direct I/O after metadata loading has completed. The source
-  // descriptor is closed immediately after this handoff, so the shared status
-  // flag cannot affect later FileReadStorage reads. Filesystems that reject
-  // O_DIRECT retain the buffered descriptor, matching open()'s fallback.
-  const int status_flags = ::fcntl(duplicate_fd, F_GETFL);
-  if (status_flags == -1 ||
-      ::fcntl(duplicate_fd, F_SETFL, status_flags | O_DIRECT) == -1) {
-    LOG_WARN(
-        "enabling O_DIRECT on captured file failed for %s (errno=%d: %s); "
-        "falling back to buffered I/O",
-        fname.c_str(), errno, ::strerror(errno));
+#if defined(__APPLE__) || defined(__MACH__)
+  if (has_independent_file_description) {
+    configure_macos_reader(duplicate_fd, fname);
   }
-#elif defined(__APPLE__) || defined(__MACH__)
-  configure_macos_reader(duplicate_fd, fname);
+#else
+  (void)has_independent_file_description;
 #endif
 
   file_desc = duplicate_fd;
@@ -1228,9 +1312,9 @@ int WindowsAlignedFileReader::open_from_handle(const std::string &fname,
   // already been renamed or replaced. Keep this stable handle unbuffered too:
   // an ordinary buffered handle beside the private unbuffered IOCP handles can
   // severely reduce random-read throughput.
-  HANDLE stable_file_handle = ::ReOpenFile(
-      source_handle, GENERIC_READ, kDiskAnnFileShareMode,
-      kDiskAnnStableHandleFlags);
+  HANDLE stable_file_handle =
+      ::ReOpenFile(source_handle, GENERIC_READ, kDiskAnnFileShareMode,
+                   kDiskAnnStableHandleFlags);
   if (stable_file_handle == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to capture DiskAnn file object (error=%lu)",
               ::GetLastError());
@@ -1283,9 +1367,9 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   // Derive each private IOCP handle from the file object captured by open().
   // Reopening the path here could bind a lazy context to a replacement index
   // while the indexer still holds metadata for the original one.
-  ctx->file_handle = ::ReOpenFile(
-      stable_file_handle_, GENERIC_READ, kDiskAnnFileShareMode,
-      FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED);
+  ctx->file_handle =
+      ::ReOpenFile(stable_file_handle_, GENERIC_READ, kDiskAnnFileShareMode,
+                   FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED);
   if (ctx->file_handle == INVALID_HANDLE_VALUE) {
     LOG_ERROR("Failed to reopen DiskAnn file object for IOCP (error=%lu)",
               ::GetLastError());

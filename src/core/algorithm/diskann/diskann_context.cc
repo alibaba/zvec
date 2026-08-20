@@ -56,7 +56,7 @@ int DiskAnnContext::resize_fetch_sector_buffer(
       entity->node_per_sector() > 0
           ? 1
           : DiskAnnUtil::div_round_up(entity->max_node_size(),
-                                       DiskAnnUtil::kSectorSize);
+                                      DiskAnnUtil::kSectorSize);
   if (sector_num_per_node == 0 ||
       sector_num_per_node > DiskAnnUtil::kMaxSectorReadNum) {
     LOG_ERROR("Invalid DiskAnn fetch sector count: %lu",
@@ -64,8 +64,8 @@ int DiskAnnContext::resize_fetch_sector_buffer(
     return IndexError_InvalidArgument;
   }
 
-  const size_t required_size = static_cast<size_t>(sector_num_per_node) *
-                               DiskAnnUtil::kSectorSize;
+  const size_t required_size =
+      static_cast<size_t>(sector_num_per_node) * DiskAnnUtil::kSectorSize;
   if (sector_buffer_ != nullptr && sector_buffer_size_ == required_size) {
     return 0;
   }
@@ -136,11 +136,10 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
           static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
           256);
       DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
-      sector_buffer_size_ = static_cast<size_t>(
-          DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize);
-      DiskAnnUtil::alloc_aligned(
-          (void **)&sector_buffer_, sector_buffer_size_,
-          DiskAnnUtil::kSectorSize);
+      sector_buffer_size_ = static_cast<size_t>(DiskAnnUtil::kMaxSectorReadNum *
+                                                DiskAnnUtil::kSectorSize);
+      DiskAnnUtil::alloc_aligned((void **)&sector_buffer_, sector_buffer_size_,
+                                 DiskAnnUtil::kSectorSize);
       if (!pq_table_dist_buffer_ || !pq_coord_buffer_ || !coord_buffer_ ||
           !sector_buffer_) {
         LOG_ERROR("Failed to allocate DiskAnn search buffers");

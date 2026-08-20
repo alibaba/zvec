@@ -82,14 +82,12 @@ class DiskAnnProviderTestPeer {
                      diskann_provider->fetch_context_.get());
   }
 
-  static DiskAnnContext *iterator_context(
-      IndexProvider::Iterator *iterator) {
+  static DiskAnnContext *iterator_context(IndexProvider::Iterator *iterator) {
     auto *diskann_iterator =
         dynamic_cast<DiskAnnIndexProvider::Iterator *>(iterator);
-    return diskann_iterator == nullptr
-               ? nullptr
-               : dynamic_cast<DiskAnnContext *>(
-                     diskann_iterator->context_.get());
+    return diskann_iterator == nullptr ? nullptr
+                                       : dynamic_cast<DiskAnnContext *>(
+                                             diskann_iterator->context_.get());
   }
 };
 
@@ -218,8 +216,7 @@ class FailingAlignedFileReader final : public AlignedFileReader {
     return IndexError_ReadData;
   }
 
-  int submit(PendingBatch & /*batch*/,
-             std::vector<AlignedRead> & /*read_reqs*/,
+  int submit(PendingBatch & /*batch*/, std::vector<AlignedRead> & /*read_reqs*/,
              IOContext & /*ctx*/) override {
     return IndexError_ReadData;
   }
@@ -252,7 +249,7 @@ size_t expected_fetch_buffer_size(const DiskAnnContext &context) {
       entity.node_per_sector() > 0
           ? 1
           : DiskAnnUtil::div_round_up(entity.max_node_size(),
-                                       DiskAnnUtil::kSectorSize);
+                                      DiskAnnUtil::kSectorSize);
   return static_cast<size_t>(sector_num_per_node) * DiskAnnUtil::kSectorSize;
 }
 
@@ -378,12 +375,12 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   auto independent_storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_NE(independent_storage, nullptr);
   Params independent_storage_params;
-  independent_storage_params.set(
-      "proxima.file.read_storage.alone_file_handle", true);
+  independent_storage_params.set("proxima.file.read_storage.alone_file_handle",
+                                 true);
   ASSERT_EQ(0, independent_storage->init(independent_storage_params));
   ASSERT_EQ(0, independent_storage->open(path, false));
-  auto retained_independent_segment = independent_storage->get(
-      DiskAnnEntity::kDiskAnnVectorSegmentId);
+  auto retained_independent_segment =
+      independent_storage->get(DiskAnnEntity::kDiskAnnVectorSegmentId);
   ASSERT_NE(retained_independent_segment, nullptr);
   ASSERT_EQ(nullptr, independent_storage->file());
   EXPECT_EQ(IndexError_InvalidArgument,
@@ -400,17 +397,33 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   auto retained_segment = storage->get(DiskAnnEntity::kDiskAnnVectorSegmentId);
   ASSERT_NE(retained_segment, nullptr);
   std::weak_ptr<zvec::ailego::File> searcher_cached_file = retained_cached_file;
+#if defined(_WIN32) || defined(_WIN64)
+  // Keeping an ordinary buffered alias beside DiskAnn's unbuffered handles
+  // causes a severe random-read regression on Windows. Reject the load without
+  // invalidating either caller-owned alias. Releasing those aliases allows the
+  // same, still-open storage to be retried.
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->load(storage, IndexMetric::Pointer()));
+  EXPECT_TRUE(retained_cached_file->is_valid());
+  uint8_t retained_file_byte = 0;
+  EXPECT_EQ(1U, retained_segment->fetch(0, &retained_file_byte, 1));
+  retained_cached_file.reset();
+  retained_segment.reset();
+  EXPECT_FALSE(searcher_cached_file.expired());
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
-  // FileReadStorage and all of its segments share this ordinary cached file
-  // handle. DiskAnn must close that shared native handle even if a caller
-  // retains a Segment reference, then use only its aligned asynchronous reader.
-  EXPECT_FALSE(retained_cached_file->is_valid());
+  EXPECT_TRUE(searcher_cached_file.expired());
+#else
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+  // DiskAnn owns an independent descriptor. Loading must not close or enable
+  // direct I/O on the File shared by caller-owned FileReadStorage segments.
+  EXPECT_TRUE(retained_cached_file->is_valid());
+  uint8_t retained_file_byte = 0;
+  EXPECT_EQ(1U, retained_segment->fetch(0, &retained_file_byte, 1));
   retained_cached_file.reset();
   EXPECT_FALSE(searcher_cached_file.expired());
-  uint8_t closed_file_byte = 0;
-  EXPECT_EQ(0U, retained_segment->fetch(0, &closed_file_byte, 1));
   retained_segment.reset();
   EXPECT_TRUE(searcher_cached_file.expired());
+#endif
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
@@ -460,12 +473,12 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
                                         kBatchQueryCount, linearCtx));
   EXPECT_EQ(release_count + 1, batch_counting_reader->release_count());
 
-  std::vector<std::vector<uint64_t>> batch_p_keys(
-      kBatchQueryCount, {0, 1, 2, 3, 4, 5, 6, 7});
+  std::vector<std::vector<uint64_t>> batch_p_keys(kBatchQueryCount,
+                                                  {0, 1, 2, 3, 4, 5, 6, 7});
   release_count = batch_counting_reader->release_count();
   ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(
-                   batch_queries.data(), batch_p_keys, qmeta,
-                   kBatchQueryCount, linearByPKeysCtx));
+                   batch_queries.data(), batch_p_keys, qmeta, kBatchQueryCount,
+                   linearByPKeysCtx));
   EXPECT_EQ(release_count + 1, batch_counting_reader->release_count());
 
   // do linear search test
@@ -1254,10 +1267,9 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_NE(provider_iterator, nullptr);
   ASSERT_TRUE(provider_iterator->is_valid());
   EXPECT_EQ(key_for_id(0), provider_iterator->key());
+  EXPECT_EQ(nullptr, DiskAnnProviderTestPeer::fetch_context(provider.get()));
   EXPECT_EQ(nullptr,
-            DiskAnnProviderTestPeer::fetch_context(provider.get()));
-  EXPECT_EQ(nullptr, DiskAnnProviderTestPeer::iterator_context(
-                         provider_iterator.get()));
+            DiskAnnProviderTestPeer::iterator_context(provider_iterator.get()));
   float iterator_value = 0.0f;
 
   // Neither object has performed vector I/O yet. Their first lazy context and
@@ -1387,9 +1399,8 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   auto *diskann_searcher = dynamic_cast<DiskAnnSearcher *>(searcher.get());
   ASSERT_NE(diskann_searcher, nullptr);
   DiskAnnCacheTestPeer::set_reader(
-      diskann_searcher,
-      std::make_shared<FailingAlignedFileReader>(
-          DiskAnnCacheTestPeer::reader(diskann_searcher)));
+      diskann_searcher, std::make_shared<FailingAlignedFileReader>(
+                            DiskAnnCacheTestPeer::reader(diskann_searcher)));
   std::string vector_after_failure;
   EXPECT_EQ(IndexError_Runtime,
             searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,
