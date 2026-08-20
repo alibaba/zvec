@@ -72,6 +72,30 @@ jobs:
           echo "Release assets:"
           find prebuilt-artifacts/ -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort
 
+      - name: Verify embedded version in artifacts
+        shell: bash
+        run: |
+          EXPECTED_TAG="${{ steps.version.outputs.tag }}"
+          # Spot-check the linux-amd64 SDK: zvec_get_version() compiles the
+          # version string resolved by cmake/version.cmake into
+          # libzvec_c_api.so, so the exact tag must appear in the binary.
+          # This catches a missing tag input (silent v0.0.0 fallback) before
+          # anything is published.
+          SDK_DIR=prebuilt-artifacts/zvec-sdk-linux-amd64
+          mkdir -p "$SDK_DIR/extracted"
+          tar xzf "$SDK_DIR"/zvec-sdk-linux-amd64.tar.gz -C "$SDK_DIR/extracted"
+          LIB="$SDK_DIR/extracted/lib/libzvec_c_api.so"
+          if [ ! -f "$LIB" ]; then
+            echo "::error::libzvec_c_api.so not found in the linux-amd64 SDK"
+            exit 1
+          fi
+          if ! strings "$LIB" | grep -Fx "$EXPECTED_TAG"; then
+            ACTUAL=$(strings "$LIB" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+            echo "::error::Embedded version '${ACTUAL:-<none>}' does not match release tag '$EXPECTED_TAG'"
+            exit 1
+          fi
+          echo "Embedded version matches release tag: $EXPECTED_TAG"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
