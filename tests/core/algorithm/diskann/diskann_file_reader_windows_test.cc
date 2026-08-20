@@ -431,6 +431,76 @@ TEST(DiskAnnFileReaderWindowsTest, ConcurrentContextsKeepCompletionsIsolated) {
   EXPECT_EQ(failures.load(), 0U);
 }
 
+TEST(DiskAnnFileReaderWindowsTest, ContextCanMoveBetweenRunnableThreads) {
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+
+  WindowsAlignedFileReader reader;
+  reader.open(file.path());
+  IOContext ctx = nullptr;
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+  ASSERT_NE(ctx, nullptr);
+
+  AlignedBuffer first_output = make_aligned_buffer(kPageSize);
+  AlignedBuffer second_output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(first_output, nullptr);
+  ASSERT_NE(second_output, nullptr);
+
+  std::atomic<bool> first_completed{false};
+  std::atomic<bool> release_first{false};
+  std::atomic<bool> second_completed{false};
+  int first_result = IndexError_Runtime;
+  int second_result = IndexError_Runtime;
+
+  std::thread first([&]() {
+    std::vector<AlignedRead> requests{{0, kPageSize, first_output.get()}};
+    first_result = reader.read(requests, ctx, false);
+    first_completed.store(true, std::memory_order_release);
+
+    // Stay runnable after dequeuing from the IOCP. With a port concurrency of
+    // one this thread occupies the only slot even though its batch is done.
+    while (!release_first.load(std::memory_order_acquire)) {
+      YieldProcessor();
+    }
+  });
+
+  while (!first_completed.load(std::memory_order_acquire)) {
+    ::Sleep(1);
+  }
+
+  std::thread second([&]() {
+    std::vector<AlignedRead> requests{
+        {kPageSize, kPageSize, second_output.get()}};
+    second_result = reader.read(requests, ctx, false);
+    second_completed.store(true, std::memory_order_release);
+  });
+
+  constexpr ULONGLONG kHandoffTimeoutMs = 5000;
+  const ULONGLONG deadline = ::GetTickCount64() + kHandoffTimeoutMs;
+  while (!second_completed.load(std::memory_order_acquire) &&
+         ::GetTickCount64() < deadline) {
+    ::Sleep(1);
+  }
+  const bool completed_while_first_runnable =
+      second_completed.load(std::memory_order_acquire);
+
+  // Always let the first thread exit before asserting. The old concurrency=1
+  // behavior then releases its IOCP association, allowing the second thread
+  // to finish instead of leaving a permanently hung regression test.
+  release_first.store(true, std::memory_order_release);
+  first.join();
+  second.join();
+
+  EXPECT_TRUE(completed_while_first_runnable);
+  EXPECT_EQ(first_result, 0);
+  EXPECT_EQ(second_result, 0);
+  EXPECT_TRUE(verify_page(first_output.get(), 0));
+  EXPECT_TRUE(verify_page(second_output.get(), 1));
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
+}
+
 TEST(DiskAnnFileReaderWindowsTest, DestroyContextDrainsOutstandingBatch) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());

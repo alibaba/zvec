@@ -100,6 +100,14 @@ static constexpr DWORD kDiskAnnFileShareMode =
 // reads even when the actual ReadFile calls use a separate unbuffered handle.
 static constexpr DWORD kDiskAnnStableHandleFlags = FILE_FLAG_NO_BUFFERING;
 
+// Threads stay associated with an IOCP after dequeuing a completion. An
+// IOContext can move between serialized callers, so a concurrency limit of one
+// can permanently starve a later caller while the previous thread remains
+// runnable. Callers still serialize each context, and outstanding_count
+// rejects overlapping batches; keep the private port effectively unthrottled.
+static constexpr DWORD kDiskAnnIoCompletionConcurrency =
+    static_cast<DWORD>(MAXLONG);
+
 // An IOContext may be reused with different reader instances. Assign every
 // successfully opened file object a process-wide identity so two readers for
 // the same path cannot accidentally share an IOCP handle to stale contents.
@@ -1377,7 +1385,8 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
   }
 
   ctx->completion_port = ::CreateIoCompletionPort(
-      ctx->file_handle, nullptr, reinterpret_cast<ULONG_PTR>(ctx), 1);
+      ctx->file_handle, nullptr, reinterpret_cast<ULONG_PTR>(ctx),
+      kDiskAnnIoCompletionConcurrency);
   if (ctx->completion_port == nullptr) {
     LOG_ERROR("CreateIoCompletionPort failed (error=%lu)", ::GetLastError());
     close_windows_io_handles(ctx);

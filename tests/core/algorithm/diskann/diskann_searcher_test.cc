@@ -15,6 +15,7 @@
 #include "diskann_searcher.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -1289,12 +1290,14 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   // providers that share one result buffer globally.
   std::atomic<bool> first_fetch_ready{false};
   std::atomic<bool> second_fetch_done{false};
+  std::atomic<bool> release_first_fetch{false};
   float first_thread_value = -1.0f;
   float second_thread_value = -1.0f;
   std::thread first_fetch([&]() {
     const void *value = provider->get_vector(key_for_id(31));
     first_fetch_ready.store(true, std::memory_order_release);
-    while (!second_fetch_done.load(std::memory_order_acquire)) {
+    while (!second_fetch_done.load(std::memory_order_acquire) &&
+           !release_first_fetch.load(std::memory_order_acquire)) {
       std::this_thread::yield();
     }
     if (value != nullptr) {
@@ -1311,8 +1314,23 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
     }
     second_fetch_done.store(true, std::memory_order_release);
   });
+
+  constexpr auto kConcurrentFetchTimeout = std::chrono::seconds(5);
+  const auto concurrent_fetch_deadline =
+      std::chrono::steady_clock::now() + kConcurrentFetchTimeout;
+  while (!second_fetch_done.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < concurrent_fetch_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const bool concurrent_fetch_completed =
+      second_fetch_done.load(std::memory_order_acquire);
+  // Let the first worker exit before joining even when the second fetch is
+  // starved. On Windows this releases its IOCP association, so a regression is
+  // reported as a bounded test failure rather than hanging the whole suite.
+  release_first_fetch.store(true, std::memory_order_release);
   first_fetch.join();
   second_fetch.join();
+  EXPECT_TRUE(concurrent_fetch_completed);
   EXPECT_EQ(31.0f, first_thread_value);
   EXPECT_EQ(47.0f, second_thread_value);
   // The provider owns one heavyweight fetch context regardless of how many
