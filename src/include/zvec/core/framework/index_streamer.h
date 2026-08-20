@@ -36,13 +36,13 @@ class IndexStreamer : public IndexRunner {
   //! Destructor
   ~IndexStreamer(void) override = default;
 
-  //! Initialize the builder
+  //! Initialize the streamer
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {
     return IndexError_NotImplemented;
   }
 
-  //! Initialize the builder with a quantizer for distance computation
+  //! Initialize the streamer with a quantizer for distance computation
   virtual int init(
       const IndexMeta & /*meta*/, const ailego::Params & /*params*/,
       const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
