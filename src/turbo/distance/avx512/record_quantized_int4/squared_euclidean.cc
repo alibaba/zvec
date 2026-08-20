@@ -15,7 +15,6 @@
 #include "avx512/record_quantized_int4/squared_euclidean.h"
 #include <cstdint>
 #include "avx512/record_quantized_int4/common.h"
-#include "common/record_quantized_distance.h"
 
 namespace zvec::turbo::avx512 {
 
@@ -31,8 +30,28 @@ void squared_euclidean_int4_distance_avx512(const void *a, const void *b,
   const float raw_ip = internal::raw_inner_product(
       static_cast<const uint8_t *>(a), static_cast<const uint8_t *>(b),
       original_dim);
-  *distance = distance_internal::record_squared_euclidean(a, b, original_dim,
-                                                          tail_offset, raw_ip);
+
+  const float *a_tail = reinterpret_cast<const float *>(
+      static_cast<const uint8_t *>(a) + tail_offset);
+  const float *b_tail = reinterpret_cast<const float *>(
+      static_cast<const uint8_t *>(b) + tail_offset);
+
+  const float ma = a_tail[0];
+  const float mb = a_tail[1];
+  const float ms = a_tail[2];
+  const float ms2 = a_tail[3];
+
+  const float qa = b_tail[0];
+  const float qb = b_tail[1];
+  const float qs = b_tail[2];
+  const float qs2 = b_tail[3];
+
+  const float sum = qa * qs;
+  const float sum2 = qa * qa * qs2;
+
+  *distance = ma * ma * ms2 + sum2 - 2.0f * ma * qa * raw_ip +
+              (mb - qb) * (mb - qb) * static_cast<float>(original_dim) +
+              2.0f * (mb - qb) * (ms * ma - sum);
 #else
   (void)a;
   (void)b;
@@ -54,9 +73,28 @@ void squared_euclidean_int4_batch_distance_avx512(const void *const *vectors,
   const size_t tail_offset = original_dim >> 1;
   internal::raw_inner_product_batch(
       vectors, static_cast<const uint8_t *>(query), n, original_dim, distances);
+
+  const float *q_tail = reinterpret_cast<const float *>(
+      static_cast<const uint8_t *>(query) + tail_offset);
+  const float qa = q_tail[0];
+  const float qb = q_tail[1];
+  const float qs = q_tail[2];
+  const float qs2 = q_tail[3];
+
+  const float sum = qa * qs;
+  const float sum2 = qa * qa * qs2;
+
   for (size_t i = 0; i < n; ++i) {
-    distances[i] = distance_internal::record_squared_euclidean(
-        vectors[i], query, original_dim, tail_offset, distances[i]);
+    const float *m_tail = reinterpret_cast<const float *>(
+        static_cast<const uint8_t *>(vectors[i]) + tail_offset);
+    const float ma = m_tail[0];
+    const float mb = m_tail[1];
+    const float ms = m_tail[2];
+    const float ms2 = m_tail[3];
+
+    distances[i] = ma * ma * ms2 + sum2 - 2.0f * ma * qa * distances[i] +
+                   (mb - qb) * (mb - qb) * static_cast<float>(original_dim) +
+                   2.0f * (mb - qb) * (ms * ma - sum);
   }
 #else
   (void)vectors;
