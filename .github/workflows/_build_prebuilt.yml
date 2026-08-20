@@ -33,13 +33,15 @@ jobs:
             os_name: linux
             arch: amd64
             ext: tar.gz
-            container: 'quay.io/pypa/manylinux_2_28_x86_64:latest'
+            # Pinned dated tag (same batch as the musllinux images) so the
+            # build does not depend on the mutable :latest tag.
+            container: 'quay.io/pypa/manylinux_2_28_x86_64:2026.03.01-1'
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             os_name: linux
             arch: arm64
             ext: tar.gz
-            container: 'quay.io/pypa/manylinux_2_28_aarch64:latest'
+            container: 'quay.io/pypa/manylinux_2_28_aarch64:2026.03.01-1'
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             os_name: linux-musl
