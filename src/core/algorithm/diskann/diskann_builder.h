@@ -31,6 +31,13 @@ class DiskAnnBuilder : public IndexBuilder {
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
+  //! Initialize the builder with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller; it takes precedence
+  //! over the internal factory selection for the full-precision distance
+  //! used during graph construction.
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
+
   //! Cleanup the builder
   int cleanup(void) override;
 
@@ -128,6 +135,11 @@ class DiskAnnBuilder : public IndexBuilder {
 
   DiskAnnAlgorithm::UPointer algo_;
   turbo::Quantizer::Pointer quantizer_;
+
+  //! Externally constructed quantizer for the full-precision distance used
+  //! during graph construction, forwarded to every build context's
+  //! DistCalculator (may be empty).
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   uint32_t check_interval_secs_{kDefaultLogIntervalSecs};
 };

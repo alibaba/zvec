@@ -1068,7 +1068,8 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
   params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
   params.set("zvec.diskann.builder.threads", 4);
 
-  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params,
+                             make_turbo_quantizer(*_index_meta_ptr)));
 
   ASSERT_EQ(0, builder->train(holder));
 
@@ -1305,7 +1306,8 @@ TEST_F(DiskAnnSearcherTest, TestNodeCacheTurbo) {
   params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
   params.set("zvec.diskann.builder.threads", 4);
 
-  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params,
+                             make_turbo_quantizer(*_index_meta_ptr)));
 
   ASSERT_EQ(0, builder->train(holder));
 
@@ -1418,7 +1420,8 @@ TEST_F(DiskAnnSearcherTest, TestFilterTurbo) {
   params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
   params.set("zvec.diskann.builder.threads", 4);
 
-  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params,
+                             make_turbo_quantizer(*_index_meta_ptr)));
 
   ASSERT_EQ(0, builder->train(holder));
 
@@ -1558,7 +1561,8 @@ TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
   params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
   params.set("zvec.diskann.builder.threads", 4);
 
-  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params,
+                             make_turbo_quantizer(*_index_meta_ptr)));
 
   ASSERT_EQ(0, builder->train(holder));
 
@@ -1721,7 +1725,8 @@ TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
   params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
   params.set("zvec.diskann.builder.threads", 4);
 
-  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params,
+                             make_turbo_quantizer(*_index_meta_ptr)));
 
   ASSERT_EQ(0, builder->train(holder));
 
@@ -1873,7 +1878,8 @@ TEST_F(DiskAnnSearcherTest, TestFp16EntrypointTurbo) {
 
   auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
   ASSERT_NE(builder, nullptr);
-  ASSERT_EQ(0, builder->init(fp16_meta, params));
+  ASSERT_EQ(0,
+            builder->init(fp16_meta, params, make_turbo_quantizer(fp16_meta)));
   ASSERT_EQ(0, builder->train(holder));
   ASSERT_EQ(0, builder->build(holder));
 
@@ -1939,7 +1945,8 @@ TEST_F(DiskAnnSearcherTest, TestRnnSearchTurbo) {
   params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
   params.set("zvec.diskann.builder.threads", 4);
 
-  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params,
+                             make_turbo_quantizer(*_index_meta_ptr)));
 
   ASSERT_EQ(0, builder->train(holder));
 

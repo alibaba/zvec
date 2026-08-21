@@ -130,10 +130,21 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   return 0;
 }
 
+int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params,
+                         const turbo::Quantizer::Pointer &quantizer) {
+  int ret = init(meta, params);
+  if (ret != 0) {
+    return ret;
+  }
+  data_quantizer_ = quantizer;
+  return 0;
+}
+
 int DiskAnnBuilder::cleanup(void) {
   holder_.reset();
   algo_.reset();
   quantizer_.reset();
+  data_quantizer_.reset();
   metric_.reset();
   entity_.clear();
   raw_meta_.clear();
@@ -512,7 +523,8 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
 
   DiskAnnContext *ctx = new (std::nothrow) DiskAnnContext(
       build_meta_, metric_,
-      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}));
+      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}),
+      data_quantizer_);
 
   if (ailego_unlikely(ctx == nullptr)) {
     if (!error_.exchange(true)) {
@@ -558,7 +570,8 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
 
   DiskAnnContext *ctx = new (std::nothrow) DiskAnnContext(
       build_meta_, metric_,
-      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}));
+      std::shared_ptr<DiskAnnEntity>(&entity_, [](DiskAnnEntity *) {}),
+      data_quantizer_);
 
   if (ailego_unlikely(ctx == nullptr)) {
     if (!error_.exchange(true)) {
