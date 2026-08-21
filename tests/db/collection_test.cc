@@ -33,6 +33,7 @@
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include "db/collection_query_internal.h"
 #include "db/common/file_helper.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
@@ -4197,7 +4198,7 @@ TEST_F(CollectionTest, Feature_Query_General) {
   }
 }
 
-TEST_F(CollectionTest, Feature_QueryWithSchema_ConsistentWithQuery) {
+TEST_F(CollectionTest, Feature_QueryResultSnapshot_ConsistentWithQuery) {
   FileHelper::RemoveDirectory(col_path);
 
   int doc_count = 100;
@@ -4219,7 +4220,7 @@ TEST_F(CollectionTest, Feature_QueryWithSchema_ConsistentWithQuery) {
   auto plain = collection->query(query);
   ASSERT_TRUE(plain.has_value());
 
-  auto snapshot = collection->query_with_schema(query);
+  auto snapshot = internal::query_result_snapshot(*collection, query);
   ASSERT_TRUE(snapshot.has_value());
 
   // docs must match the plain Query result
@@ -4230,10 +4231,10 @@ TEST_F(CollectionTest, Feature_QueryWithSchema_ConsistentWithQuery) {
   // without concurrent DDL, the schema snapshot matches schema()
   auto current_schema = collection->schema();
   ASSERT_TRUE(current_schema.has_value());
-  ASSERT_EQ(snapshot->schema, current_schema.value());
+  ASSERT_EQ(*snapshot->schema, current_schema.value());
 }
 
-TEST_F(CollectionTest, Feature_QueryWithSchema_AtomicUnderDropColumn) {
+TEST_F(CollectionTest, Feature_QueryResultSnapshot_AtomicUnderDropColumn) {
   FileHelper::RemoveDirectory(col_path);
 
   int doc_count = 200;
@@ -4261,18 +4262,19 @@ TEST_F(CollectionTest, Feature_QueryWithSchema_AtomicUnderDropColumn) {
   // Invariant for every snapshot: the dropped column is present in the
   // returned schema if and only if it is present in the returned docs, i.e.
   // docs and schema come from the same consistent execution.
-  auto check_snapshot = [&](const Result<QuerySnapshot> &result) {
-    if (!result.has_value() || result->docs.empty()) {
-      return;
-    }
-    const bool schema_has_field =
-        result->schema.get_field(dropped_field) != nullptr;
-    for (const auto &doc : result->docs) {
-      if (doc && doc->has(dropped_field) != schema_has_field) {
-        invariant_violated = true;
-      }
-    }
-  };
+  auto check_snapshot =
+      [&](const Result<internal::QueryResultSnapshot> &result) {
+        if (!result.has_value() || result->docs.empty()) {
+          return;
+        }
+        const bool schema_has_field =
+            result->schema->get_field(dropped_field) != nullptr;
+        for (const auto &doc : result->docs) {
+          if (doc && doc->has(dropped_field) != schema_has_field) {
+            invariant_violated = true;
+          }
+        }
+      };
 
   std::thread drop_thread([&]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -4281,22 +4283,22 @@ TEST_F(CollectionTest, Feature_QueryWithSchema_AtomicUnderDropColumn) {
     dropped = true;
   });
 
-  // Hammer query_with_schema from two threads while the DDL runs. A small
+  // Hammer query_result_snapshot from two threads while the DDL runs. A small
   // pause between queries keeps the shared lock from starving the DDL.
   std::thread reader([&]() {
     while (!stop) {
-      check_snapshot(collection->query_with_schema(query));
+      check_snapshot(internal::query_result_snapshot(*collection, query));
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   });
 
   while (!dropped) {
-    check_snapshot(collection->query_with_schema(query));
+    check_snapshot(internal::query_result_snapshot(*collection, query));
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   // A few extra rounds after the DDL finished.
   for (int i = 0; i < 10; ++i) {
-    check_snapshot(collection->query_with_schema(query));
+    check_snapshot(internal::query_result_snapshot(*collection, query));
   }
 
   stop = true;
@@ -4306,9 +4308,9 @@ TEST_F(CollectionTest, Feature_QueryWithSchema_AtomicUnderDropColumn) {
   ASSERT_FALSE(invariant_violated);
 
   // After the DDL, the field is gone from both schema and results.
-  auto final_result = collection->query_with_schema(query);
+  auto final_result = internal::query_result_snapshot(*collection, query);
   ASSERT_TRUE(final_result.has_value());
-  ASSERT_EQ(final_result->schema.get_field(dropped_field), nullptr);
+  ASSERT_EQ(final_result->schema->get_field(dropped_field), nullptr);
   for (const auto &doc : final_result->docs) {
     ASSERT_FALSE(doc->has(dropped_field));
   }

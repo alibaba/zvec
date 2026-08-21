@@ -316,6 +316,13 @@ py::object ZVecPyDoc::doc_value_to_py(Doc &self, const std::string &field,
 }
 
 py::tuple ZVecPyDoc::doc_to_tuple(Doc &self, const CollectionSchema &schema) {
+  return doc_to_tuple_with_fields(self, schema.forward_fields(),
+                                  schema.vector_fields());
+}
+
+py::tuple ZVecPyDoc::doc_to_tuple_with_fields(
+    Doc &self, const FieldSchemaPtrList &forward_fields,
+    const FieldSchemaPtrList &vector_fields) {
   py::tuple result(4);
   // 1. set doc id and score
   result[0] = py::str(self.pk());
@@ -328,7 +335,7 @@ py::tuple ZVecPyDoc::doc_to_tuple(Doc &self, const CollectionSchema &schema) {
   }
   // 2. set scalar fields
   py::dict fields;
-  for (const auto &field_meta : schema.forward_fields()) {
+  for (const auto &field_meta : forward_fields) {
     const std::string &field = field_meta->name();
     if (!self.has_value(field)) {
       continue;
@@ -348,7 +355,7 @@ py::tuple ZVecPyDoc::doc_to_tuple(Doc &self, const CollectionSchema &schema) {
   }
   // 3. set vector fields
   py::dict vectors;
-  for (const auto &vec_meta : schema.vector_fields()) {
+  for (const auto &vec_meta : vector_fields) {
     const std::string &vec = vec_meta->name();
     if (!self.has_value(vec)) continue;
 

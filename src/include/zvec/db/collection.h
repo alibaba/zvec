@@ -25,17 +25,6 @@
 
 namespace zvec {
 
-/**
- * @brief Atomic snapshot of a query execution: the result docs together with
- * the exact schema the query was executed against. Both are captured within a
- * single schema read-lock section, so they stay consistent even under
- * concurrent DDL (e.g. DropColumn).
- */
-struct ZVEC_API QuerySnapshot {
-  DocPtrList docs;
-  CollectionSchema schema;
-};
-
 class ZVEC_API Collection {
  public:
   using Ptr = std::shared_ptr<Collection>;
@@ -114,27 +103,6 @@ class ZVEC_API Collection {
   virtual Result<DocPtrList> query(const SearchQuery &query) const = 0;
 
   virtual Result<DocPtrList> query(const MultiQuery &query) const = 0;
-
-  /**
-   * @brief Execute a query and return the result docs together with the
-   * schema snapshot used by this execution. Unlike calling query() and
-   * schema() separately, both are captured atomically under the same
-   * read lock, so concurrent DDL cannot desynchronize them.
-   *
-   * @param query The search query.
-   * @return The query snapshot OR an error.
-   */
-  virtual Result<QuerySnapshot> query_with_schema(
-      const SearchQuery &query) const = 0;
-
-  /**
-   * @brief Multi-query variant of query_with_schema.
-   *
-   * @param query The multi query with re-ranking.
-   * @return The query snapshot OR an error.
-   */
-  virtual Result<QuerySnapshot> query_with_schema(
-      const MultiQuery &query) const = 0;
 
   virtual Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const = 0;

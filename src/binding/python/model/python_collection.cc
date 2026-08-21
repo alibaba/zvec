@@ -15,6 +15,7 @@
 #include "python_collection.h"
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
+#include "db/collection_query_internal.h"
 #include "python_doc.h"
 
 namespace zvec {
@@ -23,13 +24,17 @@ namespace {
 
 // Batch-materialize a DocPtrList into a list of (id, score, fields, vectors)
 // tuples in a single GIL-held section, avoiding per-doc _Doc wrappers and
-// per-doc Python->C++ crossings on the hot query path.
+// per-doc Python->C++ crossings on the hot query path. The forward/vector field
+// lists are resolved once per batch rather than once per doc.
 py::list docs_to_tuples(const DocPtrList &docs,
                         const CollectionSchema &schema) {
+  const auto forward_fields = schema.forward_fields();
+  const auto vector_fields = schema.vector_fields();
   py::list out(docs.size());
   for (size_t i = 0; i < docs.size(); ++i) {
     if (docs[i]) {
-      out[i] = ZVecPyDoc::doc_to_tuple(*docs[i], schema);
+      out[i] = ZVecPyDoc::doc_to_tuple_with_fields(*docs[i], forward_fields,
+                                                   vector_fields);
     } else {
       out[i] = py::none();
     }
@@ -75,6 +80,21 @@ T unwrap_expected(tl::expected<T, Status> &&exp) {
   }
   throw_if_error(exp.error());
   return T{};
+}
+
+// Run a query with the GIL released, capturing docs + schema atomically under a
+// single schema read lock (internal::query_result_snapshot), then materialize
+// the batch into tuples after the GIL is reacquired and the read lock released.
+template <typename Query>
+py::list execute_for_python(const Collection &collection, const Query &query) {
+  Result<internal::QueryResultSnapshot> result;
+  {
+    py::gil_scoped_release release;
+    result = internal::query_result_snapshot(collection, query);
+  }
+  // GIL restored, schema read lock already released.
+  auto snapshot = unwrap_expected(std::move(result));
+  return docs_to_tuples(snapshot.docs, *snapshot.schema);
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
@@ -296,19 +316,13 @@ void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
   // Query with the GIL released, then materialize all hits into
   // (id, score, fields, vectors) tuples in one crossing (see docs_to_tuples).
-  // query_with_schema returns the docs and the schema snapshot atomically
+  // execute_for_python captures the docs and the schema snapshot atomically
   // under one read lock, so concurrent DDL cannot desynchronize them, while
   // the binding signature stays unchanged from the legacy per-doc binding.
   col.def(
          "Query",
          [](const Collection &self, const SearchQuery &query) {
-           Result<QuerySnapshot> result;
-           {
-             py::gil_scoped_release release;
-             result = self.query_with_schema(query);
-           }
-           auto snapshot = unwrap_expected(std::move(result));
-           return docs_to_tuples(snapshot.docs, snapshot.schema);
+           return execute_for_python(self, query);
          },
          py::arg("query"),
          "Execute a query and return results as a list of "
@@ -317,13 +331,7 @@ void ZVecPyCollection::bind_dql_methods(
       .def(
           "Query",
           [](const Collection &self, const MultiQuery &query) {
-            Result<QuerySnapshot> result;
-            {
-              py::gil_scoped_release release;
-              result = self.query_with_schema(query);
-            }
-            auto snapshot = unwrap_expected(std::move(result));
-            return docs_to_tuples(snapshot.docs, snapshot.schema);
+            return execute_for_python(self, query);
           },
           py::arg("query"),
           "Execute a multi query with re-ranking and return results as a "

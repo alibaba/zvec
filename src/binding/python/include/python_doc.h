@@ -32,6 +32,13 @@ class ZVecPyDoc {
   // materialization path in the collection DQL bindings. Requires the GIL.
   static py::tuple doc_to_tuple(Doc &self, const CollectionSchema &schema);
 
+  // Same as doc_to_tuple but takes the pre-resolved forward/vector field lists
+  // directly, so batch materialization can resolve them once per batch instead
+  // of once per doc. Requires the GIL.
+  static py::tuple doc_to_tuple_with_fields(
+      Doc &self, const FieldSchemaPtrList &forward_fields,
+      const FieldSchemaPtrList &vector_fields);
+
   // Convert a single Doc field value into a Python object according to its
   // DataType. Shared by the per-field `get_any` binding and `doc_to_tuple`.
   // Requires the GIL.

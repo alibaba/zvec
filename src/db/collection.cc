@@ -35,6 +35,7 @@
 #include <zvec/db/reranker.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
+#include "db/collection_query_internal.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
@@ -126,12 +127,6 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> query(const MultiQuery &query) const override;
 
-  Result<QuerySnapshot> query_with_schema(
-      const SearchQuery &query) const override;
-
-  Result<QuerySnapshot> query_with_schema(
-      const MultiQuery &query) const override;
-
   Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const override;
 
@@ -142,6 +137,15 @@ class CollectionImpl : public Collection {
 
   Result<std::string> debug_get_hnsw_storage_mode(
       const std::string &column_name) const override;
+
+  // Execute a query and capture the docs together with a shared_ptr snapshot of
+  // schema_, all within a single shared lock on schema_handle_mtx_. Used by the
+  // internal query_result_snapshot() free functions below. Public because those
+  // free functions are not members/friends, but CollectionImpl itself is not
+  // exposed in any public header, so this stays internal to this .cc.
+  template <typename Query>
+  Result<internal::QueryResultSnapshot> query_result_snapshot_impl(
+      const Query &query) const;
 
  private:
   // Query bodies without locking; the caller must hold schema_handle_mtx_
@@ -1706,8 +1710,9 @@ Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {
   return query_unsafe(query);
 }
 
-Result<QuerySnapshot> CollectionImpl::query_with_schema(
-    const SearchQuery &query) const {
+template <typename Query>
+Result<internal::QueryResultSnapshot>
+CollectionImpl::query_result_snapshot_impl(const Query &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
@@ -1718,24 +1723,12 @@ Result<QuerySnapshot> CollectionImpl::query_with_schema(
     return tl::make_unexpected(docs.error());
   }
   // Snapshot the schema within the same critical section so it always matches
-  // the one used by query_unsafe, even under concurrent DDL.
-  return QuerySnapshot{std::move(*docs), *schema_};
-}
-
-Result<QuerySnapshot> CollectionImpl::query_with_schema(
-    const MultiQuery &query) const {
-  std::shared_lock lock(schema_handle_mtx_);
-
-  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
-  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
-
-  auto docs = query_unsafe(query);
-  if (!docs) {
-    return tl::make_unexpected(docs.error());
-  }
-  // Snapshot the schema within the same critical section so it always matches
-  // the one used by query_unsafe, even under concurrent DDL.
-  return QuerySnapshot{std::move(*docs), *schema_};
+  // the one used by query_unsafe, even under concurrent DDL. The shared_ptr
+  // only bumps the refcount; DDL uses clone-and-swap under the exclusive lock,
+  // so this captured schema stays valid after the lock is released.
+  std::shared_ptr<const CollectionSchema> schema_snapshot = schema_;
+  return internal::QueryResultSnapshot{std::move(docs.value()),
+                                       std::move(schema_snapshot)};
 }
 
 Result<DocPtrList> CollectionImpl::query_unsafe(
@@ -2312,5 +2305,37 @@ std::vector<Segment::Ptr> CollectionImpl::get_all_segments() const {
 std::vector<Segment::Ptr> CollectionImpl::get_all_persist_segments() const {
   return segment_manager_->get_segments();
 }
+
+namespace internal {
+
+namespace {
+// The binding layer only holds a Collection reference and cannot see
+// CollectionImpl, so recover the concrete type here. CollectionImpl is the sole
+// Collection implementation; the dynamic_cast is negligible next to a query and
+// safer than assuming the concrete type. Should a decorator/proxy Collection
+// ever appear, this returns NotSupported at runtime instead of misbehaving.
+template <typename Query>
+Result<QueryResultSnapshot> query_result_snapshot_dispatch(
+    const Collection &collection, const Query &query) {
+  const auto *impl = dynamic_cast<const CollectionImpl *>(&collection);
+  if (impl == nullptr) {
+    return tl::make_unexpected(
+        Status::NotSupported("Unsupported Collection implementation"));
+  }
+  return impl->query_result_snapshot_impl(query);
+}
+}  // namespace
+
+Result<QueryResultSnapshot> query_result_snapshot(const Collection &collection,
+                                                  const SearchQuery &query) {
+  return query_result_snapshot_dispatch(collection, query);
+}
+
+Result<QueryResultSnapshot> query_result_snapshot(const Collection &collection,
+                                                  const MultiQuery &query) {
+  return query_result_snapshot_dispatch(collection, query);
+}
+
+}  // namespace internal
 
 }  // namespace zvec
