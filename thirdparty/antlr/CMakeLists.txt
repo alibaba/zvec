@@ -9,6 +9,15 @@ endif()
 
 if(MSVC)
     set(WITH_STATIC_CRT ${ZVEC_USE_STATIC_CRT} CACHE BOOL "" FORCE)
+    # ANTLR4's own CMakeLists unconditionally appends "/O2 /Ob2" to
+    # CMAKE_CXX_FLAGS_RELEASE. The size-tuned "/O1 /Ob1" flags inherited
+    # from thirdparty/ would be overridden by that, producing hundreds of
+    # D9025 "overriding '/O1' with '/O2'" warnings. Restore the speed
+    # flags for this subtree, matching upstream main.
+    string(REPLACE "/O1" "/O2" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/O1" "/O2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string(REPLACE "/Ob1" "/Ob2" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/Ob1" "/Ob2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 endif()
 add_subdirectory(antlr4/runtime/Cpp/)
 
