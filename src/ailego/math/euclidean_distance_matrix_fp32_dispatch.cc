@@ -23,6 +23,11 @@ void SquaredEuclideanDistanceFp32NEON(const float *lhs, const float *rhs,
                                       size_t size, float *out);
 #endif
 
+#if defined(__riscv_vector)
+float SquaredEuclideanDistanceRVV(const float *lhs, const float *rhs,
+                                  size_t size);
+#endif
+
 #if defined(__AVX512F__)
 float SquaredEuclideanDistanceFp32AVX512(const float *lhs, const float *rhs,
                                          size_t size);
@@ -51,6 +56,8 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
                                                           float *out) {
 #if defined(__ARM_NEON)
   SquaredEuclideanDistanceFp32NEON(m, q, dim, out);
+#elif defined(__riscv_vector)
+  *out = SquaredEuclideanDistanceRVV(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {

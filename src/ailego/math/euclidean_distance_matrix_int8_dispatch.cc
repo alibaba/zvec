@@ -18,6 +18,11 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__riscv_vector)
+float SquaredEuclideanDistanceRVV(const int8_t *lhs, const int8_t *rhs,
+                                  size_t size);
+#endif
+
 #if defined(__AVX2__)
 float SquaredEuclideanDistanceInt8AVX2(const int8_t *lhs, const int8_t *rhs,
                                        size_t size);
@@ -36,6 +41,9 @@ void SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
                                                            const ValueType *q,
                                                            size_t dim,
                                                            float *out) {
+#if defined(__riscv_vector)
+  *out = SquaredEuclideanDistanceRVV(m, q, dim);
+#else
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     *out = SquaredEuclideanDistanceInt8AVX2(m, q, dim);
@@ -51,6 +59,7 @@ void SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
 #endif
 
   *out = SquaredEuclideanDistanceInt8Scalar(m, q, dim);
+#endif  // __riscv_vector
 }
 
 //! Compute the distance between matrix and query (INT8, M=1, N=1)

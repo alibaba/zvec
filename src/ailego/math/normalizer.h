@@ -51,7 +51,8 @@ struct Normalizer {
   }
 };
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__)) || \
+    defined(__riscv_vector)
 /*! Normalizer (FP32)
  */
 template <>
@@ -78,10 +79,10 @@ struct Normalizer<float> {
     }
   }
 };
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || (__ARM_NEON && __aarch64__) || __riscv_vector
 
 #if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+    (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
 /*! Normalizer (FP16)
  */
 template <>
@@ -108,7 +109,7 @@ struct Normalizer<Float16> {
     }
   }
 };
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh
 
 }  // namespace ailego
 }  // namespace zvec

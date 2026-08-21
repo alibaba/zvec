@@ -23,6 +23,16 @@ float InnerProductAndSquaredNormFp32NEON(const float *lhs, const float *rhs,
                                          size_t size, float *sql, float *sqr);
 #endif
 
+#if defined(__riscv_vector)
+float MipsEuclideanDistanceRepeatedQuadraticInjectionRVV(const float *lhs,
+                                                         const float *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2);
+float MipsEuclideanDistanceSphericalInjectionRVV(const float *lhs,
+                                                 const float *rhs, size_t size,
+                                                 float e2);
+#endif
+
 #if defined(__AVX512F__)
 float MipsEuclideanDistanceRepeatedQuadraticInjectionFp32AVX512(
     const float *lhs, const float *rhs, size_t size, size_t m, float e2);
@@ -70,6 +80,8 @@ void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
 
   *out = ComputeSphericalInjection(sum, u2, v2, e2);
   return;
+#elif defined(__riscv_vector)
+  *out = MipsEuclideanDistanceSphericalInjectionRVV(p, q, dim, e2);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -113,6 +125,8 @@ void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
   }
   *out = sum;
   return;
+#elif defined(__riscv_vector)
+  *out = MipsEuclideanDistanceRepeatedQuadraticInjectionRVV(p, q, dim, m, e2);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {

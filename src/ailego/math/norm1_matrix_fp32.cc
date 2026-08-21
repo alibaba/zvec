@@ -56,12 +56,37 @@ namespace ailego {
 //! Calculate sum of absolute (NEON)
 #define SA_FP32_NEON(v_m, v_sum) v_sum = vaddq_f32(vabsq_f32(v_m), v_sum);
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__riscv_vector)
+//! Compute the L1-norm of vector (RVV)
+static inline float Norm1RVV(const float *m, size_t dim) {
+  const size_t vlmax = __riscv_vsetvlmax_e32m8();
+  vfloat32m8_t v_sum = __riscv_vfmv_v_f_f32m8(0.0f, vlmax);
+
+  while (dim != 0) {
+    const size_t vl = __riscv_vsetvl_e32m8(dim);
+    vfloat32m8_t v_m = __riscv_vle32_v_f32m8(m, vl);
+    vfloat32m8_t v_abs = __riscv_vfabs_v_f32m8(v_m, vl);
+    v_sum = __riscv_vfadd_vv_f32m8_tu(v_sum, v_sum, v_abs, vl);
+    m += vl;
+    dim -= vl;
+  }
+
+  vfloat32m1_t v_zero = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+  vfloat32m1_t v_reduce =
+      __riscv_vfredusum_vs_f32m8_f32m1(v_sum, v_zero, vlmax);
+  return __riscv_vfmv_f_s_f32m1_f32(v_reduce);
+}
+#endif  // __riscv_vector
+
+#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__)) || \
+    defined(__riscv_vector)
 //! Compute the L1-norm of vectors (FP32, M=1)
 void Norm1Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                     float *out) {
 #if defined(__ARM_NEON)
   NORM_FP32_1_NEON(m, dim, out, )
+#elif defined(__riscv_vector)
+  *out = Norm1RVV(m, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -78,7 +103,7 @@ void Norm1Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
   NORM_FP32_1_SSE(m, dim, out, )
 #endif
 }
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || (__ARM_NEON && __aarch64__) || __riscv_vector
 
 }  // namespace ailego
 }  // namespace zvec

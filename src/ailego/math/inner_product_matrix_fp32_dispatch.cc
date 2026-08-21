@@ -26,6 +26,11 @@ float MinusInnerProductFp32NEON(const float *lhs, const float *rhs,
                                 size_t size);
 #endif
 
+#if defined(__riscv_vector)
+float InnerProductRVV(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductRVV(const float *lhs, const float *rhs, size_t size);
+#endif
+
 #if defined(__AVX512F__)
 float InnerProductFp32AVX512(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductFp32AVX512(const float *lhs, const float *rhs,
@@ -51,6 +56,8 @@ void InnerProductMatrix<float, 1, 1>::Compute(const float *m, const float *q,
                                               size_t dim, float *out) {
 #if defined(__ARM_NEON)
   *out = InnerProductFp32NEON(m, q, dim);
+#elif defined(__riscv_vector)
+  *out = InnerProductRVV(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -82,6 +89,8 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const float *m,
                                                    float *out) {
 #if defined(__ARM_NEON)
   *out = MinusInnerProductFp32NEON(m, q, dim);
+#elif defined(__riscv_vector)
+  *out = MinusInnerProductRVV(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
