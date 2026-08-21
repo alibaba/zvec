@@ -246,7 +246,7 @@ TEST(PqFastQuantizer, PackCodesRoundtripOddChunk) {
 // A FastScan kernel must be bit-exact with the scalar one. The pad LUT
 // group of an odd num_chunk must be zero (packing contract); pad code
 // nibbles may hold arbitrary values.
-static void check_kernel_equivalence_fn(zvec::turbo::PqFastScanFunc fn,
+static void check_kernel_equivalence_fn(zvec::turbo::CodebookFastScanFunc fn,
                                         size_t num_chunk, uint32_t seed) {
   std::mt19937 gen(seed);
   std::uniform_int_distribution<int> byte_dist(0, 255);
@@ -298,7 +298,7 @@ TEST(PqFastScanKernel, DispatchedMatchesScalarLargeChunk) {
 // not pick it, so each one is proven bit-exact on a capable host. Sizes
 // span even / odd num_chunk, the single-pair tail of the AVX512 quad loop
 // and the u16 spill period.
-static void check_kernel_all_sizes(zvec::turbo::PqFastScanFunc fn,
+static void check_kernel_all_sizes(zvec::turbo::CodebookFastScanFunc fn,
                                    uint32_t seed) {
   check_kernel_equivalence_fn(fn, 8, seed);
   check_kernel_equivalence_fn(fn, 16, seed + 1);
@@ -336,16 +336,16 @@ TEST(PqFastScanKernel, DispatchTableIsFamilyExclusive) {
   // kPQFast fills fast_scan plus the scalar single-code ADC; no SDC / batch.
   auto fast = get_pq_kernels(DataType::kInt4, QuantizeType::kPQFast);
   EXPECT_TRUE(fast.fast_scan);
-  EXPECT_TRUE(fast.adc_distance);
-  EXPECT_FALSE(fast.sdc_distance);
-  EXPECT_FALSE(fast.batch_adc_distance);
+  EXPECT_TRUE(fast.asymmetric_distance);
+  EXPECT_FALSE(fast.symmetric_distance);
+  EXPECT_FALSE(fast.batch_asymmetric_distance);
 
   // kPQ fills the gather-style kernels and leaves fast_scan null.
   for (auto dt : {DataType::kInt4, DataType::kInt8}) {
     auto pq = get_pq_kernels(dt, QuantizeType::kPQ);
-    EXPECT_TRUE(pq.adc_distance);
-    EXPECT_TRUE(pq.sdc_distance);
-    EXPECT_TRUE(pq.batch_adc_distance);
+    EXPECT_TRUE(pq.asymmetric_distance);
+    EXPECT_TRUE(pq.symmetric_distance);
+    EXPECT_TRUE(pq.batch_asymmetric_distance);
     EXPECT_FALSE(pq.fast_scan);
   }
 
@@ -353,7 +353,7 @@ TEST(PqFastScanKernel, DispatchTableIsFamilyExclusive) {
   EXPECT_FALSE(
       get_pq_kernels(DataType::kInt8, QuantizeType::kPQFast).fast_scan);
   auto none = get_pq_kernels(DataType::kInt4, QuantizeType::kFp32);
-  EXPECT_FALSE(none.adc_distance);
+  EXPECT_FALSE(none.asymmetric_distance);
   EXPECT_FALSE(none.fast_scan);
 }
 

@@ -77,9 +77,9 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   // Dispatch ISA kernels (scalar only for now).
   auto pq_k = get_pq_kernels(DataType::kInt8);
-  adc_fn_ = pq_k.adc_distance;
-  sdc_fn_ = pq_k.sdc_distance;
-  batch_adc_fn_ = pq_k.batch_adc_distance;
+  adc_fn_ = pq_k.asymmetric_distance;
+  sdc_fn_ = pq_k.symmetric_distance;
+  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // Resolve the configured metric type.  The metric is owned by the caller's
   // IndexMeta; serialize() stamps it into the header only as a sanity check
@@ -848,7 +848,8 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
-  // ADC: PqAdcDistanceFunc matches DistanceFunc directly (no lambda needed).
+  // ADC: CodebookAsymmetricDistanceFunc matches DistanceFunc directly (no
+  // lambda needed).
   DistanceFunc adc_func = adc_fn_;
 
   // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
@@ -999,9 +1000,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   // Re-dispatch kernels.
   auto pq_k = get_pq_kernels(DataType::kInt8);
-  adc_fn_ = pq_k.adc_distance;
-  sdc_fn_ = pq_k.sdc_distance;
-  batch_adc_fn_ = pq_k.batch_adc_distance;
+  adc_fn_ = pq_k.asymmetric_distance;
+  sdc_fn_ = pq_k.symmetric_distance;
+  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // L2-only batch distance for encoding (always L2 regardless of metric).
   l2_batch_fn_ =

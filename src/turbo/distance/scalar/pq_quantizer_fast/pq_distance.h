@@ -43,7 +43,7 @@ void pq_adc_fast_scan(const void *packed_codes, const void *packed_lut,
 // nibble-packed code (subquantizer m in the low nibble of byte m / 2 when m
 // is even, high nibble when odd), `qquery` is the packed uint8 LUT followed
 // by the delta/bias tail. Returns the dequantized distance
-// dist = accu * delta + bias. Signature matches PqAdcDistanceFunc.
+// dist = accu * delta + bias. Signature matches CodebookAsymmetricDistanceFunc.
 void pq_adc_u8(const void *pq_code, const void *qquery, size_t num_chunk,
                float *out);
 

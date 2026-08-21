@@ -249,8 +249,8 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
   return nullptr;
 }
 
-PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
-                         CpuArchType cpu_arch_type) {
+CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
+                               CpuArchType cpu_arch_type) {
   switch (quantize_type) {
     case QuantizeType::kPQFast:
       // FastScan is inherently 4-bit: a 16-entry LUT is what fits one SIMD

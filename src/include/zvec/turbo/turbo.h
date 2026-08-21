@@ -63,27 +63,33 @@ using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
 using UnrotateFunc = void (*)(const float *in, float *out, size_t in_dim,
                               size_t out_dim, void *ctx);
 
-// PQ kernel function pointer types.
+// Codebook kernel function pointer types (shared by all codebook-based
+// quantizers, e.g. int8/int4 PQ).
 //
-// ADC: LUT look-up distance between a PQ code and a query (via LUT).
-//   pq_code:           [num_chunk] uint8_t
-//   lut:               [num_chunk * 256] float
+// Asymmetric (ADC): LUT look-up distance between a code and a query LUT.
+//   code:              [num_chunk] code ids
+//   lut:               [num_chunk * num_centroids] float
 // Uses void* to match DistanceFunc signature for direct assignment.
-using PqAdcDistanceFunc = void (*)(const void *pq_code, const void *lut,
-                                   size_t num_chunk, float *out);
+using CodebookAsymmetricDistanceFunc = void (*)(const void *code,
+                                                const void *lut,
+                                                size_t num_chunk, float *out);
 
-// SDC kernel: centroid-to-centroid distance between two PQ codes.
-//   a, b:              [num_chunk] uint8_t
-//   dist_table:        [num_chunk * 256 * 256] float
-// Uses void* for consistency with DistanceFunc / PqAdcDistanceFunc.
-using PqSdcDistanceFunc = void (*)(const void *a, const void *b,
-                                   const void *dist_table, size_t num_chunk,
-                                   float *out);
+// Symmetric (SDC): centroid-to-centroid distance between two codes.
+//   a, b:              [num_chunk] code ids
+//   dist_table:        [num_chunk * num_centroids * num_centroids] float
+// Uses void* for consistency with DistanceFunc /
+// CodebookAsymmetricDistanceFunc.
+using CodebookSymmetricDistanceFunc = void (*)(const void *a, const void *b,
+                                               const void *dist_table,
+                                               size_t num_chunk, float *out);
 
-// Batch ADC: compute distances for multiple PQ codes against a shared LUT.
+// Batch asymmetric: distances for multiple codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
-using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
-                                size_t num, size_t num_chunk, float *out);
+using CodebookBatchAsymmetricDistanceFunc = void (*)(const void **codes,
+                                                     const void *lut,
+                                                     size_t num,
+                                                     size_t num_chunk,
+                                                     float *out);
 
 // FastScan ADC kernel: LUT look-up + accumulate over one packed block of 32
 // vectors.  Codes are 4-bit and block-interleaved, the LUT is affine-quantized
@@ -93,9 +99,9 @@ using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
 //   packed_codes: [round_up_even(num_chunk) * 16] uint8_t
 //   packed_lut:   [round_up_even(num_chunk) * 16] uint8_t
 //   accu32:       [32] int32_t, overwritten with the accumulated sums
-using PqFastScanFunc = void (*)(const void *packed_codes,
-                                const void *packed_lut, size_t num_chunk,
-                                int32_t *accu32);
+using CodebookFastScanFunc = void (*)(const void *packed_codes,
+                                      const void *packed_lut, size_t num_chunk,
+                                      int32_t *accu32);
 
 // ISA-dispatched rotate/unrotate kernels.
 struct RotatorKernels {
@@ -111,13 +117,14 @@ struct RotatorKernels {
 //                    16-entry LUT is what fits one SIMD lane)
 //
 // Fields are populated per family and are mutually exclusive: kPQ fills
-// adc_distance / sdc_distance / batch_adc_distance, kPQFast fills fast_scan
-// and adc_distance (single-code look-up; FastScan supports no SDC).
-struct PqKernels {
-  PqAdcDistanceFunc adc_distance = nullptr;
-  PqSdcDistanceFunc sdc_distance = nullptr;
-  PqBatchAdcFunc batch_adc_distance = nullptr;
-  PqFastScanFunc fast_scan = nullptr;
+// asymmetric_distance / symmetric_distance / batch_asymmetric_distance,
+// kPQFast fills fast_scan and asymmetric_distance (single-code look-up;
+// FastScan supports no SDC).
+struct CodebookKernels {
+  CodebookAsymmetricDistanceFunc asymmetric_distance = nullptr;
+  CodebookSymmetricDistanceFunc symmetric_distance = nullptr;
+  CodebookBatchAsymmetricDistanceFunc batch_asymmetric_distance = nullptr;
+  CodebookFastScanFunc fast_scan = nullptr;
 };
 
 enum class MetricType {
@@ -211,9 +218,9 @@ ZVEC_TURBO_API RotatorKernels get_rotator_kernels(
     RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
-// and CPU arch.  See PqKernels for which fields each family populates;
+// and CPU arch.  See CodebookKernels for which fields each family populates;
 // unsupported combinations yield an all-null struct.
-ZVEC_TURBO_API PqKernels get_pq_kernels(
+ZVEC_TURBO_API CodebookKernels get_pq_kernels(
     DataType data_type, QuantizeType quantize_type = QuantizeType::kPQ,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 

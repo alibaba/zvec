@@ -262,11 +262,11 @@ class PqFastQuantizer : public Quantizer,
   std::vector<std::vector<const void *>> centroid_ptrs_cache_;
 
   //! ISA-dispatched FastScan scan32 kernel.
-  PqFastScanFunc scan_fn_{nullptr};
+  CodebookFastScanFunc scan_fn_{nullptr};
 
   //! Dispatched single-code ADC against a quantized FastScan query
   //! (plain nibble code + packed u8 LUT with delta/bias tail).
-  PqAdcDistanceFunc adc_fn_{nullptr};
+  CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for the search-side LUT
   //! (L2: squared euclidean, IP: -dot).  Data type matches input.

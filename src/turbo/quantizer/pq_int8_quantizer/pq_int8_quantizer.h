@@ -223,9 +223,9 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   std::vector<std::vector<const void *>> centroid_ptrs_cache_;
 
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
-  PqAdcDistanceFunc adc_fn_{nullptr};
-  PqSdcDistanceFunc sdc_fn_{nullptr};
-  PqBatchAdcFunc batch_adc_fn_{nullptr};
+  CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
+  CodebookSymmetricDistanceFunc sdc_fn_{nullptr};
+  CodebookBatchAsymmetricDistanceFunc batch_adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for search-side LUT
   //! computation and SDC dist_table.  Data type matches input_data_type_.

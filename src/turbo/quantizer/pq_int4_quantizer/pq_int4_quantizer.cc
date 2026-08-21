@@ -77,9 +77,9 @@ int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   // Dispatch ISA kernels for the int4 (nibble-packed, 16-centroid) layout.
   auto pq_k = get_pq_kernels(DataType::kInt4);
-  adc_fn_ = pq_k.adc_distance;
-  sdc_fn_ = pq_k.sdc_distance;
-  batch_adc_fn_ = pq_k.batch_adc_distance;
+  adc_fn_ = pq_k.asymmetric_distance;
+  sdc_fn_ = pq_k.symmetric_distance;
+  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // Resolve the configured metric type (local only — not stored).
   auto mt = metric_from_name(meta_.metric_name());
@@ -838,7 +838,8 @@ DistanceImpl PqInt4Quantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
-  // ADC: PqAdcDistanceFunc matches DistanceFunc directly (no lambda needed).
+  // ADC: CodebookAsymmetricDistanceFunc matches DistanceFunc directly (no
+  // lambda needed).
   DistanceFunc adc_func = adc_fn_;
 
   // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
@@ -982,9 +983,9 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
 
   // Re-dispatch kernels.
   auto pq_k = get_pq_kernels(DataType::kInt4);
-  adc_fn_ = pq_k.adc_distance;
-  sdc_fn_ = pq_k.sdc_distance;
-  batch_adc_fn_ = pq_k.batch_adc_distance;
+  adc_fn_ = pq_k.asymmetric_distance;
+  sdc_fn_ = pq_k.symmetric_distance;
+  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // L2-only batch distance for encoding (always L2 regardless of metric).
   l2_batch_fn_ =

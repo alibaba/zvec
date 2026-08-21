@@ -51,7 +51,7 @@ void PqFastQuantizer::setup_functions() {
   // single-code ADC against a quantized LUT.
   auto pq_k = get_pq_kernels(DataType::kInt4, QuantizeType::kPQFast);
   scan_fn_ = pq_k.fast_scan;
-  adc_fn_ = pq_k.adc_distance;
+  adc_fn_ = pq_k.asymmetric_distance;
 
   // L2-only batch distance for encoding and KMeans training: the PQ
   // codebook is trained/encoded in L2 space regardless of the search metric.
@@ -904,7 +904,7 @@ DistanceImpl PqFastQuantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
-  // ADC over a plain nibble-packed code: PqAdcDistanceFunc matches
+  // ADC over a plain nibble-packed code: CodebookAsymmetricDistanceFunc matches
   // DistanceFunc directly (no lambda needed).
   DistanceFunc adc_func = adc_fn_;
 
