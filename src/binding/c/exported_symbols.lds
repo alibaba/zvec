@@ -9,6 +9,7 @@
     zvec_collection_close;
     zvec_collection_create_and_open;
     zvec_collection_create_index;
+    zvec_collection_create_iterator;
     zvec_collection_delete;
     zvec_collection_delete_by_filter;
     zvec_collection_delete_with_results;
@@ -119,6 +120,8 @@
     zvec_doc_has_field_value;
     zvec_doc_is_empty;
     zvec_doc_is_field_null;
+    zvec_doc_iterator_close;
+    zvec_doc_iterator_next;
     zvec_doc_memory_usage;
     zvec_doc_merge;
     zvec_doc_remove_field;
@@ -233,6 +236,10 @@
     zvec_int64_array_create;
     zvec_int64_array_destroy;
     zvec_is_initialized;
+    zvec_iterator_options_create;
+    zvec_iterator_options_destroy;
+    zvec_iterator_options_set_include_vector;
+    zvec_iterator_options_set_output_fields;
     zvec_malloc;
     zvec_metric_type_to_string;
     zvec_multi_query_add_sub_query;

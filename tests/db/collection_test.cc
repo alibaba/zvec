@@ -15,6 +15,7 @@
 #include "zvec/db/collection.h"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,15 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
+#endif
 #include <gtest/gtest.h>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/ailego/io/file.h>
@@ -3265,6 +3275,97 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   ASSERT_TRUE(
       collection->add_column(field_schema, "int32", AddColumnOptions()).ok());
 }
+
+TEST_F(CollectionTest, Feature_Optimize_Compacted_Segment_Directories_Removed) {
+  namespace fs = std::filesystem;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, 1000, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->optimize().ok());
+  ASSERT_TRUE(TestHelper::CollectionInsertDoc(collection, 1000, 2000).ok());
+
+  // The second optimize() compacts the first persisted segment together with
+  // the new writing segment. Keep their paths rather than assuming segment
+  // IDs so the assertion remains valid if allocation details change.
+  ASSERT_TRUE(collection->flush().ok());
+  std::vector<fs::path> source_segment_dirs;
+  for (const auto &entry : fs::directory_iterator(col_path)) {
+    if (!entry.is_directory()) {
+      continue;
+    }
+    const auto name = entry.path().filename().string();
+    if (!name.empty() &&
+        std::all_of(name.begin(), name.end(),
+                    [](unsigned char ch) { return std::isdigit(ch); })) {
+      source_segment_dirs.push_back(entry.path());
+    }
+  }
+  ASSERT_EQ(source_segment_dirs.size(), 2u);
+
+  ASSERT_TRUE(collection->optimize().ok());
+  ASSERT_EQ(collection->stats().value().doc_count, 2000u);
+
+  for (const auto &source_dir : source_segment_dirs) {
+    EXPECT_FALSE(fs::exists(source_dir))
+        << "compacted segment directory was not removed: "
+        << source_dir.string();
+  }
+
+  // The cleanup must not remove data needed by the replacement segment.
+  collection.reset();
+  auto reopened = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  ASSERT_EQ(reopened.value()->stats().value().doc_count, 2000u);
+}
+
+#ifdef _WIN32
+TEST_F(CollectionTest, Feature_Optimize_Cleanup_Failure_Is_Best_Effort) {
+  namespace fs = std::filesystem;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, 1000, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->optimize().ok());
+  ASSERT_TRUE(TestHelper::CollectionInsertDoc(collection, 1000, 2000).ok());
+  ASSERT_TRUE(collection->flush().ok());
+
+  fs::path blocked_file;
+  for (const auto &entry : fs::recursive_directory_iterator(col_path)) {
+    const auto parent_name = entry.path().parent_path().filename().string();
+    if (entry.is_regular_file() && !parent_name.empty() &&
+        std::all_of(parent_name.begin(), parent_name.end(),
+                    [](unsigned char ch) { return std::isdigit(ch); })) {
+      blocked_file = entry.path();
+      break;
+    }
+  }
+  ASSERT_FALSE(blocked_file.empty());
+
+  // Omit FILE_SHARE_DELETE to emulate another Windows process retaining a
+  // segment file. Internal zvec handles are closed by destroy(), but this
+  // external handle must make the physical directory cleanup fail.
+  HANDLE blocker = CreateFileW(blocked_file.wstring().c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_NE(blocker, INVALID_HANDLE_VALUE);
+
+  auto optimize_status = collection->optimize();
+  EXPECT_TRUE(optimize_status.ok()) << optimize_status.message();
+  EXPECT_TRUE(fs::exists(blocked_file.parent_path()));
+
+  CloseHandle(blocker);
+  EXPECT_TRUE(FileHelper::RemoveDirectory(blocked_file.parent_path().string()));
+
+  // The manifest commit and in-memory retirement are complete even though
+  // best-effort physical cleanup was deferred.
+  ASSERT_EQ(collection->stats().value().doc_count, 2000u);
+}
+#endif
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   auto run_repeated_optimize_test = [&](bool enable_mmap,
