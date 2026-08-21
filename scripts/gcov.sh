@@ -8,7 +8,7 @@ keep_info=false
 
 script_dir=$(cd "$(dirname "$0")"; pwd)
 source_base=$(dirname "$script_dir")
-filter_list="'*/tests/*' '*/thirdparty/*' '*/deps/*' '*/proto/*' '*/external/*' '*/sqlengine/antlr/gen/*'"
+filter_list="'*/tests/*' '*/thirdparty/*' '*/deps/*' '*/external/*' '*/sqlengine/antlr/gen/*'"
 
 while getopts t:p:o:zk option; do
   case "$option" in
