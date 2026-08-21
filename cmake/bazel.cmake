@@ -1502,7 +1502,7 @@ function(_find_protobuf _VERSION)
       "${protoc_INCLUDE_DIR}" CACHE STRING "Protobuf includes"
     )
   set(
-      CC_PROTOBUF_LIBS_${_VERSION} libprotobuf CACHE STRING "Protobuf libraries"
+      CC_PROTOBUF_LIBS_${_VERSION} libprotobuf-lite CACHE STRING "Protobuf libraries"
     )
 endfunction()
 

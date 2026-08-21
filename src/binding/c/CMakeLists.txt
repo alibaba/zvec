@@ -202,6 +202,21 @@ target_compile_options(zvec_c_api PRIVATE
     $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
 )
 
+# Linker-level dead code elimination with explicit export list.
+# Only symbols in the export list are kept as global; the linker can then
+# aggressively strip all code unreachable from those roots.
+if(APPLE)
+    target_link_options(zvec_c_api PRIVATE
+        -Wl,-dead_strip
+        -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols.txt
+    )
+elseif(UNIX)
+    target_link_options(zvec_c_api PRIVATE
+        -Wl,--gc-sections
+        -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols.lds
+    )
+endif()
+
 # Strip symbols in release builds to reduce library size
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(UNIX AND NOT APPLE)

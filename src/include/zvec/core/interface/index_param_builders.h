@@ -36,79 +36,80 @@ class BaseIndexParamBuilder {  //  : public
   BaseIndexParamBuilder() : param(std::make_shared<ActualIndexParamType>()) {}
   virtual ~BaseIndexParamBuilder() = default;
 
-  ActualIndexParamBuilderType &WithVersion(int version) {
+  ActualIndexParamBuilderType &with_version(int version) {
     param->version = version;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithIndexType(IndexType index_type) {
+  ActualIndexParamBuilderType &with_index_type(IndexType index_type) {
     param->index_type = index_type;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithMetricType(MetricType metric_type) {
+  ActualIndexParamBuilderType &with_metric_type(MetricType metric_type) {
     param->metric_type = metric_type;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithDimension(int dimension) {
+  ActualIndexParamBuilderType &with_dimension(int dimension) {
     param->dimension = dimension;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithPreprocessParam(
+  ActualIndexParamBuilderType &with_preprocess_param(
       const PreprocessorParam &preprocess_param) {
     param->preprocess_param = preprocess_param;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithQuantizerParam(
+  ActualIndexParamBuilderType &with_quantizer_param(
       const QuantizerParam &quantizer_param) {
-    param->quantizer_param = quantizer_param.Clone();
+    param->quantizer_param = quantizer_param.clone();
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithQuantizerParam(
+  ActualIndexParamBuilderType &with_quantizer_param(
       const QuantizerParam::Pointer &quantizer_param) {
     param->quantizer_param =
-        quantizer_param ? quantizer_param->Clone() : nullptr;
+        quantizer_param ? quantizer_param->clone() : nullptr;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  // ActualIndexParamBuilderType &WithRefinerParam(
+  // ActualIndexParamBuilderType &with_refiner_param(
   //     const RefinerParam &refiner_param) {
   //   param->refiner_param = refiner_param;
   //   return static_cast<ActualIndexParamBuilderType &>(*this);
   // }
-  // ActualIndexParamBuilderType &WithDefaultQueryParam(
+  // ActualIndexParamBuilderType &with_default_query_param(
   //     const BaseIndexQueryParam &default_query_param) {
   //   param->default_query_param = default_query_param;
   //   return static_cast<ActualIndexParamBuilderType &>(*this);
   // }
 
-  ActualIndexParamBuilderType &WithIsSparse(bool is_sparse) {
+  ActualIndexParamBuilderType &with_is_sparse(bool is_sparse) {
     param->is_sparse = is_sparse;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
-  ActualIndexParamBuilderType &WithDataType(DataType data_type) {
+  ActualIndexParamBuilderType &with_data_type(DataType data_type) {
     param->data_type = data_type;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
-  ActualIndexParamBuilderType &WithUseIDMap(bool use_id_map) {
+  ActualIndexParamBuilderType &with_use_id_map(bool use_id_map) {
     param->use_id_map = use_id_map;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
-  ActualIndexParamBuilderType &WithEnableRotate(bool enable_rotate) {
+  ActualIndexParamBuilderType &with_enable_rotate(bool enable_rotate) {
     // copy-on-write: never mutate a param object shared with others
     auto quantizer_param = param->quantizer_param
-                               ? param->quantizer_param->Clone()
+                               ? param->quantizer_param->clone()
                                : std::make_shared<QuantizerParam>();
     quantizer_param->enable_rotate = enable_rotate;
     param->quantizer_param = std::move(quantizer_param);
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
-  ActualIndexParamBuilderType &WithUseExternalVector(bool use_external_vector) {
+  ActualIndexParamBuilderType &with_use_external_vector(
+      bool use_external_vector) {
     param->use_external_vector = use_external_vector;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
-  virtual std::shared_ptr<ActualIndexParamType> Build() = 0;
+  virtual std::shared_ptr<ActualIndexParamType> build() = 0;
 
  protected:
   std::shared_ptr<ActualIndexParamType> param;
@@ -118,7 +119,7 @@ class FlatIndexParamBuilder
     : public BaseIndexParamBuilder<FlatIndexParamBuilder, FlatIndexParam> {
  public:
   FlatIndexParamBuilder() = default;
-  std::shared_ptr<FlatIndexParam> Build() override {
+  std::shared_ptr<FlatIndexParam> build() override {
     return param;
   }
 };
@@ -127,28 +128,28 @@ class IVFIndexParamBuilder
     : public BaseIndexParamBuilder<IVFIndexParamBuilder, IVFIndexParam> {
  public:
   IVFIndexParamBuilder() = default;
-  IVFIndexParamBuilder &WithNList(int nlist) {
+  IVFIndexParamBuilder &with_n_list(int nlist) {
     param->nlist = nlist;
     return *this;
   }
-  IVFIndexParamBuilder &WithNiters(int niters) {
+  IVFIndexParamBuilder &with_n_iters(int niters) {
     param->niters = niters;
     return *this;
   }
-  IVFIndexParamBuilder &WithL1Index(const BaseIndexParam &l1Index) {
+  IVFIndexParamBuilder &with_l1_index(const BaseIndexParam &l1Index) {
     param->l1Index = std::make_shared<BaseIndexParam>(l1Index);
     return *this;
   }
-  IVFIndexParamBuilder &WithL2Index(const BaseIndexParam &l2Index) {
+  IVFIndexParamBuilder &with_l2_index(const BaseIndexParam &l2Index) {
     param->l2Index = std::make_shared<BaseIndexParam>(l2Index);
     return *this;
   }
-  IVFIndexParamBuilder &WithUseSoar(bool use_soar) {
+  IVFIndexParamBuilder &with_use_soar(bool use_soar) {
     param->use_soar = use_soar;
     return *this;
   }
 
-  std::shared_ptr<IVFIndexParam> Build() override {
+  std::shared_ptr<IVFIndexParam> build() override {
     return param;
   }
 };
@@ -157,26 +158,27 @@ class HNSWIndexParamBuilder
     : public BaseIndexParamBuilder<HNSWIndexParamBuilder, HNSWIndexParam> {
  public:
   HNSWIndexParamBuilder() = default;
-  HNSWIndexParamBuilder &WithM(int m) {
+  HNSWIndexParamBuilder &with_m(int m) {
     param->m = m;
     return *this;
   }
-  HNSWIndexParamBuilder &WithEFConstruction(int ef_construction) {
+  HNSWIndexParamBuilder &with_ef_construction(int ef_construction) {
     param->ef_construction = ef_construction;
     return *this;
   }
-  HNSWIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+  HNSWIndexParamBuilder &with_use_contiguous_memory(
+      bool use_contiguous_memory) {
     param->use_contiguous_memory = use_contiguous_memory;
     return *this;
   }
-  HNSWIndexParamBuilder &WithProvider(core::IndexProvider::Pointer provider,
-                                      const core::IndexMeta &provider_meta) {
+  HNSWIndexParamBuilder &with_provider(core::IndexProvider::Pointer provider,
+                                       const core::IndexMeta &provider_meta) {
     param->provider = std::move(provider);
     param->provider_meta = provider_meta;
     return *this;
   }
 
-  std::shared_ptr<HNSWIndexParam> Build() override {
+  std::shared_ptr<HNSWIndexParam> build() override {
     return param;
   }
 };
@@ -186,37 +188,37 @@ class HNSWRabitqIndexParamBuilder
                                    HNSWRabitqIndexParam> {
  public:
   HNSWRabitqIndexParamBuilder() = default;
-  HNSWRabitqIndexParamBuilder &WithM(int m) {
+  HNSWRabitqIndexParamBuilder &with_m(int m) {
     param->m = m;
     return *this;
   }
-  HNSWRabitqIndexParamBuilder &WithEFConstruction(int ef_construction) {
+  HNSWRabitqIndexParamBuilder &with_ef_construction(int ef_construction) {
     param->ef_construction = ef_construction;
     return *this;
   }
-  HNSWRabitqIndexParamBuilder &WithTotalBits(int total_bits) {
+  HNSWRabitqIndexParamBuilder &with_total_bits(int total_bits) {
     param->total_bits = total_bits;
     return *this;
   }
-  HNSWRabitqIndexParamBuilder &WithNumClusters(int num_clusters) {
+  HNSWRabitqIndexParamBuilder &with_num_clusters(int num_clusters) {
     param->num_clusters = num_clusters;
     return *this;
   }
-  HNSWRabitqIndexParamBuilder &WithSampleCount(int sample_count) {
+  HNSWRabitqIndexParamBuilder &with_sample_count(int sample_count) {
     param->sample_count = sample_count;
     return *this;
   }
-  HNSWRabitqIndexParamBuilder &WithReformer(
+  HNSWRabitqIndexParamBuilder &with_reformer(
       core::IndexReformer::Pointer reformer) {
     param->reformer = std::move(reformer);
     return *this;
   }
-  HNSWRabitqIndexParamBuilder &WithProvider(
+  HNSWRabitqIndexParamBuilder &with_provider(
       core::IndexProvider::Pointer provider) {
     param->provider = std::move(provider);
     return *this;
   }
-  std::shared_ptr<HNSWRabitqIndexParam> Build() override {
+  std::shared_ptr<HNSWRabitqIndexParam> build() override {
     return param;
   }
 };
@@ -226,19 +228,19 @@ class IVFRabitqIndexParamBuilder
                                    IVFRabitqIndexParam> {
  public:
   IVFRabitqIndexParamBuilder() = default;
-  IVFRabitqIndexParamBuilder &WithNlist(int nlist) {
+  IVFRabitqIndexParamBuilder &with_n_list(int nlist) {
     param->nlist = nlist;
     return *this;
   }
-  IVFRabitqIndexParamBuilder &WithTotalBits(int total_bits) {
+  IVFRabitqIndexParamBuilder &with_total_bits(int total_bits) {
     param->total_bits = total_bits;
     return *this;
   }
-  IVFRabitqIndexParamBuilder &WithSampleCount(int sample_count) {
+  IVFRabitqIndexParamBuilder &with_sample_count(int sample_count) {
     param->sample_count = sample_count;
     return *this;
   }
-  std::shared_ptr<IVFRabitqIndexParam> Build() override {
+  std::shared_ptr<IVFRabitqIndexParam> build() override {
     return param;
   }
 };
@@ -248,19 +250,19 @@ class DiskAnnIndexParamBuilder
                                    DiskAnnIndexParam> {
  public:
   DiskAnnIndexParamBuilder() = default;
-  DiskAnnIndexParamBuilder &WithMaxDegree(int max_degree) {
+  DiskAnnIndexParamBuilder &with_max_degree(int max_degree) {
     param->max_degree = max_degree;
     return *this;
   }
-  DiskAnnIndexParamBuilder &WithListSize(int list_size) {
+  DiskAnnIndexParamBuilder &with_list_size(int list_size) {
     param->list_size = list_size;
     return *this;
   }
-  DiskAnnIndexParamBuilder &WithPqChunkNum(int pq_chunk_num) {
+  DiskAnnIndexParamBuilder &with_pq_chunk_num(int pq_chunk_num) {
     param->pq_chunk_num = pq_chunk_num;
     return *this;
   }
-  std::shared_ptr<DiskAnnIndexParam> Build() override {
+  std::shared_ptr<DiskAnnIndexParam> build() override {
     return param;
   }
 };
@@ -269,36 +271,37 @@ class VamanaIndexParamBuilder
     : public BaseIndexParamBuilder<VamanaIndexParamBuilder, VamanaIndexParam> {
  public:
   VamanaIndexParamBuilder() = default;
-  VamanaIndexParamBuilder &WithMaxDegree(int max_degree) {
+  VamanaIndexParamBuilder &with_max_degree(int max_degree) {
     param->max_degree = max_degree;
     return *this;
   }
-  VamanaIndexParamBuilder &WithSearchListSize(int search_list_size) {
+  VamanaIndexParamBuilder &with_search_list_size(int search_list_size) {
     param->search_list_size = search_list_size;
     return *this;
   }
-  VamanaIndexParamBuilder &WithAlpha(float alpha) {
+  VamanaIndexParamBuilder &with_alpha(float alpha) {
     param->alpha = alpha;
     return *this;
   }
-  VamanaIndexParamBuilder &WithMaxOcclusionSize(int max_occlusion_size) {
+  VamanaIndexParamBuilder &with_max_occlusion_size(int max_occlusion_size) {
     param->max_occlusion_size = max_occlusion_size;
     return *this;
   }
-  VamanaIndexParamBuilder &WithSaturateGraph(bool saturate_graph) {
+  VamanaIndexParamBuilder &with_saturate_graph(bool saturate_graph) {
     param->saturate_graph = saturate_graph;
     return *this;
   }
-  VamanaIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+  VamanaIndexParamBuilder &with_use_contiguous_memory(
+      bool use_contiguous_memory) {
     param->use_contiguous_memory = use_contiguous_memory;
     return *this;
   }
-  VamanaIndexParamBuilder &WithTwoPassBuild(bool two_pass_build) {
+  VamanaIndexParamBuilder &with_two_pass_build(bool two_pass_build) {
     param->two_pass_build = two_pass_build;
     return *this;
   }
 
-  std::shared_ptr<VamanaIndexParam> Build() override {
+  std::shared_ptr<VamanaIndexParam> build() override {
     return param;
   }
 };
@@ -307,19 +310,19 @@ class VamanaIndexParamBuilder
 //     BaseIndexParamBuilder<CompositeIndexParamBuilder, CompositeIndexParam>
 //     { public:
 //         CompositeIndexParamBuilder() = default;
-//         CompositeIndexParamBuilder &WithLayers(const
+//         CompositeIndexParamBuilder &with_layers(const
 //         std::vector<std::shared_ptr<BaseIndexParam>> &layers) {
 //             param.layers = layers;
 //             return *this;
 //         }
 //         // with layer
-//         CompositeIndexParamBuilder &WithLayer(const BaseIndexParam &layer)
+//         CompositeIndexParamBuilder &with_layer(const BaseIndexParam &layer)
 //         {
 //             param.layers.push_back(std::make_shared<BaseIndexParam>(layer));
 //             return *this;
 //         }
 
-//         CompositeIndexParamBuilder &WithLayer(const BaseIndexParam &layer,
+//         CompositeIndexParamBuilder &with_layer(const BaseIndexParam &layer,
 //                                               const BaseIndexQueryParam
 //                                               &default_query_param) {
 //             param.layers.push_back(std::make_shared<BaseIndexParam>(layer));
@@ -327,7 +330,7 @@ class VamanaIndexParamBuilder
 //             std::make_shared<BaseIndexQueryParam>(default_query_param);
 //             return *this;
 //         }
-//         std::shared_ptr<CompositeIndexParam> Build() { return
+//         std::shared_ptr<CompositeIndexParam> build() { return
 //         std::make_shared<CompositeIndexParam>(param); }
 
 //     private:
@@ -513,41 +516,41 @@ namespace predefined {
 class SCANNIndexParamBuilder {
  public:
   // alias SCANNIIndexParam = xxxxx
-  std::shared_ptr<IVFIndexParam> Build() {
+  std::shared_ptr<IVFIndexParam> build() {
     // SCANN
     auto param_ptr =
         IVFIndexParamBuilder()
-            .WithNList(40000)  //  10000000 -> 40000
-            .WithUseSoar(
+            .with_n_list(40000)  //  10000000 -> 40000
+            .with_use_soar(
                 true)  //  由于1个数据点可能对应2个partition，因此140个点中可能有重复，需要去重（保留一个取均值）
-            .WithQuantizerParam(QuantizerParam(QuantizerType::kQuickADC))
-            // .WithDefaultQueryParam(
+            .with_quantizer_param(QuantizerParam(QuantizerType::kQuickADC))
+            // .with_default_query_param(
             //     IVFQueryParamBuilder().with_topk(140).with_nprobe(68).build())
-            // .WithRefinerParam(RefinerParam{
+            // .with_refiner_param(RefinerParam{
             //     10,  // 140 -> 10
             //     nullptr,
             //     std::make_shared<QuantizerParam>(
             //         QuantizerParam{QuantizerType::kFP16}),
             // })
-            .WithL1Index(*(
+            .with_l1_index(*(
                 IVFIndexParamBuilder()
-                    .WithMetricType(
+                    .with_metric_type(
                         MetricType::kInnerProduct)  // Layer2  flat index
-                    .WithNList(700)                 //  40000 -> 700
-                    .WithQuantizerParam(
+                    .with_n_list(700)               //  40000 -> 700
+                    .with_quantizer_param(
                         QuantizerParam{QuantizerType::kQuickADC})
-                    // .WithDefaultQueryParam(IVFQueryParamBuilder()
+                    // .with_default_query_param(IVFQueryParamBuilder()
                     //                            .with_topk(68)
                     //                            .with_nprobe(20)
                     //                            .build())
-                    .WithL1Index(*(
+                    .with_l1_index(*(
                         FlatIndexParamBuilder()
-                            .WithMetricType(MetricType::kL2sq)
+                            .with_metric_type(MetricType::kL2sq)
                             // implicit :
-                            // .WithDefaultQueryParam(FlatQueryParamBuilder().with_topk(20).build())
-                            .Build()))
-                    .Build()))
-            .Build();
+                            // .with_default_query_param(FlatQueryParamBuilder().with_topk(20).build())
+                            .build()))
+                    .build()))
+            .build();
 
     return param_ptr;
   }
