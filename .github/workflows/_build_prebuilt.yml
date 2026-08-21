@@ -29,6 +29,10 @@ permissions:
 # an empty value must expand to zero words.
 env:
   ZVEC_VERSION_DEFINE: ${{ inputs.tag != '' && format('-DOVERRIDE_GIT_DESCRIBE={0}', inputs.tag) || '' }}
+  # Check out exactly the ref being released: with a tag input the build must
+  # not drift from the tag (e.g. a manual dispatch made after the branch
+  # moved on). Ad-hoc runs without a tag keep the triggering ref.
+  ZVEC_CHECKOUT_REF: ${{ inputs.tag != '' && inputs.tag || github.ref }}
 
 jobs:
   build:
@@ -91,6 +95,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
           submodules: recursive
 
       # The musllinux images are Alpine-based and the shared steps below run
@@ -257,6 +262,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
           submodules: recursive
 
       - name: Start musllinux container
@@ -367,6 +373,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
           submodules: recursive
 
       - name: Set up Python
@@ -477,6 +484,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
           submodules: recursive
 
       - name: Set up Python
