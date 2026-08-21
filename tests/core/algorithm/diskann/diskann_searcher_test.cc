@@ -24,6 +24,7 @@
 #include <unordered_set>
 #include <ailego/math/distance.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_holder.h"
@@ -39,6 +40,22 @@ class DiskAnnSearcherTest : public testing::Test {
  protected:
   void SetUp(void) override;
   void TearDown(void) override;
+
+  //! Create an initialized turbo quantizer matching the index meta, used by
+  //! the *Turbo test variants to inject an externally constructed quantizer
+  //! through the base-class init overloads.
+  static zvec::turbo::Quantizer::Pointer make_turbo_quantizer(
+      const IndexMeta &meta) {
+    const char *name = meta.data_type() == IndexMeta::DataType::DT_FP16
+                           ? "Fp16Quantizer"
+                           : "Fp32Quantizer";
+    auto quantizer = IndexFactory::CreateQuantizer(name);
+    EXPECT_NE(quantizer, nullptr);
+    if (quantizer) {
+      EXPECT_EQ(0, quantizer->init(meta, meta.metric_params()));
+    }
+    return quantizer;
+  }
 
   static std::string _dir;
   static shared_ptr<IndexMeta> _index_meta_ptr;
@@ -942,263 +959,6 @@ TEST_F(DiskAnnSearcherTest, TestFp16Entrypoint) {
   }
 }
 
-TEST_F(DiskAnnSearcherTest, TestExternalDataQuantizer) {
-  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, dim);
-  fp16_meta.set_metric("SquaredEuclidean", 0, Params());
-
-  auto holder =
-      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dim);
-  constexpr size_t doc_cnt = 2000;
-  for (size_t i = 0; i < doc_cnt; ++i) {
-    NumericalVector<Float16> vec(dim);
-    for (size_t j = 0; j < dim; ++j) {
-      vec[j] = static_cast<float>(i) / 10.0f;
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-
-  Params params;
-  params.set("zvec.diskann.builder.max_degree", 32);
-  params.set("zvec.diskann.builder.list_size", 100);
-  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
-  params.set("zvec.diskann.builder.threads", 2);
-
-  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
-  ASSERT_NE(builder, nullptr);
-  ASSERT_EQ(0, builder->init(fp16_meta, params));
-  ASSERT_EQ(0, builder->train(holder));
-  ASSERT_EQ(0, builder->build(holder));
-
-  const string path = _dir + "/TestExternalDataQuantizer";
-  auto dumper = IndexFactory::CreateDumper("FileDumper");
-  ASSERT_NE(dumper, nullptr);
-  ASSERT_EQ(0, dumper->create(path));
-  ASSERT_EQ(0, builder->dump(dumper));
-  ASSERT_EQ(0, dumper->close());
-
-  Params search_params;
-  search_params.set("zvec.diskann.searcher.list_size", 200);
-
-  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dim);
-  NumericalVector<Float16> query(dim);
-  for (size_t j = 0; j < dim; ++j) {
-    query[j] = 123.1f;
-  }
-  const size_t topk = 10;
-
-  // Baseline: default init path (quantizer selected internally).
-  IndexSearcher::Pointer baseline_searcher =
-      IndexFactory::CreateSearcher("DiskAnnSearcher");
-  ASSERT_NE(baseline_searcher, nullptr);
-  ASSERT_EQ(0, baseline_searcher->init(search_params));
-  auto baseline_storage = IndexFactory::CreateStorage("FileReadStorage");
-  ASSERT_EQ(0, baseline_storage->open(path, false));
-  ASSERT_EQ(0,
-            baseline_searcher->load(baseline_storage, IndexMetric::Pointer()));
-  auto baseline_ctx = baseline_searcher->create_context();
-  ASSERT_NE(baseline_ctx, nullptr);
-  baseline_ctx->set_topk(topk);
-  ASSERT_EQ(
-      0, baseline_searcher->search_bf_impl(query.data(), qmeta, baseline_ctx));
-  ASSERT_EQ(topk, baseline_ctx->result().size());
-
-  // Externally constructed and initialized data quantizer.
-  auto ext_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
-  ASSERT_NE(ext_quantizer, nullptr);
-  ASSERT_EQ(0, ext_quantizer->init(fp16_meta, fp16_meta.metric_params()));
-
-  // The quantizer is injected through the base-class init overload.
-  IndexSearcher::Pointer searcher =
-      IndexFactory::CreateSearcher("DiskAnnSearcher");
-  ASSERT_NE(searcher, nullptr);
-  ASSERT_EQ(0, searcher->init(search_params, ext_quantizer));
-
-  auto storage = IndexFactory::CreateStorage("FileReadStorage");
-  ASSERT_EQ(0, storage->open(path, false));
-  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
-
-  // Every context's DistCalculator must share the injected instance rather
-  // than creating its own through the factory.
-  const long ref_before_ctx = ext_quantizer.use_count();
-  auto ctx = searcher->create_context();
-  ASSERT_NE(ctx, nullptr);
-  EXPECT_GT(ext_quantizer.use_count(), ref_before_ctx);
-
-  // Full-precision distance goes through the injected quantizer; the exact
-  // results must match the internally selected FP16 path bit for bit.
-  ctx->set_topk(topk);
-  ASSERT_EQ(0, searcher->search_bf_impl(query.data(), qmeta, ctx));
-  ASSERT_EQ(topk, ctx->result().size());
-  for (size_t i = 0; i < topk; ++i) {
-    EXPECT_EQ(baseline_ctx->result()[i].key(), ctx->result()[i].key());
-    EXPECT_FLOAT_EQ(baseline_ctx->result()[i].score(),
-                    ctx->result()[i].score());
-  }
-
-  // The graph search path must stay functional with the injected quantizer.
-  ASSERT_EQ(0, searcher->search_impl(query.data(), qmeta, ctx));
-  ASSERT_EQ(topk, ctx->result().size());
-  for (size_t i = 1; i < topk; ++i) {
-    EXPECT_LE(ctx->result()[i - 1].score(), ctx->result()[i].score());
-  }
-
-  // An uninitialized external quantizer has no valid distance function; the
-  // calculator must fall back to the internal selection instead of failing.
-  auto raw_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
-  ASSERT_NE(raw_quantizer, nullptr);
-  IndexSearcher::Pointer fallback_searcher =
-      IndexFactory::CreateSearcher("DiskAnnSearcher");
-  ASSERT_NE(fallback_searcher, nullptr);
-  ASSERT_EQ(0, fallback_searcher->init(search_params, raw_quantizer));
-
-  auto fallback_storage = IndexFactory::CreateStorage("FileReadStorage");
-  ASSERT_EQ(0, fallback_storage->open(path, false));
-  ASSERT_EQ(0,
-            fallback_searcher->load(fallback_storage, IndexMetric::Pointer()));
-  auto fallback_ctx = fallback_searcher->create_context();
-  ASSERT_NE(fallback_ctx, nullptr);
-  fallback_ctx->set_topk(topk);
-  ASSERT_EQ(
-      0, fallback_searcher->search_bf_impl(query.data(), qmeta, fallback_ctx));
-  ASSERT_EQ(topk, fallback_ctx->result().size());
-  for (size_t i = 0; i < topk; ++i) {
-    EXPECT_EQ(baseline_ctx->result()[i].key(), fallback_ctx->result()[i].key());
-  }
-}
-
-TEST_F(DiskAnnSearcherTest, TestExternalDataQuantizerStreamer) {
-  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, dim);
-  fp16_meta.set_metric("SquaredEuclidean", 0, Params());
-
-  auto holder =
-      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dim);
-  constexpr size_t doc_cnt = 2000;
-  for (size_t i = 0; i < doc_cnt; ++i) {
-    NumericalVector<Float16> vec(dim);
-    for (size_t j = 0; j < dim; ++j) {
-      vec[j] = static_cast<float>(i) / 10.0f;
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-
-  Params params;
-  params.set("zvec.diskann.builder.max_degree", 32);
-  params.set("zvec.diskann.builder.list_size", 100);
-  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
-  params.set("zvec.diskann.builder.threads", 2);
-
-  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
-  ASSERT_NE(builder, nullptr);
-  ASSERT_EQ(0, builder->init(fp16_meta, params));
-  ASSERT_EQ(0, builder->train(holder));
-  ASSERT_EQ(0, builder->build(holder));
-
-  const string path = _dir + "/TestExternalDataQuantizerStreamer";
-  auto dumper = IndexFactory::CreateDumper("FileDumper");
-  ASSERT_NE(dumper, nullptr);
-  ASSERT_EQ(0, dumper->create(path));
-  ASSERT_EQ(0, builder->dump(dumper));
-  ASSERT_EQ(0, dumper->close());
-
-  Params search_params;
-  search_params.set("zvec.diskann.searcher.list_size", 200);
-
-  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dim);
-  NumericalVector<Float16> query(dim);
-  for (size_t j = 0; j < dim; ++j) {
-    query[j] = 123.1f;
-  }
-  const size_t topk = 10;
-
-  // Baseline: default init path (quantizer selected internally).
-  IndexStreamer::Pointer baseline_streamer =
-      IndexFactory::CreateStreamer("DiskAnnStreamer");
-  ASSERT_NE(baseline_streamer, nullptr);
-  ASSERT_EQ(0, baseline_streamer->init(fp16_meta, search_params));
-  auto baseline_storage = IndexFactory::CreateStorage("FileReadStorage");
-  ASSERT_EQ(0, baseline_storage->open(path, false));
-  ASSERT_EQ(0, baseline_streamer->open(baseline_storage));
-  auto baseline_ctx = baseline_streamer->create_context();
-  ASSERT_NE(baseline_ctx, nullptr);
-  baseline_ctx->set_topk(topk);
-  ASSERT_EQ(
-      0, baseline_streamer->search_bf_impl(query.data(), qmeta, baseline_ctx));
-  ASSERT_EQ(topk, baseline_ctx->result().size());
-
-  // Externally constructed and initialized data quantizer, injected through
-  // the Hnsw-style (meta, params, quantizer) base-class init overload.
-  auto ext_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
-  ASSERT_NE(ext_quantizer, nullptr);
-  ASSERT_EQ(0, ext_quantizer->init(fp16_meta, fp16_meta.metric_params()));
-
-  IndexStreamer::Pointer streamer =
-      IndexFactory::CreateStreamer("DiskAnnStreamer");
-  ASSERT_NE(streamer, nullptr);
-  ASSERT_EQ(0, streamer->init(fp16_meta, search_params, ext_quantizer));
-
-  auto storage = IndexFactory::CreateStorage("FileReadStorage");
-  ASSERT_EQ(0, storage->open(path, false));
-  ASSERT_EQ(0, streamer->open(storage));
-
-  // Every context's DistCalculator must share the injected instance rather
-  // than creating its own through the factory.
-  const long ref_before_ctx = ext_quantizer.use_count();
-  auto ctx = streamer->create_context();
-  ASSERT_NE(ctx, nullptr);
-  EXPECT_GT(ext_quantizer.use_count(), ref_before_ctx);
-
-  // Full-precision distance goes through the injected quantizer; the exact
-  // results must match the internally selected FP16 path bit for bit.
-  ctx->set_topk(topk);
-  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, ctx));
-  ASSERT_EQ(topk, ctx->result().size());
-  for (size_t i = 0; i < topk; ++i) {
-    EXPECT_EQ(baseline_ctx->result()[i].key(), ctx->result()[i].key());
-    EXPECT_FLOAT_EQ(baseline_ctx->result()[i].score(),
-                    ctx->result()[i].score());
-  }
-
-  // The graph search path must stay functional with the injected quantizer,
-  // and the context must be reused across searches instead of recreated.
-  auto *original_ctx = ctx.get();
-  ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, ctx));
-  EXPECT_EQ(original_ctx, ctx.get());
-  ASSERT_EQ(topk, ctx->result().size());
-  for (size_t i = 1; i < topk; ++i) {
-    EXPECT_LE(ctx->result()[i - 1].score(), ctx->result()[i].score());
-  }
-
-  // Closing releases the index; the injected quantizer stays with the
-  // streamer (set at init) so a later open can keep using it.
-  ASSERT_EQ(0, streamer->close());
-  EXPECT_EQ(nullptr, streamer->create_context());
-
-  // An uninitialized external quantizer has no valid distance function; the
-  // calculator must fall back to the internal selection instead of failing.
-  auto raw_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
-  ASSERT_NE(raw_quantizer, nullptr);
-  IndexStreamer::Pointer fallback_streamer =
-      IndexFactory::CreateStreamer("DiskAnnStreamer");
-  ASSERT_NE(fallback_streamer, nullptr);
-  ASSERT_EQ(0,
-            fallback_streamer->init(fp16_meta, search_params, raw_quantizer));
-
-  auto fallback_storage = IndexFactory::CreateStorage("FileReadStorage");
-  ASSERT_EQ(0, fallback_storage->open(path, false));
-  ASSERT_EQ(0, fallback_streamer->open(fallback_storage));
-  auto fallback_ctx = fallback_streamer->create_context();
-  ASSERT_NE(fallback_ctx, nullptr);
-  fallback_ctx->set_topk(topk);
-  ASSERT_EQ(
-      0, fallback_streamer->search_bf_impl(query.data(), qmeta, fallback_ctx));
-  ASSERT_EQ(topk, fallback_ctx->result().size());
-  for (size_t i = 0; i < topk; ++i) {
-    EXPECT_EQ(baseline_ctx->result()[i].key(), fallback_ctx->result()[i].key());
-  }
-  ASSERT_EQ(0, fallback_streamer->close());
-  ASSERT_EQ(0, baseline_streamer->close());
-}
-
 TEST_F(DiskAnnSearcherTest, TestRnnSearch) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
   ASSERT_NE(builder, nullptr);
@@ -1252,6 +1012,965 @@ TEST_F(DiskAnnSearcherTest, TestRnnSearch) {
   search_params.set("zvec.diskann.searcher.list_size", 500);
 
   ASSERT_EQ(0, searcher->init(search_params));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+
+  auto ctx = searcher->create_context();
+  ASSERT_TRUE(!!ctx);
+
+  NumericalVector<float> vec(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    vec[j] = 0.0;
+  }
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  size_t topk = 50;
+  ctx->set_topk(topk);
+  ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, ctx));
+  auto &results = ctx->result();
+  ASSERT_EQ(topk, results.size());
+
+  float radius = results[topk / 2].score();
+  ctx->set_threshold(radius);
+  ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, ctx));
+  ASSERT_GT(topk, results.size());
+  for (size_t k = 0; k < results.size(); ++k) {
+    ASSERT_GE(radius, results[k].score());
+  }
+
+  // Test Reset Threshold
+  ctx->reset_threshold();
+  ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, ctx));
+  ASSERT_EQ(topk, results.size());
+  ASSERT_LT(radius, results[topk - 1].score());
+}
+
+TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 10000UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 300);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+
+  ASSERT_EQ(0, builder->train(holder));
+
+  ASSERT_EQ(0, builder->build(holder));
+
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+
+  string path = _dir + "/TestGeneralTurbo";
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto &stats = builder->stats();
+  ASSERT_EQ(doc_cnt, stats.trained_count());
+  ASSERT_EQ(doc_cnt, stats.built_count());
+  ASSERT_EQ(doc_cnt, stats.dumped_count());
+  ASSERT_EQ(0UL, stats.discarded_count());
+  ASSERT_GT(stats.trained_costtime(), 0UL);
+  ASSERT_GT(stats.built_costtime(), 0UL);
+
+  // test searcher with an externally injected turbo quantizer
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_TRUE(searcher != nullptr);
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.list_size", 500);
+
+  ASSERT_EQ(
+      0, searcher->init(search_params, make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+  auto ctx = searcher->create_context();
+  ASSERT_TRUE(!!ctx);
+
+  auto linearCtx = searcher->create_context();
+  auto linearByPKeysCtx = searcher->create_context();
+  auto knnCtx = searcher->create_context();
+
+  ASSERT_TRUE(!!linearCtx);
+  ASSERT_TRUE(!!linearByPKeysCtx);
+  ASSERT_TRUE(!!knnCtx);
+
+  NumericalVector<float> vec(dim);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  size_t topk = 200;
+  int totalHits = 0;
+  int totalCnts = 0;
+  int topk1Hits = 0;
+  linearCtx->set_topk(topk);
+  linearByPKeysCtx->set_topk(topk);
+  knnCtx->set_topk(topk);
+
+  // do linear search test
+  {
+    float query[dim];
+    for (size_t i = 0; i < dim; ++i) {
+      query[i] = 3.1f;
+    }
+    ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, linearCtx));
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(3UL, linearResult[0].key());
+    ASSERT_EQ(4UL, linearResult[1].key());
+    ASSERT_EQ(2UL, linearResult[2].key());
+    ASSERT_EQ(5UL, linearResult[3].key());
+    ASSERT_EQ(1UL, linearResult[4].key());
+    ASSERT_EQ(6UL, linearResult[5].key());
+    ASSERT_EQ(0UL, linearResult[6].key());
+    ASSERT_EQ(7UL, linearResult[7].key());
+    for (size_t i = 8; i < topk; ++i) {
+      ASSERT_EQ(i, linearResult[i].key());
+    }
+  }
+
+  // do linear search by p_keys test
+  std::vector<std::vector<uint64_t>> p_keys;
+  p_keys.resize(1);
+  p_keys[0] = {8, 9, 10, 11, 3, 2, 1, 0};
+  {
+    float query[dim];
+    for (size_t i = 0; i < dim; ++i) {
+      query[i] = 3.1f;
+    }
+
+    ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(query, p_keys, qmeta,
+                                                    linearByPKeysCtx));
+    auto &linearByPKeysResult = linearByPKeysCtx->result();
+    ASSERT_EQ(8, linearByPKeysResult.size());
+    ASSERT_EQ(3UL, linearByPKeysResult[0].key());
+    ASSERT_EQ(2UL, linearByPKeysResult[1].key());
+    ASSERT_EQ(1UL, linearByPKeysResult[2].key());
+    ASSERT_EQ(0UL, linearByPKeysResult[3].key());
+    ASSERT_EQ(8UL, linearByPKeysResult[4].key());
+    ASSERT_EQ(9UL, linearByPKeysResult[5].key());
+    ASSERT_EQ(10UL, linearByPKeysResult[6].key());
+    ASSERT_EQ(11UL, linearByPKeysResult[7].key());
+  }
+
+  size_t step = 500;
+  for (size_t i = 0; i < doc_cnt; i += step) {
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i + 0.1f;
+    }
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+
+    auto &knnResult = knnCtx->result();
+    topk1Hits += i == knnResult[0].key();
+
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(i, linearResult[0].key());
+
+    for (size_t k = 0; k < topk; ++k) {
+      totalCnts++;
+      for (size_t j = 0; j < topk; ++j) {
+        if (linearResult[j].key() == knnResult[k].key()) {
+          totalHits++;
+          break;
+        }
+      }
+    }
+  }
+
+  float recall = totalHits * step * step * 1.0f / totalCnts;
+  float topk1Recall = topk1Hits * step * 1.0f / doc_cnt;
+
+  EXPECT_GT(recall, 0.90f);
+  EXPECT_GT(topk1Recall, 0.80f);
+
+  // A context created by the streamer must carry the streamer's magic so it
+  // can be reused instead of being recreated on every search.
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("DiskAnnStreamer");
+  ASSERT_NE(streamer, nullptr);
+  ASSERT_EQ(0, streamer->init(*_index_meta_ptr, search_params,
+                              make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto streamer_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, streamer_storage->open(path, false));
+  ASSERT_EQ(0, streamer->open(streamer_storage));
+
+  auto streamer_ctx = streamer->create_context();
+  ASSERT_NE(streamer_ctx, nullptr);
+  streamer_ctx->set_topk(topk);
+  auto *original_ctx = streamer_ctx.get();
+
+  ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
+  EXPECT_EQ(original_ctx, streamer_ctx.get());
+  ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
+  EXPECT_EQ(original_ctx, streamer_ctx.get());
+
+  // Concurrent fetches must not share an I/O context or return pointers into
+  // a mutable streamer-owned string.
+  std::atomic<bool> fetch_ok{true};
+  std::vector<std::thread> fetch_threads;
+  for (uint32_t thread_id = 0; thread_id < 4; ++thread_id) {
+    fetch_threads.emplace_back([&, thread_id]() {
+      for (uint32_t i = thread_id; i < 40; i += 4) {
+        IndexStorage::MemoryBlock block;
+        if (streamer->get_vector_by_id(i, block) != 0 ||
+            block.data() == nullptr ||
+            *static_cast<const float *>(block.data()) !=
+                static_cast<float>(i)) {
+          fetch_ok.store(false);
+          return;
+        }
+      }
+    });
+  }
+  for (auto &thread : fetch_threads) {
+    thread.join();
+  }
+  EXPECT_TRUE(fetch_ok.load());
+
+  // Query metadata controls both the copy size and the batch stride, so a
+  // mismatch must be rejected before either searcher touches the input.
+  IndexQueryMeta wrong_type(IndexMeta::DataType::DT_FP16, dim);
+  EXPECT_EQ(IndexError_Mismatch,
+            searcher->search_impl(vec.data(), wrong_type, knnCtx));
+  EXPECT_EQ(IndexError_Mismatch,
+            streamer->search_impl(vec.data(), wrong_type, streamer_ctx));
+  IndexQueryMeta wrong_dimension(IndexMeta::DataType::DT_FP32, dim - 1);
+  EXPECT_EQ(IndexError_Mismatch,
+            searcher->search_bf_impl(vec.data(), wrong_dimension, linearCtx));
+
+  // Group parameters without a grouping callback are invalid instead of a
+  // successful search with an empty result.
+  auto invalid_group_ctx = searcher->create_context();
+  ASSERT_NE(invalid_group_ctx, nullptr);
+  invalid_group_ctx->set_group_params(2, 3);
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_impl(vec.data(), qmeta, invalid_group_ctx));
+
+  // I/O failures from the indexer must be propagated by the streamer instead
+  // of being converted into a successful search with incomplete results.
+  ASSERT_EQ(0, ::truncate(path.c_str(), 0));
+  EXPECT_NE(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
+
+  // Closing/unloading releases the index and makes all query entry points
+  // reject work until another index is loaded.
+  ASSERT_EQ(0, streamer->close());
+  EXPECT_EQ(nullptr, streamer->create_context());
+  EXPECT_EQ(IndexError_NoReady,
+            streamer->search_impl(vec.data(), qmeta, streamer_ctx));
+  ASSERT_EQ(0, searcher->unload());
+  EXPECT_EQ(nullptr, searcher->create_context());
+  EXPECT_EQ(IndexError_NoReady,
+            searcher->search_impl(vec.data(), qmeta, knnCtx));
+}
+
+TEST_F(DiskAnnSearcherTest, TestNodeCacheTurbo) {
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 10000UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 300);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+
+  ASSERT_EQ(0, builder->train(holder));
+
+  ASSERT_EQ(0, builder->build(holder));
+
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+
+  string path = _dir + "/TestNodeCacheTurbo";
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto &stats = builder->stats();
+  ASSERT_EQ(doc_cnt, stats.trained_count());
+  ASSERT_EQ(doc_cnt, stats.built_count());
+  ASSERT_EQ(doc_cnt, stats.dumped_count());
+  ASSERT_EQ(0UL, stats.discarded_count());
+  ASSERT_GT(stats.trained_costtime(), 0UL);
+  ASSERT_GT(stats.built_costtime(), 0UL);
+
+  // test searcher with an externally injected turbo quantizer
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_TRUE(searcher != nullptr);
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.cache_node_num", 32);
+  search_params.set("zvec.diskann.searcher.list_size", 500);
+
+  ASSERT_EQ(
+      0, searcher->init(search_params, make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+  auto ctx = searcher->create_context();
+  ASSERT_TRUE(!!ctx);
+
+  auto linearCtx = searcher->create_context();
+  auto linearByPKeysCtx = searcher->create_context();
+  auto knnCtx = searcher->create_context();
+
+  ASSERT_TRUE(!!linearCtx);
+  ASSERT_TRUE(!!linearByPKeysCtx);
+  ASSERT_TRUE(!!knnCtx);
+
+  NumericalVector<float> vec(dim);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  size_t topk = 200;
+  int totalHits = 0;
+  int totalCnts = 0;
+  int topk1Hits = 0;
+  linearCtx->set_topk(topk);
+  linearByPKeysCtx->set_topk(topk);
+  knnCtx->set_topk(topk);
+
+  size_t step = 500;
+  for (size_t i = 0; i < doc_cnt; i += step) {
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i + 0.1f;
+    }
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+
+    auto &knnResult = knnCtx->result();
+    topk1Hits += i == knnResult[0].key();
+
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(i, linearResult[0].key());
+
+    for (size_t k = 0; k < topk; ++k) {
+      totalCnts++;
+      for (size_t j = 0; j < topk; ++j) {
+        if (linearResult[j].key() == knnResult[k].key()) {
+          totalHits++;
+          break;
+        }
+      }
+    }
+  }
+
+  float recall = totalHits * step * step * 1.0f / totalCnts;
+  float topk1Recall = topk1Hits * step * 1.0f / doc_cnt;
+
+  EXPECT_GT(recall, 0.90f);
+  EXPECT_GT(topk1Recall, 0.80f);
+}
+
+TEST_F(DiskAnnSearcherTest, TestFilterTurbo) {
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 10000UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 300);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+
+  ASSERT_EQ(0, builder->train(holder));
+
+  ASSERT_EQ(0, builder->build(holder));
+
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+
+  string path = _dir + "/TestFilterTurbo";
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto &stats = builder->stats();
+  ASSERT_EQ(doc_cnt, stats.trained_count());
+  ASSERT_EQ(doc_cnt, stats.built_count());
+  ASSERT_EQ(doc_cnt, stats.dumped_count());
+  ASSERT_EQ(0UL, stats.discarded_count());
+  ASSERT_GT(stats.trained_costtime(), 0UL);
+  ASSERT_GT(stats.built_costtime(), 0UL);
+
+  // test searcher with an externally injected turbo quantizer
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_TRUE(searcher != nullptr);
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.cache_node_num", 32);
+  search_params.set("zvec.diskann.searcher.list_size", 500);
+
+  ASSERT_EQ(
+      0, searcher->init(search_params, make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+  auto ctx = searcher->create_context();
+  ASSERT_TRUE(!!ctx);
+
+  auto linearCtx = searcher->create_context();
+  auto linearByPKeysCtx = searcher->create_context();
+  auto knnCtx = searcher->create_context();
+
+  ASSERT_TRUE(!!linearCtx);
+  ASSERT_TRUE(!!linearByPKeysCtx);
+  ASSERT_TRUE(!!knnCtx);
+
+  NumericalVector<float> vec(dim);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+
+  size_t topk = 200;
+  linearCtx->set_topk(topk);
+  linearByPKeysCtx->set_topk(topk);
+  knnCtx->set_topk(topk);
+
+  size_t key = 50;
+  for (size_t j = 0; j < dim; ++j) {
+    vec[j] = key + 0.1f;
+  }
+
+  // no filter
+  {
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+
+    auto &knnResult = knnCtx->result();
+    ASSERT_EQ(topk, knnResult.size());
+
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(50UL, linearResult[0].key());
+    ASSERT_EQ(51UL, linearResult[1].key());
+    ASSERT_EQ(49UL, linearResult[2].key());
+  }
+
+  // with filter
+  {
+    auto filterFunc = [](uint64_t key) {
+      if (key == 50UL || key == 51UL || key == 49UL) {
+        return true;
+      }
+      return false;
+    };
+
+
+    knnCtx->set_filter(filterFunc);
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+
+    auto &knnResult = knnCtx->result();
+    ASSERT_EQ(topk, knnResult.size());
+    std::unordered_set<uint64_t> knn_keys;
+    for (const auto &result : knnResult) {
+      ASSERT_TRUE(knn_keys.emplace(result.key()).second);
+      EXPECT_NE(50UL, result.key());
+      EXPECT_NE(51UL, result.key());
+      EXPECT_NE(49UL, result.key());
+    }
+
+    linearCtx->set_filter(filterFunc);
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(52UL, linearResult[0].key());
+    ASSERT_EQ(48UL, linearResult[1].key());
+    ASSERT_EQ(53UL, linearResult[2].key());
+
+    size_t hit_count = 0;
+    for (const auto &result : linearResult) {
+      hit_count += knn_keys.count(result.key());
+    }
+    const float recall = static_cast<float>(hit_count) / topk;
+    EXPECT_GT(recall, 0.90f);
+  }
+}
+
+TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 10000UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i / 10.0;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 300);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+
+  ASSERT_EQ(0, builder->train(holder));
+
+  ASSERT_EQ(0, builder->build(holder));
+
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+
+  string path = _dir + "/TestGroupTurbo";
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto &stats = builder->stats();
+  ASSERT_EQ(doc_cnt, stats.trained_count());
+  ASSERT_EQ(doc_cnt, stats.built_count());
+  ASSERT_EQ(doc_cnt, stats.dumped_count());
+  ASSERT_EQ(0UL, stats.discarded_count());
+  ASSERT_GT(stats.trained_costtime(), 0UL);
+  ASSERT_GT(stats.built_costtime(), 0UL);
+
+  // test searcher with an externally injected turbo quantizer
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_TRUE(searcher != nullptr);
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.list_size", 500);
+
+  ASSERT_EQ(
+      0, searcher->init(search_params, make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+  auto ctx = searcher->create_context();
+  ASSERT_TRUE(!!ctx);
+
+  NumericalVector<float> vec(dim);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  size_t group_topk = 20;
+
+  auto groupbyFunc = [](uint64_t key) {
+    uint32_t group_id = key / 10 % 10;
+
+    return std::string("g_") + std::to_string(group_id);
+  };
+
+  size_t group_num = 5;
+
+  ctx->set_group_params(group_num, group_topk);
+  ctx->set_group_by(groupbyFunc);
+
+  size_t query_value = doc_cnt / 2;
+  for (size_t j = 0; j < dim; ++j) {
+    vec[j] = query_value / 10 + 0.1f;
+  }
+
+  ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, ctx));
+
+  auto &group_result = ctx->group_result();
+  ASSERT_EQ(group_num, group_result.size());
+
+  std::set<std::string> seen_group_ids;
+  for (uint32_t i = 0; i < group_result.size(); ++i) {
+    const std::string &group_id = group_result[i].group_id();
+    auto &result = group_result[i].docs();
+
+    ASSERT_TRUE(seen_group_ids.insert(group_id).second);
+    ASSERT_GT(result.size(), 0);
+    ASSERT_LE(result.size(), group_topk);
+
+    for (uint32_t j = 0; j < result.size(); ++j) {
+      EXPECT_EQ(group_id, groupbyFunc(result[j].key()));
+    }
+  }
+
+  // Reusing a group context must not retain scores or documents from the
+  // previous query.
+  query_value = doc_cnt / 10;
+  for (size_t j = 0; j < dim; ++j) {
+    vec[j] = query_value / 10 + 0.1f;
+  }
+  ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, ctx));
+  const auto &reused_group_result = ctx->group_result();
+  ASSERT_EQ(group_num, reused_group_result.size());
+  for (const auto &group : reused_group_result) {
+    for (const auto &doc : group.docs()) {
+      float delta = static_cast<float>(doc.key()) / 10.0f - vec[0];
+      float expected_score = dim * delta * delta;
+      EXPECT_NEAR(expected_score, doc.score(),
+                  std::max(1e-3f, expected_score * 1e-4f));
+    }
+  }
+
+  // Full linear group search must maintain a heap for every group while it
+  // scans, rather than grouping only the global top-k afterward.
+  auto linear_ctx = searcher->create_context();
+  linear_ctx->set_group_params(group_num, group_topk);
+  linear_ctx->set_group_by(groupbyFunc);
+  ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
+  const auto &linear_group_result = linear_ctx->group_result();
+  ASSERT_EQ(group_num, linear_group_result.size());
+  for (const auto &group : linear_group_result) {
+    ASSERT_EQ(group_topk, group.docs().size());
+    for (const auto &doc : group.docs()) {
+      EXPECT_EQ(group.group_id(), groupbyFunc(doc.key()));
+    }
+  }
+
+  // do linear search by p_keys test
+  auto groupbyFuncLinear = [](uint64_t key) {
+    uint32_t group_id = key % 10;
+
+    return std::string("g_") + std::to_string(group_id);
+  };
+
+  auto linear_pk_ctx = searcher->create_context();
+
+  linear_pk_ctx->set_group_params(group_num, group_topk);
+  linear_pk_ctx->set_group_by(groupbyFuncLinear);
+
+  std::vector<std::vector<uint64_t>> p_keys;
+  p_keys.resize(1);
+  p_keys[0] = {4, 3, 2, 1, 5, 6, 7, 8, 9, 10};
+
+  ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
+                                                  linear_pk_ctx));
+  auto &linear_by_pkeys_group_result = linear_pk_ctx->group_result();
+  ASSERT_EQ(linear_by_pkeys_group_result.size(), group_num);
+
+  for (uint32_t i = 0; i < linear_by_pkeys_group_result.size(); ++i) {
+    auto &result = linear_by_pkeys_group_result[i].docs();
+
+    ASSERT_GT(result.size(), 0);
+    ASSERT_EQ(10 - i, result[0].key());
+  }
+}
+
+TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 10000UL;
+  auto key_for_id = [](size_t id) { return 100000UL + id * 3; };
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i;
+    }
+    ASSERT_TRUE(holder->emplace(key_for_id(i), vec));
+  }
+
+  Params params;
+
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 300);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+
+  ASSERT_EQ(0, builder->train(holder));
+
+  ASSERT_EQ(0, builder->build(holder));
+
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+
+  string path = _dir + "/TestFetchVectorTurbo";
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto &stats = builder->stats();
+  ASSERT_EQ(doc_cnt, stats.trained_count());
+  ASSERT_EQ(doc_cnt, stats.built_count());
+  ASSERT_EQ(doc_cnt, stats.dumped_count());
+  ASSERT_EQ(0UL, stats.discarded_count());
+  ASSERT_GT(stats.trained_costtime(), 0UL);
+  ASSERT_GT(stats.built_costtime(), 0UL);
+
+  // test searcher with an externally injected turbo quantizer
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_TRUE(searcher != nullptr);
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.list_size", 500);
+
+  ASSERT_EQ(
+      0, searcher->init(search_params, make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+
+  size_t query_cnt = 20U;
+  auto linearCtx = searcher->create_context();
+  auto knnCtx = searcher->create_context();
+  auto linearByPKeysCtx = searcher->create_context();
+  knnCtx->set_fetch_vector(true);
+
+  for (size_t i = 0; i < doc_cnt; i += doc_cnt / 10) {
+    std::string vec_value;
+    ASSERT_EQ(0, searcher->get_vector(key_for_id(i), linearCtx, vec_value));
+
+    ASSERT_GE(vec_value.size(), sizeof(float));
+    float vector_value = 0.0f;
+    std::memcpy(&vector_value, vec_value.data(), sizeof(vector_value));
+    ASSERT_EQ(vector_value, i);
+  }
+
+  size_t topk = 200;
+  linearCtx->set_topk(topk);
+  knnCtx->set_topk(topk);
+
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+
+  NumericalVector<float> vec(dim);
+  for (size_t i = 0; i < query_cnt; i++) {
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i;
+    }
+
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+
+    auto &knnResult = knnCtx->result();
+    ASSERT_EQ(topk, knnResult.size());
+
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(key_for_id(i), linearResult[0].key());
+
+    const auto &vector_string = knnResult[0].vector_string();
+    ASSERT_GE(vector_string.size(), sizeof(float));
+    // DiskAnn is approximate, so the first KNN result is not guaranteed to
+    // be the exact query vector on every graph build. Verify that the fetched
+    // payload belongs to the returned key instead.
+    std::string expected_vector;
+    ASSERT_EQ(0, searcher->get_vector(knnResult[0].key(), linearCtx,
+                                      expected_vector));
+    ASSERT_EQ(vector_string, expected_vector);
+  }
+
+  std::string missing_vector;
+  EXPECT_EQ(IndexError_NoExist,
+            searcher->get_vector(42, linearCtx, missing_vector));
+  EXPECT_TRUE(missing_vector.empty());
+
+  // Cached nodes keep their coordinates and adjacency lists in separate
+  // buffers. Fetching a cached vector must read the coordinate cache rather
+  // than returning bytes from the neighbor cache.
+  IndexSearcher::Pointer cached_searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(cached_searcher, nullptr);
+  Params cached_search_params;
+  cached_search_params.set("zvec.diskann.searcher.list_size", 500);
+  cached_search_params.set("zvec.diskann.searcher.cache_node_num", doc_cnt);
+  ASSERT_EQ(0, cached_searcher->init(cached_search_params,
+                                     make_turbo_quantizer(*_index_meta_ptr)));
+
+  auto cached_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(cached_storage, nullptr);
+  ASSERT_EQ(0, cached_storage->open(path, false));
+  ASSERT_EQ(0, cached_searcher->load(cached_storage, IndexMetric::Pointer()));
+  auto cached_ctx = cached_searcher->create_context();
+  ASSERT_NE(cached_ctx, nullptr);
+
+  for (size_t i = 0; i < doc_cnt; ++i) {
+    std::string vec_value;
+    ASSERT_EQ(
+        0, cached_searcher->get_vector(key_for_id(i), cached_ctx, vec_value));
+    ASSERT_GE(vec_value.size(), sizeof(float));
+    float vector_value = 0.0f;
+    std::memcpy(&vector_value, vec_value.data(), sizeof(vector_value));
+    ASSERT_EQ(vector_value, i);
+  }
+  ASSERT_EQ(0, cached_searcher->unload());
+
+  ASSERT_EQ(0, ::truncate(path.c_str(), 0));
+  std::string vector_after_truncate;
+  EXPECT_EQ(IndexError_Runtime,
+            searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,
+                                 vector_after_truncate));
+  EXPECT_TRUE(vector_after_truncate.empty());
+}
+
+TEST_F(DiskAnnSearcherTest, TestFp16EntrypointTurbo) {
+  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, dim);
+  fp16_meta.set_metric("SquaredEuclidean", 0, Params());
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dim);
+  constexpr size_t doc_cnt = 2000;
+  for (size_t i = 0; i < doc_cnt; ++i) {
+    NumericalVector<Float16> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = static_cast<float>(i) / 10.0f;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 100);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 2);
+
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+  ASSERT_EQ(0, builder->init(fp16_meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+
+  const string path = _dir + "/TestFp16EntrypointTurbo";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto searcher = IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_NE(searcher, nullptr);
+  ASSERT_EQ(0, searcher->init(params, make_turbo_quantizer(fp16_meta)));
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+
+  auto ctx = searcher->create_context();
+  ASSERT_NE(ctx, nullptr);
+  ctx->set_topk(10);
+
+  NumericalVector<Float16> query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    query[j] = 123.1f;
+  }
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dim);
+  ASSERT_EQ(0, searcher->search_impl(query.data(), qmeta, ctx));
+  ASSERT_EQ(10, ctx->result().size());
+
+  // DiskAnn is approximate, so the exact top-1 key is not stable across graph
+  // builds and platforms. Validate the FP16 search result contract instead.
+  std::unordered_set<uint64_t> result_keys;
+  for (size_t i = 0; i < ctx->result().size(); ++i) {
+    const auto &result = ctx->result()[i];
+    EXPECT_LT(result.key(), doc_cnt);
+    EXPECT_TRUE(result_keys.emplace(result.key()).second);
+    EXPECT_GE(result.score(), 0.0f);
+    if (i > 0) {
+      EXPECT_LE(ctx->result()[i - 1].score(), result.score());
+    }
+  }
+}
+
+TEST_F(DiskAnnSearcherTest, TestRnnSearchTurbo) {
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 10000UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 300);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 32);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*_index_meta_ptr, params));
+
+  ASSERT_EQ(0, builder->train(holder));
+
+  ASSERT_EQ(0, builder->build(holder));
+
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+
+  string path = _dir + "/TestRnnSearchTurbo";
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto &stats = builder->stats();
+  ASSERT_EQ(doc_cnt, stats.trained_count());
+  ASSERT_EQ(doc_cnt, stats.built_count());
+  ASSERT_EQ(doc_cnt, stats.dumped_count());
+  ASSERT_EQ(0UL, stats.discarded_count());
+  ASSERT_GT(stats.trained_costtime(), 0UL);
+  ASSERT_GT(stats.built_costtime(), 0UL);
+
+  // test searcher with an externally injected turbo quantizer
+  IndexSearcher::Pointer searcher =
+      IndexFactory::CreateSearcher("DiskAnnSearcher");
+  ASSERT_TRUE(searcher != nullptr);
+
+  Params search_params;
+  search_params.set("zvec.diskann.searcher.list_size", 500);
+
+  ASSERT_EQ(
+      0, searcher->init(search_params, make_turbo_quantizer(*_index_meta_ptr)));
 
   auto storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, storage->open(path, false));
