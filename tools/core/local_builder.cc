@@ -810,20 +810,41 @@ IndexHolder::Pointer convert_holder(const std::string &name,
   return converter->result();
 }
 
+// Holder for turbo-quantized datapoints.  The rows are allocated with the
+// full encoded size in units (raw data + record tail), but the reported
+// dimension stays the raw dimension: turbo quantization does not inflate the
+// dim, the tail is accounted by extra_meta_size in the meta, so the holder
+// must match the meta on dimension() and element_size().
+template <IndexMeta::DataType DT>
+struct QuantizedIndexHolder : public MultiPassIndexHolder<DT> {
+  QuantizedIndexHolder(size_t alloc_dim, size_t raw_dim)
+      : MultiPassIndexHolder<DT>(alloc_dim), raw_dim_(raw_dim) {}
+
+  //! Retrieve dimension
+  size_t dimension(void) const override {
+    return raw_dim_;
+  }
+
+ private:
+  size_t raw_dim_{0};
+};
+
 // Quantize every vector of the holder with a turbo quantizer.  The output
 // holder stores the quantized datapoints; index_meta is updated to the
 // quantized layout.  Symmetric to convert_holder for IndexConverter.
 template <IndexMeta::DataType DT, typename T>
 IndexHolder::Pointer fill_quantized_holder(
     const std::shared_ptr<zvec::turbo::Quantizer> &quantizer,
-    const IndexHolder::Pointer &in_holder, uint32_t out_dim) {
-  auto out_holder = std::make_shared<MultiPassIndexHolder<DT>>(out_dim);
+    const IndexHolder::Pointer &in_holder, uint32_t alloc_dim,
+    uint32_t raw_dim) {
+  auto out_holder =
+      std::make_shared<QuantizedIndexHolder<DT>>(alloc_dim, raw_dim);
   auto iter = in_holder->create_iterator();
   if (!iter) {
     LOG_ERROR("Failed to create iterator for quantize");
     return IndexHolder::Pointer();
   }
-  ailego::NumericalVector<T> vec(out_dim);
+  ailego::NumericalVector<T> vec(alloc_dim);
   for (; iter->is_valid(); iter->next()) {
     quantizer->quantize_data(iter->data(), &vec[0]);
     out_holder->emplace(iter->key(), vec);
@@ -831,10 +852,10 @@ IndexHolder::Pointer fill_quantized_holder(
   return out_holder;
 }
 
-IndexHolder::Pointer quantize_holder(const std::string &name,
-                                     const ailego::Params &params,
-                                     VecsIndexHolder::Pointer &in_holder,
-                                     IndexMeta &index_meta) {
+IndexHolder::Pointer quantize_holder(
+    const std::string &name, const ailego::Params &params,
+    VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
   IndexHolder::Pointer cast_holder =
       std::dynamic_pointer_cast<IndexHolder>(in_holder);
   if (name.empty()) {
@@ -862,35 +883,43 @@ IndexHolder::Pointer quantize_holder(const std::string &name,
     }
   }
 
-  // Output meta follows the converter convention: extra meta bytes (e.g.
-  // the trailing Cosine norm) are folded into an inflated dimension so the
-  // result stays a plain typed holder.
+  // The output meta keeps the raw dimension; the record tail (e.g. scale,
+  // Cosine norm) is accounted by extra_meta_size.  The typed holder is
+  // allocated with the full encoded size in units.
   IndexMeta out_meta = quantizer->meta();
   size_t code_bytes = quantizer->quantized_datapoint_vector_length();
   uint32_t unit = out_meta.unit_size();
-  if (unit == 0 || code_bytes % unit != 0) {
-    LOG_ERROR("Quantized length %zu not aligned to unit size %u", code_bytes,
-              unit);
+  if (unit == 0 || code_bytes % unit != 0 ||
+      code_bytes != out_meta.element_size()) {
+    LOG_ERROR("Quantized length %zu mismatches meta element size %u",
+              code_bytes, out_meta.element_size());
     return IndexHolder::Pointer();
   }
-  uint32_t out_dim = static_cast<uint32_t>(code_bytes / unit);
-  out_meta.set_extra_meta_size(0);
-  out_meta.set_meta(out_meta.data_type(), out_dim);
+  uint32_t alloc_dim = static_cast<uint32_t>(code_bytes / unit);
+
+  if (!quantizer->require_train()) {
+    out_meta.set_quantizer(name, 0, params);
+  } else {
+    LOG_WARN(
+        "Quantizer %s requires training, query-side quantizer info is not "
+        "recorded in the index meta",
+        name.c_str());
+  }
 
   IndexHolder::Pointer result;
   switch (out_meta.data_type()) {
     case IndexMeta::DataType::DT_FP32:
       result = fill_quantized_holder<IndexMeta::DataType::DT_FP32, float>(
-          quantizer, cast_holder, out_dim);
+          quantizer, cast_holder, alloc_dim, out_meta.dimension());
       break;
     case IndexMeta::DataType::DT_FP16:
       result =
           fill_quantized_holder<IndexMeta::DataType::DT_FP16, ailego::Float16>(
-              quantizer, cast_holder, out_dim);
+              quantizer, cast_holder, alloc_dim, out_meta.dimension());
       break;
     case IndexMeta::DataType::DT_INT8:
       result = fill_quantized_holder<IndexMeta::DataType::DT_INT8, int8_t>(
-          quantizer, cast_holder, out_dim);
+          quantizer, cast_holder, alloc_dim, out_meta.dimension());
       break;
     default:
       LOG_ERROR("Unsupported quantized data type %d",
@@ -901,6 +930,9 @@ IndexHolder::Pointer quantize_holder(const std::string &name,
     return IndexHolder::Pointer();
   }
 
+  if (out_quantizer) {
+    *out_quantizer = quantizer;
+  }
   index_meta = out_meta;
   return result;
 }
@@ -1193,6 +1225,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
 
   IndexConverter::Pointer build_converter;
+  std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
   IndexHolder::Pointer cv_build_holder;
   if (!quantizer_name.empty()) {
     // Quantizer path: only supported with IndexBuilder classes.  The
@@ -1203,8 +1236,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
                 builder_class.c_str());
       return -1;
     }
-    cv_build_holder =
-        quantize_holder(quantizer_name, quantizer_params, build_holder, meta);
+    cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
+                                      build_holder, meta, &build_quantizer);
     if (!cv_build_holder) {
       LOG_ERROR("Quantize holder failed.");
       return -1;
@@ -1238,8 +1271,22 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   params.set(PARAM_RABITQ_GENERAL_DIMENSION, input_meta.dimension());
 
   // INIT
-  int ret =
-      builder ? builder->init(meta, params) : streamer->init(meta, params);
+  // Pass the quantizer into the builder so it can compute distances with
+  // the quantizer; fall back to the plain init for builders without
+  // quantizer support.
+  int ret;
+  if (builder) {
+    if (build_quantizer) {
+      ret = builder->init(meta, params, build_quantizer);
+      if (ret == IndexError_NotImplemented) {
+        ret = builder->init(meta, params);
+      }
+    } else {
+      ret = builder->init(meta, params);
+    }
+  } else {
+    ret = streamer->init(meta, params);
+  }
   if (ret < 0) {
     LOG_ERROR("Failed to init builder, ret=%d", ret);
     return -1;
@@ -1308,7 +1355,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       IndexHolder::Pointer cv_train_holder;
       if (!quantizer_name.empty()) {
         cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
-                                          train_holder, meta);
+                                          train_holder, meta, nullptr);
       } else {
         cv_train_holder = convert_holder(converter_name, converter_params,
                                          train_holder, meta, nullptr);
@@ -1370,8 +1417,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     }
     IndexHolder::Pointer cv_train_holder;
     if (!quantizer_name.empty()) {
-      cv_train_holder =
-          quantize_holder(quantizer_name, quantizer_params, train_holder, meta);
+      cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                        train_holder, meta, nullptr);
     } else {
       cv_train_holder = convert_holder(converter_name, converter_params,
                                        train_holder, meta, nullptr);

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <memory>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_metric.h>

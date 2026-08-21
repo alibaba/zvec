@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <memory>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_provider.h>
@@ -38,7 +39,7 @@ class IndexStreamer : public IndexRunner {
   //! Destructor
   ~IndexStreamer(void) override = default;
 
-  //! Initialize the builder
+  //! Initialize the streamer
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {
     return IndexError_NotImplemented;

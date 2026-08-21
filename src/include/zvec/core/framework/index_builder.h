@@ -40,9 +40,7 @@ class IndexBuilder : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
-  //! Initialize the builder with an externally constructed data quantizer.
-  //! The quantizer must be initialized by the caller. Default implementation
-  //! reports not implemented.
+  //! Initialize Builder with a quantizer for distance computation
   virtual int init(
       const IndexMeta & /*meta*/, const ailego::Params & /*params*/,
       const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
