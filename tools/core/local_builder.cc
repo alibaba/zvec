@@ -852,10 +852,10 @@ IndexHolder::Pointer fill_quantized_holder(
   return out_holder;
 }
 
-IndexHolder::Pointer quantize_holder(const std::string &name,
-                                     const ailego::Params &params,
-                                     VecsIndexHolder::Pointer &in_holder,
-                                     IndexMeta &index_meta) {
+IndexHolder::Pointer quantize_holder(
+    const std::string &name, const ailego::Params &params,
+    VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
   IndexHolder::Pointer cast_holder =
       std::dynamic_pointer_cast<IndexHolder>(in_holder);
   if (name.empty()) {
@@ -930,6 +930,9 @@ IndexHolder::Pointer quantize_holder(const std::string &name,
     return IndexHolder::Pointer();
   }
 
+  if (out_quantizer) {
+    *out_quantizer = quantizer;
+  }
   index_meta = out_meta;
   return result;
 }
@@ -1222,6 +1225,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
 
   IndexConverter::Pointer build_converter;
+  std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
   IndexHolder::Pointer cv_build_holder;
   if (!quantizer_name.empty()) {
     // Quantizer path: only supported with IndexBuilder classes.  The
@@ -1232,8 +1236,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
                 builder_class.c_str());
       return -1;
     }
-    cv_build_holder =
-        quantize_holder(quantizer_name, quantizer_params, build_holder, meta);
+    cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
+                                      build_holder, meta, &build_quantizer);
     if (!cv_build_holder) {
       LOG_ERROR("Quantize holder failed.");
       return -1;
@@ -1267,8 +1271,22 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   params.set(PARAM_RABITQ_GENERAL_DIMENSION, input_meta.dimension());
 
   // INIT
-  int ret =
-      builder ? builder->init(meta, params) : streamer->init(meta, params);
+  // Pass the quantizer into the builder so it can compute distances with
+  // the quantizer; fall back to the plain init for builders without
+  // quantizer support.
+  int ret;
+  if (builder) {
+    if (build_quantizer) {
+      ret = builder->init(meta, params, build_quantizer);
+      if (ret == IndexError_NotImplemented) {
+        ret = builder->init(meta, params);
+      }
+    } else {
+      ret = builder->init(meta, params);
+    }
+  } else {
+    ret = streamer->init(meta, params);
+  }
   if (ret < 0) {
     LOG_ERROR("Failed to init builder, ret=%d", ret);
     return -1;
@@ -1337,7 +1355,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       IndexHolder::Pointer cv_train_holder;
       if (!quantizer_name.empty()) {
         cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
-                                          train_holder, meta);
+                                          train_holder, meta, nullptr);
       } else {
         cv_train_holder = convert_holder(converter_name, converter_params,
                                          train_holder, meta, nullptr);
@@ -1399,8 +1417,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     }
     IndexHolder::Pointer cv_train_holder;
     if (!quantizer_name.empty()) {
-      cv_train_holder =
-          quantize_holder(quantizer_name, quantizer_params, train_holder, meta);
+      cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                        train_holder, meta, nullptr);
     } else {
       cv_train_holder = convert_holder(converter_name, converter_params,
                                        train_holder, meta, nullptr);
