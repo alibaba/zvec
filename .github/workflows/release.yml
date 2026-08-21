@@ -94,16 +94,18 @@ jobs:
             exit 1
           fi
 
-      - name: Verify embedded version in artifacts
+      - name: Verify release artifacts
         shell: bash
         env:
           EXPECTED_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # Spot-check the linux-amd64 SDK: zvec_get_version() compiles the
+          # Spot-check the linux-amd64 SDK. Version: zvec_get_version() compiles the
           # version string resolved by cmake/version.cmake into
           # libzvec_c_api.so, so the exact tag must appear in the binary.
           # This catches a missing tag input (silent v0.0.0 fallback) before
           # anything is published.
+          # Jieba dict: the jieba FTS tokenizer needs these files at runtime;
+          # they must ship under share/zvec/jieba_dict (see CMakeLists.txt).
           SDK_DIR=prebuilt-artifacts/zvec-sdk-linux-amd64
           mkdir -p "$SDK_DIR/extracted"
           tar xzf "$SDK_DIR"/zvec-sdk-linux-amd64.tar.gz -C "$SDK_DIR/extracted"
@@ -118,6 +120,13 @@ jobs:
             exit 1
           fi
           echo "Embedded version matches release tag: $EXPECTED_TAG"
+          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+            if [ ! -f "$SDK_DIR/extracted/share/zvec/jieba_dict/$dict_file" ]; then
+              echo "::error::share/zvec/jieba_dict/$dict_file missing from the linux-amd64 SDK"
+              exit 1
+            fi
+          done
+          echo "Jieba dict files present in the SDK"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

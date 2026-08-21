@@ -546,6 +546,9 @@ jobs:
         run: |
           mkdir -p "$ZVEC_DIST_DIR"
           cp -R "$GITHUB_WORKSPACE/install_device/include" "$ZVEC_DIST_DIR/include"
+          # Architecture-independent data (jieba FTS dict) ships once from the
+          # device slice, same as the headers.
+          cp -R "$GITHUB_WORKSPACE/install_device/share" "$ZVEC_DIST_DIR/share"
           for dylib in "$GITHUB_WORKSPACE"/install_device/lib/*.dylib; do
             [ -L "$dylib" ] && continue  # skip version symlinks
             name=$(basename "$dylib" .dylib)
@@ -578,6 +581,12 @@ jobs:
             echo "missing C++ headers under include/zvec/db/"
             exit 1
           }
+          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+            if [ ! -f "$ZVEC_DIST_DIR/share/zvec/jieba_dict/$dict_file" ]; then
+              echo "missing share/zvec/jieba_dict/$dict_file"
+              exit 1
+            fi
+          done
 
       - name: Package SDK
         shell: bash

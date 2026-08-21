@@ -18,6 +18,14 @@ file(GLOB _smoke_cpp_headers "${ZVEC_SDK_DIR}/include/zvec/db/*.h")
 if(NOT _smoke_cpp_headers)
   message(FATAL_ERROR "SDK package is missing C++ headers under include/zvec/db/")
 endif()
+# The jieba FTS dict must ship with the SDK (mirrors the Python wheel's
+# zvec/data/jieba_dict bundle). Consumers register the directory via
+# zvec_set_default_jieba_dict_dir() or ZVEC_JIEBA_DICT_DIR.
+foreach(_smoke_dict_file jieba.dict.utf8 hmm_model.utf8)
+  if(NOT EXISTS "${ZVEC_SDK_DIR}/share/zvec/jieba_dict/${_smoke_dict_file}")
+    message(FATAL_ERROR "SDK package is missing share/zvec/jieba_dict/${_smoke_dict_file}")
+  endif()
+endforeach()
 
 # CMAKE_FIND_ROOT_PATH_BOTH keeps the explicit PATHS usable when
 # cross-compiling (the NDK toolchain re-roots find_library searches).
