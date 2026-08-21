@@ -3454,6 +3454,9 @@ zvec_collection_open(const char *path, const zvec_collection_options_t *options,
 
 /**
  * @brief Close collection
+ *
+ * Only releases this handle; the collection itself closes once the last
+ * handle is released, waiting for any open iterators first.
  * @param collection Collection handle
  * @return zvec_error_code_t Error code
  */
@@ -3795,6 +3798,103 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_fetch(
     zvec_collection_t *collection, const char *const *primary_keys,
     size_t count, const char *const *output_fields, size_t output_field_count,
     bool include_vector, zvec_doc_t ***documents, size_t *found_count);
+
+// =============================================================================
+// Document Iterator Interface (full traversal)
+// =============================================================================
+
+/**
+ * @brief Opaque handle for a document iterator.
+ *
+ * Created by zvec_collection_create_iterator, released by
+ * zvec_doc_iterator_close. Iterates over all documents in a collection using
+ * an isolated snapshot (data written after creation is not visible).
+ */
+typedef struct zvec_doc_iterator_t zvec_doc_iterator_t;
+
+/**
+ * @brief Opaque handle for iterator options.
+ */
+typedef struct zvec_iterator_options_t zvec_iterator_options_t;
+
+/**
+ * @brief Create an iterator options object with default values
+ *        (output_fields = all, include_vector = true).
+ * @return Options handle, or NULL on allocation failure.
+ */
+ZVEC_EXPORT zvec_iterator_options_t *ZVEC_CALL
+zvec_iterator_options_create(void);
+
+/**
+ * @brief Destroy an iterator options object.
+ * @param options Options handle (may be NULL).
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_iterator_options_destroy(zvec_iterator_options_t *options);
+
+/**
+ * @brief Set the scalar fields to return.
+ * @param options Options handle
+ * @param output_fields Array of field names; NULL means return all fields
+ * @param count Number of entries in output_fields. If output_fields is
+ *              non-NULL and count is 0, no scalar fields are returned (only
+ *              the primary key / system columns).
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_iterator_options_set_output_fields(
+    zvec_iterator_options_t *options, const char *const *output_fields,
+    size_t count);
+
+/**
+ * @brief Set whether to include vector fields in the returned documents.
+ * @param options Options handle
+ * @param include true to include vectors, false to skip them
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_iterator_options_set_include_vector(zvec_iterator_options_t *options,
+                                         bool include);
+
+/**
+ * @brief Create a document iterator over the collection.
+ *
+ * Takes an isolated snapshot at call time. On a writable collection this
+ * seals the current writing segment (each call may produce a new small
+ * segment); read-only collections are scanned without any write.
+ * While any iterator is open, schema changes (create/drop index,
+ * add/alter/drop column) and destroy return an error, and optimize fails
+ * at its start; conversely this call fails while a maintenance operation
+ * (optimize, schema DDL or destroy) is running. Flush, writes and queries
+ * are not affected.
+ * zvec_collection_close() only releases the handle: the collection
+ * itself closes when the last handle is released, waiting for any open
+ * iterators first, so close every iterator (zvec_doc_iterator_close)
+ * before releasing the last collection handle.
+ * @param collection Collection handle
+ * @param options Iterator options (may be NULL to use defaults)
+ * @param[out] out_iter Returned iterator handle (release with
+ *             zvec_doc_iterator_close)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_create_iterator(
+    zvec_collection_t *collection, const zvec_iterator_options_t *options,
+    zvec_doc_iterator_t **out_iter);
+
+/**
+ * @brief Advance the iterator and return the next document.
+ * @param iter Iterator handle
+ * @param[out] out_doc Returned document (release with zvec_doc_destroy).
+ *             Set to NULL when iteration reaches the end (EOF).
+ * @return zvec_error_code_t ZVEC_OK on success or EOF; error code otherwise.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_doc_iterator_next(zvec_doc_iterator_t *iter, zvec_doc_t **out_doc);
+
+/**
+ * @brief Close the iterator and release all its resources.
+ * @param iter Iterator handle (may be NULL).
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_doc_iterator_close(zvec_doc_iterator_t *iter);
 
 // =============================================================================
 // Document Related Structures
