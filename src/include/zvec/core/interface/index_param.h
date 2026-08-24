@@ -343,14 +343,6 @@ class ZVEC_CORE_API BaseIndexParam : public SerializableBase {
   //! nullptr means no quantizer is configured (equivalent to kNone)
   QuantizerParam::Pointer quantizer_param{nullptr};
 
-  QuantizerType quantizer_type() const {
-    return quantizer_param ? quantizer_param->type : QuantizerType::kNone;
-  }
-
-  bool enable_rotate() const {
-    return quantizer_param && quantizer_param->enable_rotate;
-  }
-
   BaseIndexQueryParam::Pointer default_query_param = nullptr;
   // virtual std::shared_ptr<BaseIndexQueryParam> GetDefaultQueryParam() const
   // {
