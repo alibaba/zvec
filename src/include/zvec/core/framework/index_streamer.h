@@ -24,9 +24,6 @@ namespace zvec {
 namespace turbo {
 class Quantizer;
 }  // namespace turbo
-}  // namespace zvec
-
-namespace zvec {
 namespace core {
 
 /*! Index Streamer
@@ -45,9 +42,7 @@ class IndexStreamer : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
-  //! Initialize the streamer with an externally constructed data quantizer.
-  //! The quantizer must be initialized by the caller. Default implementation
-  //! reports not implemented.
+  //! Initialize the streamer with a quantizer for distance computation
   virtual int init(
       const IndexMeta & /*meta*/, const ailego::Params & /*params*/,
       const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {

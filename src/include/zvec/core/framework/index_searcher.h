@@ -27,9 +27,6 @@ namespace zvec {
 namespace turbo {
 class Quantizer;
 }  // namespace turbo
-}  // namespace zvec
-
-namespace zvec {
 namespace core {
 
 /*! Index Searcher
@@ -50,9 +47,7 @@ class IndexSearcher : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
-  //! Initialize Searcher with an externally constructed data quantizer.
-  //! The quantizer must be initialized by the caller. Default implementation
-  //! reports not implemented.
+  //! Initialize Searcher with a quantizer for distance computation
   virtual int init(
       const ailego::Params & /*params*/,
       const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
