@@ -219,8 +219,8 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
               -> py::object { return doc_value_to_py(self, field, type); });
   doc.def("get_all", &ZVecPyDoc::doc_to_tuple, py::arg("schema"),
           "Get all fields and vectors as a tuple: (id, score, fields, "
-          "vectors). Vectors are zero-copy numpy arrays (dense: ndarray, "
-          "sparse: (indices, values) tuple).");
+          "vectors). Dense vectors are returned as lists, sparse vectors as "
+          "{index: value} dicts.");
 }
 
 py::object ZVecPyDoc::doc_value_to_py(Doc &self, const std::string &field,
