@@ -35,14 +35,17 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🚀  **v0.6.0（2026 年 7 月 20 日）**
+> 🚀  **v0.7.0（2026 年 8 月 24 日）**
 >
-> - **分组检索（Group-By）**：支持按分组去重检索，返回每个分组的 Top-K 结果而非全局 Top-K，覆盖 Flat、HNSW、HNSW-RaBitQ 与稀疏索引。
-> - **随机旋转量化**：为 INT8/INT4 量化新增可选的随机旋转能力，将方差均匀分布到各维度，显著提升召回率。
-> - **全文检索增强**：升级 FTS 文本分析管线，新增基于 Unicode UAX #29 的标准分词器、UTF-8 / ASCII 折叠，以及基于 Snowball、支持 34+ 种语言的词干提取过滤器。
-> - **更快更稳健**：Block-max 跳跃优化使 FTS 合取查询提速 22–38%，同时新增 DiskANN C API，以及大量稳定性修复。
+> 本次主要围绕 **DiskANN 生产化、Turbo 量化框架扩展、部署体验优化与 API 易用性** 做了一轮升级。
 >
-> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.6.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> - **DiskANN 生产化**：新增 **Linux ARM64 / macOS ARM64** 支持，新增 **io_uring** 异步 I/O 后端，支持异步 I/O 重叠与动态 beam 宽度，并整体并入 zvec core lib。Linux 上按 io_uring → libaio（动态加载）→ pread 自动回退，macOS 使用 pread + `F_NOCACHE`，无需再手动处理插件 `.so`。
+> - **Turbo 量化框架再升级**：新增 **IVF-RaBitQ** 索引、**PQ-INT8** 量化器，补齐 INT8/INT4/FP16 record quantizers 的标量距离核；RaBitQ 支持运行时 **AVX2 / AVX512** 指令集动态分发，同一套二进制可在不同 CPU 上自动选择最优路径。
+> - **部署体验大幅优化**：动态库大幅瘦身，macOS arm64 上 C API 库从 37 MB 降至 22 MB（**-40%**），C++ SDK 库从 37 MB 降至 23 MB（**-37%**），且零功能损失、核心搜索代码保持 `-O3`；新增 **musl libc / Alpine Linux** 支持；Windows 控制 DLL 导出符号；新增 GitHub Release 流水线，自动发布 Linux（x86_64/ARM64，glibc/musl）、macOS ARM64、Windows x86_64、Android ARM64、iOS 的预编译 SDK 二进制包。
+> - **API 易用性**：公共 C++ API 统一迁移到 **snake_case**（破坏性变更，升级时请注意对应调整）；新增 **DocIterator** 支持全集合文档遍历；Python 新增 `collection.close()`；HNSW 支持通过 provider 从原始向量建图。
+> - **全文检索**：新增 **N-gram 分词器**，更适合短语、代码、短文本等检索场景。
+>
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
@@ -69,7 +72,7 @@ Zvec 提供多语言官方 SDK：
 
 ### ✅ 支持的平台
 
-- Linux (x86_64, ARM64)
+- Linux (x86_64, ARM64; glibc & musl)
 - macOS (ARM64)
 - Windows (x86_64)
 

@@ -35,14 +35,17 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.6.0 (July 20, 2026)**
+> 🚀 **v0.7.0 (August 24, 2026)**
 >
-> - **Group-By Search**: Retrieve top-K results per group instead of globally (group-by deduplication) across Flat, HNSW, HNSW-RaBitQ, and sparse indexes.
-> - **Random Rotation Quantization**: Optional random rotation for INT8/INT4 quantization distributes variance evenly across dimensions, significantly boosting recall.
-> - **Enhanced Full-Text Search**: Upgraded FTS pipeline with a Unicode UAX #29 standard tokenizer, UTF-8 / ASCII folding, and a Snowball-based stemmer supporting 34+ languages.
-> - **Faster & More Robust**: Block-max skip speeds up FTS conjunction queries by 22–38%, plus a new DiskANN C API and numerous stability fixes.
+> This release focuses on **DiskANN productionization, Turbo quantization expansion, deployment experience, and API usability**.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.6.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with async I/O overlap and dynamic beam width, all moved into the zvec core lib. On Linux it falls back automatically through io_uring → libaio (dlopen) → pread; macOS uses pread + `F_NOCACHE` — no more manual plugin `.so` handling.
+> - **Turbo quantization framework expanded**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer, plus scalar distance kernels for INT8/INT4/FP16 record quantizers; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
+> - **Deployment experience greatly improved**: Prebuilt dynamic libraries slimmed significantly — on macOS arm64 the C API library drops from 37 MB to 22 MB (**-40%**) and the C++ SDK library from 37 MB to 23 MB (**-37%**), with zero feature loss and core search code still at `-O3`; new **musl libc / Alpine Linux** support; Windows DLL exports trimmed; a new GitHub Release pipeline publishes prebuilt SDK binaries for Linux (x86_64/ARM64, glibc/musl), macOS ARM64, Windows x86_64, Android ARM64, and iOS.
+> - **API usability**: Public C++ APIs unified to **snake_case** (breaking change — please update accordingly when upgrading); new **DocIterator** for full-collection document traversal; `collection.close()` added in Python; HNSW supports building the graph from original vectors via provider.
+> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
+>
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
@@ -69,7 +72,7 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 
 ### ✅ Supported Platforms
 
-- Linux (x86_64, ARM64)
+- Linux (x86_64, ARM64; glibc & musl)
 - macOS (ARM64)
 - Windows (x86_64)
 
