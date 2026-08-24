@@ -15,7 +15,6 @@
 #include <ailego/algorithm/integer_quantizer.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
-#include <core/quantizer/quantizer_params.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
@@ -47,8 +46,10 @@ class CosineReformer : public IndexReformer {
 
   //! Constructor
   CosineReformer(IndexMeta::DataType original_type,
-                 IndexMeta::DataType dst_type)
-      : original_type_(original_type), dst_type_(dst_type) {}
+                 IndexMeta::DataType dst_type, bool raw_fp16_storage = false)
+      : original_type_(original_type),
+        dst_type_(dst_type),
+        raw_fp16_storage_(raw_fp16_storage) {}
 
   //! Constructor
   CosineReformer(IndexMeta::DataType dst_type)
@@ -60,8 +61,7 @@ class CosineReformer : public IndexReformer {
         dst_type_(IndexMeta::DataType::DT_UNDEFINED) {}
 
   //! Initialize Reformer
-  int init(const ailego::Params &params) override {
-    params.get(COSINE_RAW_FP16_STORAGE, &raw_fp16_storage_);
+  int init(const ailego::Params & /*params*/) override {
     if (raw_fp16_storage_ && (original_type_ != IndexMeta::DataType::DT_FP32 ||
                               dst_type_ != IndexMeta::DataType::DT_FP16)) {
       LOG_ERROR("Raw FP16 cosine storage requires FP32 input and FP16 output");
@@ -365,7 +365,7 @@ INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineHalfFloatReformer, CosineReformer,
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineRawFp16Reformer, CosineReformer,
                                       IndexMeta::DataType::DT_FP32,
-                                      IndexMeta::DataType::DT_FP16);
+                                      IndexMeta::DataType::DT_FP16, true);
 
 }  // namespace core
 }  // namespace zvec

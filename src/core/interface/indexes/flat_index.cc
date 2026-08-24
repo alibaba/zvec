@@ -16,7 +16,6 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #include "algorithm/flat/flat_utility.h"
-#include "quantizer/quantizer_params.h"
 
 namespace zvec::core_interface {
 
@@ -39,9 +38,7 @@ int FlatIndex::CreateAndInitConverterReformer(
 
   if (storage_type == DataType::DT_FP16) {
     if (flat_param.metric_type == MetricType::kCosine) {
-      ailego::Params converter_params;
-      converter_params.set(core::COSINE_RAW_FP16_STORAGE, true);
-      return InitConverterReformer("CosineRawFp16Converter", converter_params);
+      return InitConverterReformer("CosineRawFp16Converter");
     }
     return InitConverterReformer("HalfFloatConverter");
   }

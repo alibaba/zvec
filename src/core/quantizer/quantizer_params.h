@@ -102,7 +102,6 @@ static const std::string COSINE_CONVERTER_FORCED_HALF_FLOAT =
     "cosine.converter.forced_half_float";
 static const std::string COSINE_CONVERTER_ENABLE_ROTATE =
     "cosine.converter.enable_rotate";
-static const std::string COSINE_RAW_FP16_STORAGE = "cosine.raw_fp16_storage";
 
 //! CosineReformer
 static const std::string COSINE_REFORMER_FORCED_HALF_FLOAT =

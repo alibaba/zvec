@@ -283,8 +283,10 @@ class CosineConverter : public IndexConverter {
  public:
   //! Constructor
   CosineConverter(IndexMeta::DataType original_type,
-                  IndexMeta::DataType dst_type)
-      : original_type_(original_type), dst_type_(dst_type) {}
+                  IndexMeta::DataType dst_type, bool raw_fp16_storage = false)
+      : original_type_(original_type),
+        dst_type_(dst_type),
+        raw_fp16_storage_(raw_fp16_storage) {}
 
   //! Constructor
   CosineConverter(IndexMeta::DataType dst_type)
@@ -315,7 +317,6 @@ class CosineConverter : public IndexConverter {
     }
 
     params.get(COSINE_CONVERTER_ENABLE_ROTATE, &enable_rotate_);
-    params.get(COSINE_RAW_FP16_STORAGE, &raw_fp16_storage_);
 
     if (raw_fp16_storage_ && (original_type_ != IndexMeta::DataType::DT_FP32 ||
                               dst_type_ != IndexMeta::DataType::DT_FP16)) {
@@ -327,9 +328,6 @@ class CosineConverter : public IndexConverter {
     }
 
     ailego::Params reformer_params;
-    if (raw_fp16_storage_) {
-      reformer_params.set(COSINE_RAW_FP16_STORAGE, true);
-    }
 
     // Rotation only applies to integer quantization (INT8/INT4).
     if (enable_rotate_ && (dst_type_ == IndexMeta::DataType::DT_INT8 ||
@@ -490,7 +488,8 @@ INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineFp16Converter, CosineConverter,
                                        IndexMeta::DataType::DT_FP16);
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineRawFp16Converter, CosineConverter,
-                                       IndexMeta::DataType::DT_FP16);
+                                       IndexMeta::DataType::DT_FP32,
+                                       IndexMeta::DataType::DT_FP16, true);
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineInt8Converter, CosineConverter,
                                        IndexMeta::DataType::DT_INT8);
