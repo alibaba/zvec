@@ -6,6 +6,6 @@ cc_library(
     STATIC STRICT ALWAYS_LINK
     SRCS *.cc
     LIBS zvec_ailego
-    INCS . ${PROJECT_ROOT_DIR}/src/core
+    INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/turbo
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )
