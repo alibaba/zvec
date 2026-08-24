@@ -22,8 +22,8 @@ endif()
 # zvec/data/jieba_dict bundle). Consumers register the directory via
 # zvec_set_default_jieba_dict_dir() or ZVEC_JIEBA_DICT_DIR.
 foreach(_smoke_dict_file jieba.dict.utf8 hmm_model.utf8)
-  if(NOT EXISTS "${ZVEC_SDK_DIR}/share/zvec/jieba_dict/${_smoke_dict_file}")
-    message(FATAL_ERROR "SDK package is missing share/zvec/jieba_dict/${_smoke_dict_file}")
+  if(NOT EXISTS "${ZVEC_SDK_DIR}/data/jieba_dict/${_smoke_dict_file}")
+    message(FATAL_ERROR "SDK package is missing data/jieba_dict/${_smoke_dict_file}")
   endif()
 endforeach()
 

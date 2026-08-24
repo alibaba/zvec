@@ -240,13 +240,13 @@ if(BUILD_PYTHON_BINDINGS)
 endif()
 
 # Ship the same dict files with the native SDK install (prebuilt packages)
-# as well, under <prefix>/share/zvec/jieba_dict. Unlike Python there is no
+# as well, under <prefix>/data/jieba_dict (mirrors the wheel's
+# zvec/data/jieba_dict layout). Unlike Python there is no
 # import-time registration: consumers register the directory explicitly via
 # zvec_set_default_jieba_dict_dir() / zvec_config_data_set_jieba_dict_dir(),
 # the ZVEC_JIEBA_DICT_DIR env var, or per-field extra_params.jieba_dict_dir.
 # Default component, so the wheel build (COMPONENT python) is unaffected.
-include(GNUInstallDirs)
 install(FILES
     "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
     "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/zvec/jieba_dict")
+    DESTINATION data/jieba_dict)

@@ -105,7 +105,7 @@ jobs:
           # This catches a missing tag input (silent v0.0.0 fallback) before
           # anything is published.
           # Jieba dict: the jieba FTS tokenizer needs these files at runtime;
-          # they must ship under share/zvec/jieba_dict (see CMakeLists.txt).
+          # they must ship under data/jieba_dict (see CMakeLists.txt).
           SDK_DIR=prebuilt-artifacts/zvec-sdk-linux-amd64
           mkdir -p "$SDK_DIR/extracted"
           tar xzf "$SDK_DIR"/zvec-sdk-linux-amd64.tar.gz -C "$SDK_DIR/extracted"
@@ -121,8 +121,8 @@ jobs:
           fi
           echo "Embedded version matches release tag: $EXPECTED_TAG"
           for dict_file in jieba.dict.utf8 hmm_model.utf8; do
-            if [ ! -f "$SDK_DIR/extracted/share/zvec/jieba_dict/$dict_file" ]; then
-              echo "::error::share/zvec/jieba_dict/$dict_file missing from the linux-amd64 SDK"
+            if [ ! -f "$SDK_DIR/extracted/data/jieba_dict/$dict_file" ]; then
+              echo "::error::data/jieba_dict/$dict_file missing from the linux-amd64 SDK"
               exit 1
             fi
           done
