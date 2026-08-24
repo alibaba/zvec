@@ -619,24 +619,43 @@ endfunction()
 ## Add both shared and static library
 macro(_add_library _NAME _OPTION)
   add_library(${_NAME}_objects OBJECT ${_OPTION} ${ARGN})
-  add_library(
-      ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
-    )
   if(IOS)
-    # iOS: create the main target as static too (no shared libs on iOS)
+    # iOS has no shared libraries, so the main target is static as well.
+    # Building a second, identical archive under the ${_NAME}_static name is
+    # not just wasteful, it breaks the build: giving both the same OUTPUT_NAME
+    # makes Ninja fail ("multiple rules generate ..."), while distinct names
+    # make targets that link both variants fail with duplicate symbols.
+    # A single archive exposed under both names avoids both problems.
     add_library(
         ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
       )
+    add_library(${_NAME}_static ALIAS ${_NAME})
   else()
+    add_library(
+        ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
     add_library(
         ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
       )
-  endif()
-  add_dependencies(${_NAME} ${_NAME}_static)
-  if(NOT MSVC)
-    set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
+    add_dependencies(${_NAME} ${_NAME}_static)
+    if(NOT MSVC)
+      set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
+    endif()
   endif()
 endmacro()
+
+## Check whether <name>_static is a target of its own rather than an alias of
+## <name> (see _add_library: on iOS the two names share a single archive).
+function(_has_own_static_variant _RESULT _NAME)
+  set(${_RESULT} FALSE PARENT_SCOPE)
+  if(NOT TARGET ${_NAME}_static)
+    return()
+  endif()
+  get_target_property(_ALIASED ${_NAME}_static ALIASED_TARGET)
+  if(NOT _ALIASED)
+    set(${_RESULT} TRUE PARENT_SCOPE)
+  endif()
+endfunction()
 
 ## Add a static library backed by an object library.
 macro(_add_static_library_with_objects _NAME _OPTION)
@@ -1024,7 +1043,8 @@ function(cc_library)
     )
   endif()
 
-  if(TARGET ${CC_ARGS_NAME}_static)
+  _has_own_static_variant(_CC_HAS_STATIC ${CC_ARGS_NAME})
+  if(_CC_HAS_STATIC)
     _cc_target_properties(
         NAME "${CC_ARGS_NAME}_static"
         INCS "${CC_ARGS_INCS}"
@@ -1621,7 +1641,8 @@ function(cc_proto_library)
       )
   endif()
 
-  if(TARGET ${CC_ARGS_NAME}_static)
+  _has_own_static_variant(_CC_PROTO_HAS_STATIC ${CC_ARGS_NAME})
+  if(_CC_PROTO_HAS_STATIC)
     _cc_target_properties(
         NAME "${CC_ARGS_NAME}_static"
         PUBINCS "${CPP_OUTPATH};${CC_PROTOBUF_INCS}"
@@ -1860,7 +1881,8 @@ function(cuda_library)
       )
   endif()
 
-  if(TARGET ${CUDA_ARGS_NAME}_static)
+  _has_own_static_variant(_CUDA_HAS_STATIC ${CUDA_ARGS_NAME})
+  if(_CUDA_HAS_STATIC)
     _cuda_target_properties(
         NAME "${CUDA_ARGS_NAME}_static"
         INCS "${CUDA_ARGS_INCS}"
