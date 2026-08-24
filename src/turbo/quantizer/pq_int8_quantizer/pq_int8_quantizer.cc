@@ -747,7 +747,10 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   if (hdr.quant_type != static_cast<uint16_t>(QuantizeType::kPQ)) {
     return kErrUnsupported;
   }
-  if (hdr.data_type != static_cast<uint16_t>(DataType::kInt8)) {
+  // Accept data_type == 0 for backward compat with indices serialized before
+  // the field was populated (zero-initialized default → treat as kInt8).
+  if (hdr.data_type != static_cast<uint16_t>(DataType::kInt8) &&
+      hdr.data_type != 0) {
     return kErrUnsupported;
   }
 

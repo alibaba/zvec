@@ -224,9 +224,8 @@ int DiskAnnIndexer::load_cache_list(
 
   neighbor_cache_buffer_.resize(num_cached_nodes * (max_degree_ + 1), 0);
 
-  size_t coord_cache_buf_len = num_cached_nodes * aligned_dim_;
-  DiskAnnUtil::alloc_aligned((void **)&coord_cache_buf_,
-                             coord_cache_buf_len * meta_.unit_size(),
+  size_t coord_cache_buf_len = num_cached_nodes * meta_.element_size();
+  DiskAnnUtil::alloc_aligned((void **)&coord_cache_buf_, coord_cache_buf_len,
                              8 * meta_.unit_size());
   if (coord_cache_buf_ == nullptr) {
     LOG_ERROR("Failed to allocate coordinate cache buffer");
@@ -234,7 +233,7 @@ int DiskAnnIndexer::load_cache_list(
     return IndexError_NoMemory;
   }
 
-  memset(coord_cache_buf_, 0, coord_cache_buf_len * meta_.unit_size());
+  memset(coord_cache_buf_, 0, coord_cache_buf_len);
 
   constexpr size_t BLOCK_SIZE = 8;
   size_t num_blocks = DiskAnnUtil::div_round_up(num_cached_nodes, BLOCK_SIZE);
