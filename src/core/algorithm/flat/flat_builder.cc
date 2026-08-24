@@ -31,13 +31,6 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
   }
 
   // Verify column major order
-  if (meta_.data_type() == IndexMeta::DataType::DT_UINT8) {
-    if (meta_.major_order() == IndexMeta::MO_COLUMN) {
-      LOG_ERROR("Raw UINT8 Flat only supports row-major storage.");
-      return IndexError_Unsupported;
-    }
-    meta_.set_major_order(IndexMeta::MO_ROW);
-  }
   if (meta_.major_order() != IndexMeta::MO_ROW) {
     IndexMeta::DataType dt = meta_.data_type();
 
