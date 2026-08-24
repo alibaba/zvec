@@ -15,6 +15,7 @@
 #include "python_collection.h"
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
+#include <zvec/db/doc_iterator.h>
 
 namespace zvec {
 
@@ -51,6 +52,8 @@ void ZVecPyCollection::Initialize(pybind11::module_ &m) {
   py::class_<GroupResult>(m, "_GroupResult")
       .def_readonly("group_by_value", &GroupResult::group_by_value_)
       .def_readonly("docs", &GroupResult::docs_);
+
+  bind_iterator(m);
 
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
@@ -312,6 +315,28 @@ void ZVecPyCollection::bind_dql_methods(
           py::arg("pks"), py::arg("output_fields") = py::none(),
           py::arg("include_vector") = true)
       .def(
+          "CreateIterator",
+          [](Collection &self,
+             const std::optional<std::vector<std::string>> &output_fields,
+             bool include_vector) {
+            IteratorOptions options;
+            options.output_fields_ = output_fields;
+            options.include_vector_ = include_vector;
+            Result<DocIterator::Ptr> result;
+            {
+              py::gil_scoped_release release;
+              result = self.create_iterator(options);
+            }
+            return unwrap_expected(result);
+          },
+          py::arg("output_fields") = py::none(),
+          py::arg("include_vector") = true,
+          // The collection must outlive the returned iterator (documented
+          // contract); keep it
+          // alive automatically in the binding too.
+          py::keep_alive<0, 1>(),
+          "Create a document iterator to traverse all documents.")
+      .def(
           "_debug_hnsw_storage_mode",
           [](const Collection &self, const std::string &column_name) {
             const auto result = self.debug_get_hnsw_storage_mode(column_name);
@@ -323,6 +348,31 @@ void ZVecPyCollection::bind_dql_methods(
           "Raises KeyError if no HNSW index exists on the column, or "
           "ValueError if the column's index is not an HNSW index. Intended "
           "for introspection and testing only; not part of the stable API.");
+}
+
+void ZVecPyCollection::bind_iterator(py::module_ &m) {
+  // Document iterator: Python iterator protocol (__iter__ / __next__).
+  // Constructed only via Collection.create_iterator (no py::init).
+  py::class_<DocIterator, DocIterator::Ptr>(m, "_DocIterator")
+      .def("__iter__", [](py::object self) { return self; })
+      .def("__next__",
+           [](DocIterator &self) {
+             Result<Doc::Ptr> result;
+             {
+               py::gil_scoped_release release;
+               result = self.next();
+             }
+             // !has_value() -> error (raises); value()==nullptr -> EOF
+             auto doc = unwrap_expected(result);
+             if (doc == nullptr) {
+               throw py::stop_iteration();
+             }
+             return doc;
+           })
+      .def("close", [](DocIterator &self) {
+        py::gil_scoped_release release;
+        self.close();
+      });
 }
 
 }  // namespace zvec
