@@ -123,6 +123,10 @@ class FlatIndexParamBuilder
     param->use_contiguous_memory = value;
     return *this;
   }
+  FlatIndexParamBuilder &with_storage_data_type(DataType value) {
+    param->storage_data_type = value;
+    return *this;
+  }
   std::shared_ptr<FlatIndexParam> build() override {
     return param;
   }

@@ -179,11 +179,6 @@ class ZVEC_CORE_API Index {
   int _dense_search(const VectorData &query,
                     const BaseIndexQueryParam::Pointer &search_param,
                     SearchResult *result, core::IndexContext::Pointer &context);
-  //! Candidate refinement hook owned by the reference index implementation.
-  virtual int _refine_search(const VectorData &query,
-                             const BaseIndexQueryParam::Pointer &search_param,
-                             std::vector<uint64_t> candidate_keys,
-                             SearchResult *result);
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) = 0;
@@ -206,8 +201,10 @@ class ZVEC_CORE_API Index {
  protected:
   int ParseMetricName(const BaseIndexParam &param);
   int CreateAndInitMetric(const BaseIndexParam &param);
-  int CreateAndInitConverterReformer(const QuantizerParam &param,
-                                     const BaseIndexParam &index_param);
+  virtual int CreateAndInitConverterReformer(const QuantizerParam &param,
+                                             const BaseIndexParam &index_param);
+  int InitConverterReformer(const std::string &converter_name,
+                            const ailego::Params &converter_params = {});
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) = 0;
 
  protected:
@@ -249,14 +246,12 @@ class ZVEC_CORE_API FlatIndex : public Index {
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
+  int CreateAndInitConverterReformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
+
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
-
-  int _refine_search(const VectorData &query,
-                     const BaseIndexQueryParam::Pointer &search_param,
-                     std::vector<uint64_t> candidate_keys,
-                     SearchResult *result) override;
 
  private:
   FlatIndexParam param_{};

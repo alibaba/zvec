@@ -14,115 +14,48 @@
 
 #include <memory>
 #include <string>
-#include <utility>
-#include <vector>
-#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/interface/index.h>
-#include <zvec/turbo/turbo.h>
 #include "algorithm/flat/flat_utility.h"
+#include "quantizer/quantizer_params.h"
 
 namespace zvec::core_interface {
 
-namespace {
-
-int PreprocessRefineQuery(const VectorData &query,
-                          const core::IndexQueryMeta &flat_meta,
-                          std::string *buffer, VectorData *prepared_query) {
-  if (!buffer || !prepared_query ||
-      !std::holds_alternative<DenseVector>(query.vector)) {
-    return core::IndexError_InvalidArgument;
+int FlatIndex::CreateAndInitConverterReformer(
+    const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
+  const auto &flat_param = dynamic_cast<const FlatIndexParam &>(index_param);
+  const auto storage_type = flat_param.storage_data_type;
+  if (storage_type == DataType::DT_UNDEFINED ||
+      storage_type == flat_param.data_type) {
+    return Index::CreateAndInitConverterReformer(quantizer_param, index_param);
   }
 
-  const void *query_data = std::get<DenseVector>(query.vector).data;
-  if (!query_data) {
-    return core::IndexError_InvalidArgument;
-  }
-
-  const auto *input = static_cast<const float *>(query_data);
-  const void *native_query = query_data;
-  if (flat_meta.data_type() == core::IndexMeta::DataType::DT_FP16) {
-    buffer->resize(flat_meta.element_size());
-    auto *output = reinterpret_cast<uint16_t *>(buffer->data());
-    static const auto convert = turbo::get_convert_func(turbo::DataType::kFp16);
-    if (convert) {
-      convert(input, flat_meta.dimension(), output);
-    } else {
-      ailego::FloatHelper::ToFP16(input, flat_meta.dimension(), output);
-    }
-    native_query = output;
-  } else if (flat_meta.data_type() == core::IndexMeta::DataType::DT_UINT8) {
-    buffer->resize(flat_meta.element_size());
-    auto *output = reinterpret_cast<uint8_t *>(buffer->data());
-    static const auto convert =
-        turbo::get_convert_func(turbo::DataType::kUint8);
-    if (convert) {
-      convert(input, flat_meta.dimension(), output);
-    } else {
-      for (size_t d = 0; d < flat_meta.dimension(); ++d) {
-        const float value = input[d];
-        output[d] = !(value > 0.0F)   ? 0
-                    : value >= 255.0F ? 255
-                                      : static_cast<uint8_t>(value);
-      }
-    }
-    native_query = output;
-  } else if (flat_meta.data_type() != core::IndexMeta::DataType::DT_FP32) {
+  if (flat_param.is_sparse || flat_param.data_type != DataType::DT_FP32 ||
+      quantizer_param.type != QuantizerType::kNone) {
+    LOG_ERROR(
+        "Flat storage_data_type requires dense FP32 input without another "
+        "quantizer");
     return core::IndexError_Unsupported;
   }
 
-  *prepared_query = VectorData{DenseVector{native_query}};
-  return core::IndexError_Success;
+  if (storage_type == DataType::DT_FP16) {
+    if (flat_param.metric_type == MetricType::kCosine) {
+      ailego::Params converter_params;
+      converter_params.set(core::COSINE_RAW_FP16_STORAGE, true);
+      return InitConverterReformer("CosineRawFp16Converter", converter_params);
+    }
+    return InitConverterReformer("HalfFloatConverter");
+  }
+
+  if (storage_type == DataType::DT_UINT8 &&
+      flat_param.metric_type == MetricType::kL2sq) {
+    return InitConverterReformer("RawUint8Converter");
+  }
+
+  LOG_ERROR("Unsupported Flat storage data type %d for metric %d",
+            static_cast<int>(storage_type),
+            static_cast<int>(flat_param.metric_type));
+  return core::IndexError_Unsupported;
 }
-
-int RestoreRefineVectors(const core::IndexQueryMeta &flat_meta,
-                         SearchResult *result) {
-  if (!result) {
-    return core::IndexError_InvalidArgument;
-  }
-  if (flat_meta.data_type() == core::IndexMeta::DataType::DT_FP32) {
-    return core::IndexError_Success;
-  }
-
-  auto reverted_flat_vectors = std::move(result->reverted_vector_list_);
-  const bool use_reverted_flat_vectors = !reverted_flat_vectors.empty();
-  if (use_reverted_flat_vectors &&
-      reverted_flat_vectors.size() != result->doc_list_.size()) {
-    return core::IndexError_Runtime;
-  }
-
-  std::vector<std::string> restored_vectors(result->doc_list_.size());
-  for (size_t i = 0; i < result->doc_list_.size(); ++i) {
-    if (use_reverted_flat_vectors &&
-        reverted_flat_vectors[i].size() != flat_meta.element_size()) {
-      return core::IndexError_Runtime;
-    }
-    const void *source = use_reverted_flat_vectors
-                             ? reverted_flat_vectors[i].data()
-                             : result->doc_list_[i].vector();
-    if (!source) {
-      return core::IndexError_Runtime;
-    }
-
-    auto &restored = restored_vectors[i];
-    restored.resize(flat_meta.dimension() * sizeof(float));
-    auto *output = reinterpret_cast<float *>(restored.data());
-    if (flat_meta.data_type() == core::IndexMeta::DataType::DT_FP16) {
-      ailego::FloatHelper::ToFP32(static_cast<const uint16_t *>(source),
-                                  flat_meta.dimension(), output);
-    } else if (flat_meta.data_type() == core::IndexMeta::DataType::DT_UINT8) {
-      const auto *input = static_cast<const uint8_t *>(source);
-      for (size_t d = 0; d < flat_meta.dimension(); ++d) {
-        output[d] = static_cast<float>(input[d]);
-      }
-    } else {
-      return core::IndexError_Unsupported;
-    }
-  }
-  result->reverted_vector_list_ = std::move(restored_vectors);
-  return core::IndexError_Success;
-}
-
-}  // namespace
 
 int FlatIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const FlatIndexParam &>(param);
@@ -176,38 +109,5 @@ int FlatIndex::_prepare_for_search(
 
   return 0;
 }
-
-int FlatIndex::_refine_search(const VectorData &query,
-                              const BaseIndexQueryParam::Pointer &search_param,
-                              std::vector<uint64_t> candidate_keys,
-                              SearchResult *result) {
-  if (!result) {
-    return core::IndexError_InvalidArgument;
-  }
-  result->reverted_vector_list_.clear();
-
-  auto flat_search_param = std::make_shared<FlatQueryParam>();
-  flat_search_param->topk = search_param->topk;
-  flat_search_param->fetch_vector = search_param->fetch_vector;
-  flat_search_param->filter = search_param->filter;
-  flat_search_param->bf_pks =
-      std::make_shared<std::vector<uint64_t>>(std::move(candidate_keys));
-
-  std::string query_buffer;
-  VectorData prepared_query = query;
-  int ret = PreprocessRefineQuery(query, input_vector_meta_, &query_buffer,
-                                  &prepared_query);
-  if (ret != core::IndexError_Success) {
-    LOG_ERROR("Failed to preprocess Flat refine query");
-    return ret;
-  }
-
-  ret = search(prepared_query, flat_search_param, result);
-  if (ret != core::IndexError_Success || !flat_search_param->fetch_vector) {
-    return ret;
-  }
-  return RestoreRefineVectors(input_vector_meta_, result);
-}
-
 
 }  // namespace zvec::core_interface

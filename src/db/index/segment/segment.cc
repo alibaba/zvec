@@ -31,14 +31,12 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/parallel/thread_queue.h>
-#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#include <zvec/turbo/turbo.h>
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
 #endif
@@ -695,47 +693,6 @@ Status SegmentImpl::InsertVector(VectorColumnIndexer::Ptr &indexer,
       vector_data.vector = vector_column_params::SparseVector{
           (uint32_t)sparse_indices.size(), (void *)sparse_indices.data(),
           (void *)sparse_value.data()};
-    } else if constexpr (std::is_same_v<ValueType, std::vector<float>>) {
-      const auto &source = value.value();
-      const auto target_type = indexer->field_schema().data_type();
-      if (target_type == DataType::VECTOR_FP16) {
-        static thread_local std::vector<float16_t> fp16_buffer;
-        fp16_buffer.resize(source.size());
-        static const auto convert =
-            turbo::get_convert_func(turbo::DataType::kFp16);
-        if (convert) {
-          convert(source.data(), source.size(), fp16_buffer.data());
-        } else {
-          ailego::FloatHelper::ToFP16(
-              source.data(), source.size(),
-              reinterpret_cast<uint16_t *>(fp16_buffer.data()));
-        }
-        vector_data.vector =
-            vector_column_params::DenseVector{fp16_buffer.data()};
-      } else if (target_type == DataType::VECTOR_UINT8) {
-        static thread_local std::vector<uint8_t> uint8_buffer;
-        uint8_buffer.resize(source.size());
-        static const auto convert =
-            turbo::get_convert_func(turbo::DataType::kUint8);
-        if (convert) {
-          convert(source.data(), source.size(), uint8_buffer.data());
-        } else {
-          for (size_t i = 0; i < source.size(); ++i) {
-            const float component = source[i];
-            uint8_buffer[i] = !(component > 0.0F) ? 0
-                              : component >= 255.0F
-                                  ? 255
-                                  : static_cast<uint8_t>(component);
-          }
-        }
-        vector_data.vector =
-            vector_column_params::DenseVector{uint8_buffer.data()};
-      } else if (target_type == DataType::VECTOR_FP32) {
-        vector_data.vector = vector_column_params::DenseVector{source.data()};
-      } else {
-        return Status::InvalidArgument("unsupported Flat target data type: ",
-                                       DataTypeCodeBook::AsString(target_type));
-      }
     } else {
       vector_data.vector =
           vector_column_params::DenseVector{value.value().data()};
@@ -1333,21 +1290,7 @@ Doc::Ptr SegmentImpl::Fetch(
               block_doc_id, block_idx, segment_doc_id);
           return nullptr;
         }
-        auto vector_buffer = std::move(fetch_result.value());
-        if (std::holds_alternative<vector_column_params::DenseVectorBuffer>(
-                vector_buffer.vector_buffer)) {
-          auto &dense_buffer =
-              std::get<vector_column_params::DenseVectorBuffer>(
-                  vector_buffer.vector_buffer);
-          auto status = vector_column_params::RestoreDenseVectorBuffer(
-              vector_indexer->field_schema().data_type(), field->data_type(),
-              field->dimension(), &dense_buffer);
-          if (!status.ok()) {
-            LOG_ERROR("restore native Flat vector failed %s",
-                      status.message().c_str());
-            return nullptr;
-          }
-        }
+        const auto &vector_buffer = fetch_result.value();
         auto status =
             ConvertVectorDataBufferToDocField(field, vector_buffer, doc.get());
         if (!status.ok()) {
@@ -1380,21 +1323,7 @@ Doc::Ptr SegmentImpl::Fetch(
                 mem_block_offset, block_doc_id);
             continue;
           }
-          auto vector_buffer = std::move(fetch_result.value());
-          if (std::holds_alternative<vector_column_params::DenseVectorBuffer>(
-                  vector_buffer.vector_buffer)) {
-            auto &dense_buffer =
-                std::get<vector_column_params::DenseVectorBuffer>(
-                    vector_buffer.vector_buffer);
-            auto status = vector_column_params::RestoreDenseVectorBuffer(
-                vector_indexer->field_schema().data_type(), field->data_type(),
-                field->dimension(), &dense_buffer);
-            if (!status.ok()) {
-              LOG_ERROR("restore native Flat vector failed %s",
-                        status.message().c_str());
-              return nullptr;
-            }
-          }
+          const auto &vector_buffer = fetch_result.value();
           auto status = ConvertVectorDataBufferToDocField(field, vector_buffer,
                                                           doc.get());
           if (!status.ok()) {
@@ -1636,26 +1565,37 @@ Status SegmentImpl::create_vector_index(
   } else {
     auto original_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
-    auto desired_flat_data_type = field->data_type();
-    if (field->is_dense_vector() &&
-        vector_index_params->flat_data_type() != DataType::UNDEFINED) {
-      desired_flat_data_type = vector_index_params->flat_data_type();
-    }
+    const auto configured_flat_data_type =
+        vector_index_params->flat_data_type();
+    const auto desired_flat_data_type =
+        configured_flat_data_type == DataType::UNDEFINED
+            ? field->data_type()
+            : configured_flat_data_type;
 
     core::IndexProvider::Pointer raw_vector_provider;
+
+    const auto current_flat_params =
+        vector_indexers_[column].size() == 1
+            ? std::dynamic_pointer_cast<FlatIndexParams>(
+                  vector_indexers_[column][0]->field_schema().index_params())
+            : nullptr;
+    const auto current_flat_data_type =
+        current_flat_params &&
+                current_flat_params->storage_data_type() != DataType::UNDEFINED
+            ? current_flat_params->storage_data_type()
+            : field->data_type();
 
     if (!(vector_index_params->metric_type() ==
               original_index_params->metric_type() &&
           vector_indexers_[column].size() == 1 &&
-          vector_indexers_[column][0]->field_schema().data_type() ==
-              desired_flat_data_type)) {
+          current_flat_data_type == desired_flat_data_type)) {
       BlockID block_id = allocate_block_id();
 
       auto field_with_flat = std::make_shared<FieldSchema>(*field);
-      field_with_flat->set_data_type(desired_flat_data_type);
       field_with_flat->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
-          vector_index_params->use_flat_contiguous_memory()));
+          vector_index_params->use_flat_contiguous_memory(),
+          desired_flat_data_type));
 
       std::string index_file_path = FileHelper::MakeVectorIndexPath(
           path_, column, segment_meta_->id(), block_id);
@@ -4029,15 +3969,10 @@ Status SegmentImpl::load_vector_index_blocks() {
       if (block.type_ == BlockType::VECTOR_INDEX) {
         if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED ||
             !segment_meta_->vector_indexed(column)) {
-          if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED &&
-              new_field_params.is_dense_vector() &&
-              vector_index_params->flat_data_type() != DataType::UNDEFINED) {
-            new_field_params.set_data_type(
-                vector_index_params->flat_data_type());
-          }
           new_field_params.set_index_params(MakeDefaultVectorIndexParams(
               vector_index_params->metric_type(),
-              vector_index_params->use_flat_contiguous_memory()));
+              vector_index_params->use_flat_contiguous_memory(),
+              vector_index_params->flat_data_type()));
         }
       } else {
         if (!segment_meta_->vector_indexed(column)) {
@@ -4164,7 +4099,8 @@ Status SegmentImpl::init_memory_components() {
       FieldSchema normal_field(*field);
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
-          index_params->use_flat_contiguous_memory()));
+          index_params->use_flat_contiguous_memory(),
+          index_params->flat_data_type()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);
@@ -4176,13 +4112,10 @@ Status SegmentImpl::init_memory_components() {
     } else {
       // first create normal vector indexer
       FieldSchema normal_field(*field);
-      if (field->is_dense_vector() &&
-          index_params->flat_data_type() != DataType::UNDEFINED) {
-        normal_field.set_data_type(index_params->flat_data_type());
-      }
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
-          index_params->use_flat_contiguous_memory()));
+          index_params->use_flat_contiguous_memory(),
+          index_params->flat_data_type()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);

@@ -411,6 +411,16 @@ class ProximaEngineHelper {
             field_schema.index_params().get());
         index_param_builder.value()->with_use_contiguous_memory(
             db_index_params->use_contiguous_memory());
+        if (db_index_params->storage_data_type() != DataType::UNDEFINED) {
+          auto storage_data_type =
+              convert_to_engine_data_type(db_index_params->storage_data_type());
+          if (!storage_data_type.has_value()) {
+            return tl::make_unexpected(
+                Status::InvalidArgument("unsupported Flat storage data type"));
+          }
+          index_param_builder.value()->with_storage_data_type(
+              storage_data_type.value());
+        }
         return index_param_builder.value()->build();
       }
 

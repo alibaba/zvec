@@ -1054,7 +1054,7 @@ TEST(IndexInterface, Merge) {
   }
 }
 
-TEST(IndexInterface, NativeFlatRefinePreprocessesQuery) {
+TEST(IndexInterface, FlatStorageDataTypeConvertsFp32InputAndQuery) {
   constexpr uint32_t kDimension = 17;
   constexpr uint32_t kVectorCount = 8;
   constexpr uint32_t kTopk = 4;
@@ -1111,7 +1111,8 @@ TEST(IndexInterface, NativeFlatRefinePreprocessesQuery) {
 
       auto target_param = FlatIndexParamBuilder()
                               .with_metric_type(MetricType::kL2sq)
-                              .with_data_type(target_type)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_storage_data_type(target_type)
                               .with_dimension(kDimension)
                               .with_is_sparse(false)
                               .with_use_contiguous_memory(use_contiguous)
@@ -1121,21 +1122,8 @@ TEST(IndexInterface, NativeFlatRefinePreprocessesQuery) {
       ASSERT_EQ(0, target->open(target_name,
                                 {StorageOptions::StorageType::kMMAP, true}));
       for (uint32_t i = 0; i < kVectorCount; ++i) {
-        if (target_type == DataType::DT_FP16) {
-          std::vector<uint16_t> native(kDimension);
-          zvec::ailego::FloatHelper::ToFP16(vectors[i].data(),
-                                            vectors[i].size(), native.data());
-          ASSERT_EQ(0, target->add(VectorData{DenseVector{native.data()}}, i));
-        } else {
-          std::vector<uint8_t> native(kDimension);
-          for (uint32_t d = 0; d < kDimension; ++d) {
-            const float value = vectors[i][d];
-            native[d] = !(value > 0.0F)   ? 0
-                        : value >= 255.0F ? 255
-                                          : static_cast<uint8_t>(value);
-          }
-          ASSERT_EQ(0, target->add(VectorData{DenseVector{native.data()}}, i));
-        }
+        ASSERT_EQ(0,
+                  target->add(VectorData{DenseVector{vectors[i].data()}}, i));
       }
 
       auto refiner_param = std::make_shared<RefinerParam>();
@@ -1152,6 +1140,15 @@ TEST(IndexInterface, NativeFlatRefinePreprocessesQuery) {
       ASSERT_EQ(
           0, source->search(VectorData{DenseVector{vectors[kQueryId].data()}},
                             query_param, &result));
+
+      auto direct_query_param = FlatQueryParamBuilder()
+                                    .with_topk(kTopk)
+                                    .with_fetch_vector(true)
+                                    .build();
+      SearchResult direct_result;
+      ASSERT_EQ(
+          0, target->search(VectorData{DenseVector{vectors[kQueryId].data()}},
+                            direct_query_param, &direct_result));
       ASSERT_EQ(
           0, source->search(VectorData{DenseVector{vectors[kQueryId].data()}},
                             query_param, &result));
@@ -1172,16 +1169,24 @@ TEST(IndexInterface, NativeFlatRefinePreprocessesQuery) {
 
       ASSERT_EQ(kTopk, result.doc_list_.size());
       ASSERT_EQ(kTopk, result.reverted_vector_list_.size());
+      ASSERT_EQ(kTopk, direct_result.doc_list_.size());
+      ASSERT_EQ(kTopk, direct_result.reverted_vector_list_.size());
       for (size_t i = 0; i < kTopk; ++i) {
         EXPECT_EQ(expected[i].second, result.doc_list_[i].key());
         EXPECT_NEAR(expected[i].first, result.doc_list_[i].score(), 1e-3F);
+        EXPECT_EQ(result.doc_list_[i].key(), direct_result.doc_list_[i].key());
+        EXPECT_FLOAT_EQ(result.doc_list_[i].score(),
+                        direct_result.doc_list_[i].score());
 
         const auto expected_vector =
             to_native(vectors[expected[i].second], target_type);
         const auto *restored = reinterpret_cast<const float *>(
             result.reverted_vector_list_[i].data());
+        const auto *direct_restored = reinterpret_cast<const float *>(
+            direct_result.reverted_vector_list_[i].data());
         for (uint32_t d = 0; d < kDimension; ++d) {
           EXPECT_FLOAT_EQ(expected_vector[d], restored[d]);
+          EXPECT_FLOAT_EQ(restored[d], direct_restored[d]);
         }
       }
 
@@ -1235,14 +1240,38 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
     const std::string target_name = use_contiguous
                                         ? "fp16_cosine_refine_contiguous.index"
                                         : "fp16_cosine_refine_generic.index";
+    const std::string native_name = use_contiguous
+                                        ? "fp16_cosine_native_contiguous.index"
+                                        : "fp16_cosine_native_generic.index";
     zvec::test_util::RemoveTestFiles(target_name);
+    zvec::test_util::RemoveTestFiles(native_name);
     auto target_param = FlatIndexParamBuilder()
                             .with_metric_type(MetricType::kCosine)
-                            .with_data_type(DataType::DT_FP16)
+                            .with_data_type(DataType::DT_FP32)
+                            .with_storage_data_type(DataType::DT_FP16)
                             .with_dimension(kDimension)
                             .with_is_sparse(false)
                             .with_use_contiguous_memory(use_contiguous)
                             .build();
+    auto native_target_param = FlatIndexParamBuilder()
+                                   .with_metric_type(MetricType::kCosine)
+                                   .with_data_type(DataType::DT_FP16)
+                                   .with_dimension(kDimension)
+                                   .with_is_sparse(false)
+                                   .with_use_contiguous_memory(use_contiguous)
+                                   .build();
+
+    auto native_target = IndexFactory::CreateAndInitIndex(*native_target_param);
+    ASSERT_NE(nullptr, native_target);
+    ASSERT_EQ(0, native_target->open(
+                     native_name, {StorageOptions::StorageType::kMMAP, true}));
+    for (uint32_t i = 0; i < kVectorCount; ++i) {
+      std::vector<uint16_t> native(kDimension);
+      zvec::ailego::FloatHelper::ToFP16(vectors[i].data(), vectors[i].size(),
+                                        native.data());
+      ASSERT_EQ(0,
+                native_target->add(VectorData{DenseVector{native.data()}}, i));
+    }
 
     {
       auto writer = IndexFactory::CreateAndInitIndex(*target_param);
@@ -1250,10 +1279,8 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
       ASSERT_EQ(0, writer->open(target_name,
                                 {StorageOptions::StorageType::kMMAP, true}));
       for (uint32_t i = 0; i < kVectorCount; ++i) {
-        std::vector<uint16_t> native(kDimension);
-        zvec::ailego::FloatHelper::ToFP16(vectors[i].data(), vectors[i].size(),
-                                          native.data());
-        ASSERT_EQ(0, writer->add(VectorData{DenseVector{native.data()}}, i));
+        ASSERT_EQ(0,
+                  writer->add(VectorData{DenseVector{vectors[i].data()}}, i));
       }
       ASSERT_EQ(0, writer->close());
     }
@@ -1268,8 +1295,12 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
                             .with_fetch_vector(true)
                             .build();
     SearchResult native_result;
-    ASSERT_EQ(0, target->search(VectorData{DenseVector{native_query.data()}},
-                                native_param, &native_result));
+    ASSERT_EQ(
+        0, native_target->search(VectorData{DenseVector{native_query.data()}},
+                                 native_param, &native_result));
+    SearchResult direct_result;
+    ASSERT_EQ(0, target->search(VectorData{DenseVector{query.data()}},
+                                native_param, &direct_result));
 
     auto refiner_param = std::make_shared<RefinerParam>();
     refiner_param->scale_factor_ = kVectorCount;
@@ -1284,18 +1315,29 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
                                 refine_param, &refined_result));
 
     ASSERT_EQ(native_result.doc_list_.size(), refined_result.doc_list_.size());
-    ASSERT_EQ(native_result.reverted_vector_list_.size(),
+    ASSERT_EQ(native_result.doc_list_.size(), direct_result.doc_list_.size());
+    ASSERT_EQ(native_result.doc_list_.size(),
+              native_result.reverted_vector_list_.size());
+    ASSERT_EQ(direct_result.doc_list_.size(),
+              direct_result.reverted_vector_list_.size());
+    ASSERT_EQ(direct_result.reverted_vector_list_.size(),
               refined_result.reverted_vector_list_.size());
     for (size_t i = 0; i < native_result.doc_list_.size(); ++i) {
       EXPECT_EQ(native_result.doc_list_[i].key(),
+                direct_result.doc_list_[i].key());
+      EXPECT_EQ(direct_result.doc_list_[i].key(),
                 refined_result.doc_list_[i].key());
       EXPECT_NEAR(native_result.doc_list_[i].score(),
+                  direct_result.doc_list_[i].score(), 1e-7F);
+      EXPECT_NEAR(direct_result.doc_list_[i].score(),
                   refined_result.doc_list_[i].score(), 1e-7F);
 
       ASSERT_EQ(kDimension * sizeof(uint16_t),
                 native_result.reverted_vector_list_[i].size());
       ASSERT_EQ(kDimension * sizeof(float),
                 refined_result.reverted_vector_list_[i].size());
+      ASSERT_EQ(kDimension * sizeof(float),
+                direct_result.reverted_vector_list_[i].size());
       std::vector<float> expected(kDimension);
       zvec::ailego::FloatHelper::ToFP32(
           reinterpret_cast<const uint16_t *>(
@@ -1303,12 +1345,17 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
           kDimension, expected.data());
       const auto *restored = reinterpret_cast<const float *>(
           refined_result.reverted_vector_list_[i].data());
+      const auto *direct_restored = reinterpret_cast<const float *>(
+          direct_result.reverted_vector_list_[i].data());
       for (uint32_t d = 0; d < kDimension; ++d) {
         EXPECT_FLOAT_EQ(expected[d], restored[d]);
+        EXPECT_FLOAT_EQ(expected[d], direct_restored[d]);
       }
     }
 
+    ASSERT_EQ(0, native_target->close());
     ASSERT_EQ(0, target->close());
+    zvec::test_util::RemoveTestFiles(native_name);
     zvec::test_util::RemoveTestFiles(target_name);
   }
 
@@ -1436,7 +1483,7 @@ TEST(IndexInterface, Serialize) {
                      .with_data_type(DataType::DT_FP32)
                      .with_dimension(64)
                      .with_is_sparse(false)
-                     .with_quantizer_param(QuantizerParam{QuantizerType::kFP16})
+                     .with_storage_data_type(DataType::DT_FP16)
                      .build();
 
     std::cout << "flat index -- omit=true: " << param->serialize_to_json(true)
@@ -1446,7 +1493,10 @@ TEST(IndexInterface, Serialize) {
     auto deserialized_param =
         IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json());
     ASSERT_NE(nullptr, deserialized_param.get());
-
+    auto flat_param =
+        std::dynamic_pointer_cast<FlatIndexParam>(deserialized_param);
+    ASSERT_NE(nullptr, flat_param);
+    EXPECT_EQ(DataType::DT_FP16, flat_param->storage_data_type);
 
     std::cout << "serialize then de then se:"
               << deserialized_param->serialize_to_json() << std::endl;

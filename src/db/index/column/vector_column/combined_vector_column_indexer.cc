@@ -447,22 +447,7 @@ CombinedVectorColumnIndexer::Fetch(uint32_t segment_doc_id) const {
   }
 
   auto indexer = indexers_[target_block_idx];
-  auto result = indexer->Fetch(target_block_doc_id);
-  if (!result ||
-      !std::holds_alternative<vector_column_params::DenseVectorBuffer>(
-          result->vector_buffer)) {
-    return result;
-  }
-
-  auto &buffer =
-      std::get<vector_column_params::DenseVectorBuffer>(result->vector_buffer);
-  auto status = vector_column_params::RestoreDenseVectorBuffer(
-      indexer->field_schema().data_type(), field_schema_.data_type(),
-      field_schema_.dimension(), &buffer);
-  if (!status.ok()) {
-    return tl::make_unexpected(std::move(status));
-  }
-  return result;
+  return indexer->Fetch(target_block_doc_id);
 }
 
 }  // namespace zvec

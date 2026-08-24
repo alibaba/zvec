@@ -512,17 +512,20 @@ class ZVEC_API FlatIndexParams : public VectorIndexParams {
   FlatIndexParams(MetricType metric_type,
                   QuantizeType quantize_type = QuantizeType::UNDEFINED,
                   QuantizerParam quantizer_param = {},
-                  bool use_contiguous_memory = false)
+                  bool use_contiguous_memory = false,
+                  DataType storage_data_type = DataType::UNDEFINED)
       : VectorIndexParams(IndexType::FLAT, metric_type, quantize_type,
                           quantizer_param),
-        use_contiguous_memory_(use_contiguous_memory) {}
+        use_contiguous_memory_(use_contiguous_memory),
+        storage_data_type_(storage_data_type) {}
 
   using OPtr = std::shared_ptr<FlatIndexParams>;
 
  public:
   Ptr clone() const override {
     return std::make_shared<FlatIndexParams>(
-        metric_type_, quantize_type_, quantizer_param_, use_contiguous_memory_);
+        metric_type_, quantize_type_, quantizer_param_, use_contiguous_memory_,
+        storage_data_type_);
   }
 
   std::string to_string() const override {
@@ -530,7 +533,9 @@ class ZVEC_API FlatIndexParams : public VectorIndexParams {
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
     oss << base_str << ",use_contiguous_memory:"
-        << (use_contiguous_memory_ ? "true" : "false") << ",enable_rotate:"
+        << (use_contiguous_memory_ ? "true" : "false")
+        << ",storage_data_type:" << static_cast<uint32_t>(storage_data_type_)
+        << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
@@ -544,24 +549,32 @@ class ZVEC_API FlatIndexParams : public VectorIndexParams {
            quantizer_param() == static_cast<const VectorIndexParams &>(other)
                                     .quantizer_param() &&
            use_contiguous_memory_ == static_cast<const FlatIndexParams &>(other)
-                                         .use_contiguous_memory_;
+                                         .use_contiguous_memory_ &&
+           storage_data_type_ ==
+               static_cast<const FlatIndexParams &>(other).storage_data_type_;
   }
 
   bool use_contiguous_memory() const {
     return use_contiguous_memory_;
   }
 
+  DataType storage_data_type() const {
+    return storage_data_type_;
+  }
+
  private:
   bool use_contiguous_memory_{false};
+  DataType storage_data_type_{DataType::UNDEFINED};
 };
 
 // define default index params
 const FlatIndexParams DefaultVectorIndexParams(MetricType::IP);
 
 inline FlatIndexParams MakeDefaultVectorIndexParams(
-    MetricType metric_type, bool use_contiguous_memory = false) {
+    MetricType metric_type, bool use_contiguous_memory = false,
+    DataType storage_data_type = DataType::UNDEFINED) {
   return FlatIndexParams(metric_type, QuantizeType::UNDEFINED, {},
-                         use_contiguous_memory);
+                         use_contiguous_memory, storage_data_type);
 }
 
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(

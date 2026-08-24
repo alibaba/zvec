@@ -70,6 +70,7 @@ constexpr uint32_t kSampleCount = 4;
 namespace f_flat {
 constexpr uint32_t kBase = 1;
 constexpr uint32_t kUseContiguousMemory = 2;
+constexpr uint32_t kStorageDataType = 3;
 }  // namespace f_flat
 namespace f_ivf {
 constexpr uint32_t kBase = 1;
@@ -387,11 +388,17 @@ void EncodeFlat(const FlatIndexParams *params, std::string *out) {
   Writer w(out);
   w.PutMessage(f_flat::kBase, base);
   w.PutBool(f_flat::kUseContiguousMemory, params->use_contiguous_memory());
+  if (params->storage_data_type() != DataType::UNDEFINED) {
+    w.PutVarint(f_flat::kStorageDataType,
+                static_cast<uint64_t>(wire::ToNumber(
+                    DataTypeCodeBook::Get(params->storage_data_type()))));
+  }
 }
 
 FlatIndexParams::OPtr DecodeFlat(std::string_view buf) {
   BaseParams base;
   bool use_contiguous_memory = false;
+  DataType storage_data_type = DataType::UNDEFINED;
   Reader r(buf);
   while (r.Next()) {
     switch (r.field()) {
@@ -401,13 +408,17 @@ FlatIndexParams::OPtr DecodeFlat(std::string_view buf) {
       case f_flat::kUseContiguousMemory:
         use_contiguous_memory = r.bool_value();
         break;
+      case f_flat::kStorageDataType:
+        storage_data_type = DataTypeCodeBook::Get(
+            wire::FromNumber<wire::DataType>(r.int32_value()));
+        break;
       default:
         break;
     }
   }
-  return std::make_shared<FlatIndexParams>(base.metric_type, base.quantize_type,
-                                           QuantizerParam(base.enable_rotate),
-                                           use_contiguous_memory);
+  return std::make_shared<FlatIndexParams>(
+      base.metric_type, base.quantize_type, QuantizerParam(base.enable_rotate),
+      use_contiguous_memory, storage_data_type);
 }
 
 void EncodeIvf(const IVFIndexParams *params, std::string *out) {

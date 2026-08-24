@@ -688,14 +688,10 @@ Status SegmentHelper::ReduceVectorIndex(
           output_segment_path, field->name(), vector_block_id);
 
       auto field_without_quantize = std::make_shared<FieldSchema>(*field);
-      if (field->is_dense_vector() &&
-          vector_index_params->flat_data_type() != DataType::UNDEFINED) {
-        field_without_quantize->set_data_type(
-            vector_index_params->flat_data_type());
-      }
       field_without_quantize->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
-          vector_index_params->use_flat_contiguous_memory()));
+          vector_index_params->use_flat_contiguous_memory(),
+          vector_index_params->flat_data_type()));
 
       VectorColumnIndexer::Ptr vector_indexer;
       s = MergeWithOptionalReuse(

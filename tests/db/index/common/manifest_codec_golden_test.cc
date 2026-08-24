@@ -1035,8 +1035,8 @@ TEST(ManifestCodecGolden, RefineFlatStorageParams) {
   EXPECT_EQ(hnsw_params->flat_data_type(), DataType::VECTOR_UINT8);
   EXPECT_EQ(*decoded_hnsw, hnsw);
 
-  FlatIndexParams flat(MetricType::IP, QuantizeType::FP16, QuantizerParam(),
-                       true);
+  FlatIndexParams flat(MetricType::L2, QuantizeType::UNDEFINED,
+                       QuantizerParam(), true, DataType::VECTOR_UINT8);
   std::string encoded_flat;
   ManifestCodec::EncodeIndexParams(&flat, &encoded_flat);
   const auto decoded_flat = ManifestCodec::DecodeIndexParams(encoded_flat);
@@ -1045,6 +1045,7 @@ TEST(ManifestCodecGolden, RefineFlatStorageParams) {
       dynamic_cast<const FlatIndexParams *>(decoded_flat.get());
   ASSERT_NE(flat_params, nullptr);
   EXPECT_TRUE(flat_params->use_contiguous_memory());
+  EXPECT_EQ(flat_params->storage_data_type(), DataType::VECTOR_UINT8);
   EXPECT_EQ(*decoded_flat, flat);
 
   VamanaIndexParams vamana(MetricType::COSINE, 48, 96, 1.2f, true, true, true,

@@ -12,62 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "vector_column_indexer.h"
-#include <cstdint>
 #include <zvec/ailego/pattern/expected.hpp>
-#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/db/status.h>
 #include "engine_helper.hpp"
 
 
 namespace zvec {
-
-namespace vector_column_params {
-
-Status RestoreDenseVectorBuffer(DataType source_type, DataType target_type,
-                                uint32_t dimension, DenseVectorBuffer *buffer) {
-  if (!buffer) {
-    return Status::InvalidArgument("dense vector buffer is null");
-  }
-  if (source_type == target_type) {
-    return Status::OK();
-  }
-  if (target_type != DataType::VECTOR_FP32) {
-    return Status::InvalidArgument(
-        "unsupported dense vector restore target type");
-  }
-
-  size_t expected_size = 0;
-  if (source_type == DataType::VECTOR_FP16) {
-    expected_size = static_cast<size_t>(dimension) * sizeof(uint16_t);
-  } else if (source_type == DataType::VECTOR_UINT8) {
-    expected_size = static_cast<size_t>(dimension) * sizeof(uint8_t);
-  } else {
-    return Status::InvalidArgument(
-        "unsupported dense vector restore source type");
-  }
-  if (buffer->data.size() != expected_size) {
-    return Status::InvalidArgument("invalid native Flat vector byte size: ",
-                                   buffer->data.size(), " vs ", expected_size);
-  }
-
-  std::string restored(static_cast<size_t>(dimension) * sizeof(float), '\0');
-  auto *output = reinterpret_cast<float *>(restored.data());
-  if (source_type == DataType::VECTOR_FP16) {
-    ailego::FloatHelper::ToFP32(
-        reinterpret_cast<const uint16_t *>(buffer->data.data()), dimension,
-        output);
-  } else {
-    const auto *input = reinterpret_cast<const uint8_t *>(buffer->data.data());
-    for (size_t i = 0; i < dimension; ++i) {
-      output[i] = static_cast<float>(input[i]);
-    }
-  }
-  buffer->data = std::move(restored);
-  return Status::OK();
-}
-
-}  // namespace vector_column_params
 
 Status VectorColumnIndexer::Open(
     const vector_column_params::ReadOptions &read_options) {
