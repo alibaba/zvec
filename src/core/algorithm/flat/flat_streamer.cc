@@ -120,6 +120,35 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
 }
 
 template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::init(
+    const IndexMeta &imeta, const ailego::Params &params,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+  if (!quantizer) {
+    return this->init(imeta, params);
+  }
+
+  bool column_major_order = false;
+  params.get(PARAM_FLAT_COLUMN_MAJOR_ORDER, &column_major_order);
+  if (column_major_order || imeta.major_order() == IndexMeta::MO_COLUMN) {
+    LOG_ERROR("Quantizer distance does not support column index.");
+    return IndexError_Unsupported;
+  }
+
+  quantizer_ = quantizer;
+  entity_.set_quantizer(quantizer);
+
+  IndexMeta row_meta = imeta;
+  row_meta.set_major_order(IndexMeta::MO_ROW);
+  int error_code = this->init(row_meta, params);
+  if (error_code != 0) {
+    quantizer_.reset();
+    entity_.set_quantizer(nullptr);
+    return error_code;
+  }
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();

@@ -64,20 +64,23 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   storage_ = storage;
 
   //! Create the distance calculator
-  auto metric = IndexFactory::CreateMetric(index_meta_.metric_name());
-  if (!metric) {
-    LOG_ERROR("Failed to create metric %s", index_meta_.metric_name().c_str());
-    return IndexError_NoExist;
+  if (!quantizer_) {
+    auto metric = IndexFactory::CreateMetric(index_meta_.metric_name());
+    if (!metric) {
+      LOG_ERROR("Failed to create metric %s",
+                index_meta_.metric_name().c_str());
+      return IndexError_NoExist;
+    }
+    int ret = metric->init(index_meta_, index_meta_.metric_params());
+    if (ret != 0) {
+      LOG_ERROR("Failed to initialize metric %s",
+                index_meta_.metric_name().c_str());
+      return ret;
+    }
+    row_distance_ = metric->distance();
+    column_distance_ =
+        metric->distance_matrix(meta_.header.block_vector_count, 1);
   }
-  int ret = metric->init(index_meta_, index_meta_.metric_params());
-  if (ret != 0) {
-    LOG_ERROR("Failed to initialize metric %s",
-              index_meta_.metric_name().c_str());
-    return ret;
-  }
-  row_distance_ = metric->distance();
-  column_distance_ =
-      metric->distance_matrix(meta_.header.block_vector_count, 1);
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
             index_meta_.metric_name().c_str());
@@ -349,6 +352,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
   // entity->reformer_ = this->reformer_;
   entity->segments_ = segments;
   entity->meta_ = this->meta_;
+  entity->quantizer_ = this->quantizer_;
   entity->key_info_map_lock_ = this->key_info_map_lock_;
   entity->key_info_map_ = this->key_info_map_;
   entity->id_key_vector_ = this->id_key_vector_;

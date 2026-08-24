@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <future>
+#include <memory>
+#include <random>
 #include <string>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/encoding/json/mod_json.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -1301,6 +1306,133 @@ TEST_F(FlatStreamerTest, TestInt8WithRotate) {
 
   EXPECT_EQ(kTopk, knnCtx->result().size());
   EXPECT_EQ(kTopk, linearCtx->result().size());
+}
+
+// The streamer computes distances with the turbo quantizer.
+TEST_F(FlatStreamerTest, TestTurboQuantizerAddAndSearch) {
+  const size_t raw_dim = 24;
+  const size_t doc_count = 500;
+  const uint32_t topk = 10;
+
+  std::mt19937 gen(2026);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  std::vector<std::vector<float>> data(doc_count);
+  for (auto &vec : data) {
+    vec.resize(raw_dim);
+    for (auto &v : vec) {
+      v = dist(gen);
+    }
+  }
+
+  IndexMeta raw_meta;
+  raw_meta.set_meta(IndexMeta::DataType::DT_FP32, raw_dim);
+  raw_meta.set_metric("Cosine", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  ASSERT_NE(nullptr, quantizer);
+  ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+
+  IndexMeta meta = quantizer->meta();
+  meta.set_quantizer("Fp32Quantizer", 0, Params());
+
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  Params params;
+  ASSERT_EQ(0, streamer->init(meta, params, quantizer));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "Test/TurboQuantizer", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(!!context);
+  context->set_topk(topk);
+
+  // Quantized record layout meta (identical to the query layout for FP32)
+  IndexQueryMeta record_qmeta;
+  {
+    std::string tmp;
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    ASSERT_EQ(
+        0, quantizer->quantize(data[0].data(), raw_qmeta, &tmp, &record_qmeta));
+  }
+
+  // Add quantized datapoints, keep the codes for the reference distances
+  size_t code_bytes = quantizer->quantized_datapoint_vector_length();
+  ASSERT_EQ(code_bytes, meta.element_size());
+  std::vector<std::string> codes(doc_count);
+  for (size_t i = 0; i < doc_count; ++i) {
+    codes[i].resize(code_bytes);
+    quantizer->quantize_data(data[i].data(), &codes[i][0]);
+    ASSERT_EQ(0, streamer->add_impl(i, codes[i].data(), record_qmeta, context));
+  }
+
+  std::vector<std::vector<float>> queries(5);
+  for (auto &query : queries) {
+    query.resize(raw_dim);
+    for (auto &v : query) {
+      v = dist(gen);
+    }
+  }
+  for (const auto &query : queries) {
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    std::string quantized;
+    IndexQueryMeta turbo_qmeta;
+    ASSERT_EQ(0, quantizer->quantize(query.data(), raw_qmeta, &quantized,
+                                     &turbo_qmeta));
+    ASSERT_EQ(0, streamer->search_impl(quantized.data(), turbo_qmeta, context));
+
+    // Reference topk with the quantizer scalar distance
+    std::vector<std::pair<float, uint64_t>> ref(doc_count);
+    for (size_t i = 0; i < doc_count; ++i) {
+      ref[i] = {
+          quantizer->calc_distance_dp_query(codes[i].data(), quantized.data()),
+          i};
+    }
+    std::partial_sort(ref.begin(), ref.begin() + topk, ref.end());
+
+    auto &actual = context->result();
+    ASSERT_EQ(topk, actual.size());
+    for (size_t i = 0; i < topk; ++i) {
+      EXPECT_EQ(ref[i].second, actual[i].key());
+      EXPECT_NEAR(ref[i].first, actual[i].score(),
+                  1e-4f * std::fabs(ref[i].first) + 1e-5f);
+    }
+  }
+
+  // Filtered search goes through the scalar quantizer path
+  {
+    context->set_filter([](uint64_t key) { return (key % 2 == 0); });
+    const auto &query = queries[0];
+    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, raw_dim);
+    std::string quantized;
+    IndexQueryMeta turbo_qmeta;
+    ASSERT_EQ(0, quantizer->quantize(query.data(), raw_qmeta, &quantized,
+                                     &turbo_qmeta));
+    ASSERT_EQ(0, streamer->search_impl(quantized.data(), turbo_qmeta, context));
+
+    std::vector<std::pair<float, uint64_t>> ref;
+    for (size_t i = 1; i < doc_count; i += 2) {
+      ref.emplace_back(
+          quantizer->calc_distance_dp_query(codes[i].data(), quantized.data()),
+          i);
+    }
+    std::partial_sort(ref.begin(), ref.begin() + topk, ref.end());
+
+    auto &actual = context->result();
+    ASSERT_EQ(topk, actual.size());
+    for (size_t i = 0; i < topk; ++i) {
+      EXPECT_EQ(1UL, actual[i].key() % 2);
+      EXPECT_EQ(ref[i].second, actual[i].key());
+      EXPECT_NEAR(ref[i].first, actual[i].score(),
+                  1e-4f * std::fabs(ref[i].first) + 1e-5f);
+    }
+  }
+
+  streamer->flush(0UL);
+  streamer.reset();
 }
 
 #if defined(__GNUC__) || defined(__GNUG__)

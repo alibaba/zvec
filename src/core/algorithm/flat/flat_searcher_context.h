@@ -199,6 +199,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
     actual_read_size_ =
         (owner->read_block_size() + block_size - 1) / block_size * block_size;
     features_segment_ = owner->clone_features_segment();
+    quantizer_ = owner->quantizer();
     owner_ = owner;
   }
 
@@ -239,6 +240,53 @@ class FlatSearcherContext : public IndexSearcher::Context {
                                const IndexQueryMeta &qmeta, uint32_t count);
 
  protected:
+  //! Compute the distance between a stored feature and a query
+  inline void feature_distance(const void *feature, const void *query,
+                               size_t dim, float *out) const {
+    if (quantizer_) {
+      *out = quantizer_->calc_distance_dp_query(feature, query);
+    } else {
+      owner_->distance_matrix().template distance<1>(feature, query, dim, out);
+    }
+  }
+
+  //! Compute the quantizer distances of contiguous row features
+  inline void quantized_batch_distance(const void *features, size_t num,
+                                       const void *query, float *out) const {
+    const void *dp_list[BATCH_SIZE];
+    for (size_t i = 0; i != num; ++i) {
+      dp_list[i] = static_cast<const char *>(features) + i * feature_size_;
+    }
+    quantizer_->calc_distance_dp_query_batch(dp_list, static_cast<int>(num),
+                                             query, out);
+  }
+
+  //! Enqueue a chunk of contiguous row features into the heap (no filter)
+  void enqueue_row_chunk(const void *data, size_t size, const void *query,
+                         const IndexQueryMeta &qmeta, size_t *feature_index,
+                         IndexDocumentHeap *heap) {
+    if (quantizer_) {
+      size_t count = size / feature_size_;
+      for (size_t i = 0; i < count; i += BATCH_SIZE) {
+        size_t num = std::min<size_t>(count - i, BATCH_SIZE);
+        this->quantized_batch_distance(
+            static_cast<const char *>(data) + i * feature_size_, num, query,
+            scores_);
+        for (size_t j = 0; j != num; ++j) {
+          heap->emplace(0, scores_[j], (*feature_index)++);
+        }
+      }
+    } else {
+      auto matrix = owner_->distance_matrix();
+      for (size_t offset = 0; offset < size; offset += feature_size_) {
+        float score;
+        matrix.template distance<1>(static_cast<const char *>(data) + offset,
+                                    query, qmeta.dimension(), &score);
+        heap->emplace(0, score, (*feature_index)++);
+      }
+    }
+  }
+
   //! Enqueue items into the search heaps (without filter)
   template <size_t K>
   auto batch_enqueue_nofilter(const void *block, size_t block_index,
@@ -413,6 +461,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
   uint32_t feature_size_{0};
   uint32_t actual_read_size_{0};
   IndexStorage::Segment::Pointer features_segment_{};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::vector<IndexDocumentHeap> result_heaps_{1};
   std::string batch_queries_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
@@ -585,7 +634,6 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
   size_t left_size = features_segment_->data_size();
   size_t read_offset = 0;
   size_t feature_index = 0;
-  auto matrix = owner_->distance_matrix();
 
   while (left_size >= actual_read_size_) {
     const void *data = nullptr;
@@ -596,13 +644,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
       return IndexError_ReadData;
     }
 
-    for (size_t offset = 0; offset < actual_read_size_;
-         offset += feature_size_) {
-      float score;
-      matrix.template distance<1>((const char *)data + offset, query,
-                                  qmeta.dimension(), &score);
-      heap->emplace(0, score, feature_index++);
-    }
+    this->enqueue_row_chunk(data, actual_read_size_, query, qmeta,
+                            &feature_index, heap);
     read_offset += actual_read_size_;
     left_size -= actual_read_size_;
   }
@@ -614,12 +657,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
     return IndexError_ReadData;
   }
 
-  for (size_t offset = 0; offset < left_size; offset += feature_size_) {
-    float score;
-    matrix.template distance<1>((const char *)data + offset, query,
-                                qmeta.dimension(), &score);
-    heap->emplace(0, score, feature_index++);
-  }
+  this->enqueue_row_chunk(data, left_size, query, qmeta, &feature_index, heap);
   for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }
@@ -638,7 +676,6 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_filter(
   size_t left_size = features_segment_->data_size();
   size_t read_offset = 0;
   size_t feature_index = 0;
-  auto matrix = owner_->distance_matrix();
 
   while (left_size >= actual_read_size_) {
     const void *data = nullptr;
@@ -654,8 +691,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_filter(
       uint64_t feature_key = owner_->key(feature_index);
       if (!this->filter()(feature_key)) {
         float score;
-        matrix.template distance<1>((const char *)data + offset, query,
-                                    qmeta.dimension(), &score);
+        this->feature_distance((const char *)data + offset, query,
+                               qmeta.dimension(), &score);
         heap->emplace(feature_key, score, feature_index);
       }
       feature_index += 1;
@@ -675,8 +712,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_filter(
     uint64_t feature_key = owner_->key(feature_index);
     if (!this->filter()(feature_key)) {
       float score;
-      matrix.template distance<1>((const char *)data + offset, query,
-                                  qmeta.dimension(), &score);
+      this->feature_distance((const char *)data + offset, query,
+                             qmeta.dimension(), &score);
       heap->emplace(feature_key, score, feature_index);
     }
     feature_index += 1;
@@ -865,7 +902,6 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_nofilter(
   size_t left_size = features_segment_->data_size();
   size_t read_offset = 0;
   size_t feature_index = 0;
-  auto matrix = owner_->distance_matrix();
 
   // Process feature blocks
   while (left_size >= actual_read_size_) {
@@ -884,8 +920,8 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_nofilter(
 
       for (auto &heap : result_heaps_) {
         float score;
-        matrix.template distance<1>(feature, (const char *)query + query_offset,
-                                    qmeta.dimension(), &score);
+        this->feature_distance(feature, (const char *)query + query_offset,
+                               qmeta.dimension(), &score);
         heap.emplace(0, score, feature_index);
         query_offset += qmeta.element_size();
       }
@@ -909,8 +945,8 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_nofilter(
 
     for (auto &heap : result_heaps_) {
       float score;
-      matrix.template distance<1>(feature, (const char *)query + query_offset,
-                                  qmeta.dimension(), &score);
+      this->feature_distance(feature, (const char *)query + query_offset,
+                             qmeta.dimension(), &score);
       heap.emplace(0, score, feature_index);
       query_offset += qmeta.element_size();
     }
@@ -941,7 +977,6 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_filter(
   size_t left_size = features_segment_->data_size();
   size_t read_offset = 0;
   size_t feature_index = 0;
-  auto matrix = owner_->distance_matrix();
 
   // Process feature blocks
   while (left_size >= actual_read_size_) {
@@ -963,9 +998,8 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_filter(
 
         for (auto &heap : result_heaps_) {
           float score;
-          matrix.template distance<1>(feature,
-                                      (const char *)query + query_offset,
-                                      qmeta.dimension(), &score);
+          this->feature_distance(feature, (const char *)query + query_offset,
+                                 qmeta.dimension(), &score);
           heap.emplace(feature_key, score, feature_index);
           query_offset += qmeta.element_size();
         }
@@ -993,8 +1027,8 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_row_filter(
 
       for (auto &heap : result_heaps_) {
         float score;
-        matrix.template distance<1>(feature, (const char *)query + query_offset,
-                                    qmeta.dimension(), &score);
+        this->feature_distance(feature, (const char *)query + query_offset,
+                               qmeta.dimension(), &score);
         heap.emplace(feature_key, score, feature_index);
         query_offset += qmeta.element_size();
       }
@@ -1030,9 +1064,14 @@ int FlatSearcherContext<BATCH_SIZE>::group_by_search_impl(
     for (node_id_t id = 0; id < provider->count(); ++id) {
       if (!this->filter().is_valid() || !this->filter()(owner_->key(id))) {
         dist_t dist = 0;
-        owner_->distance_matrix().template distance<1>(
-            query, provider->get_vector(owner_->key(id)), provider->dimension(),
-            &dist);
+        if (quantizer_) {
+          dist = quantizer_->calc_distance_dp_query(
+              provider->get_vector(owner_->key(id)), query);
+        } else {
+          owner_->distance_matrix().template distance<1>(
+              query, provider->get_vector(owner_->key(id)),
+              provider->dimension(), &dist);
+        }
 
         std::string group_id = group_by(owner_->key(id));
         auto &topk_heap = this->group_topk_heaps()[group_id];
@@ -1070,8 +1109,13 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
         uint64_t pk = p_keys[q][idx];
         if (!this->filter().is_valid() || !this->filter()(pk)) {
           dist_t dist = 0;
-          owner_->distance_matrix().template distance<1>(
-              query, provider->get_vector(pk), provider->dimension(), &dist);
+          if (quantizer_) {
+            dist = quantizer_->calc_distance_dp_query(provider->get_vector(pk),
+                                                      query);
+          } else {
+            owner_->distance_matrix().template distance<1>(
+                query, provider->get_vector(pk), provider->dimension(), &dist);
+          }
 
           std::string group_id = group_by(pk);
           auto &topk_heap = this->group_topk_heaps()[group_id];
@@ -1096,8 +1140,13 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
         uint64_t pk = p_keys[q][idx];
         if (!this->filter().is_valid() || !this->filter()(pk)) {
           dist_t dist = 0;
-          owner_->distance_matrix().template distance<1>(
-              query, provider->get_vector(pk), provider->dimension(), &dist);
+          if (quantizer_) {
+            dist = quantizer_->calc_distance_dp_query(provider->get_vector(pk),
+                                                      query);
+          } else {
+            owner_->distance_matrix().template distance<1>(
+                query, provider->get_vector(pk), provider->dimension(), &dist);
+          }
           result_heaps_[q].emplace(pk, dist, owner_->get_id(pk));
         }
       }

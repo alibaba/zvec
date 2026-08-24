@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <memory>
 #include <unordered_map>
 #include <ailego/parallel/lock.h>
 #include <ailego/utility/memory_helper.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
@@ -144,6 +146,11 @@ class FlatStreamerEntity {
     filter_same_key_ = enabled;
   }
 
+  //! Set the turbo quantizer
+  void set_quantizer(const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+    quantizer_ = quantizer;
+  }
+
   inline uint64_t key(uint32_t id) const {
     if (id < id_key_vector_.size()) {
       return id_key_vector_[id];
@@ -155,6 +162,19 @@ class FlatStreamerEntity {
   inline void row_major_distance(const void *query, const void *feature,
                                  size_t fnum, float *out) const {
     const uint8_t *cur_feature = reinterpret_cast<const uint8_t *>(feature);
+    if (quantizer_) {
+      if (fnum > 1) {
+        std::vector<const void *> dp_list(fnum);
+        for (size_t f = 0; f < fnum; ++f) {
+          dp_list[f] = cur_feature + f * index_meta_.element_size();
+        }
+        quantizer_->calc_distance_dp_query_batch(
+            dp_list.data(), static_cast<int>(fnum), query, out);
+      } else {
+        *out = quantizer_->calc_distance_dp_query(cur_feature, query);
+      }
+      return;
+    }
     for (size_t f = 0; f < fnum; ++f) {
       row_distance_(query, cur_feature, index_meta_.dimension(), out + f);
       cur_feature += index_meta_.element_size();
@@ -388,6 +408,7 @@ class FlatStreamerEntity {
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <random>
 #include <string>
@@ -39,6 +40,17 @@ static float reference_cosine(const float *a, const float *b, size_t dim) {
   }
   float denom = std::sqrt(na) * std::sqrt(nb);
   return (denom < 1e-12f) ? 1.0f : 1.0f - dot / denom;
+}
+
+// Helper: reference squared euclidean distance between two raw fp32 vectors.
+static float reference_squared_euclidean(const float *a, const float *b,
+                                         size_t dim) {
+  float sum = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    float diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return sum;
 }
 
 // SIMD kernels may reorder accumulation; allow a small relative tolerance.
@@ -299,4 +311,113 @@ TEST(Fp32Quantizer, Avx2DistanceMatchesScalar) {
 
 TEST(Fp32Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
+}
+
+// Under SquaredEuclidean the quantizer is an identity transform; the
+// datapoint-query distances must match the raw reference distances.
+TEST(Fp32Quantizer, SquaredEuclideanScore) {
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+  // Odd dimension to exercise the tail path
+  const size_t DIMENSION = 35;
+  const size_t COUNT = 100;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  ASSERT_TRUE(quantizer);
+  ASSERT_EQ(0u, quantizer->init(meta, Params()));
+  ASSERT_EQ(DIMENSION * sizeof(float),
+            quantizer->quantized_datapoint_vector_length());
+
+  std::vector<std::vector<float>> raw_vecs(COUNT);
+  std::vector<std::string> quant_vecs(COUNT);
+  for (size_t i = 0; i < COUNT; ++i) {
+    raw_vecs[i].resize(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) {
+      raw_vecs[i][j] = dist(gen);
+    }
+    quant_vecs[i].resize(quantizer->quantized_datapoint_vector_length());
+    quantizer->quantize_data(raw_vecs[i].data(), quant_vecs[i].data());
+    // Identity transform under SquaredEuclidean
+    EXPECT_EQ(0, std::memcmp(quant_vecs[i].data(), raw_vecs[i].data(),
+                             quant_vecs[i].size()));
+  }
+
+  for (size_t i = 1; i < COUNT; ++i) {
+    float d = quantizer->calc_distance_dp_query(quant_vecs[i].data(),
+                                                quant_vecs[0].data());
+    float expected = reference_squared_euclidean(raw_vecs[i].data(),
+                                                 raw_vecs[0].data(), DIMENSION);
+    EXPECT_NEAR(d, expected, 1e-4 * std::max(1.0f, expected)) << "i=" << i;
+  }
+
+  std::vector<const void *> dp_list(COUNT - 1);
+  for (size_t i = 1; i < COUNT; ++i) {
+    dp_list[i - 1] = quant_vecs[i].data();
+  }
+  std::vector<float> results(COUNT - 1);
+  quantizer->calc_distance_dp_query_batch(dp_list.data(),
+                                          static_cast<int>(dp_list.size()),
+                                          quant_vecs[0].data(), results.data());
+  for (size_t i = 0; i < dp_list.size(); ++i) {
+    float expected = reference_squared_euclidean(raw_vecs[i + 1].data(),
+                                                 raw_vecs[0].data(), DIMENSION);
+    EXPECT_NEAR(results[i], expected, 1e-4 * std::max(1.0f, expected))
+        << "i=" << i;
+  }
+}
+
+// The datapoint encoding (quantize_data) and the query encoding (quantize)
+// must share the same layout, so pre-quantized records can be searched with
+// pre-quantized queries (as the flat index family does).
+TEST(Fp32Quantizer, QueryDatapointLayoutConsistency) {
+  std::mt19937 gen(7);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+  const size_t DIMENSION = 24;
+  const char *metrics[] = {"SquaredEuclidean", "Cosine", "InnerProduct"};
+
+  for (const char *metric : metrics) {
+    SCOPED_TRACE(testing::Message() << "metric=" << metric);
+
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
+    meta.set_metric(metric, 0, Params());
+
+    auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+    ASSERT_TRUE(quantizer);
+    ASSERT_EQ(0u, quantizer->init(meta, Params()));
+
+    size_t code_bytes = quantizer->quantized_datapoint_vector_length();
+    EXPECT_EQ(code_bytes, quantizer->meta().element_size());
+
+    std::vector<float> raw(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) {
+      raw[j] = dist(gen);
+    }
+
+    std::string dp_code(code_bytes, '\0');
+    quantizer->quantize_data(raw.data(), dp_code.data());
+
+    std::string query_code;
+    IndexQueryMeta ometa;
+    ASSERT_EQ(0, quantizer->quantize(
+                     raw.data(),
+                     IndexQueryMeta(IndexMeta::DataType::DT_FP32, DIMENSION),
+                     &query_code, &ometa));
+    ASSERT_EQ(code_bytes, ometa.element_size());
+    ASSERT_EQ(code_bytes, query_code.size());
+    EXPECT_EQ(0, std::memcmp(dp_code.data(), query_code.data(), code_bytes));
+
+    // The self-distance of an identically encoded pair must be minimal
+    float d =
+        quantizer->calc_distance_dp_query(dp_code.data(), query_code.data());
+    if (std::string(metric) != "InnerProduct") {
+      EXPECT_NEAR(0.0f, d, 1e-5);
+    }
+  }
 }
