@@ -289,8 +289,6 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
   // and is not persisted.
 }
 
-// The header carries the code DataType so that int4 PQ blobs (which share
-// quant_type == kPQ) are rejected instead of being misparsed as int8 codes.
 TEST(PqInt8Quantizer, DeserializeRejectsForeignDataType) {
   const size_t DIM = 16;
   const size_t NSQ = 4;
@@ -311,13 +309,22 @@ TEST(PqInt8Quantizer, DeserializeRejectsForeignDataType) {
   std::memcpy(&hdr, blob.data(), sizeof(hdr));
   EXPECT_EQ(static_cast<uint16_t>(DataType::kInt8), hdr.data_type);
 
-  // Simulate a foreign blob (e.g. int4 PQ) by flipping the code data type.
-  hdr.data_type = static_cast<uint16_t>(DataType::kInt4);
+  // Simulate a foreign blob by flipping the code data type to a non-zero,
+  // non-int8 value.
+  hdr.data_type = static_cast<uint16_t>(DataType::kFp16);
   std::memcpy(blob.data(), &hdr, sizeof(hdr));
 
   auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
   ASSERT_TRUE(q2);
   EXPECT_EQ(zvec::turbo::kErrUnsupported, q2->deserialize(blob));
+
+  // Backward compat: data_type == 0 (blobs serialized before the field was
+  // populated) must still be accepted and parsed as int8 codes.
+  hdr.data_type = 0;
+  std::memcpy(blob.data(), &hdr, sizeof(hdr));
+  auto q3 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(q3);
+  EXPECT_EQ(0, q3->deserialize(blob));
 }
 
 // ---------------------------------------------------------------------------

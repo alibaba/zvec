@@ -749,6 +749,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   }
   // Accept data_type == 0 for backward compat with indices serialized before
   // the field was populated (zero-initialized default → treat as kInt8).
+  // Note: DataType::kInt4 also equals 0, so a raw kInt4 stamp is
+  // indistinguishable from legacy; foreign PQ layouts must stamp a non-zero
+  // data_type (see QuantizerSerHeader in quantizer.h).
   if (hdr.data_type != static_cast<uint16_t>(DataType::kInt8) &&
       hdr.data_type != 0) {
     return kErrUnsupported;

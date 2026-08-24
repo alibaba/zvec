@@ -38,8 +38,11 @@ struct QuantizerSerHeader {
   uint32_t dim;           // original dim (sanity check)
   uint32_t metric;        // MetricType  (sanity check)
   uint32_t payload_size;  // bytes following the header
-  uint16_t data_type;     // DataType of the stored codes: distinguishes e.g.
-                          // int8 vs int4 PQ blobs sharing quant_type == kPQ
+  uint16_t data_type;     // DataType of the stored codes: distinguishes PQ
+                          // blobs sharing quant_type == kPQ.  0 means "unset"
+                          // (legacy blobs, parsed as int8); non-int8 layouts
+                          // must stamp a non-zero value (raw DataType::kInt4
+                          // equals 0 and therefore cannot be used here)
   uint16_t reserved;      // 0, for future use / alignment
 };
 static_assert(sizeof(QuantizerSerHeader) == 24,
