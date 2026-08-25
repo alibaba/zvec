@@ -151,13 +151,13 @@ void PqInt4Quantizer::build_centroid_ptrs_cache() {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   const uint8_t *base = centroids_.data();
-  const size_t type_sz = element_size();
+  const size_t type_size = element_size();
   centroid_ptrs_cache_.resize(num_chunk_);
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     auto &ptrs = centroid_ptrs_cache_[m];
     ptrs.resize(k);
     for (size_t c = 0; c < k; ++c) {
-      ptrs[c] = base + (static_cast<size_t>(m) * k * d + c * d) * type_sz;
+      ptrs[c] = base + (static_cast<size_t>(m) * k * d + c * d) * type_size;
     }
   }
 }
@@ -222,15 +222,15 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder) {
   }
 
   size_t num = holder->count();
-  const uint32_t elem_sz = element_size();
+  const uint32_t elem_size = element_size();
 
   // Collect all data into a contiguous byte buffer (original data type).
   auto iter = holder->create_iterator();
-  std::vector<uint8_t> all_data(num * original_dim_ * elem_sz);
+  std::vector<uint8_t> all_data(num * original_dim_ * elem_size);
   size_t row = 0;
   for (; iter->is_valid(); iter->next(), ++row) {
-    std::memcpy(all_data.data() + row * original_dim_ * elem_sz, iter->data(),
-                original_dim_ * elem_sz);
+    std::memcpy(all_data.data() + row * original_dim_ * elem_size, iter->data(),
+                original_dim_ * elem_size);
   }
 
   // Subsample if the dataset exceeds the training limit (aligned with
@@ -244,18 +244,18 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder) {
       size_t j = dist(rng);
       if (i != j) {
         // Swap full vectors (dim-sized chunks in bytes).
-        size_t vec_bytes = original_dim_ * elem_sz;
+        size_t vec_bytes = original_dim_ * elem_size;
         for (size_t b = 0; b < vec_bytes; ++b) {
           std::swap(all_data[i * vec_bytes + b], all_data[j * vec_bytes + b]);
         }
       }
     }
     num = kMaxTrainVectors;
-    all_data.resize(num * original_dim_ * elem_sz);
+    all_data.resize(num * original_dim_ * elem_size);
     all_data.shrink_to_fit();
   }
 
-  size_t data_stride = original_dim_ * elem_sz;
+  size_t data_stride = original_dim_ * elem_size;
 
   // For Cosine: normalize training data so centroids are learned in
   // normalized space (L2 minimization == maximizing cosine similarity).
@@ -381,7 +381,7 @@ void PqInt4Quantizer::compute_sub_centroid_norms() {
 
 void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
-  const uint32_t elem_sz = element_size();
+  const uint32_t elem_size = element_size();
 
   // For Cosine: normalize FIRST (codebook is trained in normalized space);
   // the original norm is stored after the PQ code for dequantize().
@@ -390,8 +390,8 @@ void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
   const void *vec = input;
 
   if (meta_.metric_name() == "Cosine") {
-    norm_vec_storage.resize(original_dim_ * elem_sz);
-    std::memcpy(norm_vec_storage.data(), input, original_dim_ * elem_sz);
+    norm_vec_storage.resize(original_dim_ * elem_size);
+    std::memcpy(norm_vec_storage.data(), input, original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
         normalize(reinterpret_cast<ailego::Float16 *>(norm_vec_storage.data()),
@@ -410,8 +410,8 @@ void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
   // Zero-mean centering: subtract centroid before encoding.
   std::vector<uint8_t> centered_vec_storage;
   if (use_zero_mean_) {
-    centered_vec_storage.resize(original_dim_ * elem_sz);
-    std::memcpy(centered_vec_storage.data(), vec, original_dim_ * elem_sz);
+    centered_vec_storage.resize(original_dim_ * elem_size);
+    std::memcpy(centered_vec_storage.data(), vec, original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
         subtract_center(
@@ -438,17 +438,19 @@ void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
 
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const void *sub_vec =
-        vec_bytes + static_cast<size_t>(m) * sub_dim_ * elem_sz;
+        vec_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size;
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
 
     // Compute L2 distances from this sub-vector to all 16 centroids.
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
                  kNumCentroids, sub_dim_, dists);
 
-    // Argmin: find nearest centroid.
-    float best_dist = dists[0];
+    // Argmin: find nearest centroid.  Seeding with +infinity skips NaN
+    // distances from dead centroids; a dists[0] seed would pin them to 0
+    // because (x < NaN) is always false.
+    float best_dist = std::numeric_limits<float>::infinity();
     uint32_t best_idx = 0;
-    for (uint32_t j = 1; j < kNumCentroids; ++j) {
+    for (uint32_t j = 0; j < kNumCentroids; ++j) {
       if (dists[j] < best_dist) {
         best_dist = dists[j];
         best_idx = j;
@@ -460,15 +462,16 @@ void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
   }
 
   // Store norm after the packed PQ code for Cosine dequantize support.
+  // memcpy: packed_len is arbitrary, so code + packed_len carries no float
+  // alignment guarantee (dequantize() reads it back the same way).
   if (meta_.metric_name() == "Cosine") {
-    float *norm_out = reinterpret_cast<float *>(code + packed_len);
-    *norm_out = vec_norm;
+    std::memcpy(code + packed_len, &vec_norm, sizeof(vec_norm));
   }
 }
 
 void PqInt4Quantizer::quantize_query(const void *input, void *output) const {
   float *lut = reinterpret_cast<float *>(output);
-  const uint32_t elem_sz = element_size();
+  const uint32_t elem_size = element_size();
 
   // For Cosine: normalize FIRST (Cosine uses an L2 LUT on normalized data),
   // consistent with train() / quantize_data().
@@ -476,8 +479,8 @@ void PqInt4Quantizer::quantize_query(const void *input, void *output) const {
   const void *query = input;
 
   if (meta_.metric_name() == "Cosine") {
-    norm_query_storage.resize(original_dim_ * elem_sz);
-    std::memcpy(norm_query_storage.data(), input, original_dim_ * elem_sz);
+    norm_query_storage.resize(original_dim_ * elem_size);
+    std::memcpy(norm_query_storage.data(), input, original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
         normalize(
@@ -495,8 +498,9 @@ void PqInt4Quantizer::quantize_query(const void *input, void *output) const {
   // Zero-mean centering: subtract centroid before LUT computation.
   std::vector<uint8_t> centered_query_storage;
   if (use_zero_mean_) {
-    centered_query_storage.resize(original_dim_ * elem_sz);
-    std::memcpy(centered_query_storage.data(), query, original_dim_ * elem_sz);
+    centered_query_storage.resize(original_dim_ * elem_size);
+    std::memcpy(centered_query_storage.data(), query,
+                original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
         subtract_center(
@@ -519,7 +523,7 @@ void PqInt4Quantizer::quantize_query(const void *input, void *output) const {
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     const void *sub_query =
-        query_bytes + static_cast<size_t>(m) * sub_dim_ * elem_sz;
+        query_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size;
     batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_query,
               kNumCentroids, sub_dim_, lut + m * kNumCentroids);
   }
@@ -818,14 +822,14 @@ int PqInt4Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   // in the space the codebook was trained in (normalized for Cosine).
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
-  const uint32_t elem_sz = element_size();
+  const uint32_t elem_size = element_size();
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const uint8_t *centroids_m =
-        centroids_.data() + static_cast<size_t>(m) * k * d * elem_sz;
+        centroids_.data() + static_cast<size_t>(m) * k * d * elem_size;
     // Unpack the 4-bit code: low nibble for even m, high nibble for odd m.
     uint8_t c = static_cast<uint8_t>((code[m >> 1] >> ((m & 1) * 4)) & 0x0F);
     const uint8_t *centroid =
-        centroids_m + static_cast<size_t>(c) * d * elem_sz;
+        centroids_m + static_cast<size_t>(c) * d * elem_size;
     switch (input_data_type_) {
       case DataType::kFp16: {
         const ailego::Float16 *src =
@@ -997,6 +1001,15 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   // Restore centroids (raw bytes in original data type).
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
                            sub_dim_ * element_size();
+  size_t centroid_bytes =
+      payload.use_zero_mean ? static_cast<size_t>(original_dim_) * sizeof(float)
+                            : 0;
+  // Both blob sizes are derived from payload fields, so a truncated or
+  // corrupted buffer would otherwise be read past its end.
+  if (len - sizeof(QuantizerSerHeader) - sizeof(PqInt4SerPayload) <
+      centroids_bytes + centroid_bytes) {
+    return kErrUnsupported;
+  }
   centroids_.resize(centroids_bytes);
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
   ptr += centroids_bytes;
@@ -1004,7 +1017,6 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   // Restore zero-mean centroid if centering was enabled.
   if (payload.use_zero_mean) {
     use_zero_mean_ = true;
-    size_t centroid_bytes = static_cast<size_t>(original_dim_) * sizeof(float);
     centroid_.resize(original_dim_);
     std::memcpy(centroid_.data(), ptr, centroid_bytes);
     ptr += centroid_bytes;

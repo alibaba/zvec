@@ -333,7 +333,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
 void PqInt8Quantizer::build_centroid_ptrs_cache() {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
-  const size_t type_sz = element_size();
+  const size_t type_size = element_size();
   const uint8_t *base = centroids_.data();
 
   centroid_ptrs_cache_.resize(num_chunk_);
@@ -341,7 +341,7 @@ void PqInt8Quantizer::build_centroid_ptrs_cache() {
     auto &ptrs = centroid_ptrs_cache_[m];
     ptrs.resize(k);
     for (size_t c = 0; c < k; ++c) {
-      ptrs[c] = base + (static_cast<size_t>(m) * k * d + c * d) * type_sz;
+      ptrs[c] = base + (static_cast<size_t>(m) * k * d + c * d) * type_size;
     }
   }
 }
@@ -448,11 +448,9 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
                  kNumCentroids, sub_dim_, dists);
 
-    // Argmin: find nearest centroid.  Seed with +infinity instead of
-    // dists[0]: k-means may leave dead centroids that yield NaN distances,
-    // and (x < NaN) is false for every x, so a NaN seed would pin the
-    // result to index 0 even when valid distances exist.  NaN entries are
-    // skipped naturally by the infinity seed.
+    // Argmin: find nearest centroid.  Seeding with +infinity skips NaN
+    // distances from dead centroids; a dists[0] seed would pin them to 0
+    // because (x < NaN) is always false.
     float best_dist = std::numeric_limits<float>::infinity();
     uint32_t best_idx = 0;
     for (uint32_t j = 0; j < kNumCentroids; ++j) {
@@ -465,9 +463,10 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   }
 
   // Store norm after PQ code for Cosine dequantize support.
+  // memcpy: num_chunk_ is arbitrary, so code + num_chunk_ carries no float
+  // alignment guarantee (dequantize() reads it back the same way).
   if (meta_.metric_name() == "Cosine") {
-    float *norm_out = reinterpret_cast<float *>(code + num_chunk_);
-    *norm_out = vec_norm;
+    std::memcpy(code + num_chunk_, &vec_norm, sizeof(vec_norm));
   }
 }
 
@@ -1010,6 +1009,15 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   // Restore centroids (raw bytes in original data type).
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
                            sub_dim_ * element_size();
+  size_t centroid_bytes =
+      payload.use_zero_mean ? static_cast<size_t>(original_dim_) * sizeof(float)
+                            : 0;
+  // Both blob sizes are derived from payload fields, so a truncated or
+  // corrupted buffer would otherwise be read past its end.
+  if (len - sizeof(QuantizerSerHeader) - sizeof(PqInt8SerPayload) <
+      centroids_bytes + centroid_bytes) {
+    return kErrUnsupported;
+  }
   centroids_.resize(centroids_bytes);
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
   ptr += centroids_bytes;
@@ -1017,7 +1025,6 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   // Restore zero-mean centroid if centering was enabled.
   if (payload.use_zero_mean) {
     use_zero_mean_ = true;
-    size_t centroid_bytes = static_cast<size_t>(original_dim_) * sizeof(float);
     centroid_.resize(original_dim_);
     std::memcpy(centroid_.data(), ptr, centroid_bytes);
     ptr += centroid_bytes;
