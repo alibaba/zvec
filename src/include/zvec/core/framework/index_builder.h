@@ -19,6 +19,12 @@
 #include <zvec/core/framework/index_runner.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
+}  // namespace zvec
+
+namespace zvec {
 namespace core {
 
 class IndexBuilder : public IndexRunner {
@@ -31,6 +37,13 @@ class IndexBuilder : public IndexRunner {
   //! Initialize the builder
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {
+    return IndexError_NotImplemented;
+  }
+
+  //! Initialize Builder with a quantizer for distance computation
+  virtual int init(
+      const IndexMeta & /*meta*/, const ailego::Params & /*params*/,
+      const std::shared_ptr<zvec::turbo::Quantizer> & /*quantizer*/) {
     return IndexError_NotImplemented;
   }
 

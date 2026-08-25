@@ -15,8 +15,35 @@
 #include "python_collection.h"
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
+#include <zvec/db/doc_iterator.h>
+#include "db/collection_query_internal.h"
+#include "python_doc.h"
 
 namespace zvec {
+
+namespace {
+
+// Batch-materialize a DocPtrList into a list of (id, score, fields, vectors)
+// tuples in a single GIL-held section, avoiding per-doc _Doc wrappers and
+// per-doc Python->C++ crossings on the hot query path. The forward/vector field
+// lists are resolved once per batch rather than once per doc.
+py::list docs_to_tuples(const DocPtrList &docs,
+                        const CollectionSchema &schema) {
+  const auto forward_fields = schema.forward_fields();
+  const auto vector_fields = schema.vector_fields();
+  py::list out(docs.size());
+  for (size_t i = 0; i < docs.size(); ++i) {
+    if (docs[i]) {
+      out[i] = ZVecPyDoc::doc_to_tuple_with_fields(*docs[i], forward_fields,
+                                                   vector_fields);
+    } else {
+      out[i] = py::none();
+    }
+  }
+  return out;
+}
+
+}  // namespace
 
 inline void throw_if_error(const Status &status) {
   switch (status.code()) {
@@ -47,10 +74,36 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
   return T{};
 }
 
+template <typename T>
+T unwrap_expected(tl::expected<T, Status> &&exp) {
+  if (exp.has_value()) {
+    return std::move(exp).value();
+  }
+  throw_if_error(exp.error());
+  return T{};
+}
+
+// Run a query with the GIL released, capturing docs + schema atomically under a
+// single schema read lock (internal::query_result_snapshot), then materialize
+// the batch into tuples after the GIL is reacquired and the read lock released.
+template <typename Query>
+py::list execute_for_python(const Collection &collection, const Query &query) {
+  Result<internal::QueryResultSnapshot> result;
+  {
+    py::gil_scoped_release release;
+    result = internal::query_result_snapshot(collection, query);
+  }
+  // GIL restored, schema read lock already released.
+  auto snapshot = unwrap_expected(std::move(result));
+  return docs_to_tuples(snapshot.docs, *snapshot.schema);
+}
+
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
   py::class_<GroupResult>(m, "_GroupResult")
       .def_readonly("group_by_value", &GroupResult::group_by_value_)
       .def_readonly("docs", &GroupResult::docs_);
+
+  bind_iterator(m);
 
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
@@ -59,7 +112,7 @@ void ZVecPyCollection::Initialize(pybind11::module_ &m) {
   bind_dql_methods(collection);
   collection.def(py::pickle(
       [](const Collection &c) {
-        return py::make_tuple(c.Path(), c.Schema(), c.Options());
+        return py::make_tuple(c.path(), c.schema(), c.options());
       },
       [](py::tuple t) {
         if (t.size() != 3) {
@@ -103,21 +156,21 @@ void ZVecPyCollection::bind_ddl_methods(
   // bind collection properties
   col.def("Path",
           [](const Collection &self) {
-            auto ret = self.Path();
+            auto ret = self.path();
             return unwrap_expected(ret);
           })
       .def("Options",
            [](const Collection &self) {
-             auto ret = self.Options();
+             auto ret = self.options();
              return unwrap_expected(ret);
            })
       .def("Schema",
            [](const Collection &self) {
-             auto ret = self.Schema();
+             auto ret = self.schema();
              return unwrap_expected(ret);
            })
       .def("Stats", [](const Collection &self) {
-        auto ret = self.Stats();
+        auto ret = self.stats();
         return unwrap_expected(ret);
       });
 
@@ -127,7 +180,7 @@ void ZVecPyCollection::bind_ddl_methods(
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.Close();
+              status = self.close();
             }
             throw_if_error(status);
           })
@@ -136,7 +189,7 @@ void ZVecPyCollection::bind_ddl_methods(
              Status status;
              {
                py::gil_scoped_release release;
-               status = self.Destroy();
+               status = self.destroy();
              }
              throw_if_error(status);
            })
@@ -144,7 +197,7 @@ void ZVecPyCollection::bind_ddl_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.Flush();
+          status = self.flush();
         }
         throw_if_error(status);
       });
@@ -157,7 +210,7 @@ void ZVecPyCollection::bind_ddl_methods(
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.CreateIndex(column_name, index_options, options);
+              status = self.create_index(column_name, index_options, options);
             }
             throw_if_error(status);
           })
@@ -166,7 +219,7 @@ void ZVecPyCollection::bind_ddl_methods(
              Status status;
              {
                py::gil_scoped_release release;
-               status = self.DropIndex(column_name);
+               status = self.drop_index(column_name);
              }
              throw_if_error(status);
            })
@@ -174,7 +227,7 @@ void ZVecPyCollection::bind_ddl_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.Optimize(options);
+          status = self.optimize(options);
         }
         throw_if_error(status);
       });
@@ -186,7 +239,7 @@ void ZVecPyCollection::bind_ddl_methods(
             Status status;
             {
               py::gil_scoped_release release;
-              status = self.AddColumn(column_schema, expression, options);
+              status = self.add_column(column_schema, expression, options);
             }
             throw_if_error(status);
           })
@@ -195,7 +248,7 @@ void ZVecPyCollection::bind_ddl_methods(
              Status status;
              {
                py::gil_scoped_release release;
-               status = self.DropColumn(column_name);
+               status = self.drop_column(column_name);
              }
              throw_if_error(status);
            })
@@ -206,8 +259,8 @@ void ZVecPyCollection::bind_ddl_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status =
-              self.AlterColumn(column_name, rename, new_column_schema, options);
+          status = self.alter_column(column_name, rename, new_column_schema,
+                                     options);
         }
         throw_if_error(status);
       });
@@ -221,7 +274,7 @@ void ZVecPyCollection::bind_dml_methods(
             Result<WriteResults> result;
             {
               py::gil_scoped_release release;
-              result = self.Insert(docs);
+              result = self.insert(docs);
             }
             return unwrap_expected(result);
           })
@@ -230,7 +283,7 @@ void ZVecPyCollection::bind_dml_methods(
              Result<WriteResults> result;
              {
                py::gil_scoped_release release;
-               result = self.Update(docs);
+               result = self.update(docs);
              }
              return unwrap_expected(result);
            })
@@ -239,7 +292,7 @@ void ZVecPyCollection::bind_dml_methods(
              Result<WriteResults> result;
              {
                py::gil_scoped_release release;
-               result = self.Upsert(docs);
+               result = self.upsert(docs);
              }
              return unwrap_expected(result);
            })
@@ -248,7 +301,7 @@ void ZVecPyCollection::bind_dml_methods(
              Result<WriteResults> result;
              {
                py::gil_scoped_release release;
-               result = self.Delete(pks);
+               result = self.delete_(pks);
              }
              return unwrap_expected(result);
            })
@@ -256,7 +309,7 @@ void ZVecPyCollection::bind_dml_methods(
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.DeleteByFilter(filter);
+          status = self.delete_by_filter(filter);
         }
         throw_if_error(status);
       });
@@ -264,35 +317,35 @@ void ZVecPyCollection::bind_dml_methods(
 
 void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
-  col.def("Query",
-          [](const Collection &self, const SearchQuery &query) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.Query(query);
-            }
-            // return DocPtrList
-            return unwrap_expected(result);
-          })
+  // Query with the GIL released, then materialize all hits into
+  // (id, score, fields, vectors) tuples in one crossing (see docs_to_tuples).
+  // execute_for_python captures the docs and the schema snapshot atomically
+  // under one read lock, so concurrent DDL cannot desynchronize them, while
+  // the binding signature stays unchanged from the legacy per-doc binding.
+  col.def(
+         "Query",
+         [](const Collection &self, const SearchQuery &query) {
+           return execute_for_python(self, query);
+         },
+         py::arg("query"),
+         "Execute a query and return results as a list of "
+         "(id, score, fields, vectors) tuples materialized in one batch.")
       // MultiQuery: multi query with reranker
       .def(
           "Query",
           [](const Collection &self, const MultiQuery &query) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.Query(query);
-            }
-            // return DocPtrList
-            return unwrap_expected(result);
+            return execute_for_python(self, query);
           },
-          py::arg("query"), "Execute a multi query with re-ranking.")
+          py::arg("query"),
+          "Execute a multi query with re-ranking and return results as a "
+          "list of (id, score, fields, vectors) tuples materialized in one "
+          "batch.")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {
              Result<GroupResults> result;
              {
                py::gil_scoped_release release;
-               result = self.GroupByQuery(query);
+               result = self.group_by_query(query);
              }
              return unwrap_expected(result);
            })
@@ -304,7 +357,7 @@ void ZVecPyCollection::bind_dql_methods(
             Result<DocPtrMap> result;
             {
               py::gil_scoped_release release;
-              result = self.Fetch(pks, output_fields, include_vector);
+              result = self.fetch(pks, output_fields, include_vector);
             }
             // return DocPtrMap
             return unwrap_expected(result);
@@ -312,9 +365,31 @@ void ZVecPyCollection::bind_dql_methods(
           py::arg("pks"), py::arg("output_fields") = py::none(),
           py::arg("include_vector") = true)
       .def(
+          "CreateIterator",
+          [](Collection &self,
+             const std::optional<std::vector<std::string>> &output_fields,
+             bool include_vector) {
+            IteratorOptions options;
+            options.output_fields_ = output_fields;
+            options.include_vector_ = include_vector;
+            Result<DocIterator::Ptr> result;
+            {
+              py::gil_scoped_release release;
+              result = self.create_iterator(options);
+            }
+            return unwrap_expected(result);
+          },
+          py::arg("output_fields") = py::none(),
+          py::arg("include_vector") = true,
+          // The collection must outlive the returned iterator (documented
+          // contract); keep it
+          // alive automatically in the binding too.
+          py::keep_alive<0, 1>(),
+          "Create a document iterator to traverse all documents.")
+      .def(
           "_debug_hnsw_storage_mode",
           [](const Collection &self, const std::string &column_name) {
-            const auto result = self.DebugGetHnswStorageMode(column_name);
+            const auto result = self.debug_get_hnsw_storage_mode(column_name);
             return unwrap_expected(result);
           },
           py::arg("column_name"),
@@ -323,6 +398,31 @@ void ZVecPyCollection::bind_dql_methods(
           "Raises KeyError if no HNSW index exists on the column, or "
           "ValueError if the column's index is not an HNSW index. Intended "
           "for introspection and testing only; not part of the stable API.");
+}
+
+void ZVecPyCollection::bind_iterator(py::module_ &m) {
+  // Document iterator: Python iterator protocol (__iter__ / __next__).
+  // Constructed only via Collection.create_iterator (no py::init).
+  py::class_<DocIterator, DocIterator::Ptr>(m, "_DocIterator")
+      .def("__iter__", [](py::object self) { return self; })
+      .def("__next__",
+           [](DocIterator &self) {
+             Result<Doc::Ptr> result;
+             {
+               py::gil_scoped_release release;
+               result = self.next();
+             }
+             // !has_value() -> error (raises); value()==nullptr -> EOF
+             auto doc = unwrap_expected(result);
+             if (doc == nullptr) {
+               throw py::stop_iteration();
+             }
+             return doc;
+           })
+      .def("close", [](DocIterator &self) {
+        py::gil_scoped_release release;
+        self.close();
+      });
 }
 
 }  // namespace zvec

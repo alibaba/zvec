@@ -6490,6 +6490,257 @@ void test_diskann_wiring_on_vector_query(void) {
 // Main function
 // =============================================================================
 
+// =============================================================================
+// Document iterator tests (zvec_collection_create_iterator / next / close)
+// =============================================================================
+
+// Insert `n` docs into the collection and flush.
+static void iter_insert_docs(zvec_collection_t *collection,
+                             const zvec_collection_schema_t *schema, int n) {
+  for (int i = 0; i < n; ++i) {
+    zvec_doc_t *doc = zvec_test_create_doc((uint64_t)i, schema, NULL);
+    zvec_doc_t *docs[] = {doc};
+    size_t ok_count = 0, err_count = 0;
+    zvec_error_code_t err = zvec_collection_insert(
+        collection, (const zvec_doc_t **)docs, 1, &ok_count, &err_count);
+    TEST_ASSERT(err == ZVEC_OK && ok_count == 1 && err_count == 0);
+    zvec_doc_destroy(doc);
+  }
+  TEST_ASSERT(zvec_collection_flush(collection) == ZVEC_OK);
+}
+
+// Basic iteration: count all docs, PK non-null.
+void test_iterator_basic(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_basic";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  TEST_ASSERT(schema != NULL);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  const int N = 20;
+  iter_insert_docs(collection, schema, N);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  int count = 0;
+  while (1) {
+    zvec_doc_t *doc = NULL;
+    err = zvec_doc_iterator_next(iter, &doc);
+    TEST_ASSERT(err == ZVEC_OK);
+    if (err != ZVEC_OK) break;
+    if (doc == NULL) break;  // EOF
+
+    const char *pk = zvec_doc_get_pk_pointer(doc);
+    TEST_ASSERT(pk != NULL && strlen(pk) > 0);
+    zvec_doc_destroy(doc);
+    count++;
+  }
+  TEST_ASSERT(count == N);
+
+  zvec_doc_iterator_close(iter);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// Flush is unaffected by open iterators, and closing the iterator handle
+// only releases the handle itself.
+void test_iterator_concurrent_semantics(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_lockrej";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  TEST_ASSERT(schema != NULL);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 10);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(iter, &doc);
+  TEST_ASSERT(err == ZVEC_OK && doc != NULL);
+  zvec_doc_destroy(doc);
+
+  // flush is not blocked by open iterators, and closing the handle only
+  // releases the handle itself (the collection is closed later).
+  err = zvec_collection_flush(collection);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // destroy is rejected with FAILED_PRECONDITION while the iterator is
+  // open, and succeeds after it is closed.
+  err = zvec_collection_destroy(collection);
+  TEST_ASSERT(err == ZVEC_ERROR_FAILED_PRECONDITION);
+
+  zvec_doc_iterator_close(iter);
+
+  err = zvec_collection_flush(collection);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// include_vector=false: dense vector field should be absent.
+void test_iterator_exclude_vector(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_novec";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 5);
+
+  zvec_iterator_options_t *opts = zvec_iterator_options_create();
+  TEST_ASSERT(opts != NULL);
+  err = zvec_iterator_options_set_include_vector(opts, false);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, opts, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  int count = 0;
+  while (1) {
+    zvec_doc_t *doc = NULL;
+    err = zvec_doc_iterator_next(iter, &doc);
+    TEST_ASSERT(err == ZVEC_OK);
+    if (err != ZVEC_OK || doc == NULL) break;
+
+    TEST_ASSERT(zvec_doc_has_field(doc, "id"));
+    TEST_ASSERT(!zvec_doc_has_field(doc, "dense"));
+    zvec_doc_destroy(doc);
+    count++;
+  }
+  TEST_ASSERT(count == 5);
+
+  zvec_doc_iterator_close(iter);
+  zvec_iterator_options_destroy(opts);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// output_fields={"id"}: only "id" scalar returned, "name" absent.
+void test_iterator_output_fields(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_fields";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  iter_insert_docs(collection, schema, 5);
+
+  zvec_iterator_options_t *opts = zvec_iterator_options_create();
+  const char *fields[] = {"id"};
+  err = zvec_iterator_options_set_output_fields(opts, fields, 1);
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_iterator_options_set_include_vector(opts, false);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, opts, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  int count = 0;
+  while (1) {
+    zvec_doc_t *doc = NULL;
+    err = zvec_doc_iterator_next(iter, &doc);
+    if (err != ZVEC_OK || doc == NULL) break;
+
+    TEST_ASSERT(zvec_doc_has_field(doc, "id"));
+    TEST_ASSERT(!zvec_doc_has_field(doc, "name"));
+    zvec_doc_destroy(doc);
+    count++;
+  }
+  TEST_ASSERT(count == 5);
+
+  zvec_doc_iterator_close(iter);
+  zvec_iterator_options_destroy(opts);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// Empty collection yields immediate EOF.
+void test_iterator_empty(void) {
+  TEST_START();
+  char dir[] = "./zvec_test_c_iter_empty";
+  zvec_test_delete_dir(dir);
+
+  zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK && collection != NULL);
+
+  zvec_doc_iterator_t *iter = NULL;
+  err = zvec_collection_create_iterator(collection, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_OK && iter != NULL);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(iter, &doc);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(doc == NULL);  // EOF on empty collection
+
+  zvec_doc_iterator_close(iter);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(dir);
+  TEST_END();
+}
+
+// Null-argument handling.
+void test_iterator_null_args(void) {
+  TEST_START();
+
+  zvec_doc_iterator_t *iter = NULL;
+  zvec_error_code_t err = zvec_collection_create_iterator(NULL, NULL, &iter);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_doc_t *doc = NULL;
+  err = zvec_doc_iterator_next(NULL, &doc);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  err = zvec_iterator_options_set_include_vector(NULL, true);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_iterator_options_set_output_fields(NULL, NULL, 0);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  // close / destroy with NULL must be safe (no crash).
+  zvec_doc_iterator_close(NULL);
+  zvec_iterator_options_destroy(NULL);
+  TEST_END();
+}
+
 int main(void) {
   printf("Starting comprehensive C API tests...\n\n");
 
@@ -6568,6 +6819,14 @@ int main(void) {
   // Query tests
   test_query_params_functions();
   test_actual_vector_queries();
+
+  // Document iterator tests
+  test_iterator_basic();
+  test_iterator_concurrent_semantics();
+  test_iterator_exclude_vector();
+  test_iterator_output_fields();
+  test_iterator_empty();
+  test_iterator_null_args();
 
   // FTS tests
   test_fts_index_params_functions();

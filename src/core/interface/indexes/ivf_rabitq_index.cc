@@ -95,7 +95,7 @@ int IVFRabitqIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 #endif  // RABITQ_SUPPORTED
 }
 
-int IVFRabitqIndex::Open(const std::string &file_path,
+int IVFRabitqIndex::open(const std::string &file_path,
                          StorageOptions storage_options) {
 #if !RABITQ_SUPPORTED
   (void)file_path;
@@ -149,7 +149,7 @@ int IVFRabitqIndex::GenerateHolder() {
 #endif  // RABITQ_SUPPORTED
 }
 
-int IVFRabitqIndex::Add(const VectorData &vector, uint32_t doc_id) {
+int IVFRabitqIndex::add(const VectorData &vector, uint32_t doc_id) {
 #if !RABITQ_SUPPORTED
   (void)vector;
   (void)doc_id;
@@ -180,7 +180,7 @@ int IVFRabitqIndex::Add(const VectorData &vector, uint32_t doc_id) {
 #endif  // RABITQ_SUPPORTED
 }
 
-int IVFRabitqIndex::Train() {
+int IVFRabitqIndex::train() {
 #if !RABITQ_SUPPORTED
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
@@ -240,7 +240,7 @@ int IVFRabitqIndex::Train() {
 #endif  // RABITQ_SUPPORTED
 }
 
-int IVFRabitqIndex::Merge(const std::vector<Index::Pointer> &indexes,
+int IVFRabitqIndex::merge(const std::vector<Index::Pointer> &indexes,
                           const IndexFilter &filter,
                           const MergeOptions &options) {
 #if !RABITQ_SUPPORTED
@@ -250,7 +250,7 @@ int IVFRabitqIndex::Merge(const std::vector<Index::Pointer> &indexes,
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
 #else
-  int ret = Index::Merge(indexes, filter, options);
+  int ret = Index::merge(indexes, filter, options);
   if (ret != 0) {
     return ret;
   }

@@ -1229,3 +1229,66 @@ class TestCollectionQuery:
         )
         assert len(result) > 0
         assert len(result) <= 5
+
+    def test_collection_query_materializes_every_hit(
+        self, collection_with_multiple_docs: Collection
+    ):
+        """Query results are materialized as a batch; every hit must keep its own
+        scalar values, so a misaligned batch cannot go unnoticed."""
+        # "dense" is [id + 0.1] * 128 under the default IP metric, so the hits
+        # are the largest ids in descending score order.
+        result = collection_with_multiple_docs.query(
+            Query(field_name="dense", vector=[100.1] * 128), topk=5
+        )
+        assert [doc.id for doc in result] == ["100", "99", "98", "97", "96"]
+
+        scores = [doc.score for doc in result]
+        assert scores == sorted(scores, reverse=True)
+
+        fetched = collection_with_multiple_docs.fetch([doc.id for doc in result])
+        for doc in result:
+            # Values belong to this doc, not to a neighbour in the batch.
+            assert doc.field("id") == int(doc.id)
+            assert doc.field("name") == "test"
+            assert doc.field("weight") == 80.0
+            assert doc.field("height") == 210
+            # Cross-check against fetch, which materializes docs separately.
+            assert set(doc.field_names()) == set(fetched[doc.id].field_names())
+            for name in doc.field_names():
+                assert doc.field(name) == fetched[doc.id].field(name)
+            assert doc.vectors == {}
+
+    def test_collection_query_materializes_vectors_per_hit(
+        self, collection_with_multiple_docs: Collection
+    ):
+        """With include_vector, each hit must carry its own vector values."""
+        result = collection_with_multiple_docs.query(
+            Query(field_name="dense", vector=[100.1] * 128),
+            topk=3,
+            include_vector=True,
+        )
+        assert len(result) == 3
+        for doc in result:
+            expected = pytest.approx(int(doc.id) + 0.1, rel=1e-5)
+            assert len(doc.vector("dense")) == 128
+            assert all(value == expected for value in doc.vector("dense"))
+            assert doc.vector("sparse") == {1: 1.0, 2: 2.0, 3: 3.0}
+
+    def test_collection_multi_query_materializes_every_hit(
+        self, collection_with_multiple_docs: Collection, multiple_docs
+    ):
+        """The multi-query binding materializes results through its own code
+        path, so it needs the same per-hit guarantees as a single query."""
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="dense2", vector=multiple_docs[0].vector("dense2")),
+            ],
+            topk=10,
+            reranker=RrfReRanker(),
+        )
+        assert len(result) > 0
+        for doc in result:
+            assert doc.field("id") == int(doc.id)
+            assert doc.field("name") == "test"
+            assert doc.vectors == {}

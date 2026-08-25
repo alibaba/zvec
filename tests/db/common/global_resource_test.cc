@@ -27,17 +27,16 @@ TEST(GlobalResource, UsesEffectiveCountsAndDisablesBindingByDefault) {
   EXPECT_FALSE(config.query_thread_binding);
   EXPECT_FALSE(config.optimize_thread_binding);
 
-  const auto status = GlobalConfig::Instance().Initialize(config);
+  const auto status = GlobalConfig::Instance().initialize(config);
   ASSERT_TRUE(status.ok()) << status.message();
   EXPECT_FALSE(GlobalConfig::Instance().query_thread_binding());
   EXPECT_FALSE(GlobalConfig::Instance().optimize_thread_binding());
 
-  const auto max_workers =
-      std::max(std::thread::hardware_concurrency(), 1u);
-  const auto expected_query_workers = std::min(
-      GlobalConfig::Instance().query_thread_count(), max_workers);
-  const auto expected_optimize_workers = std::min(
-      GlobalConfig::Instance().optimize_thread_count(), max_workers);
+  const auto max_workers = std::max(std::thread::hardware_concurrency(), 1u);
+  const auto expected_query_workers =
+      std::min(GlobalConfig::Instance().query_thread_count(), max_workers);
+  const auto expected_optimize_workers =
+      std::min(GlobalConfig::Instance().optimize_thread_count(), max_workers);
 
   EXPECT_EQ(expected_query_workers,
             GlobalResource::Instance().query_thread_pool()->count());

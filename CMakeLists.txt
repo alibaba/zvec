@@ -39,6 +39,9 @@ if(MSVC)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror=return-type")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror=return-type")
+    # Fine-grained dead code elimination: place each function/data in its own section
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
@@ -64,6 +67,21 @@ endif()
 
 if(NOT DEFINED PROJECT_ROOT_DIR OR NOT PROJECT_ROOT_DIR)
     set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Root directory of the project" FORCE)
+endif()
+
+# LTO (Link-Time Optimization) — helps on Linux with --gc-sections but may
+# increase size on macOS due to aggressive inlining.  Default OFF; enable
+# explicitly with -DZVEC_ENABLE_LTO=ON when targeting Linux.
+option(ZVEC_ENABLE_LTO "Enable Link-Time Optimization for Release builds" OFF)
+if(ZVEC_ENABLE_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_OUTPUT)
+    if(IPO_SUPPORTED)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO enabled for Release build")
+    else()
+        message(STATUS "LTO not supported: ${IPO_OUTPUT}")
+    endif()
 endif()
 
 message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
@@ -164,7 +182,7 @@ cc_directories(src)
 
 cc_directories(tests)
 
-add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
+add_custom_target(clang_tidy_deps DEPENDS ARROW.BUILD glog gflags Lz4.BUILD)
 
 if(BUILD_TOOLS)
     cc_directories(tools)
@@ -176,6 +194,12 @@ set(CPACK_PACKAGE_VERSION_MINOR ${ZVEC_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
+
+# cppjieba dict files bundled with installed artifacts so the `jieba` FTS
+# tokenizer works out of the box (source of truth for both the Python wheel
+# and the native SDK packages).
+set(ZVEC_JIEBA_DICT_SRC
+    "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
 
 if(BUILD_PYTHON_BINDINGS)
     if(APPLE)
@@ -208,11 +232,21 @@ if(BUILD_PYTHON_BINDINGS)
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
     # importlib.resources and registers it with set_default_jieba_dict_dir().
-    set(ZVEC_JIEBA_DICT_SRC
-        "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
     install(FILES
         "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
         "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
         DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
         COMPONENT python)
 endif()
+
+# Ship the same dict files with the native SDK install (prebuilt packages)
+# as well, under <prefix>/data/jieba_dict (mirrors the wheel's
+# zvec/data/jieba_dict layout). Unlike Python there is no
+# import-time registration: consumers register the directory explicitly via
+# zvec_set_default_jieba_dict_dir() / zvec_config_data_set_jieba_dict_dir(),
+# the ZVEC_JIEBA_DICT_DIR env var, or per-field extra_params.jieba_dict_dir.
+# Default component, so the wheel build (COMPONENT python) is unaffected.
+install(FILES
+    "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
+    "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
+    DESTINATION data/jieba_dict)

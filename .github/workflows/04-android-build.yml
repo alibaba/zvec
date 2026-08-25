@@ -71,33 +71,8 @@ jobs:
           sdkmanager --install "system-images;android-${{ matrix.api }};google_apis_playstore;x86_64" 2>/dev/null || \
           sdkmanager --install "system-images;android-${{ matrix.api }};default;x86_64"
 
-      # ── Step 1: build host protoc (using HOST compiler, NOT NDK) ───────
-      - name: Cache host protoc
-        uses: actions/cache@v6
-        with:
-          path: build_host
-          key: ${{ runner.os }}-host-protoc-${{ hashFiles('thirdparty/protobuf/**', 'CMakeLists.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-host-protoc-
-
-      - name: 'Step 1: Build host protoc'
-        shell: bash
-        run: |
-          if [ ! -f "build_host/bin/protoc" ]; then
-            git submodule foreach --recursive 'git stash --include-untracked' 2>/dev/null || true
-            cmake -S . -B build_host \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_TOOLCHAIN_FILE="" \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -G Ninja
-            cmake --build build_host --target protoc --parallel
-          else
-            echo "Using cached host protoc"
-          fi
-
-      # ── Step 2: cross-compile zvec + tests for Android ─────────────────
-      - name: 'Step 2: Cross-compile zvec and tests'
+      # ── Step 1: cross-compile zvec + tests for Android ─────────────────────────
+      - name: 'Step 1: Cross-compile zvec and tests'
         shell: bash
         env:
           BUILD_DIR: build_android_${{ matrix.abi }}
@@ -123,7 +98,6 @@ jobs:
             -DAUTO_DETECT_ARCH=OFF \
             -DENABLE_WERROR=ON \
             -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/install" \
-            -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -150,8 +124,8 @@ jobs:
           echo "Building ${#TEST_NAMES[@]} test executables..."
           ninja -C "$BUILD_DIR" -j$(nproc) "${TEST_NAMES[@]}"
 
-      # ── Step 3: start emulator ─────────────────────────────────────────
-      - name: 'Step 3: Start Android emulator'
+      # ── Step 2: start emulator ─────────────────────────────────────────
+      - name: 'Step 2: Start Android emulator'
         shell: bash
         run: |
           AVD_NAME="zvec_test_avd"
@@ -244,8 +218,8 @@ jobs:
           echo "Device ABI: $(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
           echo "ABI list  : $(adb shell getprop ro.product.cpu.abilist | tr -d '\r')"
 
-      # ── Step 4: run unit tests on emulator ─────────────────────────────
-      - name: 'Step 4: Run unit tests on emulator'
+      # ── Step 3: run unit tests on emulator ─────────────────────────────
+      - name: 'Step 3: Run unit tests on emulator'
         shell: bash
         env:
           BUILD_DIR: build_android_${{ matrix.abi }}
@@ -385,8 +359,8 @@ jobs:
           fi
           echo "All tests passed!"
 
-      # ── Step 5: build and run examples ─────────────────────────────────
-      - name: 'Step 5: Build and run examples'
+      # ── Step 4: build and run examples ─────────────────────────────────
+      - name: 'Step 4: Build and run examples'
         shell: bash
         env:
           BUILD_DIR: build_android_${{ matrix.abi }}
@@ -405,8 +379,8 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build "$EXAMPLES_BUILD" --parallel
 
-          # Reuse the shared-library directory from Step 4; push again in
-          # case Step 4 was skipped or the directory was cleaned.
+          # Reuse the shared-library directory from Step 3; push again in
+          # case Step 3 was skipped or the directory was cleaned.
           DEVICE_LIB_DIR="/data/local/tmp/zvec_tests/lib"
           adb shell "mkdir -p $DEVICE_LIB_DIR" 2>/dev/null || true
           SO_COUNT=0

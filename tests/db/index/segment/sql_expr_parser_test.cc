@@ -16,9 +16,8 @@
 #include "db/index/segment/sql_expr_parser.h"
 #include <arrow/array.h>
 #include <arrow/compute/api.h>
-#include <arrow/dataset/api.h>
-#include <arrow/dataset/discovery.h>
 #include <arrow/memory_pool.h>
+#include <arrow/record_batch.h>
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <arrow/testing/gtest_util.h>
@@ -26,7 +25,6 @@
 #include "utils/utils.h"
 
 using namespace arrow;
-using namespace arrow::dataset;
 using namespace zvec;
 
 class SqlExprParserTest : public ::testing::Test {
@@ -237,42 +235,37 @@ std::shared_ptr<arrow::Table> MakeTestTable() {
 }
 
 
-// Convert Table to Dataset (for testing)
-arrow::Result<std::shared_ptr<arrow::dataset::Dataset>> MakeTestDataset(
-    const std::shared_ptr<arrow::Table> &table) {
-  return std::make_shared<arrow::dataset::InMemoryDataset>(table);
-}
-
-TEST_F(SqlExprParserTest, ParseAndScanDataSet) {
-  auto status = arrow::compute::Initialize();
+// Execute the parsed expression against in-memory data. This used to go
+// through arrow::dataset::Scanner, but Arrow Dataset is disabled in the
+// slim build; ExecuteScalarExpression preserves the same intent: verify
+// that a parsed expression evaluates correctly on real data.
+TEST_F(SqlExprParserTest, ParseAndExecuteExpression) {
+  ASSERT_OK(arrow::compute::Initialize());
 
   auto schema = arrow::schema({arrow::field("int_col", arrow::int32()),
                                arrow::field("double_col", arrow::float64()),
                                arrow::field("string_col", arrow::utf8()),
                                arrow::field("bool_col", arrow::boolean())});
 
-  // Step 1: Create test table
+  // Step 1: Create test table and turn it into a single record batch
   auto table = MakeTestTable();
+  ASSERT_OK_AND_ASSIGN(auto batch, table->CombineChunksToBatch());
 
-  // Step 2: Convert to Dataset
-  auto dataset = MakeTestDataset(table).ValueOrDie();
-
-  // Step 3: Create scanner and project expression A + B
-  auto scanner_builder = dataset->NewScan().ValueOrDie();
-
+  // Step 2: Parse and bind the projection expression A + B
   auto expr = ParseToExpression("int_col + double_col", schema).ValueOrDie();
-  status = scanner_builder->Project({expr}, {"sum"});
+  ASSERT_OK_AND_ASSIGN(auto bound, expr.Bind(*schema));
 
-  auto scanner = scanner_builder->Finish().ValueOrDie();
+  // Step 3: Execute the expression and get results
+  ASSERT_OK_AND_ASSIGN(auto datum, arrow::compute::ExecuteScalarExpression(
+                                       bound, *schema, arrow::Datum(batch)));
 
-  // Step 4: Execute and get results
-  auto result_table = scanner->ToTable().ValueOrDie();
-  ASSERT_TRUE(result_table != nullptr);
-  ASSERT_EQ(result_table->num_rows(), 5);
+  auto sum_array = datum.make_array();
+  ASSERT_TRUE(sum_array != nullptr);
+  ASSERT_EQ(sum_array->length(), 5);
 
-  auto int_col = table->column(0);         // int_col
-  auto double_col = table->column(1);      // double_col
-  auto sum_col = result_table->column(0);  // sum column
+  auto int_col = table->column(0);     // int_col
+  auto double_col = table->column(1);  // double_col
+  auto sum_col = std::static_pointer_cast<arrow::DoubleArray>(sum_array);
 
   for (int64_t i = 0; i < table->num_rows(); ++i) {
     auto int_value =
@@ -281,10 +274,7 @@ TEST_F(SqlExprParserTest, ParseAndScanDataSet) {
     auto double_value =
         std::static_pointer_cast<arrow::DoubleArray>(double_col->chunk(0))
             ->Value(i);
-    auto sum_value =
-        std::static_pointer_cast<arrow::DoubleArray>(sum_col->chunk(0))
-            ->Value(i);
 
-    ASSERT_NEAR(int_value + double_value, sum_value, 1e-10);
+    ASSERT_NEAR(int_value + double_value, sum_col->Value(i), 1e-10);
   }
 }
