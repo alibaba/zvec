@@ -384,6 +384,19 @@ TEST(DiskAnnBufferPoolFileReaderTest,
   EXPECT_EQ(pool->stats().bypass_rechecks, 3u);
   EXPECT_EQ(pool->stats().bypass_cache_joins, 0u);
 
+  // The second observation promotes these ghost entries for admission, but
+  // the only cache page is still pinned. Admission failure must fall back to
+  // direct I/O instead of failing the query.
+  std::memset(output, 0, 4 * page_size);
+  ASSERT_EQ(reader.read(requests, unused), 0);
+  EXPECT_EQ(std::memcmp(output, source.data() + page_size, page_size), 0);
+  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + page_size,
+                        source.data() + 2 * page_size, page_size),
+            0);
+  EXPECT_EQ(std::memcmp(static_cast<char *>(output) + 2 * page_size,
+                        source.data() + 3 * page_size, page_size),
+            0);
+
   pool->page_table_.release_block(0);
   pool->page_table_.force_evict_all_loaded();
   EXPECT_EQ(destroy_io_ctx(unused), 0);

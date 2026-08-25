@@ -653,14 +653,21 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       }
     }
 
-    if (!admitted_ids.empty() &&
-        !pool_->acquire_pages(admitted_ids.data(), admitted_ids.size(),
-                              admitted_pages.data())) {
-      release_cached_pages();
-      return IndexError_ReadData;
-    }
-    for (size_t i = 0; i < admitted_ids.size(); ++i) {
-      unique_pages[admitted_indices[i]].cached_page = admitted_pages[i];
+    if (!admitted_ids.empty()) {
+      if (pool_->acquire_pages(admitted_ids.data(), admitted_ids.size(),
+                               admitted_pages.data())) {
+        for (size_t i = 0; i < admitted_ids.size(); ++i) {
+          unique_pages[admitted_indices[i]].cached_page = admitted_pages[i];
+        }
+      } else {
+        // A cache-admission race may exhaust the remaining budget after the
+        // policy decision above. acquire_pages() rolls back all pins on
+        // failure, so preserve query availability by reading the batch
+        // directly instead of surfacing a capacity error to the caller.
+        for (const size_t index : admitted_indices) {
+          unique_pages[index].bypass_candidate = true;
+        }
+      }
     }
 
     // A rejected page may have become resident or started loading while the

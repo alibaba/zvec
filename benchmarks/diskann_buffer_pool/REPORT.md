@@ -5,9 +5,13 @@
 
 ## 1. 结论
 
-本报告中 `5.06x` QPS 是“300 条查询重复回放、热图页能完全驻留”的缓存
-上界，证明 Buffer 路径有效，但不能直接外推到均匀或长尾业务。对外发布通用
-DiskANN 性能结论时，应以第 6 节的四工作负载矩阵为准。
+通用结论已用 Cohere 1M、标准 Recall@10 和四种工作负载复测。推荐从
+`512 MiB` Pool 开始压测：相对 direct 路径，三轮中位 QPS 在 Uniform、80/20
+语义热点、Zipf 和 90/10 精确热点下分别提升 `18%`、`39%`、`37%` 和 `73%`，
+测量阶段物理读分别减少 `60%`、`80%`、`83%` 和 `97%`。Recall 完全不变。
+
+旧的 `5.06x` QPS 来自 160K 数据上重复回放 300 条查询，仍只作为“热图页完全
+驻留”的功能上界，不再作为对外主结论。
 
 在第一期边界内，当前实现可以交付：
 
@@ -23,6 +27,7 @@ DiskANN 性能结论时，应以第 6 节的四工作负载矩阵为准。
 | 128 MiB、`list_size=100` 稳态物理读 | Buffer Pool `0 MiB`，直读 `609.36 MiB` | 命中缓存后消除重复磁盘读 |
 | 101 MiB 与 256 MiB 压力对照 | 小预算产生淘汰与物理读，大预算不产生 | 软预算行为有效 |
 | 查询结果一致性 | 相同配置下结果指纹完全一致 | 通过 |
+| Cohere 1M 标准 Recall@10 | 四种负载下 direct/Buffer 完全一致 | 通过 |
 | 回归测试与格式检查 | 全部通过 | 通过 |
 
 需要明确的是：128 MiB 是共享缓存的逻辑预算，不是 RSS 上限。本次 128 MiB Buffer Pool 场景的峰值 RSS 为 `284.54 MiB`，其中还包括索引元数据、查询工作区、分配器驻留、AIO 缓冲和运行时开销。
@@ -108,12 +113,13 @@ RSS ≈ Buffer Pool 驻留页
 | 查询上下文未完整初始化，`list_size` 被回退到默认值 | 初始化上下文 magic，并保留调用方参数 | Self-hit 与结果指纹一致 |
 | VisitFilter 销毁链路造成逐查询内存泄漏 | 改为 RAII、幂等销毁，并修复 Bloom 初始化失败路径 | 1,800 次查询 RSS 平台化 |
 | AIO 读取在容量仍充足时提前淘汰 | 改为先申请空闲容量，仅在容量不足时淘汰 | 128/256 MiB 容量内均为 0 淘汰 |
+| Pool 满后 admission 失败导致查询返回 `-122` | admission 失败时回滚并旁路 direct I/O | 128 MiB 下连续 8,000 次查询完成 |
 | 后端日志由调用方自行去重 | 去重收敛到 `IOBackend` 内部 | 全进程只输出一次 |
 
 回归验证：
 
 - macOS：Buffer Pool 39 项、VisitFilter 3 项，全部通过。
-- Linux Release：VisitFilter 3 项、Buffer Pool 40 项、DiskANN AIO 5 项、DiskANN builder/streamer 3 项，全部通过。
+- Linux Release：VisitFilter 3 项、Buffer Pool 40 项、DiskANN AIO 6 项；本次另跑 DiskANN reader 3 项、searcher 7 项、builder 4 项，全部通过。
 - `clang-format 18.1.8 -Werror`：通过。
 
 ## 5. 测试设计与环境
@@ -132,43 +138,43 @@ RSS ≈ Buffer Pool 驻留页
 
 Rosetta 环境只适合验证相对行为和正确性，绝对 QPS 不应作为生产容量基线。
 
-## 6. 对外发布工作负载矩阵
+## 6. Cohere 1M 四工作负载矩阵
 
-DiskANN 的图访问不能用 IVF centroid 占比代替。新的 benchmark 使用完全相同
-的请求序列分别测试直读和 Buffer，并覆盖：
+配置：1M×768 FP32，DiskANN FP16 + PQ384，`R=32`，`list_size=128`，4 查询线程；
+同一份 2.44 GB 搜索索引分别由 direct 和 Buffer reader 打开。每点独立进程，
+先预热 3,000 次，再测量 5,000 次，启动前清理 VM 页缓存。关键档位重复三次并
+取中位数。
 
-| 工作负载 | 用途 |
-|---|---|
-| `uniform_unique` | 无复用下界 |
-| `semantic80` | 20% 相似查询承接 80% 请求，推荐主结果 |
-| `zipf1` | 长尾业务 |
-| `exact90` | 5 条精确热点承接 90% 请求，只作上界 |
+### 6.1 推荐档位：512 MiB
 
-矩阵必须在原生 Linux x86_64 Release 环境串行执行，每个点使用独立进程；固定
-`list_size`、并发、Recall 和请求种子，同时记录 QPS、P99、进程峰值 RSS、物理读、
-热点集中度和结果指纹：
+| 工作负载 | direct QPS | Buffer QPS | QPS 变化 | direct P99 | Buffer P99 | 物理读变化 | Recall@10 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Uniform unique | 752 | 887 | **+18%** | 9.21 ms | 7.73 ms | **-60%** | 0.96970 |
+| 80/20 semantic | 798 | 1,106 | **+39%** | 8.28 ms | 7.13 ms | **-80%** | 0.97950 |
+| Zipf α=1.0 | 824 | 1,131 | **+37%** | 8.18 ms | 7.43 ms | **-83%** | 0.97314 |
+| 90/10 exact repeat | 765 | 1,327 | **+73%** | 8.68 ms | 6.47 ms | **-97%** | 0.94350 |
 
-```sh
-python benchmarks/diskann_buffer_pool/run_workload_matrix.py \
-  --mmap-collection /data/diskann-direct \
-  --buffer-collection /data/diskann-buffer \
-  --query-file /data/cohere-queries.npz \
-  --buffer-memory-mb 128 256 512 \
-  --engine-threads 8 --client-threads 16 \
-  --list-size 100 \
-  --output-dir /results/diskann-buffer-matrix
-```
+direct 的峰值 RSS 中位数约 `462 MiB`，512 MiB Buffer 约 `958 MiB`，即用约
+`495 MiB` 额外 RSS 换取上表的吞吐、尾延迟和磁盘读收益。存储模式没有改变任一
+负载的 Recall。
 
-默认每个点重复三次。`matrix_summary.csv` 输出中位 QPS/P99/RSS、QPS 方差、
-物理读取，以及相对直读路径的 QPS、RSS 和 QPS/GiB 比值。
+### 6.2 工作集基本驻留：1,024 MiB
 
-发布时以 `semantic80`/`zipf1` 为主，`uniform_unique` 说明退化边界，
-`exact90` 不进入产品 headline。
+| 工作负载 | QPS 提升 | P99 变化 | 物理读减少 | 峰值 RSS |
+|---|---:|---:|---:|---:|
+| Uniform unique | +98% | -45% | 100% | 1,257 MiB |
+| 80/20 semantic | +86% | -29% | 99% | 1,186 MiB |
+| Zipf α=1.0 | +76% | -22% | 99% | 1,184 MiB |
+| 90/10 exact repeat | +96% | -38% | 99% | 1,062 MiB |
 
-现有 91.33% 指标是“索引中的查询向量自身是否出现在 top-10”，只是
-Self-hit@10，不是对 brute-force ground truth 计算的标准 Recall@10。
-它与跨存储模式的结果指纹一起可以证明本次存储对比没有改变结果；
-对外发布仍应补充数据集 ground truth Recall@10。
+128/256 MiB 的收益不稳定：Pool 太小时，减少的 I/O 可能不足以覆盖缓存管理开销。
+因此不能把 Buffer 设成很小就默认开启；应从 `512 MiB` 或预计工作集的约 60%
+开始，用真实日志逐档测量。90/10 exact repeat 仍只表示热点上界，产品主结论应以
+80/20 semantic 和 Zipf 为主。
+
+测试运行在 Apple M3 Pro 上的 Colima ARM64 Linux VM（4 vCPU、8 GiB），索引位于
+VM 内部磁盘，Linux 使用 `O_DIRECT`/libaio。结果适合证明相对收益和正确性；发布
+生产容量数字前，仍应在目标 Linux 服务器和实际 NVMe 上复测绝对 QPS。
 
 ## 7. 剩余工作
 
@@ -176,13 +182,16 @@ Self-hit@10，不是对 brute-force ground truth 计算的标准 Recall@10。
 
 1. 对外文档明确 `memory_limit_mb` 的软预算语义，以及 `enable_mmap=true` 时 DiskANN 向量读取绕过 Buffer Pool 的行为。
 2. 暴露可观测指标：逻辑容量、已用/已提交页、命中、未命中、淘汰、绕过读取、后端类型以及 `O_DIRECT` 回退状态。
-3. 在原生 Linux x86_64 Release 环境运行上述多线程预算矩阵，形成可用于生产容量规划的基线。
+3. 在目标 Linux 服务器与实际 NVMe 上复跑 Cohere 1M 矩阵，形成生产容量基线。
 4. 写入、脏页、刷盘和崩溃恢复不在本次只读测试范围内；后续接入写入链路时需要单独设计和验证。
 
 ## 8. 测试资产
 
 - [benchmark.py](./benchmark.py)：主性能测试。
 - [run_workload_matrix.py](./run_workload_matrix.py)：四工作负载串行矩阵与 CSV 汇总。
+- [cohere_1m_linux_summary.csv](./results/cohere_1m_linux_summary.csv)：Cohere 1M 中位结果与相对收益。
+- [cohere_1m_linux_raw.log](./results/cohere_1m_linux_raw.log)：逐次原始输出。
+- [`tools/core/diskann_storage_bench.cc`](../../tools/core/diskann_storage_bench.cc)：同一原始索引的 direct/Buffer 对照工具。
 - [soak.py](./soak.py)：RSS 稳定性测试。
 - [Dockerfile](./Dockerfile)：Linux 测试环境。
 - `results/fixed_query_*.log`：最终查询复测日志。

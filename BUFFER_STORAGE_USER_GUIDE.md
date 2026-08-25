@@ -104,20 +104,21 @@ QPS/GiB = QPS / 峰值 RSS(GiB)
 256 MiB Buffer 的绝对 QPS 较低，但只使用约十分之一 RSS，吞吐密度是 mmap 的
 1.72 倍；512 MiB 是延迟与内存更均衡的点。Uniform 场景无复用时没有优势。
 
-### DiskANN：160K 验证集
+### DiskANN：Cohere 1M
 
-160K×128 FP32、`list_size=100`、结果指纹一致，查询向量自身的
-Self-hit@10 均为 91.33%。直读路径在 Linux 使用 `O_DIRECT`/异步 I/O：
+1M×768、FP16 + PQ384、`list_size=128`、4 查询线程；同一份 2.44 GB 搜索索引，
+标准 Recall@10 在 direct/Buffer 间完全一致。关键档位三轮中位数：
 
-| 模式 | QPS | P95 | 峰值 RSS | 稳态物理读 | QPS/GiB |
-|---|---:|---:|---:|---:|---:|
-| 直读 | 305 | 3.77 ms | 141 MiB | 609 MiB | 2207 |
-| Buffer 128 MiB | 1542 | 0.81 ms | 285 MiB | 0 MiB | 5548 |
+| 工作负载 | 512 MiB QPS | 512 MiB P99 | 物理读 | 1,024 MiB QPS |
+|---|---:|---:|---:|---:|
+| Uniform unique | +18% | -16% | -60% | +98% |
+| 80/20 semantic | +39% | -14% | -80% | +86% |
+| Zipf α=1.0 | +37% | -9% | -83% | +76% |
+| 90/10 exact repeat | +73% | -26% | -97% | +96% |
 
-该结果说明“热图页能放入 Pool”时 Buffer 可消除重复 I/O，吞吐密度约提升
-2.5 倍；但请求集合会重复回放，因此它是热点上界，不能代表均匀流量。Self-hit
-只用于健全性检查，不是标准 Recall。对外发布通用 DiskANN 性能结论前，应在原生
-Linux 运行随仓库提供的四工作负载矩阵，并用 ground truth 确认 Recall 不变。
+建议从 `512 MiB` 或预计热工作集的约 60% 开始。更小的 Pool 可能因命中收益不足
+而变慢；Pool 能基本容纳工作集时收益最大。主结论看 80/20 与 Zipf，exact repeat
+只作上界。测试使用 Linux `O_DIRECT`/libaio；绝对 QPS 仍应在目标机器复测。
 
 详细方法和原始数据：
 
