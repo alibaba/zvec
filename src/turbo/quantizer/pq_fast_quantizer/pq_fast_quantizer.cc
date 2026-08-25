@@ -921,6 +921,11 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
   if (hdr.quant_type != static_cast<uint16_t>(QuantizeType::kPQFast)) {
     return kErrUnsupported;
   }
+  // The codebook is only decodable under the metric it was trained in.
+  if (hdr.metric !=
+      static_cast<uint32_t>(metric_from_name(meta_.metric_name()))) {
+    return kErrUnsupported;
+  }
 
   PqFastSerPayload payload;
   std::memcpy(&payload, ptr, sizeof(payload));

@@ -955,6 +955,11 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   if (hdr.data_type != static_cast<uint16_t>(DataType::kInt4)) {
     return kErrUnsupported;
   }
+  // The codebook is only decodable under the metric it was trained in.
+  if (hdr.metric !=
+      static_cast<uint32_t>(metric_from_name(meta_.metric_name()))) {
+    return kErrUnsupported;
+  }
 
   PqInt4SerPayload payload;
   std::memcpy(&payload, ptr, sizeof(payload));
