@@ -620,6 +620,12 @@ int PqInt4Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
 int PqInt4Quantizer::build_centroid_distance_table(const void *centroids,
                                                    size_t centroid_num,
                                                    std::string *table) const {
+  //! The three-term decomposition below is pure L2 algebra.  IVF forces the
+  //! residual meta's metric to L2 on both the build and the restore side, so
+  //! any other metric here means that contract was broken.
+  if (meta_.metric_name() != "SquaredEuclidean") {
+    return kErrUnsupported;
+  }
   if (centroids == nullptr || centroid_num == 0 || table == nullptr ||
       num_chunk_ == 0 || centroids_.empty() || sub_centroid_norms_.empty()) {
     return kErrInvalidArgument;
@@ -686,6 +692,11 @@ int PqInt4Quantizer::quantize_precomputed_query(const void *query,
                                                 const IndexQueryMeta &qmeta,
                                                 std::string *out,
                                                 IndexQueryMeta *ometa) const {
+  //! Same L2-only contract as build_centroid_distance_table().
+  if (meta_.metric_name() != "SquaredEuclidean") {
+    return kErrUnsupported;
+  }
+
   // Validate unit_size against the input data type (same as quantize()).
   size_t expected_unit = 0;
   switch (input_data_type_) {
