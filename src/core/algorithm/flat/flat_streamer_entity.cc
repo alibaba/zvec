@@ -898,7 +898,7 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   IndexMeta index_meta;
-  if (!index_meta.deserialize(mt->header.index_meta,
+  if (!index_meta.deserialize(mt->index_meta_data(),
                               mt->header.index_meta_size)) {
     LOG_ERROR("Failed to deserialize IndexMeta, size=%u",
               mt->header.index_meta_size);
