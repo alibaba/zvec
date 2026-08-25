@@ -37,13 +37,17 @@
 > [!Important]
 > 🚀 **v0.7.0 (August 24, 2026)**
 >
-> This release focuses on **DiskANN productionization, Turbo quantization expansion, deployment experience, and API usability**.
+> This release focuses on **ecosystem expansion, DiskANN productionization, index optimization, deployment experience, and API usability**.
 >
+> - **Ecosystem expansion**
+>   - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
+>   - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
 > - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with async I/O overlap and dynamic beam width, all moved into the zvec core lib. On Linux it falls back automatically through io_uring → libaio (dlopen) → pread; macOS uses pread + `F_NOCACHE` — no more manual plugin `.so` handling.
-> - **Turbo quantization framework expanded**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer, plus scalar distance kernels for INT8/INT4/FP16 record quantizers; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
-> - **Deployment experience greatly improved**: Prebuilt dynamic libraries slimmed significantly — on macOS arm64 the C API library drops from 37 MB to 22 MB (**-40%**) and the C++ SDK library from 37 MB to 23 MB (**-37%**), with zero feature loss and core search code still at `-O3`; new **musl libc / Alpine Linux** support; Windows DLL exports trimmed; a new GitHub Release pipeline publishes prebuilt SDK binaries for Linux (x86_64/ARM64, glibc/musl), macOS ARM64, Windows x86_64, Android ARM64, and iOS.
-> - **API usability**: Public C++ APIs unified to **snake_case** (breaking change — please update accordingly when upgrading); new **DocIterator** for full-collection document traversal; `collection.close()` added in Python; HNSW supports building the graph from original vectors via provider.
-> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
+> - **Index optimization**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
+> - **Deployment experience improved**: Prebuilt dynamic libraries slimmed significantly (macOS arm64 C API library 37→22 MB, **-40%**); new **musl libc / Alpine Linux** support; prebuilt SDK binaries for Linux (glibc/musl), macOS, Windows, Android, and iOS published with every release.
+> - **API usability**
+>   - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
+>   - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
 >
 > 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
@@ -67,6 +71,8 @@ Zvec offers official SDKs across multiple languages:
 - **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
 - **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust`
 - **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
+
+Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
