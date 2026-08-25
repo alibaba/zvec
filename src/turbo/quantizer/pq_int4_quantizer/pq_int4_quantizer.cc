@@ -41,6 +41,57 @@ struct PqInt4SerPayload {
   uint8_t reserved[2];
 };
 
+int PqInt4Quantizer::setup_functions() {
+  const QuantizeType input_quantize_type = input_data_type_ == DataType::kFp16
+                                               ? QuantizeType::kFp16
+                                               : QuantizeType::kFp32;
+
+  // Dispatch ISA kernels for the int4 (nibble-packed, 16-centroid) layout.
+  auto pq_k = get_pq_kernels(DataType::kInt4);
+  adc_fn_ = pq_k.asymmetric_distance;
+  sdc_fn_ = pq_k.symmetric_distance;
+  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
+
+  // L2-only batch distance for encoding and KMeans training: the PQ codebook
+  // is trained in L2 space regardless of the search metric.
+  l2_batch_fn_ =
+      get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
+                              input_quantize_type, CpuArchType::kAuto);
+
+  // Inner-product batch distance for the precomputed residual tables.  The
+  // table terms are pure inner products regardless of the search metric.
+  ip_batch_fn_ =
+      get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
+                              input_quantize_type, CpuArchType::kAuto);
+
+  // The search LUT always reuses one of the two kernels above, so no third
+  // dispatch is needed: Cosine = normalize + L2 is monotonic with
+  // squared-Euclidean after normalization, and only InnerProduct needs the IP
+  // kernel.  Metrics with no registered kernel leave batch_fn_ empty and are
+  // rejected by the check below.
+  switch (metric_from_name(meta_.metric_name())) {
+    case MetricType::kInnerProduct:
+      batch_fn_ = ip_batch_fn_;
+      break;
+    case MetricType::kSquaredEuclidean:
+      batch_fn_ = l2_batch_fn_;
+      break;
+    case MetricType::kCosine:
+      batch_fn_ = l2_batch_fn_;
+      extra_meta_size_ = kExtraMetaSizeCosine;
+      break;
+    case MetricType::kMipsSquaredEuclidean:
+    case MetricType::kUnknown:
+      break;
+  }
+
+  if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ ||
+      !ip_batch_fn_ || !batch_fn_) {
+    return kErrUnsupported;
+  }
+  return 0;
+}
+
 int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_ = meta;
 
@@ -52,9 +103,6 @@ int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   } else {
     return kErrUnsupported;
   }
-  const QuantizeType input_quantize_type = input_data_type_ == DataType::kFp16
-                                               ? QuantizeType::kFp16
-                                               : QuantizeType::kFp32;
 
   uint32_t d = meta.dimension();
   original_dim_ = d;
@@ -75,47 +123,8 @@ int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   centroids_.resize(static_cast<size_t>(num_chunk_) * kNumCentroids * sub_dim_ *
                     element_size());
 
-  // Dispatch ISA kernels for the int4 (nibble-packed, 16-centroid) layout.
-  auto pq_k = get_pq_kernels(DataType::kInt4);
-  adc_fn_ = pq_k.asymmetric_distance;
-  sdc_fn_ = pq_k.symmetric_distance;
-  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
-
-  // Resolve the configured metric type (local only — not stored).
-  auto mt = metric_from_name(meta_.metric_name());
-
-  // L2-only batch distance for encoding and KMeans training: the PQ codebook
-  // is trained in L2 space regardless of the search metric.
-  l2_batch_fn_ =
-      get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                              input_quantize_type, CpuArchType::kAuto);
-
-  // Inner-product batch distance for the precomputed residual tables.  The
-  // table terms are pure inner products regardless of the search metric.
-  ip_batch_fn_ =
-      get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
-                              input_quantize_type, CpuArchType::kAuto);
-
-  // The search LUT always reuses one of the two kernels above, so no third
-  // dispatch is needed: Cosine = normalize + L2 is monotonic with
-  // squared-Euclidean after normalization, and only InnerProduct needs the IP
-  // kernel.  Metrics with no registered kernel leave batch_fn_ empty, which is
-  // what get_batch_distance_func() returned for them before.
-  switch (mt) {
-    case MetricType::kInnerProduct:
-      batch_fn_ = ip_batch_fn_;
-      break;
-    case MetricType::kSquaredEuclidean:
-      batch_fn_ = l2_batch_fn_;
-      break;
-    case MetricType::kCosine:
-      batch_fn_ = l2_batch_fn_;
-      extra_meta_size_ = kExtraMetaSizeCosine;
-      meta_.set_extra_meta_size(extra_meta_size_);
-      break;
-    case MetricType::kMipsSquaredEuclidean:
-    case MetricType::kUnknown:
-      break;
+  if (setup_functions() != 0) {
+    return kErrUnsupported;
   }
 
   // Read optional training params (aligned with multi_chunk_cluster)
@@ -892,7 +901,7 @@ int PqInt4Quantizer::serialize(std::string *out) const {
   QuantizerSerHeader hdr{};
   hdr.magic = kQuantizerMagic;
   hdr.version = kQuantizerSerVersion;
-  hdr.quant_type = static_cast<uint32_t>(QuantizeType::kPQ);
+  hdr.quant_type = static_cast<uint16_t>(QuantizeType::kPQ);
   hdr.dim = original_dim_;
   hdr.metric = static_cast<uint32_t>(metric_from_name(meta_.metric_name()));
   hdr.data_type = static_cast<uint16_t>(DataType::kInt4);
@@ -968,9 +977,6 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
       input_data_type_ != DataType::kFp32) {
     return kErrUnsupported;
   }
-  const QuantizeType input_quantize_type = input_data_type_ == DataType::kFp16
-                                               ? QuantizeType::kFp16
-                                               : QuantizeType::kFp32;
 
   // Restore centroids (raw bytes in original data type).
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
@@ -990,38 +996,9 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
 
-  // Re-dispatch kernels.
-  auto pq_k = get_pq_kernels(DataType::kInt4);
-  adc_fn_ = pq_k.asymmetric_distance;
-  sdc_fn_ = pq_k.symmetric_distance;
-  batch_adc_fn_ = pq_k.batch_asymmetric_distance;
-
-  // L2-only batch distance for encoding (always L2 regardless of metric).
-  l2_batch_fn_ =
-      get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                              input_quantize_type, CpuArchType::kAuto);
-
-  // Inner-product batch distance for the precomputed residual tables.
-  ip_batch_fn_ =
-      get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
-                              input_quantize_type, CpuArchType::kAuto);
-
-  // Search LUT: same selection as init(), reusing the two kernels above.
-  switch (metric_from_name(meta_.metric_name())) {
-    case MetricType::kInnerProduct:
-      batch_fn_ = ip_batch_fn_;
-      break;
-    case MetricType::kSquaredEuclidean:
-      batch_fn_ = l2_batch_fn_;
-      break;
-    case MetricType::kCosine:
-      batch_fn_ = l2_batch_fn_;
-      extra_meta_size_ = kExtraMetaSizeCosine;
-      meta_.set_extra_meta_size(extra_meta_size_);
-      break;
-    case MetricType::kMipsSquaredEuclidean:
-    case MetricType::kUnknown:
-      break;
+  // Re-dispatch kernels and batch distance functions.
+  if (setup_functions() != 0) {
+    return kErrUnsupported;
   }
 
   // Set output meta: the quantized representation is INT4 codes with

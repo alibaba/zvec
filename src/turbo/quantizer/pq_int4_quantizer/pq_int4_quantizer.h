@@ -168,6 +168,12 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! Called after train() and deserialize() when centroids are available.
   void build_centroid_ptrs_cache();
 
+  //! Re-dispatch kernels and batch distance functions (init/deserialize).
+  //! Yields kErrUnsupported if any of them is unavailable for the configured
+  //! metric / data type.  Sets extra_meta_size_ but leaves pushing it into
+  //! meta_ to the caller.
+  int setup_functions();
+
   //! Byte size of one element in the original data type.
   uint32_t element_size() const {
     return (input_data_type_ == DataType::kFp16)

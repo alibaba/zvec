@@ -109,6 +109,20 @@ TEST(PqInt4Quantizer, InitInvalidParams) {
   Params params;
   params.set("num_chunk", static_cast<uint32_t>(0));
   EXPECT_NE(0, q2->init(meta, params));
+
+  // A metric with no registered batch kernel must be rejected up front rather
+  // than leaving batch_fn_ empty for train() to trip over: only
+  // SquaredEuclidean, Cosine and InnerProduct are dispatchable here.
+  Params good_params;
+  good_params.set("num_chunk", static_cast<uint32_t>(4));
+  for (const char *metric : {"MipsSquaredEuclidean", "NoSuchMetric"}) {
+    auto q3 = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+    ASSERT_TRUE(q3);
+    IndexMeta bad_meta;
+    bad_meta.set_meta(IndexMeta::DataType::DT_FP32, 16);
+    bad_meta.set_metric(metric, 0, Params());
+    EXPECT_NE(0, q3->init(bad_meta, good_params)) << "metric=" << metric;
+  }
 }
 
 TEST(PqInt4Quantizer, TrainAndEncode) {

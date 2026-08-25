@@ -43,7 +43,7 @@ struct PqFastSerPayload {
   uint8_t reserved[2];
 };
 
-void PqFastQuantizer::setup_functions() {
+int PqFastQuantizer::setup_functions() {
   const QuantizeType input_quantize_type = input_data_type_ == DataType::kFp16
                                                ? QuantizeType::kFp16
                                                : QuantizeType::kFp32;
@@ -86,6 +86,14 @@ void PqFastQuantizer::setup_functions() {
     case MetricType::kUnknown:
       break;
   }
+
+  // Only these four matter: kPQFast deliberately leaves asymmetric_distance /
+  // symmetric_distance / batch_asymmetric_distance null, since the packed
+  // block scan is its sole read path.
+  if (!scan_fn_ || !l2_batch_fn_ || !ip_batch_fn_ || !batch_fn_) {
+    return kErrUnsupported;
+  }
+  return 0;
 }
 
 int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
@@ -127,7 +135,9 @@ int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   centroids_.resize(static_cast<size_t>(num_chunk_) * kNumCentroids * sub_dim_ *
                     element_size());
 
-  setup_functions();
+  if (setup_functions() != 0) {
+    return kErrUnsupported;
+  }
 
   // Read optional training params (aligned with multi_chunk_cluster)
   params.get("thread_count", &thread_count_);
@@ -862,7 +872,7 @@ int PqFastQuantizer::serialize(std::string *out) const {
   QuantizerSerHeader hdr{};
   hdr.magic = kQuantizerMagic;
   hdr.version = kQuantizerSerVersion;
-  hdr.quant_type = static_cast<uint32_t>(QuantizeType::kPQFast);
+  hdr.quant_type = static_cast<uint16_t>(QuantizeType::kPQFast);
   hdr.dim = original_dim_;
   hdr.metric = static_cast<uint32_t>(metric_from_name(meta_.metric_name()));
   hdr.data_type = static_cast<uint16_t>(DataType::kInt4);
@@ -942,7 +952,9 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
   }
 
   // Re-dispatch kernels and batch distance functions.
-  setup_functions();
+  if (setup_functions() != 0) {
+    return kErrUnsupported;
+  }
 
   // Set output meta: the quantized representation is INT4 codes
   // (+ extra_meta_size_ for Cosine norm storage).

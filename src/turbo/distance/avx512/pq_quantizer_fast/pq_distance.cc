@@ -40,12 +40,16 @@ inline __m256i widen_lane_sum(__m256i s) {
       _mm256_cvtepu16_epi32(_mm256_extracti128_si256(s, 1)));
 }
 
-// Widen a uint16 partial sum holding FOUR 128-bit lanes (two sub-quantizer
-// pairs) into one int32 accumulator: every group of four lanes contributes
-// to the same 8 vectors, so they are all added together.
+// Widen a uint16 partial sum into int32. All FOUR 128-bit lanes of `s` hold the
+// same 8 vectors -- one lane per sub-quantizer -- and all four are read, so the
+// merge is the sum over sub-quantizers. It is only pairwise though: lanes 0 + 1
+// land in the low half and lanes 2 + 3 in the high half, leaving every vector
+// present twice; the caller folds the halves once at the very end rather than
+// on every spill.
 inline __m512i widen_quad_sum(__m512i s) {
   __m256i w_lo = widen_lane_sum(_mm512_extracti64x4_epi64(s, 0));
   __m256i w_hi = widen_lane_sum(_mm512_extracti64x4_epi64(s, 1));
+  // cast (not zext) is fine here: inserti64x4 overwrites the upper half.
   return _mm512_inserti64x4(_mm512_castsi256_si512(w_lo), w_hi, 1);
 }
 
@@ -56,9 +60,12 @@ void pq_adc_fast_scan_avx512(const void *packed_codes_v,
                              const void *packed_lut_v, size_t num_chunk,
                              int32_t *accu32) {
 #if defined(__AVX512BW__)
-  // Pairs of sub-quantizers between two int32 spills. Each u16 slot gains at
-  // most 2 * 255 per pair (two lanes), so 128 pairs stays well below 65535
-  // whether pairs arrive one (32B step) or two (64B step) at a time.
+  // Loop iterations between two int32 spills. A pair's two sub-quantizers land
+  // in different 128-bit lanes, hence different u16 slots, so a slot gains at
+  // most 255 per iteration however many pairs it consumed (one for the 32B
+  // step, two for the 64B step): 128 * 255 = 32640, half of 65535. The 4-way
+  // step makes the period 512 sub-quantizers here, vs 256 for AVX2 and 128
+  // for NEON.
   constexpr size_t kSpillPeriod = 128;
   const auto *packed_codes = reinterpret_cast<const uint8_t *>(packed_codes_v);
   const auto *packed_lut = reinterpret_cast<const uint8_t *>(packed_lut_v);
@@ -68,7 +75,8 @@ void pq_adc_fast_scan_avx512(const void *packed_codes_v,
   const __m512i u16_mask = _mm512_set1_epi16(0x00FF);
 
   // int32 accumulators, one 64-byte register per contiguous group of 8
-  // vectors; each 128-bit lane is the merge of one sub-quantizer's partials.
+  // vectors. 16 int32 slots for 8 vectors: widen_quad_sum keeps each vector's
+  // total split across the two 256-bit halves until the final fold.
   __m512i acc_a = _mm512_setzero_si512();  // vectors  0..7
   __m512i acc_b = _mm512_setzero_si512();  // vectors 16..23
   __m512i acc_c = _mm512_setzero_si512();  // vectors  8..15
@@ -94,10 +102,9 @@ void pq_adc_fast_scan_avx512(const void *packed_codes_v,
   };
 
   size_t m = 0;
-  // The packing contract (fast_scan_common.h) pads an odd num_chunk to an
-  // even count only, so a single leading pair may remain once the 4-way
-  // loop is done; process it with plain 32-byte steps like the AVX2 kernel.
-  // Main loop: two sub-quantizer pairs (four lanes) per iteration.
+  // Main loop: two sub-quantizer pairs (four lanes) per iteration. Spelled
+  // `m + 4 <=` rather than `m < nsq_even - 4` because nsq_even can be 2 and
+  // the subtraction would wrap.
   for (; m + 4 <= nsq_even; m += 4) {
     // Lane i = sub-quantizer m + i, for both the codes and the LUT:
     // _mm512_shuffle_epi8 looks up each 128-bit lane independently.
@@ -125,7 +132,9 @@ void pq_adc_fast_scan_avx512(const void *packed_codes_v,
       spill();
     }
   }
-  // Leading / trailing single pair: same pair-per-iteration body, 32B loads.
+  // The packing contract (fast_scan_common.h) pads an odd num_chunk to an even
+  // count only, so nsq_even may be 2 mod 4 and leave one trailing pair. Runs at
+  // most once; same body as above with 32-byte loads, like the AVX2 kernel.
   for (; m < nsq_even; m += 2) {
     __m256i codes = _mm256_loadu_si256(
         reinterpret_cast<const __m256i *>(packed_codes + m * 16));
@@ -137,15 +146,14 @@ void pq_adc_fast_scan_avx512(const void *packed_codes_v,
     __m256i hi = _mm256_and_si256(_mm256_srli_epi16(codes, 4), low_mask256);
     __m256i r0 = _mm256_shuffle_epi8(table, lo);
     __m256i r1 = _mm256_shuffle_epi8(table, hi);
-    // Two of the four lanes stay zero; widen_quad_sum still merges correctly.
     s_a = _mm512_add_epi16(
-        s_a, _mm512_castsi256_si512(_mm256_and_si256(r0, u16_mask256)));
+        s_a, _mm512_zextsi256_si512(_mm256_and_si256(r0, u16_mask256)));
     s_b =
-        _mm512_add_epi16(s_b, _mm512_castsi256_si512(_mm256_srli_epi16(r0, 8)));
+        _mm512_add_epi16(s_b, _mm512_zextsi256_si512(_mm256_srli_epi16(r0, 8)));
     s_c = _mm512_add_epi16(
-        s_c, _mm512_castsi256_si512(_mm256_and_si256(r1, u16_mask256)));
+        s_c, _mm512_zextsi256_si512(_mm256_and_si256(r1, u16_mask256)));
     s_d =
-        _mm512_add_epi16(s_d, _mm512_castsi256_si512(_mm256_srli_epi16(r1, 8)));
+        _mm512_add_epi16(s_d, _mm512_zextsi256_si512(_mm256_srli_epi16(r1, 8)));
     if (++pending == kSpillPeriod) {
       spill();
     }
@@ -154,10 +162,12 @@ void pq_adc_fast_scan_avx512(const void *packed_codes_v,
   // Flush the trailing partials.
   spill();
 
-  // Sum the four lanes of each accumulator: vector v appears in lane v / 8
-  // exactly once, so lane 0 + lane 1 + lane 2 + lane 3 holds its total in
-  // the lane holding its group. Store in group order a, c, b, d (baked into
-  // kFastScanMapper), matching the AVX2 kernel.
+  // Fold each accumulator's two 256-bit halves: they hold the same 8 vectors
+  // summed over disjoint sub-quantizer subsets (see widen_quad_sum), so adding
+  // them completes each vector's total. This must stay a 256-bit fold --
+  // summing the four 128-bit lanes instead would mix vectors 0..3 into 4..7.
+  // Store in group order a, c, b, d (baked into kFastScanMapper), matching the
+  // AVX2 kernel.
   __m256i out_a = _mm256_add_epi32(_mm512_extracti64x4_epi64(acc_a, 0),
                                    _mm512_extracti64x4_epi64(acc_a, 1));
   __m256i out_b = _mm256_add_epi32(_mm512_extracti64x4_epi64(acc_b, 0),

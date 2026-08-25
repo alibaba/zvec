@@ -350,15 +350,18 @@ TEST(PqFastScanKernel, DispatchedMatchesScalarOddChunk) {
 }
 
 TEST(PqFastScanKernel, DispatchedMatchesScalarLargeChunk) {
-  // > 256 sub-spaces exercises the u16 -> int32 spill path of the AVX2
-  // kernel (accumulation would overflow u16 otherwise).
+  // The u16 -> int32 spill period differs per kernel: 128 sub-quantizers for
+  // NEON, 256 for AVX2 (one pair per iteration), 512 for AVX512 (two pairs).
+  // 300 covers the first two; 513 covers AVX512 and, being 2 mod 4 once padded,
+  // also lands a trailing pair after a spill has reset the u16 sums.
   check_kernel_equivalence(300, 7);
+  check_kernel_equivalence(513, 8);
 }
 
 // Direct ISA coverage: call every implementation even when dispatch would
-// not pick it, so each one is proven bit-exact on a capable host. Sizes
-// span even / odd num_chunk, the single-pair tail of the AVX512 quad loop
-// and the u16 spill period.
+// not pick it, so each one is proven bit-exact on a capable host. Sizes span
+// even / odd num_chunk, the single-pair tail of the AVX512 quad loop, and the
+// u16 spill period of every kernel (the highest being AVX512's, 512).
 static void check_kernel_all_sizes(zvec::turbo::CodebookFastScanFunc fn,
                                    uint32_t seed) {
   check_kernel_equivalence_fn(fn, 8, seed);
@@ -368,6 +371,7 @@ static void check_kernel_all_sizes(zvec::turbo::CodebookFastScanFunc fn,
   check_kernel_equivalence_fn(fn, 7, seed + 4);
   check_kernel_equivalence_fn(fn, 33, seed + 5);
   check_kernel_equivalence_fn(fn, 300, seed + 6);
+  check_kernel_equivalence_fn(fn, 513, seed + 7);
 }
 
 TEST(PqFastScanKernel, Avx2MatchesScalar) {

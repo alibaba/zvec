@@ -144,16 +144,16 @@ enum class DataType {
 
 enum class QuantizeType {
   // Explicit values: type ids are persisted in serialized headers
-  // (QuantizerSerHeader.quant_type); 0 was the retired kDefault.
+  // (QuantizerSerHeader.quant_type); 0 was the retired kDefault.  Never
+  // renumber an existing id -- append new types with the next free value.
   kUniform = 1,  // Uniform uint7: codes are restricted to [0, 127].
-  kRecord,
-  kFp16,
-  kFp32,
-  kPQ,
-  kRabit,
-  kPQFast,        //!< 4-bit PQ with FastScan (packed codes + SIMD in-register
-                  //!< LUT)
-  kUniformUint8,  // Uniform uint8: codes cover the full [0, 255] range.
+  kRecord = 2,
+  kFp16 = 3,
+  kFp32 = 4,
+  kPQ = 5,
+  kRabit = 6,
+  kUniformUint8 = 7,  // Uniform uint8: codes cover the full [0, 255] range.
+  kPQFast = 8,        // 4-bit PQ with FastScan (packed codes + SIMD)
 };
 
 enum class RotateType : uint16_t {

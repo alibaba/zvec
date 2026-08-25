@@ -209,7 +209,9 @@ class PqFastQuantizer : public Quantizer,
   void build_centroid_ptrs_cache();
 
   //! Re-dispatch kernels and batch distance functions (init/deserialize).
-  void setup_functions();
+  //! Yields kErrUnsupported if any of them is unavailable for the configured
+  //! metric / data type.
+  int setup_functions();
 
   //! Byte size of one element in the original data type.
   uint32_t element_size() const {
