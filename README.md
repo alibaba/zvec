@@ -37,17 +37,13 @@
 > [!Important]
 > 🚀 **v0.7.0 (August 24, 2026)**
 >
-> This release focuses on **ecosystem expansion, DiskANN productionization, index optimization, deployment experience, and API usability**.
->
-> - **Ecosystem expansion**
->   - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
->   - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
-> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with async I/O overlap and dynamic beam width, all moved into the zvec core lib. On Linux it falls back automatically through io_uring → libaio (dlopen) → pread; macOS uses pread + `F_NOCACHE` — no more manual plugin `.so` handling.
+> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
+> - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
+> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with automatic fallback to the best available I/O option — no user intervention needed.
 > - **Index optimization**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
 > - **Deployment experience improved**: Prebuilt dynamic libraries slimmed significantly (macOS arm64 C API library 37→22 MB, **-40%**); new **musl libc / Alpine Linux** support; prebuilt SDK binaries for Linux (glibc/musl), macOS, Windows, Android, and iOS published with every release.
-> - **API usability**
->   - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
->   - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
+> - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
+> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
 >
 > 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 

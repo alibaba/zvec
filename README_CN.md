@@ -37,17 +37,13 @@
 > [!IMPORTANT]
 > 🚀  **v0.7.0（2026 年 8 月 24 日）**
 >
-> 本次主要围绕 **生态扩展、DiskANN 生产化、索引优化、部署体验优化与 API 易用性** 做了一轮升级。
->
-> - **生态扩展**
->   - **[zvec-grep](https://github.com/zvec-ai/zvec-grep)（`zg`）**：本地优先的工作区搜索，一个 CLI 统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
->   - **[ReMe](https://github.com/agentscope-ai/ReMe) 集成**：zvec 成为 ReMe（Agent 记忆管理套件）的文件存储后端，提供进程内 HNSW 向量检索。
-> - **DiskANN 生产化**：新增 **Linux ARM64 / macOS ARM64** 支持，新增 **io_uring** 异步 I/O 后端，支持异步 I/O 重叠与动态 beam 宽度，并整体并入 zvec core lib。Linux 上按 io_uring → libaio（动态加载）→ pread 自动回退，macOS 使用 pread + `F_NOCACHE`，无需再手动处理插件 `.so`。
+> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep)（`zg`）**：本地优先的工作区搜索，一个 CLI 统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
+> - **[ReMe](https://github.com/agentscope-ai/ReMe) 集成**：zvec 成为 ReMe（Agent 记忆管理套件）的文件存储后端，提供进程内 HNSW 向量检索。
+> - **DiskANN 生产化**：新增 **Linux ARM64 / macOS ARM64** 支持与 **io_uring** 异步 I/O 后端，自动回退到最优 I/O 方案，用户无需任何配置。
 > - **索引优化**：新增 **IVF-RaBitQ** 索引、**PQ-INT8** 量化器；RaBitQ 支持运行时 **AVX2 / AVX512** 指令集动态分发，同一套二进制可在不同 CPU 上自动选择最优路径。
 > - **部署体验优化**：动态库大幅瘦身（macOS arm64 C API 库 37→22 MB，**-40%**）；新增 **musl libc / Alpine Linux** 支持；每次发布自动提供 Linux（glibc/musl）、macOS、Windows、Android、iOS 的预编译 SDK。
-> - **API 易用性**
->   - **DocIterator**：新增全集合文档流式遍历迭代器，覆盖 C++、C、Python。
->   - **全文检索**：新增 **N-gram 分词器**，更适合短语、代码、短文本等检索场景。
+> - **DocIterator**：新增全集合文档流式遍历迭代器，覆盖 C++、C、Python。
+> - **全文检索**：新增 **N-gram 分词器**，更适合短语、代码、短文本等检索场景。
 >
 > 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
