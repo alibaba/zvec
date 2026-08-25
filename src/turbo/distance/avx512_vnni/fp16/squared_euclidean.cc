@@ -15,11 +15,10 @@
 #include "avx512_vnni/fp16/squared_euclidean.h"
 #include <algorithm>
 #include <cstdint>
+#include <zvec/ailego/utility/float_helper.h>
 #if (defined(__AVX512F__) && defined(__AVX512DQ__) && defined(__F16C__)) || \
     (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
-#else
-#include <zvec/ailego/utility/float_helper.h>
 #endif
 
 namespace zvec::turbo::avx512_vnni {
@@ -39,7 +38,7 @@ inline float Reduce(__m512 value) {
 }
 
 inline float HalfToFloat(uint16_t value) {
-  return _cvtsh_ss(value);
+  return ailego::FloatHelper::ToFP32(value);
 }
 
 template <size_t Batch>
