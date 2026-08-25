@@ -294,8 +294,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     const void *vector_data = iterator->data();
     if (!vector_data) {
       LOG_ERROR("Failed to read source vector, index=%zu key=%zu",
-                source_streamer_index,
-                static_cast<size_t>(iterator->key()));
+                source_streamer_index, static_cast<size_t>(iterator->key()));
       return IndexError_ReadData;
     }
 
