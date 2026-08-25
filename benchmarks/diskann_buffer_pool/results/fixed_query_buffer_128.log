@@ -1,0 +1,22 @@
+[ INFO 2026-08-07 06:43:30 140737476279168 block_eviction_queue.cc:307] Shared cache initialized with capacity: 134217728
+{"event": "process_ready", "machine": "x86_64", "memory": {"RssAnon": 61702144, "RssFile": 32661504, "VmHWM": 94363648, "VmRSS": 94363648, "VmSize": 916439040, "major_faults": 358, "minor_faults": 17156, "read_bytes": 51822592, "syscr": 580, "syscw": 2, "write_bytes": 4096}, "memory_budget_mb": 128, "mode": "buffer_pool", "monotonic_ns": 680467389795, "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39"}
+[ INFO 2026-08-07 06:43:30 140737476279168 id_map.cc:45] Opened IDMap[/data/formal_buffer_160k/idmap.0]
+[ INFO 2026-08-07 06:43:30 140737476279168 delete_store.h:78] Opened delete store, count[0]
+[ INFO 2026-08-07 06:43:30 140737476279168 bufferpool_forward_store.cc:77] Opened Parquet with 160000 rows, 3 cols, 1 row groups
+[ INFO 2026-08-07 06:43:30 140737476279168 segment.cc:3973] No scalar index found
+[ INFO 2026-08-07 06:43:30 140737476279168 diskann_builder.cc:33] Begin DiskAnnBuilder::init
+[ INFO 2026-08-07 06:43:30 140737476279168 diskann_file_reader.cc:54] DiskAnn: I/O backend 'libaio' loaded — async I/O enabled.
+[ INFO 2026-08-07 06:43:30 140737476279168 diskann_streamer.cc:50] DiskAnnStreamer::load Begin
+[ INFO 2026-08-07 06:43:30 140737476279168 diskann_indexer.cc:114] Loading centroid data from medoid vector data
+[ INFO 2026-08-07 06:43:30 140737476279168 diskann_streamer.cc:104] DiskAnnStreamer::load Done
+[ INFO 2026-08-07 06:43:30 140737476279168 segment.cc:3973] No scalar index found
+[ INFO 2026-08-07 06:43:30 140737476279168 segment.cc:4213] WAL recovery skipped: no WAL file exists [/data/formal_buffer_160k/1/0.wal]
+{"elapsed_seconds": 0.12891794899996967, "event": "open_done", "memory": {"RssAnon": 121188352, "RssFile": 40050688, "VmHWM": 161239040, "VmRSS": 161239040, "VmSize": 3593523200, "major_faults": 424, "minor_faults": 36007, "read_bytes": 75882496, "syscr": 2062, "syscw": 42, "write_bytes": 4096}, "mode": "buffer_pool", "monotonic_ns": 680597533443, "peak_rss": 161234944, "persisted_enable_mmap": false}
+{"event": "first_pass_done", "memory": {"RssAnon": 251580416, "RssFile": 45592576, "VmHWM": 297172992, "VmRSS": 297172992, "VmSize": 3717464064, "major_faults": 478, "minor_faults": 68915, "read_bytes": 141938688, "syscr": 2305, "syscw": 43, "write_bytes": 4096}, "metrics": {"max_ms": 112.9261, "mean_ms": 2.96254474, "p50_ms": 2.4077125, "p95_ms": 3.4568364000000007, "p99_ms": 11.975584499999988, "qps": 334.2389865485619, "queries": 300, "self_recall_at_k": 0.9133333333333333, "wall_seconds": 0.8975613619999194}, "mode": "buffer_pool", "monotonic_ns": 681497472998, "peak_rss": 297172992}
+{"event": "steady_pass_done", "memory": {"RssAnon": 252764160, "RssFile": 45592576, "VmHWM": 298356736, "VmRSS": 298356736, "VmSize": 3718713344, "major_faults": 478, "minor_faults": 69213, "read_bytes": 141938688, "syscr": 2599, "syscw": 44, "write_bytes": 4096}, "metrics": {"max_ms": 1.492281, "mean_ms": 0.6325617846666667, "p50_ms": 0.6082875, "p95_ms": 0.80913635, "p99_ms": 1.0382058299999999, "qps": 1541.516378068951, "queries": 1500, "self_recall_at_k": 0.9133333333333333, "wall_seconds": 0.9730678319999697}, "mode": "buffer_pool", "monotonic_ns": 682473833641, "peak_rss": 298356736, "result_fingerprint": "f5c9fc4583025ab0d5277ccfa9c6d36690703a7c61dc18f688143313be871e56"}
+[ INFO 2026-08-07 06:43:32 140737476279168 diskann_streamer.cc:42] Begin DiskAnnStreamer:cleanup
+[ INFO 2026-08-07 06:43:32 140737476279168 diskann_streamer.cc:44] End DiskAnnStreamer:cleanup
+[ INFO 2026-08-07 06:43:32 140737476279168 id_map.cc:74] Closed IDMap[/data/formal_buffer_160k/idmap.0]
+[ INFO 2026-08-07 06:43:32 140737476279168 delete_store.h:35] Closed delete store
+{"event": "query_done", "memory": {"RssAnon": 248889344, "RssFile": 45572096, "VmHWM": 297623552, "VmRSS": 294461440, "VmSize": 3709587456, "major_faults": 478, "minor_faults": 71110, "read_bytes": 141950976, "syscr": 2605, "syscw": 49, "write_bytes": 4096}, "mode": "buffer_pool", "monotonic_ns": 682485186442, "rusage": {"major_faults": 478, "max_rss_kib": 290648, "minor_faults": 71108, "system_seconds": 0.311338, "user_seconds": 3.816175}}
+[ INFO 2026-08-07 06:43:32 140737476279168 vector_page_table.cc:1864] VecBufferPool stats: file[/data/formal_buffer_160k/0/embedding.index.3.proxima] hit=187200 miss=17496 hit_rate=0.9145 evict=0 second_chance=0 dirty_flush=0 bypass_reads=0 bypass_bytes=0

@@ -35,7 +35,7 @@ The optional arguments after the measurement duration are:
 
 ```text
 [none|sequential] [ACTIVE_QUERIES] [VALIDATE_QUERIES]
-[cyclic|hot90] [HOT_QUERIES]
+[cyclic|centroid80|zipf1|hot90|semantic80] [HOT_QUERIES]
 ```
 
 For example, this runs a 90/10 workload where 90% of requests use five hot
@@ -50,9 +50,38 @@ build/bin/ivf_storage_bench \
   buffer 1024 16 16 10 15 none 1000 0 hot90 5
 ```
 
-The benchmark also validates all 1,000 queries before measurement. mmap and
-BufferReadStorage produced the same top-10 key-and-score checksum at nprobe 16:
-`11931954759916436377`.
+`hot90` is an exact-repeat best case, not the recommended production model.
+The primary no-log model is `centroid80`: it deterministically selects 20% of
+the IVF centroid domain and sends 80% of requests to queries assigned there.
+The benchmark reports the actual share of probes handled by the busiest 20%
+of centroids:
+
+```sh
+build/bin/ivf_storage_bench \
+  benchmarks/ivf_buffer_pool/cohere_1m_ivf_fp32_1024.index \
+  /Users/ali.yzf/cohere_test_vector_1000.new.txt \
+  buffer 256 4 4 10 15 none 1000 0 centroid80 1000
+```
+
+Run the complete four-workload × storage-budget matrix serially (one fresh
+process per point, so mmap and Buffer pools never overlap in memory):
+
+```sh
+python benchmarks/ivf_buffer_pool/run_workload_matrix.py \
+  --binary build/bin/ivf_storage_bench \
+  --index benchmarks/ivf_buffer_pool/cohere_1m_ivf_fp32_1024.index \
+  --queries /path/to/cohere_test_vector_1000.new.txt \
+  --output-dir /tmp/ivf-buffer-matrix
+```
+
+The runner defaults to three runs per point. `matrix_summary.csv` reports
+median QPS/P99/RSS, QPS variance, and QPS/GiB relative to mmap.
+
+Before publishing a curve, run one separate correctness invocation per storage
+mode with `VALIDATE_QUERIES=1000`. mmap and BufferReadStorage produced the same
+top-10 key-and-score checksum at nprobe 16: `11931954759916436377`. The matrix
+runner intentionally sets validation to zero so correctness reads cannot warm
+the timed cache.
 
 ## Resident scatter-read result
 
@@ -67,7 +96,51 @@ The follow-up full-cache curve is in
 within 1.8%–12.8% of mmap and improves by 54.6%–71.3% over the previous Buffer
 implementation. All cache miss, eviction, and bypass counters remained zero.
 
-## Memory-constrained result
+## Four memory-constrained workload curves
+
+The corrected comparison uses four workloads, four query threads, `nprobe=4`,
+a ten-second warmup, and a fifteen-second measurement. Buffer uses direct I/O
+and one benchmark process at a time. Raw results are in
+`cohere_1m_ivf_fp32_four_workloads.csv`.
+
+- `uniform unique`: all 1,000 queries cyclically, the no-hotspot lower bound.
+- `centroid80`: deterministically selects 20% of the 1,024 primary-centroid
+  domain as hot, then sends 80% of requests to queries assigned there. The
+  selected domain contains 88 active centroids and 206 queries.
+- `zipf1`: all 1,000 unique queries sampled with Zipf alpha 1.0.
+- `hot90`: 90% of requests repeat five exact queries, the extreme upper bound.
+
+| Workload | Busiest 20% of all centroids | Buffer 256 MiB | Buffer 512 MiB | Buffer 1 GiB | mmap |
+|---|---:|---:|---:|---:|---:|
+| Uniform unique | 64.0% | 150 QPS | 88 QPS | 90 QPS | 1429 QPS |
+| 80/20 centroid skew | 74.1% | 319 QPS | 400 QPS | 464 QPS | 1768 QPS |
+| Zipf alpha 1.0 | 82.9% | 388 QPS | 440 QPS | 509 QPS | 1758 QPS |
+| 90/10 exact repeat | 96.4% | 756 QPS | 881 QPS | 999 QPS | 2077 QPS |
+
+At 256 MiB, Buffer QPS/GiB relative to mmap is 0.98x for Uniform, 1.72x for
+centroid80, 2.06x for Zipf, and 3.40x for exact repeat. This brackets the
+product honestly: Buffer needs posting-list locality to improve throughput
+density. The recommended centroid80 result is the main evidence; exact repeat
+is only an upper bound.
+
+For centroid80, increasing the pool from 256 to 512 MiB improves QPS by 25.5%
+and P99 from 46.8 to 30.4 ms. Increasing it again to 1 GiB improves QPS by
+15.8% and P99 to 24.9 ms, but QPS/GiB falls below mmap. The useful operating
+point on this machine is therefore 256--512 MiB, depending on the latency SLO.
+
+Uniform is deliberately unfavorable and non-monotonic: its 512-MiB point was
+repeated at 72 and 88 QPS. With no reuse, admitting random pages can cost more
+than rejecting them and using contiguous bypass reads. Do not infer that a
+larger Pool always improves throughput.
+
+## Historical memory-constrained result
+
+The older `hot90` rows below used five exact hot queries. They also used a
+correlated random sampler: the same random value selected the hot/tail branch
+and the query within that branch. That restricted the reachable query set and
+overstated locality. The sampler is now fixed and the corrected curve is
+reported above, but the old rows below must not be used as product evidence.
+Uniform, full-cache, and correctness rows are unaffected by that sampling bug.
 
 The raw capacity curves are in
 `cohere_1m_ivf_fp32_memory_constrained.csv`. These runs use one benchmark
@@ -81,11 +154,10 @@ top-10 key-and-score checksum (`7259331970886160525`) for a 256-MiB Buffer pool
 and mmap. It is kept outside the timed curve so validation reads do not warm
 the measured cache state.
 
-Three workloads intentionally cover both favorable and unfavorable cases:
+The historical file contains these workloads:
 
-- `hot90`: 90% of requests use five queries and 10% use the remaining 995.
-  This models a skewed production workload whose hot posting lists can be
-  reused while the tail remains much larger than the pool.
+- `hot90`: legacy exact-repeat best case; its old rows are invalid because of
+  the correlated sampler described above.
 - `uniform`: all 1,000 queries are issued cyclically. This is the adversarial
   no-locality case and defines the lower bound for a cache.
 - Full-cache points use sequential storage warmup and define the Buffer
@@ -105,12 +177,8 @@ Three workloads intentionally cover both favorable and unfavorable cases:
 | uniform, nprobe 16 | Buffer full cache | 3072 MiB | 644.9 | 61.0 ms | 3058 MiB | 215.9 |
 | uniform, nprobe 16 | mmap | OS managed | 722.8 | 54.5 ms | 2952 MiB | 250.8 |
 
-The strongest Buffer result is throughput density under a strict memory
-budget, not maximum raw QPS. At `nprobe=4`, the 256-MiB pool uses 82.0% less
-peak RSS than mmap and delivers 1.87x its QPS/GiB. At `nprobe=16`, the
-768-MiB pool uses 68.4% less peak RSS and delivers 1.28x mmap QPS/GiB. The
-1,024-MiB point delivers 1.25x mmap QPS/GiB. Capacity beyond that still raises
-raw QPS but has diminishing throughput-per-memory returns.
+The `hot90` ratios in this historical table are retained for audit only and
+are superseded by the corrected four-workload result above.
 
 The uniform curve is the boundary condition: without locality, constrained
 Buffer cannot match mmap throughput and should be selected for predictable RSS
