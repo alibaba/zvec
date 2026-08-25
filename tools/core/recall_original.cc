@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <sys/stat.h>
 #include <signal.h>
-#include <atomic>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
-#include <memory>
 #include <mutex>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/hash/crc32c.h>
@@ -69,54 +67,6 @@ enum RetrievalMode { RM_UNDEFINED = 0, RM_DENSE = 1, RM_SPARSE = 2 };
 
 enum FilterMode { FM_UNDEFINED = 0, FM_NONE = 1, FM_TAG = 2 };
 
-using RecallOutputFiles = vector<pair<fstream *, fstream *>>;
-
-void close_recall_output_files(RecallOutputFiles *files) {
-  for (const auto &fs : *files) {
-    fs.first->close();
-    fs.second->close();
-    delete fs.first;
-    delete fs.second;
-  }
-  files->clear();
-}
-
-bool open_recall_output_files(const string &output, size_t threads,
-                              RecallOutputFiles *files) {
-  if (output.empty()) {
-    return true;
-  }
-
-  std::error_code ec;
-  std::filesystem::create_directories(output, ec);
-  if (ec) {
-    cerr << "Failed to create output directory [" << output
-         << "]: " << ec.message() << endl;
-    return false;
-  }
-  if (!std::filesystem::is_directory(output, ec)) {
-    cerr << "Invalid output directory [" << output
-         << "]: " << (ec ? ec.message() : "path is not a directory") << endl;
-    return false;
-  }
-
-  cout << "logs output to : " << output << endl;
-  for (size_t i = 0; i < threads; ++i) {
-    std::unique_ptr<fstream> fs_k(new fstream());
-    fs_k->open(output + "/t" + to_string(i) + ".knn", ios::out);
-    std::unique_ptr<fstream> fs_l(new fstream());
-    fs_l->open(output + "/t" + to_string(i) + ".linear", ios::out);
-    if (!fs_k->is_open() || !fs_l->is_open()) {
-      cerr << "Failed to open recall output files in [" << output << "]"
-           << endl;
-      close_recall_output_files(files);
-      return false;
-    }
-    files->emplace_back(fs_k.release(), fs_l.release());
-  }
-  return true;
-}
-
 template <typename T>
 class Recall {
  public:
@@ -153,8 +103,7 @@ class Recall {
          << flush;
   }
 
-  bool run_dense(Flow *flower, const string &recall_tops, size_t gt_count) {
-    worker_failed_.store(false, std::memory_order_relaxed);
+  void run_dense(Flow *flower, const string &recall_tops, size_t gt_count) {
     StringHelper::Split(recall_tops, ",", &topk_ids_);
     std::sort(topk_ids_.begin(), topk_ids_.end());
 
@@ -174,7 +123,7 @@ class Recall {
 
       if (!load_gt_dense(flower, gt_count)) {
         cerr << "Load ground truth file failed!" << endl;
-        return false;
+        return;
       }
     }
 
@@ -187,9 +136,25 @@ class Recall {
     }
 
     // Prepare file handler
-    RecallOutputFiles output_fs;
-    if (!open_recall_output_files(output_, threads_, &output_fs)) {
-      return false;
+    vector<pair<fstream *, fstream *>> output_fs;
+    if (!output_.empty()) {
+      string cmd = "mkdir -p " + output_;
+      int ret = system(cmd.c_str());
+      if (ret != 0) {
+        std::cerr << "execute cmd " << cmd << " failed" << std::endl;
+        return;
+      }
+      struct stat sb;
+      if (stat(output_.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        cout << "logs output to : " << output_ << endl;
+        for (size_t i = 0; i < threads_; ++i) {
+          fstream *fs_k = new fstream();
+          fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
+          fstream *fs_l = new fstream();
+          fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
+          output_fs.push_back(make_pair(fs_k, fs_l));
+        }
+      }
     }
 
     signal(SIGINT, stop);
@@ -208,22 +173,17 @@ class Recall {
     }
     pool_->wait_finish();
 
-    close_recall_output_files(&output_fs);
-    if (worker_failed_.load(std::memory_order_relaxed)) {
-      cerr << "Recall failed because one or more query tasks failed" << endl;
-      return false;
-    }
-    if (i != batch_queries_.size()) {
-      cerr << "Recall interrupted before all query tasks were submitted"
-           << endl;
-      return false;
+    for (auto fs : output_fs) {
+      fs.first->close();
+      fs.second->close();
+      delete fs.first;
+      delete fs.second;
     }
     cout << "Process query: " << i << endl;
     for (auto it : recall_res_) {
       cout << "Recall@" << it.first << ": "
            << it.second / linear_queries_.size() << endl;
     }
-    return true;
   }
 
   bool load_query(const std::string &query_file, const std::string &first_sep,
@@ -408,15 +368,13 @@ class Recall {
         Flow::Context::Pointer context = flower->create_context();
         if (!context) {
           cerr << "Failed to create search context" << endl;
-          error.store(true, std::memory_order_relaxed);
           return;
         }
 
         FilterResultCache filter_cache;
         if (filter_mode_ == FM_TAG) {
-          if (i >= batch_taglists_.size() || batch_taglists_[i].size() != 1) {
+          if (batch_taglists_[i].size() != 1) {
             cerr << "query tag list not equal to one!" << endl;
-            error.store(true, std::memory_order_relaxed);
             return;
           }
 
@@ -425,7 +383,7 @@ class Recall {
                                         flower->tag_key_list());
           if (ret != 0) {
             cerr << "prefilter failed, idx: " << i << std::endl;
-            error.store(true, std::memory_order_relaxed);
+
             return;
           }
 
@@ -724,9 +682,6 @@ class Recall {
   void recall_one_dense(
       Flow *flower, size_t topk, size_t index,
       std::vector<pair<std::fstream *, std::fstream *>> &output_fs) {
-    if (worker_failed_.load(std::memory_order_relaxed)) {
-      return;
-    }
     const auto &query = batch_queries_[index];
 
     size_t thread_index = pool_->indexof_this();
@@ -740,7 +695,6 @@ class Recall {
     Flow::Context::Pointer knn_context = flower->create_context();
     if (!knn_context) {
       cerr << "Failed to create search context" << endl;
-      worker_failed_.store(true, std::memory_order_relaxed);
       return;
     }
     knn_context->set_topk(topk);
@@ -851,10 +805,8 @@ class Recall {
     // prefilter
     FilterResultCache filter_cache;
     if (filter_mode_ == FM_TAG) {
-      if (index >= batch_taglists_.size() ||
-          batch_taglists_[index].size() != 1) {
+      if (batch_taglists_[index].size() != 1) {
         cerr << "query tag list not equal to one!" << endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
         return;
       }
 
@@ -863,7 +815,7 @@ class Recall {
                                     flower->tag_key_list());
       if (ret != 0) {
         cerr << "prefilter failed, idx: " << index << std::endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
+
         return;
       }
 
@@ -878,7 +830,6 @@ class Recall {
       if (ret < 0) {
         cerr << "Failed to knn_search batch, ret=" << ret << " "
              << IndexError::What(ret) << endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
         return;
       }
       for (size_t i = 0; i < qnum; ++i) {
@@ -895,7 +846,6 @@ class Recall {
       if (ret < 0) {
         cerr << "Failed to knn_search, ret=" << ret << " "
              << IndexError::What(ret) << endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
         return;
       }
       auto &knn_res = knn_context->result();
@@ -936,7 +886,6 @@ class Recall {
   bool external_gt_file_enabled_{false};
 
   FilterMode filter_mode_{FM_NONE};
-  std::atomic_bool worker_failed_{false};
 
   static bool STOP_NOW;
 };
@@ -1013,9 +962,8 @@ class SparseRecall {
     return 0;
   }
 
-  bool run_sparse(SparseFlow *flower, const string &recall_tops,
+  void run_sparse(SparseFlow *flower, const string &recall_tops,
                   size_t gt_count) {
-    worker_failed_.store(false, std::memory_order_relaxed);
     StringHelper::Split(recall_tops, ",", &topk_ids_);
     std::sort(topk_ids_.begin(), topk_ids_.end());
 
@@ -1035,7 +983,7 @@ class SparseRecall {
 
       if (!load_gt_sparse(flower, gt_count)) {
         cerr << "Load ground truth file failed!" << endl;
-        return false;
+        return;
       }
     }
 
@@ -1048,9 +996,25 @@ class SparseRecall {
     }
 
     // Prepare file handler
-    RecallOutputFiles output_fs;
-    if (!open_recall_output_files(output_, threads_, &output_fs)) {
-      return false;
+    vector<pair<fstream *, fstream *>> output_fs;
+    if (!output_.empty()) {
+      string cmd = "mkdir -p " + output_;
+      int ret = system(cmd.c_str());
+      if (ret != 0) {
+        std::cerr << "execute cmd " << cmd << " failed" << std::endl;
+        return;
+      }
+      struct stat sb;
+      if (stat(output_.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        cout << "logs output to : " << output_ << endl;
+        for (size_t i = 0; i < threads_; ++i) {
+          fstream *fs_k = new fstream();
+          fs_k->open(output_ + "/t" + to_string(i) + ".knn", ios::out);
+          fstream *fs_l = new fstream();
+          fs_l->open(output_ + "/t" + to_string(i) + ".linear", ios::out);
+          output_fs.push_back(make_pair(fs_k, fs_l));
+        }
+      }
     }
 
     signal(SIGINT, stop);
@@ -1069,22 +1033,17 @@ class SparseRecall {
     }
     pool_->wait_finish();
 
-    close_recall_output_files(&output_fs);
-    if (worker_failed_.load(std::memory_order_relaxed)) {
-      cerr << "Recall failed because one or more query tasks failed" << endl;
-      return false;
-    }
-    if (i != batch_sparse_counts_.size()) {
-      cerr << "Recall interrupted before all query tasks were submitted"
-           << endl;
-      return false;
+    for (auto fs : output_fs) {
+      fs.first->close();
+      fs.second->close();
+      delete fs.first;
+      delete fs.second;
     }
     cout << "Process query: " << i << endl;
     for (auto it : recall_res_) {
       cout << "Recall@" << it.first << ": "
            << it.second / linear_queries_.size() << endl;
     }
-    return true;
   }
 
   bool load_query(const std::string &query_file, const std::string &first_sep,
@@ -1192,7 +1151,6 @@ class SparseRecall {
         SparseFlow::Context::Pointer context = flower->create_context();
         if (!context) {
           cerr << "Failed to create search context" << endl;
-          error.store(true, std::memory_order_relaxed);
           return;
         }
 
@@ -1202,9 +1160,8 @@ class SparseRecall {
         // prefilter
         FilterResultCache filter_cache;
         if (filter_mode_ == FM_TAG) {
-          if (i >= batch_taglists_.size() || batch_taglists_[i].size() != 1) {
+          if (batch_taglists_[i].size() != 1) {
             cerr << "query tag list not equal to one!" << endl;
-            error.store(true, std::memory_order_relaxed);
             return;
           }
 
@@ -1213,7 +1170,7 @@ class SparseRecall {
                                         flower->tag_key_list());
           if (ret != 0) {
             cerr << "prefilter failed, idx: " << i << std::endl;
-            error.store(true, std::memory_order_relaxed);
+
             return;
           }
 
@@ -1437,9 +1394,6 @@ class SparseRecall {
   void recall_one_sparse(
       SparseFlow *flower, size_t topk, size_t index,
       std::vector<pair<std::fstream *, std::fstream *>> &output_fs) {
-    if (worker_failed_.load(std::memory_order_relaxed)) {
-      return;
-    }
     const auto &sparse_count = batch_sparse_counts_[index];
     const auto &sparse_index = batch_sparse_indices_[index];
     const auto &sparse_feature = batch_sparse_features_[index];
@@ -1455,7 +1409,6 @@ class SparseRecall {
     SparseFlow::Context::Pointer knn_context = flower->create_context();
     if (!knn_context) {
       cerr << "Failed to create search context" << endl;
-      worker_failed_.store(true, std::memory_order_relaxed);
       return;
     }
     knn_context->set_topk(topk);
@@ -1569,10 +1522,8 @@ class SparseRecall {
 
     FilterResultCache filter_cache;
     if (filter_mode_ == FM_TAG) {
-      if (index >= batch_taglists_.size() ||
-          batch_taglists_[index].size() != 1) {
+      if (batch_taglists_[index].size() != 1) {
         cerr << "query tag list not equal to one!" << endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
         return;
       }
 
@@ -1581,7 +1532,7 @@ class SparseRecall {
                                     flower->tag_key_list());
       if (ret != 0) {
         cerr << "prefilter failed, idx: " << index << std::endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
+
         return;
       }
 
@@ -1591,8 +1542,6 @@ class SparseRecall {
     }
 
     if (call_batch_api_) {
-      cerr << "Sparse batch recall is not supported" << endl;
-      worker_failed_.store(true, std::memory_order_relaxed);
       // size_t qnum = sparse_count.size() / dim_;
       // int ret = do_knn_search<T>(flower, knn_context, sparse_count,
       // sparse_index, sparse_feature, qnum); if (ret < 0) {
@@ -1616,7 +1565,6 @@ class SparseRecall {
       if (ret < 0) {
         cerr << "Failed to sparse_knn_search, ret=" << ret << " "
              << IndexError::What(ret) << endl;
-        worker_failed_.store(true, std::memory_order_relaxed);
         return;
       }
       auto &knn_res = knn_context->result();
@@ -1662,7 +1610,6 @@ class SparseRecall {
   bool external_gt_file_enabled_{false};
 
   FilterMode filter_mode_{FM_NONE};
-  std::atomic_bool worker_failed_{false};
   static bool STOP_NOW;
 };
 
@@ -1765,8 +1712,9 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (!load_index(flower, index_dir) ||
-        !recall.run_dense(&flower, top_k, gt_count)) {
+    if (load_index(flower, index_dir)) {
+      recall.run_dense(&flower, top_k, gt_count);
+    } else {
       return -1;
     }
   } else if (query_type == "int8") {
@@ -1783,8 +1731,9 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (!load_index(flower, index_dir) ||
-        !recall.run_dense(&flower, top_k, gt_count)) {
+    if (load_index(flower, index_dir)) {
+      recall.run_dense(&flower, top_k, gt_count);
+    } else {
       return -1;
     }
   } else if (query_type == "binary") {
@@ -1801,8 +1750,9 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (!load_index(flower, index_dir) ||
-        !recall.run_dense(&flower, top_k, gt_count)) {
+    if (load_index(flower, index_dir)) {
+      recall.run_dense(&flower, top_k, gt_count);
+    } else {
       return -1;
     }
   } else if (query_type == "binary64") {
@@ -1819,13 +1769,13 @@ int recall_dense(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (!load_index(flower, index_dir) ||
-        !recall.run_dense(&flower, top_k, gt_count)) {
+    if (load_index(flower, index_dir)) {
+      recall.run_dense(&flower, top_k, gt_count);
+    } else {
       return -1;
     }
   } else {
     cerr << "Can not recognize type: " << query_type << endl;
-    return -1;
   }
 
   return 0;
@@ -1862,13 +1812,13 @@ int recall_sparse(std::string &query_type, size_t thread_count,
       }
     }
 
-    if (!load_sparse_index(flower, index_dir) ||
-        !recall.run_sparse(&flower, top_k, gt_count)) {
+    if (load_sparse_index(flower, index_dir)) {
+      recall.run_sparse(&flower, top_k, gt_count);
+    } else {
       return -1;
     }
   } else {
     cerr << "Can not recognize type: " << query_type << endl;
-    return -1;
   }
 
   return 0;
@@ -2070,15 +2020,12 @@ int main(int argc, char *argv[]) {
     }
 
     string index_dir = config_common["IndexPath"].as<string>();
-    ret = recall_sparse(query_type, thread_count, batch_count, top_k, gt_count,
-                        query_file, first_sep, second_sep, ground_truth_file,
-                        ground_truth_first_sep, ground_truth_second_sep, flower,
-                        index_dir, log_dir, filter_mode);
+    recall_sparse(query_type, thread_count, batch_count, top_k, gt_count,
+                  query_file, first_sep, second_sep, ground_truth_file,
+                  ground_truth_first_sep, ground_truth_second_sep, flower,
+                  index_dir, log_dir, filter_mode);
 
     flower.unload();
-    if (ret != 0) {
-      return ret;
-    }
 
     cout << "Recall done." << endl;
   } else {
@@ -2130,10 +2077,10 @@ int main(int argc, char *argv[]) {
 
     string index_dir = config_common["IndexPath"].as<string>();
     if (retrieval_mode == RM_DENSE) {
-      ret = recall_dense(query_type, thread_count, batch_count, top_k, gt_count,
-                         query_file, first_sep, second_sep, ground_truth_file,
-                         ground_truth_first_sep, ground_truth_second_sep,
-                         flower, index_dir, log_dir, filter_mode);
+      recall_dense(query_type, thread_count, batch_count, top_k, gt_count,
+                   query_file, first_sep, second_sep, ground_truth_file,
+                   ground_truth_first_sep, ground_truth_second_sep, flower,
+                   index_dir, log_dir, filter_mode);
     } else {
       std::string mode = retrieval_mode == 1 ? "Dense" : "Sparse";
       cerr << "unsupported retrieval mode: " << mode << endl;
@@ -2143,9 +2090,6 @@ int main(int argc, char *argv[]) {
 
     // Cleanup
     flower.unload();
-    if (ret != 0) {
-      return ret;
-    }
 
     cout << "Recall done." << endl;
   }
