@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
 
 #include <cmath>
 #include <cstddef>
@@ -40,7 +42,10 @@ void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
     uint32_t b1 = (bits16 >> 1) & 1u;
     uint32_t b2 = (bits16 >> 2) & 1u;
     uint32_t b3 = (bits16 >> 3) & 1u;
-    uint32x4_t bit_mask = {b0, b1, b2, b3};
+    // Build the lane mask via vld1q_u32: MSVC's uint32x4_t is a union type,
+    // so GCC/Clang-style brace initialization of a vector is not portable.
+    const uint32_t bits[4] = {b0, b1, b2, b3};
+    uint32x4_t bit_mask = vld1q_u32(bits);
     uint32x4_t sign_mask = vmulq_u32(bit_mask, sign_bit);
     float32x4_t v = vld1q_f32(&data[i]);
     v = vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(v), sign_mask));
@@ -104,4 +109,4 @@ void fht_inv_kacs_walk_neon(float *data, size_t len) {
 }  // namespace ailego
 }  // namespace zvec
 
-#endif  // __ARM_NEON && __aarch64__
+#endif  // AILEGO_ARM64_NEON

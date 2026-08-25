@@ -116,7 +116,7 @@ struct Norm1Matrix<
   }
 };
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__SSE__) || defined(AILEGO_ARM64_NEON)
 /*! L1-Norm Matrix (FP32, M=1)
  */
 template <>
@@ -127,10 +127,11 @@ struct Norm1Matrix<float, 1> {
   //! Compute the L1-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
 };
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || AILEGO_ARM64_NEON
 
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+// MSVC ARM64 lacks `float16_t` without ARMv8.2 FP16; gate FP16 NEON
+// specialization to gcc/clang aarch64.
+#if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
 /*! L1-Norm Matrix (FP16, M=1)
  */
 template <>
@@ -141,7 +142,7 @@ struct Norm1Matrix<Float16, 1> {
   //! Compute the L1-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
 };
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
 }  // namespace ailego
 }  // namespace zvec

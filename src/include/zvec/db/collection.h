@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <zvec/db/doc_iterator.h>
 #include <zvec/db/options.h>
 #include <zvec/db/query.h>
 #include <zvec/db/stats.h>
@@ -111,6 +112,17 @@ class ZVEC_API Collection {
                                   const std::optional<std::vector<std::string>>
                                       &output_fields = std::nullopt,
                                   bool include_vector = true) const = 0;
+
+  // Create a document iterator over an isolated snapshot taken at call time
+  // (on writable collections this seals the current writing segment).
+  // While any iterator is open, schema DDL (create/drop index,
+  // add/alter/drop column), destroy and close return an error (only the
+  // destructor path waits for open iterators), and optimize fails at its
+  // start; conversely this call fails while a maintenance operation is
+  // running. Flush, writes and queries are not affected. The collection
+  // must outlive its iterators.
+  virtual Result<DocIterator::Ptr> create_iterator(
+      const IteratorOptions &options = {}) = 0;
 
  public:
   //! Debug-only: retrieve the storage mode string of an HNSW index on the

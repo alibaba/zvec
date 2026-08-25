@@ -15,6 +15,7 @@
 #include "zvec/db/collection.h"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -28,11 +29,21 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
+#endif
 #include <gtest/gtest.h>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include "db/collection_query_internal.h"
 #include "db/common/file_helper.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
@@ -3266,6 +3277,97 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
       collection->add_column(field_schema, "int32", AddColumnOptions()).ok());
 }
 
+TEST_F(CollectionTest, Feature_Optimize_Compacted_Segment_Directories_Removed) {
+  namespace fs = std::filesystem;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, 1000, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->optimize().ok());
+  ASSERT_TRUE(TestHelper::CollectionInsertDoc(collection, 1000, 2000).ok());
+
+  // The second optimize() compacts the first persisted segment together with
+  // the new writing segment. Keep their paths rather than assuming segment
+  // IDs so the assertion remains valid if allocation details change.
+  ASSERT_TRUE(collection->flush().ok());
+  std::vector<fs::path> source_segment_dirs;
+  for (const auto &entry : fs::directory_iterator(col_path)) {
+    if (!entry.is_directory()) {
+      continue;
+    }
+    const auto name = entry.path().filename().string();
+    if (!name.empty() &&
+        std::all_of(name.begin(), name.end(),
+                    [](unsigned char ch) { return std::isdigit(ch); })) {
+      source_segment_dirs.push_back(entry.path());
+    }
+  }
+  ASSERT_EQ(source_segment_dirs.size(), 2u);
+
+  ASSERT_TRUE(collection->optimize().ok());
+  ASSERT_EQ(collection->stats().value().doc_count, 2000u);
+
+  for (const auto &source_dir : source_segment_dirs) {
+    EXPECT_FALSE(fs::exists(source_dir))
+        << "compacted segment directory was not removed: "
+        << source_dir.string();
+  }
+
+  // The cleanup must not remove data needed by the replacement segment.
+  collection.reset();
+  auto reopened = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  ASSERT_EQ(reopened.value()->stats().value().doc_count, 2000u);
+}
+
+#ifdef _WIN32
+TEST_F(CollectionTest, Feature_Optimize_Cleanup_Failure_Is_Best_Effort) {
+  namespace fs = std::filesystem;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, 1000, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->optimize().ok());
+  ASSERT_TRUE(TestHelper::CollectionInsertDoc(collection, 1000, 2000).ok());
+  ASSERT_TRUE(collection->flush().ok());
+
+  fs::path blocked_file;
+  for (const auto &entry : fs::recursive_directory_iterator(col_path)) {
+    const auto parent_name = entry.path().parent_path().filename().string();
+    if (entry.is_regular_file() && !parent_name.empty() &&
+        std::all_of(parent_name.begin(), parent_name.end(),
+                    [](unsigned char ch) { return std::isdigit(ch); })) {
+      blocked_file = entry.path();
+      break;
+    }
+  }
+  ASSERT_FALSE(blocked_file.empty());
+
+  // Omit FILE_SHARE_DELETE to emulate another Windows process retaining a
+  // segment file. Internal zvec handles are closed by destroy(), but this
+  // external handle must make the physical directory cleanup fail.
+  HANDLE blocker = CreateFileW(blocked_file.wstring().c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_NE(blocker, INVALID_HANDLE_VALUE);
+
+  auto optimize_status = collection->optimize();
+  EXPECT_TRUE(optimize_status.ok()) << optimize_status.message();
+  EXPECT_TRUE(fs::exists(blocked_file.parent_path()));
+
+  CloseHandle(blocker);
+  EXPECT_TRUE(FileHelper::RemoveDirectory(blocked_file.parent_path().string()));
+
+  // The manifest commit and in-memory retirement are complete even though
+  // best-effort physical cleanup was deferred.
+  ASSERT_EQ(collection->stats().value().doc_count, 2000u);
+}
+#endif
+
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   auto run_repeated_optimize_test = [&](bool enable_mmap,
                                         IndexParams::Ptr index_params) {
@@ -4194,6 +4296,124 @@ TEST_F(CollectionTest, Feature_Query_General) {
   for (bool enable_mmap : {true, false}) {
     func(enable_mmap, "dense_fp32");
     func(enable_mmap, "sparse_fp32");
+  }
+}
+
+TEST_F(CollectionTest, Feature_QueryResultSnapshot_ConsistentWithQuery) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, false, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+  SearchQuery query;
+  query.topk_ = 10;
+  query.target_.field_name_ = "dense_fp32";
+  auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector.has_value());
+  query.target_.set_vector(std::string((char *)vector.value().data(),
+                                       vector.value().size() * sizeof(float)));
+
+  auto plain = collection->query(query);
+  ASSERT_TRUE(plain.has_value());
+
+  auto snapshot = internal::query_result_snapshot(*collection, query);
+  ASSERT_TRUE(snapshot.has_value());
+
+  // docs must match the plain Query result
+  ASSERT_EQ(snapshot->docs.size(), plain->size());
+  for (size_t i = 0; i < plain->size(); ++i) {
+    ASSERT_EQ(*snapshot->docs[i], *(*plain)[i]);
+  }
+  // without concurrent DDL, the schema snapshot matches schema()
+  auto current_schema = collection->schema();
+  ASSERT_TRUE(current_schema.has_value());
+  ASSERT_EQ(*snapshot->schema, current_schema.value());
+}
+
+TEST_F(CollectionTest, Feature_QueryResultSnapshot_AtomicUnderDropColumn) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 200;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, false, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  const std::string dropped_field = "int32";
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+  SearchQuery query;
+  query.topk_ = 10;
+  query.target_.field_name_ = "dense_fp32";
+  auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector.has_value());
+  query.target_.set_vector(std::string((char *)vector.value().data(),
+                                       vector.value().size() * sizeof(float)));
+
+  std::atomic<bool> stop{false};
+  std::atomic<bool> dropped{false};
+  std::atomic<bool> invariant_violated{false};
+
+  // Invariant for every snapshot: the dropped column is present in the
+  // returned schema if and only if it is present in the returned docs, i.e.
+  // docs and schema come from the same consistent execution.
+  auto check_snapshot =
+      [&](const Result<internal::QueryResultSnapshot> &result) {
+        if (!result.has_value() || result->docs.empty()) {
+          return;
+        }
+        const bool schema_has_field =
+            result->schema->get_field(dropped_field) != nullptr;
+        for (const auto &doc : result->docs) {
+          if (doc && doc->has(dropped_field) != schema_has_field) {
+            invariant_violated = true;
+          }
+        }
+      };
+
+  std::thread drop_thread([&]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto s = collection->drop_column(dropped_field);
+    ASSERT_TRUE(s.ok());
+    dropped = true;
+  });
+
+  // Hammer query_result_snapshot from two threads while the DDL runs. A small
+  // pause between queries keeps the shared lock from starving the DDL.
+  std::thread reader([&]() {
+    while (!stop) {
+      check_snapshot(internal::query_result_snapshot(*collection, query));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+
+  while (!dropped) {
+    check_snapshot(internal::query_result_snapshot(*collection, query));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  // A few extra rounds after the DDL finished.
+  for (int i = 0; i < 10; ++i) {
+    check_snapshot(internal::query_result_snapshot(*collection, query));
+  }
+
+  stop = true;
+  reader.join();
+  drop_thread.join();
+
+  ASSERT_FALSE(invariant_violated);
+
+  // After the DDL, the field is gone from both schema and results.
+  auto final_result = internal::query_result_snapshot(*collection, query);
+  ASSERT_TRUE(final_result.has_value());
+  ASSERT_EQ(final_result->schema->get_field(dropped_field), nullptr);
+  for (const auto &doc : final_result->docs) {
+    ASSERT_FALSE(doc->has(dropped_field));
   }
 }
 

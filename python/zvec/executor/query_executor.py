@@ -21,8 +21,7 @@ from zvec._zvec import _Collection, _MultiQuery
 from zvec._zvec.param import _Fts, _SearchQuery, _SubQuery
 
 from ..extension import CallbackReRanker, ReRanker, RrfReRanker, WeightedReRanker
-from ..model.convert import convert_to_py_doc
-from ..model.doc import DocList
+from ..model.doc import Doc, DocList
 from ..model.param.query import Query
 from ..model.schema import CollectionSchema
 from ..typing import DataType
@@ -135,9 +134,14 @@ class QueryExecutor:
     def _execute_single_query(
         self, query: _SearchQuery, collection: _Collection
     ) -> DocList:
-        """Single/vector-less query: send a ``_SearchQuery`` to C++."""
-        docs = collection.Query(query)
-        return [convert_to_py_doc(doc, self._schema) for doc in docs]
+        """Single/vector-less query: send a ``_SearchQuery`` to C++.
+
+        Results are batch-materialized into tuples in a single C++ call
+        (the schema is resolved inside the binding from the collection),
+        avoiding per-doc Python/C++ crossings on the hot path.
+        """
+        tuples = collection.Query(query)
+        return [Doc._from_tuple(t) if t is not None else None for t in tuples]
 
     def _execute_multi_query(
         self, ctx: QueryContext, queries: list[_SearchQuery], collection: _Collection
@@ -160,8 +164,8 @@ class QueryExecutor:
             return self._merge_and_rerank(ctx, docs_list)
 
         multi_query = self._build_multi_query(ctx, queries)
-        docs = collection.Query(multi_query)
-        return [convert_to_py_doc(doc, self._schema) for doc in docs]
+        tuples = collection.Query(multi_query)
+        return [Doc._from_tuple(t) if t is not None else None for t in tuples]
 
     def _build_multi_query(
         self, ctx: QueryContext, queries: list[_SearchQuery]

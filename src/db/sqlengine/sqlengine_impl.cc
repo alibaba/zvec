@@ -23,6 +23,7 @@
 #include "db/index/column/fts_column/fts_ast_rewriter.h"
 #include "db/index/column/fts_column/fts_pipeline.h"
 #include "db/index/column/fts_column/fts_query_ast.h"
+#include "db/index/common/doc_field_converter.h"
 #include "db/sqlengine/analyzer/query_analyzer.h"
 #include "db/sqlengine/parser/select_info.h"
 #include "db/sqlengine/parser/sql_info_helper.h"
@@ -426,118 +427,10 @@ Status fill_doc_vector(const arrow::BinaryArray *typed_arr,
   return Status::OK();
 }
 
-template <typename ArrowArrayType>
-Status fill_doc_field(const arrow::Array *arr, const std::string &field_name,
-                      DocPtrList::iterator doc_it) {
-  auto *typed_arr = static_cast<const ArrowArrayType *>(arr);
-  bool no_null = typed_arr->null_count() == 0;
-  for (int64_t i = 0; i < typed_arr->length(); ++i, ++doc_it) {
-    if (no_null || !typed_arr->IsNull(i)) {
-      if constexpr (std::is_same_v<ArrowArrayType, arrow::StringArray> ||
-                    std::is_same_v<ArrowArrayType, arrow::LargeStringArray> ||
-                    std::is_same_v<ArrowArrayType, arrow::BinaryArray> ||
-                    std::is_same_v<ArrowArrayType, arrow::LargeBinaryArray>) {
-        (*doc_it)->set(field_name, typed_arr->GetString(i));
-      } else {
-        (*doc_it)->set(field_name, typed_arr->Value(i));
-      }
-    }
-  }
-  return Status::OK();
-}
-
-template <typename ArrowArrayType, typename ElementType>
-Status fill_doc_array_field(const arrow::Array *arr,
-                            const std::string &field_name,
-                            DocPtrList::iterator doc_it) {
-  const auto *list_arr = static_cast<const arrow::ListArray *>(arr);
-  auto *typed_arr =
-      dynamic_cast<const ArrowArrayType *>(list_arr->values().get());
-  bool has_null = list_arr->null_count() > 0;
-  for (int64_t i = 0; i < list_arr->length(); ++i, ++doc_it) {
-    if (has_null && list_arr->IsNull(i)) {
-      continue;
-    }
-    int64_t offset = list_arr->value_offset(i);
-    int64_t length = list_arr->value_length(i);
-    std::vector<ElementType> vec(length);
-    for (int64_t j = 0; j < length; ++j) {
-      vec[j] = typed_arr->Value(offset + j);
-    }
-    (*doc_it)->set(field_name, std::move(vec));
-  }
-  return Status::OK();
-}
-
 Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
                       const FieldSchema &field_schema,
                       DocPtrList::iterator doc_it) {
   switch (field_schema.data_type()) {
-    case DataType::INT32:
-      return fill_doc_field<arrow::Int32Array>(chunk.get(), field_schema.name(),
-                                               doc_it);
-    case DataType::UINT32:
-      return fill_doc_field<arrow::UInt32Array>(chunk.get(),
-                                                field_schema.name(), doc_it);
-    case DataType::INT64:
-      return fill_doc_field<arrow::Int64Array>(chunk.get(), field_schema.name(),
-                                               doc_it);
-    case DataType::UINT64:
-      return fill_doc_field<arrow::UInt64Array>(chunk.get(),
-                                                field_schema.name(), doc_it);
-    case DataType::FLOAT:
-      return fill_doc_field<arrow::FloatArray>(chunk.get(), field_schema.name(),
-                                               doc_it);
-    case DataType::DOUBLE:
-      return fill_doc_field<arrow::DoubleArray>(chunk.get(),
-                                                field_schema.name(), doc_it);
-    case DataType::BOOL:
-      return fill_doc_field<arrow::BooleanArray>(chunk.get(),
-                                                 field_schema.name(), doc_it);
-    case DataType::BINARY:
-      return fill_doc_field<arrow::BinaryArray>(chunk.get(),
-                                                field_schema.name(), doc_it);
-
-    case DataType::STRING:
-      return fill_doc_field<arrow::StringArray>(chunk.get(),
-                                                field_schema.name(), doc_it);
-
-    case DataType::ARRAY_INT32:
-      return fill_doc_array_field<arrow::Int32Array, int32_t>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_INT64:
-      return fill_doc_array_field<arrow::Int64Array, int64_t>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_UINT32:
-      return fill_doc_array_field<arrow::UInt32Array, uint32_t>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_UINT64:
-      return fill_doc_array_field<arrow::UInt64Array, uint64_t>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_FLOAT:
-      return fill_doc_array_field<arrow::FloatArray, float>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_DOUBLE:
-      return fill_doc_array_field<arrow::DoubleArray, double>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_STRING:
-      return fill_doc_array_field<arrow::StringArray, std::string>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_BINARY:
-      return fill_doc_array_field<arrow::BinaryArray, std::string>(
-          chunk.get(), field_schema.name(), doc_it);
-
-    case DataType::ARRAY_BOOL:
-      return fill_doc_array_field<arrow::BooleanArray, bool>(
-          chunk.get(), field_schema.name(), doc_it);
-
     case DataType::VECTOR_FP32:
       return fill_doc_vector<float>((arrow::BinaryArray *)chunk.get(),
                                     field_schema.name(),
@@ -581,9 +474,10 @@ Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
           (arrow::StructArray *)chunk.get(), field_schema.name(), doc_it);
 
     default:
-      return Status::InvalidArgument("Unsupported data type for field [",
-                                     field_schema.name(),
-                                     "]: data_type=", field_schema.data_type());
+      // Scalar/array fields: shared column-level conversion (dispatches the
+      // type and checks null_count once per column; see
+      // doc_field_converter.h). Unsupported types fail inside it.
+      return ConvertArrowColumnToDocFields(chunk.get(), field_schema, doc_it);
   }
   return Status::OK();
 }
