@@ -219,8 +219,8 @@ class QueryExecutor:
         """Set FTS query on search_query if the query has FTS parameters."""
         if query.has_fts():
             fts = _Fts()
-            fts.query_string = query.fts.query_string or ""
-            fts.match_string = query.fts.match_string or ""
+            fts.query_string = query._fts_query_string()
+            fts.match_string = query._fts_match_string()
             search_query.fts = fts
 
     def set_query_vector(

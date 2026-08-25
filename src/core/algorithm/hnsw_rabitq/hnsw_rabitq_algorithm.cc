@@ -263,7 +263,7 @@ void HnswRabitqAlgorithm::update_neighbors(HnswRabitqAddDistCalculator &dc,
   uint32_t max_neighbor_cnt = entity_.neighbor_cnt(level);
   if (topk_heap.size() <= static_cast<size_t>(entity_.prune_cnt())) {
     if (topk_heap.size() <= static_cast<size_t>(max_neighbor_cnt)) {
-      entity_.update_neighbors(level, id, topk_heap);
+      entity_.update_neighbors(level, id, topk_heap.container());
       return;
     }
   }
@@ -282,8 +282,8 @@ void HnswRabitqAlgorithm::update_neighbors(HnswRabitqAddDistCalculator &dc,
     }
 
     if (good) {
-      topk_heap[cur_size].first = cur_node;
-      topk_heap[cur_size].second = cur_node_dist;
+      topk_heap.mutable_at(cur_size).first = cur_node;
+      topk_heap.mutable_at(cur_size).second = cur_node_dist;
       cur_size++;
       if (cur_size >= max_neighbor_cnt) {
         break;
@@ -306,14 +306,14 @@ void HnswRabitqAlgorithm::update_neighbors(HnswRabitqAddDistCalculator &dc,
       }
     }
     if (!exist) {
-      topk_heap[cur_size].first = topk_heap[k].first;
-      topk_heap[cur_size].second = topk_heap[k].second;
+      topk_heap.mutable_at(cur_size).first = topk_heap[k].first;
+      topk_heap.mutable_at(cur_size).second = topk_heap[k].second;
       cur_size++;
     }
   }
 
-  topk_heap.resize(cur_size);
-  entity_.update_neighbors(level, id, topk_heap);
+  topk_heap.truncate(cur_size);
+  entity_.update_neighbors(level, id, topk_heap.container());
 
   return;
 }
@@ -359,8 +359,8 @@ void HnswRabitqAlgorithm::reverse_update_neighbors(
     }
 
     if (good) {
-      update_heap[cur_size].first = cur_node;
-      update_heap[cur_size].second = cur_node_dist;
+      update_heap.mutable_at(cur_size).first = cur_node;
+      update_heap.mutable_at(cur_size).second = cur_node_dist;
       cur_size++;
       if (cur_size >= max_neighbor_cnt) {
         break;
@@ -368,8 +368,8 @@ void HnswRabitqAlgorithm::reverse_update_neighbors(
     }
   }
 
-  update_heap.resize(cur_size);
-  entity_.update_neighbors(level, id, update_heap);
+  update_heap.truncate(cur_size);
+  entity_.update_neighbors(level, id, update_heap.container());
 
   lock_pool_[lock_idx].unlock();
 

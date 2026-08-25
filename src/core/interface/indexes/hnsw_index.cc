@@ -45,9 +45,9 @@ std::string HNSWIndex::storage_mode() const {
   return "";
 }
 
-int HNSWIndex::AddWithSource(const VectorData &vector_data,
-                             const uint32_t doc_id,
-                             const core::VectorSource &src) {
+int HNSWIndex::add_with_source(const VectorData &vector_data,
+                               const uint32_t doc_id,
+                               const core::VectorSource &src) {
   auto &context = acquire_context();
   if (!context) {
     LOG_ERROR("Failed to acquire context for AddWithSource");
@@ -56,10 +56,10 @@ int HNSWIndex::AddWithSource(const VectorData &vector_data,
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
   }
-  return Index::Add(vector_data, doc_id);
+  return Index::add(vector_data, doc_id);
 }
 
-int HNSWIndex::SearchWithSource(
+int HNSWIndex::search_with_source(
     const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
     const core::VectorSource &src, SearchResult *result) {
   auto &context = acquire_context();
@@ -70,7 +70,7 @@ int HNSWIndex::SearchWithSource(
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
   }
-  return Index::Search(query, search_param, result);
+  return Index::search(query, search_param, result);
 }
 
 int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
@@ -81,6 +81,11 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_.m = std::max(5, std::min(1024, param_.m));
 
   if (is_sparse_) {
+    // the original vector provider is only supported by the dense streamer
+    if (ailego_unlikely(param_.provider != nullptr)) {
+      LOG_ERROR("Provider is not supported by sparse HNSW index");
+      return core::IndexError_Unsupported;
+    }
     proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION,
                               param_.ef_construction);
     proxima_index_params_.set(
@@ -115,6 +120,14 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
                               param_.use_external_vector);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
+    // build graph from the original vectors of provider when it is set
+    if (param_.provider && streamer_) {
+      int ret = streamer_->set_provider(param_.provider, param_.provider_meta);
+      if (ailego_unlikely(ret != 0)) {
+        LOG_ERROR("Failed to set provider to streamer, ret=%d", ret);
+        return ret;
+      }
+    }
   }
 
   if (ailego_unlikely(!streamer_)) {

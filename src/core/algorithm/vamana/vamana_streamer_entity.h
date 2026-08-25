@@ -130,8 +130,9 @@ class VamanaStreamerEntity : public VamanaEntity {
     if (use_key_info_map_) {
       keys_map_lock_->lock_shared();
       auto it = keys_map_->find(key);
+      node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
       keys_map_lock_->unlock_shared();
-      return it == keys_map_->end() ? kInvalidNodeId : it->second;
+      return id;
     }
     return key;
   }

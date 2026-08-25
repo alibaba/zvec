@@ -1,0 +1,603 @@
+name: Build Prebuilt Libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag used to stamp the SDK version (e.g., v0.7.0)'
+        required: false
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag used to stamp the SDK version (e.g., v0.7.0)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+# Checkouts in this workflow are shallow and tag-less, so `git describe` in
+# cmake/version.cmake cannot recover the release version and would fall back
+# to v0.0.0. Callers (release.yml) therefore pass the release tag, which is
+# injected into every configure step below via -DOVERRIDE_GIT_DESCRIBE.
+# Stays empty on ad-hoc runs, keeping the v0.0.0 fallback.
+#
+# ZVEC_VERSION_DEFINE is deliberately left unquoted in the configure steps:
+# an empty value must expand to zero words.
+env:
+  ZVEC_VERSION_DEFINE: ${{ inputs.tag != '' && format('-DOVERRIDE_GIT_DESCRIBE={0}', inputs.tag) || '' }}
+  # Check out exactly the ref being released: with a tag input the build must
+  # not drift from the tag (e.g. a manual dispatch made after the branch
+  # moved on). Ad-hoc runs without a tag keep the triggering ref.
+  ZVEC_CHECKOUT_REF: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.os_name }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    # Linux builds run inside containers so the prebuilt .so files work
+    # broadly: manylinux_2_28 (glibc 2.28) covers glibc distros as old as
+    # CentOS 8 / Ubuntu 20.04, and musllinux_1_2 (Alpine/musl) covers musl
+    # distros. This mirrors the Python wheel build which uses cibuildwheel
+    # with the same images — see [tool.cibuildwheel.linux] in pyproject.toml.
+    container: ${{ matrix.container || null }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+            os_name: osx
+            arch: arm64
+            ext: tar.gz
+            container: ''
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            os_name: linux
+            arch: amd64
+            ext: tar.gz
+            # Pinned dated tag (same batch as the musllinux images) so the
+            # build does not depend on the mutable :latest tag.
+            container: 'quay.io/pypa/manylinux_2_28_x86_64:2026.03.01-1'
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            os_name: linux
+            arch: arm64
+            ext: tar.gz
+            container: 'quay.io/pypa/manylinux_2_28_aarch64:2026.03.01-1'
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            os_name: linux-musl
+            arch: amd64
+            ext: tar.gz
+            # Pinned musllinux image, kept in sync with 09-musllinux-build.yml
+            # and [tool.cibuildwheel.linux] in pyproject.toml.
+            container: 'quay.io/pypa/musllinux_1_2_x86_64:2026.03.01-1'
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
+            os_name: windows
+            arch: amd64
+            ext: zip
+            container: ''
+
+    env:
+      # Prefixed with ZVEC_ to avoid clashing with Makefile conventions:
+      # lz4's Makefile.inc defines `INSTALL_DIR ?= install -d -m 755` which
+      # would be overridden by an INSTALL_DIR environment variable.
+      ZVEC_INSTALL_DIR: ${{ github.workspace }}/install
+      ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
+          submodules: recursive
+
+      # The musllinux images are Alpine-based and the shared steps below run
+      # under bash; install it first in case the image does not ship it.
+      - name: Ensure bash (musl)
+        if: matrix.os_name == 'linux-musl'
+        run: command -v bash || apk add --no-cache bash
+        shell: sh
+
+      # Skip actions/setup-python on Linux: it downloads a CPython built for
+      # the host glibc (2.38), which won't run inside the manylinux_2_28
+      # container (glibc 2.28).  Instead, use the manylinux-bundled CPython
+      # at /opt/python/cp3*/bin (which has pip) — see the install step below.
+      - name: Set up Python
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          # Use manylinux-bundled CPython (has pip; system python3 does not).
+          # Also update GITHUB_PATH so cmake/ninja installed via pip are
+          # available in subsequent steps.
+          PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1 || true)
+          if [ -n "$PYBIN" ]; then
+            echo "$PYBIN" >> "$GITHUB_PATH"
+            export PATH="$PYBIN:$PATH"
+          fi
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
+        shell: bash
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install --upgrade pip `
+            pybind11==3.0 `
+            cmake==3.30.0 `
+            ninja==1.11.1
+        shell: powershell
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DBUILD_ZVEC_AILEGO_SHARED=ON \
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
+
+      - name: Build and install SDK
+        shell: bash
+        run: |
+          NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          cmake --build build --target install --parallel "$NPROC"
+
+      - name: Dump third-party build logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          find build -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) | while read -r f; do
+            echo "===== $f ====="
+            tail -80 "$f"
+          done
+
+      - name: Stage package contents
+        shell: bash
+        run: |
+          mkdir -p "$ZVEC_DIST_DIR"
+          cp -R "$ZVEC_INSTALL_DIR"/. "$ZVEC_DIST_DIR"/.
+          # Ship shared libraries only: zvec static libs are not self-contained
+          # (third-party deps like rocksdb/arrow/protobuf are not installed).
+          # On Windows, keep DLL import libs (*_shared.lib, zvec_c_api.lib).
+          rm -f "$ZVEC_DIST_DIR"/lib/*.a
+          rm -f "$ZVEC_DIST_DIR"/lib/zvec.lib \
+            "$ZVEC_DIST_DIR"/lib/zvec_core.lib \
+            "$ZVEC_DIST_DIR"/lib/zvec_ailego.lib \
+            "$ZVEC_DIST_DIR"/lib/zvec_turbo.lib
+          # On Windows, DLLs are installed into bin/ (RUNTIME); move them to
+          # lib/ so the package layout is include/ + lib/ on all platforms.
+          if [ -d "$ZVEC_DIST_DIR/bin" ]; then
+            find "$ZVEC_DIST_DIR/bin" -name '*.dll' -exec mv {} "$ZVEC_DIST_DIR/lib/" \;
+            rm -rf "${ZVEC_DIST_DIR:?}/bin"
+          fi
+
+      - name: Smoke-test staged SDK
+        shell: bash
+        run: |
+          # Compile and run tiny C and C++ programs against the staged
+          # package (the exact tree that gets packaged next): verifies the
+          # include/lib layout and that the shipped libraries link and load.
+          SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
+          cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+          cmake --build "$SMOKE_BUILD" --parallel 2
+          # Windows loads the DLLs via PATH; Unix uses BUILD_RPATH.
+          export PATH="$ZVEC_DIST_DIR/lib:$PATH"
+          ctest --test-dir "$SMOKE_BUILD" --output-on-failure
+
+      - name: Package SDK (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tar czf "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}" -C "$ZVEC_DIST_DIR" .
+          ls -lh "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}"
+
+      - name: Package SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $Pkg = "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}"
+          Compress-Archive -Path "$env:ZVEC_DIST_DIR\*" -DestinationPath "$Pkg" -Force
+          Get-ChildItem "$Pkg" | Select-Object Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}
+          path: zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # musl/Alpine SDK for arm64. The musl x64 build lives in the matrix above,
+  # but arm64 needs its own job: GitHub runners cannot execute JavaScript
+  # actions (checkout, upload-artifact) inside Alpine containers on arm64, so
+  # instead of `container:` this job keeps the actions on the host and runs
+  # the build inside a long-lived container via docker exec — the same
+  # approach as build-and-test-arm64 in 09-musllinux-build.yml.
+  build-musl-arm64:
+    name: Build (linux-musl-arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+
+    env:
+      # Pinned to the same image as 09-musllinux-build.yml and
+      # [tool.cibuildwheel.linux] in pyproject.toml.
+      MUSL_IMAGE: quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1
+      MUSL_CONTAINER: zvec-musl-arm64-sdk
+      # Prepend the image-bundled CPython so the pip-installed cmake/ninja
+      # shadow the tools bundled in the image, which include an unsupported
+      # CMake 4.x — same trick as the other musllinux jobs.
+      MUSL_PATH: /opt/python/cp310-cp310/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
+          submodules: recursive
+
+      - name: Start musllinux container
+        run: |
+          docker run -d --name "$MUSL_CONTAINER" \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            -e PATH="$MUSL_PATH" \
+            "$MUSL_IMAGE" sleep infinity
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          docker exec "$MUSL_CONTAINER" python -m pip install --upgrade pip
+          docker exec "$MUSL_CONTAINER" python -m pip install \
+            cmake==3.30.0 \
+            ninja==1.11.1
+        shell: bash
+
+      - name: Configure CMake
+        run: |
+          docker exec "$MUSL_CONTAINER" cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/work/install \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DBUILD_ZVEC_AILEGO_SHARED=ON \
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
+        shell: bash
+
+      - name: Build and install SDK
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c \
+            'cmake --build build --target install --parallel "$(nproc)"'
+        shell: bash
+
+      - name: Dump third-party build logs on failure
+        if: failure()
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c '
+            find build -type f \( -name "*-configure-*.log" -o -name "*-build-*.log" -o -name "*-install-*.log" \) | while read -r f; do
+              echo "===== $f ====="
+              tail -80 "$f"
+            done
+          ' || true
+        shell: bash
+
+      - name: Stage package contents
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c '
+            mkdir -p /work/dist
+            cp -R /work/install/. /work/dist/.
+            # Ship shared libraries only (same policy as the matrix job).
+            rm -f /work/dist/lib/*.a
+          '
+        shell: bash
+
+      - name: Smoke-test staged SDK
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c '
+            cmake -S .github/cmake/sdk-smoke -B /work/smoke-build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DZVEC_SDK_DIR=/work/dist
+            cmake --build /work/smoke-build --parallel "$(nproc)"
+            ctest --test-dir /work/smoke-build --output-on-failure
+          '
+        shell: bash
+
+      - name: Package SDK
+        run: |
+          tar czf zvec-sdk-linux-musl-arm64.tar.gz -C "$ZVEC_DIST_DIR" .
+          ls -lh zvec-sdk-linux-musl-arm64.tar.gz
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: zvec-sdk-linux-musl-arm64
+          path: zvec-sdk-linux-musl-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Tear down musllinux container
+        if: always()
+        run: docker rm -f "$MUSL_CONTAINER" || true
+        shell: bash
+
+  # Cross-compile for Android (arm64-v8a) with the runner's preinstalled NDK.
+  # Mirrors scripts/build_android.sh (post-#627: no protobuf/protoc needed).
+  build-android:
+    name: Build (android-arm64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ZVEC_INSTALL_DIR: ${{ github.workspace }}/install
+      ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+      # minSdkVersion of the prebuilt .so files. bionic provides
+      # aligned_alloc (used by ailego MemoryHelper) only since API 28.
+      ZVEC_ANDROID_API_LEVEL: '28'
+      ZVEC_ANDROID_ABI: arm64-v8a
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
+
+      - name: Configure CMake (Android)
+        shell: bash
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "Using NDK: $NDK"
+          # c++_static matches scripts/build_android.sh since #627: the
+          # slimmed libraries are self-contained, no shared libc++ needed.
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_NDK="$NDK" \
+            -DANDROID_ABI="$ZVEC_ANDROID_ABI" \
+            -DANDROID_NATIVE_API_LEVEL="$ZVEC_ANDROID_API_LEVEL" \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DBUILD_ZVEC_AILEGO_SHARED=ON \
+            -DENABLE_NATIVE=OFF \
+            -DAUTO_DETECT_ARCH=OFF \
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
+
+      - name: Build and install SDK
+        shell: bash
+        run: |
+          cmake --build build --target install --parallel "$(nproc)"
+
+      - name: Dump third-party build logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          find build -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) | while read -r f; do
+            echo "===== $f ====="
+            tail -80 "$f"
+          done
+
+      - name: Stage package contents
+        shell: bash
+        run: |
+          mkdir -p "$ZVEC_DIST_DIR"
+          cp -R "$ZVEC_INSTALL_DIR"/. "$ZVEC_DIST_DIR"/.
+          # Ship shared libraries only (same policy as desktop platforms).
+          rm -f "$ZVEC_DIST_DIR"/lib/*.a
+
+      - name: Smoke-test staged SDK (link only)
+        shell: bash
+        run: |
+          # Cross-compile the smoke programs against the packaged libraries.
+          # They cannot run on the runner, but linking them validates the
+          # package layout and the symbols exported by the .so files.
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          cmake -S .github/cmake/sdk-smoke -B build_smoke -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ZVEC_ANDROID_ABI" \
+            -DANDROID_NATIVE_API_LEVEL="$ZVEC_ANDROID_API_LEVEL" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+          cmake --build build_smoke --parallel 2
+
+      - name: Package SDK
+        shell: bash
+        run: |
+          tar czf zvec-sdk-android-arm64.tar.gz -C "$ZVEC_DIST_DIR" .
+          ls -lh zvec-sdk-android-arm64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: zvec-sdk-android-arm64
+          path: zvec-sdk-android-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Cross-compile for iOS (device arm64 + simulator arm64) and merge each
+  # shared library into an XCFramework. Mirrors scripts/build_ios.sh.
+  build-ios:
+    name: Build (ios)
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    env:
+      ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+      ZVEC_IOS_DEPLOYMENT_TARGET: '13.0'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
+
+      - name: Build SDK for device and simulator
+        shell: bash
+        run: |
+          NPROC=$(sysctl -n hw.ncpu)
+          build_slice() {
+            local slice="$1" sdk="$2"
+            # Reset thirdparty sources so each toolchain can patch cleanly.
+            git submodule foreach --recursive 'git checkout -- . && git clean -fd' || true
+            cmake -S . -B "build_ios_${slice}" -G Ninja \
+              -DCMAKE_SYSTEM_NAME=iOS \
+              -DIOS=ON \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET="$ZVEC_IOS_DEPLOYMENT_TARGET" \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 \
+              -DCMAKE_OSX_SYSROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install_${slice}" \
+              -DBUILD_TOOLS=OFF \
+              -DBUILD_PYTHON_BINDINGS=OFF \
+              -DBUILD_C_BINDINGS=ON \
+              -DBUILD_ZVEC_SHARED=ON \
+              -DBUILD_ZVEC_CORE_SHARED=ON \
+              -DBUILD_ZVEC_AILEGO_SHARED=ON \
+              -DENABLE_WERROR=OFF \
+              $ZVEC_VERSION_DEFINE
+            cmake --build "build_ios_${slice}" --target install --parallel "$NPROC"
+          }
+          build_slice device iphoneos
+          build_slice simulator iphonesimulator
+
+      - name: Dump third-party build logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          find build_ios_* -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) 2>/dev/null | while read -r f; do
+            echo "===== $f ====="
+            tail -80 "$f"
+          done
+
+      - name: Create XCFrameworks
+        shell: bash
+        run: |
+          mkdir -p "$ZVEC_DIST_DIR"
+          cp -R "$GITHUB_WORKSPACE/install_device/include" "$ZVEC_DIST_DIR/include"
+          # Architecture-independent data (jieba FTS dict) ships once from the
+          # device slice, same as the headers.
+          cp -R "$GITHUB_WORKSPACE/install_device/data" "$ZVEC_DIST_DIR/data"
+          for dylib in "$GITHUB_WORKSPACE"/install_device/lib/*.dylib; do
+            [ -L "$dylib" ] && continue  # skip version symlinks
+            name=$(basename "$dylib" .dylib)
+            sim_dylib="$GITHUB_WORKSPACE/install_simulator/lib/$(basename "$dylib")"
+            xcodebuild -create-xcframework \
+              -library "$dylib" \
+              -library "$sim_dylib" \
+              -output "$ZVEC_DIST_DIR/${name}.xcframework"
+          done
+          find "$ZVEC_DIST_DIR" -maxdepth 2 | sort
+
+      - name: Verify XCFramework contents
+        shell: bash
+        run: |
+          # Every XCFramework must carry both slices, and headers must live
+          # at include/zvec/ (guards against a nested include/include/).
+          for fw in libzvec libzvec_core libzvec_ailego libzvec_c_api; do
+            for slice in ios-arm64 ios-arm64-simulator; do
+              if [ ! -d "$ZVEC_DIST_DIR/${fw}.xcframework/${slice}" ]; then
+                echo "missing slice: ${fw}.xcframework/${slice}"
+                exit 1
+              fi
+            done
+          done
+          if [ ! -f "$ZVEC_DIST_DIR/include/zvec/c_api.h" ]; then
+            echo "missing include/zvec/c_api.h"
+            exit 1
+          fi
+          ls "$ZVEC_DIST_DIR"/include/zvec/db/*.h > /dev/null || {
+            echo "missing C++ headers under include/zvec/db/"
+            exit 1
+          }
+          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+            if [ ! -f "$ZVEC_DIST_DIR/data/jieba_dict/$dict_file" ]; then
+              echo "missing data/jieba_dict/$dict_file"
+              exit 1
+            fi
+          done
+
+      - name: Package SDK
+        shell: bash
+        run: |
+          (cd "$ZVEC_DIST_DIR" && zip -ry "$GITHUB_WORKSPACE/zvec-sdk-ios.zip" .)
+          ls -lh zvec-sdk-ios.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: zvec-sdk-ios
+          path: zvec-sdk-ios.zip
+          if-no-files-found: error
+          retention-days: 7

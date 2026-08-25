@@ -13,7 +13,9 @@
 # limitations under the License.
 from __future__ import annotations
 
+import contextlib
 import warnings
+from collections.abc import Iterator
 from typing import Optional, Union, overload
 
 from zvec._zvec import _Collection
@@ -35,6 +37,7 @@ from .param import (
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
+    IvfRabitqIndexParam,
     OptimizeOption,
 )
 from .param.query import Query
@@ -48,6 +51,62 @@ def _require_positive_integer(value, name: str) -> None:
         raise ValueError(f"{name} must be a positive integer")
 
 
+class DocIterator(Iterator[Doc], contextlib.AbstractContextManager["DocIterator"]):
+    """Iterator over all documents in a collection.
+
+    Returned by :meth:`Collection.iter_docs`. Supports the iterator protocol,
+    explicit :meth:`close`, and the context-manager protocol (preferred):
+
+        with collection.iter_docs() as docs:
+            for doc in docs:
+                ...
+
+    Closing the iterator releases the collection's active-iterator slot;
+    while any iterator is open, schema changes, destroy and close are
+    rejected and optimize fails at its start, so
+    deterministic closing matters.
+    """
+
+    def __init__(self, core_iterator, schema):
+        self._core_iterator = core_iterator
+        self._schema = schema
+        self._closed = False
+
+    def __next__(self) -> Doc:
+        if self._closed:
+            raise StopIteration
+
+        try:
+            while True:
+                core_doc = next(self._core_iterator)
+                py_doc = convert_to_py_doc(core_doc, self._schema)
+                if py_doc is not None:
+                    return py_doc
+        except BaseException:
+            # StopIteration is a BaseException subclass, so this also covers
+            # normal exhaustion; always release the slot before propagating.
+            self.close()
+            raise
+
+    def close(self):
+        """Release the underlying iterator (idempotent)."""
+        if not self._closed:
+            self._closed = True
+            self._core_iterator.close()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # AbstractContextManager's default __exit__ does not release
+        # resources, so it must be overridden here.
+        self.close()
+        return False
+
+    def __del__(self):
+        # Best-effort fallback only; never rely on this for deterministic
+        # resource release -- use close() or a with-statement.
+        with contextlib.suppress(Exception):
+            self.close()
+
+
 class Collection:
     """Represents an opened collection in Zvec.
 
@@ -59,6 +118,20 @@ class Collection:
 
     def __init__(self, obj: _Collection):
         self._obj = obj
+        self._schema = None
+        self._querier = None
+
+    def close(self) -> None:
+        """Close the collection and release its native resources.
+
+        Flushes pending writes and releases the collection's file lock so the
+        path can be reopened or removed, even if other references to this
+        collection still exist. Closing an already-closed collection is a
+        no-op.
+        """
+        if self._obj is not None:
+            self._obj.Close()
+        self._obj = None
         self._schema = None
         self._querier = None
 
@@ -116,6 +189,7 @@ class Collection:
         index_param: Union[
             HnswIndexParam,
             HnswRabitqIndexParam,
+            IvfRabitqIndexParam,
             IVFIndexParam,
             FlatIndexParam,
             InvertIndexParam,
@@ -125,13 +199,13 @@ class Collection:
     ) -> None:
         """Create an index on a field.
 
-        Vector index types (HNSW, IVF, FLAT) can only be applied to vector fields.
+        Vector index types (HNSW, HNSW_RABITQ, IVF, IVF_RABITQ, FLAT) can only be applied to vector fields.
         Inverted index (`InvertIndexParam`) is for scalar fields.
         FTS index (`FtsIndexParam`) is for full-text search on STRING fields.
 
         Args:
             field_name (str): Name of the field to index.
-            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
+            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IvfRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
                 Index configuration.
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.
@@ -377,6 +451,51 @@ class Collection:
             for doc_id, core_doc in docs.items()
             if (py_doc := convert_to_py_doc(core_doc, self.schema)) is not None
         }
+
+    # ========== Collection DQL-Iterator Methods ==========
+    def iter_docs(
+        self,
+        *,
+        output_fields: Optional[list[str]] = None,
+        include_vector: bool = True,
+    ) -> DocIterator:
+        """Iterate over all documents in the collection.
+
+        Streams documents one by one using an isolated snapshot taken at call
+        time: memory usage stays constant regardless of collection size, and
+        data written after the iterator is created is not visible.
+
+        Note: on a writable collection the snapshot seals the current writing
+        segment (each call may produce a new small segment); read-only
+        collections are scanned without any write.
+
+        While any iterator is open, schema changes
+        (create_index/drop_index/add_column/alter_column/drop_column) and
+        destroy raise an error, optimize fails at its start, and close
+        raises an error too (only releasing the collection outright waits
+        for open iterators); conversely iter_docs raises an
+        error while a maintenance operation (optimize, schema DDL, close
+        or destroy) is running. Flush, writes and queries are not
+        affected.
+        The iterator is closed automatically when exhausted, so prefer
+        the with-statement when iteration may end early.
+
+        Args:
+            output_fields (Optional[list[str]], optional): Scalar fields to
+                include. If None, all fields are returned. Defaults to None.
+            include_vector (bool, optional): Whether to include vector data in
+                each document. Defaults to True.
+
+        Returns:
+            DocIterator: An iterator yielding each document in the collection.
+
+        Examples:
+            >>> with collection.iter_docs(include_vector=False) as docs:
+            ...     for doc in docs:
+            ...         print(doc.id, doc.field("title"))
+        """
+        iterator = self._obj.CreateIterator(output_fields, include_vector)
+        return DocIterator(iterator, self.schema)
 
     # ========== Collection DQL-Query Methods ==========
 

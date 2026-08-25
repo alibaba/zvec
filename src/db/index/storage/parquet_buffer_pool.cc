@@ -26,6 +26,7 @@
 #include <arrow/table.h>
 #include <parquet/arrow/reader.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/utility/file_helper.h>
 
 namespace zvec {
 
@@ -89,14 +90,27 @@ std::shared_ptr<arrow::ArrayData> CloneWithPinnedBuffers(
 ParquetBufferID::ParquetBufferID(const std::string &filename, int column,
                                  int row_group)
     : filename(filename), column(column), row_group(row_group) {
+  const auto path = ailego::FileHelper::PathFromUtf8(filename);
+  bool has_stat_mtime = false;
+  int64_t stat_mtime = 0;
+#if defined(_WIN32) || defined(_WIN64)
+  struct _stat64 file_stat;
+  if (!path.empty() && _wstat64(path.c_str(), &file_stat) == 0) {
+#else
   struct stat file_stat;
-  if (stat(filename.c_str(), &file_stat) == 0) {
+  if (stat(path.c_str(), &file_stat) == 0) {
+#endif
     file_id = file_stat.st_ino;
-    std::filesystem::path p(filename);
-    std::error_code error;
-    auto ftime = std::filesystem::last_write_time(p, error);
-    mtime = error ? static_cast<int64_t>(file_stat.st_mtime)
-                  : static_cast<int64_t>(ftime.time_since_epoch().count());
+    has_stat_mtime = true;
+    stat_mtime = static_cast<int64_t>(file_stat.st_mtime);
+  }
+
+  std::error_code ec;
+  const auto ftime = std::filesystem::last_write_time(path, ec);
+  if (!ec) {
+    mtime = static_cast<int64_t>(ftime.time_since_epoch().count());
+  } else if (has_stat_mtime) {
+    mtime = stat_mtime;
   }
 }
 

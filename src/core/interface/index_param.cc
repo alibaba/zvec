@@ -36,7 +36,7 @@ FlatQueryParam &FlatQueryParam::operator=(const FlatQueryParam &) = default;
 FlatQueryParam &FlatQueryParam::operator=(FlatQueryParam &&) noexcept = default;
 FlatQueryParam::~FlatQueryParam() = default;
 
-BaseIndexQueryParam::Pointer FlatQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer FlatQueryParam::clone() const {
   return std::make_shared<FlatQueryParam>(*this);
 }
 
@@ -47,7 +47,7 @@ HNSWQueryParam &HNSWQueryParam::operator=(const HNSWQueryParam &) = default;
 HNSWQueryParam &HNSWQueryParam::operator=(HNSWQueryParam &&) noexcept = default;
 HNSWQueryParam::~HNSWQueryParam() = default;
 
-BaseIndexQueryParam::Pointer HNSWQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer HNSWQueryParam::clone() const {
   return std::make_shared<HNSWQueryParam>(*this);
 }
 
@@ -62,8 +62,22 @@ HNSWRabitqQueryParam &HNSWRabitqQueryParam::operator=(
     HNSWRabitqQueryParam &&) noexcept = default;
 HNSWRabitqQueryParam::~HNSWRabitqQueryParam() = default;
 
-BaseIndexQueryParam::Pointer HNSWRabitqQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer HNSWRabitqQueryParam::clone() const {
   return std::make_shared<HNSWRabitqQueryParam>(*this);
+}
+
+IVFRabitqQueryParam::IVFRabitqQueryParam() = default;
+IVFRabitqQueryParam::IVFRabitqQueryParam(const IVFRabitqQueryParam &) = default;
+IVFRabitqQueryParam::IVFRabitqQueryParam(IVFRabitqQueryParam &&) noexcept =
+    default;
+IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
+    const IVFRabitqQueryParam &) = default;
+IVFRabitqQueryParam &IVFRabitqQueryParam::operator=(
+    IVFRabitqQueryParam &&) noexcept = default;
+IVFRabitqQueryParam::~IVFRabitqQueryParam() = default;
+
+BaseIndexQueryParam::Pointer IVFRabitqQueryParam::clone() const {
+  return std::make_shared<IVFRabitqQueryParam>(*this);
 }
 
 IVFQueryParam::IVFQueryParam() = default;
@@ -73,10 +87,10 @@ IVFQueryParam &IVFQueryParam::operator=(const IVFQueryParam &) = default;
 IVFQueryParam &IVFQueryParam::operator=(IVFQueryParam &&) noexcept = default;
 IVFQueryParam::~IVFQueryParam() = default;
 
-BaseIndexQueryParam::Pointer IVFQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer IVFQueryParam::clone() const {
   auto cloned_this = std::make_shared<IVFQueryParam>(*this);
-  cloned_this->l1QueryParam = l1QueryParam ? l1QueryParam->Clone() : nullptr;
-  cloned_this->l2QueryParam = l2QueryParam ? l2QueryParam->Clone() : nullptr;
+  cloned_this->l1QueryParam = l1QueryParam ? l1QueryParam->clone() : nullptr;
+  cloned_this->l2QueryParam = l2QueryParam ? l2QueryParam->clone() : nullptr;
   return cloned_this;
 }
 
@@ -89,7 +103,7 @@ DiskAnnQueryParam &DiskAnnQueryParam::operator=(DiskAnnQueryParam &&) noexcept =
     default;
 DiskAnnQueryParam::~DiskAnnQueryParam() = default;
 
-BaseIndexQueryParam::Pointer DiskAnnQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer DiskAnnQueryParam::clone() const {
   return std::make_shared<DiskAnnQueryParam>(*this);
 }
 
@@ -123,7 +137,7 @@ IVFIndexParam &IVFIndexParam::operator=(const IVFIndexParam &) = default;
 IVFIndexParam &IVFIndexParam::operator=(IVFIndexParam &&) = default;
 IVFIndexParam::~IVFIndexParam() = default;
 
-BaseIndexQueryParam::Pointer VamanaQueryParam::Clone() const {
+BaseIndexQueryParam::Pointer VamanaQueryParam::clone() const {
   return std::make_shared<VamanaQueryParam>(*this);
 }
 
@@ -146,6 +160,20 @@ HNSWRabitqIndexParam &HNSWRabitqIndexParam::operator=(
 HNSWRabitqIndexParam &HNSWRabitqIndexParam::operator=(HNSWRabitqIndexParam &&) =
     default;
 HNSWRabitqIndexParam::~HNSWRabitqIndexParam() = default;
+
+IVFRabitqIndexParam::IVFRabitqIndexParam()
+    : BaseIndexParam(IndexType::kIVFRabitq) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(int nlist)
+    : BaseIndexParam(IndexType::kIVFRabitq), nlist(nlist) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(MetricType metric, int dim, int nlist)
+    : BaseIndexParam(IndexType::kIVFRabitq, metric, dim), nlist(nlist) {}
+IVFRabitqIndexParam::IVFRabitqIndexParam(const IVFRabitqIndexParam &) = default;
+IVFRabitqIndexParam::IVFRabitqIndexParam(IVFRabitqIndexParam &&) = default;
+IVFRabitqIndexParam &IVFRabitqIndexParam::operator=(
+    const IVFRabitqIndexParam &) = default;
+IVFRabitqIndexParam &IVFRabitqIndexParam::operator=(IVFRabitqIndexParam &&) =
+    default;
+IVFRabitqIndexParam::~IVFRabitqIndexParam() = default;
 
 ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
     bool omit_empty_value) const {
@@ -183,18 +211,24 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
   }
 
   // if (preprocess_param) {
-  //   json.set("preprocess_param", preprocess_param->SerializeToJson());
+  //   json.set("preprocess_param", preprocess_param->serialize_to_json());
   // }
-  if (!omit_empty_value || quantizer_param.type != QuantizerType::kNone) {
+  if (quantizer_param) {
+    if (!omit_empty_value || quantizer_param->type != QuantizerType::kNone) {
+      json_obj.set("quantizer_param",
+                   quantizer_param->SerializeToJsonObject(omit_empty_value));
+    }
+  } else if (!omit_empty_value) {
+    // no quantizer configured, keep the default(kNone) object as before
     json_obj.set("quantizer_param",
-                 quantizer_param.SerializeToJsonObject(omit_empty_value));
+                 QuantizerParam().SerializeToJsonObject(false));
   }
   // if (refiner_param) {
-  //   json.set("refiner_param", refiner_param->SerializeToJson());
+  //   json.set("refiner_param", refiner_param->serialize_to_json());
   // }
   // if (default_query_param) {
   //   json.set("default_query_param",
-  //   default_query_param->SerializeToJson());
+  //   default_query_param->serialize_to_json());
   // }
   return json_obj;
 }
@@ -239,7 +273,20 @@ bool BaseIndexParam::DeserializeFromJsonObject(
   if (json_obj.has("quantizer_param")) {
     if (json_obj.get("quantizer_param", &tmp_json_value);
         tmp_json_value.is_object()) {
-      quantizer_param.DeserializeFromJsonObject(tmp_json_value.as_object());
+      const auto &quantizer_json_obj = tmp_json_value.as_object();
+      // the concrete param type is determined by the quantizer type
+      auto quantizer_type = QuantizerType::kNone;
+      ailego::JsonValue type_json_value;
+      if (!extract_enum_from_json<QuantizerType>(
+              quantizer_json_obj, "type", quantizer_type, type_json_value)) {
+        LOG_ERROR("Error when deserialize json - field:quantizer_param.type");
+        return false;
+      }
+      auto quantizer = QuantizerParam::Create(quantizer_type);
+      if (!quantizer->DeserializeFromJsonObject(quantizer_json_obj)) {
+        LOG_ERROR("Error when deserialize json - field:quantizer_param");
+      }
+      quantizer_param = std::move(quantizer);
     }
   }
 
@@ -312,6 +359,35 @@ ailego::JsonObject HNSWRabitqIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
+bool IVFRabitqIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVFRabitq) {
+    LOG_ERROR("index_type is not kIVFRabitq");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+
+  return true;
+}
+
+ailego::JsonObject IVFRabitqIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("total_bits", ailego::JsonValue(total_bits));
+  if (!omit_empty_value || sample_count != 0) {
+    json_obj.set("sample_count", ailego::JsonValue(sample_count));
+  }
+  return json_obj;
+}
+
 ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
     bool omit_empty_value) const {
   auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
@@ -328,6 +404,9 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
   if (!omit_empty_value || use_contiguous_memory) {
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
+  }
+  if (!omit_empty_value || two_pass_build) {
+    json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
   }
   return json_obj;
 }
@@ -369,6 +448,7 @@ bool VamanaIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, max_occlusion_size);
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
 
   return true;
 }
@@ -390,6 +470,33 @@ bool QuantizerParam::DeserializeFromJsonObject(
     const ailego::JsonObject &json_obj) {
   DESERIALIZE_ENUM_FIELD(json_obj, type, QuantizerType);
   DESERIALIZE_VALUE_FIELD(json_obj, enable_rotate);
+  return true;
+}
+
+QuantizerParam::Pointer QuantizerParam::Create(QuantizerType t) {
+  switch (t) {
+    case QuantizerType::kPQ:
+      return std::make_shared<PqQuantizerParam>();
+    default:
+      return std::make_shared<QuantizerParam>(t);
+  }
+}
+
+ailego::JsonObject PqQuantizerParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = QuantizerParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set("num_chunk", ailego::JsonValue(num_chunk));
+  json_obj.set("num_bits", ailego::JsonValue(num_bits));
+  return json_obj;
+}
+
+bool PqQuantizerParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!QuantizerParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+  DESERIALIZE_VALUE_FIELD(json_obj, num_chunk);
+  DESERIALIZE_VALUE_FIELD(json_obj, num_bits);
   return true;
 }
 

@@ -50,14 +50,14 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     LogConfig(LogLevel level) : level(level) {}
     virtual ~LogConfig() = default;
-    virtual std::string GetLoggerType() const = 0;
+    virtual std::string get_logger_type() const = 0;
   };
 
   // Console log configuration
   struct ConsoleLogConfig : LogConfig {
     ConsoleLogConfig(LogLevel level = LogLevel::kWarn) : LogConfig{level} {}
 
-    std::string GetLoggerType() const override {
+    std::string get_logger_type() const override {
       return CONSOLE_LOG_TYPE_NAME;
     }
   };
@@ -80,7 +80,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
           file_size{file_size},
           overdue_days(overdue_days) {}
 
-    std::string GetLoggerType() const override {
+    std::string get_logger_type() const override {
       return FILE_LOG_TYPE_NAME;
     }
   };
@@ -114,14 +114,14 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
     ConfigData();
   };
 
-  // Initialize the configuration (can only be called once)
-  Status Initialize(const ConfigData &config);
+  // initialize the configuration (can only be called once)
+  Status initialize(const ConfigData &config);
 
-  Status Validate(const ConfigData &config) const;
+  Status validate(const ConfigData &config) const;
 
   // Set the process-wide default jieba dict dir. Thread-safe and decoupled
-  // from Initialize() so language SDKs can call it on module load.
-  // Initialize() with a non-empty config.jieba_dict_dir overrides this.
+  // from initialize() so language SDKs can call it on module load.
+  // initialize() with a non-empty config.jieba_dict_dir overrides this.
   void set_default_jieba_dict_dir(const std::string &dir);
 
   // Read-only accessors
@@ -134,7 +134,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
   std::string log_type() const noexcept {
     auto config = config_snapshot();
-    return config->log_config->GetLoggerType();
+    return config->log_config->get_logger_type();
   }
 
   LogLevel log_level() const noexcept {
@@ -224,7 +224,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
     return std::atomic_load_explicit(&config_, std::memory_order_acquire);
   }
 
-  // Readers atomically acquire an immutable snapshot, so Initialize() and the
+  // Readers atomically acquire an immutable snapshot, so initialize() and the
   // language-SDK jieba setter can publish whole configurations without data
   // races or mixed-field observations.
   std::shared_ptr<const ConfigData> config_{
@@ -235,7 +235,7 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   // concurrently with the one-time snapshot publication cannot dangle.
   std::shared_ptr<LogConfig> retained_log_config_;
 
-  // Initialize() can be called concurrently by language bindings. Publish a
+  // initialize() can be called concurrently by language bindings. Publish a
   // terminal state only after every initialization stage has completed, and
   // make followers observe the same result instead of returning early while
   // the winning thread is still working.

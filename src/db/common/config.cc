@@ -44,7 +44,7 @@ GlobalConfig::ConfigData::ConfigData()
       optimize_thread_binding(false),
       jieba_dict_dir() {}
 
-Status GlobalConfig::Validate(const ConfigData &config) const {
+Status GlobalConfig::validate(const ConfigData &config) const {
   if (config.memory_limit_bytes < MIN_MEMORY_LIMIT_BYTES) {
     return Status::InvalidArgument("memory_limit_bytes must be greater than ",
                                    MIN_MEMORY_LIMIT_BYTES);
@@ -91,7 +91,7 @@ Status GlobalConfig::Validate(const ConfigData &config) const {
   if (!config.log_config) {
     return Status::InvalidArgument("log_config cannot be null");
   }
-  const std::string logger_type = config.log_config->GetLoggerType();
+  const std::string logger_type = config.log_config->get_logger_type();
   if (logger_type == FILE_LOG_TYPE_NAME) {
     auto log_config =
         std::dynamic_pointer_cast<FileLogConfig>(config.log_config);
@@ -133,7 +133,7 @@ Status GlobalConfig::Validate(const ConfigData &config) const {
   return Status::OK();
 }
 
-Status GlobalConfig::Initialize(const ConfigData &config) {
+Status GlobalConfig::initialize(const ConfigData &config) {
   {
     std::unique_lock<std::mutex> lock(initialization_mutex_);
     initialization_cv_.wait(lock, [this] {
@@ -149,7 +149,7 @@ Status GlobalConfig::Initialize(const ConfigData &config) {
   Status result;
   bool validation_failed = false;
   try {
-    result = Validate(config);
+    result = validate(config);
     validation_failed = !result.ok();
 
     std::unique_lock<std::mutex> config_write_lock;
@@ -212,7 +212,7 @@ Status GlobalConfig::Initialize(const ConfigData &config) {
                     LogUtil::Init(file_config ? file_config->dir : empty,
                                   file_config ? file_config->basename : empty,
                                   int(effective_config.log_config->level),
-                                  effective_config.log_config->GetLoggerType(),
+                                  effective_config.log_config->get_logger_type(),
                                   file_config ? file_config->file_size : 0,
                                   file_config ? file_config->overdue_days : 0);
                 log_initialized = log_status.ok();

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <variant>
 #include <vector>
@@ -111,46 +112,45 @@ class ZVEC_CORE_API Index {
   typedef std::shared_ptr<Index> Pointer;
   virtual ~Index() = default;
 
-  // static Index::Pointer Create(const BaseIndexParam &param); //IndexFactory
-  virtual int Open(const std::string &file_path,
+  // static Index::Pointer Create(const BaseIndexParam &param); // IndexFactory
+  virtual int open(const std::string &file_path,
                    StorageOptions storage_options);
-  int Close();
-  int Flush();
-  // virtual int Serialize(const std::string &file_path);
-  // virtual int Deserialize(const std::string &file_path);
+  int close();
+  int flush();
+  // virtual int serialize(const std::string &file_path);
+  // virtual int deserialize(const std::string &file_path);
 
   // // TODO: use holder
-  // virtual int Build() = 0;
-  virtual int Train();
+  // virtual int build() = 0;
+  virtual int train();
 
-  // virtual int Dump(const std::string &file_path) = 0;
-  virtual int Merge(const std::vector<Index::Pointer> &indexes,
+  // virtual int dump(const std::string &file_path) = 0;
+  virtual int merge(const std::vector<Index::Pointer> &indexes,
                     const IndexFilter &filter,
                     const MergeOptions &options = {});
   // TODO: static reduce
 
-  virtual int Add(const VectorData &vector, uint32_t doc_id);
+  virtual int add(const VectorData &vector, uint32_t doc_id);
 
-  virtual int Fetch(const uint32_t doc_id,
+  virtual int fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
-  virtual int Search(const VectorData &query,
+  virtual int search(const VectorData &query,
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
-  virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
-                            const core::VectorSource &src);
-  virtual int SearchWithSource(const VectorData &query,
-                               const BaseIndexQueryParam::Pointer &search_param,
-                               const core::VectorSource &src,
-                               SearchResult *result);
+  virtual int add_with_source(const VectorData &vector, uint32_t doc_id,
+                              const core::VectorSource &src);
+  virtual int search_with_source(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      const core::VectorSource &src, SearchResult *result);
 
-  virtual BaseIndexParam::Pointer GetParam() const;
+  virtual BaseIndexParam::Pointer get_param() const;
 
-  virtual bool IsTrained() const;
+  virtual bool is_trained() const;
 
-  bool IsDirty() const;
+  bool is_dirty() const;
 
-  uint32_t GetDocCount() const;
+  uint32_t get_doc_count() const;
 
   core::IndexStreamer::Pointer index_searcher();
 
@@ -267,16 +267,16 @@ class ZVEC_CORE_API IVFIndex : public Index {
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
 
-  int Add(const VectorData &vector, uint32_t doc_id) override;
+  int add(const VectorData &vector, uint32_t doc_id) override;
 
-  int Train() override;
+  int train() override;
 
-  int Open(const std::string &file_path,
+  int open(const std::string &file_path,
            StorageOptions storage_options) override;
 
   int _dense_fetch(const uint32_t doc_id,
                    VectorDataBuffer *vector_data_buffer) override;
-  int Merge(const std::vector<Index::Pointer> &indexes,
+  int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
   int GenerateHolder();
 
@@ -300,12 +300,12 @@ class ZVEC_CORE_API HNSWIndex : public Index {
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
 
-  int AddWithSource(const VectorData &vector, uint32_t doc_id,
-                    const core::VectorSource &src) override;
-  int SearchWithSource(const VectorData &query,
-                       const BaseIndexQueryParam::Pointer &search_param,
-                       const core::VectorSource &src,
-                       SearchResult *result) override;
+  int add_with_source(const VectorData &vector, uint32_t doc_id,
+                      const core::VectorSource &src) override;
+  int search_with_source(const VectorData &query,
+                         const BaseIndexQueryParam::Pointer &search_param,
+                         const core::VectorSource &src,
+                         SearchResult *result) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -323,6 +323,10 @@ class ZVEC_CORE_API HNSWIndex : public Index {
 class ZVEC_CORE_API VamanaIndex : public Index {
  public:
   VamanaIndex() = default;
+
+  int merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter,
+            const MergeOptions &options = {}) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -354,6 +358,35 @@ class ZVEC_CORE_API HNSWRabitqIndex : public Index {
   HNSWRabitqIndexParam param_{};
 };
 
+class ZVEC_CORE_API IVFRabitqIndex : public Index {
+ public:
+  IVFRabitqIndex() = default;
+
+ protected:
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
+
+  int add(const VectorData &vector, uint32_t doc_id) override;
+  int train() override;
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
+  int GenerateHolder();
+
+ private:
+  IVFRabitqIndexParam param_{};
+  std::mutex mutex_{};
+  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
+  core::IndexHolder::Pointer holder_{};
+  std::string file_path_;
+};
+
 class ZVEC_CORE_API DiskAnnIndex : public Index {
  public:
   DiskAnnIndex() = default;
@@ -365,16 +398,16 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
 
-  int Add(const VectorData &vector, uint32_t doc_id) override;
+  int add(const VectorData &vector, uint32_t doc_id) override;
 
-  int Train() override;
+  int train() override;
 
-  int Open(const std::string &file_path,
+  int open(const std::string &file_path,
            StorageOptions storage_options) override;
 
   int _dense_fetch(const uint32_t doc_id,
                    VectorDataBuffer *vector_data_buffer) override;
-  int Merge(const std::vector<Index::Pointer> &indexes,
+  int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
   int GenerateHolder();
 

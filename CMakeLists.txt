@@ -5,6 +5,7 @@ set(CC_CXX_STANDARD 17)
 
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
+    add_compile_options(/utf-8)
     # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
     # Use CACHE FORCE so it propagates into thirdparty subdirectories that call project().
     foreach(_cfg DEBUG RELWITHDEBINFO)
@@ -38,6 +39,9 @@ if(MSVC)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror=return-type")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror=return-type")
+    # Fine-grained dead code elimination: place each function/data in its own section
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
@@ -45,14 +49,46 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 endif()
 
+# Detect musl libc. Some code paths need to avoid large stack buffers on musl
+# because its default thread stack is much smaller than glibc's (128KB vs 8MB).
+# Detection: musl's ldd prints "musl libc" to stderr.
+set(ZVEC_ON_MUSL FALSE CACHE BOOL "Building on musl libc" FORCE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    execute_process(
+        COMMAND ldd --version
+        OUTPUT_VARIABLE _zvec_ldd_stdout
+        ERROR_VARIABLE _zvec_ldd_stderr
+    )
+    if("${_zvec_ldd_stdout}${_zvec_ldd_stderr}" MATCHES "musl")
+        set(ZVEC_ON_MUSL TRUE CACHE BOOL "Building on musl libc" FORCE)
+        message(STATUS "musl libc detected")
+    endif()
+endif()
+
 if(NOT DEFINED PROJECT_ROOT_DIR OR NOT PROJECT_ROOT_DIR)
     set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Root directory of the project" FORCE)
+endif()
+
+# LTO (Link-Time Optimization) — helps on Linux with --gc-sections but may
+# increase size on macOS due to aggressive inlining.  Default OFF; enable
+# explicitly with -DZVEC_ENABLE_LTO=ON when targeting Linux.
+option(ZVEC_ENABLE_LTO "Enable Link-Time Optimization for Release builds" OFF)
+if(ZVEC_ENABLE_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_OUTPUT)
+    if(IPO_SUPPORTED)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO enabled for Release build")
+    else()
+        message(STATUS "LTO not supported: ${IPO_OUTPUT}")
+    endif()
 endif()
 
 message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
 
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/version.cmake)
 
 # iOS platform detection
 if(NOT ANDROID AND NOT IOS AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -89,27 +125,26 @@ message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
-option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID AND NOT IOS)
-  include(CheckCCompilerFlag)
+  include(CheckCXXCompilerFlag)
 
-  check_c_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
-  check_c_compiler_flag("-mavx512f -mavx512bw -mavx512vl" COMPILER_SUPPORTS_AVX512)
+  check_cxx_compiler_flag("-mavx2 -mfma" COMPILER_SUPPORTS_RABITQ_AVX2)
+  check_cxx_compiler_flag(
+      "-mavx512f -mavx512bw -mavx512dq -mfma"
+      COMPILER_SUPPORTS_RABITQ_AVX512)
+  check_cxx_compiler_flag(
+      "-mavx512f -mavx512bw -mavx512dq -mavx512vpopcntdq -mfma"
+      COMPILER_SUPPORTS_RABITQ_AVX512_POPCNT)
 
-  if(COMPILER_SUPPORTS_AVX2 OR COMPILER_SUPPORTS_AVX512)
+  if(COMPILER_SUPPORTS_RABITQ_AVX2 AND
+     COMPILER_SUPPORTS_RABITQ_AVX512 AND
+     COMPILER_SUPPORTS_RABITQ_AVX512_POPCNT)
     set(RABITQ_SUPPORTED ON)
     add_definitions(-DRABITQ_SUPPORTED=1)
-    if(RABITQ_ENABLE_AVX512 AND COMPILER_SUPPORTS_AVX512)
-      add_definitions(-DRABITQ_COMPILED_AVX512=1)
-      set(RABITQ_ARCH_FLAG "${MATH_MARCH_FLAG_AVX512}")
-    else()
-      set(RABITQ_ARCH_FLAG "${MATH_MARCH_FLAG_AVX2}")
-    endif()
   else()
     set(RABITQ_SUPPORTED OFF)
     add_definitions(-DRABITQ_SUPPORTED=0)
-    message(STATUS "RaBitQ support disabled - compiler does not support AVX2 or AVX-512")
+    message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
   endif()
 elseif(IOS)
   set(RABITQ_SUPPORTED OFF)
@@ -120,16 +155,19 @@ else()
   add_definitions(-DRABITQ_SUPPORTED=0)
   message(STATUS "RaBitQ support disabled - only supported on Linux x86_64")
 endif()
-message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
+message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 
-# DiskAnn support (Linux x86_64 only; libaio loaded at runtime via dlopen)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
+# DiskAnn support:
+#   - Linux x86_64 and ARM64 with io_uring, libaio, or pread
+#   - macOS ARM64 (Apple Silicon) with synchronous pread
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" AND NOT ANDROID AND NOT IOS)
+    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled - only supported on Linux x86_64")
+  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 
@@ -144,16 +182,24 @@ cc_directories(src)
 
 cc_directories(tests)
 
-add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
+add_custom_target(clang_tidy_deps DEPENDS ARROW.BUILD glog gflags Lz4.BUILD)
 
 if(BUILD_TOOLS)
     cc_directories(tools)
 endif()
 
-git_version(GIT_SRCS_VER ${PROJECT_ROOT_DIR})
-set(CPACK_PACKAGE_VERSION ${GIT_SRCS_VER})
+set(CPACK_PACKAGE_VERSION ${ZVEC_VERSION_NUMBER})
+set(CPACK_PACKAGE_VERSION_MAJOR ${ZVEC_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${ZVEC_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
+
+# cppjieba dict files bundled with installed artifacts so the `jieba` FTS
+# tokenizer works out of the box (source of truth for both the Python wheel
+# and the native SDK packages).
+set(ZVEC_JIEBA_DICT_SRC
+    "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
 
 if(BUILD_PYTHON_BINDINGS)
     if(APPLE)
@@ -186,11 +232,21 @@ if(BUILD_PYTHON_BINDINGS)
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
     # importlib.resources and registers it with set_default_jieba_dict_dir().
-    set(ZVEC_JIEBA_DICT_SRC
-        "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
     install(FILES
         "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
         "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
         DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
         COMPONENT python)
 endif()
+
+# Ship the same dict files with the native SDK install (prebuilt packages)
+# as well, under <prefix>/data/jieba_dict (mirrors the wheel's
+# zvec/data/jieba_dict layout). Unlike Python there is no
+# import-time registration: consumers register the directory explicitly via
+# zvec_set_default_jieba_dict_dir() / zvec_config_data_set_jieba_dict_dir(),
+# the ZVEC_JIEBA_DICT_DIR env var, or per-field extra_params.jieba_dict_dir.
+# Default component, so the wheel build (COMPONENT python) is unaffected.
+install(FILES
+    "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
+    "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
+    DESTINATION data/jieba_dict)

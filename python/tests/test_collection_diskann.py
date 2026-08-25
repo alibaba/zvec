@@ -15,16 +15,11 @@
 
 Mirrors ``test_collection_hnsw_rabitq.py`` but targets the DiskAnn index.
 
-Two platform-level prerequisites are enforced at module import time:
+DiskAnn must be built for Linux (x86_64/ARM64) or macOS ARM64. Other
+platforms are skipped wholesale.
 
-1. DiskAnn is currently built only for Linux x86_64 — other platforms are
-   skipped wholesale.
-2. libaio is loaded eagerly (via dlopen) inside DiskAnnBuilder::init() /
-   DiskAnnStreamer::init(). If libaio is missing, DiskAnn falls back to
-   synchronous pread() — the tests still run but with degraded performance.
-
-If either prerequisite fails the whole module is skipped so the rest of the
-test-suite is not affected.
+If the prerequisite fails the whole module is skipped so the rest of the
+test suite is not affected. macOS uses synchronous pread.
 """
 
 from __future__ import annotations
@@ -39,8 +34,14 @@ import pytest
 # Platform gating (must happen BEFORE we touch zvec).
 # --------------------------------------------------------------------------- #
 pytestmark = pytest.mark.skipif(
-    not (sys.platform == "linux" and platform.machine() in ("x86_64", "AMD64")),
-    reason="DiskAnn plugin is only supported on Linux x86_64",
+    not (
+        (
+            sys.platform == "linux"
+            and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
+        )
+        or (sys.platform == "darwin" and platform.machine() in ("aarch64", "arm64"))
+    ),
+    reason="DiskAnn is supported on Linux (x86_64/ARM64) and macOS ARM64",
 )
 
 import zvec  # noqa: E402

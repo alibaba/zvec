@@ -28,32 +28,32 @@ namespace zvec::core_interface {
 
 int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   (void)param;
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
-int DiskAnnIndex::Open(const std::string &file_path,
+int DiskAnnIndex::open(const std::string &file_path,
                        StorageOptions storage_options) {
   (void)file_path;
   (void)storage_options;
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
 int DiskAnnIndex::GenerateHolder() {
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
-int DiskAnnIndex::Add(const VectorData &vector, uint32_t doc_id) {
+int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
   (void)vector;
   (void)doc_id;
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
-int DiskAnnIndex::Train() {
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+int DiskAnnIndex::train() {
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
@@ -61,7 +61,7 @@ int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
                                VectorDataBuffer *vector_data_buffer) {
   (void)doc_id;
   (void)vector_data_buffer;
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
@@ -71,17 +71,17 @@ int DiskAnnIndex::_prepare_for_search(
   (void)query;
   (void)search_param;
   (void)context;
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
-int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
+int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
                         const IndexFilter &filter,
                         const MergeOptions &options) {
   (void)indexes;
   (void)filter;
   (void)options;
-  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
 
@@ -136,7 +136,7 @@ int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   return 0;
 }
 
-int DiskAnnIndex::Open(const std::string &file_path,
+int DiskAnnIndex::open(const std::string &file_path,
                        StorageOptions storage_options) {
   ailego::Params storage_params;
   file_path_ = file_path;
@@ -200,7 +200,7 @@ int DiskAnnIndex::GenerateHolder() {
                               converter_, &holder_);
 }
 
-int DiskAnnIndex::Add(const VectorData &vector, uint32_t doc_id) {
+int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
   if (is_trained_) {
     LOG_ERROR("this diskann index is trained");
     return core::IndexError_Runtime;
@@ -224,7 +224,7 @@ int DiskAnnIndex::Add(const VectorData &vector, uint32_t doc_id) {
   return 0;
 }
 
-int DiskAnnIndex::Train() {
+int DiskAnnIndex::train() {
   int ret = GenerateHolder();
   if (ret != 0) {
     LOG_ERROR("Failed to generate holder, err: %s",
@@ -304,6 +304,17 @@ int DiskAnnIndex::_prepare_for_search(
   }
 
   context->set_topk(diskann_search_param->topk);
+  context->set_fetch_vector(diskann_search_param->fetch_vector);
+  if (diskann_search_param->filter) {
+    context->set_filter(*diskann_search_param->filter);
+  } else {
+    context->reset_filter();
+  }
+  if (diskann_search_param->radius > 0.0f) {
+    context->set_threshold(diskann_search_param->radius);
+  } else {
+    context->reset_threshold();
+  }
 
   // Propagate the query-time beam-search list size into the context. Must be
   // at least topk to keep enough candidates for a correct result.
@@ -316,10 +327,10 @@ int DiskAnnIndex::_prepare_for_search(
   return 0;
 }
 
-int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
+int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
                         const IndexFilter &filter,
                         const MergeOptions &options) {
-  int pre_ret = Index::Merge(indexes, filter, options);
+  int pre_ret = Index::merge(indexes, filter, options);
   if (pre_ret != 0) {
     return pre_ret;
   }

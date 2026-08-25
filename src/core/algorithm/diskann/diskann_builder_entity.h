@@ -29,6 +29,8 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   virtual ~DiskAnnBuilderEntity() = default;
 
  public:
+  void clear();
+
   int add_vector(diskann_key_t key, const void *vec) override;
 
   std::pair<uint32_t, const diskann_id_t *> get_neighbors(

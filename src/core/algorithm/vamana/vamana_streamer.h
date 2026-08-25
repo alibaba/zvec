@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_framework.h>
 #include "vamana_algorithm.h"
@@ -30,6 +31,9 @@ class VamanaStreamer : public IndexStreamer {
 
   VamanaStreamer(const VamanaStreamer &) = delete;
   VamanaStreamer &operator=(const VamanaStreamer &) = delete;
+
+  //! Run the configured-alpha second graph pass exactly once.
+  int finalize_build(void);
 
  protected:
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
@@ -125,6 +129,8 @@ class VamanaStreamer : public IndexStreamer {
 
   int setup_entity();
   int update_context(VamanaContext *ctx) const;
+  int finalize_build_locked();
+  void update_entry_point_to_medoid();
 
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
@@ -180,6 +186,8 @@ class VamanaStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
+  bool two_pass_build_enabled_{false};
+  std::atomic<bool> build_finalized_{false};
 
   ailego::SharedMutex shared_mutex_{};
 };

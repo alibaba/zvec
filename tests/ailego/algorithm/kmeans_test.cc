@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <random>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
@@ -22,6 +23,117 @@
 #include <ailego/algorithm/kmeans.h>
 
 using namespace zvec;
+
+using SmallInnerProductKmeansContext =
+    ailego::NumericalInnerProductKmeansContext<float, 2>;
+using SmallInnerProductKmeans =
+    ailego::LloydCluster<float, ailego::ThreadPool,
+                         SmallInnerProductKmeansContext,
+                         ailego::NumericalVectorArray<float>>;
+using SmallInnerProductKmc2Generator =
+    ailego::Kmc2CentroidsGenerator<SmallInnerProductKmeans, ailego::ThreadPool>;
+
+TEST(NumericalInnerProductKmeans, Kmc2UsesCosineWeightForNormalizedVectors) {
+  SmallInnerProductKmeans kmeans(1, 2, true);
+  const float centroid[] = {1.0f, 0.0f};
+  const float feature[] = {0.6f, 0.8f};
+  kmeans.mutable_centroids()->append(centroid, 2);
+
+  std::vector<float> centroid_norms;
+  SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
+  float weight = 0.0f;
+  SmallInnerProductKmc2Generator::UpdateBenchScores(
+      &kmeans, feature, centroid_norms.data(), &weight);
+
+  EXPECT_NEAR(weight, 0.4f, 1e-6f);
+}
+
+TEST(NumericalInnerProductKmeans, Kmc2UsesNonNegativeWeightForRawVectors) {
+  SmallInnerProductKmeans kmeans(1, 2, true);
+  const float centroid[] = {3.0f, 4.0f};
+  const float feature[] = {6.0f, 8.0f};
+  kmeans.mutable_centroids()->append(centroid, 2);
+
+  std::vector<float> centroid_norms;
+  SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
+  float weight = 0.0f;
+  SmallInnerProductKmc2Generator::UpdateBenchScores(
+      &kmeans, feature, centroid_norms.data(), &weight);
+
+  EXPECT_NEAR(weight, 0.0f, 1e-6f);
+}
+
+TEST(NumericalInnerProductKmeans, Kmc2NormalizesEachCandidateCentroid) {
+  SmallInnerProductKmeans kmeans(2, 2, true);
+  const float centroids[][2] = {{100.0f, 0.0f}, {0.0f, 1.0f}};
+  const float feature[] = {0.1f, 1.0f};
+  for (const auto &centroid : centroids) {
+    kmeans.mutable_centroids()->append(centroid, 2);
+  }
+
+  std::vector<float> centroid_norms;
+  SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
+  float weight = 0.0f;
+  SmallInnerProductKmc2Generator::UpdateBenchScores(
+      &kmeans, feature, centroid_norms.data(), &weight);
+
+  EXPECT_NEAR(weight, std::sqrt(1.01f) - 1.0f, 1e-6f);
+}
+
+TEST(NumericalInnerProductKmeans, Afkmc2UsesSphericalWeights) {
+  SmallInnerProductKmeans kmeans(1, 2, true);
+  const float centroid[] = {1.0f, 0.0f};
+  const float features[][2] = {{0.6f, 0.8f}, {-1.0f, 0.0f}};
+  kmeans.mutable_centroids()->append(centroid, 2);
+  for (const auto &feature : features) {
+    kmeans.append(feature, 2);
+  }
+
+  float weights[2] = {};
+  SmallInnerProductKmc2Generator::UpdateMatrixScores(&kmeans, 0, 1, weights);
+
+  EXPECT_NEAR(weights[0], 0.4f, 1e-6f);
+  EXPECT_NEAR(weights[1], 2.0f, 1e-6f);
+}
+
+TEST(NumericalInnerProductKmeans, Afkmc2UsesNonNegativeWeightForRawVectors) {
+  SmallInnerProductKmeans kmeans(1, 2, true);
+  const float centroid[] = {3.0f, 4.0f};
+  const float feature[] = {6.0f, 8.0f};
+  kmeans.mutable_centroids()->append(centroid, 2);
+  kmeans.append(feature, 2);
+
+  float weight = 0.0f;
+  SmallInnerProductKmc2Generator::UpdateCacheScores(&kmeans, &weight);
+
+  EXPECT_NEAR(weight, 0.0f, 1e-6f);
+}
+
+TEST(NumericalInnerProductKmeans,
+     Afkmc2UsesUniformProbabilitiesForZeroWeights) {
+  std::vector<float> probabilities = {0.0f, 0.0f};
+
+  SmallInnerProductKmc2Generator::NormalizeProbabilities(&probabilities);
+
+  ASSERT_EQ(2u, probabilities.size());
+  EXPECT_FLOAT_EQ(0.5f, probabilities[0]);
+  EXPECT_FLOAT_EQ(0.5f, probabilities[1]);
+}
+
+TEST(NumericalInnerProductKmeans, NonSphericalKmc2KeepsInnerProductScore) {
+  SmallInnerProductKmeans kmeans(1, 2, false);
+  const float centroid[] = {1.0f, 0.0f};
+  const float feature[] = {0.6f, 0.8f};
+  kmeans.mutable_centroids()->append(centroid, 2);
+
+  std::vector<float> centroid_norms;
+  SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
+  float weight = 0.0f;
+  SmallInnerProductKmc2Generator::UpdateBenchScores(
+      &kmeans, feature, centroid_norms.data(), &weight);
+
+  EXPECT_NEAR(weight, -0.6f, 1e-6f);
+}
 
 TEST(NumericalKmeans, FP32_General) {
   const size_t DIMENSION = 20;

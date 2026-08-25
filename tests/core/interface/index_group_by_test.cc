@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
 #include <numeric>
 #include <set>
 #include <string>
@@ -44,6 +45,7 @@ struct GroupByCase {
   bool is_sparse = false;
   uint32_t dimension = kDimension;
   bool with_refiner = false;
+  int expected_error = 0;
 };
 
 std::shared_ptr<std::vector<uint64_t>> AllPks() {
@@ -66,38 +68,38 @@ void AttachGroupBy(const BaseIndexQueryParam::Pointer &query_param) {
 
 BaseIndexParam::Pointer DenseFlatParam(uint32_t dimension = kDimension) {
   return FlatIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(dimension)
-      .WithIsSparse(false)
-      .Build();
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(dimension)
+      .with_is_sparse(false)
+      .build();
 }
 
 BaseIndexParam::Pointer SparseFlatParam() {
   return FlatIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithIsSparse(true)
-      .Build();
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_is_sparse(true)
+      .build();
 }
 
 BaseIndexParam::Pointer DenseHnswParam(uint32_t dimension = kDimension) {
   return HNSWIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(dimension)
-      .WithIsSparse(false)
-      .WithEFConstruction(100)
-      .Build();
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(dimension)
+      .with_is_sparse(false)
+      .with_ef_construction(100)
+      .build();
 }
 
 BaseIndexParam::Pointer SparseHnswParam() {
   return HNSWIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithIsSparse(true)
-      .WithEFConstruction(100)
-      .Build();
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_is_sparse(true)
+      .with_ef_construction(100)
+      .build();
 }
 
 BaseIndexQueryParam::Pointer FlatQuery(bool fetch_vector = false) {
@@ -158,14 +160,14 @@ BaseIndexParam::Pointer DenseHnswRabitqParam(uint32_t dimension) {
   EXPECT_EQ(0, converter.to_reformer(&reformer));
 
   return HNSWRabitqIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(dimension)
-      .WithIsSparse(false)
-      .WithEFConstruction(100)
-      .WithProvider(holder)
-      .WithReformer(reformer)
-      .Build();
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(dimension)
+      .with_is_sparse(false)
+      .with_ef_construction(100)
+      .with_provider(holder)
+      .with_reformer(reformer)
+      .build();
 }
 
 BaseIndexQueryParam::Pointer HnswRabitqQuery(bool fetch_vector = false,
@@ -181,19 +183,44 @@ BaseIndexQueryParam::Pointer HnswRabitqQuery(bool fetch_vector = false,
   }
   return builder.build();
 }
+
+BaseIndexParam::Pointer DenseIvfRabitqParam(uint32_t dimension) {
+  return IVFRabitqIndexParamBuilder()
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(dimension)
+      .with_is_sparse(false)
+      .with_n_list(4)
+      .with_total_bits(7)
+      .build();
+}
+
+BaseIndexQueryParam::Pointer IvfRabitqQuery(bool is_linear = false,
+                                            bool with_bf_pks = false,
+                                            bool fetch_vector = false) {
+  auto query = std::make_shared<IVFRabitqQueryParam>();
+  query->topk = kSearchTopk;
+  query->nprobe = 4;
+  query->is_linear = is_linear;
+  query->fetch_vector = fetch_vector;
+  if (with_bf_pks) {
+    query->bf_pks = AllPks();
+  }
+  return query;
+}
 #endif
 
 #if DISKANN_SUPPORTED
 BaseIndexParam::Pointer DenseDiskAnnParam(uint32_t dimension = kDimension) {
   return DiskAnnIndexParamBuilder()
-      .WithMetricType(MetricType::kInnerProduct)
-      .WithDataType(DataType::DT_FP32)
-      .WithDimension(dimension)
-      .WithIsSparse(false)
-      .WithMaxDegree(32)
-      .WithListSize(kSearchTopk)
-      .WithPqChunkNum(0)
-      .Build();
+      .with_metric_type(MetricType::kInnerProduct)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(dimension)
+      .with_is_sparse(false)
+      .with_max_degree(32)
+      .with_list_size(kSearchTopk)
+      .with_pq_chunk_num(0)
+      .build();
 }
 
 BaseIndexQueryParam::Pointer DiskAnnQuery(bool fetch_vector = false,
@@ -236,23 +263,23 @@ class GroupByInterfaceTest : public ::testing::Test {
 
     auto source = IndexFactory::CreateAndInitIndex(*FlatSourceParam(test_case));
     ASSERT_NE(nullptr, source) << test_case.name;
-    ASSERT_EQ(0, source->Open(source_index_name,
+    ASSERT_EQ(0, source->open(source_index_name,
                               {StorageOptions::StorageType::kMMAP, true}))
         << test_case.name;
 
     for (uint32_t i = 0; i < kNumDocs; ++i) {
       AddDoc(source, i, test_case);
     }
-    ASSERT_EQ(0, source->Train()) << test_case.name;
+    ASSERT_EQ(0, source->train()) << test_case.name;
 
     auto index = IndexFactory::CreateAndInitIndex(*test_case.index_param);
     ASSERT_NE(nullptr, index) << test_case.name;
     ASSERT_EQ(
-        0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}))
+        0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}))
         << test_case.name;
-    ASSERT_EQ(0, index->Merge({source}, IndexFilter())) << test_case.name;
+    ASSERT_EQ(0, index->merge({source}, IndexFilter())) << test_case.name;
 
-    auto query_param = test_case.query_param->Clone();
+    auto query_param = test_case.query_param->clone();
     AttachGroupBy(query_param);
     if (test_case.with_refiner) {
       query_param->refiner_param = std::make_shared<RefinerParam>();
@@ -262,16 +289,20 @@ class GroupByInterfaceTest : public ::testing::Test {
     auto query = MakeQuery(test_case);
 
     SearchResult result;
-    const int ret = index->Search(query.data, query_param, &result);
+    const int ret = index->search(query.data, query_param, &result);
     if (expect_error) {
-      ASSERT_NE(0, ret) << test_case.name;
+      if (test_case.expected_error != 0) {
+        ASSERT_EQ(test_case.expected_error, ret) << test_case.name;
+      } else {
+        ASSERT_NE(0, ret) << test_case.name;
+      }
     } else {
       ASSERT_EQ(0, ret) << test_case.name;
       AssertGroupedResult(result, query_param, test_case);
     }
 
-    ASSERT_EQ(0, index->Close()) << test_case.name;
-    ASSERT_EQ(0, source->Close()) << test_case.name;
+    ASSERT_EQ(0, index->close()) << test_case.name;
+    ASSERT_EQ(0, source->close()) << test_case.name;
     zvec::test_util::RemoveTestFiles(index_name + "*");
     zvec::test_util::RemoveTestFiles(source_index_name + "*");
   }
@@ -291,11 +322,11 @@ class GroupByInterfaceTest : public ::testing::Test {
       std::iota(indices.begin(), indices.end(), 0u);
       VectorData data{
           SparseVector{test_case.dimension, indices.data(), values.data()}};
-      ASSERT_EQ(0, index->Add(data, key)) << key;
+      ASSERT_EQ(0, index->add(data, key)) << key;
       return;
     }
     VectorData data{DenseVector{values.data()}};
-    ASSERT_EQ(0, index->Add(data, key)) << key;
+    ASSERT_EQ(0, index->add(data, key)) << key;
   }
 
   QueryHolder MakeQuery(const GroupByCase &test_case) {
@@ -337,6 +368,16 @@ class GroupByInterfaceTest : public ::testing::Test {
     }
 
     if (!query_param->fetch_vector) {
+      return;
+    }
+    if (test_case.index_param->index_type == IndexType::kIVFRabitq) {
+      ASSERT_TRUE(result.group_reverted_vector_list_.empty());
+      for (const auto &group : result.group_doc_list_) {
+        for (const auto &doc : group.docs()) {
+          ASSERT_EQ(nullptr, doc.vector());
+          ASSERT_TRUE(doc.vector_string().empty());
+        }
+      }
       return;
     }
     if (test_case.is_sparse) {
@@ -458,9 +499,27 @@ TEST_F(GroupByInterfaceTest, Dense) {
        HnswRabitqQuery(/*fetch_vector=*/false, /*is_linear=*/false,
                        /*with_bf_pks=*/true),
        /*is_sparse=*/false, /*dimension=*/64},
-  // Note: fetch_vector is not supported for RabitQ because the entity
-  // stores quantized binary data (not original float vectors), and
-  // RabitqReformer does not implement revert().
+      {"dense_ivf_rabitq_graph", DenseIvfRabitqParam(64), IvfRabitqQuery(),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_linear", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_bf_pks", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_fetch_vector_ignored", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/false,
+                      /*fetch_vector=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_large_nprobe", DenseIvfRabitqParam(64),
+       [] {
+         auto query = IvfRabitqQuery();
+         std::dynamic_pointer_cast<IVFRabitqQueryParam>(query)->nprobe = 1025;
+         return query;
+       }(),
+       /*is_sparse=*/false, /*dimension=*/64},
+  // IVF RaBitQ ignores fetch_vector; DB queries fetch original vectors from
+  // the accompanying Flat index after recall.
 
 #endif
   };
@@ -496,31 +555,40 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
   std::vector<GroupByCase> cases{
       {"unsupported_vamana",
        VamanaIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithMaxDegree(32)
-           .WithSearchListSize(100)
-           .WithAlpha(1.2f)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_max_degree(32)
+           .with_search_list_size(100)
+           .with_alpha(1.2f)
+           .build(),
        VamanaQueryParamBuilder()
            .with_topk(kSearchTopk)
            .with_ef_search(kSearchTopk)
            .build()},
       {"unsupported_ivf",
        IVFIndexParamBuilder()
-           .WithMetricType(MetricType::kInnerProduct)
-           .WithDataType(DataType::DT_FP32)
-           .WithDimension(kDimension)
-           .WithIsSparse(false)
-           .WithNList(4)
-           .Build(),
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_n_list(4)
+           .build(),
        IVFQueryParamBuilder().with_topk(kSearchTopk).build()},
       {"unsupported_refiner", DenseHnswParam(), HnswQuery(),
        /*is_sparse=*/false,
        /*dimension=*/kDimension,
        /*with_refiner=*/true},
+#if RABITQ_SUPPORTED
+      {"unsupported_ivf_rabitq_zero_nprobe", DenseIvfRabitqParam(64),
+       [] {
+         auto query = IvfRabitqQuery();
+         std::dynamic_pointer_cast<IVFRabitqQueryParam>(query)->nprobe = 0;
+         return query;
+       }(),
+       /*is_sparse=*/false, /*dimension=*/64},
+#endif
 #if DISKANN_SUPPORTED
       {"unsupported_diskann_graph", DenseDiskAnnParam(), DiskAnnQuery()},
       {"unsupported_diskann_linear", DenseDiskAnnParam(),
@@ -537,3 +605,145 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
     RunRejected(test_case);
   }
 }
+
+#if DISKANN_SUPPORTED
+TEST(DiskAnnInterfaceTest, PropagatesCommonQueryOptions) {
+  const std::string source_name = "test_diskann_query_options_source";
+  const std::string index_name = "test_diskann_query_options";
+  zvec::test_util::RemoveTestFiles(source_name + "*");
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto source_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .build();
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  ASSERT_NE(source, nullptr);
+  ASSERT_EQ(
+      0, source->open(source_name, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t key = 0; key < kNumDocs; ++key) {
+    std::vector<float> values(kDimension, static_cast<float>(key));
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{values.data()}}, key));
+  }
+  ASSERT_EQ(0, source->train());
+
+  auto diskann_param = DiskAnnIndexParamBuilder()
+                           .with_metric_type(MetricType::kL2sq)
+                           .with_data_type(DataType::DT_FP32)
+                           .with_dimension(kDimension)
+                           .with_is_sparse(false)
+                           .with_max_degree(32)
+                           .with_list_size(kSearchTopk)
+                           .with_pq_chunk_num(0)
+                           .build();
+  auto index = IndexFactory::CreateAndInitIndex(*diskann_param);
+  ASSERT_NE(index, nullptr);
+  ASSERT_EQ(
+      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, index->merge({source}, IndexFilter()));
+
+  std::vector<float> query_values(kDimension, 3.0f);
+  VectorData query{DenseVector{query_values.data()}};
+
+  auto filtered_query = std::make_shared<DiskAnnQueryParam>();
+  filtered_query->topk = 6;
+  filtered_query->list_size = kSearchTopk;
+  filtered_query->fetch_vector = true;
+  filtered_query->filter = std::make_shared<IndexFilter>();
+  filtered_query->filter->set([](uint64_t key) { return key == 3; });
+
+  SearchResult filtered_result;
+  ASSERT_EQ(0, index->search(query, filtered_query, &filtered_result));
+  ASSERT_FALSE(filtered_result.doc_list_.empty());
+  for (const auto &doc : filtered_result.doc_list_) {
+    EXPECT_NE(3UL, doc.key());
+    ASSERT_EQ(kDimension * sizeof(float), doc.vector_string().size());
+    for (uint32_t i = 0; i < kDimension; ++i) {
+      float vector_value = 0.0f;
+      std::memcpy(&vector_value,
+                  doc.vector_string().data() + i * sizeof(vector_value),
+                  sizeof(vector_value));
+      EXPECT_FLOAT_EQ(static_cast<float>(doc.key()), vector_value);
+    }
+  }
+
+  auto radius_query = std::make_shared<DiskAnnQueryParam>();
+  radius_query->topk = kNumDocs;
+  radius_query->list_size = kSearchTopk;
+  radius_query->radius = 1.0f;
+
+  SearchResult radius_result;
+  ASSERT_EQ(0, index->search(query, radius_query, &radius_result));
+  ASSERT_FALSE(radius_result.doc_list_.empty());
+  for (const auto &doc : radius_result.doc_list_) {
+    EXPECT_LE(doc.score(), radius_query->radius);
+  }
+
+  ASSERT_EQ(0, index->close());
+  ASSERT_EQ(0, source->close());
+
+  // The thread-local context pool is shared by all DiskAnn indexes. Reusing
+  // the prior L2 context for an InnerProduct index must copy the caller-facing
+  // radius and denormalize it with the new metric.
+  const std::string ip_source_name = "test_diskann_query_options_ip_source";
+  const std::string ip_index_name = "test_diskann_query_options_ip";
+  zvec::test_util::RemoveTestFiles(ip_source_name + "*");
+  zvec::test_util::RemoveTestFiles(ip_index_name + "*");
+
+  auto ip_source_param = FlatIndexParamBuilder()
+                             .with_metric_type(MetricType::kInnerProduct)
+                             .with_data_type(DataType::DT_FP32)
+                             .with_dimension(kDimension)
+                             .with_is_sparse(false)
+                             .build();
+  auto ip_source = IndexFactory::CreateAndInitIndex(*ip_source_param);
+  ASSERT_NE(ip_source, nullptr);
+  ASSERT_EQ(0, ip_source->open(ip_source_name,
+                               {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t key = 0; key < kNumDocs; ++key) {
+    std::vector<float> values(kDimension, static_cast<float>(key));
+    ASSERT_EQ(0, ip_source->add(VectorData{DenseVector{values.data()}}, key));
+  }
+  ASSERT_EQ(0, ip_source->train());
+
+  auto ip_diskann_param = DiskAnnIndexParamBuilder()
+                              .with_metric_type(MetricType::kInnerProduct)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_dimension(kDimension)
+                              .with_is_sparse(false)
+                              .with_max_degree(32)
+                              .with_list_size(kNumDocs)
+                              .with_pq_chunk_num(0)
+                              .build();
+  auto ip_index = IndexFactory::CreateAndInitIndex(*ip_diskann_param);
+  ASSERT_NE(ip_index, nullptr);
+  ASSERT_EQ(0, ip_index->open(ip_index_name,
+                              {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, ip_index->merge({ip_source}, IndexFilter()));
+
+  std::vector<float> ip_query_values(kDimension, 1.0f);
+  VectorData ip_query{DenseVector{ip_query_values.data()}};
+  auto ip_radius_query = std::make_shared<DiskAnnQueryParam>();
+  ip_radius_query->topk = kNumDocs;
+  ip_radius_query->list_size = kNumDocs;
+  ip_radius_query->is_linear = true;
+  ip_radius_query->radius = static_cast<float>(kDimension * 8);
+
+  SearchResult ip_radius_result;
+  ASSERT_EQ(0, ip_index->search(ip_query, ip_radius_query, &ip_radius_result));
+  ASSERT_EQ(kNumDocs - 8, ip_radius_result.doc_list_.size());
+  for (const auto &doc : ip_radius_result.doc_list_) {
+    EXPECT_GE(doc.key(), 8UL);
+    EXPECT_GE(doc.score(), ip_radius_query->radius);
+  }
+
+  ASSERT_EQ(0, ip_index->close());
+  ASSERT_EQ(0, ip_source->close());
+  zvec::test_util::RemoveTestFiles(source_name + "*");
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  zvec::test_util::RemoveTestFiles(ip_source_name + "*");
+  zvec::test_util::RemoveTestFiles(ip_index_name + "*");
+}
+#endif
