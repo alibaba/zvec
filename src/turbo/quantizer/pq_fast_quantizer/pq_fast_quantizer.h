@@ -32,28 +32,21 @@ using namespace zvec::core;
 
 //! FastScan Product Quantizer (num_bits=4, 16 centroids per sub-quantizer).
 //!
-//! Datapoints are encoded as nibble-packed codes exactly like
-//! PqInt4Quantizer (sub-quantizer m in the low nibble of byte m/2 when m is
-//! even, high nibble when odd; total ceil(num_chunk / 2) bytes).  Unlike
-//! the gather-style PQ quantizers, codes MUST be stored in packed
-//! 32-vector blocks (it implements the PackedCodeQuantizer capability) so
-//! that the FastScan kernel can look up 32 codes per sub-space with one
-//! SIMD byte shuffle over an in-register LUT.
+//! Codes are nibble-packed exactly like PqInt4Quantizer, but MUST be stored in
+//! packed 32-vector blocks (PackedCodeQuantizer capability) so the FastScan
+//! kernel can look up 32 codes per sub-space with one SIMD byte shuffle.
 //!
-//! Queries are encoded as a uint8 affine-quantized LUT: the float ADC
-//! table [num_chunk * 16] is quantized with a single min/max over the
-//! whole table (u8 = round((f - lo) * 255 / (hi - lo))), packed for kernel
-//! consumption, and followed by two floats for dequantization:
+//! Queries are a uint8 affine-quantized LUT (single min/max over the whole
+//! [num_chunk * 16] float table), packed and followed by a dequantization tail:
 //!   [packed u8 LUT | float delta = (hi - lo) / 255 | float bias = M * lo]
-//! Final distance: dist = accu * delta + bias.
+//! with dist = accu * delta + bias.
 //!
-//! FastScan is a batch-scan quantizer (IVF inverted lists, linear scan).
-//! It exposes an ADC DistanceImpl handle (single plain-code look-up over
-//! the quantized LUT) but no SDC: sym_distance() returns an empty handle,
-//! so it must not be used for HNSW graph construction (pairwise
-//! code-vs-code distance).  Supported metrics: SquaredEuclidean,
-//! InnerProduct and Cosine (= normalize + L2; the original vector norm is
-//! stored after each code for dequantize, aligned with PqInt4Quantizer).
+//! calc_distance_packed_block() is the only read path: single-code ADC, SDC and
+//! reconstruction are unavailable (distance() / sym_distance() return empty
+//! handles, dequantize() fails), so this quantizer must not be used for HNSW
+//! graph construction, and callers needing the vector back must read it from
+//! the unquantized side.  Metrics: SquaredEuclidean, InnerProduct and Cosine
+//! (= normalize + L2, with the original vector norm stored after each code).
 class PqFastQuantizer : public Quantizer,
                         public PackedCodeQuantizer,
                         public PrecomputeTableQuantizer {
@@ -98,12 +91,16 @@ class PqFastQuantizer : public Quantizer,
 
   void quantize_query(const void *input, void *output) const override;
 
+  //! Pack up to 32 plain nibble codes (as returned by quantize_data()) into
+  //! one interleaved block consumable by calc_distance_packed_block().
   int pack_codes(const void *codes, size_t num, size_t stride,
                  void *out) const override;
 
+  //! Unsupported, see the class comment: asserts and yields NaN.
   float calc_distance_dp_query(const void *dp,
                                const void *query) const override;
 
+  //! Unsupported, see the class comment: asserts and yields NaN.
   void calc_distance_dp_query_batch(const void *const *dp_list, int dp_num,
                                     const void *query,
                                     float *dist_list) const override;
@@ -115,13 +112,16 @@ class PqFastQuantizer : public Quantizer,
                                   const void *query,
                                   float *dist_list) const override;
 
+  //! Unsupported, see the class comment: asserts and yields NaN.
   float calc_distance_dp_query_unquantized(const void *dp,
                                            const void *query) const override;
 
+  //! Unsupported, see the class comment: asserts and yields NaN.
   void calc_distance_dp_query_batch_unquantized(
       const void *const *dp_list, int dp_num, const void *query,
       float *dist_list) const override;
 
+  //! Unsupported, see the class comment: asserts and yields NaN.
   float calc_distance_dp_dp(const void *dp1, const void *dp2) const override;
 
   DistanceImpl distance(const void *query,
@@ -150,6 +150,7 @@ class PqFastQuantizer : public Quantizer,
   int quantize(const void *query, const IndexQueryMeta &qmeta, std::string *out,
                IndexQueryMeta *ometa) const override;
 
+  //! Unsupported, see the class comment: asserts and yields kErrUnsupported.
   int dequantize(const void *in, const IndexQueryMeta &qmeta,
                  std::string *out) const override;
 
@@ -263,10 +264,6 @@ class PqFastQuantizer : public Quantizer,
 
   //! ISA-dispatched FastScan scan32 kernel.
   CodebookFastScanFunc scan_fn_{nullptr};
-
-  //! Dispatched single-code ADC against a quantized FastScan query
-  //! (plain nibble code + packed u8 LUT with delta/bias tail).
-  CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for the search-side LUT
   //! (L2: squared euclidean, IP: -dot).  Data type matches input.

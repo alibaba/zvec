@@ -90,24 +90,33 @@ int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
       get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
 
-  // Cosine = normalize + L2: after normalization cosine distance is monotonic
-  // with squared-Euclidean, so the search LUT reuses SquaredEuclidean.
-  if (meta_.metric_name() == "Cosine") {
-    batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                input_quantize_type, CpuArchType::kAuto);
-    extra_meta_size_ = kExtraMetaSizeCosine;
-    meta_.set_extra_meta_size(extra_meta_size_);
-  } else {
-    batch_fn_ = get_batch_distance_func(
-        mt, input_data_type_, input_quantize_type, CpuArchType::kAuto);
-  }
-
   // Inner-product batch distance for the precomputed residual tables.  The
   // table terms are pure inner products regardless of the search metric.
   ip_batch_fn_ =
       get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
+
+  // The search LUT always reuses one of the two kernels above, so no third
+  // dispatch is needed: Cosine = normalize + L2 is monotonic with
+  // squared-Euclidean after normalization, and only InnerProduct needs the IP
+  // kernel.  Metrics with no registered kernel leave batch_fn_ empty, which is
+  // what get_batch_distance_func() returned for them before.
+  switch (mt) {
+    case MetricType::kInnerProduct:
+      batch_fn_ = ip_batch_fn_;
+      break;
+    case MetricType::kSquaredEuclidean:
+      batch_fn_ = l2_batch_fn_;
+      break;
+    case MetricType::kCosine:
+      batch_fn_ = l2_batch_fn_;
+      extra_meta_size_ = kExtraMetaSizeCosine;
+      meta_.set_extra_meta_size(extra_meta_size_);
+      break;
+    case MetricType::kMipsSquaredEuclidean:
+    case MetricType::kUnknown:
+      break;
+  }
 
   // Read optional training params (aligned with multi_chunk_cluster)
   params.get("thread_count", &thread_count_);
@@ -992,18 +1001,27 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
       get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
 
-  // Metric-aware batch distance for search LUT.  Cosine = normalize + L2,
-  // so it uses SquaredEuclidean (same as encoding), not IP.
-  if (meta_.metric_name() == "Cosine") {
-    batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                input_quantize_type, CpuArchType::kAuto);
-    extra_meta_size_ = kExtraMetaSizeCosine;
-    meta_.set_extra_meta_size(extra_meta_size_);
-  } else {
-    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
-                                        input_data_type_, input_quantize_type,
-                                        CpuArchType::kAuto);
+  // Inner-product batch distance for the precomputed residual tables.
+  ip_batch_fn_ =
+      get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
+                              input_quantize_type, CpuArchType::kAuto);
+
+  // Search LUT: same selection as init(), reusing the two kernels above.
+  switch (metric_from_name(meta_.metric_name())) {
+    case MetricType::kInnerProduct:
+      batch_fn_ = ip_batch_fn_;
+      break;
+    case MetricType::kSquaredEuclidean:
+      batch_fn_ = l2_batch_fn_;
+      break;
+    case MetricType::kCosine:
+      batch_fn_ = l2_batch_fn_;
+      extra_meta_size_ = kExtraMetaSizeCosine;
+      meta_.set_extra_meta_size(extra_meta_size_);
+      break;
+    case MetricType::kMipsSquaredEuclidean:
+    case MetricType::kUnknown:
+      break;
   }
 
   // Set output meta: the quantized representation is INT4 codes with
@@ -1013,11 +1031,6 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
 
   // Pre-build centroid pointer cache for fast encode/search.
   build_centroid_ptrs_cache();
-
-  // Inner-product batch distance for the precomputed residual tables.
-  ip_batch_fn_ =
-      get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
-                              input_quantize_type, CpuArchType::kAuto);
 
   // Pre-compute sub-centroid norms for the precomputed residual table.
   compute_sub_centroid_norms();

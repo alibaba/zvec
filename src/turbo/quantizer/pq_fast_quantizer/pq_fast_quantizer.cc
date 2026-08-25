@@ -15,6 +15,7 @@
 #include "quantizer/pq_fast_quantizer/pq_fast_quantizer.h"
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -47,11 +48,10 @@ void PqFastQuantizer::setup_functions() {
                                                ? QuantizeType::kFp16
                                                : QuantizeType::kFp32;
 
-  // ISA-dispatched FastScan kernels: the packed block scan plus the scalar
-  // single-code ADC against a quantized LUT.
+  // ISA-dispatched FastScan kernel: the packed block scan is the only distance
+  // kernel of the kPQFast family.
   auto pq_k = get_pq_kernels(DataType::kInt4, QuantizeType::kPQFast);
   scan_fn_ = pq_k.fast_scan;
-  adc_fn_ = pq_k.asymmetric_distance;
 
   // L2-only batch distance for encoding and KMeans training: the PQ
   // codebook is trained/encoded in L2 space regardless of the search metric.
@@ -59,27 +59,33 @@ void PqFastQuantizer::setup_functions() {
       get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
 
-  // Metric-aware batch distance for the search LUT.  Cosine = normalize +
-  // L2: after normalization cosine distance is monotonic with
-  // squared-Euclidean, so the search LUT reuses SquaredEuclidean (aligned
-  // with PqInt4Quantizer).
-  if (meta_.metric_name() == "Cosine") {
-    batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                input_quantize_type, CpuArchType::kAuto);
-    extra_meta_size_ = kExtraMetaSizeCosine;
-    meta_.set_extra_meta_size(extra_meta_size_);
-  } else {
-    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
-                                        input_data_type_, input_quantize_type,
-                                        CpuArchType::kAuto);
-  }
-
   // Inner-product batch distance for the precomputed residual tables.  The
   // table terms are pure inner products regardless of the search metric.
   ip_batch_fn_ =
       get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
+
+  // The search LUT always reuses one of the two kernels above, so no third
+  // dispatch is needed: Cosine = normalize + L2 is monotonic with
+  // squared-Euclidean after normalization (aligned with PqInt4Quantizer), and
+  // only InnerProduct needs the IP kernel.  init() rejects every other metric,
+  // so the remaining cases are unreachable and leave batch_fn_ empty.
+  switch (metric_from_name(meta_.metric_name())) {
+    case MetricType::kInnerProduct:
+      batch_fn_ = ip_batch_fn_;
+      break;
+    case MetricType::kSquaredEuclidean:
+      batch_fn_ = l2_batch_fn_;
+      break;
+    case MetricType::kCosine:
+      batch_fn_ = l2_batch_fn_;
+      extra_meta_size_ = kExtraMetaSizeCosine;
+      meta_.set_extra_meta_size(extra_meta_size_);
+      break;
+    case MetricType::kMipsSquaredEuclidean:
+    case MetricType::kUnknown:
+      break;
+  }
 }
 
 int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
@@ -726,27 +732,18 @@ int PqFastQuantizer::pack_codes(const void *codes, size_t num, size_t stride,
 // Distance computation
 // ---------------------------------------------------------------------------
 
-float PqFastQuantizer::calc_distance_dp_query(const void *dp,
-                                              const void *query) const {
-  // dp = plain nibble-packed pq_code; query = quantized query (u8 LUT).
-  float d = 0.0f;
-  adc_fn_(reinterpret_cast<const uint8_t *>(dp),
-          reinterpret_cast<const uint8_t *>(query), num_chunk_, &d);
-  return d;
+float PqFastQuantizer::calc_distance_dp_query(const void * /*dp*/,
+                                              const void * /*query*/) const {
+  assert(false && "PqFastQuantizer: packed-block only, no single-code ADC");
+  return std::numeric_limits<float>::quiet_NaN();
 }
 
-void PqFastQuantizer::calc_distance_dp_query_batch(const void *const *dp_list,
-                                                   int dp_num,
-                                                   const void *query,
-                                                   float *dist_list) const {
-  // Gather-style contract: plain nibble codes addressed one pointer at a
-  // time (single-code ADC).  The SIMD FastScan kernel only runs over
-  // packed blocks, see calc_distance_packed_block.
-  const uint8_t *q = reinterpret_cast<const uint8_t *>(query);
+void PqFastQuantizer::calc_distance_dp_query_batch(
+    const void *const * /*dp_list*/, int dp_num, const void * /*query*/,
+    float *dist_list) const {
+  assert(false && "PqFastQuantizer: packed-block only, no gather-style batch");
   for (int i = 0; i < dp_num; ++i) {
-    float d = 0.0f;
-    adc_fn_(reinterpret_cast<const uint8_t *>(dp_list[i]), q, num_chunk_, &d);
-    dist_list[i] = d;
+    dist_list[i] = std::numeric_limits<float>::quiet_NaN();
   }
 }
 
@@ -778,43 +775,26 @@ void PqFastQuantizer::calc_distance_packed_block(const void *block, size_t num,
 }
 
 float PqFastQuantizer::calc_distance_dp_query_unquantized(
-    const void *dp, const void *query) const {
-  // Exact float ADC over the on-the-fly LUT (no uint8 quantization).
-  std::vector<float> lut(static_cast<size_t>(num_chunk_) * kNumCentroids);
-  compute_float_lut(query, lut.data());
-  const uint8_t *code = reinterpret_cast<const uint8_t *>(dp);
-  float d = 0.0f;
-  for (uint32_t m = 0; m < num_chunk_; ++m) {
-    const uint8_t c =
-        static_cast<uint8_t>(code[m >> 1] >> ((m & 1) * 4)) & 0x0F;
-    d += lut[static_cast<size_t>(m) * kNumCentroids + c];
-  }
-  return d;
+    const void * /*dp*/, const void * /*query*/) const {
+  assert(false && "PqFastQuantizer: packed-block only, no single-code ADC");
+  return std::numeric_limits<float>::quiet_NaN();
 }
 
 void PqFastQuantizer::calc_distance_dp_query_batch_unquantized(
-    const void *const *dp_list, int dp_num, const void *query,
+    const void *const * /*dp_list*/, int dp_num, const void * /*query*/,
     float *dist_list) const {
-  std::vector<float> lut(static_cast<size_t>(num_chunk_) * kNumCentroids);
-  compute_float_lut(query, lut.data());
+  assert(false && "PqFastQuantizer: packed-block only, no gather-style batch");
   for (int i = 0; i < dp_num; ++i) {
-    const uint8_t *code = reinterpret_cast<const uint8_t *>(dp_list[i]);
-    float d = 0.0f;
-    for (uint32_t m = 0; m < num_chunk_; ++m) {
-      const uint8_t c =
-          static_cast<uint8_t>(code[m >> 1] >> ((m & 1) * 4)) & 0x0F;
-      d += lut[static_cast<size_t>(m) * kNumCentroids + c];
-    }
-    dist_list[i] = d;
+    dist_list[i] = std::numeric_limits<float>::quiet_NaN();
   }
 }
 
-float PqFastQuantizer::calc_distance_dp_dp(const void *dp1,
-                                           const void *dp2) const {
-  // FastScan is a pure batch-scan quantizer: no SDC dist_table is kept.
-  (void)dp1;
-  (void)dp2;
-  return 0.0f;
+float PqFastQuantizer::calc_distance_dp_dp(const void * /*dp1*/,
+                                           const void * /*dp2*/) const {
+  // NaN rather than a plausible value, so callers that skip the capability
+  // check cannot silently build on all-equal distances.
+  assert(false && "PqFastQuantizer: no SDC, code-vs-code distance unavailable");
+  return std::numeric_limits<float>::quiet_NaN();
 }
 
 int PqFastQuantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
@@ -845,81 +825,24 @@ int PqFastQuantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
-int PqFastQuantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
-                                std::string *out) const {
-  (void)qmeta;
-  const uint8_t *code = reinterpret_cast<const uint8_t *>(in);
-  size_t byte_size = static_cast<size_t>(original_dim_) * sizeof(float);
-  out->resize(byte_size);
-  float *result = reinterpret_cast<float *>(&(*out)[0]);
-
-  // Reconstruct by concatenating the selected centroids per sub-quantizer.
-  const size_t k = kNumCentroids;
-  const size_t d = sub_dim_;
-  const uint32_t elem_sz = element_size();
-  for (uint32_t m = 0; m < num_chunk_; ++m) {
-    const uint8_t *centroids_m =
-        centroids_.data() + static_cast<size_t>(m) * k * d * elem_sz;
-    // Unpack the 4-bit code: low nibble for even m, high nibble for odd m.
-    uint8_t c = static_cast<uint8_t>((code[m >> 1] >> ((m & 1) * 4)) & 0x0F);
-    const uint8_t *centroid =
-        centroids_m + static_cast<size_t>(c) * d * elem_sz;
-    switch (input_data_type_) {
-      case DataType::kFp16: {
-        const ailego::Float16 *src =
-            reinterpret_cast<const ailego::Float16 *>(centroid);
-        for (size_t j = 0; j < d; ++j) {
-          result[m * d + j] = static_cast<float>(src[j]);
-        }
-        break;
-      }
-      case DataType::kFp32:
-        std::memcpy(result + m * d, centroid, d * sizeof(float));
-        break;
-      default:
-        break;
-    }
-  }
-
-  // Undo zero-mean centering: add the centroid back.
-  if (use_zero_mean_) {
-    for (uint32_t j = 0; j < original_dim_; ++j) {
-      result[j] += centroid_[j];
-    }
-  }
-
-  // For Cosine: rescale the unit-space reconstruction back to the original
-  // magnitude using the norm stored after the packed code.
-  if (meta_.metric_name() == "Cosine") {
-    float norm = 0.0f;
-    std::memcpy(&norm, code + packed_code_length(), sizeof(float));
-    for (uint32_t j = 0; j < original_dim_; ++j) {
-      result[j] *= norm;
-    }
-  }
-  return 0;
+int PqFastQuantizer::dequantize(const void * /*in*/,
+                                const IndexQueryMeta & /*qmeta*/,
+                                std::string * /*out*/) const {
+  // Reconstruction needs a plain nibble code, which only exists between
+  // quantize_data() and pack_codes(): stored blocks keep neither the
+  // per-code byte boundary nor the Cosine norm tail.  Callers that need the
+  // vector back must read it from the unquantized side (an IVF features
+  // segment or the refiner index), never from a FastScan code.
+  assert(false && "PqFastQuantizer: packed-block only, cannot reconstruct");
+  return kErrUnsupported;
 }
 
-DistanceImpl PqFastQuantizer::distance(const void *query,
-                                       const IndexQueryMeta &qmeta) const {
-  (void)qmeta;
-
-  // ADC over a plain nibble-packed code: CodebookAsymmetricDistanceFunc matches
-  // DistanceFunc directly (no lambda needed).
-  DistanceFunc adc_func = adc_fn_;
-
-  // FastScan has no per-pointer batch kernel: its fast path scans packed
-  // 32-vector blocks (PackedCodeQuantizer::calc_distance_packed_block).
-  // Use the 3-arg constructor; DistanceImpl::batch() falls back to the
-  // scalar path.
-
-  // The query is already quantized (packed u8 LUT + delta/bias tail) by the
-  // caller; copy it directly.
-  size_t lut_bytes = quantized_query_vector_length();
-  std::string lut_storage(static_cast<const char *>(query), lut_bytes);
-
-  return DistanceImpl(std::move(adc_func), std::move(lut_storage),
-                      static_cast<size_t>(num_chunk_));
+DistanceImpl PqFastQuantizer::distance(const void * /*query*/,
+                                       const IndexQueryMeta & /*qmeta*/) const {
+  // No gather-style handle: callers must fall back to
+  // calc_distance_packed_block() rather than receive a callable that would
+  // mis-read a plain code.
+  return DistanceImpl{};
 }
 
 DistanceImpl PqFastQuantizer::sym_distance(

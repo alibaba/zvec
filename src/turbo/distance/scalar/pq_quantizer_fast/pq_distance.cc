@@ -15,7 +15,6 @@
 #include "scalar/pq_quantizer_fast/pq_distance.h"
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include "common/fast_scan_common.h"
 
 namespace zvec::turbo::scalar {
@@ -40,28 +39,6 @@ void pq_adc_fast_scan(const void *packed_codes_v, const void *packed_lut_v,
       accu32[kFastScanMapper[2 * j + 1]] += table[byte >> 4];
     }
   }
-}
-
-void pq_adc_u8(const void *pq_code, const void *qquery, size_t num_chunk,
-               float *out) {
-  const auto *code = reinterpret_cast<const uint8_t *>(pq_code);
-  const auto *q = reinterpret_cast<const uint8_t *>(qquery);
-
-  // The packed LUT keeps subquantizer m at offset m * 16, so a plain code
-  // can be looked up directly.
-  int32_t accu = 0;
-  for (size_t m = 0; m < num_chunk; ++m) {
-    const uint8_t idx =
-        static_cast<uint8_t>(code[m >> 1] >> ((m & 1) * 4)) & 0x0F;
-    accu += q[m * 16 + idx];
-  }
-
-  float delta = 0.0f;
-  float bias = 0.0f;
-  const uint8_t *tail = q + fast_scan_packed_lut_size(num_chunk);
-  std::memcpy(&delta, tail, sizeof(float));
-  std::memcpy(&bias, tail + sizeof(float), sizeof(float));
-  *out = static_cast<float>(accu) * delta + bias;
 }
 
 }  // namespace zvec::turbo::scalar

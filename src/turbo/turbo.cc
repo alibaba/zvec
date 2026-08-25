@@ -258,26 +258,23 @@ CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
       if (data_type != DataType::kInt4) {
         return {};
       }
-      // Single-code ADC against the quantized LUT is scalar-only: the hot path
-      // is the packed 32-vector block scan below. No SDC / batch ADC kernels.
+      // FastScan exposes only the packed 32-vector block scan: no single-code
+      // ADC, no SDC, no gather-style batch ADC.
       if (CpuSupports(CpuArchType::kAVX512) &&
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX512BW &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
         // _mm512_shuffle_epi8 needs AVX512BW on top of AVX512F.
-        return {scalar::pq_adc_u8, nullptr, nullptr,
-                avx512::pq_adc_fast_scan_avx512};
+        return {nullptr, nullptr, nullptr, avx512::pq_adc_fast_scan_avx512};
       }
       if (CpuSupports(CpuArchType::kAVX2) &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
-        return {scalar::pq_adc_u8, nullptr, nullptr,
-                avx2::pq_adc_fast_scan_avx2};
+        return {nullptr, nullptr, nullptr, avx2::pq_adc_fast_scan_avx2};
       }
       if (CpuSupports(CpuArchType::kNEON) &&
           IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
-        return {scalar::pq_adc_u8, nullptr, nullptr,
-                neon::pq_adc_fast_scan_neon};
+        return {nullptr, nullptr, nullptr, neon::pq_adc_fast_scan_neon};
       }
-      return {scalar::pq_adc_u8, nullptr, nullptr, scalar::pq_adc_fast_scan};
+      return {nullptr, nullptr, nullptr, scalar::pq_adc_fast_scan};
 
     case QuantizeType::kPQ:
       if (data_type == DataType::kInt4) {

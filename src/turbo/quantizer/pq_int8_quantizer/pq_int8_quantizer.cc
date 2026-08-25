@@ -98,17 +98,26 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
       get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
 
-  // Cosine = normalize + L2: after normalization cosine distance is monotonic
-  // with squared-Euclidean, so the search LUT reuses SquaredEuclidean.
-  if (meta_.metric_name() == "Cosine") {
-    batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                input_quantize_type, CpuArchType::kAuto);
-    extra_meta_size_ = kExtraMetaSizeCosine;
-    meta_.set_extra_meta_size(extra_meta_size_);
-  } else {
-    batch_fn_ = get_batch_distance_func(
-        mt, input_data_type_, input_quantize_type, CpuArchType::kAuto);
+  // The search LUT always reuses one of the two kernels above, so no third
+  // dispatch is needed: Cosine = normalize + L2 is monotonic with
+  // squared-Euclidean after normalization, and only InnerProduct needs the IP
+  // kernel.  Metrics with no registered kernel leave batch_fn_ empty and are
+  // rejected by the check below.
+  switch (mt) {
+    case MetricType::kInnerProduct:
+      batch_fn_ = ip_batch_fn_;
+      break;
+    case MetricType::kSquaredEuclidean:
+      batch_fn_ = l2_batch_fn_;
+      break;
+    case MetricType::kCosine:
+      batch_fn_ = l2_batch_fn_;
+      extra_meta_size_ = kExtraMetaSizeCosine;
+      meta_.set_extra_meta_size(extra_meta_size_);
+      break;
+    case MetricType::kMipsSquaredEuclidean:
+    case MetricType::kUnknown:
+      break;
   }
 
   if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ ||
@@ -1015,17 +1024,22 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
       get_batch_distance_func(MetricType::kInnerProduct, input_data_type_,
                               input_quantize_type, CpuArchType::kAuto);
 
-  // Metric-aware batch distance for search LUT.  Cosine = normalize + L2,
-  // so it uses SquaredEuclidean (same as encoding), not IP.
-  if (meta_.metric_name() == "Cosine") {
-    batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
-                                input_quantize_type, CpuArchType::kAuto);
-    extra_meta_size_ = kExtraMetaSizeCosine;
-  } else {
-    batch_fn_ = get_batch_distance_func(metric_from_name(meta_.metric_name()),
-                                        input_data_type_, input_quantize_type,
-                                        CpuArchType::kAuto);
+  // Search LUT: same selection as init(), reusing the two kernels above.
+  // extra_meta_size_ is pushed into meta_ further below.
+  switch (metric_from_name(meta_.metric_name())) {
+    case MetricType::kInnerProduct:
+      batch_fn_ = ip_batch_fn_;
+      break;
+    case MetricType::kSquaredEuclidean:
+      batch_fn_ = l2_batch_fn_;
+      break;
+    case MetricType::kCosine:
+      batch_fn_ = l2_batch_fn_;
+      extra_meta_size_ = kExtraMetaSizeCosine;
+      break;
+    case MetricType::kMipsSquaredEuclidean:
+    case MetricType::kUnknown:
+      break;
   }
 
   if (!adc_fn_ || !sdc_fn_ || !batch_adc_fn_ || !l2_batch_fn_ ||

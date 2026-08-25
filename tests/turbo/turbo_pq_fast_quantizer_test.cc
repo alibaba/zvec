@@ -91,6 +91,50 @@ make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
   return holder;
 }
 
+// Build a holder whose vectors lie, up to 1e-4 noise, on a per-sub-space grid
+// of prototypes, so k-means recovers the prototypes exactly, PQ becomes almost
+// lossless, and the raw vector doubles as the reconstruction -- which is how
+// the numeric tests below can use a tight bound without a reconstruction hook
+// (PqFastQuantizer::dequantize is unsupported).
+//
+// The prototypes are the hypercube sign patterns over the first min(sub_dim, 3)
+// coordinates, scaled to norm 1/sqrt(nsq).  Using 8 prototypes against the 16
+// centroids of a 4-bit sub-quantizer leaves k-means enough slack that it cannot
+// merge two clusters, and the equal norms make any concatenation a unit vector
+// so the grid also survives the Cosine normalization.
+static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
+make_grid_holder(size_t count, size_t dim, size_t nsq, uint32_t seed = 7) {
+  const size_t sub_dim = dim / nsq;
+  const size_t nbits = std::min<size_t>(sub_dim, 3);
+  const size_t nproto = static_cast<size_t>(1) << nbits;
+  const float scale = 1.0f / (std::sqrt(static_cast<float>(nsq)) *
+                              std::sqrt(static_cast<float>(nbits)));
+
+  std::vector<std::vector<float>> protos(nproto, std::vector<float>(sub_dim));
+  for (size_t c = 0; c < nproto; ++c) {
+    for (size_t j = 0; j < nbits; ++j) {
+      protos[c][j] = ((c >> j) & 1) ? scale : -scale;
+    }
+  }
+
+  std::mt19937 gen(seed);
+  std::normal_distribution<float> noise(0.0f, 1e-4f);
+  std::uniform_int_distribution<size_t> pick(0, nproto - 1);
+  auto holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  for (size_t i = 0; i < count; ++i) {
+    NumericalVector<float> vec(dim);
+    for (size_t m = 0; m < nsq; ++m) {
+      const auto &p = protos[pick(gen)];
+      for (size_t j = 0; j < sub_dim; ++j) {
+        vec[m * sub_dim + j] = p[j] + noise(gen);
+      }
+    }
+    holder->emplace(i + 1, vec);
+  }
+  return holder;
+}
+
 // Unpack sub-space i of vector v from a Package32 block.
 static uint8_t unpack_packed_code(const uint8_t *packed, size_t v, size_t i) {
   // Find the nibble slot p with kFastScanMapper[p] == v.
@@ -105,6 +149,24 @@ static uint8_t unpack_packed_code(const uint8_t *packed, size_t v, size_t i) {
 // Read the plain nibble code of sub-space i from a plain PQ code.
 static uint8_t plain_code(const uint8_t *code, size_t i) {
   return static_cast<uint8_t>(code[i >> 1] >> ((i & 1) * 4)) & 0x0F;
+}
+
+// FastScan has no single-code ADC: pack one plain code into a 1-vector block
+// and read slot 0 back through the block-scan capability.
+static float packed_distance_of(
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer, const void *code,
+    size_t code_len, size_t num_chunk, const void *qquery) {
+  auto packer =
+      std::dynamic_pointer_cast<const zvec::turbo::PackedCodeQuantizer>(
+          quantizer);
+  if (!packer) return std::numeric_limits<float>::quiet_NaN();
+  std::vector<uint8_t> packed(fast_scan_packed_block_size(num_chunk), 0);
+  if (packer->pack_codes(code, 1, code_len, packed.data()) != 0) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  float dist = std::numeric_limits<float>::quiet_NaN();
+  packer->calc_distance_packed_block(packed.data(), 1, qquery, &dist);
+  return dist;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,37 +219,36 @@ TEST(PqFastQuantizer, LengthsAndProperties) {
 }
 
 // ---------------------------------------------------------------------------
-// Train / encode / dequantize consistency
+// Train / encode / block-scan consistency
 // ---------------------------------------------------------------------------
 
-TEST(PqFastQuantizer, TrainEncodeDequantize) {
+TEST(PqFastQuantizer, TrainEncodeBlockScan) {
   const size_t DIM = 32;
   const size_t NSQ = 8;
   const size_t COUNT = 1000;
 
   auto quantizer = make_pqfs_quantizer(DIM, NSQ);
   ASSERT_TRUE(quantizer);
-  auto holder = make_random_holder(COUNT, DIM);
+  auto holder = make_grid_holder(COUNT, DIM, NSQ);
   ASSERT_EQ(0, quantizer->train(holder));
 
   auto iter = holder->create_iterator();
   std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
+  std::vector<uint8_t> qquery(quantizer->quantized_query_vector_length());
   for (size_t i = 0; iter->is_valid() && i < 10; iter->next(), ++i) {
-    const float *v = reinterpret_cast<const float *>(iter->data());
     quantizer->quantize_data(iter->data(), code.data());
+    quantizer->quantize_query(iter->data(), qquery.data());
+    float delta = 0.0f;
+    std::memcpy(&delta, qquery.data() + fast_scan_packed_lut_size(NSQ),
+                sizeof(float));
 
-    // Reconstruction from the code must match the exact float ADC of the
-    // same vector against its own code:
-    //   sum_m ||q_m - c_m[code_m]||^2 == ||q - recon||^2
-    std::string recon;
-    IndexQueryMeta qmeta;
-    ASSERT_EQ(0, quantizer->dequantize(code.data(), qmeta, &recon));
-    ASSERT_EQ(DIM * sizeof(float), recon.size());
-    const float *r = reinterpret_cast<const float *>(recon.data());
-
-    float adc = quantizer->calc_distance_dp_query_unquantized(code.data(), v);
-    float ref = reference_sq_euclidean(v, r, DIM);
-    EXPECT_NEAR(adc, ref, 1e-4f) << "i=" << i;
+    // Scanning a vector against itself yields its own reconstruction error,
+    // which is the grid noise here: the LUT must sum ||v_m - c_m[code_m]||^2
+    // over sub-spaces, so a wrong sub-space offset shows up immediately.
+    float scanned = packed_distance_of(quantizer, code.data(), code.size(), NSQ,
+                                       qquery.data());
+    EXPECT_NEAR(scanned, 0.0f, static_cast<float>(NSQ) * delta * 0.5f + 1e-2f)
+        << "i=" << i;
   }
 }
 
@@ -333,10 +394,10 @@ TEST(PqFastScanKernel, DispatchTableIsFamilyExclusive) {
   using zvec::turbo::get_pq_kernels;
   using zvec::turbo::QuantizeType;
 
-  // kPQFast fills fast_scan plus the scalar single-code ADC; no SDC / batch.
+  // kPQFast fills only fast_scan: no single-code ADC, no SDC, no batch ADC.
   auto fast = get_pq_kernels(DataType::kInt4, QuantizeType::kPQFast);
   EXPECT_TRUE(fast.fast_scan);
-  EXPECT_TRUE(fast.asymmetric_distance);
+  EXPECT_FALSE(fast.asymmetric_distance);
   EXPECT_FALSE(fast.symmetric_distance);
   EXPECT_FALSE(fast.batch_asymmetric_distance);
 
@@ -361,14 +422,14 @@ TEST(PqFastScanKernel, DispatchTableIsFamilyExclusive) {
 // Distance paths
 // ---------------------------------------------------------------------------
 
-TEST(PqFastQuantizer, QuantizedAdcVsExactAdc) {
+TEST(PqFastQuantizer, QuantizedAdcVsExactDistance) {
   const size_t DIM = 32;
   const size_t NSQ = 8;
   const size_t COUNT = 1000;
 
   auto quantizer = make_pqfs_quantizer(DIM, NSQ);
   ASSERT_TRUE(quantizer);
-  auto holder = make_random_holder(COUNT, DIM);
+  auto holder = make_grid_holder(COUNT, DIM, NSQ);
   ASSERT_EQ(0, quantizer->train(holder));
 
   const size_t code_len = quantizer->quantized_datapoint_vector_length();
@@ -385,38 +446,43 @@ TEST(PqFastQuantizer, QuantizedAdcVsExactAdc) {
   std::vector<uint8_t> qquery(quantizer->quantized_query_vector_length());
   quantizer->quantize_query(raws[0].data(), qquery.data());
 
-  // The u8-LUT rounding error is at most delta/2 per sub-space.
+  // The u8-LUT rounding error is at most delta/2 per sub-space; the grid data
+  // makes the reconstruction error negligible on top of that.
   float delta = 0.0f;
   std::memcpy(&delta, qquery.data() + fast_scan_packed_lut_size(NSQ),
               sizeof(float));
-  const float bound = static_cast<float>(NSQ) * delta * 0.5f + 1e-3f;
+  const float bound = static_cast<float>(NSQ) * delta * 0.5f + 1e-2f;
 
+  // The exact distance between raw vectors is an independent reference: it
+  // shares no code path with the block scan, so a wrong LUT or slot mapping
+  // cannot cancel out.
   for (size_t i = 1; i < COUNT; ++i) {
-    float quantized =
-        quantizer->calc_distance_dp_query(codes[i].data(), qquery.data());
-    float exact = quantizer->calc_distance_dp_query_unquantized(codes[i].data(),
-                                                                raws[0].data());
+    float quantized = packed_distance_of(quantizer, codes[i].data(), code_len,
+                                         NSQ, qquery.data());
+    float exact = reference_sq_euclidean(raws[0].data(), raws[i].data(), DIM);
     ASSERT_NEAR(quantized, exact, bound) << "i=" << i;
   }
 }
 
-TEST(PqFastQuantizer, PackedBlockMatchesSingle) {
+TEST(PqFastQuantizer, PackedBlockMatchesSingleBlock) {
   const size_t DIM = 32;
   const size_t NSQ = 8;
   const size_t COUNT = 300;
 
   auto quantizer = make_pqfs_quantizer(DIM, NSQ);
   ASSERT_TRUE(quantizer);
-  auto holder = make_random_holder(COUNT, DIM);
+  auto holder = make_grid_holder(COUNT, DIM, NSQ);
   ASSERT_EQ(0, quantizer->train(holder));
 
   const size_t code_len = quantizer->quantized_datapoint_vector_length();
   std::vector<uint8_t> codes(COUNT * code_len);
   std::vector<float> query(DIM);
+  std::vector<std::vector<float>> raws(COUNT);
   auto iter = holder->create_iterator();
   for (size_t i = 0; iter->is_valid(); iter->next(), ++i) {
+    const float *v = reinterpret_cast<const float *>(iter->data());
+    raws[i].assign(v, v + DIM);
     if (i == 0) {
-      const float *v = reinterpret_cast<const float *>(iter->data());
       query.assign(v, v + DIM);
     }
     quantizer->quantize_data(iter->data(), codes.data() + i * code_len);
@@ -448,24 +514,28 @@ TEST(PqFastQuantizer, PackedBlockMatchesSingle) {
   packer->calc_distance_packed_block(packed.data(), COUNT, qquery.data(),
                                      batch_dist.data());
 
+  // A one-vector block must land in slot 0 and yield exactly the same distance
+  // as the same code inside a full 32-vector block: this pins down the
+  // Package32 slot mapping.
   for (size_t i = 0; i < COUNT; ++i) {
-    float single = quantizer->calc_distance_dp_query(
-        codes.data() + i * code_len, qquery.data());
+    float single = packed_distance_of(quantizer, codes.data() + i * code_len,
+                                      code_len, NSQ, qquery.data());
     ASSERT_FLOAT_EQ(single, batch_dist[i]) << "i=" << i;
   }
 
-  // Pointer-array batch must agree as well.
-  std::vector<const void *> dp_list(COUNT);
-  for (size_t i = 0; i < COUNT; ++i) dp_list[i] = codes.data() + i * code_len;
-  std::vector<float> list_dist(COUNT);
-  quantizer->calc_distance_dp_query_batch(
-      dp_list.data(), static_cast<int>(COUNT), qquery.data(), list_dist.data());
+  // The block distance must also track the exact distance within the affine
+  // rounding bound, which a wrong slot mapping would break.
+  float delta = 0.0f;
+  std::memcpy(&delta, qquery.data() + fast_scan_packed_lut_size(NSQ),
+              sizeof(float));
+  const float bound = static_cast<float>(NSQ) * delta * 0.5f + 1e-2f;
   for (size_t i = 0; i < COUNT; ++i) {
-    ASSERT_FLOAT_EQ(list_dist[i], batch_dist[i]) << "i=" << i;
+    float exact = reference_sq_euclidean(query.data(), raws[i].data(), DIM);
+    ASSERT_NEAR(batch_dist[i], exact, bound) << "i=" << i;
   }
 }
 
-TEST(PqFastQuantizer, DistanceHandleMatchesAdc) {
+TEST(PqFastQuantizer, DistanceHandlesUnavailable) {
   const size_t DIM = 32;
   const size_t NSQ = 8;
   const size_t COUNT = 200;
@@ -490,31 +560,14 @@ TEST(PqFastQuantizer, DistanceHandleMatchesAdc) {
   std::vector<uint8_t> qquery(quantizer->quantized_query_vector_length());
   quantizer->quantize_query(query.data(), qquery.data());
 
-  // distance() hands the quantized LUT to the caller as a handle.
+  // FastScan reads only through calc_distance_packed_block, so neither handle
+  // may be advertised: callers must fall back instead of receiving a callable
+  // that mis-reads a plain code.
   IndexQueryMeta qmeta;
   auto impl = quantizer->distance(qquery.data(), qmeta);
-  ASSERT_TRUE(impl.valid());
+  EXPECT_FALSE(impl.valid());
   EXPECT_FALSE(impl.batch_valid());
-  EXPECT_EQ(NSQ, impl.dim());
-  EXPECT_EQ(qquery.size(), impl.query_storage().size());
 
-  for (size_t i = 0; i < COUNT; ++i) {
-    const void *code = codes.data() + i * code_len;
-    float single = quantizer->calc_distance_dp_query(code, qquery.data());
-    ASSERT_FLOAT_EQ(single, impl(code)) << "i=" << i;
-  }
-
-  // No per-pointer batch kernel: batch() falls back to the scalar path and
-  // must still agree element-wise.
-  std::vector<const void *> dp_list(COUNT);
-  for (size_t i = 0; i < COUNT; ++i) dp_list[i] = codes.data() + i * code_len;
-  std::vector<float> batch_dist(COUNT);
-  impl.batch(dp_list.data(), COUNT, batch_dist.data());
-  for (size_t i = 0; i < COUNT; ++i) {
-    ASSERT_FLOAT_EQ(impl(dp_list[i]), batch_dist[i]) << "i=" << i;
-  }
-
-  // No SDC: sym_distance() must return an empty handle.
   auto fast =
       std::dynamic_pointer_cast<zvec::turbo::PqFastQuantizer>(quantizer);
   ASSERT_TRUE(fast);
@@ -529,7 +582,7 @@ TEST(PqFastQuantizer, InnerProductMetric) {
 
   auto quantizer = make_pqfs_quantizer(DIM, NSQ, "InnerProduct");
   ASSERT_TRUE(quantizer);
-  auto holder = make_random_holder(COUNT, DIM);
+  auto holder = make_grid_holder(COUNT, DIM, NSQ);
   ASSERT_EQ(0, quantizer->train(holder));
 
   const size_t code_len = quantizer->quantized_datapoint_vector_length();
@@ -539,16 +592,12 @@ TEST(PqFastQuantizer, InnerProductMetric) {
   const float *v0 = reinterpret_cast<const float *>(iter->data());
   query.assign(v0, v0 + DIM);
   iter->next();
+  const float *v1 = reinterpret_cast<const float *>(iter->data());
+  std::vector<float> stored(v1, v1 + DIM);
   quantizer->quantize_data(iter->data(), code.data());
 
-  // Exact float ADC == -dot(query, reconstruction).
-  std::string recon;
-  IndexQueryMeta qmeta;
-  ASSERT_EQ(0, quantizer->dequantize(code.data(), qmeta, &recon));
-  const float *r = reinterpret_cast<const float *>(recon.data());
-  float adc =
-      quantizer->calc_distance_dp_query_unquantized(code.data(), query.data());
-  EXPECT_NEAR(adc, reference_neg_ip(query.data(), r, DIM), 1e-4f);
+  // Reference: IP distance == -dot(query, stored vector).
+  float adc = reference_neg_ip(query.data(), stored.data(), DIM);
 
   // Quantized ADC within the affine-quantization error bound.
   std::vector<uint8_t> qquery(quantizer->quantized_query_vector_length());
@@ -557,8 +606,8 @@ TEST(PqFastQuantizer, InnerProductMetric) {
   std::memcpy(&delta, qquery.data() + fast_scan_packed_lut_size(NSQ),
               sizeof(float));
   float quantized =
-      quantizer->calc_distance_dp_query(code.data(), qquery.data());
-  EXPECT_NEAR(quantized, adc, static_cast<float>(NSQ) * delta * 0.5f + 1e-3f);
+      packed_distance_of(quantizer, code.data(), code_len, NSQ, qquery.data());
+  EXPECT_NEAR(quantized, adc, static_cast<float>(NSQ) * delta * 0.5f + 1e-2f);
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +621,7 @@ TEST(PqFastQuantizer, CosineMetric) {
 
   auto quantizer = make_pqfs_quantizer(DIM, NSQ, "Cosine");
   ASSERT_TRUE(quantizer);
-  auto holder = make_random_holder(COUNT, DIM);
+  auto holder = make_grid_holder(COUNT, DIM, NSQ);
   ASSERT_EQ(0, quantizer->train(holder));
 
   const size_t packed_len = (NSQ + 1) / 2;
@@ -614,32 +663,19 @@ TEST(PqFastQuantizer, CosineMetric) {
   for (auto &x : qn) x /= q_norm;
 
   for (size_t i = 1; i < COUNT; ++i) {
-    // dequantize() rescales the unit-space reconstruction back by the
-    // stored norm.  The centroid concatenation itself carries PQ error, so
-    // its norm only approximates 1 — use a loose check.
-    std::string recon;
-    IndexQueryMeta qmeta;
-    ASSERT_EQ(0, quantizer->dequantize(codes[i].data(), qmeta, &recon));
-    const float *r = reinterpret_cast<const float *>(recon.data());
+    // The ADC accumulates 0.5 * ||qn - cn||^2 over normalized centroids, so it
+    // must equal the cosine distance between the normalized raw vectors.
     float stored_norm = 0.0f;
     std::memcpy(&stored_norm, codes[i].data() + packed_len, sizeof(float));
-    EXPECT_NEAR(l2_norm(r) / stored_norm, 1.0f, 0.25f) << "i=" << i;
-
-    // Exact float ADC must equal the cosine distance between the raw query
-    // and the normalized reconstruction: 0.5 * ||qn - r/stored_norm||^2
-    // (the ADC accumulates 0.5 * ||qn - cn||^2 over normalized centroids).
     std::vector<float> rn(DIM);
-    for (size_t j = 0; j < DIM; ++j) rn[j] = r[j] / stored_norm;
+    for (size_t j = 0; j < DIM; ++j) rn[j] = raws[i][j] / stored_norm;
     float ref = 0.5f * reference_sq_euclidean(qn.data(), rn.data(), DIM);
 
-    float exact = quantizer->calc_distance_dp_query_unquantized(codes[i].data(),
-                                                                raws[0].data());
-    ASSERT_NEAR(exact, ref, 1e-4f) << "i=" << i;
-
-    // The u8-LUT distance stays within the affine rounding bound.
-    float quantized =
-        quantizer->calc_distance_dp_query(codes[i].data(), qquery.data());
-    ASSERT_NEAR(quantized, exact, bound) << "i=" << i;
+    // The u8-LUT block distance stays within the affine rounding bound of the
+    // independent cosine reference.
+    float quantized = packed_distance_of(quantizer, codes[i].data(), code_len,
+                                         NSQ, qquery.data());
+    ASSERT_NEAR(quantized, ref, bound) << "i=" << i;
   }
 }
 
@@ -718,8 +754,10 @@ TEST(PqFastQuantizer, PrecomputeZeroCentroidMatchesDirect) {
 
   for (size_t i = 1; i < COUNT; ++i) {
     const uint8_t *code = codes.data() + i * code_len;
-    const float from_merged = q->calc_distance_dp_query(code, merged.data());
-    const float from_direct = q->calc_distance_dp_query(code, direct.data());
+    const float from_merged =
+        packed_distance_of(q, code, code_len, NSQ, merged.data());
+    const float from_direct =
+        packed_distance_of(q, code, code_len, NSQ, direct.data());
     ASSERT_NEAR(from_merged + q_norm2, from_direct, bound) << "i=" << i;
   }
 }
@@ -795,8 +833,9 @@ TEST(PqFastQuantizer, SerializeDeserialize) {
     q1->quantize_data(iter->data(), c1.data());
     q2->quantize_data(iter->data(), c2.data());
     ASSERT_EQ(0, std::memcmp(c1.data(), c2.data(), code_len)) << "i=" << i;
-    ASSERT_FLOAT_EQ(q1->calc_distance_dp_query(c1.data(), l1.data()),
-                    q2->calc_distance_dp_query(c2.data(), l2.data()));
+    ASSERT_FLOAT_EQ(
+        packed_distance_of(q1, c1.data(), code_len, NSQ, l1.data()),
+        packed_distance_of(q2, c2.data(), code_len, NSQ, l2.data()));
   }
 
   // A wrong-type blob must be rejected.
@@ -847,7 +886,7 @@ TEST(PqFastQuantizer, Fp16Input) {
   q->quantize_query(iter->data(), qquery.data());
   iter->next();
   q->quantize_data(iter->data(), code.data());
-  float d = q->calc_distance_dp_query(code.data(), qquery.data());
+  float d = packed_distance_of(q, code.data(), code.size(), NSQ, qquery.data());
   EXPECT_GE(d, 0.0f);
   EXPECT_TRUE(std::isfinite(d));
 

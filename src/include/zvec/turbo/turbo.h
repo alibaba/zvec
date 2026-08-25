@@ -118,8 +118,7 @@ struct RotatorKernels {
 //
 // Fields are populated per family and are mutually exclusive: kPQ fills
 // asymmetric_distance / symmetric_distance / batch_asymmetric_distance,
-// kPQFast fills fast_scan and asymmetric_distance (single-code look-up;
-// FastScan supports no SDC).
+// kPQFast fills only fast_scan (the packed block scan is its sole read path).
 struct CodebookKernels {
   CodebookAsymmetricDistanceFunc asymmetric_distance = nullptr;
   CodebookSymmetricDistanceFunc symmetric_distance = nullptr;

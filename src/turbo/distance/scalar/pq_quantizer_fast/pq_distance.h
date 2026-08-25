@@ -35,16 +35,10 @@ namespace zvec::turbo::scalar {
 // uint8 LUT entries of all 32 vectors in the quantized domain. The caller
 // turns the sums into distances via dist = accu32 * delta + bias.
 //
+// This is FastScan's only distance kernel.
+//
 // accu32[v] = sum_{m=0}^{num_chunk-1} packed_lut[m * 16 + code(m, v)]
 void pq_adc_fast_scan(const void *packed_codes, const void *packed_lut,
                       size_t num_chunk, int32_t *accu32);
-
-// Single-code ADC against a quantized FastScan query: `pq_code` is one plain
-// nibble-packed code (subquantizer m in the low nibble of byte m / 2 when m
-// is even, high nibble when odd), `qquery` is the packed uint8 LUT followed
-// by the delta/bias tail. Returns the dequantized distance
-// dist = accu * delta + bias. Signature matches CodebookAsymmetricDistanceFunc.
-void pq_adc_u8(const void *pq_code, const void *qquery, size_t num_chunk,
-               float *out);
 
 }  // namespace zvec::turbo::scalar
