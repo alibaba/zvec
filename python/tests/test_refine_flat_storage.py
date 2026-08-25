@@ -219,6 +219,91 @@ def test_refine_flat_native_storage_roundtrip(
 
 
 @pytest.mark.parametrize("index_kind", ["hnsw", "vamana"])
+def test_pooled_graph_context_refreshes_metric(tmp_path, index_kind):
+    """A pooled graph context must not retain a prior index's query metric."""
+    dimension = 16
+    doc_count = 48
+    query_id = 11
+    docs = [
+        Doc(
+            id=str(i),
+            vectors={
+                "dense": np.asarray(
+                    [(i * 17 + d * 7) % 101 for d in range(dimension)],
+                    dtype=np.float32,
+                ).tolist()
+            },
+        )
+        for i in range(doc_count)
+    ]
+    option = CollectionOption(read_only=False, enable_mmap=True)
+
+    def create_collection(name, quantize_type):
+        if index_kind == "hnsw":
+            index_param = HnswIndexParam(
+                metric_type=MetricType.L2,
+                m=12,
+                ef_construction=64,
+                quantize_type=quantize_type,
+            )
+        else:
+            index_param = VamanaIndexParam(
+                metric_type=MetricType.L2,
+                max_degree=12,
+                search_list_size=64,
+                quantize_type=quantize_type,
+            )
+        schema = CollectionSchema(
+            name=name,
+            vectors=[
+                VectorSchema(
+                    "dense",
+                    DataType.VECTOR_FP32,
+                    dimension=dimension,
+                    index_param=index_param,
+                )
+            ],
+        )
+        collection = zvec.create_and_open(
+            path=str(tmp_path / name), schema=schema, option=option
+        )
+        for status in collection.insert(docs):
+            assert status.ok()
+        collection.optimize()
+        return collection
+
+    def linear_query(collection):
+        if index_kind == "hnsw":
+            query_param = HnswQueryParam(ef=128, is_linear=True)
+        else:
+            query_param = VamanaQueryParam(ef_search=128, is_linear=True)
+        hits = collection.query(
+            Query(
+                field_name="dense",
+                vector=docs[query_id].vector("dense"),
+                param=query_param,
+            ),
+            topk=5,
+        )
+        assert hits
+        return [hit.id for hit in hits]
+
+    quantized = create_collection(f"{index_kind}_pooled_quantized", QuantizeType.INT8)
+    raw = None
+    try:
+        assert linear_query(quantized)[0] == str(query_id)
+
+        # HNSW/Vamana contexts are reused per thread. Searching a raw FP32
+        # index after an INT8 index must replace the old query preprocess.
+        raw = create_collection(f"{index_kind}_pooled_raw", QuantizeType.UNDEFINED)
+        assert linear_query(raw)[0] == str(query_id)
+    finally:
+        if raw is not None:
+            raw.destroy()
+        quantized.destroy()
+
+
+@pytest.mark.parametrize("index_kind", ["hnsw", "vamana"])
 def test_fp16_cosine_refine_uses_native_flat_pipeline(tmp_path, index_kind):
     dimension = 17
     doc_count = 80
