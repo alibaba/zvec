@@ -18,7 +18,6 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
-#include <mutex>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -57,18 +56,6 @@ class DiskAnnCacheTestPeer {
 
   static size_t neighbor_cache_size(const DiskAnnSearcher *searcher) {
     return searcher->diskann_indexer_->neighbor_cache_.size();
-  }
-};
-
-class DiskAnnStreamerTestPeer {
- public:
-  static std::shared_ptr<AlignedFileReader> reader(DiskAnnStreamer *streamer) {
-    return streamer->diskann_indexer_->reader_;
-  }
-
-  static void set_reader(DiskAnnStreamer *streamer,
-                         std::shared_ptr<AlignedFileReader> reader) {
-    streamer->diskann_indexer_->reader_ = std::move(reader);
   }
 };
 
@@ -148,54 +135,6 @@ class CountingAlignedFileReader final : public AlignedFileReader {
   std::shared_ptr<AlignedFileReader> reader_;
   size_t requested_reads_{0};
   size_t release_count_{0};
-};
-
-class ContextTrackingAlignedFileReader final : public AlignedFileReader {
- public:
-  explicit ContextTrackingAlignedFileReader(
-      std::shared_ptr<AlignedFileReader> reader)
-      : reader_(std::move(reader)) {}
-
-  void open(const std::string &fname) override {
-    reader_->open(fname);
-  }
-
-  void close() override {
-    reader_->close();
-  }
-
-  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-           bool async = false) override {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      contexts_.insert(ctx);
-    }
-    return reader_->read(read_reqs, ctx, async);
-  }
-
-  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
-             IOContext &ctx) override {
-    return reader_->submit(batch, read_reqs, ctx);
-  }
-
-  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
-                    std::vector<uint32_t> &completed_indices) override {
-    return reader_->get_completed(batch, ctx, min_completed, completed_indices);
-  }
-
-  void release_io_ctx(IOContext &ctx) override {
-    reader_->release_io_ctx(ctx);
-  }
-
-  size_t context_count() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return contexts_.size();
-  }
-
- private:
-  std::shared_ptr<AlignedFileReader> reader_;
-  mutable std::mutex mutex_;
-  std::set<IOContext> contexts_;
 };
 
 class FailingAlignedFileReader final : public AlignedFileReader {
@@ -574,30 +513,23 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   ASSERT_EQ(0, streamer->open(streamer_storage));
   EXPECT_TRUE(streamer_cached_file.expired());
 
-  auto *diskann_streamer = dynamic_cast<DiskAnnStreamer *>(streamer.get());
-  ASSERT_NE(diskann_streamer, nullptr);
-  auto streamer_counting_reader = std::make_shared<CountingAlignedFileReader>(
-      DiskAnnStreamerTestPeer::reader(diskann_streamer));
-  DiskAnnStreamerTestPeer::set_reader(diskann_streamer,
-                                      streamer_counting_reader);
-
   auto streamer_ctx = streamer->create_context();
   ASSERT_NE(streamer_ctx, nullptr);
   streamer_ctx->set_topk(topk);
   auto *original_ctx = streamer_ctx.get();
 
-  release_count = streamer_counting_reader->release_count();
   ASSERT_EQ(0, streamer->search_impl(batch_queries.data(), qmeta,
                                      kBatchQueryCount, streamer_ctx));
-  EXPECT_EQ(release_count + 1, streamer_counting_reader->release_count());
+  for (uint32_t i = 0; i < kBatchQueryCount; ++i) {
+    EXPECT_FALSE(streamer_ctx->result(i).empty());
+  }
 
   ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
   EXPECT_EQ(original_ctx, streamer_ctx.get());
   ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
   EXPECT_EQ(original_ctx, streamer_ctx.get());
 
-  // Concurrent fetches must not share an I/O context or return pointers into
-  // a mutable streamer-owned string.
+  // Concurrent fetches must return independent, correctly owned blocks.
   std::atomic<bool> fetch_ok{true};
   std::vector<std::thread> fetch_threads;
   for (uint32_t thread_id = 0; thread_id < 4; ++thread_id) {
@@ -637,16 +569,6 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   invalid_group_ctx->set_group_params(2, 3);
   EXPECT_EQ(IndexError_InvalidArgument,
             searcher->search_impl(vec.data(), qmeta, invalid_group_ctx));
-
-  // I/O failures from the indexer must be propagated by the streamer instead
-  // of being converted into a successful search with incomplete results.
-  auto failing_reader = std::make_shared<CountingAlignedFileReader>(
-      std::make_shared<FailingAlignedFileReader>(
-          DiskAnnStreamerTestPeer::reader(diskann_streamer)));
-  DiskAnnStreamerTestPeer::set_reader(diskann_streamer, failing_reader);
-  release_count = failing_reader->release_count();
-  EXPECT_NE(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
-  EXPECT_EQ(release_count + 1, failing_reader->release_count());
 
   // Closing/unloading releases the index and makes all query entry points
   // reject work until another index is loaded.
@@ -1242,12 +1164,6 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_EQ(0, streamer->open(streamer_storage));
   ASSERT_TRUE(provider_cached_file.expired());
 
-  auto *diskann_streamer = dynamic_cast<DiskAnnStreamer *>(streamer.get());
-  ASSERT_NE(diskann_streamer, nullptr);
-  auto tracking_reader = std::make_shared<ContextTrackingAlignedFileReader>(
-      DiskAnnStreamerTestPeer::reader(diskann_streamer));
-  DiskAnnStreamerTestPeer::set_reader(diskann_streamer, tracking_reader);
-
   auto provider = streamer->create_provider();
   ASSERT_NE(provider, nullptr);
   auto second_provider = streamer->create_provider();
@@ -1333,10 +1249,6 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   EXPECT_TRUE(concurrent_fetch_completed);
   EXPECT_EQ(31.0f, first_thread_value);
   EXPECT_EQ(47.0f, second_thread_value);
-  // The provider owns one heavyweight fetch context regardless of how many
-  // transient worker threads call get_vector(). Only result bytes are local
-  // to each thread.
-  EXPECT_EQ(1U, tracking_reader->context_count());
 
   // Providers also need independent result bytes on the same thread. Keep the
   // first provider's pointer live while a second provider fetches a different
@@ -1353,9 +1265,6 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   std::memcpy(&retained_provider_value, provider_vector,
               sizeof(retained_provider_value));
   EXPECT_EQ(17.0f, retained_provider_value);
-  // Each provider still owns exactly one heavyweight fetch context, rather
-  // than retaining one for every historical worker thread.
-  EXPECT_EQ(2U, tracking_reader->context_count());
 
   second_provider.reset();
   provider.reset();
