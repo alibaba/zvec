@@ -35,14 +35,17 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.6.0 (July 20, 2026)**
+> 🚀 **v0.7.0 (August 24, 2026)**
 >
-> - **Group-By Search**: Retrieve top-K results per group instead of globally (group-by deduplication) across Flat, HNSW, HNSW-RaBitQ, and sparse indexes.
-> - **Random Rotation Quantization**: Optional random rotation for INT8/INT4 quantization distributes variance evenly across dimensions, significantly boosting recall.
-> - **Enhanced Full-Text Search**: Upgraded FTS pipeline with a Unicode UAX #29 standard tokenizer, UTF-8 / ASCII folding, and a Snowball-based stemmer supporting 34+ languages.
-> - **Faster & More Robust**: Block-max skip speeds up FTS conjunction queries by 22–38%, plus a new DiskANN C API and numerous stability fixes.
+> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
+> - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
+> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with automatic fallback to the best available I/O option — no user intervention needed.
+> - **Index optimization**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
+> - **Deployment experience improved**: Prebuilt dynamic libraries slimmed significantly (macOS arm64 C API library 37→22 MB, **-40%**); new **musl libc / Alpine Linux** support; prebuilt SDK binaries for Linux (glibc/musl), macOS, Windows, Android, and iOS published with every release.
+> - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
+> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.6.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
@@ -65,11 +68,13 @@ Zvec offers official SDKs across multiple languages:
 - **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust`
 - **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
 
+Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
+
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
 ### ✅ Supported Platforms
 
-- Linux (x86_64, ARM64)
+- Linux (x86_64, ARM64; glibc & musl)
 - macOS (ARM64)
 - Windows (x86_64)
 
