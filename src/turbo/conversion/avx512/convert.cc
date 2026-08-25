@@ -26,20 +26,22 @@ void fp32_to_fp16(const float *input, size_t dimension, void *output_buffer) {
 #if (defined(__AVX512F__) && defined(__F16C__)) || \
     (defined(_MSC_VER) && defined(__AVX512F__))
   size_t d = 0;
-  constexpr int kRounding = _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC;
+  constexpr int kAvx512Rounding =
+      _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC;
+  constexpr int kF16cRounding = _MM_FROUND_TO_NEAREST_INT;
   for (; d + 16 <= dimension; d += 16) {
     const __m512 values = _mm512_loadu_ps(input + d);
-    const __m256i half = _mm512_cvtps_ph(values, kRounding);
+    const __m256i half = _mm512_cvtps_ph(values, kAvx512Rounding);
     _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + d), half);
   }
   if (d + 8 <= dimension) {
     const __m256 values = _mm256_loadu_ps(input + d);
-    const __m128i half = _mm256_cvtps_ph(values, kRounding);
+    const __m128i half = _mm256_cvtps_ph(values, kF16cRounding);
     _mm_storeu_si128(reinterpret_cast<__m128i *>(output + d), half);
     d += 8;
   }
-  for (; d < dimension; ++d) {
-    output[d] = _cvtss_sh(input[d], kRounding);
+  if (d < dimension) {
+    ailego::FloatHelper::ToFP16(input + d, dimension - d, output + d);
   }
 #else
   ailego::FloatHelper::ToFP16(input, dimension, output);
