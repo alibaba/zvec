@@ -691,7 +691,8 @@ Status SegmentHelper::ReduceVectorIndex(
       field_without_quantize->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
           vector_index_params->use_flat_contiguous_memory(),
-          vector_index_params->flat_data_type()));
+          segment_detail::FlatStorageDataTypeForField(
+              field->data_type(), vector_index_params->flat_data_type())));
 
       VectorColumnIndexer::Ptr vector_indexer;
       s = MergeWithOptionalReuse(

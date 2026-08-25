@@ -1566,7 +1566,8 @@ Status SegmentImpl::create_vector_index(
     auto original_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
     const auto configured_flat_data_type =
-        vector_index_params->flat_data_type();
+        segment_detail::FlatStorageDataTypeForField(
+            field->data_type(), vector_index_params->flat_data_type());
     const auto desired_flat_data_type =
         configured_flat_data_type == DataType::UNDEFINED
             ? field->data_type()
@@ -1595,7 +1596,7 @@ Status SegmentImpl::create_vector_index(
       field_with_flat->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
           vector_index_params->use_flat_contiguous_memory(),
-          desired_flat_data_type));
+          configured_flat_data_type));
 
       std::string index_file_path = FileHelper::MakeVectorIndexPath(
           path_, column, segment_meta_->id(), block_id);
@@ -3972,7 +3973,9 @@ Status SegmentImpl::load_vector_index_blocks() {
           new_field_params.set_index_params(MakeDefaultVectorIndexParams(
               vector_index_params->metric_type(),
               vector_index_params->use_flat_contiguous_memory(),
-              vector_index_params->flat_data_type()));
+              segment_detail::FlatStorageDataTypeForField(
+                  new_field_params.data_type(),
+                  vector_index_params->flat_data_type())));
         }
       } else {
         if (!segment_meta_->vector_indexed(column)) {
@@ -4100,7 +4103,8 @@ Status SegmentImpl::init_memory_components() {
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
           index_params->use_flat_contiguous_memory(),
-          index_params->flat_data_type()));
+          segment_detail::FlatStorageDataTypeForField(
+              field->data_type(), index_params->flat_data_type())));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);
@@ -4115,7 +4119,8 @@ Status SegmentImpl::init_memory_components() {
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
           index_params->use_flat_contiguous_memory(),
-          index_params->flat_data_type()));
+          segment_detail::FlatStorageDataTypeForField(
+              field->data_type(), index_params->flat_data_type())));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);

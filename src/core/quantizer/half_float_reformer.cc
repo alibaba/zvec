@@ -145,7 +145,10 @@ class HalfFloatReformer : public IndexReformer {
   }
 
  private:
-  turbo::ConvertFunc convert_func_{nullptr};
+  // Preserve the pre-existing behavior for direct factory users that invoke
+  // transform() without init(). The normal initialized path replaces this
+  // fallback with Turbo's architecture-specific conversion kernel.
+  turbo::ConvertFunc convert_func_{Fp32ToFp16Fallback};
 };
 
 /*! Half Float Sparse Reformer
