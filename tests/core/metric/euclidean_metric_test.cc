@@ -184,7 +184,9 @@ TEST(TurboDispatch, RawDistanceAndConversionUseUnifiedRegistry) {
   EXPECT_EQ(8U, static_cast<uint32_t>(turbo::QuantizeType::kRaw));
 
   const auto &flags = ailego::internal::CpuFeatures::static_flags_;
-  const bool supports_uint8 = flags.AVX512F && flags.AVX512BW;
+  const bool supports_uint8_distance =
+      flags.AVX512F && flags.AVX512BW && flags.AVX512_VNNI;
+  const bool supports_uint8_conversion = flags.AVX512F && flags.AVX512BW;
   const bool supports_fp16_distance =
       flags.AVX512F && flags.AVX512DQ && flags.F16C;
   const bool supports_fp16_conversion = flags.AVX512F && flags.F16C;
@@ -205,9 +207,9 @@ TEST(TurboDispatch, RawDistanceAndConversionUseUnifiedRegistry) {
 
   const auto uint8_simd = turbo::get_distance_kernels(
       turbo::MetricType::kSquaredEuclidean, turbo::DataType::kUint8,
-      turbo::QuantizeType::kRaw, turbo::CpuArchType::kAVX512);
-  EXPECT_EQ(supports_uint8, static_cast<bool>(uint8_simd.dist));
-  EXPECT_EQ(supports_uint8, static_cast<bool>(uint8_simd.batch));
+      turbo::QuantizeType::kRaw, turbo::CpuArchType::kAVX512VNNI);
+  EXPECT_EQ(supports_uint8_distance, static_cast<bool>(uint8_simd.dist));
+  EXPECT_EQ(supports_uint8_distance, static_cast<bool>(uint8_simd.batch));
 
   const auto fp16_simd = turbo::get_distance_kernels(
       turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
@@ -250,7 +252,7 @@ TEST(TurboDispatch, RawDistanceAndConversionUseUnifiedRegistry) {
   EXPECT_FALSE(unsupported.batch);
   EXPECT_EQ(nullptr, unsupported.preprocess);
 
-  EXPECT_EQ(supports_uint8,
+  EXPECT_EQ(supports_uint8_conversion,
             turbo::get_convert_func(turbo::DataType::kUint8) != nullptr);
   EXPECT_EQ(supports_fp16_conversion,
             turbo::get_convert_func(turbo::DataType::kFp16) != nullptr);

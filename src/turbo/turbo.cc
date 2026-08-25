@@ -26,6 +26,7 @@
 #include "avx512_vnni/uniform_uint7/quantize.h"
 #include "avx512_vnni/uniform_uint7/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint8/squared_euclidean.h"
+#include "conversion/avx512/convert.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
 #include "neon/rotate/fht/fht.h"
 #include "scalar/fp16/cosine.h"
@@ -119,7 +120,7 @@ struct KernelSet {
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
     // --- raw physical storage (AVX512, then scalar fallback) ---
-    {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512,
+    {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
      avx512_vnni::squared_euclidean_uint8_batch_distance, nullptr,
@@ -212,9 +213,9 @@ struct ConvertKernel {
 };
 
 constexpr ConvertKernel kConvertKernelTable[] = {
-    {DataType::kUint8, CpuArchType::kAVX512, avx512_vnni::fp32_to_raw_uint8,
+    {DataType::kUint8, CpuArchType::kAVX512, avx512::fp32_to_uint8,
      kCpuFeatureAvx512Bw},
-    {DataType::kFp16, CpuArchType::kAVX512, avx512_vnni::fp32_to_fp16,
+    {DataType::kFp16, CpuArchType::kAVX512, avx512::fp32_to_fp16,
      kCpuFeatureF16c},
 };
 

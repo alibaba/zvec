@@ -18,8 +18,6 @@
 
 namespace zvec::turbo::avx512_vnni {
 
-void fp32_to_raw_uint8(const float *input, std::size_t dimension, void *output);
-
 void squared_euclidean_uint8_distance(const void *lhs, const void *rhs,
                                       std::size_t dimension, float *distance);
 

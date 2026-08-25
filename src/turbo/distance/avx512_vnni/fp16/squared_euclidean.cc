@@ -130,26 +130,6 @@ void squared_euclidean_fp16_batch_distance(const void *const *vectors,
   }
 }
 
-void fp32_to_fp16(const float *input, size_t dimension, void *output_buffer) {
-  auto *output = static_cast<uint16_t *>(output_buffer);
-  size_t d = 0;
-  constexpr int kRounding = _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC;
-  for (; d + 16 <= dimension; d += 16) {
-    const __m512 values = _mm512_loadu_ps(input + d);
-    const __m256i half = _mm512_cvtps_ph(values, kRounding);
-    _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + d), half);
-  }
-  if (d + 8 <= dimension) {
-    const __m256 values = _mm256_loadu_ps(input + d);
-    const __m128i half = _mm256_cvtps_ph(values, kRounding);
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(output + d), half);
-    d += 8;
-  }
-  for (; d < dimension; ++d) {
-    output[d] = _cvtss_sh(input[d], kRounding);
-  }
-}
-
 #else
 
 void squared_euclidean_fp16_distance(const void *lhs, const void *rhs,
@@ -172,11 +152,6 @@ void squared_euclidean_fp16_batch_distance(const void *const *vectors,
     }
     distances[row] = sum;
   }
-}
-
-void fp32_to_fp16(const float *input, size_t dimension, void *output_buffer) {
-  auto *output = static_cast<uint16_t *>(output_buffer);
-  ailego::FloatHelper::ToFP16(input, dimension, output);
 }
 
 #endif

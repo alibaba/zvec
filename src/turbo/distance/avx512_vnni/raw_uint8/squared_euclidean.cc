@@ -82,30 +82,6 @@ inline void PrefetchRow(const void *vector) {
 
 }  // namespace
 
-void fp32_to_raw_uint8(const float *input, size_t dimension,
-                       void *output_buffer) {
-  auto *output = static_cast<uint8_t *>(output_buffer);
-  size_t i = 0;
-  const __m512 zero = _mm512_setzero_ps();
-  const __m512 max_uint8 = _mm512_set1_ps(255.0F);
-  for (; i + 16 <= dimension; i += 16) {
-    // Clamp before conversion so infinities and values outside int32 range
-    // saturate consistently with the scalar tail. MAXPS selects its second
-    // operand for NaN, which maps non-numeric inputs to zero here.
-    const __m512 values = _mm512_min_ps(
-        _mm512_max_ps(_mm512_loadu_ps(input + i), zero), max_uint8);
-    const __m512i integers = _mm512_cvttps_epi32(values);
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(output + i),
-                     _mm512_cvtusepi32_epi8(integers));
-  }
-  for (; i < dimension; ++i) {
-    const float value = input[i];
-    output[i] = !(value > 0.0F)   ? 0
-                : value >= 255.0F ? 255
-                                  : static_cast<uint8_t>(value);
-  }
-}
-
 void squared_euclidean_uint8_distance(const void *lhs, const void *rhs,
                                       size_t dimension, float *distance) {
   const void *rows[] = {lhs};
@@ -137,17 +113,6 @@ void squared_euclidean_uint8_batch_distance(const void *const *vectors,
 }
 
 #else
-
-void fp32_to_raw_uint8(const float *input, size_t dimension,
-                       void *output_buffer) {
-  auto *output = static_cast<uint8_t *>(output_buffer);
-  for (size_t i = 0; i < dimension; ++i) {
-    const float value = input[i];
-    output[i] = !(value > 0.0F)   ? 0
-                : value >= 255.0F ? 255
-                                  : static_cast<uint8_t>(value);
-  }
-}
 
 void squared_euclidean_uint8_distance(const void *lhs, const void *rhs,
                                       size_t dimension, float *distance) {

@@ -14,17 +14,11 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 
-namespace zvec::turbo::avx512_vnni {
+namespace zvec::turbo::avx512 {
 
-void squared_euclidean_fp16_distance(const void *lhs, const void *rhs,
-                                     std::size_t dimension, float *distance);
+void fp32_to_fp16(const float *input, std::size_t dimension, void *output);
 
-// Squared L2 from one FP16 query to independently-addressed FP16 rows.
-void squared_euclidean_fp16_batch_distance(const void *const *vectors,
-                                           const void *query, std::size_t count,
-                                           std::size_t dimension,
-                                           float *distances);
+void fp32_to_uint8(const float *input, std::size_t dimension, void *output);
 
-}  // namespace zvec::turbo::avx512_vnni
+}  // namespace zvec::turbo::avx512

@@ -56,8 +56,7 @@ using QueryPreprocessFunc =
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
-// Direct fp32-to-physical-storage conversion used by native Flat reference
-// storage. The output layout is selected by get_convert_func().
+// Direct FP32 conversion. The output layout is selected by get_convert_func().
 using ConvertFunc = void (*)(const float *in, size_t dim, void *out);
 
 // Generic rotate / unrotate function pointer types.
