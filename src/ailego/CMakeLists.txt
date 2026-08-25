@@ -90,29 +90,35 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
         )
     endforeach()
     elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
-        if(MSVC)
-            return()
+        if(NOT MSVC)
+            set(MATH_MARCH_FLAG_NEON "-march=armv8-a")
+
+            file(GLOB_RECURSE MATH_FILES_NEON
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.c
+            )
+
+            foreach(MATH_FILE ${MATH_FILES_NEON})
+              set_source_files_properties(
+                  ${MATH_FILE}
+                  PROPERTIES
+                  COMPILE_FLAGS "${MATH_MARCH_FLAG_NEON}"
+              )
+            endforeach()
+        else()
+            # MSVC on ARM64: NEON is the ARMv8 baseline and is always enabled,
+            # so no `-march` flag is required (MSVC does not accept GCC-style
+            # `-march=` anyway). The NEON math kernels still get compiled via
+            # the ALL_SRCS glob above; their guards use the AILEGO_HAVE_NEON /
+            # AILEGO_ARM64 feature macros (defined in platform.h), which resolve
+            # to true on MSVC ARM64 so the bodies actually emit code.
         endif()
-        set(MATH_MARCH_FLAG_NEON "-march=armv8-a")
-
-        file(GLOB_RECURSE MATH_FILES_NEON
-          ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.cc
-          ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.cc
-          ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.cc
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.c
-        )
-
-        foreach(MATH_FILE ${MATH_FILES_NEON})
-          set_source_files_properties(
-              ${MATH_FILE}
-              PROPERTIES
-              COMPILE_FLAGS "${MATH_MARCH_FLAG_NEON}"
-          )
-        endforeach()
     endif()
 endif()
 

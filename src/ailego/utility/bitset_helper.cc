@@ -23,7 +23,7 @@
 #define bitset_popcount64 _mm_popcnt_u64
 #endif  // !__SSE4_2__
 
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
 static inline void bitset_and(uint32_t *lhs, const uint32_t *rhs, size_t size) {
   uint32_t *last = lhs + size;
   uint32_t *last_aligned = lhs + ((size >> 2) << 2);
@@ -1480,7 +1480,7 @@ static inline bool bitset_test_none(const uint32_t *lhs, size_t size) {
 #endif  // AILEGO_M64
 #endif  // __AVX2__
 
-#if (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(AILEGO_ARM64_NEON)
 static inline size_t bitset_cardinality(const uint32_t *lhs, size_t size) {
   const uint32_t *last = lhs + size;
   const uint32_t *last_aligned = lhs + ((size >> 2) << 2);
@@ -1839,7 +1839,7 @@ static inline size_t bitset_or_cardinality(const uint32_t *lhs,
   return count;
 }
 
-#else   // !__ARM_NEON && !AILEGO_M64
+#else   // !AILEGO_ARM64_NEON && !AILEGO_M64
 static inline size_t bitset_cardinality(const uint32_t *lhs, size_t size) {
   const uint32_t *last = lhs + size;
   const uint32_t *last_aligned = lhs + ((size >> 2) << 2);
@@ -1964,7 +1964,7 @@ static inline size_t bitset_or_cardinality(const uint32_t *lhs,
   }
   return count;
 }
-#endif  // __ARM_NEON && __aarch64__
+#endif  // AILEGO_ARM64_NEON
 
 namespace zvec {
 

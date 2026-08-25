@@ -30,7 +30,7 @@
                                             _mm512_castps_si512(b)))
 #endif  // __AVX512DQ__
 
-#if defined(__ARM_NEON) && !defined(__aarch64__)
+#if defined(AILEGO_HAVE_NEON) && !defined(AILEGO_ARM64)
 static inline float32_t vaddvq_f32(float32x4_t v) {
   float32x2_t s = vadd_f32(vget_low_f32(v), vget_high_f32(v));
   return vget_lane_f32(vpadd_f32(s, s), 0);
@@ -40,13 +40,13 @@ static inline int32_t vaddvq_s32(int32x4_t v) {
   int32x2_t s = vadd_s32(vget_low_s32(v), vget_high_s32(v));
   return vget_lane_s32(vpadd_s32(s, s), 0);
 }
-#endif  //__ARM_NEON && !__aarch64__
+#endif  // AILEGO_HAVE_NEON && !AILEGO_ARM64
 
-#if defined(__aarch64__)
+#if defined(AILEGO_ARM64)
 #define ACCUM_FP32_2X1_NEON ACCUM_FP32_2X1_NEON_A64
 #else
 #define ACCUM_FP32_2X1_NEON ACCUM_FP32_2X1_NEON_A32
-#endif  // __aarch64__
+#endif  // AILEGO_ARM64
 
 //! Compute the distance between matrix and query (FP32, M=2, N=1)
 #define ACCUM_FP32_2X1_SSE(m, q, dim, out, _NORM)                       \

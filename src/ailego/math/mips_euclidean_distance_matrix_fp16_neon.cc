@@ -19,7 +19,7 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_GNU_LIKE)
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
 float InnerProductAndSquaredNormFp16NEON(const Float16 *lhs, const Float16 *rhs,
@@ -153,7 +153,7 @@ float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEON(
 
   return sum;
 }
-#endif  // __ARM_NEON && __aarch64__
+#endif  // AILEGO_ARM64_GNU_LIKE
 
 }  // namespace ailego
 }  // namespace zvec
