@@ -188,10 +188,10 @@ class DistCalculator {
     }
 
     const char *name = nullptr;
-    // FP32 stays on the SIMD-optimized ailego metric: the turbo FP32
-    // kernels are scalar-only and much slower for graph build / rerank.
     if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
       name = "Fp16Quantizer";
+    } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+      name = "Fp32Quantizer";
     }
     if (name != nullptr) {
       turbo::Quantizer::Pointer quantizer = IndexFactory::CreateQuantizer(name);
