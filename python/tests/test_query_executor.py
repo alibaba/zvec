@@ -287,20 +287,47 @@ class TestQueryExecutor:
         reranker.rerank.assert_called_once_with(docs_list, ctx.topk)
 
     def test_execute_python_pipeline(self):
-        # Each query is executed serially and converted into a result list.
-        schema = MockCollectionSchema()
-        executor = QueryExecutor(schema)
+        # Each query is executed serially and batch-materialized into results:
+        # Doc._from_tuple is invoked for every non-None tuple returned by
+        # collection.Query, while None entries are passed through untouched.
+        executor = QueryExecutor(MagicMock())
         collection = MagicMock()
-        collection.Query.side_effect = [["raw1"], ["raw2"]]
+        collection.Query.side_effect = [["raw1", None], ["raw2"]]
         vectors = [MagicMock(), MagicMock()]
 
-        with patch(
-            "zvec.executor.query_executor.convert_to_py_doc",
-            side_effect=lambda doc, schema: doc,
-        ):
+        with patch("zvec.executor.query_executor.Doc") as mock_doc:
+            mock_doc._from_tuple.side_effect = lambda t: ("doc", t)
             results = executor._execute_python_pipeline(vectors, collection)
-        assert results == [["raw1"], ["raw2"]]
-        assert collection.Query.call_count == 2
+
+        assert collection.Query.call_args_list == [
+            ((vectors[0],), {}),
+            ((vectors[1],), {}),
+        ]
+        assert mock_doc._from_tuple.call_args_list == [
+            (("raw1",), {}),
+            (("raw2",), {}),
+        ]
+        assert results == [[("doc", "raw1"), None], [("doc", "raw2")]]
+
+    def test_execute_single_query_batch_materializes(self):
+        # _execute_single_query sends the query as-is to collection.Query
+        # (the schema is resolved inside the C++ binding) and converts each
+        # non-None returned tuple via Doc._from_tuple, keeping order and None.
+        executor = QueryExecutor(MagicMock())
+        collection = MagicMock()
+        collection.Query.return_value = ["raw1", None, "raw2"]
+        query = MagicMock()
+
+        with patch("zvec.executor.query_executor.Doc") as mock_doc:
+            mock_doc._from_tuple.side_effect = lambda t: ("doc", t)
+            results = executor._execute_single_query(query, collection)
+
+        collection.Query.assert_called_once_with(query)
+        assert mock_doc._from_tuple.call_args_list == [
+            (("raw1",), {}),
+            (("raw2",), {}),
+        ]
+        assert results == [("doc", "raw1"), None, ("doc", "raw2")]
 
     def test_build_search_query_by_missing_id_raises_value_error(self):
         vector_schema = VectorSchema(name="test", data_type=DataType.VECTOR_FP32)

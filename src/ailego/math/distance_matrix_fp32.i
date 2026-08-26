@@ -26,9 +26,9 @@
   _mm256_insertf128_ps(_mm256_castps128_ps256(b), (a), 1)
 #endif  // __AVX__
 
-#if defined(__ARM_NEON) && !defined(__aarch64__)
+#if defined(AILEGO_HAVE_NEON) && !defined(AILEGO_ARM64)
 #define vdupq_laneq_f32(a, b) vdupq_n_f32(vgetq_lane_f32(a, b))
-#endif  // __ARM_NEON && __aarch64__
+#endif  // AILEGO_HAVE_NEON && !AILEGO_ARM64
 
 //! Iterative process of computing distance (FP32, M=2, N=1)
 #define MATRIX_FP32_ITER_2X1_SSE(m, q, _RES, _LOAD, _PROC)         \

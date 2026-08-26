@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.7.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Step 1: Build prebuilt libraries for all platforms
+  build-prebuilt:
+    name: Build Prebuilt Libraries
+    uses: ./.github/workflows/_build_prebuilt.yml
+    with:
+      # Tag pushes take the tag from the ref; manual dispatch takes it from
+      # the input (github.ref_name would be a branch name there).
+      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+  # Step 2: Create release and upload prebuilt libraries
+  release:
+    name: Create Release
+    needs: build-prebuilt
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAG="${{ inputs.tag }}"
+          else
+            RAW_TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${RAW_TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION (tag: $RAW_TAG)"
+
+      - name: Download all prebuilt artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: prebuilt-artifacts/
+          pattern: zvec-sdk-*
+          merge-multiple: false
+
+      - name: List prebuilt artifacts
+        shell: bash
+        run: |
+          echo "Release assets:"
+          find prebuilt-artifacts/ -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort
+          # Every platform must have produced its archive, otherwise the
+          # release below would silently ship an incomplete SDK set.
+          expected=(
+            zvec-sdk-osx-arm64.tar.gz
+            zvec-sdk-linux-amd64.tar.gz
+            zvec-sdk-linux-arm64.tar.gz
+            zvec-sdk-linux-musl-amd64.tar.gz
+            zvec-sdk-linux-musl-arm64.tar.gz
+            zvec-sdk-windows-amd64.zip
+            zvec-sdk-android-arm64.tar.gz
+            zvec-sdk-ios.zip
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! find prebuilt-artifacts/ -type f -name "$name" | grep -q .; then
+              echo "::error::Missing release artifact: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Verify release artifacts
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Spot-check the linux-amd64 SDK. Version: zvec_get_version() compiles the
+          # version string resolved by cmake/version.cmake into
+          # libzvec_c_api.so, so the exact tag must appear in the binary.
+          # This catches a missing tag input (silent v0.0.0 fallback) before
+          # anything is published.
+          # Jieba dict: the jieba FTS tokenizer needs these files at runtime;
+          # they must ship under data/jieba_dict (see CMakeLists.txt).
+          SDK_DIR=prebuilt-artifacts/zvec-sdk-linux-amd64
+          mkdir -p "$SDK_DIR/extracted"
+          tar xzf "$SDK_DIR"/zvec-sdk-linux-amd64.tar.gz -C "$SDK_DIR/extracted"
+          LIB="$SDK_DIR/extracted/lib/libzvec_c_api.so"
+          if [ ! -f "$LIB" ]; then
+            echo "::error::libzvec_c_api.so not found in the linux-amd64 SDK"
+            exit 1
+          fi
+          if ! strings "$LIB" | grep -Fx "$EXPECTED_TAG"; then
+            ACTUAL=$(strings "$LIB" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+            echo "::error::Embedded version '${ACTUAL:-<none>}' does not match release tag '$EXPECTED_TAG'"
+            exit 1
+          fi
+          echo "Embedded version matches release tag: $EXPECTED_TAG"
+          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+            if [ ! -f "$SDK_DIR/extracted/data/jieba_dict/$dict_file" ]; then
+              echo "::error::data/jieba_dict/$dict_file missing from the linux-amd64 SDK"
+              exit 1
+            fi
+          done
+          echo "Jieba dict files present in the SDK"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, 'alpha') || contains(steps.version.outputs.tag, 'beta') || contains(steps.version.outputs.tag, 'rc') }}
+          files: |
+            prebuilt-artifacts/**/*.tar.gz
+            prebuilt-artifacts/**/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

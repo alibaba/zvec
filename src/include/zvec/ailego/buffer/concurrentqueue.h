@@ -129,8 +129,9 @@ static inline thread_id_t thread_id() {
 }
 }  // namespace details
 }  // namespace moodycamel
-#elif defined(__arm__) || defined(_M_ARM) || defined(__aarch64__) || \
-    (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__MVS__) ||  \
+#elif defined(__arm__) || defined(_M_ARM) ||                        \
+    (defined(__aarch64__) || defined(_M_ARM64)) ||                  \
+    (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__MVS__) || \
     defined(MOODYCAMEL_NO_THREAD_LOCAL)
 namespace moodycamel {
 namespace details {
@@ -293,13 +294,14 @@ inline thread_id_t thread_id() {
 // support thread_local either. Finally, iOS/ARM doesn't have support for it
 // either, and g++/ARM allows it to compile but it's unconfirmed to actually
 // work
-#if (!defined(_MSC_VER) || _MSC_VER >= 1900) &&                        \
-    (!defined(__MINGW32__) && !defined(__MINGW64__) ||                 \
-     !defined(__WINPTHREADS_VERSION)) &&                               \
-    (!defined(__GNUC__) || __GNUC__ > 4 ||                             \
-     (__GNUC__ == 4 && __GNUC_MINOR__ >= 8)) &&                        \
-    (!defined(__APPLE__) || !TARGET_OS_IPHONE) && !defined(__arm__) && \
-    !defined(_M_ARM) && !defined(__aarch64__) && !defined(__MVS__)
+#if (!defined(_MSC_VER) || _MSC_VER >= 1900) &&                         \
+    (!defined(__MINGW32__) && !defined(__MINGW64__) ||                  \
+     !defined(__WINPTHREADS_VERSION)) &&                                \
+    (!defined(__GNUC__) || __GNUC__ > 4 ||                              \
+     (__GNUC__ == 4 && __GNUC_MINOR__ >= 8)) &&                         \
+    (!defined(__APPLE__) || !TARGET_OS_IPHONE) && !defined(__arm__) &&  \
+    !defined(_M_ARM) && !(defined(__aarch64__) || defined(_M_ARM64)) && \
+    !defined(__MVS__)
 // Assume `thread_local` is fully supported in all other C++11
 // compilers/platforms
 #define MOODYCAMEL_CPP11_THREAD_LOCAL_SUPPORTED  // tentatively enabled for now;

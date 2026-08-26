@@ -109,9 +109,20 @@ class SegmentImpl : public Segment,
   }
 
   virtual ~SegmentImpl() {
-    close();
+    auto s = close();
+    if (!s.ok()) {
+      LOG_ERROR("Failed to close segment[%d] during destruction: %s", id(),
+                s.message().c_str());
+    }
     if (need_destroyed_) {
-      cleanup();
+      s = cleanup();
+      if (!s.ok()) {
+        LOG_WARN(
+            "Cleanup of retired segment[%d] failed during destruction: "
+            "%s; the directory will be left for cleanup on a future "
+            "read-write open",
+            id(), s.message().c_str());
+      }
     }
   }
 
@@ -579,6 +590,16 @@ Status SegmentImpl::close() {
     indexer->Close();
   }
   quant_memory_vector_indexers_.clear();
+
+  // Release forward stores and wal so their file handles/mappings are
+  // dropped before cleanup() removes the segment directory (on Windows
+  // open/mapped files cannot be deleted).
+  persist_stores_.clear();
+  memory_store_.reset();
+  if (wal_file_) {
+    wal_file_->close();
+    wal_file_.reset();
+  }
 
   return Status::OK();
 }
@@ -2140,12 +2161,22 @@ Status SegmentImpl::destroy() {
     return Status::InvalidArgument("Segment has been marked need destroyed");
   }
   need_destroyed_ = true;
+
+  // destroy() may be called while the collection holds its exclusive schema
+  // lock. Release mapped files and other handles here, but defer recursive
+  // directory removal until the final reference is released outside the lock.
+  auto s = close();
+  CHECK_RETURN_STATUS(s);
   return Status::OK();
 }
 
 Status SegmentImpl::cleanup() {
   auto seg_path = FileHelper::MakeSegmentPath(path_, segment_meta_->id());
-  FileHelper::RemoveDirectory(seg_path);
+  if (!FileHelper::RemoveDirectory(seg_path)) {
+    return Status::InternalError(
+        "Failed to remove destroyed segment directory: ", seg_path,
+        ", error: ", ailego::FileHelper::GetLastErrorString());
+  }
   return Status::OK();
 }
 

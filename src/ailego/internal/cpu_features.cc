@@ -14,12 +14,11 @@
 
 #include "cpu_features.h"
 #include <cstddef>
+#include <zvec/ailego/internal/platform.h>
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 #include <intrin.h>
-#endif
-
-#if (defined(__x86_64__) || defined(__i386__)) && !defined(_MSC_VER)
+#elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
 
@@ -43,7 +42,7 @@ namespace internal {
 
 CpuFeatures::CpuFlags CpuFeatures::flags_;
 
-#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 CpuFeatures::CpuFlags::CpuFlags(void)
     : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
   int l1[4] = {0, 0, 0, 0};
@@ -347,7 +346,11 @@ bool CpuFeatures::HYPERVISOR(void) {
 bool CpuFeatures::NEON(void) {
 #if defined(__aarch64__) && defined(__linux__)
   return !!(getauxval(AT_HWCAP) & HWCAP_ASIMD);
-#elif defined(__ARM_NEON)
+#elif defined(AILEGO_HAVE_NEON)
+  // NEON is part of the ARMv8 baseline, so it is unconditionally present when
+  // the target has it (including MSVC ARM64, which predefines only _M_ARM64).
+  // This must agree with Intrinsics()/version.i, which report "Neon" from the
+  // same macro.
   return true;
 #else
   return false;
@@ -356,7 +359,7 @@ bool CpuFeatures::NEON(void) {
 
 const char *CpuFeatures::Intrinsics(void) {
   return ""
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
          "Neon"
 #if defined(__ARM_FEATURE_CRC32)
          "+CRC"
