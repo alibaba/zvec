@@ -386,8 +386,7 @@ bool MemoryLimitPool::try_reserve_used(size_t bytes) {
 bool MemoryLimitPool::try_reserve_page_used(size_t bytes) {
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
   const size_t reserve = page_admission_reserve();
-  const size_t external =
-      external_used_size_.load(std::memory_order_relaxed);
+  const size_t external = external_used_size_.load(std::memory_order_relaxed);
   const size_t remaining_reserve = reserve > external ? reserve - external : 0;
   const size_t page_limit = capacity - remaining_reserve;
   size_t used = used_size_.load(std::memory_order_relaxed);
@@ -659,9 +658,7 @@ void MemoryLimitPool::stop_background_evictor() {
   if (!bg_running_.exchange(false)) {
     return;  // not running
   }
-  {
-    std::lock_guard<std::mutex> lk(bg_mutex_);
-  }
+  { std::lock_guard<std::mutex> lk(bg_mutex_); }
   bg_cv_.notify_all();
   if (bg_thread_.joinable()) {
     bg_thread_.join();
@@ -705,9 +702,8 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   buffer = nullptr;
   const bool cacheable = is_cacheable_buffer_size(buffer_size);
-  if (buffer_size == 0 ||
-      !(cacheable ? try_reserve_page_used(buffer_size)
-                  : try_reserve_used(buffer_size))) {
+  if (buffer_size == 0 || !(cacheable ? try_reserve_page_used(buffer_size)
+                                      : try_reserve_used(buffer_size))) {
     // Out of budget: wake the background evictor so the next attempt is
     // more likely to find a free buffer without inline eviction.
     high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
@@ -815,9 +811,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
     (void)prev;
     assert(prev >= buffer_size);
-    {
-      std::lock_guard<std::mutex> lock(capacity_mutex_);
-    }
+    { std::lock_guard<std::mutex> lock(capacity_mutex_); }
     capacity_cv_.notify_one();
     return;
   }
@@ -830,9 +824,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
     (void)prev;
     assert(prev >= buffer_size);
-    {
-      std::lock_guard<std::mutex> lock(capacity_mutex_);
-    }
+    { std::lock_guard<std::mutex> lock(capacity_mutex_); }
     capacity_cv_.notify_one();
     return;
   }
@@ -841,9 +833,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
   size_t prev = used_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)prev;
   assert(prev >= buffer_size);
-  {
-    std::lock_guard<std::mutex> lock(capacity_mutex_);
-  }
+  { std::lock_guard<std::mutex> lock(capacity_mutex_); }
   capacity_cv_.notify_one();
 }
 
@@ -872,9 +862,7 @@ void MemoryLimitPool::release_fixed(const size_t buffer_size,
       committed_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
   (void)committed_prev;
   assert(committed_prev >= buffer_size);
-  {
-    std::lock_guard<std::mutex> lock(capacity_mutex_);
-  }
+  { std::lock_guard<std::mutex> lock(capacity_mutex_); }
   capacity_cv_.notify_all();
 }
 
@@ -890,8 +878,7 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
   const bool cacheable = is_cacheable_buffer_size(buffer_size);
   const size_t reserve = cacheable ? page_admission_reserve() : 0;
-  const size_t external =
-      external_used_size_.load(std::memory_order_relaxed);
+  const size_t external = external_used_size_.load(std::memory_order_relaxed);
   const size_t remaining_reserve = reserve > external ? reserve - external : 0;
   const size_t admission_limit = capacity - remaining_reserve;
   size_t total_size = 0;

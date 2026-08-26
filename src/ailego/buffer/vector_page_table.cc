@@ -2121,8 +2121,9 @@ bool VecBufferPoolHandle::acquire_pages(const block_id_t *page_ids,
   return pool_.acquire_pages(page_ids, count, pages);
 }
 
-bool VecBufferPoolHandle::try_acquire_resident_pages(
-    const block_id_t *page_ids, size_t count, char **pages) {
+bool VecBufferPoolHandle::try_acquire_resident_pages(const block_id_t *page_ids,
+                                                     size_t count,
+                                                     char **pages) {
   return pool_.try_acquire_resident_pages(page_ids, count, pages);
 }
 

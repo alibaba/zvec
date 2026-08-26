@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #if defined(__APPLE__) || defined(__MACH__)
-#include <libproc.h>
 #include <mach/mach.h>
 #include <sys/resource.h>
+#include <libproc.h>
 #include <unistd.h>
 #elif defined(__linux__) || defined(__linux)
 #include <unistd.h>
@@ -37,7 +37,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/interface/index.h>
@@ -226,8 +225,8 @@ double Percentile(std::vector<uint64_t> values, double fraction) {
   const size_t lower = static_cast<size_t>(position);
   const size_t upper = std::min(lower + 1, values.size() - 1);
   const double weight = position - lower;
-  const double nanoseconds = values[lower] * (1.0 - weight) +
-                             values[upper] * weight;
+  const double nanoseconds =
+      values[lower] * (1.0 - weight) + values[upper] * weight;
   return nanoseconds / 1000000.0;
 }
 
@@ -274,10 +273,9 @@ std::pair<std::vector<size_t>, std::vector<size_t>> SemanticQueryGroups(
     const float *query = queries.values.data() + row * queries.cols;
     double best = -1.0;
     for (size_t seed = 0; seed < seed_count; ++seed) {
-      const size_t seed_row = seed * (queries.rows - 1) /
-                              std::max<size_t>(1, seed_count - 1);
-      const float *seed_query =
-          queries.values.data() + seed_row * queries.cols;
+      const size_t seed_row =
+          seed * (queries.rows - 1) / std::max<size_t>(1, seed_count - 1);
+      const float *seed_query = queries.values.data() + seed_row * queries.cols;
       double dot = 0.0;
       for (size_t dim = 0; dim < queries.cols; ++dim) {
         dot += static_cast<double>(query[dim]) * seed_query[dim];
@@ -318,10 +316,9 @@ WorkloadPlan BuildWorkload(const QueryMatrix &queries,
       plan.requests.insert(plan.requests.end(), ids.begin(), ids.end());
     }
   } else if (pattern == "semantic80") {
-    const size_t hot_count = hot_queries == 0
-                                 ? std::max<size_t>(1, std::ceil(
-                                                           queries.rows * 0.2))
-                                 : hot_queries;
+    const size_t hot_count =
+        hot_queries == 0 ? std::max<size_t>(1, std::ceil(queries.rows * 0.2))
+                         : hot_queries;
     auto [hot, tail] = SemanticQueryGroups(queries, hot_count);
     plan.hot_query_ids = hot;
     for (size_t i = 0; i < request_count; ++i) {
@@ -344,10 +341,10 @@ WorkloadPlan BuildWorkload(const QueryMatrix &queries,
     }
     cdf.back() = 1.0;
     for (size_t i = 0; i < request_count; ++i) {
-      const auto found = std::lower_bound(cdf.begin(), cdf.end(),
-                                          NextUnit(state));
-      const size_t rank = static_cast<size_t>(
-          std::distance(cdf.begin(), found));
+      const auto found =
+          std::lower_bound(cdf.begin(), cdf.end(), NextUnit(state));
+      const size_t rank =
+          static_cast<size_t>(std::distance(cdf.begin(), found));
       plan.requests.push_back(ids[std::min(rank, ids.size() - 1)]);
     }
   } else if (pattern == "exact90") {
@@ -374,8 +371,8 @@ WorkloadPlan BuildWorkload(const QueryMatrix &queries,
   }
   plan.unique_queries = static_cast<size_t>(std::count_if(
       counts.begin(), counts.end(), [](uint64_t count) { return count != 0; }));
-  plan.query_top20_share = FractionShare(
-      counts, std::max<size_t>(1, std::ceil(queries.rows * 0.2)));
+  plan.query_top20_share =
+      FractionShare(counts, std::max<size_t>(1, std::ceil(queries.rows * 0.2)));
   if (!plan.hot_query_ids.empty()) {
     uint64_t hot_total = 0;
     for (const size_t query_id : plan.hot_query_ids) {
@@ -396,11 +393,10 @@ uint64_t HashResult(const SearchResult &result) {
   return hash;
 }
 
-PhaseResult RunPhase(
-    const Index::Pointer &index, const QueryMatrix &queries,
-    const std::vector<std::vector<uint64_t>> &ground_truth,
-    const WorkloadPlan &workload, size_t thread_count, uint32_t list_size,
-    bool collect_latency) {
+PhaseResult RunPhase(const Index::Pointer &index, const QueryMatrix &queries,
+                     const std::vector<std::vector<uint64_t>> &ground_truth,
+                     const WorkloadPlan &workload, size_t thread_count,
+                     uint32_t list_size, bool collect_latency) {
   std::atomic<size_t> ready{0};
   std::atomic<bool> go{false};
   std::atomic<int> error{0};
@@ -456,8 +452,8 @@ PhaseResult RunPhase(
         if (!ground_truth.empty()) {
           const auto &expected = ground_truth[query_id];
           for (const auto &doc : result.doc_list_) {
-            if (std::find(expected.begin(), expected.begin() + 10,
-                          doc.key()) != expected.begin() + 10) {
+            if (std::find(expected.begin(), expected.begin() + 10, doc.key()) !=
+                expected.begin() + 10) {
               ++recall_hits[tid];
             }
           }
@@ -478,9 +474,8 @@ PhaseResult RunPhase(
     while (sample_rss.load(std::memory_order_acquire)) {
       const size_t current = CurrentProcessSnapshot().rss_bytes;
       size_t peak = peak_rss.load(std::memory_order_relaxed);
-      while (current > peak &&
-             !peak_rss.compare_exchange_weak(peak, current,
-                                             std::memory_order_relaxed)) {
+      while (current > peak && !peak_rss.compare_exchange_weak(
+                                   peak, current, std::memory_order_relaxed)) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -494,8 +489,7 @@ PhaseResult RunPhase(
   sample_rss.store(false, std::memory_order_release);
   sampler.join();
   if (error.load(std::memory_order_relaxed) != 0) {
-    throw std::runtime_error("search failed: " +
-                             std::to_string(error.load()));
+    throw std::runtime_error("search failed: " + std::to_string(error.load()));
   }
 
   const auto after = CurrentProcessSnapshot();
@@ -505,14 +499,13 @@ PhaseResult RunPhase(
   result.rss_end_bytes = after.rss_bytes;
   result.rss_peak_bytes =
       std::max(peak_rss.load(std::memory_order_relaxed), after.rss_bytes);
-  result.read_bytes =
-      after.read_bytes >= before.read_bytes ? after.read_bytes - before.read_bytes
-                                            : 0;
+  result.read_bytes = after.read_bytes >= before.read_bytes
+                          ? after.read_bytes - before.read_bytes
+                          : 0;
   std::vector<uint64_t> combined_latencies;
   for (auto &thread_latencies : latencies) {
     combined_latencies.insert(combined_latencies.end(),
-                              thread_latencies.begin(),
-                              thread_latencies.end());
+                              thread_latencies.begin(), thread_latencies.end());
   }
   result.p50_ms = Percentile(combined_latencies, 0.50);
   result.p99_ms = Percentile(combined_latencies, 0.99);
@@ -609,8 +602,8 @@ int main(int argc, char **argv) {
                                std::to_string(open_ret));
     }
 
-    const auto warmup_workload = BuildWorkload(
-        queries, workload_pattern, warmup_repetitions, hot_queries);
+    const auto warmup_workload = BuildWorkload(queries, workload_pattern,
+                                               warmup_repetitions, hot_queries);
     const auto measured_workload = BuildWorkload(
         queries, workload_pattern, measure_repetitions, hot_queries);
     const auto opened = CurrentProcessSnapshot();
@@ -626,8 +619,7 @@ int main(int argc, char **argv) {
               << " hot_queries=" << hot_queries
               << " warmup_queries=" << warmup.queries
               << " queries=" << measured.queries << " qps=" << measured.qps
-              << " p50_ms=" << measured.p50_ms
-              << " p99_ms=" << measured.p99_ms
+              << " p50_ms=" << measured.p50_ms << " p99_ms=" << measured.p99_ms
               << " recall_at_10=" << measured.recall_at_10
               << " rss_open_bytes=" << opened.rss_bytes
               << " rss_start_bytes=" << measured.rss_start_bytes
@@ -635,8 +627,7 @@ int main(int argc, char **argv) {
               << " rss_end_bytes=" << measured.rss_end_bytes
               << " read_bytes=" << measured.read_bytes
               << " unique_queries=" << measured_workload.unique_queries
-              << " query_top20_share="
-              << measured_workload.query_top20_share
+              << " query_top20_share=" << measured_workload.query_top20_share
               << " configured_hot_share="
               << measured_workload.configured_hot_share
               << " fingerprint=" << measured.fingerprint

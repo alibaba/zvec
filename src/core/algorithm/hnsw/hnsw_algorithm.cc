@@ -715,9 +715,9 @@ void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
       prune_ids.emplace_back(candidate.first);
     }
     prune_blocks.clear();
-    if (ailego_unlikely(read_entity.get_vector_for_prune(
-                            prune_ids.data(), prune_ids.size(),
-                            prune_blocks) != 0)) {
+    if (ailego_unlikely(read_entity.get_vector_for_prune(prune_ids.data(),
+                                                         prune_ids.size(),
+                                                         prune_blocks) != 0)) {
       dc.set_error();
       return;
     }
@@ -862,9 +862,9 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
       bool good = true;
       if (selected_count != 0) {
         for (size_t j = 0; j < selected_count; ++j) {
-          const dist_t pair_distance = dc.dist(
-              candidate_blocks[candidate_block_index].data(),
-              candidate_blocks[update_heap[j].first].data());
+          const dist_t pair_distance =
+              dc.dist(candidate_blocks[candidate_block_index].data(),
+                      candidate_blocks[update_heap[j].first].data());
           if (pair_distance <= candidate_distance) {
             good = false;
             break;

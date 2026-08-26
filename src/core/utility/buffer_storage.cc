@@ -497,12 +497,10 @@ class BufferStorage : public IndexStorage {
       // checking available bytes here used to turn the entire batch into
       // per-vector bypass reads as soon as the cache reached that reserve.
       scratch.unique_page_ids = scratch.page_ids;
-      std::sort(scratch.unique_page_ids.begin(),
-                scratch.unique_page_ids.end());
-      scratch.unique_page_ids.erase(
-          std::unique(scratch.unique_page_ids.begin(),
-                      scratch.unique_page_ids.end()),
-          scratch.unique_page_ids.end());
+      std::sort(scratch.unique_page_ids.begin(), scratch.unique_page_ids.end());
+      scratch.unique_page_ids.erase(std::unique(scratch.unique_page_ids.begin(),
+                                                scratch.unique_page_ids.end()),
+                                    scratch.unique_page_ids.end());
       scratch.pages.assign(scratch.unique_page_ids.size(), nullptr);
 
       // Take resident hits without I/O first, then admit only unique misses
@@ -534,9 +532,8 @@ class BufferStorage : public IndexStorage {
       scratch.admitted_pages.resize(scratch.admitted_ids.size(), nullptr);
       size_t admitted_begin = 0;
       while (admitted_begin < scratch.admitted_ids.size()) {
-        const size_t admitted_count =
-            std::min(kAdmissionBatchPages,
-                     scratch.admitted_ids.size() - admitted_begin);
+        const size_t admitted_count = std::min(
+            kAdmissionBatchPages, scratch.admitted_ids.size() - admitted_begin);
         const bool acquired = owner_->buffer_pool_handle_->acquire_pages(
             scratch.admitted_ids.data() + admitted_begin, admitted_count,
             scratch.admitted_pages.data() + admitted_begin);
@@ -555,8 +552,7 @@ class BufferStorage : public IndexStorage {
         // are not discarded, then bypass the remaining cold pages.
         for (size_t j = 0; j < admitted_count; ++j) {
           const size_t admitted_index = admitted_begin + j;
-          const size_t unique_index =
-              scratch.admitted_indices[admitted_index];
+          const size_t unique_index = scratch.admitted_indices[admitted_index];
           scratch.pages[unique_index] =
               owner_->buffer_pool_->try_acquire_buffer(
                   scratch.admitted_ids[admitted_index]);
@@ -602,8 +598,7 @@ class BufferStorage : public IndexStorage {
             continue;
           }
           const size_t length = state.request->length;
-          if (length > std::numeric_limits<size_t>::max() -
-                           (kArenaAlign - 1)) {
+          if (length > std::numeric_limits<size_t>::max() - (kArenaAlign - 1)) {
             return fail();
           }
           const size_t aligned =
@@ -625,8 +620,8 @@ class BufferStorage : public IndexStorage {
               continue;
             }
             state.owned = scratch.arena.data() + off;
-            off += (state.request->length + kArenaAlign - 1) &
-                   ~(kArenaAlign - 1);
+            off +=
+                (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
           }
         }
       }
@@ -665,8 +660,7 @@ class BufferStorage : public IndexStorage {
           const size_t length =
               std::min(remaining, ailego::kVectorPageSize - source_offset);
           scratch.page_uses.push_back(PageUse{
-              unique_index_for(
-                  scratch.page_ids[state.first_page_index + j]),
+              unique_index_for(scratch.page_ids[state.first_page_index + j]),
               state_index, source_offset, destination_offset, length});
           destination_offset += length;
           remaining -= length;
@@ -683,16 +677,14 @@ class BufferStorage : public IndexStorage {
       }
       size_t use_begin = 0;
       while (use_begin < scratch.page_uses.size()) {
-        const size_t unique_index =
-            scratch.page_uses[use_begin].unique_index;
+        const size_t unique_index = scratch.page_uses[use_begin].unique_index;
         const char *source = scratch.pages[unique_index];
         if (source == nullptr) {
           const size_t page_offset =
-              scratch.unique_page_ids[unique_index] *
-              ailego::kVectorPageSize;
-          const size_t read_length = std::min(
-              ailego::kVectorPageSize,
-              owner_->buffer_pool_->file_size() - page_offset);
+              scratch.unique_page_ids[unique_index] * ailego::kVectorPageSize;
+          const size_t read_length =
+              std::min(ailego::kVectorPageSize,
+                       owner_->buffer_pool_->file_size() - page_offset);
           if (!owner_->buffer_pool_handle_->read_range_bypass(
                   page_offset, read_length, scratch.bypass_page.data())) {
             return fail();
@@ -717,16 +709,16 @@ class BufferStorage : public IndexStorage {
           continue;
         }
         if (!state.copy_result) {
-          const size_t unique_index = unique_index_for(
-              scratch.page_ids[state.first_page_index]);
+          const size_t unique_index =
+              unique_index_for(scratch.page_ids[state.first_page_index]);
           const size_t offset_in_page =
               state.abs_offset % ailego::kVectorPageSize;
           owner_->buffer_pool_handle_->acquire_one(
               scratch.unique_page_ids[unique_index]);
-          state.request->block->reset(owner_->buffer_pool_handle_.get(),
-                                      scratch.unique_page_ids[unique_index],
-                                      scratch.pages[unique_index] +
-                                          offset_in_page);
+          state.request->block->reset(
+              owner_->buffer_pool_handle_.get(),
+              scratch.unique_page_ids[unique_index],
+              scratch.pages[unique_index] + offset_in_page);
           continue;
         }
         *state.request->block =

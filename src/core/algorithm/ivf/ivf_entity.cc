@@ -30,16 +30,14 @@ class ScatterCursor {
 
   const uint8_t *data() {
     normalize();
-    return span_index_ < spans_.size()
-               ? spans_[span_index_].data + span_offset_
-               : nullptr;
+    return span_index_ < spans_.size() ? spans_[span_index_].data + span_offset_
+                                       : nullptr;
   }
 
   size_t contiguous_size() {
     normalize();
-    return span_index_ < spans_.size()
-               ? spans_[span_index_].size - span_offset_
-               : 0;
+    return span_index_ < spans_.size() ? spans_[span_index_].size - span_offset_
+                                       : 0;
   }
 
   bool skip(size_t size) {
@@ -90,11 +88,12 @@ class ScatterCursor {
 
 //! Calculate a row-major IVF block directly from its resident page spans.
 //! Only a vector split by a page boundary is copied into scratch.
-bool calculate_row_major_block(
-    ScatterCursor *cursor, IVFDistanceCalculator *calculator,
-    const void *query, size_t vector_count, size_t element_size,
-    size_t serialized_size, uint8_t *scratch, float *distances,
-    bool calculate) {
+bool calculate_row_major_block(ScatterCursor *cursor,
+                               IVFDistanceCalculator *calculator,
+                               const void *query, size_t vector_count,
+                               size_t element_size, size_t serialized_size,
+                               uint8_t *scratch, float *distances,
+                               bool calculate) {
   if (element_size == 0 ||
       vector_count > std::numeric_limits<size_t>::max() / element_size) {
     return false;
@@ -113,8 +112,8 @@ bool calculate_row_major_block(
     const size_t direct_count =
         std::min(vector_count - processed, contiguous / element_size);
     if (direct_count != 0) {
-      calculator->query_features_distance(
-          query, cursor->data(), direct_count, distances + processed);
+      calculator->query_features_distance(query, cursor->data(), direct_count,
+                                          distances + processed);
       if (!cursor->skip(direct_count * element_size)) {
         return false;
       }
@@ -126,7 +125,7 @@ bool calculate_row_major_block(
       return false;
     }
     calculator->query_features_distance(query, scratch, 1,
-                                         distances + processed);
+                                        distances + processed);
     ++processed;
   }
   return cursor->skip(serialized_size - vector_bytes);
@@ -756,8 +755,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     IndexStorage::Segment::ScatterBlock scatter_data;
     if (row_major) {
       if (inverted_->read_scatter(off, scatter_data, size) != size) {
-        LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off,
-                  size);
+        LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
         return IndexError_ReadData;
       }
     } else if (inverted_->read(off, &data, size) != size) {
@@ -786,8 +784,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                   size);
         return IndexError_ReadData;
       }
-      const size_t serialized_size =
-          std::min(block_size, size - block_offset);
+      const size_t serialized_size = std::min(block_size, size - block_offset);
       if (keeps == 0) {
         if (row_major && !calculate_row_major_block(
                              &scatter_cursor, calculator_.get(), query,
@@ -801,17 +798,16 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       }
 
       if (row_major) {
-        if (!calculate_row_major_block(
-                &scatter_cursor, calculator_.get(), query, vecs_count,
-                element_size, serialized_size, scatter_vector_.data(),
-                distances.data(), true)) {
+        if (!calculate_row_major_block(&scatter_cursor, calculator_.get(),
+                                       query, vecs_count, element_size,
+                                       serialized_size, scatter_vector_.data(),
+                                       distances.data(), true)) {
           LOG_ERROR("Invalid scatter-read IVF block, off=%zu, size=%zu",
                     off + block_offset, serialized_size);
           return IndexError_ReadData;
         }
       } else {
-        const void *block_data =
-            static_cast<const char *>(data) + block_offset;
+        const void *block_data = static_cast<const char *>(data) + block_offset;
         calculator_->query_features_distance(query, block_data, vecs_count,
                                              distances.data());
       }
@@ -871,8 +867,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     IndexStorage::Segment::ScatterBlock scatter_data;
     if (row_major) {
       if (inverted_->read_scatter(off, scatter_data, size) != size) {
-        LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off,
-                  size);
+        LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
         return IndexError_ReadData;
       }
     } else if (inverted_->read(off, &data, size) != size) {
@@ -892,20 +887,18 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                   size);
         return IndexError_ReadData;
       }
-      const size_t serialized_size =
-          std::min(block_size, size - block_offset);
+      const size_t serialized_size = std::min(block_size, size - block_offset);
       if (row_major) {
-        if (!calculate_row_major_block(
-                &scatter_cursor, calculator_.get(), query, vecs_count,
-                element_size, serialized_size, scatter_vector_.data(),
-                distances.data(), true)) {
+        if (!calculate_row_major_block(&scatter_cursor, calculator_.get(),
+                                       query, vecs_count, element_size,
+                                       serialized_size, scatter_vector_.data(),
+                                       distances.data(), true)) {
           LOG_ERROR("Invalid scatter-read IVF block, off=%zu, size=%zu",
                     off + block_offset, serialized_size);
           return IndexError_ReadData;
         }
       } else {
-        const void *block_data =
-            static_cast<const char *>(data) + block_offset;
+        const void *block_data = static_cast<const char *>(data) + block_offset;
         calculator_->query_features_distance(query, block_data, vecs_count,
                                              distances.data());
       }

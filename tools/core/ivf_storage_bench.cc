@@ -29,14 +29,12 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/framework/index_streamer.h>
-
 #include "algorithm/ivf/ivf_searcher_context.h"
 #include "algorithm/ivf/ivf_streamer.h"
 
@@ -128,8 +126,7 @@ QueryWorkload BuildSemanticWorkload(const Matrix &queries,
     double best_similarity = -1.0;
     for (size_t seed = 0; seed < seed_count; ++seed) {
       const size_t seed_row = seed * queries.rows / seed_count;
-      const float *seed_query =
-          queries.values.data() + seed_row * queries.cols;
+      const float *seed_query = queries.values.data() + seed_row * queries.cols;
       double dot = 0.0;
       for (size_t dim = 0; dim < queries.cols; ++dim) {
         dot += static_cast<double>(query[dim]) * seed_query[dim];
@@ -140,11 +137,10 @@ QueryWorkload BuildSemanticWorkload(const Matrix &queries,
     }
     scores.emplace_back(best_similarity, row);
   }
-  std::sort(scores.begin(), scores.end(),
-            [](const auto &lhs, const auto &rhs) {
-              if (lhs.first != rhs.first) return lhs.first > rhs.first;
-              return lhs.second < rhs.second;
-            });
+  std::sort(scores.begin(), scores.end(), [](const auto &lhs, const auto &rhs) {
+    if (lhs.first != rhs.first) return lhs.first > rhs.first;
+    return lhs.second < rhs.second;
+  });
 
   QueryWorkload workload;
   workload.hot_query_ids.reserve(hot_query_count);
@@ -163,15 +159,13 @@ QueryWorkload BuildSemanticWorkload(const Matrix &queries,
   workload.hot_similarity_mean =
       hot_similarity_sum / static_cast<double>(hot_query_count);
   workload.tail_similarity_mean =
-      tail_similarity_sum /
-      static_cast<double>(queries.rows - hot_query_count);
+      tail_similarity_sum / static_cast<double>(queries.rows - hot_query_count);
   return workload;
 }
 
 QueryWorkload BuildCentroidWorkload(const IndexStreamer::Pointer &streamer,
                                     const Matrix &queries) {
-  auto *ivf_streamer =
-      dynamic_cast<zvec::core::IVFStreamer *>(streamer.get());
+  auto *ivf_streamer = dynamic_cast<zvec::core::IVFStreamer *>(streamer.get());
   if (!ivf_streamer) {
     throw std::runtime_error("centroid80 requires IVFStreamer");
   }
@@ -184,8 +178,7 @@ QueryWorkload BuildCentroidWorkload(const IndexStreamer::Pointer &streamer,
   IndexQueryMeta query_meta;
   query_meta.set_meta(zvec::core::IndexMeta::DataType::DT_FP32, queries.cols);
 
-  const size_t centroid_domain =
-      ivf_context->entity()->inverted_list_count();
+  const size_t centroid_domain = ivf_context->entity()->inverted_list_count();
   if (centroid_domain == 0) {
     throw std::runtime_error("centroid80 found no IVF centroids");
   }
@@ -229,9 +222,8 @@ QueryWorkload BuildCentroidWorkload(const IndexStreamer::Pointer &streamer,
     }
   }
   for (size_t centroid_id = 0; centroid_id < centroid_domain; ++centroid_id) {
-    auto &destination = hot_centroid[centroid_id]
-                            ? workload.hot_query_ids
-                            : workload.tail_query_ids;
+    auto &destination = hot_centroid[centroid_id] ? workload.hot_query_ids
+                                                  : workload.tail_query_ids;
     destination.insert(destination.end(),
                        queries_by_centroid[centroid_id].begin(),
                        queries_by_centroid[centroid_id].end());
@@ -249,8 +241,7 @@ QueryWorkload BuildZipfWorkload(size_t query_count, double alpha) {
   }
   QueryWorkload workload;
   workload.zipf_query_ids.resize(query_count);
-  std::iota(workload.zipf_query_ids.begin(),
-            workload.zipf_query_ids.end(), 0);
+  std::iota(workload.zipf_query_ids.begin(), workload.zipf_query_ids.end(), 0);
   uint64_t random_state = 0xd1b54a32d192ed03ULL;
   for (size_t i = query_count; i > 1; --i) {
     const size_t selected = NextRandom(random_state) % i;
@@ -276,13 +267,12 @@ size_t SampleZipf(const QueryWorkload &workload, uint64_t &random_state) {
   constexpr double kInverse53 = 1.0 / 9007199254740992.0;
   const double sample =
       static_cast<double>(NextRandom(random_state) >> 11) * kInverse53;
-  const auto it =
-      std::lower_bound(workload.zipf_cdf.begin(), workload.zipf_cdf.end(),
-                       sample);
-  const size_t rank = static_cast<size_t>(
-      std::distance(workload.zipf_cdf.begin(), it));
-  return workload.zipf_query_ids[std::min(rank,
-                                           workload.zipf_query_ids.size() - 1)];
+  const auto it = std::lower_bound(workload.zipf_cdf.begin(),
+                                   workload.zipf_cdf.end(), sample);
+  const size_t rank =
+      static_cast<size_t>(std::distance(workload.zipf_cdf.begin(), it));
+  return workload
+      .zipf_query_ids[std::min(rank, workload.zipf_query_ids.size() - 1)];
 }
 
 Matrix LoadTextF32(const std::string &path) {
@@ -326,8 +316,7 @@ size_t CurrentRssBytes() {
   mach_task_basic_info_data_t info{};
   mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
   if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                reinterpret_cast<task_info_t>(&info), &count) !=
-      KERN_SUCCESS) {
+                reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) {
     return 0;
   }
   return static_cast<size_t>(info.resident_size);
@@ -351,8 +340,8 @@ double Percentile(std::vector<uint64_t> &values, double fraction) {
     return 0.0;
   }
   std::sort(values.begin(), values.end());
-  const size_t index = static_cast<size_t>(
-      fraction * static_cast<double>(values.size() - 1));
+  const size_t index =
+      static_cast<size_t>(fraction * static_cast<double>(values.size() - 1));
   return static_cast<double>(values[index]) / 1.0e6;
 }
 
@@ -388,10 +377,9 @@ uint64_t ValidateQueries(const IndexStreamer::Pointer &streamer,
 }
 
 PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
-                     const Matrix &queries, size_t thread_count,
-                     double seconds, bool collect_latency,
-                     const std::string &query_pattern, size_t hot_queries,
-                     const QueryWorkload *workload,
+                     const Matrix &queries, size_t thread_count, double seconds,
+                     bool collect_latency, const std::string &query_pattern,
+                     size_t hot_queries, const QueryWorkload *workload,
                      size_t centroid_domain) {
   std::atomic<size_t> ready{0};
   std::atomic<bool> go{false};
@@ -432,8 +420,7 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
 
       size_t cursor = tid % queries.rows;
       if (query_pattern == "semantic80" || query_pattern == "centroid80") {
-        cursor =
-            workload->hot_query_ids[tid % workload->hot_query_ids.size()];
+        cursor = workload->hot_query_ids[tid % workload->hot_query_ids.size()];
       } else if (query_pattern == "zipf1") {
         cursor =
             workload->zipf_query_ids[tid % workload->zipf_query_ids.size()];
@@ -467,8 +454,8 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
         }
         ++counts[tid];
         if (query_pattern == "hot90") {
-          const bool choose_hot = hot_queries == queries.rows ||
-                                  NextRandom(random_state) % 10 != 0;
+          const bool choose_hot =
+              hot_queries == queries.rows || NextRandom(random_state) % 10 != 0;
           if (choose_hot) {
             cursor = NextRandom(random_state) % hot_queries;
           } else {
@@ -501,10 +488,9 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
     while (sample_rss.load(std::memory_order_acquire)) {
       const size_t rss = CurrentRssBytes();
       size_t peak = peak_rss.load(std::memory_order_relaxed);
-      while (rss > peak &&
-             !peak_rss.compare_exchange_weak(
-                 peak, rss, std::memory_order_relaxed,
-                 std::memory_order_relaxed)) {
+      while (rss > peak && !peak_rss.compare_exchange_weak(
+                               peak, rss, std::memory_order_relaxed,
+                               std::memory_order_relaxed)) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -526,8 +512,8 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
 
   result.seconds = std::chrono::duration<double>(finish - start).count();
   result.rss_end = CurrentRssBytes();
-  result.rss_peak = std::max(peak_rss.load(std::memory_order_relaxed),
-                             result.rss_end);
+  result.rss_peak =
+      std::max(peak_rss.load(std::memory_order_relaxed), result.rss_end);
   std::vector<uint64_t> combined;
   std::vector<uint64_t> combined_query_counts(queries.rows, 0);
   std::unordered_map<uint64_t, uint64_t> combined_centroid_counts;
@@ -548,14 +534,14 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
     result.p50_ms = Percentile(combined, 0.50);
     result.p99_ms = Percentile(combined, 0.99);
   }
-  result.unique_queries = static_cast<size_t>(std::count_if(
-      combined_query_counts.begin(), combined_query_counts.end(),
-      [](uint64_t count) { return count != 0; }));
+  result.unique_queries = static_cast<size_t>(
+      std::count_if(combined_query_counts.begin(), combined_query_counts.end(),
+                    [](uint64_t count) { return count != 0; }));
   if ((workload && !workload->hot_query_ids.empty()) ||
       query_pattern == "hot90") {
-    const uint64_t total_queries = std::accumulate(
-        combined_query_counts.begin(), combined_query_counts.end(),
-        uint64_t{0});
+    const uint64_t total_queries =
+        std::accumulate(combined_query_counts.begin(),
+                        combined_query_counts.end(), uint64_t{0});
     uint64_t hot_queries_total = 0;
     if (query_pattern == "hot90") {
       hot_queries_total = std::accumulate(
@@ -574,8 +560,7 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
   }
   result.query_top20_share = FractionShare(
       combined_query_counts,
-      std::max<size_t>(1, static_cast<size_t>(
-                              std::ceil(queries.rows * 0.20))));
+      std::max<size_t>(1, static_cast<size_t>(std::ceil(queries.rows * 0.20))));
   result.unique_centroids = combined_centroid_counts.size();
   result.centroid_domain = centroid_domain;
   if (!combined_centroid_counts.empty()) {
@@ -588,8 +573,8 @@ PhaseResult RunPhase(const IndexStreamer::Pointer &streamer,
     }
     result.centroid_top20_share = FractionShare(
         dense_centroid_counts,
-        std::max<size_t>(1, static_cast<size_t>(
-                                std::ceil(result.centroid_domain * 0.20))));
+        std::max<size_t>(
+            1, static_cast<size_t>(std::ceil(result.centroid_domain * 0.20))));
   }
   return result;
 }
@@ -599,8 +584,7 @@ void PrintStats(const char *phase,
   const auto memory = zvec::ailego::MemoryLimitPool::get_instance().stats();
   std::cout << "stats phase=" << phase << " rss=" << CurrentRssBytes()
             << " pool_capacity=" << memory.pool_size
-            << " pool_used=" << memory.used
-            << " page_used=" << memory.page_used
+            << " pool_used=" << memory.used << " page_used=" << memory.page_used
             << " metadata_used=" << memory.metadata_used;
   if (pool) {
     const auto cache = pool->stats();
@@ -686,23 +670,20 @@ int main(int argc, char **argv) {
           BuildSemanticWorkload(queries, hot_queries));
       std::cout << "semantic_workload hot_queries="
                 << workload->hot_query_ids.size()
-                << " tail_queries="
-                << workload->tail_query_ids.size()
-                << " hot_similarity_mean="
-                << workload->hot_similarity_mean
-                << " tail_similarity_mean="
-                << workload->tail_similarity_mean << std::endl;
+                << " tail_queries=" << workload->tail_query_ids.size()
+                << " hot_similarity_mean=" << workload->hot_similarity_mean
+                << " tail_similarity_mean=" << workload->tail_similarity_mean
+                << std::endl;
     } else if (query_pattern == "zipf1") {
-      workload = std::make_unique<QueryWorkload>(
-          BuildZipfWorkload(queries.rows, 1.0));
+      workload =
+          std::make_unique<QueryWorkload>(BuildZipfWorkload(queries.rows, 1.0));
       std::cout << "zipf_workload alpha=1 queries="
                 << workload->zipf_query_ids.size() << std::endl;
     }
 
     zvec::ailego::LoggerBroker::SetLevel(zvec::ailego::Logger::LEVEL_INFO);
-    if (use_buffer &&
-        zvec::ailego::MemoryLimitPool::get_instance().init(pool_mb << 20U) !=
-            0) {
+    if (use_buffer && zvec::ailego::MemoryLimitPool::get_instance().init(
+                          pool_mb << 20U) != 0) {
       throw std::runtime_error("failed to initialize memory limit pool");
     }
 
@@ -753,18 +734,15 @@ int main(int argc, char **argv) {
     if (!ivf_context || !ivf_context->entity()) {
       throw std::runtime_error("failed to inspect IVF centroid domain");
     }
-    const size_t centroid_domain =
-        ivf_context->entity()->inverted_list_count();
+    const size_t centroid_domain = ivf_context->entity()->inverted_list_count();
     if (centroid_domain == 0) {
       throw std::runtime_error("IVF index has no centroids");
     }
     if (query_pattern == "centroid80") {
       workload = std::make_unique<QueryWorkload>(
           BuildCentroidWorkload(streamer, queries));
-      std::cout << "centroid_workload hot_centroids="
-                << workload->hot_centroids
-                << " active_hot_centroids="
-                << workload->active_hot_centroids
+      std::cout << "centroid_workload hot_centroids=" << workload->hot_centroids
+                << " active_hot_centroids=" << workload->active_hot_centroids
                 << " centroid_domain=" << workload->centroid_domain
                 << " hot_queries=" << workload->hot_query_ids.size()
                 << " tail_queries=" << workload->tail_query_ids.size()
@@ -777,12 +755,10 @@ int main(int argc, char **argv) {
               << " storage_warmup=" << storage_warmup
               << " validate_queries=" << validate_queries
               << " query_pattern=" << query_pattern
-              << " hot_queries=" << hot_queries
-              << std::endl;
+              << " hot_queries=" << hot_queries << std::endl;
     PrintStats("loaded", storage->vec_buffer_pool());
     if (validate_queries != 0) {
-      std::cout << "validation queries=" << validate_queries
-                << " checksum="
+      std::cout << "validation queries=" << validate_queries << " checksum="
                 << ValidateQueries(streamer, queries, validate_queries)
                 << std::endl;
     } else {
@@ -791,8 +767,8 @@ int main(int argc, char **argv) {
     const auto warmup =
         RunPhase(streamer, queries, threads, warmup_seconds, false,
                  query_pattern, hot_queries, workload.get(), centroid_domain);
-    std::cout << "warmup queries=" << warmup.queries
-              << " qps=" << warmup.qps << std::endl;
+    std::cout << "warmup queries=" << warmup.queries << " qps=" << warmup.qps
+              << std::endl;
     PrintStats("warmup_done", storage->vec_buffer_pool());
 
     zvec::ailego::VecBufferPool::Stats cache_before;
@@ -816,8 +792,7 @@ int main(int argc, char **argv) {
               << " query_pattern=" << query_pattern
               << " hot_queries=" << hot_queries
               << " queries=" << measured.queries << " qps=" << measured.qps
-              << " p50_ms=" << measured.p50_ms
-              << " p99_ms=" << measured.p99_ms
+              << " p50_ms=" << measured.p50_ms << " p99_ms=" << measured.p99_ms
               << " rss_start_bytes=" << measured.rss_start
               << " rss_peak_bytes=" << measured.rss_peak
               << " rss_end_bytes=" << measured.rss_end
@@ -827,12 +802,10 @@ int main(int argc, char **argv) {
               << " query_top20_share=" << measured.query_top20_share
               << " unique_centroids=" << measured.unique_centroids
               << " centroid_domain=" << measured.centroid_domain
-              << " centroid_top20_share="
-              << measured.centroid_top20_share
+              << " centroid_top20_share=" << measured.centroid_top20_share
               << " cache_hit=" << delta(cache_after.hit, cache_before.hit)
               << " cache_miss=" << delta(cache_after.miss, cache_before.miss)
-              << " cache_evict="
-              << delta(cache_after.evict, cache_before.evict)
+              << " cache_evict=" << delta(cache_after.evict, cache_before.evict)
               << " bypass_reads="
               << delta(cache_after.bypass_reads, cache_before.bypass_reads)
               << " bypass_bytes="

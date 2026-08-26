@@ -60,9 +60,8 @@ bool ResolveContainerOffset(size_t file_size, int64_t configured_offset,
 
 class BufferPageLease {
  public:
-  BufferPageLease(
-      std::shared_ptr<ailego::VecBufferPoolHandle> handle,
-      const std::vector<ailego::block_id_t> &page_ids)
+  BufferPageLease(std::shared_ptr<ailego::VecBufferPoolHandle> handle,
+                  const std::vector<ailego::block_id_t> &page_ids)
       : handle_(std::move(handle)), page_ids_(page_ids) {}
 
   BufferPageLease(const BufferPageLease &) = delete;
@@ -246,8 +245,7 @@ class BufferReadStorage : public IndexStorage {
 
       const size_t abs_offset = data_offset_ + offset;
       const size_t first_page = abs_offset / ailego::kVectorPageSize;
-      const size_t last_page =
-          (abs_offset + len - 1) / ailego::kVectorPageSize;
+      const size_t last_page = (abs_offset + len - 1) / ailego::kVectorPageSize;
       const size_t page_count = last_page - first_page + 1;
       std::vector<ailego::block_id_t> page_ids(page_count);
       std::vector<char *> pages(page_count, nullptr);
@@ -269,13 +267,11 @@ class BufferReadStorage : public IndexStorage {
           const size_t span_begin = std::max(abs_offset, page_begin);
           const size_t span_end =
               std::min(range_end, page_begin + ailego::kVectorPageSize);
-          spans.push_back(
-              {reinterpret_cast<const uint8_t *>(pages[i]) +
-                   (span_begin - page_begin),
-               span_end - span_begin});
+          spans.push_back({reinterpret_cast<const uint8_t *>(pages[i]) +
+                               (span_begin - page_begin),
+                           span_end - span_begin});
         }
-        auto lease =
-            std::make_shared<BufferPageLease>(handle_, page_ids);
+        auto lease = std::make_shared<BufferPageLease>(handle_, page_ids);
         pins_owned_by_lease = true;
         data.reset_scattered(std::move(spans), std::move(lease), len);
         return len;

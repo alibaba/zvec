@@ -320,8 +320,8 @@ int HnswBufferPoolStreamerEntity::get_vector_for_prune(
   if (ailego_unlikely(
           !batch_reads.front().segment->read_borrowed_batch_immutable(
               batch_reads.data(), batch_reads.size()))) {
-    LOG_ERROR("Batch read prune vectors failed, count=%u, read size=%zu",
-              count, read_size);
+    LOG_ERROR("Batch read prune vectors failed, count=%u, read size=%zu", count,
+              read_size);
     return IndexError_ReadData;
   }
   return 0;

@@ -208,13 +208,13 @@ Status GlobalConfig::initialize(const ConfigData &config) {
                 const auto *file_config = dynamic_cast<const FileLogConfig *>(
                     effective_config.log_config.get());
                 static const std::string empty;
-                log_status =
-                    LogUtil::Init(file_config ? file_config->dir : empty,
-                                  file_config ? file_config->basename : empty,
-                                  int(effective_config.log_config->level),
-                                  effective_config.log_config->get_logger_type(),
-                                  file_config ? file_config->file_size : 0,
-                                  file_config ? file_config->overdue_days : 0);
+                log_status = LogUtil::Init(
+                    file_config ? file_config->dir : empty,
+                    file_config ? file_config->basename : empty,
+                    int(effective_config.log_config->level),
+                    effective_config.log_config->get_logger_type(),
+                    file_config ? file_config->file_size : 0,
+                    file_config ? file_config->overdue_days : 0);
                 log_initialized = log_status.ok();
                 return log_initialized ? 0 : -1;
               });

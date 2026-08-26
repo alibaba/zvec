@@ -231,8 +231,7 @@ class MemoryLimitPool {
       return used != 0;
     }
     const size_t reserve = page_admission_reserve();
-    const size_t external =
-        external_used_size_.load(std::memory_order_relaxed);
+    const size_t external = external_used_size_.load(std::memory_order_relaxed);
     const size_t remaining_reserve =
         reserve > external ? reserve - external : 0;
     const size_t limit = capacity - remaining_reserve;
