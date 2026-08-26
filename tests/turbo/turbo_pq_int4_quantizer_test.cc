@@ -17,19 +17,21 @@
 #include <iostream>
 #include <random>
 #include <vector>
+#include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
+// Every ISA header unconditionally: the kernels live in the library, which
+// compiles each one with its own march flags. This TU is built for the
+// baseline arch, so guarding the includes with __AVX2__ / __ARM_NEON would
+// compile the SIMD tests away everywhere instead of selecting them at run
+// time from CpuFeatures.
+#include "distance/avx2/pq_quantizer_int4/pq_distance.h"
+#include "distance/avx512/pq_quantizer_int4/pq_distance.h"
+#include "distance/neon/pq_quantizer_int4/pq_distance.h"
 #include "distance/scalar/pq_quantizer_int4/pq_distance.h"
 #include "quantizer/pq_int4_quantizer/pq_int4_quantizer.h"
 #include "zvec/core/framework/index_factory.h"
-
-#if defined(__AVX2__)
-#include "distance/avx2/pq_quantizer_int4/pq_distance.h"
-#endif
-#if defined(__AVX512F__)
-#include "distance/avx512/pq_quantizer_int4/pq_distance.h"
-#endif
 
 using namespace zvec;
 using namespace zvec::core;
@@ -381,125 +383,158 @@ void fill_random_sdc_table(float *table, size_t num_chunk, std::mt19937 &gen) {
   }
 }
 
-}  // anonymous namespace
+// One ISA's PQ kernel triple. get_pq_kernels() only ever hands back the set
+// dispatch picked for this host, so the tests below reach for every
+// implementation directly: a kernel no host ever calls is a kernel whose bugs
+// surface only in production.
+struct KernelSet {
+  zvec::turbo::CodebookAsymmetricDistanceFunc adc;
+  zvec::turbo::CodebookSymmetricDistanceFunc sdc;
+  zvec::turbo::CodebookBatchAsymmetricDistanceFunc batch;
+};
 
-// Test ADC SIMD consistency across multiple M values.
-TEST(PqInt4SimdConsistency, AdcDistance) {
-  std::mt19937 gen(2024);
+// num_chunk sweep: 1 = minimum, 8 = AVX2 chunk, 16 = AVX512 chunk,
+// 12 = AVX2 remainder, 13/17 = odd totals crossing a SIMD chunk boundary and
+// leaving a padding nibble in the last packed byte.
+constexpr size_t kChunkSweep[] = {1, 4, 8, 12, 13, 16, 17};
 
-  // M values include boundary cases and odd totals (padding nibble):
-  // 8 = AVX2 chunk, 16 = AVX512 chunk, 12 = AVX2 remainder,
-  // 13/17 = odd totals crossing SIMD chunk boundaries.
-  for (size_t num_sq : {4, 8, 12, 13, 16, 17}) {
+// Every check seeds `out` with a value the kernel must overwrite, so a stub
+// that silently returns without writing fails here instead of handing back
+// whatever the caller's buffer held.
+void check_adc(zvec::turbo::CodebookAsymmetricDistanceFunc fn, float tol,
+               uint32_t seed) {
+  std::mt19937 gen(seed);
+  for (size_t num_sq : kChunkSweep) {
     std::vector<uint8_t> codes(packed_len(num_sq));
     std::vector<float> lut(num_sq * kInt4NumCentroids);
-
     fill_random_codes(codes.data(), num_sq, gen);
     fill_random_lut(lut.data(), num_sq, gen);
 
-    // Compute reference (scalar)
-    float scalar_result = 0.0f;
+    float expected = 0.0f;
     zvec::turbo::scalar::pq_adc_int4_distance(codes.data(), lut.data(), num_sq,
-                                              &scalar_result);
-
-#if defined(__AVX2__)
-    {
-      float avx2_result = 0.0f;
-      zvec::turbo::avx2::pq_adc_int4_distance_avx2(codes.data(), lut.data(),
-                                                   num_sq, &avx2_result);
-      EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
-          << "AVX2 ADC mismatch for M=" << num_sq;
-    }
-#endif
-
-#if defined(__AVX512F__)
-    {
-      float avx512_result = 0.0f;
-      zvec::turbo::avx512::pq_adc_int4_distance_avx512(codes.data(), lut.data(),
-                                                       num_sq, &avx512_result);
-      EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
-          << "AVX512 ADC mismatch for M=" << num_sq;
-    }
-#endif
+                                              &expected);
+    float got = -1.0f;
+    fn(codes.data(), lut.data(), num_sq, &got);
+    EXPECT_NEAR(expected, got, tol) << "ADC mismatch for M=" << num_sq;
   }
 }
 
-// Test SDC SIMD consistency across multiple M values.
-TEST(PqInt4SimdConsistency, SdcDistance) {
-  std::mt19937 gen(2025);
-
-  for (size_t num_sq : {4, 8, 12, 13, 16, 17}) {
-    constexpr size_t kTablePerSub = kInt4NumCentroids * kInt4NumCentroids;
+void check_sdc(zvec::turbo::CodebookSymmetricDistanceFunc fn, float tol,
+               uint32_t seed) {
+  constexpr size_t kTablePerSub = kInt4NumCentroids * kInt4NumCentroids;
+  std::mt19937 gen(seed);
+  for (size_t num_sq : kChunkSweep) {
     std::vector<uint8_t> codes_a(packed_len(num_sq));
     std::vector<uint8_t> codes_b(packed_len(num_sq));
     std::vector<float> dist_table(num_sq * kTablePerSub);
-
     fill_random_codes(codes_a.data(), num_sq, gen);
     fill_random_codes(codes_b.data(), num_sq, gen);
     fill_random_sdc_table(dist_table.data(), num_sq, gen);
 
-    // Compute reference (scalar)
-    float scalar_result = 0.0f;
-    zvec::turbo::scalar::pq_sdc_int4_distance(codes_a.data(), codes_b.data(),
-                                              dist_table.data(), num_sq,
-                                              &scalar_result);
-
-#if defined(__AVX2__)
-    {
-      float avx2_result = 0.0f;
-      zvec::turbo::avx2::pq_sdc_int4_distance_avx2(
-          codes_a.data(), codes_b.data(), dist_table.data(), num_sq,
-          &avx2_result);
-      EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
-          << "AVX2 SDC mismatch for M=" << num_sq;
-    }
-#endif
-
-#if defined(__AVX512F__)
-    {
-      float avx512_result = 0.0f;
-      zvec::turbo::avx512::pq_sdc_int4_distance_avx512(
-          codes_a.data(), codes_b.data(), dist_table.data(), num_sq,
-          &avx512_result);
-      EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
-          << "AVX512 SDC mismatch for M=" << num_sq;
-    }
-#endif
+    float expected = 0.0f;
+    zvec::turbo::scalar::pq_sdc_int4_distance(
+        codes_a.data(), codes_b.data(), dist_table.data(), num_sq, &expected);
+    float got = -1.0f;
+    fn(codes_a.data(), codes_b.data(), dist_table.data(), num_sq, &got);
+    EXPECT_NEAR(expected, got, tol) << "SDC mismatch for M=" << num_sq;
   }
 }
 
-// Test edge case: M=1 (minimum valid value).
-TEST(PqInt4SimdConsistency, AdcDistanceM1) {
-  std::mt19937 gen(123);
-  constexpr size_t num_sq = 1;
+// Batch ADC must agree with the scalar single-code reference candidate by
+// candidate. The `num` sweep covers the 4-way unrolled main loop, its
+// leftovers and the single-candidate path; because each unrolled lane owns its
+// own LUT row, a hoisted/shared row pointer shows up as a mismatch on i >= 1.
+void check_batch(zvec::turbo::CodebookBatchAsymmetricDistanceFunc fn, float tol,
+                 uint32_t seed) {
+  std::mt19937 gen(seed);
+  for (size_t num_sq : kChunkSweep) {
+    for (size_t num : {1, 3, 4, 7, 9}) {
+      std::vector<std::vector<uint8_t>> codes(
+          num, std::vector<uint8_t>(packed_len(num_sq)));
+      std::vector<const void *> candidates(num);
+      for (size_t i = 0; i < num; ++i) {
+        fill_random_codes(codes[i].data(), num_sq, gen);
+        candidates[i] = codes[i].data();
+      }
+      std::vector<float> lut(num_sq * kInt4NumCentroids);
+      fill_random_lut(lut.data(), num_sq, gen);
 
-  std::vector<uint8_t> codes(packed_len(num_sq));
-  std::vector<float> lut(num_sq * kInt4NumCentroids);
+      std::vector<float> expected(num, 0.0f);
+      for (size_t i = 0; i < num; ++i) {
+        zvec::turbo::scalar::pq_adc_int4_distance(codes[i].data(), lut.data(),
+                                                  num_sq, &expected[i]);
+      }
 
-  fill_random_codes(codes.data(), num_sq, gen);
-  fill_random_lut(lut.data(), num_sq, gen);
-
-  float scalar_result = 0.0f;
-  zvec::turbo::scalar::pq_adc_int4_distance(codes.data(), lut.data(), num_sq,
-                                            &scalar_result);
-
-#if defined(__AVX2__)
-  {
-    float avx2_result = 0.0f;
-    zvec::turbo::avx2::pq_adc_int4_distance_avx2(codes.data(), lut.data(),
-                                                 num_sq, &avx2_result);
-    EXPECT_NEAR(scalar_result, avx2_result, 1e-5f);
+      std::vector<float> got(num, -1.0f);
+      fn(candidates.data(), lut.data(), num, num_sq, got.data());
+      for (size_t i = 0; i < num; ++i) {
+        EXPECT_NEAR(expected[i], got[i], tol)
+            << "batch ADC mismatch for M=" << num_sq << " num=" << num
+            << " i=" << i;
+      }
+    }
   }
-#endif
+}
 
-#if defined(__AVX512F__)
-  {
-    float avx512_result = 0.0f;
-    zvec::turbo::avx512::pq_adc_int4_distance_avx512(codes.data(), lut.data(),
-                                                     num_sq, &avx512_result);
-    EXPECT_NEAR(scalar_result, avx512_result, 1e-5f);
+void check_kernel_set(const KernelSet &k, float tol, uint32_t seed) {
+  ASSERT_TRUE(k.adc);
+  ASSERT_TRUE(k.sdc);
+  ASSERT_TRUE(k.batch);
+  check_adc(k.adc, tol, seed);
+  check_sdc(k.sdc, tol, seed + 1);
+  check_batch(k.batch, tol, seed + 2);
+}
+
+}  // anonymous namespace
+
+// The scalar single-code kernels are the reference, so only its batch path is
+// a real assertion here.
+TEST(PqInt4SimdConsistency, ScalarBatchMatchesSingle) {
+  check_batch(zvec::turbo::scalar::pq_adc_int4_batch_distance, 1e-5f, 2024);
+}
+
+TEST(PqInt4SimdConsistency, Avx2MatchesScalar) {
+  if (!zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    GTEST_SKIP() << "host CPU lacks AVX2";
   }
-#endif
+  const KernelSet k = {zvec::turbo::avx2::pq_adc_int4_distance_avx2,
+                       zvec::turbo::avx2::pq_sdc_int4_distance_avx2,
+                       zvec::turbo::avx2::pq_adc_int4_batch_distance_avx2};
+  check_kernel_set(k, 1e-5f, 2100);
+}
+
+TEST(PqInt4SimdConsistency, Avx512MatchesScalar) {
+  // Matches the dispatch condition in get_pq_kernels(): these kernels stay
+  // within AVX512F and need no BW/VL extension.
+  if (!zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    GTEST_SKIP() << "host CPU lacks AVX512F";
+  }
+  const KernelSet k = {zvec::turbo::avx512::pq_adc_int4_distance_avx512,
+                       zvec::turbo::avx512::pq_sdc_int4_distance_avx512,
+                       zvec::turbo::avx512::pq_adc_int4_batch_distance_avx512};
+  check_kernel_set(k, 1e-5f, 2200);
+}
+
+TEST(PqInt4SimdConsistency, NeonMatchesScalar) {
+  if (!zvec::ailego::internal::CpuFeatures::static_flags_.NEON) {
+    GTEST_SKIP() << "host CPU lacks NEON";
+  }
+  const KernelSet k = {zvec::turbo::neon::pq_adc_int4_distance_neon,
+                       zvec::turbo::neon::pq_sdc_int4_distance_neon,
+                       zvec::turbo::neon::pq_adc_int4_batch_distance_neon};
+  // NEON accumulates via float32x4_t, a different rounding order than the
+  // scalar sequential sum, so allow slightly more slack than x86.
+  check_kernel_set(k, 1e-4f, 2300);
+}
+
+// Whatever dispatch picked must also be correct: this is the set the quantizer
+// actually runs.
+TEST(PqInt4SimdConsistency, DispatchedMatchesScalar) {
+  auto kernels = zvec::turbo::get_pq_kernels(zvec::turbo::DataType::kInt4,
+                                             zvec::turbo::QuantizeType::kPQ);
+  const KernelSet k = {kernels.asymmetric_distance, kernels.symmetric_distance,
+                       kernels.batch_asymmetric_distance};
+  check_kernel_set(k, 1e-4f, 2400);
 }
 
 

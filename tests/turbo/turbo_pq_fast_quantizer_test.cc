@@ -615,6 +615,74 @@ TEST(PqFastQuantizer, InnerProductMetric) {
 }
 
 // ---------------------------------------------------------------------------
+// Non-finite LUT entries
+// ---------------------------------------------------------------------------
+
+// A non-finite query component poisons every LUT entry of its own sub-space,
+// and for component 0 that includes lut[0] -- the entry the min/max scan used
+// to be seeded from, which is why a single NaN there used to take out the whole
+// table.  The affine scale has to stay finite either way, and the poisoned
+// entries must land at the far end of the u8 range: rounding them down to code
+// 0 would make the affected sub-space contribute the *smallest* possible term
+// and hand back a bogus nearest neighbour.
+static void check_non_finite_query(float poison, const char *label) {
+  const size_t DIM = 32;
+  const size_t NSQ = 8;
+  const size_t COUNT = 500;
+
+  auto quantizer = make_pqfs_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer) << label;
+  auto holder = make_grid_holder(COUNT, DIM, NSQ);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  const size_t code_len = quantizer->quantized_datapoint_vector_length();
+  std::vector<uint8_t> code_a(code_len);
+  std::vector<uint8_t> code_b(code_len);
+  auto iter = holder->create_iterator();
+  const float *v0 = reinterpret_cast<const float *>(iter->data());
+  std::vector<float> query(v0, v0 + DIM);
+  quantizer->quantize_data(iter->data(), code_a.data());
+  iter->next();
+  quantizer->quantize_data(iter->data(), code_b.data());
+
+  // Component 0 belongs to sub-space 0, so lut[0] itself goes non-finite.
+  query[0] = poison;
+
+  std::vector<uint8_t> qquery(quantizer->quantized_query_vector_length());
+  quantizer->quantize_query(query.data(), qquery.data());
+
+  const uint8_t *tail = qquery.data() + fast_scan_packed_lut_size(NSQ);
+  float delta = 0.0f;
+  float bias = 0.0f;
+  std::memcpy(&delta, tail, sizeof(float));
+  std::memcpy(&bias, tail + sizeof(float), sizeof(float));
+  EXPECT_TRUE(std::isfinite(delta)) << label << ": delta=" << delta;
+  EXPECT_TRUE(std::isfinite(bias)) << label << ": bias=" << bias;
+  EXPECT_GT(delta, 0.0f) << label;
+
+  const float da = packed_distance_of(quantizer, code_a.data(), code_len, NSQ,
+                                      qquery.data());
+  const float db = packed_distance_of(quantizer, code_b.data(), code_len, NSQ,
+                                      qquery.data());
+  EXPECT_TRUE(std::isfinite(da)) << label << ": dist=" << da;
+  EXPECT_TRUE(std::isfinite(db)) << label << ": dist=" << db;
+
+  // The seven clean sub-spaces still tell the two candidates apart.  Had the
+  // poisoned entry driven delta to infinity, every code would have collapsed
+  // to 0 and both candidates would come back with the same distance.
+  EXPECT_NE(da, db) << label;
+}
+
+TEST(PqFastQuantizer, NanQueryKeepsLutScaleFinite) {
+  check_non_finite_query(std::numeric_limits<float>::quiet_NaN(), "NaN");
+}
+
+TEST(PqFastQuantizer, InfQueryKeepsLutScaleFinite) {
+  check_non_finite_query(std::numeric_limits<float>::infinity(), "+Inf");
+  check_non_finite_query(-std::numeric_limits<float>::infinity(), "-Inf");
+}
+
+// ---------------------------------------------------------------------------
 // Metric variants
 // ---------------------------------------------------------------------------
 

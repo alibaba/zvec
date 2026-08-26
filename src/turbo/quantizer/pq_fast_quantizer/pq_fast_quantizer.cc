@@ -23,6 +23,7 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "common/fast_scan_common.h"
@@ -535,21 +536,35 @@ size_t PqFastQuantizer::lut_entry_count() const {
 int PqFastQuantizer::quantize_lut(const float *lut, void *output) const {
   const size_t lut_size = static_cast<size_t>(num_chunk_) * kNumCentroids;
 
-  // Affine-quantize the whole table with a single min/max so that the
-  // integer accumulation keeps the correct additive semantics.
-  float lo = lut[0];
-  float hi = lut[0];
-  for (size_t i = 1; i < lut_size; ++i) {
-    lo = std::min(lo, lut[i]);
-    hi = std::max(hi, lut[i]);
+  // Sentinel-seeded and non-finite entries excluded: std::min/std::max keep
+  // their first argument for a NaN operand, so a NaN reaching lo/hi is
+  // unrecoverable; one +Inf makes delta infinite and all distances 0 * Inf.
+  float lo = std::numeric_limits<float>::max();
+  float hi = std::numeric_limits<float>::lowest();
+  for (size_t i = 0; i < lut_size; ++i) {
+    if (std::isfinite(lut[i])) {
+      lo = std::min(lo, lut[i]);
+      hi = std::max(hi, lut[i]);
+    }
   }
-  const float delta = (hi - lo) / 255.0f;
-  const float inv_delta = (delta > 0.0f) ? (1.0f / delta) : 0.0f;
+  if (lo > hi) {  // no finite entry at all
+    lo = 0.0f;
+    hi = 0.0f;
+  }
+  constexpr float epsilon = std::numeric_limits<float>::epsilon();
+  const float delta = std::max(hi - lo, epsilon) / 255.0f;
+  const float inv_delta = 1.0f / delta;
 
   std::vector<uint8_t> u8_lut(lut_size);
   for (size_t i = 0; i < lut_size; ++i) {
-    float q = std::round((lut[i] - lo) * inv_delta);
-    u8_lut[i] = static_cast<uint8_t>(std::min(std::max(q, 0.0f), 255.0f));
+    // Non-finite entries go to the far end: NaN slips through the clamp
+    // untouched and would cast to code 0, i.e. the *smallest* distance.
+    const float q =
+        std::isfinite(lut[i])
+            ? std::min(std::max(std::round((lut[i] - lo) * inv_delta), 0.0f),
+                       255.0f)
+            : 255.0f;
+    u8_lut[i] = static_cast_from_float_to_uint8(q);
   }
 
   // [packed u8 LUT | float delta | float bias]
