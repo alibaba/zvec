@@ -38,6 +38,8 @@ class DiskAnnIndexHolder : public IndexHolder {
  public:
   static constexpr uint32_t kDataSectorSize = 128 * 1024;
   static constexpr uint32_t kMetaSectorSize = 4096;
+  static_assert(sizeof(DiskAnnIndexHolderMeta) == kMetaSectorSize,
+                "DiskAnnIndexHolderMeta must occupy one metadata sector");
 
  public:
   inline static uint32_t get_sector_id(uint32_t id, uint32_t sector_vec_num) {

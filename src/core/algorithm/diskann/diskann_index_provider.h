@@ -66,6 +66,7 @@ class DiskAnnIndexProvider : public IndexProvider {
       result_buffer_owner_ = std::make_shared<ResultBufferOwner>();
     } catch (const std::bad_alloc &) {
       LOG_ERROR("Failed to allocate DiskAnn provider result-buffer owner");
+      throw;
     }
   }
 
