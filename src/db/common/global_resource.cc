@@ -14,26 +14,47 @@
 #include "db/common/global_resource.h"
 #include <exception>
 #include <mutex>
+#include <rocksdb/advanced_cache.h>
+#include <rocksdb/cache.h>
+#include <rocksdb/write_buffer_manager.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
 
 namespace zvec {
 
+uint64_t GlobalResource::calculate_rocksdb_memory_budget(
+    uint64_t total_bytes) noexcept {
+  return (total_bytes / 100) * detail::kRocksDbMemoryPercent +
+         ((total_bytes % 100) * detail::kRocksDbMemoryPercent) / 100;
+}
+
+uint64_t GlobalResource::calculate_buffer_pool_memory_budget(
+    uint64_t total_bytes) noexcept {
+  return total_bytes - calculate_rocksdb_memory_budget(total_bytes);
+}
+
 int GlobalResource::initialize() {
+  {
+    std::lock_guard<std::mutex> lock(initialization_mutex_);
+    if (query_thread_pool_ && optimize_thread_pool_) {
+      return 0;
+    }
+  }
   const auto &config = GlobalConfig::Instance();
   auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
   // Standalone/core users may configure the process-wide pool before the DB
   // layer lazily creates its thread pools. In that case the first published
   // pool budget remains authoritative; a lazy accessor must not try to resize
   // a live cache merely because GlobalConfig still contains its default.
-  const uint64_t effective_memory_limit = memory_pool.initialized()
+  const bool preserve_existing_pool = memory_pool.initialized();
+  const uint64_t effective_memory_limit = preserve_existing_pool
                                               ? memory_pool.capacity()
                                               : config.memory_limit_bytes();
-  return initialize(effective_memory_limit, config.query_thread_count(),
-                    config.query_thread_binding(),
-                    config.optimize_thread_count(),
-                    config.optimize_thread_binding());
+  return initialize_with_setup(
+      effective_memory_limit, config.query_thread_count(),
+      config.query_thread_binding(), config.optimize_thread_count(),
+      config.optimize_thread_binding(), {}, preserve_existing_pool);
 }
 
 int GlobalResource::initialize(uint64_t memory_limit_bytes,
@@ -51,10 +72,17 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
                                           bool query_thread_binding,
                                           uint32_t optimize_thread_count,
                                           bool optimize_thread_binding,
-                                          const std::function<int()> &setup) {
+                                          const std::function<int()> &setup,
+                                          bool preserve_existing_pool) {
   std::lock_guard<std::mutex> lock(initialization_mutex_);
   try {
     auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+    const uint64_t rocksdb_memory_capacity =
+        calculate_rocksdb_memory_budget(memory_limit_bytes);
+    const uint64_t buffer_pool_capacity =
+        preserve_existing_pool
+            ? memory_pool.capacity()
+            : calculate_buffer_pool_memory_budget(memory_limit_bytes);
     if (query_thread_pool_ && optimize_thread_pool_) {
       if (memory_limit_bytes_ == memory_limit_bytes &&
           query_thread_count_ == query_thread_count &&
@@ -75,12 +103,12 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
     // deliberately passes the existing capacity and therefore remains
     // compatible with standalone/core callers.
     if (setup && memory_pool.initialized() &&
-        memory_pool.capacity() != memory_limit_bytes) {
+        memory_pool.capacity() != buffer_pool_capacity) {
       LOG_ERROR(
           "GlobalResource::initialize rejected memory limit change after "
-          "MemoryLimitPool was configured: requested_capacity=%llu "
+          "MemoryLimitPool was configured: requested_buffer_capacity=%llu "
           "current_capacity=%llu",
-          static_cast<unsigned long long>(memory_limit_bytes),
+          static_cast<unsigned long long>(buffer_pool_capacity),
           static_cast<unsigned long long>(memory_pool.capacity()));
       return -1;
     }
@@ -89,6 +117,17 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
         query_thread_count, query_thread_binding);
     auto optimize_thread_pool = std::make_unique<ailego::ThreadPool>(
         optimize_thread_count, optimize_thread_binding);
+    auto rocksdb_block_cache = rocksdb::NewLRUCache(
+        static_cast<size_t>(rocksdb_memory_capacity),
+        /*num_shard_bits=*/-1, /*strict_capacity_limit=*/true);
+    if (!rocksdb_block_cache) {
+      LOG_ERROR("Failed to create the process-wide RocksDB block cache");
+      return -1;
+    }
+    auto rocksdb_write_buffer_manager =
+        std::make_shared<rocksdb::WriteBufferManager>(
+            static_cast<size_t>(rocksdb_memory_capacity), rocksdb_block_cache,
+            /*allow_stall=*/true);
     // Run side-effecting setup only after every fallible resource allocation
     // and compatibility check that can be performed without mutating global
     // state. Holding initialization_mutex_ closes the race with lazy callers
@@ -96,17 +135,28 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
     if (setup && setup() != 0) {
       return -1;
     }
-    if (memory_pool.init(memory_limit_bytes) != 0) {
+    if (memory_pool.init(static_cast<size_t>(buffer_pool_capacity)) != 0) {
       return -1;
     }
 
     memory_limit_bytes_ = memory_limit_bytes;
+    buffer_pool_capacity_ = buffer_pool_capacity;
+    rocksdb_memory_capacity_ = rocksdb_memory_capacity;
     query_thread_count_ = query_thread_count;
     optimize_thread_count_ = optimize_thread_count;
     query_thread_binding_ = query_thread_binding;
     optimize_thread_binding_ = optimize_thread_binding;
     this->query_thread_pool_ = std::move(query_thread_pool);
     this->optimize_thread_pool_ = std::move(optimize_thread_pool);
+    rocksdb_block_cache_ = std::move(rocksdb_block_cache);
+    rocksdb_write_buffer_manager_ = std::move(rocksdb_write_buffer_manager);
+    LOG_INFO(
+        "Managed memory initialized: total=%llu buffer_pool=%llu "
+        "rocksdb=%llu rocksdb_percent=%u",
+        static_cast<unsigned long long>(memory_limit_bytes_),
+        static_cast<unsigned long long>(buffer_pool_capacity_),
+        static_cast<unsigned long long>(rocksdb_memory_capacity_),
+        detail::kRocksDbMemoryPercent);
     return 0;
   } catch (const std::exception &e) {
     LOG_ERROR("GlobalResource::initialize failed: %s", e.what());
@@ -114,6 +164,29 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
     LOG_ERROR("GlobalResource::initialize failed with an unknown exception");
   }
   return -1;
+}
+
+GlobalResource::MemoryStats GlobalResource::memory_stats() {
+  MemoryStats result;
+  if (initialize() != 0) {
+    return result;
+  }
+
+  const auto pool_stats = zvec::ailego::MemoryLimitPool::get_instance().stats();
+  result.total_capacity = memory_limit_bytes_;
+  result.buffer_pool_capacity = pool_stats.pool_size;
+  result.buffer_pool_used = pool_stats.used;
+  result.rocksdb_capacity = rocksdb_memory_capacity_;
+  if (rocksdb_block_cache_) {
+    result.rocksdb_cache_used = rocksdb_block_cache_->GetUsage();
+  }
+  if (rocksdb_write_buffer_manager_) {
+    result.rocksdb_memtable_used =
+        rocksdb_write_buffer_manager_->memory_usage();
+    result.rocksdb_mutable_memtable_used =
+        rocksdb_write_buffer_manager_->mutable_memtable_memory_usage();
+  }
+  return result;
 }
 
 }  // namespace zvec

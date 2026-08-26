@@ -14,6 +14,7 @@
 
 
 #include "rocksdb_context.h"
+#include <algorithm>
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/memtablerep.h>
 #include <rocksdb/slice_transform.h>
@@ -21,6 +22,7 @@
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/checkpoint.h>
 #include <zvec/ailego/logger/logger.h>
+#include "db/common/global_resource.h"
 
 
 namespace zvec {
@@ -49,7 +51,13 @@ Status RocksdbContext::create(Args args) {
   }
 
   create_opts_.create_if_missing = true;
-  prepare_options(std::move(args.merge_op));
+  size_t column_family_count = args.column_names.size();
+  if (std::find(args.column_names.begin(), args.column_names.end(),
+                rocksdb::kDefaultColumnFamilyName) == args.column_names.end()) {
+    ++column_family_count;
+  }
+  prepare_options(std::move(args.merge_op), /*read_only=*/false,
+                  std::max<size_t>(column_family_count, 1));
 
   rocksdb::DB *db;
   rocksdb::Status s = rocksdb::DB::Open(create_opts_, args.db_path, &db);
@@ -125,7 +133,8 @@ Status RocksdbContext::open(Args args, bool read_only) {
   }
 
   create_opts_.create_if_missing = false;
-  prepare_options(std::move(args.merge_op));
+  prepare_options(std::move(args.merge_op), read_only,
+                  std::max<size_t>(args.column_names.size(), 1));
 
   rocksdb::Status s;
   std::vector<std::string> existing_cf_names{};
@@ -137,6 +146,9 @@ Status RocksdbContext::open(Args args, bool read_only) {
               args.db_path.c_str(), s.code(), s.ToString().c_str());
     return Status::InternalError();
   }
+
+  configure_hash_skiplist(read_only,
+                          std::max<size_t>(existing_cf_names.size(), 1));
 
   auto make_cf_options = [&](const std::string &cf_name) {
     rocksdb::ColumnFamilyOptions cf_options(create_opts_);
@@ -239,7 +251,8 @@ Status RocksdbContext::validate_and_set_db_path(const std::string &db_path,
 
 
 void RocksdbContext::prepare_options(
-    std::shared_ptr<rocksdb::MergeOperator> merge_op) {
+    std::shared_ptr<rocksdb::MergeOperator> merge_op, bool read_only,
+    size_t column_family_count) {
   // Increase parallelism with default thread count (typically 16)
   create_opts_.IncreaseParallelism();
 
@@ -274,8 +287,18 @@ void RocksdbContext::prepare_options(
     create_opts_.write_buffer_size = 8 << 20;
   }
 
-  // Create default cache
-  table_options.block_cache = nullptr;
+  // All RocksDB-backed features (ID map, scalar inverted indexes and FTS)
+  // share one process-wide strict-capacity cache. Index and filter blocks must
+  // enter the same cache instead of remaining resident in each table reader.
+  table_options.block_cache = GlobalResource::Instance().rocksdb_block_cache();
+  table_options.cache_index_and_filter_blocks = true;
+  table_options.cache_index_and_filter_blocks_with_high_priority = true;
+  table_options.pin_l0_filter_and_index_blocks_in_cache = false;
+  if (!table_options.block_cache) {
+    // Resource initialization failure must not silently fall back to one
+    // implicit default cache per RocksDB instance.
+    table_options.no_block_cache = true;
+  }
 
   auto table_factory = NewBlockBasedTableFactory(table_options);
   create_opts_.table_factory.reset(table_factory);
@@ -283,8 +306,11 @@ void RocksdbContext::prepare_options(
   // Enable statistics
   create_opts_.statistics = rocksdb::CreateDBStatistics();
 
-  // Disable external write buffer manager, let RocksDB manage it
-  create_opts_.write_buffer_manager = nullptr;
+  // Memtables from every DB and column family share the same limit. The write
+  // buffer manager charges their arenas to the shared cache, so block pages
+  // are evicted as writes grow and writes stall if flushing cannot keep up.
+  create_opts_.write_buffer_manager =
+      GlobalResource::Instance().rocksdb_write_buffer_manager();
 
   // Reduce preallocation size for manifest file to 512KB to save disk space
   create_opts_.manifest_preallocation_size = 512 * 1024;
@@ -292,17 +318,40 @@ void RocksdbContext::prepare_options(
   // Disable direct reads (use buffered I/O instead)
   create_opts_.use_direct_reads = false;
 
-  // Hash skip list memtable for prefix-based lookups
-  if (enable_hash_skiplist_) {
-    create_opts_.prefix_extractor.reset(rocksdb::NewCappedPrefixTransform(8));
-    create_opts_.memtable_factory.reset(rocksdb::NewHashSkipListRepFactory(
-        1000000,  // bucket_count
-        4,        // skiplist_height
-        4         // skiplist_branching_factor
-        ));
-    create_opts_.allow_concurrent_memtable_write = false;
-    read_opts_.total_order_seek = true;
+  configure_hash_skiplist(read_only, column_family_count);
+}
+
+void RocksdbContext::configure_hash_skiplist(bool read_only,
+                                             size_t column_family_count) {
+  hash_skiplist_bucket_count_ = 0;
+  if (!enable_hash_skiplist_) {
+    return;
   }
+
+  create_opts_.prefix_extractor.reset(rocksdb::NewCappedPrefixTransform(8));
+  read_opts_.total_order_seek = true;
+  if (read_only) {
+    // Immutable FTS segments do not write a memtable. Using the hash factory
+    // here used to allocate a large empty bucket array for every CF at open.
+    return;
+  }
+
+  constexpr size_t kMinimumBucketCount = 4096;
+  constexpr size_t kMaximumBucketCount = 1000000;
+  constexpr uint64_t kHashTableBudgetDivisor = 8;
+  const uint64_t rocksdb_budget =
+      GlobalResource::Instance().rocksdb_memory_capacity();
+  const uint64_t hash_table_budget = rocksdb_budget / kHashTableBudgetDivisor;
+  const uint64_t bytes_per_cf =
+      hash_table_budget / std::max<size_t>(column_family_count, 1);
+  const uint64_t calculated_bucket_count = bytes_per_cf / sizeof(void *);
+  hash_skiplist_bucket_count_ = static_cast<size_t>(std::clamp<uint64_t>(
+      calculated_bucket_count, kMinimumBucketCount, kMaximumBucketCount));
+  create_opts_.memtable_factory.reset(
+      rocksdb::NewHashSkipListRepFactory(hash_skiplist_bucket_count_,
+                                         /*skiplist_height=*/4,
+                                         /*skiplist_branching_factor=*/4));
+  create_opts_.allow_concurrent_memtable_write = false;
 }
 
 

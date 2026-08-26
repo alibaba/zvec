@@ -16,9 +16,26 @@
 #include <algorithm>
 #include <thread>
 #include <gtest/gtest.h>
+#include <rocksdb/advanced_cache.h>
+#include <rocksdb/write_buffer_manager.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/db/config.h>
 
 using namespace zvec;
+
+TEST(GlobalResource, ReservesFifteenPercentForRocksDb) {
+  constexpr uint64_t kOneHundredMiB = 100ULL * 1024 * 1024;
+  constexpr uint64_t kTwoGiB = 2ULL * 1024 * 1024 * 1024;
+
+  EXPECT_EQ(15ULL * 1024 * 1024,
+            GlobalResource::calculate_rocksdb_memory_budget(kOneHundredMiB));
+  EXPECT_EQ(
+      85ULL * 1024 * 1024,
+      GlobalResource::calculate_buffer_pool_memory_budget(kOneHundredMiB));
+  EXPECT_EQ(kTwoGiB,
+            GlobalResource::calculate_rocksdb_memory_budget(kTwoGiB) +
+                GlobalResource::calculate_buffer_pool_memory_budget(kTwoGiB));
+}
 
 TEST(GlobalResource, UsesEffectiveCountsAndDisablesBindingByDefault) {
   GlobalConfig::ConfigData config;
@@ -42,4 +59,26 @@ TEST(GlobalResource, UsesEffectiveCountsAndDisablesBindingByDefault) {
             GlobalResource::Instance().query_thread_pool()->count());
   EXPECT_EQ(expected_optimize_workers,
             GlobalResource::Instance().optimize_thread_pool()->count());
+
+  const uint64_t total_capacity = config.memory_limit_bytes;
+  const uint64_t expected_rocksdb_capacity =
+      GlobalResource::calculate_rocksdb_memory_budget(total_capacity);
+  const uint64_t expected_buffer_capacity =
+      GlobalResource::calculate_buffer_pool_memory_budget(total_capacity);
+  EXPECT_EQ(expected_buffer_capacity,
+            ailego::MemoryLimitPool::get_instance().capacity());
+
+  const auto rocksdb_cache = GlobalResource::Instance().rocksdb_block_cache();
+  const auto write_buffer_manager =
+      GlobalResource::Instance().rocksdb_write_buffer_manager();
+  ASSERT_NE(nullptr, rocksdb_cache);
+  ASSERT_NE(nullptr, write_buffer_manager);
+  EXPECT_EQ(expected_rocksdb_capacity, rocksdb_cache->GetCapacity());
+  EXPECT_EQ(expected_rocksdb_capacity, write_buffer_manager->buffer_size());
+  EXPECT_TRUE(write_buffer_manager->cost_to_cache());
+
+  const auto stats = GlobalResource::Instance().memory_stats();
+  EXPECT_EQ(total_capacity, stats.total_capacity);
+  EXPECT_EQ(expected_buffer_capacity, stats.buffer_pool_capacity);
+  EXPECT_EQ(expected_rocksdb_capacity, stats.rocksdb_capacity);
 }

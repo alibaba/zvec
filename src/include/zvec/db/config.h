@@ -87,6 +87,8 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
   // Configuration data structure
   struct ConfigData {
+    // Process-wide managed cache budget. Internally shared by vector storage
+    // and RocksDB-backed metadata/index features; it is not a hard RSS limit.
     uint64_t memory_limit_bytes;
 
     // log

@@ -24,9 +24,39 @@ namespace zvec {
 
 class GlobalConfig;
 
+namespace detail {
+constexpr uint32_t kRocksDbMemoryPercent = 15;
+}
+
+}  // namespace zvec
+
+namespace rocksdb {
+class Cache;
+class WriteBufferManager;
+}  // namespace rocksdb
+
+namespace zvec {
+
 class GlobalResource : public ailego::Singleton<GlobalResource> {
  public:
+  struct MemoryStats {
+    uint64_t total_capacity{0};
+    uint64_t buffer_pool_capacity{0};
+    uint64_t buffer_pool_used{0};
+    uint64_t rocksdb_capacity{0};
+    uint64_t rocksdb_cache_used{0};
+    uint64_t rocksdb_memtable_used{0};
+    uint64_t rocksdb_mutable_memtable_used{0};
+  };
+
+  static uint64_t calculate_rocksdb_memory_budget(
+      uint64_t total_bytes) noexcept;
+  static uint64_t calculate_buffer_pool_memory_budget(
+      uint64_t total_bytes) noexcept;
+
   int initialize();
+
+  MemoryStats memory_stats();
 
   ailego::ThreadPool *query_thread_pool() {
     if (initialize() != 0) {
@@ -42,6 +72,27 @@ class GlobalResource : public ailego::Singleton<GlobalResource> {
     return optimize_thread_pool_.get();
   }
 
+  std::shared_ptr<rocksdb::Cache> rocksdb_block_cache() {
+    if (initialize() != 0) {
+      return nullptr;
+    }
+    return rocksdb_block_cache_;
+  }
+
+  std::shared_ptr<rocksdb::WriteBufferManager> rocksdb_write_buffer_manager() {
+    if (initialize() != 0) {
+      return nullptr;
+    }
+    return rocksdb_write_buffer_manager_;
+  }
+
+  uint64_t rocksdb_memory_capacity() {
+    if (initialize() != 0) {
+      return 0;
+    }
+    return rocksdb_memory_capacity_;
+  }
+
  private:
   friend class GlobalConfig;
 
@@ -53,7 +104,8 @@ class GlobalResource : public ailego::Singleton<GlobalResource> {
                             bool query_thread_binding,
                             uint32_t optimize_thread_count,
                             bool optimize_thread_binding,
-                            const std::function<int()> &setup);
+                            const std::function<int()> &setup,
+                            bool preserve_existing_pool = false);
 
   std::mutex initialization_mutex_;
   uint64_t memory_limit_bytes_{0};
@@ -61,8 +113,12 @@ class GlobalResource : public ailego::Singleton<GlobalResource> {
   uint32_t optimize_thread_count_{0};
   bool query_thread_binding_{false};
   bool optimize_thread_binding_{false};
+  uint64_t buffer_pool_capacity_{0};
+  uint64_t rocksdb_memory_capacity_{0};
   std::unique_ptr<ailego::ThreadPool> query_thread_pool_;
   std::unique_ptr<ailego::ThreadPool> optimize_thread_pool_;
+  std::shared_ptr<rocksdb::Cache> rocksdb_block_cache_;
+  std::shared_ptr<rocksdb::WriteBufferManager> rocksdb_write_buffer_manager_;
 };
 
 }  // namespace zvec

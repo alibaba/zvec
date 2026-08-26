@@ -44,6 +44,7 @@ struct RocksdbContext {
   std::string db_path_;
   bool read_only_;
   bool enable_hash_skiplist_{false};
+  size_t hash_skiplist_bucket_count_{0};
   std::vector<rocksdb::ColumnFamilyHandle *> cf_handles_;
   rocksdb::Options create_opts_;
   rocksdb::WriteOptions write_opts_;
@@ -139,7 +140,10 @@ struct RocksdbContext {
   Status validate_and_set_db_path(const std::string &db_path,
                                   bool should_exist);
 
-  void prepare_options(std::shared_ptr<rocksdb::MergeOperator> merge_op);
+  void prepare_options(std::shared_ptr<rocksdb::MergeOperator> merge_op,
+                       bool read_only, size_t column_family_count);
+
+  void configure_hash_skiplist(bool read_only, size_t column_family_count);
 
   Status flush_unlocked();
 
