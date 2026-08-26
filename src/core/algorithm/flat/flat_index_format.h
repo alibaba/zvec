@@ -51,12 +51,10 @@ struct LinearIndexHeader {
   uint32_t block_count{0};
   uint32_t index_meta_size{0};
   char reserved_[28] = {0};
-#ifdef _MSC_VER
-  char index_meta[];
-#else
-  char index_meta[0];
-#endif
 };
+
+static_assert(sizeof(LinearIndexHeader) == 64,
+              "LinearIndexHeader disk format must remain unchanged");
 
 /*! Index Format of Linear Index Meta for each Linear list
  */
@@ -146,7 +144,14 @@ struct StreamerLinearMeta {
   uint32_t segment_size{0};
   uint8_t reserved_[32] = {0};
   LinearIndexHeader header;
+
+  const char *index_meta_data(void) const {
+    return reinterpret_cast<const char *>(this) + sizeof(*this);
+  }
 };
+
+static_assert(sizeof(StreamerLinearMeta) == 128,
+              "StreamerLinearMeta disk format must remain unchanged");
 
 /*! Location of Vector in Storage Segment
  */

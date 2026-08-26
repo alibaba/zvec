@@ -58,6 +58,10 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return &result_heap_;
   }
 
+  FlatSearchScratch *search_scratch(void) {
+    return &search_scratch_;
+  }
+
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
@@ -238,6 +242,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
 
  private:
   const FlatStreamer<BATCH_SIZE> *owner_{nullptr};
+  FlatSearchScratch search_scratch_{};
   std::vector<Stats> stats_vec_{};
   uint32_t magic_{0};
   uint32_t topk_{0};

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "algorithm/flat/flat_streamer.h"
+#include <atomic>
 #include <cstddef>
 #include <future>
 #include <string>
@@ -95,6 +97,136 @@ TEST_F(FlatStreamerTest, TestAddVector) {
 
   streamer->flush(0UL);
   streamer.reset();
+}
+
+TEST_F(FlatStreamerTest, TestContiguousCandidateSearchAndInsertFallback) {
+  const std::string path = dir_ + "Test/ContiguousEntity";
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < 64; ++id) {
+      NumericalVector<float> vec(dim);
+      for (size_t d = 0; d < dim; ++d) {
+        vec[d] = static_cast<float>(id);
+      }
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vec.data(), qmeta, context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  auto *contiguous_entity =
+      dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+  ASSERT_NE(nullptr, contiguous_entity);
+  ASSERT_TRUE(contiguous_entity->is_contiguous());
+
+  auto context = streamer->create_context();
+  context->set_topk(2);
+  NumericalVector<float> query(dim);
+  for (size_t d = 0; d < dim; ++d) {
+    query[d] = 17.0F;
+  }
+  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  std::vector<std::vector<uint64_t>> keys{{5, 17, 31}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys, qmeta, 1,
+                                                  context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  IndexStorage::MemoryBlock contiguous_block;
+  ASSERT_EQ(0, streamer->get_vector_by_id(17, contiguous_block));
+  ASSERT_NE(nullptr, contiguous_block.data());
+  EXPECT_FLOAT_EQ(17.0F,
+                  static_cast<const float *>(contiguous_block.data())[0]);
+
+  NumericalVector<float> appended(dim);
+  for (size_t d = 0; d < dim; ++d) {
+    appended[d] = 64.0F;
+  }
+
+  std::promise<void> search_started;
+  std::promise<void> resume_search;
+  auto resume_search_future = resume_search.get_future().share();
+  std::atomic_bool search_paused{false};
+  context->set_filter([&](uint64_t) {
+    if (!search_paused.exchange(true)) {
+      search_started.set_value();
+      resume_search_future.wait();
+    }
+    return false;
+  });
+  auto search_future = std::async(std::launch::async, [&]() {
+    return streamer->search_bf_impl(query.data(), qmeta, 1, context);
+  });
+  search_started.get_future().wait();
+
+  auto add_context = streamer->create_context();
+  int add_ret =
+      streamer->add_with_id_impl(64, appended.data(), qmeta, add_context);
+  resume_search.set_value();
+  EXPECT_EQ(0, add_ret);
+  ASSERT_EQ(0, search_future.get());
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+  context->reset_filter();
+
+  EXPECT_FALSE(contiguous_entity->is_contiguous());
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(0, streamer->get_vector_by_id(64, block));
+  ASSERT_NE(nullptr, block.data());
+  EXPECT_FLOAT_EQ(64.0F, static_cast<const float *>(block.data())[0]);
+
+  ASSERT_EQ(0, streamer->search_bf_impl(appended.data(), qmeta, 1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(64, context->result()[0].key());
+
+  NumericalVector<float> updated(dim);
+  for (size_t d = 0; d < dim; ++d) {
+    updated[d] = 80.0F;
+  }
+  ASSERT_EQ(0, streamer->add_with_id_impl(17, updated.data(), qmeta, context));
+  keys = {{17, 64}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(updated.data(), keys, qmeta,
+                                                  1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  keys = {{17, 64}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(appended.data(), keys, qmeta,
+                                                  1, context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(64, context->result()[0].key());
+
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearch) {

@@ -106,6 +106,7 @@ int VamanaContext::update_context(ContextType type, const IndexMeta &meta,
   type_ = type;
   entity_ = entity;
   metric_ = metric;
+  update_index_metric(metric);
   magic_ = magic_num;
   if (metric) {
     build_distance_offset_ = metric->build_distance_offset();

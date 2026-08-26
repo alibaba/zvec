@@ -334,6 +334,9 @@ class ProximaEngineHelper {
       case DataType::VECTOR_INT8:
         return core_interface::DataType::DT_INT8;
 
+      case DataType::VECTOR_UINT8:
+        return core_interface::DataType::DT_UINT8;
+
       default:
         return tl::make_unexpected(
             Status::InvalidArgument("unsupported data type"));
@@ -403,6 +406,20 @@ class ProximaEngineHelper {
           return tl::make_unexpected(
               Status::InvalidArgument("failed to build index param: " +
                                       index_param_builder.error().message()));
+        }
+        auto db_index_params = dynamic_cast<const FlatIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder.value()->with_use_contiguous_memory(
+            db_index_params->use_contiguous_memory());
+        if (db_index_params->storage_data_type() != DataType::UNDEFINED) {
+          auto storage_data_type =
+              convert_to_engine_data_type(db_index_params->storage_data_type());
+          if (!storage_data_type.has_value()) {
+            return tl::make_unexpected(
+                Status::InvalidArgument("unsupported Flat storage data type"));
+          }
+          index_param_builder.value()->with_storage_data_type(
+              storage_data_type.value());
         }
         return index_param_builder.value()->build();
       }
