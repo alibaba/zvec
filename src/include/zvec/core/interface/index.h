@@ -257,9 +257,6 @@ class ZVEC_CORE_API IVFIndex : public Index {
  public:
   IVFIndex() = default;
 
-  //! Retrieve the active storage backend for debug/testing usage.
-  std::string storage_mode() const;
-
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 

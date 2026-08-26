@@ -39,24 +39,12 @@ namespace zvec {
 
 class GlobalResource : public ailego::Singleton<GlobalResource> {
  public:
-  struct MemoryStats {
-    uint64_t total_capacity{0};
-    uint64_t buffer_pool_capacity{0};
-    uint64_t buffer_pool_used{0};
-    uint64_t rocksdb_capacity{0};
-    uint64_t rocksdb_cache_used{0};
-    uint64_t rocksdb_memtable_used{0};
-    uint64_t rocksdb_mutable_memtable_used{0};
-  };
-
   static uint64_t calculate_rocksdb_memory_budget(
       uint64_t total_bytes) noexcept;
   static uint64_t calculate_buffer_pool_memory_budget(
       uint64_t total_bytes) noexcept;
 
   int initialize();
-
-  MemoryStats memory_stats();
 
   ailego::ThreadPool *query_thread_pool() {
     if (initialize() != 0) {
@@ -113,7 +101,6 @@ class GlobalResource : public ailego::Singleton<GlobalResource> {
   uint32_t optimize_thread_count_{0};
   bool query_thread_binding_{false};
   bool optimize_thread_binding_{false};
-  uint64_t buffer_pool_capacity_{0};
   uint64_t rocksdb_memory_capacity_{0};
   std::unique_ptr<ailego::ThreadPool> query_thread_pool_;
   std::unique_ptr<ailego::ThreadPool> optimize_thread_pool_;

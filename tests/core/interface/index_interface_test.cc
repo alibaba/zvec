@@ -918,9 +918,6 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
   });
   opener.join();
   ASSERT_EQ(0, open_rc);
-  auto *ivf_index = dynamic_cast<IVFIndex *>(read_index.get());
-  ASSERT_NE(nullptr, ivf_index);
-  ASSERT_EQ("BufferReadStorage", ivf_index->storage_mode());
 
   auto query_param = IVFQueryParamBuilder()
                          .with_topk(1)

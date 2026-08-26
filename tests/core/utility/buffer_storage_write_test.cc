@@ -1200,8 +1200,8 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {
   auto pool = storage->vec_buffer_pool();
   ASSERT_TRUE(pool);
   const auto before = pool->stats();
-  ASSERT_TRUE(segment->read_borrowed_batch_immutable(reads.data(),
-                                                      reads.size()));
+  ASSERT_TRUE(
+      segment->read_borrowed_batch_immutable(reads.data(), reads.size()));
   size_t cached_unique = 0;
   size_t bypassed_unique = 0;
   for (size_t i = 0; i < count; ++i) {
@@ -1220,8 +1220,7 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {
   for (size_t i = 0; i < kDuplicateTailReads; ++i) {
     EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[count + i].type_);
     ASSERT_NE(nullptr, blocks[count + i].data());
-    EXPECT_EQ(0,
-              *static_cast<const unsigned char *>(blocks[count + i].data()));
+    EXPECT_EQ(0, *static_cast<const unsigned char *>(blocks[count + i].data()));
   }
   const auto after = pool->stats();
   EXPECT_EQ(bypassed_unique, after.bypass_reads - before.bypass_reads);
@@ -1255,8 +1254,7 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
   const size_t available_before =
       ailego::MemoryLimitPool::get_instance().available();
   ASSERT_GT(available_before, kSharedReserveBytes);
-  const size_t count =
-      (available_before - kSharedReserveBytes) / page_size + 1;
+  const size_t count = (available_before - kSharedReserveBytes) / page_size + 1;
   ASSERT_LT(first + count * page_size, segment->data_size());
 
   std::vector<IndexStorage::MemoryBlock> blocks(count);
@@ -1266,8 +1264,8 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
     reads.emplace_back(segment.get(), first + i * page_size, 1, &blocks[i]);
   }
 
-  ASSERT_TRUE(segment->read_borrowed_batch_immutable(reads.data(),
-                                                      reads.size()));
+  ASSERT_TRUE(
+      segment->read_borrowed_batch_immutable(reads.data(), reads.size()));
   EXPECT_GE(ailego::MemoryLimitPool::get_instance().available() + page_size,
             kSharedReserveBytes);
   blocks.clear();
@@ -1727,8 +1725,7 @@ TEST_F(BufferStorageWriteTest, BatchBorrowedReadAcrossSegments) {
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[0].type_);
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[1].type_);
   // Cross-page reads are served from the reused thread-local scratch arena as
-  // non-owning views (ZVEC_CROSS_ARENA default on); the reassembled bytes are
-  // still validated below.
+  // non-owning views; the reassembled bytes are still validated below.
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[2].type_);
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[3].type_);
   EXPECT_EQ(0, std::memcmp(payload_a.data() + a_page_aligned_offset,

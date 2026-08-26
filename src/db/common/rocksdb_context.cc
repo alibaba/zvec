@@ -323,7 +323,6 @@ void RocksdbContext::prepare_options(
 
 void RocksdbContext::configure_hash_skiplist(bool read_only,
                                              size_t column_family_count) {
-  hash_skiplist_bucket_count_ = 0;
   if (!enable_hash_skiplist_) {
     return;
   }
@@ -345,10 +344,10 @@ void RocksdbContext::configure_hash_skiplist(bool read_only,
   const uint64_t bytes_per_cf =
       hash_table_budget / std::max<size_t>(column_family_count, 1);
   const uint64_t calculated_bucket_count = bytes_per_cf / sizeof(void *);
-  hash_skiplist_bucket_count_ = static_cast<size_t>(std::clamp<uint64_t>(
+  const size_t bucket_count = static_cast<size_t>(std::clamp<uint64_t>(
       calculated_bucket_count, kMinimumBucketCount, kMaximumBucketCount));
   create_opts_.memtable_factory.reset(
-      rocksdb::NewHashSkipListRepFactory(hash_skiplist_bucket_count_,
+      rocksdb::NewHashSkipListRepFactory(bucket_count,
                                          /*skiplist_height=*/4,
                                          /*skiplist_branching_factor=*/4));
   create_opts_.allow_concurrent_memtable_write = false;

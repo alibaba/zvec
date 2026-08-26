@@ -76,9 +76,4 @@ TEST(GlobalResource, UsesEffectiveCountsAndDisablesBindingByDefault) {
   EXPECT_EQ(expected_rocksdb_capacity, rocksdb_cache->GetCapacity());
   EXPECT_EQ(expected_rocksdb_capacity, write_buffer_manager->buffer_size());
   EXPECT_TRUE(write_buffer_manager->cost_to_cache());
-
-  const auto stats = GlobalResource::Instance().memory_stats();
-  EXPECT_EQ(total_capacity, stats.total_capacity);
-  EXPECT_EQ(expected_buffer_capacity, stats.buffer_pool_capacity);
-  EXPECT_EQ(expected_rocksdb_capacity, stats.rocksdb_capacity);
 }

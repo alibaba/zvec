@@ -44,7 +44,6 @@ struct RocksdbContext {
   std::string db_path_;
   bool read_only_;
   bool enable_hash_skiplist_{false};
-  size_t hash_skiplist_bucket_count_{0};
   std::vector<rocksdb::ColumnFamilyHandle *> cf_handles_;
   rocksdb::Options create_opts_;
   rocksdb::WriteOptions write_opts_;

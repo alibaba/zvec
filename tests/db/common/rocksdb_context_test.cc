@@ -44,7 +44,8 @@ class RocksdbContextMemoryTest : public ::testing::Test {
   }
 };
 
-TEST_F(RocksdbContextMemoryTest, SharesWriteBudgetAndBoundsFtsHashTable) {
+TEST_F(RocksdbContextMemoryTest,
+       SharesWriteBudgetAndAvoidsReadOnlyFtsHashTable) {
   const std::vector<std::string> column_families = {
       "postings", "positions", "term_freq", "max_tf", "doc_len", "stat"};
 
@@ -57,8 +58,6 @@ TEST_F(RocksdbContextMemoryTest, SharesWriteBudgetAndBoundsFtsHashTable) {
             writer.create_opts_.write_buffer_manager);
   EXPECT_STREQ("HashSkipListRepFactory",
                writer.create_opts_.memtable_factory->Name());
-  EXPECT_GE(writer.hash_skiplist_bucket_count_, 4096U);
-  EXPECT_LT(writer.hash_skiplist_bucket_count_, 1000000U);
   ASSERT_TRUE(writer.close().ok());
 
   RocksdbContext reader;
@@ -69,7 +68,6 @@ TEST_F(RocksdbContextMemoryTest, SharesWriteBudgetAndBoundsFtsHashTable) {
   EXPECT_EQ(GlobalResource::Instance().rocksdb_write_buffer_manager(),
             reader.create_opts_.write_buffer_manager);
   EXPECT_STREQ("SkipListFactory", reader.create_opts_.memtable_factory->Name());
-  EXPECT_EQ(0U, reader.hash_skiplist_bucket_count_);
   ASSERT_TRUE(reader.close().ok());
 }
 

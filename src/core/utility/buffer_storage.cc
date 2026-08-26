@@ -16,7 +16,6 @@
 #include <array>
 #include <atomic>
 #include <cinttypes>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -354,12 +353,7 @@ class BufferStorage : public IndexStorage {
       // is reused across calls instead of a per-vector malloc/free: the arena
       // is safe to recycle because the previous hop's blocks are destroyed
       // before this call runs (see fast_search_neighbors_buffer). Cross-page
-      // results become non-owning views into the arena. On by default;
-      // ZVEC_CROSS_ARENA=0 restores the per-vector malloc path.
-      static const bool cross_arena = [] {
-        const char *v = std::getenv("ZVEC_CROSS_ARENA");
-        return !(v != nullptr && *v == '0');
-      }();
+      // results become non-owning views into the arena.
       // Cap the per-thread arena: a batch needing more falls back to malloc so
       // an abnormally wide batch cannot pin unbounded out-of-pool RSS. HNSW
       // hops need only about max_degree * vector_size (tens of KiB).
@@ -587,42 +581,38 @@ class BufferStorage : public IndexStorage {
         }
       }
 
-      if (cross_arena) {
-        // Reserve copied values once, then hand out bump slices. This includes
-        // single-page bypass values, so the direct-read page scratch can be
-        // immediately reused for the next unique miss.
-        static constexpr size_t kArenaAlign = 64;
-        size_t total = 0;
-        for (const BatchState &state : scratch.states) {
+      // Reserve copied values once, then hand out bump slices. This includes
+      // single-page bypass values, so the direct-read page scratch can be
+      // immediately reused for the next unique miss.
+      static constexpr size_t kArenaAlign = 64;
+      size_t total = 0;
+      for (const BatchState &state : scratch.states) {
+        if (!state.copy_result) {
+          continue;
+        }
+        const size_t length = state.request->length;
+        if (length > std::numeric_limits<size_t>::max() - (kArenaAlign - 1)) {
+          return fail();
+        }
+        const size_t aligned = (length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+        if (aligned > kMaxArenaBytes - total) {
+          total = kMaxArenaBytes + 1;
+          break;
+        }
+        total += aligned;
+      }
+      batch_arena = total <= kMaxArenaBytes;
+      if (batch_arena) {
+        if (scratch.arena.size() < total) {
+          scratch.arena.resize(total);
+        }
+        size_t off = 0;
+        for (BatchState &state : scratch.states) {
           if (!state.copy_result) {
             continue;
           }
-          const size_t length = state.request->length;
-          if (length > std::numeric_limits<size_t>::max() - (kArenaAlign - 1)) {
-            return fail();
-          }
-          const size_t aligned =
-              (length + kArenaAlign - 1) & ~(kArenaAlign - 1);
-          if (aligned > kMaxArenaBytes - total) {
-            total = kMaxArenaBytes + 1;
-            break;
-          }
-          total += aligned;
-        }
-        batch_arena = total <= kMaxArenaBytes;
-        if (batch_arena) {
-          if (scratch.arena.size() < total) {
-            scratch.arena.resize(total);
-          }
-          size_t off = 0;
-          for (BatchState &state : scratch.states) {
-            if (!state.copy_result) {
-              continue;
-            }
-            state.owned = scratch.arena.data() + off;
-            off +=
-                (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
-          }
+          state.owned = scratch.arena.data() + off;
+          off += (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
         }
       }
       if (!batch_arena) {

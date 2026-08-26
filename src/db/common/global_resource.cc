@@ -140,7 +140,6 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
     }
 
     memory_limit_bytes_ = memory_limit_bytes;
-    buffer_pool_capacity_ = buffer_pool_capacity;
     rocksdb_memory_capacity_ = rocksdb_memory_capacity;
     query_thread_count_ = query_thread_count;
     optimize_thread_count_ = optimize_thread_count;
@@ -154,7 +153,7 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
         "Managed memory initialized: total=%llu buffer_pool=%llu "
         "rocksdb=%llu rocksdb_percent=%u",
         static_cast<unsigned long long>(memory_limit_bytes_),
-        static_cast<unsigned long long>(buffer_pool_capacity_),
+        static_cast<unsigned long long>(buffer_pool_capacity),
         static_cast<unsigned long long>(rocksdb_memory_capacity_),
         detail::kRocksDbMemoryPercent);
     return 0;
@@ -164,29 +163,6 @@ int GlobalResource::initialize_with_setup(uint64_t memory_limit_bytes,
     LOG_ERROR("GlobalResource::initialize failed with an unknown exception");
   }
   return -1;
-}
-
-GlobalResource::MemoryStats GlobalResource::memory_stats() {
-  MemoryStats result;
-  if (initialize() != 0) {
-    return result;
-  }
-
-  const auto pool_stats = zvec::ailego::MemoryLimitPool::get_instance().stats();
-  result.total_capacity = memory_limit_bytes_;
-  result.buffer_pool_capacity = pool_stats.pool_size;
-  result.buffer_pool_used = pool_stats.used;
-  result.rocksdb_capacity = rocksdb_memory_capacity_;
-  if (rocksdb_block_cache_) {
-    result.rocksdb_cache_used = rocksdb_block_cache_->GetUsage();
-  }
-  if (rocksdb_write_buffer_manager_) {
-    result.rocksdb_memtable_used =
-        rocksdb_write_buffer_manager_->memory_usage();
-    result.rocksdb_mutable_memtable_used =
-        rocksdb_write_buffer_manager_->mutable_memtable_memory_usage();
-  }
-  return result;
 }
 
 }  // namespace zvec

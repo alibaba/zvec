@@ -20,10 +20,6 @@
 
 namespace zvec::core_interface {
 
-std::string IVFIndex::storage_mode() const {
-  return storage_ ? storage_->name() : std::string();
-}
-
 int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("IVF Index not support sparse vector");
