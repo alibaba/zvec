@@ -1,2 +1,0 @@
-/data/formal_mmap_160k/0/embedding.index.3.proxima 176157600
-/data/formal_buffer_160k/0/embedding.index.3.proxima 176157600

@@ -189,10 +189,8 @@ VM 内部磁盘，Linux 使用 `O_DIRECT`/libaio。结果适合证明相对收�
 
 - [benchmark.py](./benchmark.py)：主性能测试。
 - [run_workload_matrix.py](./run_workload_matrix.py)：四工作负载串行矩阵与 CSV 汇总。
-- [cohere_1m_linux_summary.csv](./results/cohere_1m_linux_summary.csv)：Cohere 1M 中位结果与相对收益。
-- [cohere_1m_linux_raw.log](./results/cohere_1m_linux_raw.log)：逐次原始输出。
 - [`tools/core/diskann_storage_bench.cc`](../../tools/core/diskann_storage_bench.cc)：同一原始索引的 direct/Buffer 对照工具。
 - [soak.py](./soak.py)：RSS 稳定性测试。
 - [Dockerfile](./Dockerfile)：Linux 测试环境。
-- `results/fixed_query_*.log`：最终查询复测日志。
-- `results/fixed_soak_*.log`：最终 RSS 稳定性日志。
+
+原始日志和 CSV 由测试脚本写入本地 `results/`，该目录不会提交到 Git。

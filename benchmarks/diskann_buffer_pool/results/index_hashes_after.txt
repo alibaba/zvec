@@ -1,2 +1,0 @@
-1d1638ab8c65f8cac44e9438b418fd0ee569d14092cb88d3523e2844d2dda50a  /data/formal_mmap_160k/0/embedding.index.3.proxima
-1d1638ab8c65f8cac44e9438b418fd0ee569d14092cb88d3523e2844d2dda50a  /data/formal_buffer_160k/0/embedding.index.3.proxima

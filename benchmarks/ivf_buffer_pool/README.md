@@ -91,7 +91,7 @@ scratch allocation. It computes directly from pinned page spans and copies
 only an individual vector that straddles a page boundary. Cold and partially
 resident batches retain the previous contiguous fallback.
 
-The follow-up full-cache curve is in
+The follow-up full-cache curve was generated locally as
 `cohere_1m_ivf_fp32_scatter_full_cache.csv`. Across nprobe 4–64, Buffer QPS is
 within 1.8%–12.8% of mmap and improves by 54.6%–71.3% over the previous Buffer
 implementation. All cache miss, eviction, and bypass counters remained zero.
@@ -100,8 +100,8 @@ implementation. All cache miss, eviction, and bypass counters remained zero.
 
 The corrected comparison uses four workloads, four query threads, `nprobe=4`,
 a ten-second warmup, and a fifteen-second measurement. Buffer uses direct I/O
-and one benchmark process at a time. Raw results are in
-`cohere_1m_ivf_fp32_four_workloads.csv`.
+and one benchmark process at a time. The raw local output is
+`cohere_1m_ivf_fp32_four_workloads.csv` and is intentionally ignored by Git.
 
 - `uniform unique`: all 1,000 queries cyclically, the no-hotspot lower bound.
 - `centroid80`: deterministically selects 20% of the 1,024 primary-centroid
@@ -142,12 +142,12 @@ overstated locality. The sampler is now fixed and the corrected curve is
 reported above, but the old rows below must not be used as product evidence.
 Uniform, full-cache, and correctness rows are unaffected by that sampling bug.
 
-The raw capacity curves are in
-`cohere_1m_ivf_fp32_memory_constrained.csv`. These runs use one benchmark
-process only; they do not apply whole-system memory pressure. A Buffer pool
-smaller than the 2.88-GiB index working set is the memory constraint. RSS is
-sampled every 50 ms during the measured window, and cache counters are deltas
-for that same window.
+The raw capacity curves were generated locally as
+`cohere_1m_ivf_fp32_memory_constrained.csv` and are intentionally ignored by
+Git. These runs use one benchmark process only; they do not apply whole-system
+memory pressure. A Buffer pool smaller than the 2.88-GiB index working set is
+the memory constraint. RSS is sampled every 50 ms during the measured window,
+and cache counters are deltas for that same window.
 
 A separate 20-query correctness check at `nprobe=16` produced the identical
 top-10 key-and-score checksum (`7259331970886160525`) for a 256-MiB Buffer pool
