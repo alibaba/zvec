@@ -89,6 +89,8 @@ class TestHnswIndexParam:
         assert param.m == 50
         assert param.ef_construction == 500
         assert param.quantize_type == QuantizeType.UNDEFINED
+        assert param.use_flat_contiguous_memory is False
+        assert param.flat_data_type == DataType.VECTOR_FP32
         assert param.type == IndexType.HNSW
 
     def test_custom(self):
@@ -97,14 +99,26 @@ class TestHnswIndexParam:
             m=10,
             ef_construction=1000,
             quantize_type=QuantizeType.FP16,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         assert param.metric_type == MetricType.L2
         assert param.m == 10
         assert param.ef_construction == 1000
         assert param.quantize_type == QuantizeType.FP16
+        assert param.use_flat_contiguous_memory is True
+        assert param.flat_data_type == DataType.VECTOR_FP16
 
     @pytest.mark.parametrize(
-        "attr", ["metric_type", "m", "ef_construction", "quantize_type"]
+        "attr",
+        [
+            "metric_type",
+            "m",
+            "ef_construction",
+            "quantize_type",
+            "use_flat_contiguous_memory",
+            "flat_data_type",
+        ],
     )
     def test_readonly_attributes(self, attr):
         param = HnswIndexParam()
@@ -127,15 +141,21 @@ class TestFlatIndexParam:
         assert param.type == IndexType.FLAT
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.metric_type == MetricType.IP
+        assert param.use_contiguous_memory is False
 
     def test_custom(self):
         param = FlatIndexParam(
-            metric_type=MetricType.L2, quantize_type=QuantizeType.INT8
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.INT8,
+            use_contiguous_memory=True,
         )
         assert param.metric_type == MetricType.L2
         assert param.quantize_type == QuantizeType.INT8
+        assert param.use_contiguous_memory is True
 
-    @pytest.mark.parametrize("attr", ["metric_type", "quantize_type"])
+    @pytest.mark.parametrize(
+        "attr", ["metric_type", "quantize_type", "use_contiguous_memory"]
+    )
     def test_readonly_attributes(self, attr):
         param = FlatIndexParam()
         import sys

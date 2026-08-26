@@ -201,8 +201,10 @@ class ZVEC_CORE_API Index {
  protected:
   int ParseMetricName(const BaseIndexParam &param);
   int CreateAndInitMetric(const BaseIndexParam &param);
-  int CreateAndInitConverterReformer(const QuantizerParam &param,
-                                     const BaseIndexParam &index_param);
+  virtual int CreateAndInitConverterReformer(const QuantizerParam &param,
+                                             const BaseIndexParam &index_param);
+  int InitConverterReformer(const std::string &converter_name,
+                            const ailego::Params &converter_params = {});
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) = 0;
 
  protected:
@@ -243,6 +245,9 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  int CreateAndInitConverterReformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
