@@ -186,6 +186,7 @@ class MMapFileReadStorage : public IndexStorage {
 
   //! Load a index file into container
   int open(const std::string &path, bool) override {
+    file_path_ = path;
     file_ptr_ = std::make_shared<ailego::MMapFile>();
     if (!file_ptr_) {
       LOG_ERROR("Failed to create mmap file object, %s",
@@ -280,6 +281,10 @@ class MMapFileReadStorage : public IndexStorage {
     return magic_;
   }
 
+  std::string file_path(void) const override {
+    return file_path_;
+  }
+
  private:
   bool memory_locked_{false};
   bool memory_warmup_{false};
@@ -289,6 +294,7 @@ class MMapFileReadStorage : public IndexStorage {
   int64_t footer_offset_{0};
   size_t index_offset_{0};
   uint32_t magic_{0};
+  std::string file_path_;
   std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
   std::shared_ptr<ailego::MMapFile> file_ptr_{nullptr};
 };

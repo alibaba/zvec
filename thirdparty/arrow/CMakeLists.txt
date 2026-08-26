@@ -18,6 +18,10 @@ endif()
 if(MSVC)
         set(ARROW_WIN_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.windows.patch)
         apply_patch_once("arrow_windows_crt_fix" "${ARROW_SRC_DIR}" "${ARROW_WIN_PATCH}")
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+                set(ARROW_WIN_ARM64_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.windows-arm64.patch)
+                apply_patch_once("arrow_windows_arm64_fix" "${ARROW_SRC_DIR}" "${ARROW_WIN_ARM64_PATCH}")
+        endif()
 endif()
 # Trim unused compute kernels to reduce binary size (~14MB savings)
 set(ARROW_SLIM_COMPUTE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.slim_compute.patch)
@@ -145,6 +149,14 @@ elseif (MSVC)
         -DARROW_USE_STATIC_CRT=${ZVEC_USE_STATIC_CRT}
         "-DCMAKE_MSVC_RUNTIME_LIBRARY=${_ARROW_MSVC_RUNTIME}"
     )
+    # Arrow 21.0's xsimd-13 does not provide make_sized_batch_t for MSVC ARM64,
+    # so disable SIMD on that target. x86/x64 MSVC keeps the default SSE4.2 path.
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+        list(APPEND ARROW_EXTRA_CMAKE_ARGS
+            -DARROW_SIMD_LEVEL=NONE
+            -DARROW_RUNTIME_SIMD_LEVEL=NONE
+        )
+    endif()
         ExternalProject_Add(
                 ARROW.BUILD PREFIX arrow
                 SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0

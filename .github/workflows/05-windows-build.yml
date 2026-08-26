@@ -18,7 +18,16 @@ jobs:
       matrix:
         include:
           - platform: windows-2022
+            msvc_arch: x64
+            python_version: '3.10'
           - platform: windows-2025
+            msvc_arch: x64
+            python_version: '3.10'
+          # Windows ARM64: Python 3.10 has no official ARM64 installer;
+          # 3.11 is the first CPython release with a Windows-on-ARM build.
+          - platform: windows-11-arm
+            msvc_arch: arm64
+            python_version: '3.11'
 
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -47,14 +56,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python_version }}
           cache: 'pip'
           cache-dependency-path: 'pyproject.toml'
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: x64
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Set up environment variables
         run: |
