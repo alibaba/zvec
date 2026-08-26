@@ -95,6 +95,7 @@ int PqInt8Quantizer::setup_functions() {
 }
 
 int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
+  initialized_ = false;
   meta_ = meta;
 
   // Map core IndexMeta::DataType to turbo DataType.
@@ -145,6 +146,7 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   // num_chunk_ bytes (+ extra_meta_size_ for Cosine norm storage).
   meta_.set_meta(IndexMeta::DataType::DT_INT8, num_chunk_);
   meta_.set_extra_meta_size(extra_meta_size_);
+  initialized_ = true;
   return 0;
 }
 
@@ -955,11 +957,13 @@ int PqInt8Quantizer::deserialize(std::string &in) {
   return deserialize(in.data(), in.size());
 }
 
-//! Contract: init(meta) must run before deserialize().  The metric policy
-//! (batch_fn_, extra_meta_size_) is taken from meta_ and is intentionally NOT
-//! restored from hdr.metric: load paths (e.g. IVFResidualCodec) own the
-//! metric via the persisted IndexMeta and may even rewrite it before init().
+//! Contract: init(meta) must run before deserialize(), enforced via
+//! initialized_.  The metric policy (batch_fn_, extra_meta_size_) is taken from
+//! meta_ and is intentionally NOT restored from hdr.metric: load paths (e.g.
+//! IVFResidualCodec) own the metric via the persisted IndexMeta and may even
+//! rewrite it before init().
 int PqInt8Quantizer::deserialize(const void *data, size_t len) {
+  if (!initialized_) return kErrUnsupported;
   if (len < sizeof(QuantizerSerHeader) + sizeof(PqInt8SerPayload)) {
     return kErrUnsupported;
   }

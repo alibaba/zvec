@@ -245,6 +245,11 @@ class PqFastQuantizer : public Quantizer,
   //! Whether to apply zero-mean centering before training/encoding.
   bool use_zero_mean_{false};
 
+  //! Set by a successful init().  deserialize() requires it: the metric policy
+  //! comes from meta_, and a default-constructed IndexMeta silently reports
+  //! "SquaredEuclidean", so its value cannot tell initialized from fresh.
+  bool initialized_{false};
+
   //! Extra bytes appended to each code (Cosine: original vector norm for
   //! dequantize).
   uint32_t extra_meta_size_{0};

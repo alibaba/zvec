@@ -256,8 +256,8 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
   ASSERT_EQ(0, quantizer->serialize(&blob));
   EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  // Deserialize into a second quantizer (deserialize() requires init() first).
+  auto q2 = make_pq_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   ASSERT_EQ(0, q2->deserialize(blob));
 
@@ -315,7 +315,7 @@ TEST(PqInt8Quantizer, DeserializeRejectsForeignDataType) {
   hdr.data_type = static_cast<uint16_t>(DataType::kInt4);
   std::memcpy(blob.data(), &hdr, sizeof(hdr));
 
-  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  auto q2 = make_pq_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   EXPECT_EQ(zvec::turbo::kErrUnsupported, q2->deserialize(blob));
 }
@@ -1127,8 +1127,8 @@ TEST(PqInt8Quantizer, ZeroMeanSerializeDeserialize) {
   ASSERT_EQ(0, quantizer->serialize(&blob));
   EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  // Deserialize into a second quantizer (deserialize() requires init() first).
+  auto q2 = make_pq_zero_mean_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   ASSERT_EQ(0, q2->deserialize(blob));
 
@@ -1422,8 +1422,8 @@ TEST(PqInt8Fp16, SerializeDeserialize) {
   ASSERT_EQ(0, quantizer->serialize(&blob));
   EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  // Deserialize into a second quantizer (deserialize() requires init() first).
+  auto q2 = make_pq_fp16_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   ASSERT_EQ(0, q2->deserialize(blob));
 

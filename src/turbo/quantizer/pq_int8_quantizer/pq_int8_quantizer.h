@@ -198,6 +198,11 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! from all vectors (train, encode, query) and added back on dequantize.
   bool use_zero_mean_{false};
 
+  //! Set by a successful init().  deserialize() requires it: the metric policy
+  //! comes from meta_, and a default-constructed IndexMeta silently reports
+  //! "SquaredEuclidean", so its value cannot tell initialized from fresh.
+  bool initialized_{false};
+
   IndexMeta meta_{};
   uint32_t original_dim_{0};
   uint32_t num_chunk_{0};

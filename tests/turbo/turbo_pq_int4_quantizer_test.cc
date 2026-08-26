@@ -311,8 +311,8 @@ TEST(PqInt4Quantizer, SerializeDeserialize) {
   ASSERT_EQ(0, quantizer->serialize(&blob));
   EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+  // Deserialize into a second quantizer (deserialize() requires init() first).
+  auto q2 = make_pq_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   ASSERT_EQ(0, q2->deserialize(blob));
 
@@ -1014,8 +1014,8 @@ TEST(PqInt4Quantizer, ZeroMeanSerializeDeserialize) {
   ASSERT_EQ(0, quantizer->serialize(&blob));
   EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+  // Deserialize into a second quantizer (deserialize() requires init() first).
+  auto q2 = make_pq_zero_mean_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   ASSERT_EQ(0, q2->deserialize(blob));
 
@@ -1259,8 +1259,8 @@ TEST(PqInt4Fp16, SerializeDeserialize) {
   ASSERT_EQ(0, quantizer->serialize(&blob));
   EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+  // Deserialize into a second quantizer (deserialize() requires init() first).
+  auto q2 = make_pq_fp16_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   ASSERT_EQ(0, q2->deserialize(blob));
 

@@ -93,6 +93,7 @@ int PqInt4Quantizer::setup_functions() {
 }
 
 int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
+  initialized_ = false;
   meta_ = meta;
 
   // Map core IndexMeta::DataType to turbo DataType.
@@ -140,6 +141,7 @@ int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   meta_.set_meta(IndexMeta::DataType::DT_INT4, num_chunk_);
   meta_.set_extra_meta_size(extra_meta_size_);
+  initialized_ = true;
   return 0;
 }
 
@@ -955,6 +957,7 @@ int PqInt4Quantizer::deserialize(std::string &in) {
 }
 
 int PqInt4Quantizer::deserialize(const void *data, size_t len) {
+  if (!initialized_) return kErrUnsupported;
   if (len < sizeof(QuantizerSerHeader) + sizeof(PqInt4SerPayload)) {
     return kErrUnsupported;
   }
