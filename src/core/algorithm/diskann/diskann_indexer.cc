@@ -48,10 +48,11 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 
   auto pool = storage->vec_buffer_pool();
   if (pool) {
-    if (ailego::kVectorPageSize != DiskAnnUtil::kSectorSize) {
+    if (ailego::kVectorPageSize < DiskAnnUtil::kSectorSize ||
+        ailego::kVectorPageSize % DiskAnnUtil::kSectorSize != 0) {
       LOG_ERROR(
-          "DiskAnn BufferPool page size mismatch: page_size=%zu "
-          "sector_size=%zu",
+          "DiskAnn BufferPool page size is incompatible with the sector "
+          "size: page_size=%zu sector_size=%zu",
           ailego::kVectorPageSize,
           static_cast<size_t>(DiskAnnUtil::kSectorSize));
       return IndexError_Unsupported;

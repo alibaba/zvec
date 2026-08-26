@@ -560,13 +560,15 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   try {
     struct UniquePage {
       ailego::block_id_t page_id;
-      char *first_destination;
       char *cached_page{nullptr};
       bool bypass_candidate{false};
     };
     struct PageOccurrence {
       size_t unique_index;
       char *destination;
+      size_t offset_in_page;
+      size_t length;
+      size_t canonical_index;
     };
 
     size_t total_pages = 0;
@@ -578,12 +580,16 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       }
       const size_t offset = static_cast<size_t>(req.offset);
       const size_t length = static_cast<size_t>(req.len);
-      if (offset % ailego::kVectorPageSize != 0 ||
-          length % ailego::kVectorPageSize != 0 ||
+      if (ailego::kVectorPageSize < DiskAnnUtil::kSectorSize ||
+          ailego::kVectorPageSize % DiskAnnUtil::kSectorSize != 0 ||
+          offset % DiskAnnUtil::kSectorSize != 0 ||
+          length % DiskAnnUtil::kSectorSize != 0 ||
           offset > pool_->file_size() || length > pool_->file_size() - offset) {
         return IndexError_InvalidArgument;
       }
-      const size_t pages = length / ailego::kVectorPageSize;
+      const size_t first_page = offset / ailego::kVectorPageSize;
+      const size_t last_page = (offset + length - 1) / ailego::kVectorPageSize;
+      const size_t pages = last_page - first_page + 1;
       if (pages > std::numeric_limits<size_t>::max() - total_pages) {
         return IndexError_InvalidLength;
       }
@@ -595,24 +601,39 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     unique_pages.reserve(total_pages);
     occurrences.reserve(total_pages);
     for (const AlignedRead &req : read_reqs) {
-      const size_t first_page =
-          static_cast<size_t>(req.offset) / ailego::kVectorPageSize;
-      const size_t pages =
-          static_cast<size_t>(req.len) / ailego::kVectorPageSize;
+      size_t source_offset = static_cast<size_t>(req.offset);
+      size_t remaining = static_cast<size_t>(req.len);
       char *destination = static_cast<char *>(req.buf);
-      for (size_t i = 0; i < pages; ++i) {
-        const auto page_id = static_cast<ailego::block_id_t>(first_page + i);
+      while (remaining != 0) {
+        const auto page_id = static_cast<ailego::block_id_t>(
+            source_offset / ailego::kVectorPageSize);
+        const size_t offset_in_page = source_offset % ailego::kVectorPageSize;
+        const size_t copy_length =
+            std::min(remaining, ailego::kVectorPageSize - offset_in_page);
         size_t unique_index = 0;
         while (unique_index < unique_pages.size() &&
                unique_pages[unique_index].page_id != page_id) {
           ++unique_index;
         }
-        char *page_destination = destination + i * ailego::kVectorPageSize;
         if (unique_index == unique_pages.size()) {
-          unique_pages.push_back(
-              UniquePage{page_id, page_destination, nullptr, false});
+          unique_pages.push_back(UniquePage{page_id, nullptr, false});
         }
-        occurrences.push_back(PageOccurrence{unique_index, page_destination});
+        size_t canonical_index = occurrences.size();
+        for (size_t i = 0; i < occurrences.size(); ++i) {
+          const PageOccurrence &prior = occurrences[i];
+          if (prior.unique_index == unique_index &&
+              prior.offset_in_page == offset_in_page &&
+              prior.length == copy_length) {
+            canonical_index = prior.canonical_index;
+            break;
+          }
+        }
+        occurrences.push_back(PageOccurrence{unique_index, destination,
+                                             offset_in_page, copy_length,
+                                             canonical_index});
+        source_offset += copy_length;
+        destination += copy_length;
+        remaining -= copy_length;
       }
     }
 
@@ -705,37 +726,39 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     }
     pool_->record_bypass_recheck(bypass_rechecks, bypass_cache_joins);
 
-    // Preserve large contiguous DiskANN reads on the direct path. Duplicate
-    // pages use their first destination as the canonical read target and are
-    // fanned out after I/O completes.
+    // Preserve contiguous DiskANN reads on the direct path. Duplicate slices
+    // use their first destination as the canonical read target and are fanned
+    // out after I/O completes. A native buffer-pool page may contain multiple
+    // 4 KiB DiskANN sectors (for example, 16 KiB pages on Apple silicon).
     uint64_t run_offset = 0;
     uint64_t run_length = 0;
     char *run_destination = nullptr;
-    size_t bypass_page_count = 0;
+    size_t bypass_bytes = 0;
     auto flush_bypass_run = [&]() {
       if (run_length != 0) {
         bypass_requests.emplace_back(run_offset, run_length, run_destination);
         run_length = 0;
       }
     };
-    for (const PageOccurrence &occurrence : occurrences) {
+    for (size_t i = 0; i < occurrences.size(); ++i) {
+      const PageOccurrence &occurrence = occurrences[i];
       const UniquePage &page = unique_pages[occurrence.unique_index];
-      if (!page.bypass_candidate ||
-          occurrence.destination != page.first_destination) {
+      if (!page.bypass_candidate || occurrence.canonical_index != i) {
         continue;
       }
-      const uint64_t page_offset =
-          static_cast<uint64_t>(page.page_id) * ailego::kVectorPageSize;
-      if (run_length != 0 && run_offset + run_length == page_offset &&
+      const uint64_t slice_offset =
+          static_cast<uint64_t>(page.page_id) * ailego::kVectorPageSize +
+          occurrence.offset_in_page;
+      if (run_length != 0 && run_offset + run_length == slice_offset &&
           run_destination + run_length == occurrence.destination) {
-        run_length += ailego::kVectorPageSize;
+        run_length += occurrence.length;
       } else {
         flush_bypass_run();
-        run_offset = page_offset;
-        run_length = ailego::kVectorPageSize;
+        run_offset = slice_offset;
+        run_length = occurrence.length;
         run_destination = occurrence.destination;
       }
-      ++bypass_page_count;
+      bypass_bytes += occurrence.length;
     }
     flush_bypass_run();
 
@@ -754,18 +777,20 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         release_cached_pages();
         return read_ret;
       }
-      pool_->record_bypass_read(bypass_page_count * ailego::kVectorPageSize,
-                                bypass_requests.size());
+      pool_->record_bypass_read(bypass_bytes, bypass_requests.size());
     }
 
-    for (const PageOccurrence &occurrence : occurrences) {
+    for (size_t i = 0; i < occurrences.size(); ++i) {
+      const PageOccurrence &occurrence = occurrences[i];
       const UniquePage &page = unique_pages[occurrence.unique_index];
       if (page.cached_page != nullptr) {
-        std::memcpy(occurrence.destination, page.cached_page,
-                    ailego::kVectorPageSize);
-      } else if (occurrence.destination != page.first_destination) {
-        std::memcpy(occurrence.destination, page.first_destination,
-                    ailego::kVectorPageSize);
+        std::memcpy(occurrence.destination,
+                    page.cached_page + occurrence.offset_in_page,
+                    occurrence.length);
+      } else if (occurrence.canonical_index != i) {
+        std::memcpy(occurrence.destination,
+                    occurrences[occurrence.canonical_index].destination,
+                    occurrence.length);
       }
     }
     release_cached_pages();
@@ -775,8 +800,9 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   }
 }
 
-int BufferPoolAlignedFileReader::submit(
-    PendingBatch &batch, std::vector<AlignedRead> &read_reqs, IOContext &ctx) {
+int BufferPoolAlignedFileReader::submit(PendingBatch &batch,
+                                        std::vector<AlignedRead> &read_reqs,
+                                        IOContext &ctx) {
   batch.n_submitted = 0;
   batch.n_reaped = 0;
   batch.used_pread = false;

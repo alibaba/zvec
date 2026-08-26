@@ -21,6 +21,7 @@
 #include <memory>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 
 using namespace zvec::core;
 
@@ -165,6 +166,62 @@ TEST(DiskAnnFileReaderTest, ReadBeforeOpenReturnsError) {
   LinuxAlignedFileReader reader;
   IOContext ctx{};
   EXPECT_NE(reader.read(requests, ctx, false), 0);
+}
+
+TEST(DiskAnnFileReaderTest, BufferPoolReadsSectorSlicesFromNativePages) {
+  namespace ailego = zvec::ailego;
+  const size_t native_page_size = ailego::kVectorPageSize;
+  const size_t sector_size = DiskAnnUtil::kSectorSize;
+  ASSERT_GE(native_page_size, sector_size);
+  ASSERT_EQ(native_page_size % sector_size, 0U);
+
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(2 * native_page_size);
+  for (size_t sector = 0; sector < source.size() / sector_size; ++sector) {
+    std::memset(source.data() + sector * sector_size,
+                static_cast<int>(sector + 1), sector_size);
+  }
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  ASSERT_EQ(
+      memory_pool.init(native_page_size +
+                       ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
+      0);
+  auto pool =
+      std::make_shared<ailego::VecBufferPool>(file.path(), /*writable=*/false);
+  ASSERT_EQ(pool->init(), 0);
+  ailego::block_id_t seed_page = 0;
+  ASSERT_NE(pool->acquire_buffer(seed_page, 10), nullptr);
+
+  AlignedBuffer output = make_aligned_buffer(4 * sector_size);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{
+      {sector_size, sector_size, output.get()},
+      {native_page_size - sector_size, 2 * sector_size,
+       static_cast<uint8_t *>(output.get()) + sector_size},
+      {sector_size, sector_size,
+       static_cast<uint8_t *>(output.get()) + 3 * sector_size},
+  };
+
+  BufferPoolAlignedFileReader reader(pool);
+  reader.open(file.path());
+  IOContext unused{};
+  ASSERT_EQ(reader.read(requests, unused), 0);
+  EXPECT_EQ(std::memcmp(output.get(), source.data() + sector_size, sector_size),
+            0);
+  EXPECT_EQ(std::memcmp(static_cast<uint8_t *>(output.get()) + sector_size,
+                        source.data() + native_page_size - sector_size,
+                        2 * sector_size),
+            0);
+  EXPECT_EQ(std::memcmp(static_cast<uint8_t *>(output.get()) + 3 * sector_size,
+                        source.data() + sector_size, sector_size),
+            0);
+  EXPECT_GE(pool->stats().bypass_bytes, sector_size);
+  pool->release_pages(&seed_page, 1);
+  reader.close();
 }
 
 #if defined(__APPLE__) || defined(__MACH__)
