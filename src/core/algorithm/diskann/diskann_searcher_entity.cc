@@ -47,18 +47,13 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
     return DiskAnnEntity::Pointer();
   }
 
-  try {
-    entity->meta_header_ = meta_header_;
-    entity->pq_meta_ = pq_meta_;
-    entity->meta_ = meta_;
-    entity->pq_table_ = pq_table_;
-    entity->key_buffer_ = key_buffer_;
-    entity->key_mapping_buffer_ = key_mapping_buffer_;
-    entity->entrypoints_ = entrypoints_;
-  } catch (const std::bad_alloc &) {
-    LOG_ERROR("Failed to clone in-memory DiskAnn entity");
-    return DiskAnnEntity::Pointer();
-  }
+  entity->meta_header_ = meta_header_;
+  entity->pq_meta_ = pq_meta_;
+  entity->meta_ = meta_;
+  entity->pq_table_ = pq_table_;
+  entity->key_buffer_ = key_buffer_;
+  entity->key_mapping_buffer_ = key_mapping_buffer_;
+  entity->entrypoints_ = entrypoints_;
 
   return DiskAnnEntity::Pointer(entity.release());
 }
