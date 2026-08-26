@@ -68,7 +68,8 @@ void pq_adc_int4_distance_neon(const void *pq_code_v, const void *lut_v,
     float d1 = lut[(m + 1) * kNumCentroids + nibble(pq_code, m + 1)];
     float d2 = lut[(m + 2) * kNumCentroids + nibble(pq_code, m + 2)];
     float d3 = lut[(m + 3) * kNumCentroids + nibble(pq_code, m + 3)];
-    float32x4_t d = {d0, d1, d2, d3};
+    const float lane[4] = {d0, d1, d2, d3};
+    float32x4_t d = vld1q_f32(lane);
     acc = vaddq_f32(acc, d);
   }
 
@@ -122,7 +123,8 @@ void pq_sdc_int4_distance_neon(const void *a_v, const void *b_v,
         dist_table[(m + 3) * kTablePerSub +
                    static_cast<size_t>(nibble(a, m + 3)) * kNumCentroids +
                    static_cast<size_t>(nibble(b, m + 3))];
-    float32x4_t d = {d0, d1, d2, d3};
+    const float lane[4] = {d0, d1, d2, d3};
+    float32x4_t d = vld1q_f32(lane);
     acc = vaddq_f32(acc, d);
   }
 
@@ -173,14 +175,18 @@ void pq_adc_int4_batch_distance_neon(const void **candidates_v,
       const float *tab2 = lut + (m + 2) * kNumCentroids;
       const float *tab3 = lut + (m + 3) * kNumCentroids;
 
-      float32x4_t d0 = {tab0[nibble(c0, m + 0)], tab1[nibble(c0, m + 1)],
-                        tab2[nibble(c0, m + 2)], tab3[nibble(c0, m + 3)]};
-      float32x4_t d1 = {tab0[nibble(c1, m + 0)], tab1[nibble(c1, m + 1)],
-                        tab2[nibble(c1, m + 2)], tab3[nibble(c1, m + 3)]};
-      float32x4_t d2 = {tab0[nibble(c2, m + 0)], tab1[nibble(c2, m + 1)],
-                        tab2[nibble(c2, m + 2)], tab3[nibble(c2, m + 3)]};
-      float32x4_t d3 = {tab0[nibble(c3, m + 0)], tab1[nibble(c3, m + 1)],
-                        tab2[nibble(c3, m + 2)], tab3[nibble(c3, m + 3)]};
+      const float lane0[4] = {tab0[nibble(c0, m + 0)], tab1[nibble(c0, m + 1)],
+                              tab2[nibble(c0, m + 2)], tab3[nibble(c0, m + 3)]};
+      const float lane1[4] = {tab0[nibble(c1, m + 0)], tab1[nibble(c1, m + 1)],
+                              tab2[nibble(c1, m + 2)], tab3[nibble(c1, m + 3)]};
+      const float lane2[4] = {tab0[nibble(c2, m + 0)], tab1[nibble(c2, m + 1)],
+                              tab2[nibble(c2, m + 2)], tab3[nibble(c2, m + 3)]};
+      const float lane3[4] = {tab0[nibble(c3, m + 0)], tab1[nibble(c3, m + 1)],
+                              tab2[nibble(c3, m + 2)], tab3[nibble(c3, m + 3)]};
+      float32x4_t d0 = vld1q_f32(lane0);
+      float32x4_t d1 = vld1q_f32(lane1);
+      float32x4_t d2 = vld1q_f32(lane2);
+      float32x4_t d3 = vld1q_f32(lane3);
 
       acc0 = vaddq_f32(acc0, d0);
       acc1 = vaddq_f32(acc1, d1);
