@@ -66,9 +66,3 @@ config/
 examples/python/
 examples/c_api/
 logs/
-
-# Local Buffer Storage performance validation assets
-/benchmarks/diskann_buffer_pool/
-/benchmarks/ivf_buffer_pool/
-/tools/core/diskann_storage_bench.cc
-/tools/core/ivf_storage_bench.cc
