@@ -18,12 +18,27 @@
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 #include "rotator/rotator.h"
 #include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+void Fp32ToFp16Fallback(const float *input, size_t dimension, void *output) {
+  ailego::FloatHelper::ToFP16(input, dimension,
+                              static_cast<uint16_t *>(output));
+}
+
+turbo::ConvertFunc ResolveFp16ConvertFunc() {
+  auto convert = turbo::get_convert_func(turbo::DataType::kFp16);
+  return convert ? convert : Fp32ToFp16Fallback;
+}
+
+}  // namespace
 
 /*! Cosine Converter Holder
  */
@@ -48,12 +63,14 @@ class CosineConverterHolder : public IndexHolder {
       if (original_type_ == IndexMeta::DataType::DT_FP16) {
         normalize_buffer_.resize(dimension_ * sizeof(ailego::Float16));
       } else {  // original_type_ == IndexMeta::DataType::DT_FP32
-        normalize_buffer_.resize(dimension_ * sizeof(float));
-
         if (type_ == IndexMeta::DataType::DT_FP16 ||
             type_ == IndexMeta::DataType::DT_INT4 ||
             type_ == IndexMeta::DataType::DT_INT8) {
           buffer_.resize(element_size, 0);
+        }
+
+        if (!owner_->raw_fp16_storage_) {
+          normalize_buffer_.resize(dimension_ * sizeof(float));
         }
 
         if (owner_->rotator_) {
@@ -115,6 +132,16 @@ class CosineConverterHolder : public IndexHolder {
         ::memcpy(reinterpret_cast<uint16_t *>(&normalize_buffer_[0]) +
                      original_dimension_,
                  &norm, NORM_SIZE);
+      } else if (owner_->raw_fp16_storage_) {
+        auto *buf = reinterpret_cast<ailego::Float16 *>(buffer_.data());
+        owner_->fp16_convert_func_(
+            static_cast<const float *>(front_iter_->data()),
+            original_dimension_, buf);
+
+        float norm = 0.0F;
+        ailego::Normalizer<ailego::Float16>::L2(buf, original_dimension_,
+                                                &norm);
+        ::memcpy(buffer_.data() + element_size - NORM_SIZE, &norm, NORM_SIZE);
       } else {  // original_type_ == IndexMeta::DataType::DT_FP32
         ::memcpy(reinterpret_cast<char *>(&normalize_buffer_[0]),
                  reinterpret_cast<const char *>(front_iter_->data()),
@@ -174,12 +201,16 @@ class CosineConverterHolder : public IndexHolder {
   CosineConverterHolder(IndexHolder::Pointer front,
                         IndexMeta::DataType original_type,
                         IndexMeta::DataType type,
-                        std::shared_ptr<Rotator> rotator = nullptr)
+                        std::shared_ptr<Rotator> rotator = nullptr,
+                        bool raw_fp16_storage = false,
+                        turbo::ConvertFunc fp16_convert_func = nullptr)
       : front_(std::move(front)),
         original_type_(original_type),
         type_(type),
         dimension_(front_->dimension()),
-        rotator_(std::move(rotator)) {}
+        rotator_(std::move(rotator)),
+        raw_fp16_storage_(raw_fp16_storage),
+        fp16_convert_func_(fp16_convert_func) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count(void) const override {
@@ -239,6 +270,8 @@ class CosineConverterHolder : public IndexHolder {
   IndexMeta::DataType type_{};
   uint32_t dimension_{0};
   std::shared_ptr<Rotator> rotator_{};
+  bool raw_fp16_storage_{false};
+  turbo::ConvertFunc fp16_convert_func_{nullptr};
 };
 
 /*! Converter of Cosine
@@ -250,8 +283,10 @@ class CosineConverter : public IndexConverter {
  public:
   //! Constructor
   CosineConverter(IndexMeta::DataType original_type,
-                  IndexMeta::DataType dst_type)
-      : original_type_(original_type), dst_type_(dst_type) {}
+                  IndexMeta::DataType dst_type, bool raw_fp16_storage = false)
+      : original_type_(original_type),
+        dst_type_(dst_type),
+        raw_fp16_storage_(raw_fp16_storage) {}
 
   //! Constructor
   CosineConverter(IndexMeta::DataType dst_type)
@@ -282,6 +317,15 @@ class CosineConverter : public IndexConverter {
     }
 
     params.get(COSINE_CONVERTER_ENABLE_ROTATE, &enable_rotate_);
+
+    if (raw_fp16_storage_ && (original_type_ != IndexMeta::DataType::DT_FP32 ||
+                              dst_type_ != IndexMeta::DataType::DT_FP16)) {
+      LOG_ERROR("Raw FP16 cosine storage requires FP32 input and FP16 output");
+      return IndexError_Unsupported;
+    }
+    if (raw_fp16_storage_) {
+      fp16_convert_func_ = ResolveFp16ConvertFunc();
+    }
 
     ailego::Params reformer_params;
 
@@ -327,7 +371,10 @@ class CosineConverter : public IndexConverter {
                         index_meta.metric_params());
       meta_.set_metric("QuantizedInteger", 0, metric_params);
     } else if (dst_type_ == IndexMeta::DataType::DT_FP16) {
-      if (original_type_ == IndexMeta::DataType::DT_FP16) {
+      if (raw_fp16_storage_) {
+        meta_.set_reformer("CosineRawFp16Reformer", 0, reformer_params);
+        meta_.set_converter("CosineRawFp16Converter", 0, params);
+      } else if (original_type_ == IndexMeta::DataType::DT_FP16) {
         meta_.set_reformer("CosineHalfFloatReformer", 0, reformer_params);
         meta_.set_converter("CosineHalfFloatConverter", 0, params);
       } else {
@@ -367,7 +414,8 @@ class CosineConverter : public IndexConverter {
     *stats_.mutable_transformed_count() += holder->count();
 
     holder_ = std::make_shared<CosineConverterHolder>(
-        holder, holder->data_type(), dst_type_, rotator_);
+        holder, holder->data_type(), dst_type_, rotator_, raw_fp16_storage_,
+        fp16_convert_func_);
     return 0;
   }
 
@@ -425,6 +473,8 @@ class CosineConverter : public IndexConverter {
   IndexMeta::DataType dst_type_{IndexMeta::DataType::DT_UNDEFINED};
   bool enable_rotate_{false};
   std::shared_ptr<Rotator> rotator_{};
+  bool raw_fp16_storage_{false};
+  turbo::ConvertFunc fp16_convert_func_{nullptr};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineNormalizeConverter,
@@ -436,6 +486,10 @@ INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineFp32Converter, CosineConverter,
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineFp16Converter, CosineConverter,
                                        IndexMeta::DataType::DT_FP16);
+
+INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineRawFp16Converter, CosineConverter,
+                                       IndexMeta::DataType::DT_FP32,
+                                       IndexMeta::DataType::DT_FP16, true);
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineInt8Converter, CosineConverter,
                                        IndexMeta::DataType::DT_INT8);

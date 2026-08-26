@@ -35,8 +35,12 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
         )
 
-        # AVX512 (avx512_vnni and avx512/fht both use AVX512 march)
-        file(GLOB_RECURSE AVX512_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc)
+        # AVX512
+        file(GLOB_RECURSE AVX512_SRCS
+            ${CMAKE_CURRENT_SOURCE_DIR}/conversion/avx512/*.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc
+        )
         set_source_files_properties(
             ${AVX512_SRCS}
             PROPERTIES

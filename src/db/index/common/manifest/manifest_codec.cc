@@ -50,6 +50,8 @@ constexpr uint32_t kBase = 1;
 constexpr uint32_t kM = 2;
 constexpr uint32_t kEfConstruction = 3;
 constexpr uint32_t kUseContiguousMemory = 4;
+constexpr uint32_t kUseFlatContiguousMemory = 5;
+constexpr uint32_t kFlatDataType = 6;
 }  // namespace f_hnsw
 namespace f_hnsw_rabitq {
 constexpr uint32_t kBase = 1;
@@ -67,7 +69,9 @@ constexpr uint32_t kSampleCount = 4;
 }  // namespace f_ivf_rabitq
 namespace f_flat {
 constexpr uint32_t kBase = 1;
-}
+constexpr uint32_t kUseContiguousMemory = 2;
+constexpr uint32_t kStorageDataType = 3;
+}  // namespace f_flat
 namespace f_ivf {
 constexpr uint32_t kBase = 1;
 constexpr uint32_t kNList = 2;
@@ -89,6 +93,8 @@ constexpr uint32_t kSaturateGraph = 5;
 constexpr uint32_t kUseContiguousMemory = 6;
 constexpr uint32_t kUseIdMap = 7;
 constexpr uint32_t kTwoPassBuild = 8;
+constexpr uint32_t kUseFlatContiguousMemory = 9;
+constexpr uint32_t kFlatDataType = 10;
 }  // namespace f_vamana
 namespace f_fts {
 constexpr uint32_t kTokenizerName = 1;
@@ -221,6 +227,13 @@ void EncodeHnsw(const HnswIndexParams *params, std::string *out) {
   w.PutVarint(f_hnsw::kEfConstruction,
               static_cast<uint64_t>(params->ef_construction()));
   w.PutBool(f_hnsw::kUseContiguousMemory, params->use_contiguous_memory());
+  w.PutBool(f_hnsw::kUseFlatContiguousMemory,
+            params->use_flat_contiguous_memory());
+  if (params->flat_data_type() != DataType::VECTOR_FP32) {
+    w.PutVarint(f_hnsw::kFlatDataType,
+                static_cast<uint64_t>(wire::ToNumber(
+                    DataTypeCodeBook::Get(params->flat_data_type()))));
+  }
 }
 
 HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
@@ -228,6 +241,8 @@ HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
   int32_t m = 0;
   int32_t ef_construction = 0;
   bool use_contiguous_memory = false;
+  bool use_flat_contiguous_memory = false;
+  DataType flat_data_type = DataType::VECTOR_FP32;
   Reader r(buf);
   while (r.Next()) {
     switch (r.field()) {
@@ -243,13 +258,21 @@ HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
       case f_hnsw::kUseContiguousMemory:
         use_contiguous_memory = r.bool_value();
         break;
+      case f_hnsw::kUseFlatContiguousMemory:
+        use_flat_contiguous_memory = r.bool_value();
+        break;
+      case f_hnsw::kFlatDataType:
+        flat_data_type = DataTypeCodeBook::Get(
+            wire::FromNumber<wire::DataType>(r.int32_value()));
+        break;
       default:
         break;
     }
   }
   return std::make_shared<HnswIndexParams>(
       base.metric_type, m, ef_construction, base.quantize_type,
-      use_contiguous_memory, QuantizerParam(base.enable_rotate));
+      use_contiguous_memory, QuantizerParam(base.enable_rotate),
+      use_flat_contiguous_memory, flat_data_type);
 }
 
 void EncodeHnswRabitq(const HnswRabitqIndexParams *params, std::string *out) {
@@ -364,18 +387,38 @@ void EncodeFlat(const FlatIndexParams *params, std::string *out) {
   EncodeBase(MakeBase(params), &base);
   Writer w(out);
   w.PutMessage(f_flat::kBase, base);
+  w.PutBool(f_flat::kUseContiguousMemory, params->use_contiguous_memory());
+  if (params->storage_data_type() != DataType::UNDEFINED) {
+    w.PutVarint(f_flat::kStorageDataType,
+                static_cast<uint64_t>(wire::ToNumber(
+                    DataTypeCodeBook::Get(params->storage_data_type()))));
+  }
 }
 
 FlatIndexParams::OPtr DecodeFlat(std::string_view buf) {
   BaseParams base;
+  bool use_contiguous_memory = false;
+  DataType storage_data_type = DataType::UNDEFINED;
   Reader r(buf);
   while (r.Next()) {
-    if (r.field() == f_flat::kBase) {
-      base = DecodeBase(r.bytes());
+    switch (r.field()) {
+      case f_flat::kBase:
+        base = DecodeBase(r.bytes());
+        break;
+      case f_flat::kUseContiguousMemory:
+        use_contiguous_memory = r.bool_value();
+        break;
+      case f_flat::kStorageDataType:
+        storage_data_type = DataTypeCodeBook::Get(
+            wire::FromNumber<wire::DataType>(r.int32_value()));
+        break;
+      default:
+        break;
     }
   }
-  return std::make_shared<FlatIndexParams>(base.metric_type, base.quantize_type,
-                                           QuantizerParam(base.enable_rotate));
+  return std::make_shared<FlatIndexParams>(
+      base.metric_type, base.quantize_type, QuantizerParam(base.enable_rotate),
+      use_contiguous_memory, storage_data_type);
 }
 
 void EncodeIvf(const IVFIndexParams *params, std::string *out) {
@@ -472,6 +515,13 @@ void EncodeVamana(const VamanaIndexParams *params, std::string *out) {
   w.PutBool(f_vamana::kUseContiguousMemory, params->use_contiguous_memory());
   w.PutBool(f_vamana::kUseIdMap, params->use_id_map());
   w.PutBool(f_vamana::kTwoPassBuild, params->two_pass_build());
+  w.PutBool(f_vamana::kUseFlatContiguousMemory,
+            params->use_flat_contiguous_memory());
+  if (params->flat_data_type() != DataType::VECTOR_FP32) {
+    w.PutVarint(f_vamana::kFlatDataType,
+                static_cast<uint64_t>(wire::ToNumber(
+                    DataTypeCodeBook::Get(params->flat_data_type()))));
+  }
 }
 
 VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
@@ -483,6 +533,8 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   bool use_contiguous_memory = false;
   bool use_id_map = false;
   bool two_pass_build = false;
+  bool use_flat_contiguous_memory = false;
+  DataType flat_data_type = DataType::VECTOR_FP32;
   Reader r(buf);
   while (r.Next()) {
     switch (r.field()) {
@@ -510,6 +562,13 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
       case f_vamana::kTwoPassBuild:
         two_pass_build = r.bool_value();
         break;
+      case f_vamana::kUseFlatContiguousMemory:
+        use_flat_contiguous_memory = r.bool_value();
+        break;
+      case f_vamana::kFlatDataType:
+        flat_data_type = DataTypeCodeBook::Get(
+            wire::FromNumber<wire::DataType>(r.int32_value()));
+        break;
       default:
         break;
     }
@@ -517,7 +576,8 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   return std::make_shared<VamanaIndexParams>(
       base.metric_type, max_degree, search_list_size, alpha, saturate_graph,
       use_contiguous_memory, use_id_map, base.quantize_type,
-      QuantizerParam(base.enable_rotate), two_pass_build);
+      QuantizerParam(base.enable_rotate), two_pass_build,
+      use_flat_contiguous_memory, flat_data_type);
 }
 
 void EncodeInvert(const InvertIndexParams *params, std::string *out) {

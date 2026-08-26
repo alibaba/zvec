@@ -1021,6 +1021,48 @@ TEST(ManifestCodecGolden, VamanaTwoPassBuild) {
   EXPECT_EQ(*decoded_enabled, enabled);
 }
 
+TEST(ManifestCodecGolden, RefineFlatStorageParams) {
+  HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::INT8, true,
+                       QuantizerParam(true), true, DataType::VECTOR_UINT8);
+  std::string encoded_hnsw;
+  ManifestCodec::EncodeIndexParams(&hnsw, &encoded_hnsw);
+  const auto decoded_hnsw = ManifestCodec::DecodeIndexParams(encoded_hnsw);
+  ASSERT_NE(decoded_hnsw, nullptr);
+  const auto *hnsw_params =
+      dynamic_cast<const HnswIndexParams *>(decoded_hnsw.get());
+  ASSERT_NE(hnsw_params, nullptr);
+  EXPECT_TRUE(hnsw_params->use_flat_contiguous_memory());
+  EXPECT_EQ(hnsw_params->flat_data_type(), DataType::VECTOR_UINT8);
+  EXPECT_EQ(*decoded_hnsw, hnsw);
+
+  FlatIndexParams flat(MetricType::L2, QuantizeType::UNDEFINED,
+                       QuantizerParam(), true, DataType::VECTOR_UINT8);
+  std::string encoded_flat;
+  ManifestCodec::EncodeIndexParams(&flat, &encoded_flat);
+  const auto decoded_flat = ManifestCodec::DecodeIndexParams(encoded_flat);
+  ASSERT_NE(decoded_flat, nullptr);
+  const auto *flat_params =
+      dynamic_cast<const FlatIndexParams *>(decoded_flat.get());
+  ASSERT_NE(flat_params, nullptr);
+  EXPECT_TRUE(flat_params->use_contiguous_memory());
+  EXPECT_EQ(flat_params->storage_data_type(), DataType::VECTOR_UINT8);
+  EXPECT_EQ(*decoded_flat, flat);
+
+  VamanaIndexParams vamana(MetricType::COSINE, 48, 96, 1.2f, true, true, true,
+                           QuantizeType::FP16, QuantizerParam(true), true, true,
+                           DataType::VECTOR_FP16);
+  std::string encoded_vamana;
+  ManifestCodec::EncodeIndexParams(&vamana, &encoded_vamana);
+  const auto decoded_vamana = ManifestCodec::DecodeIndexParams(encoded_vamana);
+  ASSERT_NE(decoded_vamana, nullptr);
+  const auto *vamana_params =
+      dynamic_cast<const VamanaIndexParams *>(decoded_vamana.get());
+  ASSERT_NE(vamana_params, nullptr);
+  EXPECT_TRUE(vamana_params->use_flat_contiguous_memory());
+  EXPECT_EQ(vamana_params->flat_data_type(), DataType::VECTOR_FP16);
+  EXPECT_EQ(*decoded_vamana, vamana);
+}
+
 TEST(ManifestCodecGolden, IndexParamsLastBranchWins) {
   // protobuf oneof semantics: when several branches appear on the wire the
   // last one wins.

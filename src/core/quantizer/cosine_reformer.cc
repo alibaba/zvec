@@ -15,13 +15,28 @@
 #include <ailego/algorithm/integer_quantizer.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
-#include <core/quantizer/quantizer_params.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 #include "rotator/rotator.h"
 #include "record_quantizer.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+void Fp32ToFp16Fallback(const float *input, size_t dimension, void *output) {
+  ailego::FloatHelper::ToFP16(input, dimension,
+                              static_cast<uint16_t *>(output));
+}
+
+turbo::ConvertFunc ResolveFp16ConvertFunc() {
+  auto convert = turbo::get_convert_func(turbo::DataType::kFp16);
+  return convert ? convert : Fp32ToFp16Fallback;
+}
+
+}  // namespace
 
 /*! Reformer of Cosine
  */
@@ -31,8 +46,10 @@ class CosineReformer : public IndexReformer {
 
   //! Constructor
   CosineReformer(IndexMeta::DataType original_type,
-                 IndexMeta::DataType dst_type)
-      : original_type_(original_type), dst_type_(dst_type) {}
+                 IndexMeta::DataType dst_type, bool raw_fp16_storage = false)
+      : original_type_(original_type),
+        dst_type_(dst_type),
+        raw_fp16_storage_(raw_fp16_storage) {}
 
   //! Constructor
   CosineReformer(IndexMeta::DataType dst_type)
@@ -45,6 +62,14 @@ class CosineReformer : public IndexReformer {
 
   //! Initialize Reformer
   int init(const ailego::Params & /*params*/) override {
+    if (raw_fp16_storage_ && (original_type_ != IndexMeta::DataType::DT_FP32 ||
+                              dst_type_ != IndexMeta::DataType::DT_FP16)) {
+      LOG_ERROR("Raw FP16 cosine storage requires FP32 input and FP16 output");
+      return IndexError_Unsupported;
+    }
+    if (raw_fp16_storage_) {
+      fp16_convert_func_ = ResolveFp16ConvertFunc();
+    }
     return 0;
   }
 
@@ -101,6 +126,15 @@ class CosineReformer : public IndexReformer {
       size_t origin_dimension = qmeta.dimension();
       const float *vec = reinterpret_cast<const float *>(query);
       float norm = 0.0f;
+
+      if (raw_fp16_storage_) {
+        auto *buf = reinterpret_cast<ailego::Float16 *>(out->data());
+        fp16_convert_func_(vec, origin_dimension, buf);
+        ailego::Normalizer<ailego::Float16>::L2(buf, origin_dimension, &norm);
+        ::memcpy(out->data() + ometa->element_size() - NORM_SIZE, &norm,
+                 NORM_SIZE);
+        return 0;
+      }
 
       // Fast path: no rotation — matches main branch behavior exactly
       std::string normalized_buffer(reinterpret_cast<const char *>(query),
@@ -234,7 +268,16 @@ class CosineReformer : public IndexReformer {
         return IndexError_Unsupported;
       }
 
-      if (original_type_ == IndexMeta::DataType::DT_FP32) {
+      if (raw_fp16_storage_) {
+        float *out_buf = reinterpret_cast<float *>(out->data());
+        const ailego::Float16 *in_buf =
+            reinterpret_cast<const ailego::Float16 *>(in);
+        for (size_t d = 0; d < dimension; ++d) {
+          ailego::Float16 restored;
+          restored = static_cast<float>(in_buf[d]) * norm;
+          out_buf[d] = static_cast<float>(restored);
+        }
+      } else if (original_type_ == IndexMeta::DataType::DT_FP32) {
         float *out_buf = reinterpret_cast<float *>(&(*out)[0]);
         RecordQuantizer::unquantize_record(in, dimension, dst_type_, out_buf);
 
@@ -296,6 +339,8 @@ class CosineReformer : public IndexReformer {
   IndexMeta::DataType original_type_{IndexMeta::DataType::DT_UNDEFINED};
   IndexMeta::DataType dst_type_{IndexMeta::DataType::DT_UNDEFINED};
   bool enable_rotate_{false};
+  bool raw_fp16_storage_{false};
+  turbo::ConvertFunc fp16_convert_func_{nullptr};
   std::shared_ptr<Rotator> rotator_{};
 };
 
@@ -317,6 +362,10 @@ INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineInt4Reformer, CosineReformer,
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineHalfFloatReformer, CosineReformer,
                                       IndexMeta::DataType::DT_FP16,
                                       IndexMeta::DataType::DT_FP16);
+
+INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineRawFp16Reformer, CosineReformer,
+                                      IndexMeta::DataType::DT_FP32,
+                                      IndexMeta::DataType::DT_FP16, true);
 
 }  // namespace core
 }  // namespace zvec
