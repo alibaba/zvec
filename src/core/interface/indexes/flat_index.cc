@@ -19,12 +19,49 @@
 
 namespace zvec::core_interface {
 
+int FlatIndex::CreateAndInitConverterReformer(
+    const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
+  const auto &flat_param = dynamic_cast<const FlatIndexParam &>(index_param);
+  const auto storage_type = flat_param.storage_data_type;
+  if (storage_type == DataType::DT_UNDEFINED ||
+      storage_type == flat_param.data_type) {
+    return Index::CreateAndInitConverterReformer(quantizer_param, index_param);
+  }
+
+  if (flat_param.is_sparse || flat_param.data_type != DataType::DT_FP32 ||
+      quantizer_param.type != QuantizerType::kNone) {
+    LOG_ERROR(
+        "Flat storage_data_type requires dense FP32 input without another "
+        "quantizer");
+    return core::IndexError_Unsupported;
+  }
+
+  if (storage_type == DataType::DT_FP16) {
+    if (flat_param.metric_type == MetricType::kCosine) {
+      return InitConverterReformer("CosineRawFp16Converter");
+    }
+    return InitConverterReformer("HalfFloatConverter");
+  }
+
+  if (storage_type == DataType::DT_UINT8 &&
+      flat_param.metric_type == MetricType::kL2sq) {
+    return InitConverterReformer("RawUint8Converter");
+  }
+
+  LOG_ERROR("Unsupported Flat storage data type %d for metric %d",
+            static_cast<int>(storage_type),
+            static_cast<int>(flat_param.metric_type));
+  return core::IndexError_Unsupported;
+}
+
 int FlatIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const FlatIndexParam &>(param);
 
   proxima_index_params_.set(core::PARAM_FLAT_COLUMN_MAJOR_ORDER,
                             param_.major_order == IndexMeta::MO_COLUMN);
   proxima_index_params_.set(core::PARAM_FLAT_USE_ID_MAP, param_.use_id_map);
+  proxima_index_params_.set(core::PARAM_FLAT_USE_CONTIGUOUS_MEMORY,
+                            param_.use_contiguous_memory);
   if (is_sparse_) {
     streamer_ = core::IndexFactory::CreateStreamer("FlatSparseStreamer");
   } else {
@@ -69,6 +106,5 @@ int FlatIndex::_prepare_for_search(
 
   return 0;
 }
-
 
 }  // namespace zvec::core_interface

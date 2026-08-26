@@ -72,6 +72,13 @@ void IndexMeta::serialize(std::string *out) const {
     item.set("params", reformer_params_);
     attachment.set("reformer", std::move(item));
   }
+  if (!quantizer_name_.empty()) {
+    ailego::Params item;
+    item.set("name", quantizer_name_);
+    item.set("revision", quantizer_revision_);
+    item.set("params", quantizer_params_);
+    attachment.set("quantizer", std::move(item));
+  }
   if (!trainer_name_.empty()) {
     ailego::Params item;
     item.set("name", trainer_name_);
@@ -177,6 +184,11 @@ bool IndexMeta::deserialize(const void *data, size_t len) {
     item.get("name", &reformer_name_);
     item.get("revision", &reformer_revision_);
     item.get("params", &reformer_params_);
+  }
+  if (attachment.get("quantizer", &item)) {
+    item.get("name", &quantizer_name_);
+    item.get("revision", &quantizer_revision_);
+    item.get("params", &quantizer_params_);
   }
   if (attachment.get("trainer", &item)) {
     item.get("name", &trainer_name_);

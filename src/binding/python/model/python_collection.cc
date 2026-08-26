@@ -15,8 +15,35 @@
 #include "python_collection.h"
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
+#include <zvec/db/doc_iterator.h>
+#include "db/collection_query_internal.h"
+#include "python_doc.h"
 
 namespace zvec {
+
+namespace {
+
+// Batch-materialize a DocPtrList into a list of (id, score, fields, vectors)
+// tuples in a single GIL-held section, avoiding per-doc _Doc wrappers and
+// per-doc Python->C++ crossings on the hot query path. The forward/vector field
+// lists are resolved once per batch rather than once per doc.
+py::list docs_to_tuples(const DocPtrList &docs,
+                        const CollectionSchema &schema) {
+  const auto forward_fields = schema.forward_fields();
+  const auto vector_fields = schema.vector_fields();
+  py::list out(docs.size());
+  for (size_t i = 0; i < docs.size(); ++i) {
+    if (docs[i]) {
+      out[i] = ZVecPyDoc::doc_to_tuple_with_fields(*docs[i], forward_fields,
+                                                   vector_fields);
+    } else {
+      out[i] = py::none();
+    }
+  }
+  return out;
+}
+
+}  // namespace
 
 inline void throw_if_error(const Status &status) {
   switch (status.code()) {
@@ -47,10 +74,36 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
   return T{};
 }
 
+template <typename T>
+T unwrap_expected(tl::expected<T, Status> &&exp) {
+  if (exp.has_value()) {
+    return std::move(exp).value();
+  }
+  throw_if_error(exp.error());
+  return T{};
+}
+
+// Run a query with the GIL released, capturing docs + schema atomically under a
+// single schema read lock (internal::query_result_snapshot), then materialize
+// the batch into tuples after the GIL is reacquired and the read lock released.
+template <typename Query>
+py::list execute_for_python(const Collection &collection, const Query &query) {
+  Result<internal::QueryResultSnapshot> result;
+  {
+    py::gil_scoped_release release;
+    result = internal::query_result_snapshot(collection, query);
+  }
+  // GIL restored, schema read lock already released.
+  auto snapshot = unwrap_expected(std::move(result));
+  return docs_to_tuples(snapshot.docs, *snapshot.schema);
+}
+
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
   py::class_<GroupResult>(m, "_GroupResult")
       .def_readonly("group_by_value", &GroupResult::group_by_value_)
       .def_readonly("docs", &GroupResult::docs_);
+
+  bind_iterator(m);
 
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
@@ -264,29 +317,29 @@ void ZVecPyCollection::bind_dml_methods(
 
 void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
-  col.def("Query",
-          [](const Collection &self, const SearchQuery &query) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.query(query);
-            }
-            // return DocPtrList
-            return unwrap_expected(result);
-          })
+  // Query with the GIL released, then materialize all hits into
+  // (id, score, fields, vectors) tuples in one crossing (see docs_to_tuples).
+  // execute_for_python captures the docs and the schema snapshot atomically
+  // under one read lock, so concurrent DDL cannot desynchronize them, while
+  // the binding signature stays unchanged from the legacy per-doc binding.
+  col.def(
+         "Query",
+         [](const Collection &self, const SearchQuery &query) {
+           return execute_for_python(self, query);
+         },
+         py::arg("query"),
+         "Execute a query and return results as a list of "
+         "(id, score, fields, vectors) tuples materialized in one batch.")
       // MultiQuery: multi query with reranker
       .def(
           "Query",
           [](const Collection &self, const MultiQuery &query) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.query(query);
-            }
-            // return DocPtrList
-            return unwrap_expected(result);
+            return execute_for_python(self, query);
           },
-          py::arg("query"), "Execute a multi query with re-ranking.")
+          py::arg("query"),
+          "Execute a multi query with re-ranking and return results as a "
+          "list of (id, score, fields, vectors) tuples materialized in one "
+          "batch.")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {
              Result<GroupResults> result;
@@ -312,6 +365,28 @@ void ZVecPyCollection::bind_dql_methods(
           py::arg("pks"), py::arg("output_fields") = py::none(),
           py::arg("include_vector") = true)
       .def(
+          "CreateIterator",
+          [](Collection &self,
+             const std::optional<std::vector<std::string>> &output_fields,
+             bool include_vector) {
+            IteratorOptions options;
+            options.output_fields_ = output_fields;
+            options.include_vector_ = include_vector;
+            Result<DocIterator::Ptr> result;
+            {
+              py::gil_scoped_release release;
+              result = self.create_iterator(options);
+            }
+            return unwrap_expected(result);
+          },
+          py::arg("output_fields") = py::none(),
+          py::arg("include_vector") = true,
+          // The collection must outlive the returned iterator (documented
+          // contract); keep it
+          // alive automatically in the binding too.
+          py::keep_alive<0, 1>(),
+          "Create a document iterator to traverse all documents.")
+      .def(
           "_debug_hnsw_storage_mode",
           [](const Collection &self, const std::string &column_name) {
             const auto result = self.debug_get_hnsw_storage_mode(column_name);
@@ -323,6 +398,31 @@ void ZVecPyCollection::bind_dql_methods(
           "Raises KeyError if no HNSW index exists on the column, or "
           "ValueError if the column's index is not an HNSW index. Intended "
           "for introspection and testing only; not part of the stable API.");
+}
+
+void ZVecPyCollection::bind_iterator(py::module_ &m) {
+  // Document iterator: Python iterator protocol (__iter__ / __next__).
+  // Constructed only via Collection.create_iterator (no py::init).
+  py::class_<DocIterator, DocIterator::Ptr>(m, "_DocIterator")
+      .def("__iter__", [](py::object self) { return self; })
+      .def("__next__",
+           [](DocIterator &self) {
+             Result<Doc::Ptr> result;
+             {
+               py::gil_scoped_release release;
+               result = self.next();
+             }
+             // !has_value() -> error (raises); value()==nullptr -> EOF
+             auto doc = unwrap_expected(result);
+             if (doc == nullptr) {
+               throw py::stop_iteration();
+             }
+             return doc;
+           })
+      .def("close", [](DocIterator &self) {
+        py::gil_scoped_release release;
+        self.close();
+      });
 }
 
 }  // namespace zvec

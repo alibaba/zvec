@@ -13,10 +13,25 @@
 // limitations under the License.
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 #include "record_quantizer.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+void Fp32ToFp16Fallback(const float *input, size_t dimension, void *output) {
+  ailego::FloatHelper::ToFP16(input, dimension,
+                              static_cast<uint16_t *>(output));
+}
+
+turbo::ConvertFunc ResolveFp16ConvertFunc() {
+  auto convert = turbo::get_convert_func(turbo::DataType::kFp16);
+  return convert ? convert : Fp32ToFp16Fallback;
+}
+
+}  // namespace
 
 /*! Half Float Reformer
  */
@@ -24,6 +39,7 @@ class HalfFloatReformer : public IndexReformer {
  public:
   //! Initialize Reformer
   int init(const ailego::Params &) override {
+    convert_func_ = ResolveFp16ConvertFunc();
     return 0;
   }
 
@@ -57,9 +73,8 @@ class HalfFloatReformer : public IndexReformer {
           return IndexError_Unsupported;
         }
         out->resize(qmeta.dimension() * sizeof(ailego::Float16));
-        ailego::FloatHelper::ToFP16(reinterpret_cast<const float *>(query),
-                                    qmeta.dimension(),
-                                    reinterpret_cast<uint16_t *>(&(*out)[0]));
+        convert_func_(reinterpret_cast<const float *>(query), qmeta.dimension(),
+                      out->data());
         *ometa = qmeta;
         ometa->set_meta(IndexMeta::DataType::DT_FP16, qmeta.dimension());
         break;
@@ -85,9 +100,9 @@ class HalfFloatReformer : public IndexReformer {
           return IndexError_Unsupported;
         }
         out->resize(qmeta.dimension() * count * sizeof(ailego::Float16));
-        ailego::FloatHelper::ToFP16(reinterpret_cast<const float *>(query),
-                                    qmeta.dimension() * count,
-                                    reinterpret_cast<uint16_t *>(&(*out)[0]));
+        convert_func_(reinterpret_cast<const float *>(query),
+                      static_cast<size_t>(qmeta.dimension()) * count,
+                      out->data());
         *ometa = qmeta;
         ometa->set_meta(IndexMeta::DataType::DT_FP16, qmeta.dimension());
         break;
@@ -128,6 +143,12 @@ class HalfFloatReformer : public IndexReformer {
 
     return 0;
   }
+
+ private:
+  // Preserve the pre-existing behavior for direct factory users that invoke
+  // transform() without init(). The normal initialized path replaces this
+  // fallback with Turbo's architecture-specific conversion kernel.
+  turbo::ConvertFunc convert_func_{Fp32ToFp16Fallback};
 };
 
 /*! Half Float Sparse Reformer

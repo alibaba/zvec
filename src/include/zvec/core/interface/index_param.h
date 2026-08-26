@@ -361,6 +361,9 @@ struct ZVEC_CORE_API FlatIndexParam : public BaseIndexParam {
   FlatIndexParam() : BaseIndexParam(IndexType::kFlat) {}
 
   IndexMeta::MajorOrder major_order = IndexMeta::MajorOrder::MO_ROW;
+  bool use_contiguous_memory = false;
+  // Physical row type used by Flat. DT_UNDEFINED keeps the input data type.
+  DataType storage_data_type = DataType::DT_UNDEFINED;
 
  protected:
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;

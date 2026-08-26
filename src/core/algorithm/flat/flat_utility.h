@@ -40,6 +40,8 @@ static const std::string PARAM_FLAT_BATCH_SIZE("proxima.flat.batch_size");
 static const std::string PARAM_FLAT_READ_BLOCK_SIZE(
     "proxima.flat.read_block_size");
 static const std::string PARAM_FLAT_USE_ID_MAP("proxima.flat.use_id_map");
+static const std::string PARAM_FLAT_USE_CONTIGUOUS_MEMORY(
+    "proxima.flat.use_contiguous_memory");
 
 //! Determines if a number is equal to two to the power of n.
 template <size_t K>

@@ -14,6 +14,34 @@
 
 #pragma once
 
+// Architecture / SIMD feature detection, named once so guards across the
+// codebase read clearly instead of repeating compiler-macro disjunctions:
+//
+//   AILEGO_ARM64          - AArch64. GCC/Clang: __aarch64__; MSVC: _M_ARM64.
+//   AILEGO_ARM            - any ARM, 32- or 64-bit.
+//   AILEGO_HAVE_NEON      - NEON intrinsics available. NEON is an ARMv8
+//                           baseline, so MSVC ARM64 qualifies.
+//   AILEGO_ARM64_NEON     - AArch64 with NEON. Use for FP32 kernels.
+//   AILEGO_ARM64_GNU_LIKE - AArch64 NEON under GCC/Clang. Excludes MSVC,
+//                           which exposes neither float16_t nor the v*_f16
+//                           intrinsics outside ARMv8.2 FP16. Use for FP16
+//                           kernels and other GCC/Clang-only extensions.
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define AILEGO_ARM64 1
+#endif
+#if defined(__arm__) || defined(AILEGO_ARM64)
+#define AILEGO_ARM 1
+#endif
+#if defined(__ARM_NEON) || defined(_M_ARM64)
+#define AILEGO_HAVE_NEON 1
+#endif
+#if defined(AILEGO_HAVE_NEON) && defined(AILEGO_ARM64)
+#define AILEGO_ARM64_NEON 1
+#endif
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#define AILEGO_ARM64_GNU_LIKE 1
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <sdkddkver.h>
 #endif
@@ -30,13 +58,16 @@
 
 #if defined(_MSC_VER)
 #include <intrin.h>
+#if defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 #else
 #include <strings.h>
 #include <unistd.h>
 #if defined(__x86_64__) || defined(__i386)
 #include <x86intrin.h>
 #endif
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
 #include <arm_neon.h>
 #endif
 #if defined(__ARM_FEATURE_CRC32)
@@ -111,7 +142,7 @@ extern "C" {
 #endif
 
 #if defined(__GNUC__)
-#if defined(__x86_64__) || defined(__aarch64__) || defined(__ppc64__)
+#if defined(__x86_64__) || defined(AILEGO_ARM64) || defined(__ppc64__)
 #define AILEGO_M64
 #else
 #define AILEGO_M32
@@ -236,10 +267,12 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_popcount ailego_popcount32
 #endif  // AILEGO_M64
 
-#if defined(__arm__) || defined(__aarch64__)
+#if defined(AILEGO_ARM)
 // ARMv7 Architecture Reference Manual (for YIELD)
 // ARM Compiler toolchain Compiler Reference (for __yield() instrinsic)
-#if defined(__CC_ARM)
+#if defined(__CC_ARM) || defined(_MSC_VER)
+// ARM Compiler toolchain and MSVC both expose the intrinsic `__yield()`
+// for the AArch64/ARMv7 YIELD instruction.
 #define ailego_yield() __yield()
 #else
 #define ailego_yield() __asm__ __volatile__("yield")
@@ -248,7 +281,7 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_yield() _mm_pause()
 #else
 #define ailego_yield() ((void)0)
-#endif  // __arm__ || __aarch64__
+#endif  // AILEGO_ARM
 
 #if defined(_MSC_VER)
 #define ailego_aligned_malloc(SIZE, ALIGN) \
@@ -281,11 +314,11 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 32)
 #elif defined(__SSE__)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 16)
-#elif defined(__ARM_NEON)
+#elif defined(AILEGO_HAVE_NEON)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 16)
 #endif
 #endif  // !ailego_malloc
-#if (defined(__SSE__) || defined(__ARM_NEON)) && !defined(ailego_free)
+#if (defined(__SSE__) || defined(AILEGO_HAVE_NEON)) && !defined(ailego_free)
 #define ailego_free ailego_aligned_free
 #endif
 #endif  // !__SANITIZE_ADDRESS__

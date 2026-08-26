@@ -20,6 +20,91 @@
 namespace zvec {
 namespace core {
 
+int FlatContiguousStreamerEntity::evaluate_distances(
+    const ContiguousStorage &storage, const void *query,
+    const std::vector<uint64_t> *p_keys, const IndexFilter &filter,
+    size_t batch_size, FlatSearchScratch *scratch,
+    IndexContext::Stats *context_stats, IndexDocumentHeap *heap) const {
+  if (!storage.vector_memory || !query || !scratch || batch_size == 0 ||
+      !heap) {
+    return IndexError_InvalidArgument;
+  }
+
+  auto &vector_ptrs = scratch->vector_ptrs;
+  auto &vector_keys = scratch->vector_keys;
+  auto &distances = scratch->distances;
+  vector_ptrs.clear();
+  vector_keys.clear();
+  vector_ptrs.reserve(batch_size);
+  vector_keys.reserve(batch_size);
+
+  auto evaluate_batch = [&]() {
+    if (vector_ptrs.empty()) {
+      return;
+    }
+    distances.resize(vector_ptrs.size());
+    const auto &batch_distance_func = batch_distance();
+    if (batch_distance_func) {
+      batch_distance_func(vector_ptrs.data(), query, vector_ptrs.size(),
+                          meta().dimension(), distances.data());
+    } else {
+      const auto &distance_func = distance();
+      for (size_t i = 0; i < vector_ptrs.size(); ++i) {
+        distance_func(query, vector_ptrs[i], meta().dimension(),
+                      distances.data() + i);
+      }
+    }
+    if (context_stats) {
+      *context_stats->mutable_dist_calced_count() += vector_ptrs.size();
+    }
+    for (size_t i = 0; i < vector_ptrs.size(); ++i) {
+      heap->emplace(vector_keys[i], distances[i]);
+    }
+    vector_ptrs.clear();
+    vector_keys.clear();
+  };
+
+  auto append = [&](uint64_t key, const void *vector) {
+    vector_ptrs.push_back(vector);
+    vector_keys.push_back(key);
+    if (vector_ptrs.size() == batch_size) {
+      evaluate_batch();
+    }
+  };
+
+  if (p_keys) {
+    for (uint64_t key : *p_keys) {
+      if (filter.is_valid() && filter(key)) {
+        continue;
+      }
+      if (const void *vector = get_vector_ptr_by_key(storage, key)) {
+        append(key, vector);
+      }
+    }
+  } else {
+    for (size_t position = 0; position < storage.vector_count; ++position) {
+      const uint64_t vector_key = storage.position_to_key[position];
+      if (vector_key == kInvalidKey ||
+          (filter.is_valid() && filter(vector_key))) {
+        if (context_stats) {
+          ++(*context_stats->mutable_filtered_count());
+        }
+        continue;
+      }
+      const void *vector = get_vector_ptr(storage, position);
+      if (!vector) {
+        if (context_stats) {
+          ++(*context_stats->mutable_filtered_count());
+        }
+        continue;
+      }
+      append(vector_key, vector);
+    }
+  }
+  evaluate_batch();
+  return 0;
+}
+
 FlatStreamerEntity::FlatStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {}
 
@@ -78,6 +163,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   row_distance_ = metric->distance();
   column_distance_ =
       metric->distance_matrix(meta_.header.block_vector_count, 1);
+  batch_distance_ = metric->batch_distance();
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
             index_meta_.metric_name().c_str());
@@ -218,7 +304,9 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
 
 int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                uint32_t *scan_count, IndexDocumentHeap *heap,
-                               IndexContext::Stats *context_stats) const {
+                               IndexContext::Stats *context_stats,
+                               FlatSearchScratch * /*scratch*/,
+                               size_t /*batch_size*/) const {
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
   const BlockLocation *bl =
@@ -255,6 +343,27 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
       }
     }
     block = hd->next;
+  }
+  return 0;
+}
+
+int FlatStreamerEntity::search_by_p_keys(const void *query,
+                                         const std::vector<uint64_t> &p_keys,
+                                         const IndexFilter &filter,
+                                         IndexDocumentHeap *heap,
+                                         FlatSearchScratch * /*scratch*/,
+                                         size_t /*batch_size*/) const {
+  for (uint64_t key : p_keys) {
+    if (filter.is_valid() && filter(key)) {
+      continue;
+    }
+    IndexStorage::MemoryBlock block;
+    if (get_vector_by_key(key, block) != 0) {
+      continue;
+    }
+    dist_t distance = 0;
+    row_major_distance(query, block.data(), 1, &distance);
+    heap->emplace(key, distance);
   }
   return 0;
 }
@@ -325,7 +434,7 @@ void FlatStreamerEntity::search_block(
 int FlatStreamerEntity::search_bf(const void *query, const IndexFilter &filter,
                                   IndexDocumentHeap *heap,
                                   IndexContext::Stats *context_stats) const {
-  uint32_t scan_count;
+  uint32_t scan_count = 0;
   return this->search(query, filter, &scan_count, heap, context_stats);
 }
 
@@ -358,6 +467,206 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
   entity->vec_unit_size_ = this->vec_unit_size_;
   entity->vec_cols_ = this->vec_cols_;
   return FlatStreamerEntity::Pointer(entity);
+}
+
+int FlatStreamerEntity::get_vector_by_position(
+    uint32_t id, IndexStorage::MemoryBlock &block) const {
+  if (id >= withid_key_info_map_.size()) {
+    return -1;
+  }
+  const VectorLocation &loc = withid_key_info_map_[id];
+  auto segment = this->get_segment(loc.segment_id);
+  if (!segment ||
+      segment->read(loc.offset, block, index_meta_.element_size()) !=
+          index_meta_.element_size()) {
+    LOG_ERROR("Failed to read vector by position, id=%u size=%u", id,
+              index_meta_.element_size());
+    return -1;
+  }
+  return 0;
+}
+
+int FlatStreamerEntity::get_key_by_position(uint32_t id, uint64_t *key) const {
+  if (!key || id >= withid_key_info_map_.size() ||
+      id >= withid_key_map_.size()) {
+    return -1;
+  }
+  const auto &loc = withid_key_info_map_[id];
+  auto segment = get_segment(loc.segment_id);
+  IndexStorage::MemoryBlock key_block;
+  if (!segment ||
+      segment->read(withid_key_map_[id], key_block, sizeof(*key)) !=
+          sizeof(*key) ||
+      !key_block.data()) {
+    LOG_ERROR("Failed to read Flat key by position, id=%u", id);
+    return -1;
+  }
+  std::memcpy(key, key_block.data(), sizeof(*key));
+  return 0;
+}
+
+int FlatContiguousStreamerEntity::search(
+    const void *query, const IndexFilter &filter, uint32_t *scan_count,
+    IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+    FlatSearchScratch *scratch, size_t batch_size) const {
+  auto storage = load_contiguous_storage();
+  if (!storage) {
+    return FlatStreamerEntity::search(query, filter, scan_count, heap,
+                                      context_stats, scratch, batch_size);
+  }
+
+  FlatSearchScratch local_scratch;
+  if (!scratch) {
+    scratch = &local_scratch;
+  }
+  if (batch_size == 0) {
+    batch_size = block_vector_count();
+  }
+  if (scan_count) {
+    *scan_count += storage->vector_count;
+  }
+  return evaluate_distances(*storage, query, nullptr, filter, batch_size,
+                            scratch, context_stats, heap);
+}
+
+int FlatContiguousStreamerEntity::search_by_p_keys(
+    const void *query, const std::vector<uint64_t> &p_keys,
+    const IndexFilter &filter, IndexDocumentHeap *heap,
+    FlatSearchScratch *scratch, size_t batch_size) const {
+  auto storage = load_contiguous_storage();
+  if (!storage) {
+    return FlatStreamerEntity::search_by_p_keys(query, p_keys, filter, heap,
+                                                scratch, batch_size);
+  }
+
+  FlatSearchScratch local_scratch;
+  if (!scratch) {
+    scratch = &local_scratch;
+  }
+  if (batch_size == 0) {
+    batch_size = block_vector_count();
+  }
+  return evaluate_distances(*storage, query, &p_keys, filter, batch_size,
+                            scratch, nullptr, heap);
+}
+
+int FlatContiguousStreamerEntity::build_contiguous_memory(void) {
+  degrade_to_mmap();
+
+  const size_t count = use_key_info_map() ? id_key_count() : vector_count();
+  if (count == 0) {
+    return 0;
+  }
+
+  const size_t vector_size = meta().element_size();
+  const size_t stride =
+      (vector_size + kVectorAlignment - 1) & ~(kVectorAlignment - 1);
+  const size_t data_size = count * stride;
+  const size_t allocation_size =
+      ailego::MemoryHelper::AlignHugePageSize(data_size);
+  char *raw = static_cast<char *>(
+      ailego::MemoryHelper::AllocateHugePage(allocation_size));
+  if (!raw) {
+    LOG_ERROR("Failed to allocate Flat contiguous memory, size=%zu",
+              allocation_size);
+    return IndexError_Runtime;
+  }
+
+  auto storage = std::make_shared<ContiguousStorage>();
+  storage->vector_memory =
+      std::shared_ptr<char>(raw, ContiguousDeleter{allocation_size});
+  storage->vector_stride = stride;
+  storage->vector_count = count;
+  if (use_key_info_map()) {
+    storage->key_to_position.reserve(count);
+  }
+  storage->position_to_key.assign(count, static_cast<uint64_t>(kInvalidKey));
+
+  for (uint32_t id = 0; id < count; ++id) {
+    IndexStorage::MemoryBlock block;
+    uint64_t vector_key = kInvalidKey;
+    int ret = 0;
+    if (use_key_info_map()) {
+      vector_key = key(id);
+      ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
+      if (ret == 0) {
+        storage->key_to_position[vector_key] = id;
+      }
+    } else {
+      ret = get_vector_by_position(id, block);
+      if (ret == 0) {
+        ret = get_key_by_position(id, &vector_key);
+      }
+    }
+    if (ret != 0 || block.data() == nullptr) {
+      LOG_ERROR("Failed to load Flat vector into contiguous memory, id=%u", id);
+      return IndexError_ReadData;
+    }
+    std::memcpy(raw + static_cast<size_t>(id) * stride, block.data(),
+                vector_size);
+    storage->position_to_key[id] = vector_key;
+  }
+
+  std::atomic_store_explicit(
+      &contiguous_storage_,
+      std::shared_ptr<const ContiguousStorage>(std::move(storage)),
+      std::memory_order_release);
+  LOG_INFO(
+      "Built Flat contiguous memory: vectors=%zu vector_size=%zu "
+      "vector_stride=%zu memory=%zu",
+      count, vector_size, stride, allocation_size);
+  return 0;
+}
+
+void FlatContiguousStreamerEntity::degrade_to_mmap(void) {
+  std::shared_ptr<const ContiguousStorage> empty;
+  auto storage = std::atomic_exchange_explicit(
+      &contiguous_storage_, std::move(empty), std::memory_order_acq_rel);
+  if (storage) {
+    LOG_INFO("Flat contiguous entity degraded to mmap mode for insertion");
+  }
+}
+
+int FlatContiguousStreamerEntity::close(void) {
+  degrade_to_mmap();
+  return FlatStreamerEntity::close();
+}
+
+int FlatContiguousStreamerEntity::add(uint64_t key, const void *vec,
+                                      size_t size) {
+  degrade_to_mmap();
+  return FlatStreamerEntity::add(key, vec, size);
+}
+
+int FlatContiguousStreamerEntity::add_vector_with_id(uint32_t id,
+                                                     const void *query,
+                                                     uint32_t element_size) {
+  degrade_to_mmap();
+  return FlatStreamerEntity::add_vector_with_id(id, query, element_size);
+}
+
+const void *FlatContiguousStreamerEntity::get_vector_ptr_by_key(
+    const ContiguousStorage &storage, uint64_t key) const {
+  size_t position = key;
+  if (use_key_info_map()) {
+    auto it = storage.key_to_position.find(key);
+    if (it == storage.key_to_position.end()) {
+      return nullptr;
+    }
+    position = it->second;
+  } else if (key >= storage.position_to_key.size() ||
+             storage.position_to_key[key] != key) {
+    return nullptr;
+  }
+  return get_vector_ptr(storage, position);
+}
+
+const void *FlatContiguousStreamerEntity::get_vector_ptr(
+    const ContiguousStorage &storage, size_t position) const {
+  if (!storage.vector_memory || position >= storage.vector_count) {
+    return nullptr;
+  }
+  return storage.vector_memory.get() + position * storage.vector_stride;
 }
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
@@ -589,7 +898,7 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   IndexMeta index_meta;
-  if (!index_meta.deserialize(mt->header.index_meta,
+  if (!index_meta.deserialize(mt->index_meta_data(),
                               mt->header.index_meta_size)) {
     LOG_ERROR("Failed to deserialize IndexMeta, size=%u",
               mt->header.index_meta_size);

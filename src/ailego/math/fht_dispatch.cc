@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <ailego/internal/cpu_features.h>
+#include <zvec/ailego/internal/platform.h>
 #include "fht.h"
 
 namespace zvec {
@@ -41,7 +42,7 @@ void fht_kacs_walk_avx512(float *data, size_t len);
 void fht_inv_kacs_walk_avx512(float *data, size_t len);
 void fht_inplace_avx512(float *data, size_t n);
 #endif
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
 void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim);
 void fht_kacs_walk_neon(float *data, size_t len);
 void fht_inv_kacs_walk_neon(float *data, size_t len);
@@ -52,7 +53,7 @@ void fht_inv_kacs_walk_neon(float *data, size_t len);
 // ============================================================================
 
 void fht_flip_sign(const uint8_t *flip, float *data, size_t dim) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   fht_flip_sign_neon(flip, data, dim);
 #else
 #if defined(__AVX512F__)
@@ -75,11 +76,11 @@ void fht_flip_sign(const uint8_t *flip, float *data, size_t dim) {
   }
 #endif
   fht_flip_sign_scalar(flip, data, dim);
-#endif  // __ARM_NEON
+#endif  // AILEGO_ARM64_NEON
 }
 
 void fht_kacs_walk(float *data, size_t len) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   fht_kacs_walk_neon(data, len);
 #else
 #if defined(__AVX512F__)
@@ -101,11 +102,11 @@ void fht_kacs_walk(float *data, size_t len) {
   }
 #endif
   fht_kacs_walk_scalar(data, len);
-#endif  // __ARM_NEON
+#endif  // AILEGO_ARM64_NEON
 }
 
 void fht_inv_kacs_walk(float *data, size_t len) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   fht_inv_kacs_walk_neon(data, len);
 #else
 #if defined(__AVX512F__)
@@ -127,7 +128,7 @@ void fht_inv_kacs_walk(float *data, size_t len) {
   }
 #endif
   fht_inv_kacs_walk_scalar(data, len);
-#endif  // __ARM_NEON
+#endif  // AILEGO_ARM64_NEON
 }
 
 void fht_inplace(float *data, size_t n) {
