@@ -62,11 +62,6 @@ class IVFStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  //! Search only the centroid index without reading inverted lists.
-  //! Intended for diagnostics and workload classification.
-  int search_centroids(const void *query, const IndexQueryMeta &qmeta,
-                       uint32_t count, Context::Pointer &context) const;
-
   //! Retrieve statistics
   const Stats &stats(void) const override;
 

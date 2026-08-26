@@ -190,22 +190,6 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return this->search_impl(query, qmeta, 1, context);
 }
 
-int IVFStreamer::search_centroids(const void *query,
-                                  const IndexQueryMeta &qmeta, uint32_t count,
-                                  Context::Pointer &context) const {
-  if (!query || count == 0 || qmeta.element_size() != meta_.element_size()) {
-    LOG_ERROR("Null query or invalid centroid query meta");
-    return IndexError_InvalidArgument;
-  }
-  auto *ctx = dynamic_cast<IVFSearcherContext *>(context.get());
-  if (!ctx || ctx->magic() != magic_) {
-    LOG_ERROR("Invalid context for centroid-only search");
-    return IndexError_InvalidArgument;
-  }
-  return centroid_index_->search(query, qmeta, count,
-                                 ctx->centroid_searcher_ctx());
-}
-
 int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                              uint32_t count, Context::Pointer &context) const {
   if (entity_->vector_count() <= bruteforce_threshold_) {
