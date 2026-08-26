@@ -19,15 +19,17 @@
 // operations.
 
 #include "neon/pq_quantizer_int4/pq_distance.h"
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <zvec/ailego/internal/platform.h>
+#if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
 #endif
 #include <cstddef>
 #include <cstdint>
+#include "scalar/pq_quantizer_int4/pq_distance.h"
 
 namespace zvec::turbo::neon {
 
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
 namespace {
 
 // Horizontal sum of 4 floats in a float32x4_t register via pairwise add.
@@ -49,7 +51,7 @@ inline uint8_t nibble(const uint8_t *code, size_t m) {
 
 void pq_adc_int4_distance_neon(const void *pq_code_v, const void *lut_v,
                                size_t num_chunk, float *out) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr int kNumCentroids = 16;
   constexpr int kChunkSize = 4;  // NEON processes 4 floats at once
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
@@ -79,17 +81,18 @@ void pq_adc_int4_distance_neon(const void *pq_code_v, const void *lut_v,
 
   *out = sum;
 #else
-  (void)pq_code_v;
-  (void)lut_v;
-  (void)num_chunk;
-  (void)out;
+  // Without NEON this translation unit still compiles, so delegate to the
+  // scalar kernel. Never leave `out` unwritten: turbo.cc selects these entry
+  // points from CpuFeatures flags, and a no-op here would silently return
+  // whatever the caller's buffer already held.
+  scalar::pq_adc_int4_distance(pq_code_v, lut_v, num_chunk, out);
 #endif
 }
 
 void pq_sdc_int4_distance_neon(const void *a_v, const void *b_v,
                                const void *dist_table_v, size_t num_chunk,
                                float *out) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr int kNumCentroids = 16;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 256
   constexpr int kChunkSize = 4;
@@ -135,18 +138,14 @@ void pq_sdc_int4_distance_neon(const void *a_v, const void *b_v,
 
   *out = sum;
 #else
-  (void)a_v;
-  (void)b_v;
-  (void)dist_table_v;
-  (void)num_chunk;
-  (void)out;
+  scalar::pq_sdc_int4_distance(a_v, b_v, dist_table_v, num_chunk, out);
 #endif
 }
 
 void pq_adc_int4_batch_distance_neon(const void **candidates_v,
                                      const void *lut_v, size_t num,
                                      size_t num_chunk, float *out) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr int kNumCentroids = 16;
   constexpr int kChunkSize = 4;
   constexpr int kBatch = 4;
@@ -212,11 +211,7 @@ void pq_adc_int4_batch_distance_neon(const void **candidates_v,
     pq_adc_int4_distance_neon(candidates[i], lut, num_chunk, out + i);
   }
 #else
-  (void)candidates_v;
-  (void)lut_v;
-  (void)num;
-  (void)num_chunk;
-  (void)out;
+  scalar::pq_adc_int4_batch_distance(candidates_v, lut_v, num, num_chunk, out);
 #endif
 }
 

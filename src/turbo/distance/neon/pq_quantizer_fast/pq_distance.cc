@@ -17,7 +17,8 @@
 // sub-quantizer's 32 look-ups are two TBL instructions (lo / hi nibble).
 
 #include "neon/pq_quantizer_fast/pq_distance.h"
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <zvec/ailego/internal/platform.h>
+#if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
 #endif
 #include <cstddef>
@@ -29,7 +30,7 @@ namespace zvec::turbo::neon {
 
 void pq_adc_fast_scan_neon(const void *packed_codes_v, const void *packed_lut_v,
                            size_t num_chunk, int32_t *accu32) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr size_t kSpillPeriod = 128;  // sub-quantizers per int32 spill
   const auto *packed_codes = reinterpret_cast<const uint8_t *>(packed_codes_v);
   const auto *packed_lut = reinterpret_cast<const uint8_t *>(packed_lut_v);
