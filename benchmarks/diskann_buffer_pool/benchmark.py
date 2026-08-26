@@ -7,8 +7,8 @@ import argparse
 import concurrent.futures
 import gc
 import hashlib
+import importlib
 import json
-import os
 import platform
 import resource
 import statistics
@@ -56,7 +56,7 @@ class RssSampler:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-    def __enter__(self) -> "RssSampler":
+    def __enter__(self) -> RssSampler:
         self._thread.start()
         return self
 
@@ -100,6 +100,20 @@ def latency_summary(latencies_ns: list[int], wall_seconds: float) -> dict[str, A
     }
 
 
+def sample_hot_tail(
+    rng: np.random.Generator,
+    request_count: int,
+    hot_ids: np.ndarray,
+    tail_ids: np.ndarray,
+    hot_probability: float,
+) -> np.ndarray:
+    choose_hot = rng.random(request_count) < hot_probability
+    requests = np.empty(request_count, dtype=np.int64)
+    requests[choose_hot] = rng.choice(hot_ids, choose_hot.sum())
+    requests[~choose_hot] = rng.choice(tail_ids, (~choose_hot).sum())
+    return requests
+
+
 def build_workload_plan(
     vectors: np.ndarray,
     repetitions: int,
@@ -136,10 +150,7 @@ def build_workload_plan(
         semantic_order = np.argsort(-semantic_scores, kind="stable")
         hot_ids = semantic_order[:hot_count]
         tail_ids = semantic_order[hot_count:]
-        choose_hot = rng.random(request_count) < 0.80
-        requests = np.empty(request_count, dtype=np.int64)
-        requests[choose_hot] = rng.choice(hot_ids, choose_hot.sum())
-        requests[~choose_hot] = rng.choice(tail_ids, (~choose_hot).sum())
+        requests = sample_hot_tail(rng, request_count, hot_ids, tail_ids, 0.80)
     elif workload == "zipf1":
         ranked_ids = rng.permutation(query_ids)
         weights = 1.0 / np.arange(1, query_count + 1, dtype=np.float64)
@@ -153,10 +164,7 @@ def build_workload_plan(
         shuffled = rng.permutation(query_ids)
         hot_ids = shuffled[:hot_count]
         tail_ids = shuffled[hot_count:]
-        choose_hot = rng.random(request_count) < 0.90
-        requests = np.empty(request_count, dtype=np.int64)
-        requests[choose_hot] = rng.choice(hot_ids, choose_hot.sum())
-        requests[~choose_hot] = rng.choice(tail_ids, (~choose_hot).sum())
+        requests = sample_hot_tail(rng, request_count, hot_ids, tail_ids, 0.90)
     else:
         raise ValueError(f"unknown workload: {workload}")
 
@@ -172,7 +180,7 @@ def build_workload_plan(
         "unique_queries": int(np.count_nonzero(counts)),
         "query_top20_share": top_share,
         "configured_hot_share": hot_share,
-        "hot_query_count": int(len(hot_ids)),
+        "hot_query_count": len(hot_ids),
         "workload_seed": seed,
     }
 
@@ -187,18 +195,15 @@ def result_fingerprint(results: list[list[str]]) -> str:
 
 def emit(event: str, **values: Any) -> None:
     payload = {"event": event, "monotonic_ns": time.monotonic_ns(), **values}
-    print(json.dumps(payload, sort_keys=True), flush=True)
+    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+    sys.stdout.flush()
 
 
 def import_zvec() -> Any:
-    import zvec
-
-    return zvec
+    return importlib.import_module("zvec")
 
 
 def make_schema(zvec: Any, dimension: int) -> Any:
-    from zvec.typing import QuantizeType
-
     return zvec.CollectionSchema(
         name="diskann_buffer_pool_benchmark",
         fields=[zvec.FieldSchema("ordinal", zvec.DataType.INT64, nullable=False)],
@@ -212,7 +217,7 @@ def make_schema(zvec: Any, dimension: int) -> Any:
                     max_degree=64,
                     list_size=100,
                     pq_chunk_num=0,
-                    quantize_type=QuantizeType.UNDEFINED,
+                    quantize_type=zvec.QuantizeType.UNDEFINED,
                 ),
             )
         ],
@@ -248,9 +253,7 @@ def build_collection(args: argparse.Namespace) -> None:
     collection = zvec.create_and_open(
         path=str(path),
         schema=make_schema(zvec, args.dimension),
-        option=zvec.CollectionOption(
-            read_only=False, enable_mmap=args.mode == "mmap"
-        ),
+        option=zvec.CollectionOption(read_only=False, enable_mmap=args.mode == "mmap"),
     )
     emit("build_open", mode=args.mode, memory=proc_snapshot())
 

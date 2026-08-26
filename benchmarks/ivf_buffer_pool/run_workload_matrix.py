@@ -8,8 +8,8 @@ import csv
 import shlex
 import statistics
 import subprocess
+import sys
 from pathlib import Path
-
 
 WORKLOADS = {
     "uniform_unique": ("cyclic", 1000),
@@ -17,6 +17,11 @@ WORKLOADS = {
     "zipf_alpha_1": ("zipf1", 1000),
     "exact_repeat_90_10": ("hot90", 5),
 }
+
+
+def write_line(value: str) -> None:
+    sys.stdout.write(value + "\n")
+    sys.stdout.flush()
 
 
 def parse_result(output: str) -> dict[str, str]:
@@ -34,7 +39,7 @@ def parse_result(output: str) -> dict[str, str]:
     return result
 
 
-def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run each point in a fresh process and never run points in parallel. "
@@ -62,7 +67,10 @@ def main() -> None:
         parser.error("phase durations must be positive")
     if any(value <= 0 for value in args.pool_mb):
         parser.error("Buffer pool budgets must be positive")
+    return args
 
+
+def build_commands(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
     points: list[tuple[str, int, str, str, int]] = []
     for workload, (pattern, hot_queries) in WORKLOADS.items():
         points.append(("mmap", 0, workload, pattern, hot_queries))
@@ -91,20 +99,20 @@ def main() -> None:
             str(hot_queries),
         ]
         commands.append((label, command))
+    return commands
 
-    if args.dry_run:
-        for _, command in commands:
-            for _ in range(args.runs):
-                print(shlex.join(command))
-        return
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+def run_commands(
+    args: argparse.Namespace, commands: list[tuple[str, list[str]]]
+) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for label, command in commands:
         for run in range(1, args.runs + 1):
             run_label = f"{label}_run{run}"
-            print(f"running {run_label}", flush=True)
-            completed = subprocess.run(command, text=True, capture_output=True)
+            write_line(f"running {run_label}")
+            completed = subprocess.run(
+                command, text=True, capture_output=True, check=False
+            )
             log_path = args.output_dir / f"{run_label}.log"
             log_path.write_text(completed.stdout + completed.stderr)
             if completed.returncode != 0:
@@ -114,15 +122,19 @@ def main() -> None:
             result["workload"] = label.rsplit("_", 2)[0]
             result["log"] = log_path.name
             rows.append(result)
+    return rows
 
-    csv_path = args.output_dir / "matrix.csv"
+
+def write_rows(path: Path, rows: list[dict[str, object]]) -> None:
     fieldnames = ["workload", *rows[0].keys()]
     fieldnames = list(dict.fromkeys(fieldnames))
-    with csv_path.open("w", newline="") as output:
+    with path.open("w", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
+
+def summarize_rows(rows: list[dict[str, str]]) -> list[dict[str, object]]:
     summary_rows: list[dict[str, object]] = []
     groups = sorted({(row["workload"], row["storage"], row["pool_mb"]) for row in rows})
     for workload, storage, pool_mb in groups:
@@ -141,15 +153,14 @@ def main() -> None:
                 "pool_mb": pool_mb,
                 "runs": len(group),
                 "median_qps": statistics.median(qps_values),
-                "qps_stdev": statistics.stdev(qps_values)
-                if len(qps_values) > 1
-                else 0.0,
+                "qps_stdev": (
+                    statistics.stdev(qps_values) if len(qps_values) > 1 else 0.0
+                ),
                 "median_p99_ms": statistics.median(
                     float(row["p99_ms"]) for row in group
                 ),
                 "median_rss_peak_mib": statistics.median(
-                    float(row["rss_peak_bytes"]) / (1024 * 1024)
-                    for row in group
+                    float(row["rss_peak_bytes"]) / (1024 * 1024) for row in group
                 ),
                 "median_centroid_top20_share": statistics.median(
                     float(row["centroid_top20_share"]) for row in group
@@ -158,9 +169,7 @@ def main() -> None:
         )
 
     mmap_by_workload = {
-        row["workload"]: row
-        for row in summary_rows
-        if row["storage"] == "mmap"
+        row["workload"]: row for row in summary_rows if row["storage"] == "mmap"
     }
     for row in summary_rows:
         baseline = mmap_by_workload[row["workload"]]
@@ -168,20 +177,32 @@ def main() -> None:
         baseline_rss_gib = float(baseline["median_rss_peak_mib"]) / 1024
         row["qps_per_gib"] = float(row["median_qps"]) / rss_gib
         baseline_density = float(baseline["median_qps"]) / baseline_rss_gib
-        row["qps_vs_mmap"] = (
-            float(row["median_qps"]) / float(baseline["median_qps"])
-        )
-        row["rss_vs_mmap"] = (
-            float(row["median_rss_peak_mib"])
-            / float(baseline["median_rss_peak_mib"])
+        row["qps_vs_mmap"] = float(row["median_qps"]) / float(baseline["median_qps"])
+        row["rss_vs_mmap"] = float(row["median_rss_peak_mib"]) / float(
+            baseline["median_rss_peak_mib"]
         )
         row["qps_per_gib_vs_mmap"] = row["qps_per_gib"] / baseline_density
+    return summary_rows
+
+
+def main() -> None:
+    args = parse_args()
+    commands = build_commands(args)
+
+    if args.dry_run:
+        for _, command in commands:
+            for _ in range(args.runs):
+                write_line(shlex.join(command))
+        return
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    rows = run_commands(args, commands)
+    csv_path = args.output_dir / "matrix.csv"
+    write_rows(csv_path, rows)
+    summary_rows = summarize_rows(rows)
     summary_path = args.output_dir / "matrix_summary.csv"
-    with summary_path.open("w", newline="") as output:
-        writer = csv.DictWriter(output, fieldnames=list(summary_rows[0]))
-        writer.writeheader()
-        writer.writerows(summary_rows)
-    print(f"wrote {csv_path} and {summary_path}")
+    write_rows(summary_path, summary_rows)
+    write_line(f"wrote {csv_path} and {summary_path}")
 
 
 if __name__ == "__main__":

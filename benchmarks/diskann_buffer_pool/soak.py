@@ -7,16 +7,18 @@ import argparse
 import ctypes
 import gc
 import hashlib
+import importlib
 import json
+import sys
 import time
 
 import numpy as np
-
 from benchmark import proc_snapshot
 
 
 def emit(event: str, **values: object) -> None:
-    print(json.dumps({"event": event, **values}, sort_keys=True), flush=True)
+    sys.stdout.write(json.dumps({"event": event, **values}, sort_keys=True) + "\n")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -31,7 +33,7 @@ def main() -> None:
     parser.add_argument("--malloc-trim", action="store_true")
     args = parser.parse_args()
 
-    import zvec
+    zvec = importlib.import_module("zvec")
 
     zvec.init(
         memory_limit_mb=args.memory_mb,
@@ -46,9 +48,7 @@ def main() -> None:
     emit("soak_ready", mode=args.mode, memory=proc_snapshot())
     collection = zvec.open(
         path=args.collection,
-        option=zvec.CollectionOption(
-            read_only=True, enable_mmap=args.mode == "mmap"
-        ),
+        option=zvec.CollectionOption(read_only=True, enable_mmap=args.mode == "mmap"),
     )
     emit("soak_open", mode=args.mode, memory=proc_snapshot())
 
@@ -63,7 +63,7 @@ def main() -> None:
     total_hits = 0
     for batch in range(1, args.batches + 1):
         started = time.monotonic()
-        for expected_id, vector in zip(ids, vectors):
+        for expected_id, vector in zip(ids, vectors, strict=True):
             result = collection.query(
                 queries=zvec.Query(
                     field_name="embedding",
