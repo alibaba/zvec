@@ -614,6 +614,12 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
       meta_.metric_name() != "SquaredEuclidean") {
     return kErrUnsupported;
   }
+  //! Refuse zero-mean: the shift applied here (term2) and in
+  //! quantize_precomputed_query() (term3) cancels on merge, so the scan would
+  //! rank against ||q - c_i - c_m[j]||^2 and drop the mean the codes carry.
+  if (use_zero_mean_) {
+    return kErrUnsupported;
+  }
   if (centroids == nullptr || centroid_num == 0 || table == nullptr ||
       num_chunk_ == 0 || centroids_.empty() || sub_centroid_norms_.empty()) {
     return kErrInvalidArgument;
@@ -636,11 +642,6 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
   for (size_t i = 0; i < centroid_num; ++i) {
     std::memcpy(buf.data(), src + i * original_dim_,
                 original_dim_ * sizeof(float));
-    //! Same zero-mean shift as quantize_query(); the identity holds as
-    //! long as query/centroid/codebook share the shifted space.
-    if (use_zero_mean_) {
-      subtract_center(buf.data());
-    }
     const uint8_t *buf_bytes = reinterpret_cast<const uint8_t *>(buf.data());
     const uint32_t elem_size = element_size();
     float *row = tab + i * row_floats;
@@ -669,13 +670,17 @@ int PqFastQuantizer::quantize_precomputed_query(const void *query,
       meta_.metric_name() != "SquaredEuclidean") {
     return kErrUnsupported;
   }
+  //! Same zero-mean restriction as build_centroid_distance_table().
+  if (use_zero_mean_) {
+    return kErrUnsupported;
+  }
   if (query == nullptr || out == nullptr || centroids_.empty() ||
       qmeta.unit_size() != sizeof(float)) {
     return kErrInvalidArgument;
   }
 
-  //! Preprocess into the codebook space (zero-mean; Cosine already gated
-  //! out), then build the term3 table.  It stays UNQUANTIZED here:
+  //! Preprocess into the codebook space (Cosine and zero-mean both gated
+  //! out above), then build the term3 table.  It stays UNQUANTIZED here:
   //! merge_query_distance_table() adds the per-list term2 row first and
   //! affine-quantizes the merged table once.
   std::vector<float> prep(original_dim_);

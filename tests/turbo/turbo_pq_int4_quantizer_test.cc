@@ -1078,6 +1078,50 @@ TEST(PqInt4Quantizer, ZeroMeanSerializeDeserialize) {
       << "Deserialized quantizer centroid not restored properly";
 }
 
+// Zero-mean centering is incompatible with the precomputed residual protocol:
+// build_centroid_distance_table() would subtract the mean from the coarse
+// centroid (term2) while quantize_precomputed_query() subtracts it from the
+// query (term3), so the two cancel on merge and the scan ranks against
+// ||q - c_i - c_m[j]||^2 instead of ||q - c_i - mean - c_m[j]||^2.  The gap
+// includes 2<c_m[j], mean>, which depends on the code, so it reorders results
+// inside a single list.  Both halves must refuse so a caller cannot pick up
+// one of them alone.
+TEST(PqInt4Quantizer, PrecomputeZeroMeanGates) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+
+  auto zm = make_pq_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(zm);
+  ASSERT_EQ(0, zm->train(make_offset_holder(500, DIM, 5.0f)));
+  auto zm_pq = std::dynamic_pointer_cast<zvec::turbo::PqInt4Quantizer>(zm);
+  ASSERT_TRUE(zm_pq);
+
+  std::vector<float> centroid(DIM, 0.0f);
+  std::vector<float> query(DIM, 5.0f);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  IndexQueryMeta ometa;
+  std::string table;
+  std::string qtable;
+  EXPECT_NE(0,
+            zm_pq->build_centroid_distance_table(centroid.data(), 1, &table));
+  EXPECT_NE(0, zm_pq->quantize_precomputed_query(query.data(), qmeta, &qtable,
+                                                 &ometa));
+
+  // Guard against a vacuous test: the very same calls succeed once centering
+  // is off, so the refusal above is attributable to use_zero_mean and not to
+  // the arguments.
+  auto plain = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(plain);
+  ASSERT_EQ(0, plain->train(make_offset_holder(500, DIM, 5.0f)));
+  auto plain_pq =
+      std::dynamic_pointer_cast<zvec::turbo::PqInt4Quantizer>(plain);
+  ASSERT_TRUE(plain_pq);
+  EXPECT_EQ(
+      0, plain_pq->build_centroid_distance_table(centroid.data(), 1, &table));
+  EXPECT_EQ(0, plain_pq->quantize_precomputed_query(query.data(), qmeta,
+                                                    &qtable, &ometa));
+}
+
 // ===========================================================================
 // FP16 input tests
 // ===========================================================================

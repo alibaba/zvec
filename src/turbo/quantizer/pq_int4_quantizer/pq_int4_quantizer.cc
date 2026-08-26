@@ -632,6 +632,12 @@ int PqInt4Quantizer::build_centroid_distance_table(const void *centroids,
   if (meta_.metric_name() != "SquaredEuclidean") {
     return kErrUnsupported;
   }
+  //! Refuse zero-mean: the shift applied here (term2) and in
+  //! quantize_precomputed_query() (term3) cancels on merge, so the scan would
+  //! rank against ||q - c_i - c_m[j]||^2 and drop the mean the codes carry.
+  if (use_zero_mean_) {
+    return kErrUnsupported;
+  }
   if (centroids == nullptr || centroid_num == 0 || table == nullptr ||
       num_chunk_ == 0 || centroids_.empty() || sub_centroid_norms_.empty()) {
     return kErrInvalidArgument;
@@ -657,11 +663,6 @@ int PqInt4Quantizer::build_centroid_distance_table(const void *centroids,
     for (size_t i = 0; i < centroid_num; ++i) {
       std::memcpy(buf.data(), src + i * original_dim_,
                   original_dim_ * sizeof(T));
-      //! Same zero-mean shift as quantize_query(); the identity holds as
-      //! long as query/centroid/codebook share the shifted space.
-      if (use_zero_mean_) {
-        subtract_center<T>(buf.data());
-      }
       const uint8_t *buf_bytes = reinterpret_cast<const uint8_t *>(buf.data());
       float *row = tab + i * row_floats;
       for (uint32_t m = 0; m < num_chunk_; ++m) {
@@ -702,6 +703,10 @@ int PqInt4Quantizer::quantize_precomputed_query(const void *query,
   if (meta_.metric_name() != "SquaredEuclidean") {
     return kErrUnsupported;
   }
+  //! Same zero-mean restriction as build_centroid_distance_table().
+  if (use_zero_mean_) {
+    return kErrUnsupported;
+  }
 
   // Validate unit_size against the input data type (same as quantize()).
   size_t expected_unit = 0;
@@ -723,8 +728,8 @@ int PqInt4Quantizer::quantize_precomputed_query(const void *query,
   const uint32_t elem_size = element_size();
 
   //! Preprocessing mirrors quantize_query() so the query lands in the same
-  //! space as the codebook: Cosine normalization first (inert on the
-  //! residual path, whose metric is intrinsically L2), then zero-mean.
+  //! space as the codebook: Cosine normalization only (inert on the residual
+  //! path, whose metric is intrinsically L2); zero-mean is gated out above.
   std::vector<uint8_t> norm_query_storage;
   const void *prep = query;
   if (meta_.metric_name() == "Cosine") {

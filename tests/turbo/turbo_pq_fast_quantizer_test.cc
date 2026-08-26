@@ -76,6 +76,23 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pqfs_quantizer(
   return q;
 }
 
+// Same, with zero-mean centering enabled.
+static std::shared_ptr<zvec::turbo::Quantizer> make_pqfs_zero_mean_quantizer(
+    size_t dim, size_t num_chunk) {
+  auto q = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  if (!q) return nullptr;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+
+  Params params;
+  params.set("num_chunk", static_cast<uint32_t>(num_chunk));
+  params.set("use_zero_mean", true);
+  if (q->init(meta, params) != 0) return nullptr;
+  return q;
+}
+
 // Helper: build a holder with random fp32 vectors.
 static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
 make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
@@ -857,6 +874,49 @@ TEST(PqFastQuantizer, PrecomputeMetricGates) {
   std::string qtable;
   EXPECT_NE(0, fast_ip->quantize_precomputed_query(query.data(), qmeta, &qtable,
                                                    &ometa));
+}
+
+// Zero-mean centering must be refused by the precomputed residual protocol:
+// build_centroid_distance_table() subtracted the mean from the coarse centroid
+// (term2) while quantize_precomputed_query() subtracts it from the query
+// (term3), so the mean cancelled out and the scan ranked against
+// ||q - c_i - c_m[j]||^2 instead of ||q - c_i - mean - c_m[j]||^2.  The gap is
+// -2<q - c_i, mean> + 2<c_m[j], mean> + ||mean||^2, and the middle term depends
+// on the code, so it reorders results inside a single list.  A nonzero return
+// is this capability's documented "unavailable" signal, so the caller keeps
+// using its own residual path.
+TEST(PqFastQuantizer, PrecomputeZeroMeanGates) {
+  const size_t DIM = 32;
+  const size_t NSQ = 8;
+
+  auto q = make_pqfs_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q);
+  auto fast = std::dynamic_pointer_cast<zvec::turbo::PqFastQuantizer>(q);
+  ASSERT_TRUE(fast);
+  ASSERT_EQ(0, q->train(make_random_holder(256, DIM)));
+
+  // Guard against a vacuous test: init() force-clears use_zero_mean_ for
+  // metrics other than L2/Cosine, so make sure it really stayed on here.  The
+  // serialized blob carries the extra centroid vector only when it did.
+  auto plain = make_pqfs_quantizer(DIM, NSQ);
+  ASSERT_TRUE(plain);
+  ASSERT_EQ(0, plain->train(make_random_holder(256, DIM)));
+  std::string blob_zm;
+  std::string blob_plain;
+  ASSERT_EQ(0, q->serialize(&blob_zm));
+  ASSERT_EQ(0, plain->serialize(&blob_plain));
+  ASSERT_EQ(blob_plain.size() + DIM * sizeof(float), blob_zm.size());
+
+  std::vector<float> centroid(DIM, 0.0f);
+  std::vector<float> query(DIM, 0.5f);
+  std::string table;
+  EXPECT_NE(0, fast->build_centroid_distance_table(centroid.data(), 1, &table));
+
+  IndexQueryMeta zm_qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  IndexQueryMeta zm_ometa;
+  std::string zm_qtable;
+  EXPECT_NE(0, fast->quantize_precomputed_query(query.data(), zm_qmeta,
+                                                &zm_qtable, &zm_ometa));
 }
 
 // ---------------------------------------------------------------------------
