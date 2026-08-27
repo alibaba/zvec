@@ -261,6 +261,7 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
   }
 
   entity_ = entity;
+  update_index_metric(metric);
   dc_.update(entity_.get(), metric, meta.dimension());
   if (vector_source_) {
     entity_->set_vector_source(vector_source_);

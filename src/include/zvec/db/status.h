@@ -153,6 +153,13 @@ class ZVEC_API Status {
                   concat(std::forward<Args>(args)...));
   }
 
+  /// @brief Factory: Failed precondition
+  template <typename... Args>
+  static Status FailedPrecondition(Args &&...args) {
+    return Status(StatusCode::FAILED_PRECONDITION,
+                  concat(std::forward<Args>(args)...));
+  }
+
   /// @brief Factory: Not supported
   template <typename... Args>
   static Status NotSupported(Args &&...args) {

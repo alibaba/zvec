@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
@@ -260,6 +261,11 @@ class IndexContext {
     threshold_set_ = false;
   }
 
+  //! Retrieve reusable storage for a transformed query.
+  std::string *mutable_features(void) {
+    return &features_;
+  }
+
  protected:
   //! Replace the metric associated with this context and recompute any
   //! configured threshold in the new metric's internal distance space.
@@ -308,6 +314,7 @@ class IndexContext {
   float raw_threshold_{std::numeric_limits<float>::max()};
   float threshold_{std::numeric_limits<float>::max()};
   bool threshold_set_{false};
+  std::string features_{};
 
   Profiler profiler_{};
 

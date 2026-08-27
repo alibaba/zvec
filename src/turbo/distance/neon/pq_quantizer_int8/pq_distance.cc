@@ -18,15 +18,17 @@
 // the running accumulator, halving the number of FP add operations.
 
 #include "neon/pq_quantizer_int8/pq_distance.h"
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <zvec/ailego/internal/platform.h>
+#if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
 #endif
 #include <cstddef>
 #include <cstdint>
+#include "scalar/pq_quantizer_int8/pq_distance.h"
 
 namespace zvec::turbo::neon {
 
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
 namespace {
 
 // Horizontal sum of 4 floats in a float32x4_t register via pairwise add.
@@ -43,7 +45,7 @@ inline float horizontal_sum_neon(float32x4_t v) {
 
 void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
                                size_t num_chunk, float *out) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 4;  // NEON processes 4 floats at once
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
@@ -60,7 +62,8 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
     float d1 = lut[(m + 1) * kNumCentroids + pq_code[m + 1]];
     float d2 = lut[(m + 2) * kNumCentroids + pq_code[m + 2]];
     float d3 = lut[(m + 3) * kNumCentroids + pq_code[m + 3]];
-    float32x4_t d = {d0, d1, d2, d3};
+    const float lane[4] = {d0, d1, d2, d3};
+    float32x4_t d = vld1q_f32(lane);
     acc = vaddq_f32(acc, d);
   }
 
@@ -73,17 +76,18 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
 
   *out = sum;
 #else
-  (void)pq_code_v;
-  (void)lut_v;
-  (void)num_chunk;
-  (void)out;
+  // Without NEON this translation unit still compiles, so delegate to the
+  // scalar kernel. Never leave `out` unwritten: turbo.cc selects these entry
+  // points from CpuFeatures flags, and a no-op here would silently return
+  // whatever the caller's buffer already held.
+  scalar::pq_adc_int8_distance(pq_code_v, lut_v, num_chunk, out);
 #endif
 }
 
 void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
                                const void *dist_table_v, size_t num_chunk,
                                float *out) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr int kNumCentroids = 256;
   constexpr int chunk = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 4;
@@ -109,7 +113,8 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
     float d3 = dist_table[(m + 3) * chunk +
                           static_cast<size_t>(a[m + 3]) * kNumCentroids +
                           static_cast<size_t>(b[m + 3])];
-    float32x4_t d = {d0, d1, d2, d3};
+    const float lane[4] = {d0, d1, d2, d3};
+    float32x4_t d = vld1q_f32(lane);
     acc = vaddq_f32(acc, d);
   }
 
@@ -124,18 +129,14 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
 
   *out = sum;
 #else
-  (void)a_v;
-  (void)b_v;
-  (void)dist_table_v;
-  (void)num_chunk;
-  (void)out;
+  scalar::pq_sdc_int8_distance(a_v, b_v, dist_table_v, num_chunk, out);
 #endif
 }
 
 void pq_adc_int8_batch_distance_neon(const void **candidates_v,
                                      const void *lut_v, size_t num,
                                      size_t num_chunk, float *out) {
-#if defined(__ARM_NEON) && defined(__aarch64__)
+#if defined(AILEGO_ARM64_NEON)
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 4;
   constexpr int kBatch = 4;
@@ -156,16 +157,26 @@ void pq_adc_int8_batch_distance_neon(const void **candidates_v,
 
     size_t m = 0;
     for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
-      const float *tab = lut + m * kNumCentroids;
+      // Each lane holds a different chunk, so every lane needs its own
+      // sub-table: lane j reads chunk (m + j). Sharing one base here would
+      // score every lane against chunk m's centroids.
+      const float *t0 = lut + (m + 0) * kNumCentroids;
+      const float *t1 = lut + (m + 1) * kNumCentroids;
+      const float *t2 = lut + (m + 2) * kNumCentroids;
+      const float *t3 = lut + (m + 3) * kNumCentroids;
 
-      float32x4_t d0 = {tab[c0[m + 0]], tab[c0[m + 1]], tab[c0[m + 2]],
-                        tab[c0[m + 3]]};
-      float32x4_t d1 = {tab[c1[m + 0]], tab[c1[m + 1]], tab[c1[m + 2]],
-                        tab[c1[m + 3]]};
-      float32x4_t d2 = {tab[c2[m + 0]], tab[c2[m + 1]], tab[c2[m + 2]],
-                        tab[c2[m + 3]]};
-      float32x4_t d3 = {tab[c3[m + 0]], tab[c3[m + 1]], tab[c3[m + 2]],
-                        tab[c3[m + 3]]};
+      const float lane0[4] = {t0[c0[m + 0]], t1[c0[m + 1]], t2[c0[m + 2]],
+                              t3[c0[m + 3]]};
+      const float lane1[4] = {t0[c1[m + 0]], t1[c1[m + 1]], t2[c1[m + 2]],
+                              t3[c1[m + 3]]};
+      const float lane2[4] = {t0[c2[m + 0]], t1[c2[m + 1]], t2[c2[m + 2]],
+                              t3[c2[m + 3]]};
+      const float lane3[4] = {t0[c3[m + 0]], t1[c3[m + 1]], t2[c3[m + 2]],
+                              t3[c3[m + 3]]};
+      float32x4_t d0 = vld1q_f32(lane0);
+      float32x4_t d1 = vld1q_f32(lane1);
+      float32x4_t d2 = vld1q_f32(lane2);
+      float32x4_t d3 = vld1q_f32(lane3);
 
       acc0 = vaddq_f32(acc0, d0);
       acc1 = vaddq_f32(acc1, d1);
@@ -196,11 +207,7 @@ void pq_adc_int8_batch_distance_neon(const void **candidates_v,
     pq_adc_int8_distance_neon(candidates[i], lut, num_chunk, out + i);
   }
 #else
-  (void)candidates_v;
-  (void)lut_v;
-  (void)num;
-  (void)num_chunk;
-  (void)out;
+  scalar::pq_adc_int8_batch_distance(candidates_v, lut_v, num, num_chunk, out);
 #endif
 }
 

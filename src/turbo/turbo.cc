@@ -19,11 +19,14 @@
 #include "avx2/rotate/fht/fht.h"
 #include "avx512/pq_quantizer_int8/pq_distance.h"
 #include "avx512/rotate/fht/fht.h"
+#include "avx512_vnni/fp16/squared_euclidean.h"
+#include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint7/quantize.h"
 #include "avx512_vnni/uniform_uint7/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint8/squared_euclidean.h"
+#include "conversion/avx512/convert.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
 #include "neon/rotate/fht/fht.h"
 #include "scalar/fp16/cosine.h"
@@ -33,6 +36,7 @@
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
 #include "scalar/pq_quantizer_int8/pq_distance.h"
+#include "scalar/raw_uint8/squared_euclidean.h"
 #include "scalar/record_quantized_int4/cosine.h"
 #include "scalar/record_quantized_int4/inner_product.h"
 #include "scalar/record_quantized_int4/squared_euclidean.h"
@@ -79,6 +83,26 @@ using RawDistanceFn = void (*)(const void *, const void *, size_t, float *);
 using RawBatchDistanceFn = void (*)(const void *const *, const void *, size_t,
                                     size_t, float *);
 
+using CpuFeatureMask = uint32_t;
+constexpr CpuFeatureMask kCpuFeatureNone = 0;
+constexpr CpuFeatureMask kCpuFeatureAvx512Bw = 1U << 0;
+constexpr CpuFeatureMask kCpuFeatureAvx512Dq = 1U << 1;
+constexpr CpuFeatureMask kCpuFeatureF16c = 1U << 2;
+
+bool HasRequiredCpuFeatures(CpuFeatureMask required) {
+  const auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
+  return ((required & kCpuFeatureAvx512Bw) == 0 || flags.AVX512BW) &&
+         ((required & kCpuFeatureAvx512Dq) == 0 || flags.AVX512DQ) &&
+         ((required & kCpuFeatureF16c) == 0 || flags.F16C);
+}
+
+bool CanUseKernel(CpuArchType requested_arch, CpuArchType kernel_arch,
+                  CpuFeatureMask required) {
+  return IsArchMatch(requested_arch, kernel_arch) &&
+         (kernel_arch == CpuArchType::kScalar || CpuSupports(kernel_arch)) &&
+         HasRequiredCpuFeatures(required);
+}
+
 //! One row = one kernel family: all functions that must be used together
 //! for a given (metric, data type) combination on a given ISA.
 struct KernelSet {
@@ -89,11 +113,31 @@ struct KernelSet {
   RawDistanceFn dist;
   RawBatchDistanceFn batch;
   QueryPreprocessFunc preprocess;  //!< non-null: batch needs preprocessing
+  CpuFeatureMask required_cpu_features{kCpuFeatureNone};
 };
 
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
+    // --- raw physical storage (AVX512, then scalar fallback) ---
+    {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
+     MetricType::kSquaredEuclidean,
+     avx512_vnni::squared_euclidean_uint8_distance,
+     avx512_vnni::squared_euclidean_uint8_batch_distance, nullptr,
+     kCpuFeatureAvx512Bw},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
+     MetricType::kSquaredEuclidean,
+     avx512_vnni::squared_euclidean_fp16_distance,
+     avx512_vnni::squared_euclidean_fp16_batch_distance, nullptr,
+     kCpuFeatureAvx512Dq | kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean,
+     scalar::squared_euclidean_raw_uint8_distance,
+     scalar::squared_euclidean_raw_uint8_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::squared_euclidean_fp16_distance,
+     scalar::squared_euclidean_fp16_batch_distance, nullptr},
+
     // --- record-quantized int8 (AVX512-VNNI, then scalar fallback) ---
     {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
@@ -161,6 +205,20 @@ constexpr KernelSet kKernelTable[] = {
      scalar::inner_product_fp32_batch_distance, nullptr},
 };
 
+struct ConvertKernel {
+  DataType target_dtype;
+  CpuArchType arch;
+  ConvertFunc convert;
+  CpuFeatureMask required_cpu_features;
+};
+
+constexpr ConvertKernel kConvertKernelTable[] = {
+    {DataType::kUint8, CpuArchType::kAVX512, avx512::fp32_to_uint8,
+     kCpuFeatureAvx512Bw},
+    {DataType::kFp16, CpuArchType::kAVX512, avx512::fp32_to_fp16,
+     kCpuFeatureF16c},
+};
+
 // Returns the first (highest-priority) matching kernel row, or nullptr.
 // Scalar rows are the fallback for auto dispatch: they match for kAuto and
 // kScalar requests. An explicit SIMD arch request yields nullptr when that
@@ -174,8 +232,17 @@ const KernelSet *FindKernel(MetricType metric_type, DataType data_type,
         k.quantize != quantize_type) {
       continue;
     }
-    if (IsArchMatch(cpu_arch_type, k.arch) &&
-        (k.arch == CpuArchType::kScalar || CpuSupports(k.arch))) {
+    if (CanUseKernel(cpu_arch_type, k.arch, k.required_cpu_features)) {
+      return &k;
+    }
+  }
+  return nullptr;
+}
+
+const ConvertKernel *FindConvertKernel(DataType target_data_type) {
+  for (const auto &k : kConvertKernelTable) {
+    if (k.target_dtype == target_data_type &&
+        CanUseKernel(CpuArchType::kAuto, k.arch, k.required_cpu_features)) {
       return &k;
     }
   }
@@ -239,6 +306,11 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
     }
   }
   return nullptr;
+}
+
+ConvertFunc get_convert_func(DataType target_data_type) {
+  const ConvertKernel *k = FindConvertKernel(target_data_type);
+  return k ? k->convert : nullptr;
 }
 
 CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,

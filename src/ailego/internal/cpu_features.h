@@ -371,16 +371,14 @@ class CpuFeatures {
 
     bool HYPERVISOR = CpuFeatures::HYPERVISOR();
 
-<<<<<<< HEAD
     //! ARM NEON (ASIMD) support
     bool NEON = CpuFeatures::NEON();
-=======
+
     //! RISC-V Vector Extension
     bool RISCV_VECTOR = CpuFeatures::RISCV_VECTOR();
 
     //! RISC-V Zvfh Extension
     bool RISCV_ZVFH = CpuFeatures::RISCV_ZVFH();
->>>>>>> e8844fc (feat(cpu_features): implement runtime detection for RISC-V RVV)
   };
   static StaticFlags static_flags_;
 };

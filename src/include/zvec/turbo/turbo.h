@@ -56,6 +56,9 @@ using QueryPreprocessFunc =
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
+// Direct FP32 conversion. The output layout is selected by get_convert_func().
+using ConvertFunc = void (*)(const float *in, size_t dim, void *out);
+
 // Generic rotate / unrotate function pointer types.
 // ctx is an opaque context (e.g. FhtCtx*) managed by the caller.
 using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
@@ -118,6 +121,7 @@ enum class DataType {
   kInt8,
   kFp16,
   kFp32,
+  kUint8,
   kUnknown,
 };
 
@@ -125,12 +129,16 @@ enum class QuantizeType {
   // Explicit values: type ids are persisted in serialized headers
   // (QuantizerSerHeader.quant_type); 0 was the retired kDefault.
   kUniform = 1,  // Uniform uint7: codes are restricted to [0, 127].
-  kRecord,
-  kFp16,
-  kFp32,
-  kPQ,
-  kRabit,
-  kUniformUint8,  // Uniform uint8: codes cover the full [0, 255] range.
+  kRecord = 2,
+  kFp16 = 3,
+  kFp32 = 4,
+  kPQ = 5,
+  kRabit = 6,
+  kUniformUint8 = 7,  // Uniform uint8: codes cover the full [0, 255] range.
+  // Identity/raw quantization family for vectors kept in their direct
+  // physical representation. Used for kernel dispatch; no serialized
+  // quantizer payload is required.
+  kRaw = 8,
 };
 
 enum class RotateType : uint16_t {
@@ -188,6 +196,11 @@ ZVEC_TURBO_API DistanceKernels get_distance_kernels(
 // interface can grow to cover other output types (e.g. fp16) in the future.
 ZVEC_TURBO_API UniformQuantizeFunc
 get_uniform_quantize_func(DataType data_type);
+
+// Returns an optimized fp32 conversion kernel for the requested physical
+// target type, or nullptr when no optimized implementation is available.
+// Currently kFp16 and kUint8 are supported.
+ZVEC_TURBO_API ConvertFunc get_convert_func(DataType target_data_type);
 
 // Returns rotator kernels dispatched for the current CPU.
 ZVEC_TURBO_API RotatorKernels get_rotator_kernels(

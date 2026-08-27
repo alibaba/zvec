@@ -54,20 +54,20 @@ core::IndexContext::Pointer &Index::acquire_context() {
   return _context_list[context_index_];
 }
 
-int Index::Train() {
+int Index::train() {
   is_trained_ = true;
   return 0;
 }
 
-BaseIndexParam::Pointer Index::GetParam() const {
+BaseIndexParam::Pointer Index::get_param() const {
   return std::make_shared<BaseIndexParam>(param_);
 }
 
-bool Index::IsTrained() const {
+bool Index::is_trained() const {
   return is_trained_;
 }
 
-uint32_t Index::GetDocCount() const {
+uint32_t Index::get_doc_count() const {
   if (streamer_ == nullptr) {
     return -1;
   }
@@ -243,6 +243,11 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
     }
   }
 
+  return InitConverterReformer(converter_name, converter_params);
+}
+
+int Index::InitConverterReformer(const std::string &converter_name,
+                                 const ailego::Params &converter_params) {
   proxima_index_meta_.set_converter(converter_name, 0, converter_params);
   converter_ = core::IndexFactory::CreateConverter(converter_name);
   if (converter_ == nullptr ||
@@ -316,7 +321,7 @@ int Index::Init(const BaseIndexParam &param) {
 }
 
 
-int Index::Open(const std::string &file_path, StorageOptions storage_options) {
+int Index::open(const std::string &file_path, StorageOptions storage_options) {
   ailego::Params storage_params;
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
@@ -377,7 +382,7 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // If a converter exists but reformer was not created during Init() because
+  // If a converter exists but reformer was not created during init() because
   // its params are only available after training, create it now from the
   // persisted meta loaded by the streamer. When there is no converter
   // (QuantizerType::kNone), reformer_ is nullptr by design.
@@ -385,7 +390,7 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {
       LOG_ERROR(
-          "Index::Open: converter exists but reformer not initialized and "
+          "Index::open: converter exists but reformer not initialized and "
           "no reformer in persisted meta");
       return core::IndexError_Runtime;
     }
@@ -430,14 +435,14 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   return 0;
 }
 
-int Index::Close() {
+int Index::close() {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
   }
 
   if (!is_read_only_) {
-    if (ailego_unlikely(Flush() != 0)) {
+    if (ailego_unlikely(flush() != 0)) {
       LOG_ERROR("Failed to cleanup streamer");
       return core::IndexError_Runtime;
     }
@@ -454,7 +459,7 @@ int Index::Close() {
   return 0;
 }
 
-int Index::Flush() {
+int Index::flush() {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -475,14 +480,14 @@ int Index::Flush() {
   return 0;
 }
 
-bool Index::IsDirty() const {
+bool Index::is_dirty() const {
   if (!storage_) {
     return false;
   }
   return storage_->is_dirty();
 }
 
-int Index::Fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
+int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -493,7 +498,7 @@ int Index::Fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
   return _dense_fetch(doc_id, vector_data_buffer);
 }
 
-int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
+int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -520,13 +525,13 @@ int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
   return ret;
 }
 
-int Index::AddWithSource(const VectorData & /*vector*/, uint32_t /*doc_id*/,
-                         const core::VectorSource & /*src*/) {
+int Index::add_with_source(const VectorData & /*vector*/, uint32_t /*doc_id*/,
+                           const core::VectorSource & /*src*/) {
   LOG_ERROR("AddWithSource is not supported by this index type");
   return core::IndexError_Unsupported;
 }
 
-int Index::SearchWithSource(
+int Index::search_with_source(
     const VectorData & /*query*/,
     const BaseIndexQueryParam::Pointer & /*search_param*/,
     const core::VectorSource & /*src*/, SearchResult * /*result*/) {
@@ -534,7 +539,7 @@ int Index::SearchWithSource(
   return core::IndexError_Unsupported;
 }
 
-int Index::Search(const VectorData &vector_data,
+int Index::search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,
                   SearchResult *result) {
   if (!is_open_) {
@@ -553,7 +558,7 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
-  if (!is_trained_ && this->Train() != 0) {
+  if (!is_trained_ && this->train() != 0) {
     LOG_ERROR("Failed to train index");
     return core::IndexError_Runtime;
   }
@@ -610,15 +615,15 @@ int Index::Search(const VectorData &vector_data,
       keys[i] = base_result[i].key();
     }
 
-    FlatQueryParam::Pointer flat_search_param =
-        std::make_shared<FlatQueryParam>();
+    auto flat_search_param = std::make_shared<FlatQueryParam>();
     flat_search_param->topk = search_param->topk;
     flat_search_param->fetch_vector = search_param->fetch_vector;
     flat_search_param->filter = search_param->filter;
-    // TODO: should copy other params?
-    flat_search_param->bf_pks = std::make_shared<std::vector<uint64_t>>(keys);
+    flat_search_param->bf_pks =
+        std::make_shared<std::vector<uint64_t>>(std::move(keys));
 
-    ret = reference_index->Search(vector_data, flat_search_param, result);
+    result->reverted_vector_list_.clear();
+    ret = reference_index->search(vector_data, flat_search_param, result);
     context->reset();
   }
   return ret;
@@ -691,15 +696,15 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   if (reformer_ != nullptr) {
     core::IndexQueryMeta new_meta;
-    std::string new_vector;
+    auto *new_vector = context->mutable_features();
     int ret;
-    ret = reformer_->convert(dense_vector.data, input_vector_meta_, &new_vector,
+    ret = reformer_->convert(dense_vector.data, input_vector_meta_, new_vector,
                              &new_meta);
     if (ret != 0) {
       LOG_ERROR("Failed to convert vector");
       return core::IndexError_Runtime;
     }
-    ret = streamer_->add_with_id_impl(doc_id, new_vector.data(), new_meta,
+    ret = streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
                                       context);
     if (ret != 0) {
       LOG_ERROR("Failed to add vector");
@@ -768,15 +773,15 @@ int Index::_dense_search(const VectorData &vector_data,
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   auto vector = dense_vector.data;
   // Check if need to transform feature
-  std::string new_vector;
   core::IndexQueryMeta new_meta = input_vector_meta_;
   if (reformer_ != nullptr) {
-    if (reformer_->transform(dense_vector.data, input_vector_meta_, &new_vector,
+    auto *new_vector = context->mutable_features();
+    if (reformer_->transform(dense_vector.data, input_vector_meta_, new_vector,
                              &new_meta) != 0) {
       LOG_ERROR("Failed to transform vector");
       return core::IndexError_Runtime;
     }
-    vector = new_vector.data();
+    vector = new_vector->data();
   }
   if (search_param->bf_pks != nullptr) {
     // should we eliminate the copy of bf_pks?
@@ -1002,7 +1007,7 @@ int Index::_sparse_search(const VectorData &vector_data,
 }
 
 
-int Index::Merge(const std::vector<Index::Pointer> &indexes,
+int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
   if (indexes.empty()) {
     return core::IndexError_Success;

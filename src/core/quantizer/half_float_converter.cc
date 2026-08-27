@@ -13,9 +13,24 @@
 // limitations under the License.
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_framework.h>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+void Fp32ToFp16Fallback(const float *input, size_t dimension, void *output) {
+  ailego::FloatHelper::ToFP16(input, dimension,
+                              static_cast<uint16_t *>(output));
+}
+
+turbo::ConvertFunc ResolveFp16ConvertFunc() {
+  auto convert = turbo::get_convert_func(turbo::DataType::kFp16);
+  return convert ? convert : Fp32ToFp16Fallback;
+}
+
+}  // namespace
 
 /*! Half Float Holder
  */
@@ -31,7 +46,9 @@ class HalfFloatHolder : public IndexHolder {
     //! Constructor
     Iterator(const HalfFloatHolder *owner,
              IndexHolder::Iterator::Pointer &&iter)
-        : buffer_(owner->dimension(), 0), front_iter_(std::move(iter)) {
+        : owner_(owner),
+          buffer_(owner->dimension(), 0),
+          front_iter_(std::move(iter)) {
       this->transform_record();
     }
 
@@ -62,18 +79,20 @@ class HalfFloatHolder : public IndexHolder {
    private:
     inline void transform_record(void) {
       if (front_iter_->is_valid()) {
-        ailego::FloatHelper::ToFP16(
+        owner_->convert_func_(
             reinterpret_cast<const float *>(front_iter_->data()),
             buffer_.size(), buffer_.data());
       }
     }
 
+    const HalfFloatHolder *owner_{nullptr};
     std::vector<uint16_t> buffer_{};
     IndexHolder::Iterator::Pointer front_iter_{};
   };
 
   //! Constructor
-  HalfFloatHolder(IndexHolder::Pointer front) : front_(std::move(front)) {}
+  HalfFloatHolder(IndexHolder::Pointer front, turbo::ConvertFunc convert_func)
+      : front_(std::move(front)), convert_func_(convert_func) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count(void) const override {
@@ -110,11 +129,13 @@ class HalfFloatHolder : public IndexHolder {
   }
 
  private:
+  friend class Iterator;
   //! Disable them
   HalfFloatHolder(void) = delete;
 
   //! Members
   IndexHolder::Pointer front_{};
+  turbo::ConvertFunc convert_func_{nullptr};
 };
 
 /*! Half Float Converter
@@ -134,6 +155,7 @@ class HalfFloatConverter : public IndexConverter {
     }
 
     meta_ = mt;
+    convert_func_ = ResolveFp16ConvertFunc();
     meta_.set_meta(IndexMeta::DataType::DT_FP16, mt.dimension());
     meta_.set_converter("HalfFloatConverter", 0, ailego::Params());
     meta_.set_reformer("HalfFloatReformer", 0, ailego::Params());
@@ -156,7 +178,8 @@ class HalfFloatConverter : public IndexConverter {
         holder->dimension() != meta_.dimension()) {
       return IndexError_Mismatch;
     }
-    holder_ = std::make_shared<HalfFloatHolder>(std::move(holder));
+    holder_ =
+        std::make_shared<HalfFloatHolder>(std::move(holder), convert_func_);
     return 0;
   }
 
@@ -184,6 +207,7 @@ class HalfFloatConverter : public IndexConverter {
   IndexMeta meta_{};
   IndexHolder::Pointer holder_{};
   Stats stats_{};
+  turbo::ConvertFunc convert_func_{nullptr};
 };
 
 /*! Half Float Sparse Holder

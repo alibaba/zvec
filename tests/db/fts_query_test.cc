@@ -99,7 +99,7 @@ TEST_F(FtsQueryTest, BasicFtsQuery) {
   docs.push_back(MakeDoc(2, "faq", "baz qux nothing here"));
   docs.push_back(MakeDoc(3, "tips", "hello hello hello world"));
 
-  auto insert_res = col->Insert(docs);
+  auto insert_res = col->insert(docs);
   ASSERT_TRUE(insert_res.has_value()) << insert_res.error().message();
 
   // FTS query: search for "hello"
@@ -110,7 +110,7 @@ TEST_F(FtsQueryTest, BasicFtsQuery) {
   fts.query_string_ = "hello";
   vq.target_.clause_ = fts;
 
-  auto query_res = col->Query(vq);
+  auto query_res = col->query(vq);
   ASSERT_TRUE(query_res.has_value()) << query_res.error().message();
 
   auto &results = query_res.value();
@@ -132,7 +132,7 @@ TEST_F(FtsQueryTest, NGramTokenizerEndToEnd) {
   docs.push_back(MakeDoc(0, "chinese",
                          "\xE4\xB8\xAD\xE6\x96\x87\xE5\x88\x86\xE8\xAF\x8D"));
   docs.push_back(MakeDoc(1, "english", "english tokenizer"));
-  auto insert_result = col->Insert(docs);
+  auto insert_result = col->insert(docs);
   ASSERT_TRUE(insert_result.has_value()) << insert_result.error().message();
 
   SearchQuery query;
@@ -142,7 +142,7 @@ TEST_F(FtsQueryTest, NGramTokenizerEndToEnd) {
   fts.query_string_ = "\xE4\xB8\xAD\xE6\x96\x87";
   query.target_.clause_ = fts;
 
-  auto query_result = col->Query(query);
+  auto query_result = col->query(query);
   ASSERT_TRUE(query_result.has_value()) << query_result.error().message();
   ASSERT_EQ(query_result.value().size(), 1u);
 }
@@ -180,7 +180,7 @@ TEST_F(FtsQueryTest, FtsQueryEmptyField) {
   fts.query_string_ = "hello";
   vq.target_.clause_ = fts;
 
-  auto query_res = col->Query(vq);
+  auto query_res = col->query(vq);
   ASSERT_FALSE(query_res.has_value());
 }
 
@@ -195,7 +195,7 @@ TEST_F(FtsQueryTest, FtsQueryNoMatch) {
 
   std::vector<Doc> docs;
   docs.push_back(MakeDoc(0, "intro", "hello world"));
-  auto insert_res = col->Insert(docs);
+  auto insert_res = col->insert(docs);
   ASSERT_TRUE(insert_res.has_value());
 
   SearchQuery vq;
@@ -205,7 +205,7 @@ TEST_F(FtsQueryTest, FtsQueryNoMatch) {
   fts.query_string_ = "nonexistent_term_xyz";
   vq.target_.clause_ = fts;
 
-  auto query_res = col->Query(vq);
+  auto query_res = col->query(vq);
   ASSERT_TRUE(query_res.has_value());
   ASSERT_EQ(query_res.value().size(), 0u);
 }
@@ -224,14 +224,14 @@ TEST_F(FtsQueryTest, FtsFieldUnsupportedAddColumn) {
   // Insert a document so the collection is non-empty
   std::vector<Doc> docs;
   docs.push_back(MakeDoc(0, "intro", "hello world"));
-  auto insert_res = col->Insert(docs);
+  auto insert_res = col->insert(docs);
   ASSERT_TRUE(insert_res.has_value());
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
   // Attempt to add a new FTS column — should fail
   auto fts_field = std::make_shared<FieldSchema>(
       "new_fts", DataType::STRING, true, std::make_shared<FtsIndexParams>());
-  auto status = col->AddColumn(fts_field, "", AddColumnOptions());
+  auto status = col->add_column(fts_field, "", AddColumnOptions());
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
 }
@@ -248,12 +248,12 @@ TEST_F(FtsQueryTest, FtsFieldUnsupportedDropColumn) {
   // Insert a document so the collection is non-empty
   std::vector<Doc> docs;
   docs.push_back(MakeDoc(0, "intro", "hello world"));
-  auto insert_res = col->Insert(docs);
+  auto insert_res = col->insert(docs);
   ASSERT_TRUE(insert_res.has_value());
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
   // Attempt to drop an existing FTS column — should fail
-  auto status = col->DropColumn("content");
+  auto status = col->drop_column("content");
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
 }
@@ -270,20 +270,21 @@ TEST_F(FtsQueryTest, FtsFieldUnsupportedAlterColumn) {
   // Insert a document so the collection is non-empty
   std::vector<Doc> docs;
   docs.push_back(MakeDoc(0, "intro", "hello world"));
-  auto insert_res = col->Insert(docs);
+  auto insert_res = col->insert(docs);
   ASSERT_TRUE(insert_res.has_value());
-  ASSERT_TRUE(col->Flush().ok());
+  ASSERT_TRUE(col->flush().ok());
 
   // Attempt to alter (rename) the FTS column — should fail
-  auto status = col->AlterColumn("content", "content_renamed", nullptr,
-                                 AlterColumnOptions());
+  auto status = col->alter_column("content", "content_renamed", nullptr,
+                                  AlterColumnOptions());
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
 
   // Attempt to alter the FTS column with a new schema — should also fail
   auto new_fts_field = std::make_shared<FieldSchema>(
       "content", DataType::STRING, true, std::make_shared<FtsIndexParams>());
-  status = col->AlterColumn("content", "", new_fts_field, AlterColumnOptions());
+  status =
+      col->alter_column("content", "", new_fts_field, AlterColumnOptions());
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
 }

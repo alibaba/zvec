@@ -38,6 +38,9 @@ class IndexMeta {
     DT_INT4 = 6,
     DT_BINARY32 = 7,
     DT_BINARY64 = 8,
+    // Native unsigned-byte vector storage. Unlike uniform quantization this
+    // carries no scale/bias metadata: every component is stored verbatim.
+    DT_UINT8 = 9,
   };
 
 
@@ -83,6 +86,7 @@ class IndexMeta {
         metric_revision_(rhs.metric_revision_),
         converter_revision_(rhs.converter_revision_),
         reformer_revision_(rhs.reformer_revision_),
+        quantizer_revision_(rhs.quantizer_revision_),
         trainer_revision_(rhs.trainer_revision_),
         builder_revision_(rhs.builder_revision_),
         reducer_revision_(rhs.reducer_revision_),
@@ -91,6 +95,7 @@ class IndexMeta {
         metric_name_(rhs.metric_name_),
         converter_name_(rhs.converter_name_),
         reformer_name_(rhs.reformer_name_),
+        quantizer_name_(rhs.quantizer_name_),
         trainer_name_(rhs.trainer_name_),
         builder_name_(rhs.builder_name_),
         reducer_name_(rhs.reducer_name_),
@@ -99,6 +104,7 @@ class IndexMeta {
         metric_params_(rhs.metric_params_),
         converter_params_(rhs.converter_params_),
         reformer_params_(rhs.reformer_params_),
+        quantizer_params_(rhs.quantizer_params_),
         trainer_params_(rhs.trainer_params_),
         builder_params_(rhs.builder_params_),
         reducer_params_(rhs.reducer_params_),
@@ -119,6 +125,7 @@ class IndexMeta {
         metric_revision_(rhs.metric_revision_),
         converter_revision_(rhs.converter_revision_),
         reformer_revision_(rhs.reformer_revision_),
+        quantizer_revision_(rhs.quantizer_revision_),
         trainer_revision_(rhs.trainer_revision_),
         builder_revision_(rhs.builder_revision_),
         reducer_revision_(rhs.reducer_revision_),
@@ -127,6 +134,7 @@ class IndexMeta {
         metric_name_(std::move(rhs.metric_name_)),
         converter_name_(std::move(rhs.converter_name_)),
         reformer_name_(std::move(rhs.reformer_name_)),
+        quantizer_name_(std::move(rhs.quantizer_name_)),
         trainer_name_(std::move(rhs.trainer_name_)),
         builder_name_(std::move(rhs.builder_name_)),
         reducer_name_(std::move(rhs.reducer_name_)),
@@ -135,6 +143,7 @@ class IndexMeta {
         metric_params_(std::move(rhs.metric_params_)),
         converter_params_(std::move(rhs.converter_params_)),
         reformer_params_(std::move(rhs.reformer_params_)),
+        quantizer_params_(std::move(rhs.quantizer_params_)),
         trainer_params_(std::move(rhs.trainer_params_)),
         builder_params_(std::move(rhs.builder_params_)),
         reducer_params_(std::move(rhs.reducer_params_)),
@@ -154,6 +163,7 @@ class IndexMeta {
     metric_revision_ = rhs.metric_revision_;
     converter_revision_ = rhs.converter_revision_;
     reformer_revision_ = rhs.reformer_revision_;
+    quantizer_revision_ = rhs.quantizer_revision_;
     trainer_revision_ = rhs.trainer_revision_;
     builder_revision_ = rhs.builder_revision_;
     reducer_revision_ = rhs.reducer_revision_;
@@ -162,6 +172,7 @@ class IndexMeta {
     metric_name_ = std::move(rhs.metric_name_);
     converter_name_ = std::move(rhs.converter_name_);
     reformer_name_ = std::move(rhs.reformer_name_);
+    quantizer_name_ = std::move(rhs.quantizer_name_);
     trainer_name_ = std::move(rhs.trainer_name_);
     builder_name_ = std::move(rhs.builder_name_);
     reducer_name_ = std::move(rhs.reducer_name_);
@@ -170,6 +181,7 @@ class IndexMeta {
     metric_params_ = std::move(rhs.metric_params_);
     converter_params_ = std::move(rhs.converter_params_);
     reformer_params_ = std::move(rhs.reformer_params_);
+    quantizer_params_ = std::move(rhs.quantizer_params_);
     trainer_params_ = std::move(rhs.trainer_params_);
     builder_params_ = std::move(rhs.builder_params_);
     reducer_params_ = std::move(rhs.reducer_params_);
@@ -193,6 +205,7 @@ class IndexMeta {
     metric_revision_ = rhs.metric_revision_;
     converter_revision_ = rhs.converter_revision_;
     reformer_revision_ = rhs.reformer_revision_;
+    quantizer_revision_ = rhs.quantizer_revision_;
     trainer_revision_ = rhs.trainer_revision_;
     builder_revision_ = rhs.builder_revision_;
     reducer_revision_ = rhs.reducer_revision_;
@@ -201,6 +214,7 @@ class IndexMeta {
     metric_name_ = std::move(rhs.metric_name_);
     converter_name_ = std::move(rhs.converter_name_);
     reformer_name_ = std::move(rhs.reformer_name_);
+    quantizer_name_ = std::move(rhs.quantizer_name_);
     trainer_name_ = std::move(rhs.trainer_name_);
     builder_name_ = std::move(rhs.builder_name_);
     reducer_name_ = std::move(rhs.reducer_name_);
@@ -209,6 +223,7 @@ class IndexMeta {
     metric_params_ = std::move(rhs.metric_params_);
     converter_params_ = std::move(rhs.converter_params_);
     reformer_params_ = std::move(rhs.reformer_params_);
+    quantizer_params_ = std::move(rhs.quantizer_params_);
     trainer_params_ = std::move(rhs.trainer_params_);
     builder_params_ = std::move(rhs.builder_params_);
     reducer_params_ = std::move(rhs.reducer_params_);
@@ -232,6 +247,7 @@ class IndexMeta {
     metric_revision_ = 0;
     converter_revision_ = 0;
     reformer_revision_ = 0;
+    quantizer_revision_ = 0;
     trainer_revision_ = 0;
     builder_revision_ = 0;
     reducer_revision_ = 0;
@@ -240,6 +256,7 @@ class IndexMeta {
     metric_name_.clear();
     converter_name_.clear();
     reformer_name_.clear();
+    quantizer_name_.clear();
     trainer_name_.clear();
     builder_name_.clear();
     reducer_name_.clear();
@@ -248,6 +265,7 @@ class IndexMeta {
     metric_params_.clear();
     converter_params_.clear();
     reformer_params_.clear();
+    quantizer_params_.clear();
     trainer_params_.clear();
     builder_params_.clear();
     reducer_params_.clear();
@@ -312,6 +330,11 @@ class IndexMeta {
     return reformer_revision_;
   }
 
+  //! Retrieve revision of quantizer
+  uint32_t quantizer_revision(void) const {
+    return quantizer_revision_;
+  }
+
   //! Retrieve revision of trainer
   uint32_t trainer_revision(void) const {
     return trainer_revision_;
@@ -352,6 +375,11 @@ class IndexMeta {
     return reformer_name_;
   }
 
+  //! Retrieve name of quantizer
+  const std::string &quantizer_name(void) const {
+    return quantizer_name_;
+  }
+
   //! Retrieve name of trainer
   const std::string &trainer_name(void) const {
     return trainer_name_;
@@ -390,6 +418,11 @@ class IndexMeta {
   //! Retrieve reformer params
   const ailego::Params &reformer_params(void) const {
     return reformer_params_;
+  }
+
+  //! Retrieve quantizer params
+  const ailego::Params &quantizer_params(void) const {
+    return quantizer_params_;
   }
 
   //! Retrieve trainer params
@@ -494,6 +527,14 @@ class IndexMeta {
     reformer_params_ = std::forward<TParams>(params);
   }
 
+  //! Set information of quantizer
+  template <typename TName, typename TParams>
+  void set_quantizer(TName &&name, uint32_t rev, TParams &&params) {
+    quantizer_name_ = std::forward<TName>(name);
+    quantizer_revision_ = rev;
+    quantizer_params_ = std::forward<TParams>(params);
+  }
+
   //! Set information of trainer
   template <typename TName, typename TParams>
   void set_trainer(TName &&name, uint32_t rev, TParams &&params) {
@@ -551,7 +592,8 @@ class IndexMeta {
         sizeof(int16_t),   // DT_INT16
         sizeof(uint8_t),   // DT_INT4
         sizeof(uint32_t),  // DT_BINARY32
-        sizeof(uint64_t)   // DT_BINARY64
+        sizeof(uint64_t),  // DT_BINARY64
+        sizeof(uint8_t)    // DT_UINT8
     };
     return unit_size_table[data_type];
   }
@@ -567,7 +609,8 @@ class IndexMeta {
         sizeof(int16_t),      // DT_INT16
         sizeof(uint8_t) * 4,  // DT_INT4
         sizeof(uint32_t),     // DT_BINARY32
-        sizeof(uint64_t)      // DT_BINARY64
+        sizeof(uint64_t),     // DT_BINARY64
+        sizeof(uint8_t) * 4   // DT_UINT8
     };
     return align_size_table[ft];
   }
@@ -583,6 +626,7 @@ class IndexMeta {
       case DataType::DT_FP64:
       case DataType::DT_INT8:
       case DataType::DT_INT16:
+      case DataType::DT_UINT8:
         return (dim * unit);
       case DataType::DT_INT4:
         return (dim + unit * 2 - 1) / (unit * 2) * unit;
@@ -610,6 +654,7 @@ class IndexMeta {
   uint32_t metric_revision_{0};
   uint32_t converter_revision_{0};
   uint32_t reformer_revision_{0};
+  uint32_t quantizer_revision_{0};
   uint32_t trainer_revision_{0};
   uint32_t builder_revision_{0};
   uint32_t reducer_revision_{0};
@@ -619,6 +664,7 @@ class IndexMeta {
   std::string metric_name_{};
   std::string converter_name_{};
   std::string reformer_name_{};
+  std::string quantizer_name_{};
   std::string trainer_name_{};
   std::string builder_name_{};
   std::string reducer_name_{};
@@ -628,6 +674,7 @@ class IndexMeta {
   ailego::Params metric_params_{};
   ailego::Params converter_params_{};
   ailego::Params reformer_params_{};
+  ailego::Params quantizer_params_{};
   ailego::Params trainer_params_{};
   ailego::Params builder_params_{};
   ailego::Params reducer_params_{};

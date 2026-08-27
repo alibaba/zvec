@@ -14,7 +14,10 @@
 
 #pragma once
 
+#include <atomic>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 #include <ailego/parallel/lock.h>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
@@ -26,6 +29,13 @@
 
 namespace zvec {
 namespace core {
+
+//! Reusable request-local buffers for storage-specific Flat search paths.
+struct FlatSearchScratch {
+  std::vector<const void *> vector_ptrs{};
+  std::vector<uint64_t> vector_keys{};
+  std::vector<float> distances{};
+};
 
 /*! Flat Streamer Entity
  */
@@ -43,7 +53,7 @@ class FlatStreamerEntity {
   int open(IndexStorage::Pointer storage, const IndexMeta &mt);
 
   //! Close the entity
-  int close(void);
+  virtual int close(void);
 
   //! Flush Linear Meta information to storage
   int flush_linear_meta(void);
@@ -52,11 +62,22 @@ class FlatStreamerEntity {
   int flush(uint64_t checkpoint);
 
   //! Add vector to linear index
-  int add(uint64_t key, const void *vec, size_t size);
+  virtual int add(uint64_t key, const void *vec, size_t size);
 
   //! Search in linear list with filter
-  int search(const void *query, const IndexFilter &filter, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+  virtual int search(const void *query, const IndexFilter &filter,
+                     uint32_t *scan_count, IndexDocumentHeap *heap,
+                     IndexContext::Stats *context_stats,
+                     FlatSearchScratch *scratch = nullptr,
+                     size_t batch_size = 0) const;
+
+  //! Search the requested primary keys.
+  virtual int search_by_p_keys(const void *query,
+                               const std::vector<uint64_t> &p_keys,
+                               const IndexFilter &filter,
+                               IndexDocumentHeap *heap,
+                               FlatSearchScratch *scratch = nullptr,
+                               size_t batch_size = 0) const;
 
   //! Search in a block
   void search_block(const void *query, const BlockLocation &bl,
@@ -110,10 +131,10 @@ class FlatStreamerEntity {
   }
 
   //! Retrieve vector by local id
-  const void *get_vector_by_key(uint64_t key) const;
+  virtual const void *get_vector_by_key(uint64_t key) const;
 
-  int get_vector_by_key(const uint64_t key,
-                        IndexStorage::MemoryBlock &block) const;
+  virtual int get_vector_by_key(const uint64_t key,
+                                IndexStorage::MemoryBlock &block) const;
 
   //! Create a new iterator
   IndexProvider::Iterator::Pointer creater_iterator(void) const;
@@ -161,8 +182,30 @@ class FlatStreamerEntity {
     }
   }
 
-  int add_vector_with_id(const uint32_t id, const void *query,
-                         const uint32_t element_size);
+  virtual int add_vector_with_id(const uint32_t id, const void *query,
+                                 const uint32_t element_size);
+
+ protected:
+  const IndexMetric::MatrixDistance &distance(void) const {
+    return row_distance_;
+  }
+
+  const IndexMetric::MatrixBatchDistance &batch_distance(void) const {
+    return batch_distance_;
+  }
+
+  int get_vector_by_position(uint32_t id,
+                             IndexStorage::MemoryBlock &block) const;
+
+  int get_key_by_position(uint32_t id, uint64_t *key) const;
+
+  size_t id_key_count(void) const {
+    return id_key_vector_.size();
+  }
+
+  bool use_key_info_map(void) const {
+    return use_key_info_map_;
+  }
 
  private:
   //! Disable them
@@ -388,6 +431,7 @@ class FlatStreamerEntity {
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
+  IndexMetric::MatrixBatchDistance batch_distance_{};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};
@@ -401,6 +445,72 @@ class FlatStreamerEntity {
   uint32_t vec_cols_{0};
   mutable std::string vec_buf_{};
   StreamerLinearMeta meta_{};
+};
+
+/*! A Flat entity backed by aligned row-major contiguous memory. */
+class FlatContiguousStreamerEntity : public FlatStreamerEntity {
+ public:
+  explicit FlatContiguousStreamerEntity(IndexStreamer::Stats &stats)
+      : FlatStreamerEntity(stats) {}
+  ~FlatContiguousStreamerEntity(void) override = default;
+
+  int build_contiguous_memory(void);
+  int close(void) override;
+
+  int add(uint64_t key, const void *vec, size_t size) override;
+  int add_vector_with_id(uint32_t id, const void *query,
+                         uint32_t element_size) override;
+
+  int search(const void *query, const IndexFilter &filter, uint32_t *scan_count,
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             FlatSearchScratch *scratch, size_t batch_size) const override;
+  int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
+                       const IndexFilter &filter, IndexDocumentHeap *heap,
+                       FlatSearchScratch *scratch,
+                       size_t batch_size) const override;
+
+  bool is_contiguous(void) const {
+    return !!load_contiguous_storage();
+  }
+
+ private:
+  struct ContiguousDeleter {
+    size_t size;
+    void operator()(char *ptr) const {
+      ailego::MemoryHelper::FreeHugePage(ptr, size);
+    }
+  };
+
+  struct ContiguousStorage {
+    std::shared_ptr<char> vector_memory{};
+    size_t vector_stride{0};
+    size_t vector_count{0};
+    std::unordered_map<uint64_t, uint32_t> key_to_position{};
+    std::vector<uint64_t> position_to_key{};
+  };
+
+  // Same lifetime model as HNSW/Vamana contiguous entity clones: a search
+  // keeps shared ownership of one immutable generation while add() removes
+  // the entity's owner reference and falls back to mmap storage.
+  std::shared_ptr<const ContiguousStorage> load_contiguous_storage(void) const {
+    return std::atomic_load_explicit(&contiguous_storage_,
+                                     std::memory_order_acquire);
+  }
+
+  void degrade_to_mmap(void);
+  int evaluate_distances(const ContiguousStorage &storage, const void *query,
+                         const std::vector<uint64_t> *p_keys,
+                         const IndexFilter &filter, size_t batch_size,
+                         FlatSearchScratch *scratch,
+                         IndexContext::Stats *context_stats,
+                         IndexDocumentHeap *heap) const;
+  const void *get_vector_ptr(const ContiguousStorage &storage,
+                             size_t position) const;
+  const void *get_vector_ptr_by_key(const ContiguousStorage &storage,
+                                    uint64_t key) const;
+
+  static constexpr size_t kVectorAlignment = 64;
+  std::shared_ptr<const ContiguousStorage> contiguous_storage_{};
 };
 
 }  // namespace core

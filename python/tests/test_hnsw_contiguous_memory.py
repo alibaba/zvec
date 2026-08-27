@@ -154,6 +154,8 @@ class TestHnswIndexParamContiguousMemorySurface:
             ef_construction=100,
             quantize_type=QuantizeType.FP16,
             use_contiguous_memory=True,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         data = param.to_dict()
         assert data["use_contiguous_memory"] is True
@@ -162,6 +164,8 @@ class TestHnswIndexParamContiguousMemorySurface:
         assert data["m"] == 16
         assert data["ef_construction"] == 100
         assert data["quantize_type"] == "FP16"
+        assert data["use_flat_contiguous_memory"] is True
+        assert data["flat_data_type"] == "VECTOR_FP16"
 
     def test_repr_contains_flag(self):
         on = repr(HnswIndexParam(use_contiguous_memory=True))
@@ -187,6 +191,8 @@ class TestHnswIndexParamContiguousMemorySurface:
             ef_construction=150,
             quantize_type=QuantizeType.INT8,
             use_contiguous_memory=True,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.use_contiguous_memory is True
@@ -194,6 +200,8 @@ class TestHnswIndexParamContiguousMemorySurface:
         assert restored.m == 24
         assert restored.ef_construction == 150
         assert restored.quantize_type == QuantizeType.INT8
+        assert restored.use_flat_contiguous_memory is True
+        assert restored.flat_data_type == DataType.VECTOR_FP16
 
 
 # ---------------------------------------------------------------------------

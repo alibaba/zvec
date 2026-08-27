@@ -229,7 +229,7 @@
 #define AILEGO_VERSION_OPENMP ""
 #endif
 
-#if defined(__ARM_NEON)
+#if defined(AILEGO_HAVE_NEON)
 #define AILEGO_VERSION_SIMD "  Arm Neon Instruction Set\n"
 #elif defined(__riscv_vector)
 #if defined(__riscv_zvfh)

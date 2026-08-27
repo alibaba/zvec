@@ -57,6 +57,9 @@ enum class DataType : uint32_t {
   VECTOR_INT4 = 25,
   VECTOR_INT8 = 26,
   VECTOR_INT16 = 27,
+  // Unsigned 8-bit physical vector storage. This is currently exposed for
+  // Flat reference indexes; it is not an affine quantization format.
+  VECTOR_UINT8 = 28,
 
   SPARSE_VECTOR_FP16 = 30,
   SPARSE_VECTOR_FP32 = 31,
