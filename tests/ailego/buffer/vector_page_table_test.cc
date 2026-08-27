@@ -1794,7 +1794,7 @@ TEST_F(BufferPoolTest, BatchAcquireScatteredPagesWithDuplicates) {
 }
 
 TEST_F(BufferPoolTest, ConcurrentBatchLoadsPopulateEachPageOnce) {
-  constexpr size_t kPageCount = 128;
+  static constexpr size_t kPageCount = 128;
   constexpr size_t kThreadCount = 8;
   InitVecPool(/*capacity_pages=*/512, /*file_pages=*/kPageCount);
   std::string file = NewFile(kPageCount);
