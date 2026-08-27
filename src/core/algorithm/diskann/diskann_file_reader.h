@@ -50,7 +50,7 @@ struct IoBackend {
   ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
 #if (defined(__linux) || defined(__linux__))
-  IoUringRing ring{};
+  ailego::IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
 #endif
 };
@@ -64,6 +64,9 @@ int destroy_io_ctx(IOContext &ctx);
 // backend on first call. No-op outside Linux and macOS.
 void log_diskann_io_backend();
 
+#if (defined(__linux) || defined(__linux__))
+using AlignedRead = ailego::IoUringRead;
+#else
 struct AlignedRead {
   uint64_t offset;
   uint64_t len;
@@ -81,6 +84,7 @@ struct AlignedRead {
 #endif
   }
 };
+#endif
 
 struct PendingBatch {
 #if (defined(__linux) || defined(__linux__))
