@@ -580,7 +580,18 @@ TEST_F(BufferPoolTest, PageLoadClaimCoalescesConcurrentWaiters) {
   for (auto &worker : workers) {
     worker.join();
   }
-  EXPECT_TRUE(table.force_evict_block(/*block_id=*/0));
+  // The background reclaimer may win the eviction claim but spend the
+  // page's CLOCK second chance instead of reclaiming it. Retry after each
+  // transition while keeping the final unloaded-state checks strict.
+  for (size_t attempt = 0;
+       attempt < 32 && table.has_residency_activity(/*block_id=*/0);
+       ++attempt) {
+    (void)table.force_evict_block(/*block_id=*/0);
+    ASSERT_TRUE(table.wait_for_block_transition(/*block_id=*/0));
+  }
+  EXPECT_FALSE(table.has_residency_activity(/*block_id=*/0));
+  EXPECT_FALSE(table.is_loaded(/*block_id=*/0));
+  EXPECT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
 }
 
 TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
