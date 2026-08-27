@@ -537,9 +537,34 @@ static inline uint16_t float16(float val) {
            ((hbits & 0x7C00) != 0x7C00);
   return static_cast<uint16_t>(hbits);
 }
+
+/**
+ *  Hardware FP16 conversion strategy (x86):
+ *  - FP16_*_DIRECT: the target ISA already guarantees F16C plus AVX/AVX512F
+ *    (e.g. -march=native), call the hardware kernels directly.
+ *  - FP16_*_RUNTIME: baseline x86 build; compile only the hardware kernels
+ *    with per-function target attributes and select them at runtime via
+ *    CpuFeatures, keeping the rest of this file at the baseline march.
+ */
 #if defined(__F16C__) && defined(__AVX512F__)
-static inline void convert_fp16_to_fp32_avx512f(const uint16_t *arr,
-                                                size_t size, float *out) {
+#define FP16_AVX512F_DIRECT 1
+#define FP16_TARGET_AVX512F
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386))
+#define FP16_AVX512F_RUNTIME 1
+#define FP16_TARGET_AVX512F __attribute__((target("avx512f,f16c")))
+#endif
+
+#if defined(__F16C__) && defined(__AVX__)
+#define FP16_AVX_DIRECT 1
+#define FP16_TARGET_AVX
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386))
+#define FP16_AVX_RUNTIME 1
+#define FP16_TARGET_AVX __attribute__((target("avx,f16c")))
+#endif
+
+#if defined(FP16_AVX512F_DIRECT) || defined(FP16_AVX512F_RUNTIME)
+static inline FP16_TARGET_AVX512F void convert_fp16_to_fp32_avx512f(
+    const uint16_t *arr, size_t size, float *out) {
   const uint16_t *last = arr + size;
   const uint16_t *last_aligned = arr + ((size >> 5) << 5);
 
@@ -605,9 +630,8 @@ static inline void convert_fp16_to_fp32_avx512f(const uint16_t *arr,
   }
 }
 
-static inline void convert_fp16_to_fp32_avx512f(const uint16_t *arr,
-                                                size_t size, float norm,
-                                                float *out) {
+static inline FP16_TARGET_AVX512F void convert_fp16_to_fp32_avx512f(
+    const uint16_t *arr, size_t size, float norm, float *out) {
   const uint16_t *last = arr + size;
   const uint16_t *last_aligned = arr + ((size >> 5) << 5);
   __m512 zmm_norm = _mm512_set1_ps(norm);
@@ -686,8 +710,8 @@ static inline void convert_fp16_to_fp32_avx512f(const uint16_t *arr,
   }
 }
 
-static inline void convert_fp32_to_fp16_avx512f(const float *arr, size_t size,
-                                                uint16_t *out) {
+static inline FP16_TARGET_AVX512F void convert_fp32_to_fp16_avx512f(
+    const float *arr, size_t size, uint16_t *out) {
   const float *last = arr + size;
   const float *last_aligned = arr + ((size >> 5) << 5);
 
@@ -764,8 +788,8 @@ static inline void convert_fp32_to_fp16_avx512f(const float *arr, size_t size,
   }
 }
 
-static inline void convert_fp32_to_fp16_avx512f(const float *arr, size_t size,
-                                                float norm, uint16_t *out) {
+static inline FP16_TARGET_AVX512F void convert_fp32_to_fp16_avx512f(
+    const float *arr, size_t size, float norm, uint16_t *out) {
   const float *last = arr + size;
   const float *last_aligned = arr + ((size >> 5) << 5);
   __m512 zmm_norm = _mm512_set1_ps(norm);
@@ -846,11 +870,12 @@ static inline void convert_fp32_to_fp16_avx512f(const float *arr, size_t size,
       out[0] = float16(arr[0] / norm);
   }
 }
-#endif  //__F16C__ && __AVX512F__
+#endif  // FP16_AVX512F_DIRECT || FP16_AVX512F_RUNTIME
 
-#if defined(__F16C__) && defined(__AVX__)
-static inline void convert_fp16_to_fp32_avx(const uint16_t *arr, size_t size,
-                                            float *out) {
+#if defined(FP16_AVX_DIRECT) || defined(FP16_AVX_RUNTIME)
+static inline FP16_TARGET_AVX void convert_fp16_to_fp32_avx(const uint16_t *arr,
+                                                            size_t size,
+                                                            float *out) {
   const uint16_t *last = arr + size;
   const uint16_t *last_aligned = arr + ((size >> 4) << 4);
 
@@ -907,8 +932,10 @@ static inline void convert_fp16_to_fp32_avx(const uint16_t *arr, size_t size,
   }
 }
 
-static inline void convert_fp16_to_fp32_avx(const uint16_t *arr, size_t size,
-                                            float norm, float *out) {
+static inline FP16_TARGET_AVX void convert_fp16_to_fp32_avx(const uint16_t *arr,
+                                                            size_t size,
+                                                            float norm,
+                                                            float *out) {
   const uint16_t *last = arr + size;
   const uint16_t *last_aligned = arr + ((size >> 4) << 4);
   __m256 ymm_norm = _mm256_set1_ps(norm);
@@ -972,8 +999,9 @@ static inline void convert_fp16_to_fp32_avx(const uint16_t *arr, size_t size,
   }
 }
 
-static inline void convert_fp32_to_fp16_avx(const float *arr, size_t size,
-                                            uint16_t *out) {
+static inline FP16_TARGET_AVX void convert_fp32_to_fp16_avx(const float *arr,
+                                                            size_t size,
+                                                            uint16_t *out) {
   const float *last = arr + size;
   const float *last_aligned = arr + ((size >> 4) << 4);
 
@@ -1036,8 +1064,10 @@ static inline void convert_fp32_to_fp16_avx(const float *arr, size_t size,
   }
 }
 
-static inline void convert_fp32_to_fp16_avx(const float *arr, size_t size,
-                                            float norm, uint16_t *out) {
+static inline FP16_TARGET_AVX void convert_fp32_to_fp16_avx(const float *arr,
+                                                            size_t size,
+                                                            float norm,
+                                                            uint16_t *out) {
   const float *last = arr + size;
   const float *last_aligned = arr + ((size >> 4) << 4);
   __m256 ymm_norm = _mm256_set1_ps(norm);
@@ -1106,7 +1136,7 @@ static inline void convert_fp32_to_fp16_avx(const float *arr, size_t size,
       out[0] = _cvtss_sh(arr[0] / norm, _MM_FROUND_NO_EXC);
   }
 }
-#endif  // __F16C__ && __AVX__
+#endif  // FP16_AVX_DIRECT || FP16_AVX_RUNTIME
 
 static inline void convert_fp16_to_fp32_fallback(const uint16_t *arr,
                                                  size_t size, float *out) {
@@ -1139,14 +1169,14 @@ static inline void convert_fp32_to_fp16_fallback(const float *arr, size_t size,
 
 static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
                                         float *out) {
-#if defined(__F16C__) && defined(__AVX512F__)
+#if defined(FP16_AVX512F_DIRECT) || defined(FP16_AVX512F_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     return convert_fp16_to_fp32_avx512f(arr, size, out);
   }
 #endif
 
-#if defined(__F16C__) && defined(__AVX__)
+#if defined(FP16_AVX_DIRECT) || defined(FP16_AVX_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     return convert_fp16_to_fp32_avx(arr, size, out);
@@ -1158,14 +1188,14 @@ static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
 
 static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
                                         float norm, float *out) {
-#if defined(__F16C__) && defined(__AVX512F__)
+#if defined(FP16_AVX512F_DIRECT) || defined(FP16_AVX512F_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     return convert_fp16_to_fp32_avx512f(arr, size, norm, out);
   }
 #endif
 
-#if defined(__F16C__) && defined(__AVX__)
+#if defined(FP16_AVX_DIRECT) || defined(FP16_AVX_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     return convert_fp16_to_fp32_avx(arr, size, norm, out);
@@ -1177,14 +1207,14 @@ static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
 
 static inline void convert_fp32_to_fp16(const float *arr, size_t size,
                                         uint16_t *out) {
-#if defined(__F16C__) && defined(__AVX512F__)
+#if defined(FP16_AVX512F_DIRECT) || defined(FP16_AVX512F_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     return convert_fp32_to_fp16_avx512f(arr, size, out);
   }
 #endif
 
-#if defined(__F16C__) && defined(__AVX__)
+#if defined(FP16_AVX_DIRECT) || defined(FP16_AVX_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     return convert_fp32_to_fp16_avx(arr, size, out);
@@ -1196,14 +1226,14 @@ static inline void convert_fp32_to_fp16(const float *arr, size_t size,
 
 static inline void convert_fp32_to_fp16(const float *arr, size_t size,
                                         float norm, uint16_t *out) {
-#if defined(__F16C__) && defined(__AVX512F__)
+#if defined(FP16_AVX512F_DIRECT) || defined(FP16_AVX512F_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     return convert_fp32_to_fp16_avx512f(arr, size, norm, out);
   }
 #endif
 
-#if defined(__F16C__) && defined(__AVX__)
+#if defined(FP16_AVX_DIRECT) || defined(FP16_AVX_RUNTIME)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     return convert_fp32_to_fp16_avx(arr, size, norm, out);

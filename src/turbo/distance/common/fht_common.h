@@ -36,8 +36,12 @@ struct FhtPrimitives {
 ///   offset 16: float  fac
 ///   offset 20: uint8_t pad[4]
 ///   offset 24: uint8_t flip[]
-inline void fht_rotate_impl(const float *in, float *out, size_t dim, void *ctx,
-                            const FhtPrimitives &p) {
+//
+// `static`: compiled into TUs with different /arch flags (scalar, SSE, AVX2,
+// AVX512); a shared COMDAT copy could carry AVX512 encodings and crash
+// lower-arch callers on CPUs without AVX512.
+static inline void fht_rotate_impl(const float *in, float *out, size_t dim,
+                                   void *ctx, const FhtPrimitives &p) {
   if (out != in) {
     std::memcpy(out, in, sizeof(float) * dim);
   }
@@ -83,8 +87,8 @@ inline void fht_rotate_impl(const float *in, float *out, size_t dim, void *ctx,
   p.rescale(data, dim, 0.25f);
 }
 
-inline void fht_unrotate_impl(const float *in, float *out, size_t dim,
-                              void *ctx, const FhtPrimitives &p) {
+static inline void fht_unrotate_impl(const float *in, float *out, size_t dim,
+                                     void *ctx, const FhtPrimitives &p) {
   if (out != in) {
     std::memcpy(out, in, sizeof(float) * dim);
   }

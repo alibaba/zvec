@@ -12,8 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
+#include <string>
 #include <vector>
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
@@ -35,6 +39,93 @@ static float reference_cosine(const float *a, const float *b, size_t dim) {
   }
   float denom = std::sqrt(na) * std::sqrt(nb);
   return (denom < 1e-12f) ? 1.0f : 1.0f - dot / denom;
+}
+
+// SIMD kernels may reorder accumulation; allow a small relative tolerance.
+static void expect_simd_near(float actual, float expected) {
+  const float tolerance = 1.0e-4f * std::max(1.0f, std::abs(expected));
+  EXPECT_NEAR(actual, expected, tolerance);
+}
+
+// Verify that the `arch` distance kernels match the scalar kernels for all
+// metrics across a range of dimensions.
+static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
+  const struct {
+    turbo::MetricType type;
+    const char *name;
+  } metrics[] = {
+      {turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean"},
+      {turbo::MetricType::kCosine, "Cosine"},
+      {turbo::MetricType::kInnerProduct, "InnerProduct"},
+  };
+  // Dimensions around the SIMD lane boundaries plus odd tails.
+  const size_t dimensions[] = {2,  7,  8,  15, 16, 17,  31,
+                               32, 33, 63, 64, 65, 126, 130};
+
+  for (const auto &metric : metrics) {
+    for (size_t dim : dimensions) {
+      SCOPED_TRACE(testing::Message()
+                   << "metric=" << metric.name << ", dim=" << dim);
+
+      const auto scalar = turbo::get_distance_kernels(
+          metric.type, turbo::DataType::kFp32, turbo::QuantizeType::kFp32,
+          turbo::CpuArchType::kScalar);
+      ASSERT_TRUE(scalar.dist);
+      ASSERT_TRUE(scalar.batch);
+      const auto simd =
+          turbo::get_distance_kernels(metric.type, turbo::DataType::kFp32,
+                                      turbo::QuantizeType::kFp32, arch);
+      if (!simd.dist) {
+        GTEST_SKIP() << "SIMD kernels unavailable on this CPU";
+      }
+      ASSERT_TRUE(simd.batch);
+
+      IndexMeta meta;
+      meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
+      meta.set_metric(metric.name, 0, Params());
+      auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      ASSERT_TRUE(quantizer);
+      ASSERT_EQ(0, quantizer->init(meta, Params()));
+
+      constexpr size_t kVectorCount = 7;
+      std::mt19937 gen(
+          static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
+      std::uniform_real_distribution<float> dist(-4.0f, 5.0f);
+      std::vector<std::vector<float>> raw(kVectorCount,
+                                          std::vector<float>(dim));
+      std::vector<std::string> encoded(
+          kVectorCount,
+          std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+      for (size_t i = 0; i < kVectorCount; ++i) {
+        for (float &value : raw[i]) {
+          value = dist(gen);
+        }
+        quantizer->quantize_data(raw[i].data(), encoded[i].data());
+      }
+
+      for (size_t i = 1; i < kVectorCount; ++i) {
+        float expected = 0.0f;
+        float actual = 0.0f;
+        scalar.dist(encoded[i].data(), encoded[0].data(), dim, &expected);
+        simd.dist(encoded[i].data(), encoded[0].data(), dim, &actual);
+        expect_simd_near(actual, expected);
+      }
+
+      std::vector<const void *> candidates(kVectorCount - 1);
+      for (size_t i = 1; i < kVectorCount; ++i) {
+        candidates[i - 1] = encoded[i].data();
+      }
+      std::vector<float> expected(candidates.size());
+      std::vector<float> actual(candidates.size());
+      scalar.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
+                   expected.data());
+      simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
+                 actual.data());
+      for (size_t i = 0; i < candidates.size(); ++i) {
+        expect_simd_near(actual[i], expected[i]);
+      }
+    }
+  }
 }
 
 TEST(Fp32Quantizer, General) {
@@ -200,4 +291,12 @@ TEST(Fp32Quantizer, Score) {
         reference_cosine(raw_vecs[i].data(), raw_vecs[0].data(), DIMENSION);
     EXPECT_NEAR(d, expected, 1e-4) << "i=" << i;
   }
+}
+
+TEST(Fp32Quantizer, Avx2DistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX2);
+}
+
+TEST(Fp32Quantizer, Avx512DistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
 }
