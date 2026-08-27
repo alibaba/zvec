@@ -121,3 +121,13 @@ jobs:
     name: Build & Test (musllinux)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/09-musllinux-build.yml
+
+  # RISC-V Vector (RVV) smoke test: cross-compile for riscv64 and run the
+  # ailego unit tests under qemu-user (ported from faiss's
+  # linux-riscv64-DD-cmake job). Complements the weekly native riscv
+  # build (07-linux-riscv-build.yml) with per-PR coverage.
+  build-and-test-linux-riscv64-rvv-cross:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Test (linux-riscv64 RVV cross)
+    needs: [lint, clang-tidy]
+    uses: ./.github/workflows/08-linux-riscv64-rvv-cross.yml
