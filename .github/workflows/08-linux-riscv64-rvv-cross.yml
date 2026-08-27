@@ -16,14 +16,16 @@ name: Linux riscv64 RVV Cross Compile
 #     links only the static zvec_ailego + gtest, so no heavy thirdparty
 #     (arrow/rocksdb/...) cross builds are needed. Like faiss, the full test
 #     suite is not run under qemu — that would take hours under emulation.
-#   - ENABLE_RISCV64 / ENABLE_RISCV_VECTOR / ENABLE_RISCV_ZIHINTPAUSE are the
-#     RVV build options from the RISC-V platform support. Until that support
-#     lands on main, CMake warns about the unused variables and the job runs
-#     as a plain rv64gc cross-compile smoke test.
-#   - ENABLE_RISCV_ZVFH is intentionally left off: the test asserts
-#     CpuFeatures::RISCV_ZVFH() when compiled with Zvfh, but qemu-user's
-#     riscv_hwprobe emulation may not report ZVFH, which would fail the run
-#     spuriously.
+#   - ENABLE_RISCV64 / ENABLE_RISCV_VECTOR / ENABLE_RISCV_ZVFH /
+#     ENABLE_RISCV_ZIHINTPAUSE are the RVV build options from the RISC-V
+#     platform support. Until that support lands on main, CMake warns about
+#     the unused variables and the job runs as a plain rv64gc cross-compile
+#     smoke test.
+#   - The runtime detection behind CpuFeatures::RISCV_VECTOR()/RISCV_ZVFH()
+#     uses the riscv_hwprobe syscall, which qemu-user only emulates since
+#     9.2 (V and ZVFH are both reported from the -cpu config there). Ubuntu
+#     24.04 ships qemu 8.2, so a newer qemu-user-static is installed from
+#     the Ubuntu package pool.
 #   - QEMU gets an explicit -cpu with the extensions the binary is built
 #     with, instead of relying on the (version-dependent) default CPU.
 
@@ -85,8 +87,7 @@ jobs:
             libc6:riscv64 \
             libc6-dev:riscv64 \
             libstdc++6:riscv64 \
-            libgcc-s1:riscv64 \
-            qemu-user-static
+            libgcc-s1:riscv64
 
           echo "Checking GCC version:"
           riscv64-linux-gnu-gcc-14 --version
@@ -97,6 +98,24 @@ jobs:
 
           sudo ln -sfn /usr/lib/riscv64-linux-gnu \
             /usr/riscv64-linux-gnu/usr/lib/riscv64-linux-gnu
+        shell: bash
+
+      # Ubuntu 24.04's qemu-user-static is 8.2, which predates qemu-user's
+      # riscv_hwprobe emulation (added in 9.2) — CpuFeatures::RISCV_VECTOR()/
+      # RISCV_ZVFH() would always report false. Install the newest static
+      # build from the Ubuntu pool instead; the -static package is
+      # self-contained, so it installs fine on 24.04.
+      - name: Install qemu-user-static >= 9.2
+        run: |
+          QEMU_DEB=$(
+            curl -sL http://archive.ubuntu.com/ubuntu/pool/universe/q/qemu/ \
+              | grep -oE 'qemu-user-static_(9\.[2-9]|[1-9][0-9]+\.)[^"]*_amd64\.deb' \
+              | sort -uV | tail -1
+          )
+          echo "Selected ${QEMU_DEB}"
+          curl -sLO "http://archive.ubuntu.com/ubuntu/pool/universe/q/qemu/${QEMU_DEB}"
+          sudo apt-get install -y "./${QEMU_DEB}"
+          qemu-riscv64-static --version
         shell: bash
 
       - name: Setup ccache
@@ -116,6 +135,7 @@ jobs:
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DENABLE_RISCV64=ON \
             -DENABLE_RISCV_VECTOR=ON \
+            -DENABLE_RISCV_ZVFH=ON \
             -DENABLE_RISCV_ZIHINTPAUSE=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -161,7 +181,7 @@ jobs:
             ( cd "build/test_tmp/$t" && \
               qemu-riscv64-static \
                 -L /usr/riscv64-linux-gnu \
-                -cpu rv64,v=true,zihintpause=true \
+                -cpu rv64,v=true,zvfh=true,zihintpause=true \
                 "$GITHUB_WORKSPACE/build/bin/$t" ) || FAILED+=("$t")
           done
 
