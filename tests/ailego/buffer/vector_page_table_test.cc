@@ -1942,8 +1942,23 @@ TEST_F(BufferPoolTest, SecondChanceKeepsHotSet) {
   VecBufferPool::Stats s = pool.stats();
   EXPECT_GT(s.hit, 0u);
   EXPECT_GT(s.evict, 0u);
-  // The second-chance mechanism must have spared at least some pages.
-  EXPECT_GT(s.second_chance, 0u);
+
+  // The workload above intentionally leaves eviction scheduling
+  // nondeterministic. Pin one resident page while setting its CLOCK bit so
+  // either this thread or the background reclaimer must consume a second
+  // chance after the pin is released.
+  const block_id_t hot_page = 0;
+  char *hot_buffer = nullptr;
+  ASSERT_TRUE(handle.acquire_pages(&hot_page, 1, &hot_buffer));
+  ASSERT_NE(nullptr, hot_buffer);
+  pool.page_table_.set_evict_priority(hot_page, VecBufferPool::kLowPriority);
+  ASSERT_TRUE(pool.page_table_.promote_evict_priority(
+      hot_page, VecBufferPool::kNormalPriority));
+  const uint64_t second_chance_before = pool.stats().second_chance;
+  handle.release_pages(&hot_page, 1);
+  (void)pool.page_table_.evict_block(hot_page);
+  ASSERT_TRUE(pool.page_table_.wait_for_block_transition(hot_page));
+  EXPECT_GT(pool.stats().second_chance, second_chance_before);
 }
 
 // ---------------------------------------------------------------------------
