@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <zvec/ailego/internal/platform.h>
+
 #if defined(__AVX2__)
 
 #include <immintrin.h>

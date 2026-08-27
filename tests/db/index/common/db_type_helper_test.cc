@@ -99,6 +99,7 @@ TEST(DataTypeCodeBookTest, IsArrayType) {
   EXPECT_FALSE(DataTypeCodeBook::IsArrayType(wire::DataType::DT_VECTOR_INT4));
   EXPECT_FALSE(DataTypeCodeBook::IsArrayType(wire::DataType::DT_VECTOR_INT8));
   EXPECT_FALSE(DataTypeCodeBook::IsArrayType(wire::DataType::DT_VECTOR_INT16));
+  EXPECT_FALSE(DataTypeCodeBook::IsArrayType(wire::DataType::DT_VECTOR_UINT8));
   EXPECT_FALSE(
       DataTypeCodeBook::IsArrayType(wire::DataType::DT_SPARSE_VECTOR_FP32));
   EXPECT_FALSE(
@@ -142,6 +143,8 @@ TEST(DataTypeCodeBookTest, WireToCppConversion) {
             DataType::VECTOR_INT8);
   EXPECT_EQ(DataTypeCodeBook::Get(wire::DataType::DT_VECTOR_INT16),
             DataType::VECTOR_INT16);
+  EXPECT_EQ(DataTypeCodeBook::Get(wire::DataType::DT_VECTOR_UINT8),
+            DataType::VECTOR_UINT8);
   EXPECT_EQ(DataTypeCodeBook::Get(wire::DataType::DT_SPARSE_VECTOR_FP16),
             DataType::SPARSE_VECTOR_FP16);
   EXPECT_EQ(DataTypeCodeBook::Get(wire::DataType::DT_SPARSE_VECTOR_FP32),
@@ -197,6 +200,8 @@ TEST(DataTypeCodeBookTest, CppToWireConversion) {
             wire::DataType::DT_VECTOR_INT8);
   EXPECT_EQ(DataTypeCodeBook::Get(DataType::VECTOR_INT16),
             wire::DataType::DT_VECTOR_INT16);
+  EXPECT_EQ(DataTypeCodeBook::Get(DataType::VECTOR_UINT8),
+            wire::DataType::DT_VECTOR_UINT8);
   EXPECT_EQ(DataTypeCodeBook::Get(DataType::SPARSE_VECTOR_FP16),
             wire::DataType::DT_SPARSE_VECTOR_FP16);
   EXPECT_EQ(DataTypeCodeBook::Get(DataType::SPARSE_VECTOR_FP32),
@@ -246,6 +251,7 @@ TEST(DataTypeCodeBookTest, CppToStringConversion) {
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_INT4), "VECTOR_INT4");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_INT8), "VECTOR_INT8");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_INT16), "VECTOR_INT16");
+  EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_UINT8), "VECTOR_UINT8");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::SPARSE_VECTOR_FP16),
             "SPARSE_VECTOR_FP16");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::SPARSE_VECTOR_FP32),

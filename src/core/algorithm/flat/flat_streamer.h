@@ -128,7 +128,7 @@ class FlatStreamer : public IndexStreamer {
   }
 
   const FlatStreamerEntity &entity(void) const {
-    return entity_;
+    return *entity_;
   }
 
   //! Retrieve the turbo quantizer
@@ -146,12 +146,12 @@ class FlatStreamer : public IndexStreamer {
   }
 
   const void *get_vector_by_key(uint64_t key) const {
-    return entity_.get_vector_by_key(key);
+    return entity_->get_vector_by_key(key);
   }
 
   int get_vector_by_key(const uint64_t key,
                         IndexStorage::MemoryBlock &block) const override {
-    return entity_.get_vector_by_key(key, block);
+    return entity_->get_vector_by_key(key, block);
   }
   const void *get_vector_by_id(uint32_t id) const override {
     return get_vector_by_key(id);
@@ -193,8 +193,9 @@ class FlatStreamer : public IndexStreamer {
   bool column_major_order_{false};
   bool use_key_info_map_{true};
   uint32_t read_block_size_{0};
+  bool use_contiguous_memory_{false};
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
-  FlatStreamerEntity entity_;
+  std::unique_ptr<FlatStreamerEntity> entity_{};
 };
 
 }  // namespace core

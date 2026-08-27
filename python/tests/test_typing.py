@@ -83,6 +83,7 @@ def test_metric_type_has_member(member):
         "VECTOR_FP32",
         "VECTOR_FP64",
         "VECTOR_INT8",
+        "VECTOR_UINT8",
         "SPARSE_VECTOR_FP32",
         "SPARSE_VECTOR_FP16",
         "ARRAY_STRING",

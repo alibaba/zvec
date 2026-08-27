@@ -20,7 +20,9 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
-#include "quantizer/quantizer.h"
+// Rooted at src/ so this header stays includable from core (ivf_entity).
+#include <turbo/quantizer/common/pq_quantizer/precompute_table_quantizer.h>
+#include <turbo/quantizer/quantizer.h>
 
 namespace zvec {
 namespace turbo {
@@ -34,7 +36,7 @@ using namespace zvec::core;
 //! via quantize_query().  Distance between a PQ code and a
 //! query uses ADC (LUT look-up); distance between two PQ codes uses
 //! SDC (centroid-to-centroid distance table).
-class PqInt8Quantizer : public Quantizer {
+class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
  public:
   PqInt8Quantizer() : Quantizer(QuantizeType::kPQ) {}
 
@@ -95,6 +97,20 @@ class PqInt8Quantizer : public Quantizer {
   int quantize(const void *query, const IndexQueryMeta &qmeta, std::string *out,
                IndexQueryMeta *ometa) const override;
 
+  //! Precomputed residual distance table support (see
+  //! PrecomputeTableQuantizer).
+  int build_centroid_distance_table(const void *centroids, size_t centroid_num,
+                                    std::string *table) const override;
+
+  int quantize_precomputed_query(const void *query, const IndexQueryMeta &qmeta,
+                                 std::string *out,
+                                 IndexQueryMeta *ometa) const override;
+
+  int merge_query_distance_table(const void *query_table,
+                                 const std::string &centroid_table,
+                                 size_t centroid_id,
+                                 std::string *out) const override;
+
   int dequantize(const void *in, const IndexQueryMeta &qmeta,
                  std::string *out) const override;
 
@@ -138,9 +154,19 @@ class PqInt8Quantizer : public Quantizer {
   //! Compute the centroid-to-centroid distance table for SDC.
   void compute_dist_table();
 
+  //! Compute the squared norms of all sub-centroids ([num_chunk * 256]).
+  //! Called after train() and deserialize() when centroids are available.
+  void compute_sub_centroid_norms();
+
   //! Build centroid_ptrs_cache_ from current centroids_.
   //! Called after train() and deserialize() when centroids are available.
   void build_centroid_ptrs_cache();
+
+  //! Re-dispatch kernels and batch distance functions (init/deserialize).
+  //! Yields kErrUnsupported if any of them is unavailable for the configured
+  //! metric / data type.  Sets extra_meta_size_ but leaves pushing it into
+  //! meta_ to the caller.
+  int setup_functions();
 
   //! Byte size of one element in the original data type.
   uint32_t element_size() const {
@@ -172,13 +198,18 @@ class PqInt8Quantizer : public Quantizer {
   //! from all vectors (train, encode, query) and added back on dequantize.
   bool use_zero_mean_{false};
 
+  //! Set by a successful init().  deserialize() requires it: the metric policy
+  //! comes from meta_, and a default-constructed IndexMeta silently reports
+  //! "SquaredEuclidean", so its value cannot tell initialized from fresh.
+  bool initialized_{false};
+
   IndexMeta meta_{};
   uint32_t original_dim_{0};
   uint32_t num_chunk_{0};
-  uint32_t chunk_dim_{0};
+  uint32_t sub_dim_{0};
 
   //! Centroids stored as raw bytes in the original data type:
-  //! [num_chunk * kNumCentroids * chunk_dim * sizeof(T)]
+  //! [num_chunk * kNumCentroids * sub_dim * sizeof(T)]
   //! T = float for kFp32, ailego::Float16 for kFp16.
   std::vector<uint8_t> centroids_;
 
@@ -189,6 +220,12 @@ class PqInt8Quantizer : public Quantizer {
   //! Centroid-to-centroid distance table for SDC:
   //! [num_chunk * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
+
+  //! Squared norms of the sub-centroids: [num_chunk * kNumCentroids],
+  //! entry [m * 256 + j] = ||c_m[j]||^2.  Used by the precomputed
+  //! residual distance table (build_centroid_distance_table /
+  //! quantize_precomputed_query).
+  std::vector<float> sub_centroid_norms_;
 
   //! Pre-built centroid pointer arrays for each chunk.
   //! Layout: centroid_ptrs_cache_[sub_idx][centroid_idx] = pointer to centroid.
@@ -210,6 +247,11 @@ class PqInt8Quantizer : public Quantizer {
   //! Data type matches input_data_type_.  PQ encoding always minimizes L2
   //! quantization error regardless of the search metric.
   BatchDistanceFunc l2_batch_fn_{};
+
+  //! Inner-product batch distance function for the precomputed residual
+  //! tables (build_centroid_distance_table / quantize_precomputed_query).
+  //! Independent of the configured metric; returns -<a, b> per element.
+  BatchDistanceFunc ip_batch_fn_{};
 };
 
 }  // namespace turbo

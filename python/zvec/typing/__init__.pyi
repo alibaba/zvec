@@ -104,9 +104,10 @@ class DataType:
     VECTOR_FP32: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP32: 23>
     VECTOR_FP64: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP64: 24>
     VECTOR_INT8: typing.ClassVar[DataType]  # value = <DataType.VECTOR_INT8: 26>
+    VECTOR_UINT8: typing.ClassVar[DataType]  # value = <DataType.VECTOR_UINT8: 28>
     __members__: typing.ClassVar[
         dict[str, DataType]
-    ]  # value = {'STRING': <DataType.STRING: 2>, 'BOOL': <DataType.BOOL: 3>, 'INT32': <DataType.INT32: 4>, 'INT64': <DataType.INT64: 5>, 'FLOAT': <DataType.FLOAT: 8>, 'DOUBLE': <DataType.DOUBLE: 9>, 'UINT32': <DataType.UINT32: 6>, 'UINT64': <DataType.UINT64: 7>, 'VECTOR_FP16': <DataType.VECTOR_FP16: 22>, 'VECTOR_FP32': <DataType.VECTOR_FP32: 23>, 'VECTOR_FP64': <DataType.VECTOR_FP64: 24>, 'VECTOR_INT8': <DataType.VECTOR_INT8: 26>, 'SPARSE_VECTOR_FP32': <DataType.SPARSE_VECTOR_FP32: 31>, 'SPARSE_VECTOR_FP16': <DataType.SPARSE_VECTOR_FP16: 30>, 'ARRAY_STRING': <DataType.ARRAY_STRING: 41>, 'ARRAY_INT32': <DataType.ARRAY_INT32: 43>, 'ARRAY_INT64': <DataType.ARRAY_INT64: 44>, 'ARRAY_FLOAT': <DataType.ARRAY_FLOAT: 47>, 'ARRAY_DOUBLE': <DataType.ARRAY_DOUBLE: 48>, 'ARRAY_BOOL': <DataType.ARRAY_BOOL: 42>, 'ARRAY_UINT32': <DataType.ARRAY_UINT32: 45>, 'ARRAY_UINT64': <DataType.ARRAY_UINT64: 46>}
+    ]  # value = {'STRING': <DataType.STRING: 2>, 'BOOL': <DataType.BOOL: 3>, 'INT32': <DataType.INT32: 4>, 'INT64': <DataType.INT64: 5>, 'FLOAT': <DataType.FLOAT: 8>, 'DOUBLE': <DataType.DOUBLE: 9>, 'UINT32': <DataType.UINT32: 6>, 'UINT64': <DataType.UINT64: 7>, 'VECTOR_FP16': <DataType.VECTOR_FP16: 22>, 'VECTOR_FP32': <DataType.VECTOR_FP32: 23>, 'VECTOR_FP64': <DataType.VECTOR_FP64: 24>, 'VECTOR_INT8': <DataType.VECTOR_INT8: 26>, 'VECTOR_UINT8': <DataType.VECTOR_UINT8: 28>, 'SPARSE_VECTOR_FP32': <DataType.SPARSE_VECTOR_FP32: 31>, 'SPARSE_VECTOR_FP16': <DataType.SPARSE_VECTOR_FP16: 30>, 'ARRAY_STRING': <DataType.ARRAY_STRING: 41>, 'ARRAY_INT32': <DataType.ARRAY_INT32: 43>, 'ARRAY_INT64': <DataType.ARRAY_INT64: 44>, 'ARRAY_FLOAT': <DataType.ARRAY_FLOAT: 47>, 'ARRAY_DOUBLE': <DataType.ARRAY_DOUBLE: 48>, 'ARRAY_BOOL': <DataType.ARRAY_BOOL: 42>, 'ARRAY_UINT32': <DataType.ARRAY_UINT32: 45>, 'ARRAY_UINT64': <DataType.ARRAY_UINT64: 46>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...

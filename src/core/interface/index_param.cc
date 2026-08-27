@@ -241,6 +241,15 @@ ailego::JsonObject FlatIndexParam::SerializeToJsonObject(
     json_obj.set("major_order",
                  ailego::JsonValue(magic_enum::enum_name(major_order).data()));
   }
+  if (!omit_empty_value || use_contiguous_memory) {
+    json_obj.set("use_contiguous_memory",
+                 ailego::JsonValue(use_contiguous_memory));
+  }
+  if (!omit_empty_value || storage_data_type != DataType::DT_UNDEFINED) {
+    json_obj.set(
+        "storage_data_type",
+        ailego::JsonValue(magic_enum::enum_name(storage_data_type).data()));
+  }
   return json_obj;
 }
 
@@ -305,6 +314,8 @@ bool FlatIndexParam::DeserializeFromJsonObject(
   }
 
   DESERIALIZE_ENUM_FIELD(json_obj, major_order, IndexMeta::MajorOrder);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_ENUM_FIELD(json_obj, storage_data_type, DataType);
   return true;
 }
 

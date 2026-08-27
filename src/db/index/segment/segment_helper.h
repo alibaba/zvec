@@ -30,6 +30,19 @@
 
 namespace zvec {
 
+namespace segment_detail {
+
+// Configurable Flat storage is a conversion from a dense FP32 field. Other
+// field types keep the native Flat storage behavior they had before this
+// option was introduced.
+inline DataType FlatStorageDataTypeForField(DataType field_data_type,
+                                            DataType configured_data_type) {
+  return field_data_type == DataType::VECTOR_FP32 ? configured_data_type
+                                                  : DataType::UNDEFINED;
+}
+
+}  // namespace segment_detail
+
 struct CompactTask {
   CompactTask(const std::string &collection_path,
               const CollectionSchema::Ptr &schema,

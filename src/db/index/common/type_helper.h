@@ -183,6 +183,9 @@ struct DataTypeCodeBook {
       case wire::DataType::DT_VECTOR_INT16:
         data_types = DataType::VECTOR_INT16;
         break;
+      case wire::DataType::DT_VECTOR_UINT8:
+        data_types = DataType::VECTOR_UINT8;
+        break;
       case wire::DataType::DT_SPARSE_VECTOR_FP16:
         data_types = DataType::SPARSE_VECTOR_FP16;
         break;
@@ -273,6 +276,9 @@ struct DataTypeCodeBook {
         break;
       case DataType::VECTOR_INT8:
         data_type = wire::DataType::DT_VECTOR_INT8;
+        break;
+      case DataType::VECTOR_UINT8:
+        data_type = wire::DataType::DT_VECTOR_UINT8;
         break;
       case DataType::VECTOR_INT16:
         data_type = wire::DataType::DT_VECTOR_INT16;
@@ -368,6 +374,9 @@ struct DataTypeCodeBook {
         break;
       case DataType::VECTOR_INT8:
         data_type = "VECTOR_INT8";
+        break;
+      case DataType::VECTOR_UINT8:
+        data_type = "VECTOR_UINT8";
         break;
       case DataType::VECTOR_INT16:
         data_type = "VECTOR_INT16";

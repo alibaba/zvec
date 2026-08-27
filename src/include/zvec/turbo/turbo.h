@@ -56,6 +56,9 @@ using QueryPreprocessFunc =
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
+// Direct FP32 conversion. The output layout is selected by get_convert_func().
+using ConvertFunc = void (*)(const float *in, size_t dim, void *out);
+
 // Generic rotate / unrotate function pointer types.
 // ctx is an opaque context (e.g. FhtCtx*) managed by the caller.
 using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
@@ -91,18 +94,39 @@ using CodebookBatchAsymmetricDistanceFunc = void (*)(const void **codes,
                                                      size_t num_chunk,
                                                      float *out);
 
+// FastScan ADC kernel: LUT look-up + accumulate over one packed block of 32
+// vectors.  Codes are 4-bit and block-interleaved, the LUT is affine-quantized
+// to uint8; accumulation stays in the integer domain (callers apply
+// dist = accu32 * delta + bias) so that a future SIMD-domain top-k filter can
+// compare in the quantized domain.
+//   packed_codes: [round_up_even(num_chunk) * 16] uint8_t
+//   packed_lut:   [round_up_even(num_chunk) * 16] uint8_t
+//   accu32:       [32] int32_t, overwritten with the accumulated sums
+using CodebookFastScanFunc = void (*)(const void *packed_codes,
+                                      const void *packed_lut, size_t num_chunk,
+                                      int32_t *accu32);
+
 // ISA-dispatched rotate/unrotate kernels.
 struct RotatorKernels {
   RotateFunc rotate = nullptr;
   UnrotateFunc unrotate = nullptr;
 };
 
-// data_type selects the code packing layout:
-//   kInt8: one uint8 per chunk (256 centroids, stride=256)
+// quantize_type + data_type select the kernel family and the code layout:
+//   kPQ     + kInt8: one uint8 code per sub-quantizer (256 centroids)
+//   kPQ     + kInt4: two nibble-packed codes per byte (16 centroids)
+//   kPQFast + kInt4: FastScan, codes block-interleaved over 32 vectors
+//                    (16 centroids; 4-bit is the only valid width, since a
+//                    16-entry LUT is what fits one SIMD lane)
+//
+// Fields are populated per family and are mutually exclusive: kPQ fills
+// asymmetric_distance / symmetric_distance / batch_asymmetric_distance,
+// kPQFast fills only fast_scan (the packed block scan is its sole read path).
 struct CodebookKernels {
   CodebookAsymmetricDistanceFunc asymmetric_distance = nullptr;
   CodebookSymmetricDistanceFunc symmetric_distance = nullptr;
   CodebookBatchAsymmetricDistanceFunc batch_asymmetric_distance = nullptr;
+  CodebookFastScanFunc fast_scan = nullptr;
 };
 
 enum class MetricType {
@@ -118,19 +142,26 @@ enum class DataType {
   kInt8,
   kFp16,
   kFp32,
+  kUint8,
   kUnknown,
 };
 
 enum class QuantizeType {
   // Explicit values: type ids are persisted in serialized headers
-  // (QuantizerSerHeader.quant_type); 0 was the retired kDefault.
+  // (QuantizerSerHeader.quant_type); 0 was the retired kDefault.  Never
+  // renumber an existing id -- append new types with the next free value.
   kUniform = 1,  // Uniform uint7: codes are restricted to [0, 127].
-  kRecord,
-  kFp16,
-  kFp32,
-  kPQ,
-  kRabit,
-  kUniformUint8,  // Uniform uint8: codes cover the full [0, 255] range.
+  kRecord = 2,
+  kFp16 = 3,
+  kFp32 = 4,
+  kPQ = 5,
+  kRabit = 6,
+  kUniformUint8 = 7,  // Uniform uint8: codes cover the full [0, 255] range.
+  // Identity/raw quantization family for vectors kept in their direct
+  // physical representation. Used for kernel dispatch; no serialized
+  // quantizer payload is required.
+  kRaw = 8,
+  kPQFast = 9,  // 4-bit PQ with FastScan (packed codes + SIMD)
 };
 
 enum class RotateType : uint16_t {
@@ -189,12 +220,18 @@ ZVEC_TURBO_API DistanceKernels get_distance_kernels(
 ZVEC_TURBO_API UniformQuantizeFunc
 get_uniform_quantize_func(DataType data_type);
 
+// Returns an optimized fp32 conversion kernel for the requested physical
+// target type, or nullptr when no optimized implementation is available.
+// Currently kFp16 and kUint8 are supported.
+ZVEC_TURBO_API ConvertFunc get_convert_func(DataType target_data_type);
+
 // Returns rotator kernels dispatched for the current CPU.
 ZVEC_TURBO_API RotatorKernels get_rotator_kernels(
     RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
-// and CPU arch.
+// and CPU arch.  See CodebookKernels for which fields each family populates;
+// unsupported combinations yield an all-null struct.
 ZVEC_TURBO_API CodebookKernels get_pq_kernels(
     DataType data_type, QuantizeType quantize_type = QuantizeType::kPQ,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);

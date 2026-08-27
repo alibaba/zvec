@@ -81,6 +81,12 @@ class Quantizer {
     return 0;
   }
 
+  //! Train the quantizer with data from an IndexHolder, hinting the number
+  //! of worker threads. Default falls back to the sequential train.
+  virtual int train(IndexHolder::Pointer holder, int /*thread_count*/) {
+    return train(holder);
+  }
+
   //! Byte length of a quantized datapoint vector
   virtual size_t quantized_datapoint_vector_length() const = 0;
 
@@ -97,7 +103,11 @@ class Quantizer {
   virtual float calc_distance_dp_query(const void *dp,
                                        const void *query) const = 0;
 
-  //! Batched distance between quantized datapoints and a quantized query
+  //! Batched distance between quantized datapoints and a quantized query.
+  //! Gather-style contract: each datapoint is addressed by its own pointer,
+  //! so this works for any code layout (HNSW neighbors, IVF posting codes).
+  //! Packed-block scanners (FastScan) live in the PackedCodeQuantizer
+  //! capability instead.
   virtual void calc_distance_dp_query_batch(const void *const *dp_list,
                                             int dp_num, const void *query,
                                             float *dist_list) const = 0;

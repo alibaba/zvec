@@ -487,6 +487,48 @@ TEST(FieldSchemaTest, Validate) {
   }
 }
 
+TEST(FieldSchemaTest, ValidateFlatReferenceDataType) {
+  auto params = std::make_shared<HnswIndexParams>(MetricType::L2, 16, 100,
+                                                  QuantizeType::INT8);
+  params->set_use_flat_contiguous_memory(true);
+
+  params->set_flat_data_type(DataType::VECTOR_FP16);
+  FieldSchema fp16_flat("fp16_flat", DataType::VECTOR_FP32, 128, false, params);
+  EXPECT_TRUE(fp16_flat.validate().ok());
+
+  params->set_flat_data_type(DataType::VECTOR_UINT8);
+  FieldSchema uint8_flat("uint8_flat", DataType::VECTOR_FP32, 128, false,
+                         params);
+  EXPECT_TRUE(uint8_flat.validate().ok());
+
+  auto ip_params = std::make_shared<HnswIndexParams>(MetricType::IP);
+  ip_params->set_flat_data_type(DataType::VECTOR_UINT8);
+  FieldSchema uint8_ip("uint8_ip", DataType::VECTOR_FP32, 128, false,
+                       ip_params);
+  EXPECT_FALSE(uint8_ip.validate().ok());
+
+  auto fp16_params = std::make_shared<HnswIndexParams>(MetricType::L2);
+  FieldSchema fp16_default("fp16_default", DataType::VECTOR_FP16, 128, false,
+                           fp16_params);
+  EXPECT_TRUE(fp16_default.validate().ok());
+
+  auto sparse_params = std::make_shared<HnswIndexParams>(MetricType::IP);
+  FieldSchema sparse_default("sparse_default", DataType::SPARSE_VECTOR_FP32, 0,
+                             false, sparse_params);
+  EXPECT_TRUE(sparse_default.validate().ok());
+
+  sparse_params->set_flat_data_type(DataType::VECTOR_FP16);
+  FieldSchema sparse("sparse", DataType::SPARSE_VECTOR_FP32, 0, false,
+                     sparse_params);
+  EXPECT_FALSE(sparse.validate().ok());
+
+  auto unsupported_params = std::make_shared<HnswIndexParams>(MetricType::L2);
+  unsupported_params->set_flat_data_type(DataType::VECTOR_INT8);
+  FieldSchema unsupported("unsupported", DataType::VECTOR_FP32, 128, false,
+                          unsupported_params);
+  EXPECT_FALSE(unsupported.validate().ok());
+}
+
 TEST(CollectionSchemaTest, DefaultConstructor) {
   CollectionSchema schema;
   EXPECT_EQ(schema.name(), "");
