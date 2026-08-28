@@ -162,10 +162,15 @@ void test_io_backend_functions(void) {
   TEST_ASSERT(
       strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
              "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED),
+                     "windows_overlapped") == 0);
   TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
 
   zvec_io_backend_type_t current = zvec_get_io_backend_type();
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(_WIN32)
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED);
+#elif defined(__APPLE__) && defined(__MACH__)
   TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD);
 #else
   TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD ||

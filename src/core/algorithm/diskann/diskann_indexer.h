@@ -24,6 +24,8 @@
 namespace zvec {
 namespace core {
 
+class DiskAnnCacheTestPeer;
+
 class DiskAnnIndexer {
  public:
   typedef std::shared_ptr<DiskAnnIndexer> Pointer;
@@ -34,10 +36,8 @@ class DiskAnnIndexer {
 
  public:
   int init(DiskAnnSearcherEntity &entity);
-  int load_cache_list(const std::vector<diskann_id_t> &node_list);
 
-  void cache_bfs_levels(uint64_t num_nodes_to_cache,
-                        std::vector<diskann_id_t> &node_list);
+  int configure_cache(uint32_t cache_node_num);
 
   int cached_beam_search(DiskAnnContext *ctx);
   int cached_beam_search_by_group(DiskAnnContext *ctx);
@@ -47,6 +47,9 @@ class DiskAnnIndexer {
   int knn_search(DiskAnnContext *ctx);
   int linear_search(DiskAnnContext *ctx);
   int keys_search(const std::vector<diskann_key_t> &keys, DiskAnnContext *ctx);
+
+  //! Release lazy per-context reader resources at a public operation boundary.
+  void release_io_ctx(DiskAnnContext *ctx);
 
   int get_vector(diskann_id_t id, IndexContext::Pointer &context,
                  std::string &vector);
@@ -69,9 +72,26 @@ class DiskAnnIndexer {
   void populate_group_topk_heaps(DiskAnnContext *ctx);
 
  private:
-  DiskAnnSearcherEntity *entity_;
+  struct CacheSlot {
+    diskann_id_t id{0};
+    uint32_t neighbor_count{0};
+    bool loaded{false};
+  };
 
-  IndexStorage::Pointer storage_{};
+  struct CacheLoadState {
+    size_t capacity{0};
+    std::vector<CacheSlot> slots;
+  };
+
+  uint32_t effective_cache_node_count(uint32_t requested_nodes) const;
+  int prepare_cache_storage(size_t capacity, CacheLoadState &state);
+  int load_cache_list(CacheLoadState &state);
+  int cache_bfs_levels(uint64_t num_nodes_to_cache, CacheLoadState &state);
+  void reset_cache_storage();
+  int cached_beam_search_impl(DiskAnnContext *ctx);
+
+  DiskAnnEntity::Pointer entity_{};
+
   IndexMeta meta_;
 
   uint32_t max_degree_{0};
@@ -79,7 +99,6 @@ class DiskAnnIndexer {
   uint32_t max_node_size_{0};
   uint64_t pq_chunk_num_{0};
   uint64_t disk_bytes_per_point_{0};
-  uint64_t aligned_dim_{0};
   uint64_t index_segment_offset_{0};
   uint64_t sector_num_per_node_{0};
 
@@ -89,22 +108,23 @@ class DiskAnnIndexer {
   diskann_id_t medoid_;
   std::vector<diskann_id_t> entrypoints_;
 
-  std::shared_ptr<LinuxAlignedFileReader> reader_{nullptr};
+  std::shared_ptr<AlignedFileReader> reader_{nullptr};
 
   PQTable::Pointer pq_table_;
 
-  IOContext init_ctx_{0};
+  IOContext init_ctx_{};
 
   std::vector<diskann_id_t> neighbor_cache_buffer_;
   void *coord_cache_buf_{nullptr};
 
   std::map<diskann_id_t, void *> coord_cache_;
   std::map<diskann_id_t, std::pair<uint32_t, diskann_id_t *>> neighbor_cache_;
-
   uint32_t beam_width_{2};
   uint32_t io_limit_{std::numeric_limits<uint32_t>::max()};
 
   uint64_t doc_cnt_{0};
+
+  friend class DiskAnnCacheTestPeer;
 };
 
 }  // namespace core
