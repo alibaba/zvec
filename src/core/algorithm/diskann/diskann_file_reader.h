@@ -156,6 +156,8 @@ class LinuxAlignedFileReader : public AlignedFileReader {
  public:
   LinuxAlignedFileReader();
   LinuxAlignedFileReader(int file_desc);
+  LinuxAlignedFileReader(const LinuxAlignedFileReader &) = delete;
+  LinuxAlignedFileReader &operator=(const LinuxAlignedFileReader &) = delete;
   ~LinuxAlignedFileReader() override;
 
  public:
@@ -188,6 +190,10 @@ class WindowsAlignedFileReader : public AlignedFileReader {
   void reset_io_ctx(IOContext &ctx);
 
  public:
+  WindowsAlignedFileReader() = default;
+  WindowsAlignedFileReader(const WindowsAlignedFileReader &) = delete;
+  WindowsAlignedFileReader &operator=(const WindowsAlignedFileReader &) =
+      delete;
   ~WindowsAlignedFileReader() override;
 
   void open(const std::string &fname) override;
