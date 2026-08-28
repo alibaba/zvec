@@ -35,6 +35,12 @@ env:
   ZVEC_CHECKOUT_REF: ${{ inputs.tag != '' && inputs.tag || github.ref }}
 
 jobs:
+  build-macos-x64:
+    name: Build (osx-amd64)
+    uses: ./.github/workflows/_build_macos_x64_sdk.yml
+    with:
+      tag: ${{ inputs.tag }}
+
   build:
     name: Build (${{ matrix.os_name }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
@@ -49,13 +55,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            os_name: osx
-            arch: amd64
-            ext: tar.gz
-            container: ''
-            cmake_platform_args: '-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'
           - target: aarch64-apple-darwin
             os: macos-15
             os_name: osx

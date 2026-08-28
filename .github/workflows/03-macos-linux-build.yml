@@ -21,6 +21,11 @@ permissions:
   contents: read
 
 jobs:
+  build-prebuilt-sdk-macos-x64:
+    if: inputs.platform == 'macos-x64'
+    name: Build & Smoke-test Prebuilt SDK (macos-x64)
+    uses: ./.github/workflows/_build_macos_x64_sdk.yml
+
   # Build and test matrix (parallel execution)
   build-and-test:
     name: Build & Test (${{ inputs.platform }})

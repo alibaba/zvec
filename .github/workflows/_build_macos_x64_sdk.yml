@@ -1,0 +1,145 @@
+name: "(Reusable) Build and Smoke-test the macOS x64 SDK"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag used to stamp the SDK version (e.g., v0.7.0)'
+        required: false
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag used to stamp the SDK version (e.g., v0.7.0)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  ZVEC_CHECKOUT_REF: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+  ZVEC_VERSION_DEFINE: ${{ inputs.tag != '' && format('-DOVERRIDE_GIT_DESCRIBE={0}', inputs.tag) || '' }}
+  ZVEC_INSTALL_DIR: ${{ github.workspace }}/install
+  ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+
+jobs:
+  build:
+    name: Build and smoke-test (osx-amd64)
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ZVEC_CHECKOUT_REF }}
+          submodules: recursive
+
+      - name: Verify Intel runner
+        shell: bash
+        run: |
+          test "$(uname -m)" = "x86_64"
+          sw_vers
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DBUILD_ZVEC_AILEGO_SHARED=ON \
+            -DENABLE_WERROR=OFF \
+            $ZVEC_VERSION_DEFINE
+
+      - name: Build and install SDK
+        shell: bash
+        run: |
+          NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          cmake --build build --target install --parallel "$NPROC"
+
+      - name: Dump third-party build logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          find build -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) | while read -r log; do
+            echo "===== $log ====="
+            tail -80 "$log"
+          done
+
+      - name: Stage package contents
+        shell: bash
+        run: |
+          mkdir -p "$ZVEC_DIST_DIR"
+          cp -R "$ZVEC_INSTALL_DIR"/. "$ZVEC_DIST_DIR"/.
+          # Static libraries are not self-contained because their third-party
+          # dependencies are not installed with the SDK.
+          rm -f "$ZVEC_DIST_DIR"/lib/*.a
+
+      - name: Verify packaged library architecture
+        shell: bash
+        run: |
+          found=0
+          for library in "$ZVEC_DIST_DIR"/lib/*.dylib; do
+            [ -e "$library" ] || continue
+            found=1
+            archs=$(lipo -archs "$library")
+            echo "$(basename "$library"): $archs"
+            if ! printf '%s\n' "$archs" | tr ' ' '\n' | grep -Fx x86_64; then
+              echo "::error::$library does not contain an x86_64 slice"
+              exit 1
+            fi
+          done
+          if [ "$found" -ne 1 ]; then
+            echo "::error::No packaged dylibs found"
+            exit 1
+          fi
+
+      - name: Smoke-test staged SDK
+        shell: bash
+        run: |
+          SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
+          cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+          cmake --build "$SMOKE_BUILD" --parallel 2
+          ctest --test-dir "$SMOKE_BUILD" --output-on-failure
+
+      - name: Package SDK
+        shell: bash
+        run: |
+          tar czf zvec-sdk-osx-amd64.tar.gz -C "$ZVEC_DIST_DIR" .
+          ls -lh zvec-sdk-osx-amd64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: zvec-sdk-osx-amd64
+          path: zvec-sdk-osx-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
