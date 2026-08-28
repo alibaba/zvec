@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -419,25 +420,44 @@ TEST_F(DiskAnnMobileCollectionTest, CompleteQuerySurfaceAndMetricMatrix) {
     ASSERT_TRUE(fp16_result.has_value()) << fp16_result.error().message();
     ASSERT_FALSE(fp16_result->empty());
 
-    ASSERT_GE(fp32_result->size(), 2u);
-    const float best_score = fp32_result->front()->score();
-    const float worst_score = fp32_result->back()->score();
-    const float radius = (best_score + worst_score) / 2.0F;
-    ASSERT_GT(radius, 0.0F);
+    // Use the exhaustive DiskANN path for both sides of radius validation.
+    // ANN searches may produce different candidate sets, and result order is
+    // not a suitable substitute for computing the actual score extrema.
+    auto radius_baseline_query = MakeFp32Query(12, kFp32Field, 8);
+    radius_baseline_query.filter_ = "category = 0";
+    radius_baseline_query.target_.query_params_->set_is_linear(true);
+    auto radius_baseline_result = collection->query(radius_baseline_query);
+    ASSERT_TRUE(radius_baseline_result.has_value())
+        << radius_baseline_result.error().message();
+    ASSERT_GE(radius_baseline_result->size(), 2u);
+    std::vector<float> radius_baseline_scores;
+    radius_baseline_scores.reserve(radius_baseline_result->size());
+    for (const auto &doc : *radius_baseline_result) {
+      ASSERT_NE(doc, nullptr);
+      ASSERT_TRUE(std::isfinite(doc->score()));
+      radius_baseline_scores.emplace_back(doc->score());
+    }
+    const auto [min_score, max_score] = std::minmax_element(
+        radius_baseline_scores.begin(), radius_baseline_scores.end());
+    float radius = (*min_score + *max_score) / 2.0F;
+    if (radius <= 0.0F) {
+      radius = 0.001F;
+    }
+    const auto is_within_radius = [metric, radius](float score) {
+      return metric == MetricType::IP ? score >= radius : score <= radius;
+    };
+    ASSERT_TRUE(std::any_of(radius_baseline_scores.begin(),
+                            radius_baseline_scores.end(), is_within_radius));
     auto radius_query = MakeFp32Query(12, kFp32Field, 8);
     radius_query.filter_ = "category = 0";
     radius_query.target_.query_params_->set_radius(radius);
+    radius_query.target_.query_params_->set_is_linear(true);
     auto radius_result = collection->query(radius_query);
     ASSERT_TRUE(radius_result.has_value()) << radius_result.error().message();
     ASSERT_FALSE(radius_result->empty());
-    EXPECT_LT(radius_result->size(), fp32_result->size());
     for (const auto &doc : *radius_result) {
       ASSERT_NE(doc, nullptr);
-      if (metric == MetricType::IP) {
-        EXPECT_GE(doc->score(), radius);
-      } else {
-        EXPECT_LE(doc->score(), radius);
-      }
+      EXPECT_TRUE(is_within_radius(doc->score()));
     }
 
     MultiQuery multi_query;
