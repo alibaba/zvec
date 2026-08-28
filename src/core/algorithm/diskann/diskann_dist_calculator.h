@@ -197,7 +197,10 @@ class DistCalculator {
       turbo::Quantizer::Pointer quantizer = IndexFactory::CreateQuantizer(name);
       if (quantizer) {
         IndexMeta quant_meta = meta;
-        if (meta.metric_name() == "Cosine") {
+        // Legacy Cosine layout folds the stored norm into an inflated
+        // dimension; the turbo-quantizer layout keeps the raw dimension and
+        // accounts the norm with extra_meta_size instead.
+        if (meta.metric_name() == "Cosine" && meta.extra_meta_size() == 0) {
           quant_meta.set_dimension(meta.dimension() -
                                    sizeof(float) / meta.unit_size());
         }
