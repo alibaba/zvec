@@ -12,9 +12,19 @@ on:
         required: false
         type: string
         default: ""
+      build_identifier:
+        description: "Optional single cibuildwheel identifier used by CI"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Publish wheels on workflow_dispatch"
+        required: false
+        type: boolean
+        default: true
     secrets:
       PYPI_API_TOKEN:
-        required: true
+        required: false
 
 jobs:
   build_publish_test:
@@ -42,14 +52,46 @@ jobs:
           pip install cibuildwheel==3.4.0
 
       - name: Build wheels using cibuildwheel
+        env:
+          CIBW_ONLY: ${{ inputs.build_identifier }}
         run: |
-          python -m cibuildwheel --output-dir wheelhouse
+          if [ -n "$CIBW_ONLY" ]; then
+            python -m cibuildwheel --only "$CIBW_ONLY" --output-dir wheelhouse
+          else
+            python -m cibuildwheel --output-dir wheelhouse
+          fi
           # Save list of built wheels for publishing
           ls wheelhouse/*.whl | tee $GITHUB_STEP_SUMMARY
           echo "wheels=$(ls wheelhouse/*.whl | tr '\n' ' ')" >> $GITHUB_ENV
 
+      - name: Verify native macOS wheel tags
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          EXPECTED_ARCH=$(uname -m)
+          for wheel in wheelhouse/*.whl; do
+            wheel_name=$(basename "$wheel")
+            case "$wheel_name" in
+              *-macosx_*_"$EXPECTED_ARCH".whl)
+                echo "Verified native wheel: $wheel_name"
+                ;;
+              *)
+                echo "::error::Expected a macOS $EXPECTED_ARCH wheel, got $wheel_name"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ inputs.runner }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Publish to PyPI
-        if: success() && github.event_name == 'workflow_dispatch'
+        if: success() && inputs.publish && github.event_name == 'workflow_dispatch'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -59,7 +101,7 @@ jobs:
           twine upload --skip-existing --verbose wheelhouse/*.whl
 
       - name: Smoke test from PyPI
-        if: success() && github.event_name == 'workflow_dispatch'
+        if: success() && inputs.publish && github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           PYPI_REPOSITORY_URL: ${{ inputs.pypi_repository_url }}

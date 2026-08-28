@@ -68,7 +68,7 @@ jobs:
       - name: Set up environment variables
         run: |
           # Set number of processors for parallel builds
-          if [[ "${{ matrix.platform }}" == "macos-arm64" ]]; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
             NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
           else
             NPROC=$(nproc 2>/dev/null || echo 2)
