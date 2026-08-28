@@ -385,6 +385,7 @@ TEST_F(DiskAnnMobileCollectionTest, CompleteQuerySurfaceAndMetricMatrix) {
     ASSERT_FALSE(fp32_result->empty());
     for (const auto &doc : *fp32_result) {
       ASSERT_NE(doc, nullptr);
+      ASSERT_TRUE(std::isfinite(doc->score()));
       auto category = doc->get<int32_t>("category");
       ASSERT_TRUE(category.has_value());
       EXPECT_EQ(category.value(), 0);
@@ -457,6 +458,7 @@ TEST_F(DiskAnnMobileCollectionTest, CompleteQuerySurfaceAndMetricMatrix) {
     ASSERT_FALSE(radius_result->empty());
     for (const auto &doc : *radius_result) {
       ASSERT_NE(doc, nullptr);
+      ASSERT_TRUE(std::isfinite(doc->score()));
       EXPECT_TRUE(is_within_radius(doc->score()));
     }
 
