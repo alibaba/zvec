@@ -321,7 +321,7 @@ TEST(PqInt8Quantizer, DeserializeRejectsForeignDataType) {
   // populated) must still be accepted and parsed as int8 codes.
   hdr.data_type = 0;
   std::memcpy(blob.data(), &hdr, sizeof(hdr));
-  auto q3 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  auto q3 = make_pq_quantizer(DIM, NSQ);
   ASSERT_TRUE(q3);
   EXPECT_EQ(0, q3->deserialize(blob));
 }
