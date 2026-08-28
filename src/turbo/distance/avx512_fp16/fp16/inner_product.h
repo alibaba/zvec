@@ -17,7 +17,12 @@
 
 namespace zvec::turbo::avx512_fp16 {
 
-// True when these translation units were compiled with AVX512-FP16 enabled.
+// True when these translation units were compiled with AVX512-FP16 enabled
+// (__AVX512FP16__ defined, i.e. GCC >= 12 / Clang >= 14 with
+// -march=sapphirerapids; never on MSVC). With older compilers the kernels
+// below compile into no-op stubs that do not even write the output, so a
+// runtime CPUID check alone is not enough: dispatch must also verify that
+// the real kernels were built into this binary.
 bool fp16_distance_kernels_available();
 
 void inner_product_fp16_distance(const void *a, const void *b, size_t dim,

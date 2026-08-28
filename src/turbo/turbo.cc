@@ -103,6 +103,10 @@ static bool CpuSupports(CpuArchType arch) {
     case CpuArchType::kAVX512VNNI:
       return flags.AVX512_VNNI;
     case CpuArchType::kAVX512FP16:
+      // CPUID says the CPU can run FP16 instructions; the extra call checks
+      // that the FP16 kernels were actually compiled in (needs GCC >= 12 /
+      // Clang >= 14), otherwise they are no-op stubs. See
+      // avx512_fp16/fp16/inner_product.h.
       return flags.AVX512F && flags.AVX512_FP16 &&
              avx512_fp16::fp16_distance_kernels_available();
     case CpuArchType::kNEON:
