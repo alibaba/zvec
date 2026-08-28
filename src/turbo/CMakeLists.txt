@@ -35,6 +35,16 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
         )
 
+        # AVX512-FP16
+        file(GLOB_RECURSE AVX512FP16_SRCS
+            ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_fp16/*.cc
+        )
+        set_source_files_properties(
+            ${AVX512FP16_SRCS}
+            PROPERTIES
+            COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512FP16}"
+        )
+
         # AVX512
         file(GLOB_RECURSE AVX512_SRCS
             ${CMAKE_CURRENT_SOURCE_DIR}/conversion/avx512/*.cc
