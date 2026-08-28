@@ -619,8 +619,9 @@ endfunction()
 ## Add both shared and static library
 macro(_add_library _NAME _OPTION)
   add_library(${_NAME}_objects OBJECT ${_OPTION} ${ARGN})
-  if(IOS)
-    # iOS has no shared libraries, so the main target is static as well.
+  if(IOS OR (ANDROID AND ANDROID_STL STREQUAL "c++_static"))
+    # Mobile c++_static builds expose one archive under both target names so
+    # the C++ runtime is linked into an executable exactly once.
     # Building a second, identical archive under the ${_NAME}_static name is
     # not just wasteful, it breaks the build: giving both the same OUTPUT_NAME
     # makes Ninja fail ("multiple rules generate ..."), while distinct names
@@ -645,7 +646,7 @@ macro(_add_library _NAME _OPTION)
 endmacro()
 
 ## Check whether <name>_static is a target of its own rather than an alias of
-## <name> (see _add_library: on iOS the two names share a single archive).
+## <name> (see _add_library: mobile c++_static builds share one archive).
 function(_has_own_static_variant _RESULT _NAME)
   set(${_RESULT} FALSE PARENT_SCOPE)
   if(NOT TARGET ${_NAME}_static)

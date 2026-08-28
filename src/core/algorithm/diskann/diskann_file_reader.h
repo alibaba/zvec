@@ -18,7 +18,7 @@
 #include <fcntl.h>
 #include <array>
 
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
 #include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #elif defined(_WIN32) || defined(_WIN64)
@@ -67,7 +67,7 @@ namespace core {
 struct IoBackend {
   ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
   IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
 #elif defined(_WIN32) || defined(_WIN64)
@@ -88,7 +88,7 @@ int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
 
 // Log the current DiskAnn I/O backend (io_uring, libaio, or pread). Probes the
-// backend on first call. No-op outside Linux and macOS.
+// backend on first call. Android and iOS always use synchronous pread.
 void log_diskann_io_backend();
 
 struct AlignedRead {
@@ -100,7 +100,7 @@ struct AlignedRead {
 
   AlignedRead(uint64_t offset, uint64_t len, void *buf)
       : offset(offset), len(len), buf(buf) {
-#if defined(__linux__) || defined(__linux)
+#if defined(__linux__) && !defined(__ANDROID__)
     // O_DIRECT requires 512-byte alignment on Linux.
     ailego_assert(static_cast<size_t>(offset) % 512 == 0);
     ailego_assert(static_cast<size_t>(len) % 512 == 0);
@@ -110,7 +110,7 @@ struct AlignedRead {
 };
 
 struct PendingBatch {
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
   std::vector<struct iocb> cbs;
   std::vector<struct iocb *> cb_ptrs;
 #elif defined(_WIN32) || defined(_WIN64)

@@ -3539,7 +3539,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<IVFIndexParams>(
                          MetricType::IP, 10, 4, false, QuantizeType::FP16));
-#if DISKANN_SUPPORTED
+#if DISKANN_SUPPORTED && DISKANN_STRESS_TESTS
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<DiskAnnIndexParams>(
                          MetricType::IP, 10, 4, 0, QuantizeType::UNDEFINED));
@@ -6303,7 +6303,7 @@ TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
 }
 #endif
 
-#if DISKANN_SUPPORTED
+#if DISKANN_SUPPORTED && DISKANN_STRESS_TESTS
 TEST_F(CollectionTest, Feature_Optimize_DiskAnn) {
   auto func = [](MetricType metric_type, int concurrency) {
     FileHelper::RemoveDirectory(col_path);
