@@ -4,6 +4,18 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
     if (HOST_ARCH MATCHES "^(x86|x64)$")
         setup_compiler_march_for_x86(TURBO_MARCH_FLAG_SSE TURBO_MARCH_FLAG_AVX2 TURBO_MARCH_FLAG_AVX512 TURBO_MARCH_FLAG_AVX512FP16)
+        # kSSE is gated by SSE2 at runtime. Keep these translation units at
+        # that exact baseline so auto-vectorized scalar tails cannot acquire
+        # instructions from the broader corei7 profile returned above.
+        if(MSVC AND HOST_ARCH STREQUAL "x86")
+            set(TURBO_MARCH_FLAG_SSE "/arch:SSE2")
+        elseif(NOT MSVC)
+            if(HOST_ARCH STREQUAL "x64")
+                set(TURBO_MARCH_FLAG_SSE "-march=x86-64")
+            else()
+                set(TURBO_MARCH_FLAG_SSE "-march=i686 -msse2")
+            endif()
+        endif()
     elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
         # ARM64 architecture - NEON is enabled by default on aarch64,
         # no special march flags needed.
