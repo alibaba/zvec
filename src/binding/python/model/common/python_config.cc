@@ -230,7 +230,8 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       "as an IOBackendType enum (zvec.typing.IOBackendType). "
       "Linux selects IOBackendType.IO_URING, IOBackendType.LIBAIO, or "
       "IOBackendType.PREAD in that order. macOS ARM64 uses "
-      "IOBackendType.PREAD.");
+      "IOBackendType.PREAD. Windows uses "
+      "IOBackendType.WINDOWS_OVERLAPPED.");
 
   // Returns a human-readable description identifying io_uring, libaio, or
   // pread, with asynchronous-backend guidance for Linux pread fallback.
@@ -240,7 +241,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       "Returns a human-readable description of the current I/O backend. "
       "The description identifies io_uring, libaio, or pread. On Linux, the "
       "pread description includes guidance for enabling io_uring or "
-      "installing libaio.");
+      "installing libaio. Windows reports its overlapped-I/O backend.");
 }
 
 

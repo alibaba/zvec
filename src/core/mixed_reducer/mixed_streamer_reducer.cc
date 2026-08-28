@@ -181,8 +181,17 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     }
 
     for (size_t i = 0; i < streamers_.size(); i++) {
-      read_results[i] = read_vec(i, filter, id_offset, &next_id);
-      id_offset += streamers_[i]->create_provider()->count();
+      auto provider = streamers_[i]->create_provider();
+      if (!provider) {
+        LOG_ERROR("Failed to create source provider, index=%zu", i);
+        read_results[i] = IndexError_Runtime;
+        break;
+      }
+      read_results[i] = read_vec(i, provider, filter, id_offset, &next_id);
+      if (read_results[i] != 0) {
+        break;
+      }
+      id_offset += provider->count();
     }
 
     mt_list_.done();
@@ -244,6 +253,7 @@ int MixedStreamerReducer::dump(const IndexDumper::Pointer &dumper) {
 }
 
 int MixedStreamerReducer::read_vec(size_t source_streamer_index,
+                                   const IndexProvider::Pointer &provider,
                                    const IndexFilter &filter,
                                    const uint32_t id_offset,
                                    uint32_t *next_id) {
@@ -259,8 +269,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     need_revert = true;
   }
 
-  IndexProvider::Pointer provider = streamer->create_provider();
+  if (!provider) {
+    LOG_ERROR("Source provider is null, index=%zu", source_streamer_index);
+    return IndexError_Runtime;
+  }
   IndexProvider::Iterator::Pointer iterator = provider->create_iterator();
+  if (!iterator) {
+    LOG_ERROR("Failed to create source provider iterator, index=%zu",
+              source_streamer_index);
+    return IndexError_Runtime;
+  }
 
   while (iterator->is_valid()) {
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
@@ -273,10 +291,17 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       continue;
     }
 
+    const void *vector_data = iterator->data();
+    if (!vector_data) {
+      LOG_ERROR("Failed to read source vector, index=%zu key=%zu",
+                source_streamer_index, static_cast<size_t>(iterator->key()));
+      return IndexError_ReadData;
+    }
+
     std::vector<uint8_t> bytes;
     if (need_revert) {
       std::string new_vector;
-      if (reformer->revert(iterator->data(), source_streamer_query_meta,
+      if (reformer->revert(vector_data, source_streamer_query_meta,
                            &new_vector) != 0) {
         LOG_ERROR("Failed to revert the vector");
         return IndexError_Runtime;
@@ -286,7 +311,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     } else {
       // TODO: eliminate the copy
       bytes.resize(provider->element_size());
-      memcpy(bytes.data(), iterator->data(), bytes.size());
+      memcpy(bytes.data(), vector_data, bytes.size());
     }
 
     // TODO: use id instead of key

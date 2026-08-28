@@ -17,10 +17,10 @@
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 
-class LinuxAlignedFileReader;
-
 namespace zvec {
 namespace core {
+
+class DiskAnnCacheTestPeer;
 
 class DiskAnnSearcher : public IndexSearcher {
  public:
@@ -48,7 +48,8 @@ class DiskAnnSearcher : public IndexSearcher {
   int cleanup(void) override;
 
   //! Load Index from storage
-  int load(IndexStorage::Pointer storage, IndexMetric::Pointer metric) override;
+  int load(IndexStorage::Pointer storage,
+           IndexMetric::Pointer /*metric*/) override;
 
   //! Unload index from storage
   int unload(void) override;
@@ -159,8 +160,6 @@ class DiskAnnSearcher : public IndexSearcher {
   uint32_t list_size_{200};
   uint32_t cache_nodes_num_{0};
 
-  bool warm_up_{false};
-  uint32_t beam_size_{2};
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
@@ -173,6 +172,8 @@ class DiskAnnSearcher : public IndexSearcher {
 
   Stats stats_;
   State state_{STATE_INIT};
+
+  friend class DiskAnnCacheTestPeer;
 };
 
 }  // namespace core
