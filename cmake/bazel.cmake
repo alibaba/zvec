@@ -786,7 +786,16 @@ function(_target_link_libraries _NAME)
     endif()
 
     if(NOT MSVC)
-      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
+      if(ANDROID AND ANDROID_STL STREQUAL "c++_static")
+        # Keep the target in the normal link graph so CMake can resolve its
+        # transitive dependencies, but force-load the archive exactly once via
+        # a link option. Wrapping the target directly in --whole-archive here
+        # lets CMake emit another transitive occurrence later; lld then loads
+        # the same objects twice and reports duplicate symbols.
+        list(APPEND LINK_LIBS ${LIB})
+        list(APPEND ANDROID_WHOLEARCHIVE_OPTS
+             -Wl,--whole-archive,$<TARGET_FILE:${LIB}>,--no-whole-archive)
+      elseif(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
         list(APPEND LINK_LIBS -Wl,--whole-archive ${LIB} -Wl,--no-whole-archive)
       else()
         list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
@@ -812,6 +821,9 @@ function(_target_link_libraries _NAME)
   endforeach()
 
   target_link_libraries(${_NAME} ${LINK_LIBS})
+  if(ANDROID_WHOLEARCHIVE_OPTS)
+    target_link_options(${_NAME} PRIVATE ${ANDROID_WHOLEARCHIVE_OPTS})
+  endif()
   if(MSVC_WHOLEARCHIVE_OPTS)
     target_link_options(${_NAME} PRIVATE ${MSVC_WHOLEARCHIVE_OPTS})
   endif()
