@@ -30,6 +30,9 @@ int main() {
   schema.add_field(std::make_shared<FieldSchema>(
       "embedding", DataType::VECTOR_FP32, 4, false,
       std::make_shared<HnswIndexParams>(MetricType::IP)));
+  schema.add_field(std::make_shared<FieldSchema>(
+      "sparse_embedding", DataType::SPARSE_VECTOR_FP32, 0, false,
+      std::make_shared<HnswIndexParams>(MetricType::IP)));
 
   CollectionOptions options{false, true};
   auto create_result =
@@ -45,6 +48,9 @@ int main() {
     doc.set_pk("doc_" + std::to_string(i));
     doc.set<std::vector<float>>("embedding",
                                 std::vector<float>{0.1F + i, 0.2F, 0.3F, 0.4F});
+    doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+        "sparse_embedding", std::make_pair(std::vector<uint32_t>{1, 3},
+                                           std::vector<float>{1.0F + i, 0.5F}));
     docs.emplace_back(std::move(doc));
   }
 
@@ -68,7 +74,22 @@ int main() {
                   query_vector.size() * sizeof(float)));
   auto query_result = collection->query(query);
   if (!query_result.has_value() || query_result.value().empty()) {
-    return Fail("query returned no documents");
+    return Fail("dense query returned no documents");
+  }
+
+  SearchQuery sparse_query;
+  sparse_query.topk_ = 3;
+  sparse_query.target_.field_name_ = "sparse_embedding";
+  const std::vector<uint32_t> sparse_query_indices{1, 3};
+  const std::vector<float> sparse_query_values{1.0F, 0.5F};
+  sparse_query.target_.set_sparse_vector(
+      std::string(reinterpret_cast<const char *>(sparse_query_indices.data()),
+                  sparse_query_indices.size() * sizeof(uint32_t)),
+      std::string(reinterpret_cast<const char *>(sparse_query_values.data()),
+                  sparse_query_values.size() * sizeof(float)));
+  auto sparse_query_result = collection->query(sparse_query);
+  if (!sparse_query_result.has_value() || sparse_query_result.value().empty()) {
+    return Fail("sparse query returned no documents");
   }
 
   if (!collection->close().ok()) {
@@ -85,7 +106,12 @@ int main() {
   auto reopened_query_result = reopened->query(query);
   if (!reopened_query_result.has_value() ||
       reopened_query_result.value().empty()) {
-    return Fail("query after reopen returned no documents");
+    return Fail("dense query after reopen returned no documents");
+  }
+  auto reopened_sparse_query_result = reopened->query(sparse_query);
+  if (!reopened_sparse_query_result.has_value() ||
+      reopened_sparse_query_result.value().empty()) {
+    return Fail("sparse query after reopen returned no documents");
   }
   if (!reopened->close().ok()) {
     return Fail("read-only close failed");
@@ -97,7 +123,8 @@ int main() {
   if (!message) {
     return Fail("GetDefaultMessage() returned null");
   }
-  std::cout << "cpp_smoke: inserted, optimized, queried, and reopened 3 docs"
+  std::cout << "cpp_smoke: inserted, optimized, queried dense/sparse, and "
+               "reopened 3 docs"
             << std::endl;
   std::cout << "cpp_smoke: StatusCode::OK -> " << message << std::endl;
   std::cout << "cpp_smoke: OK" << std::endl;

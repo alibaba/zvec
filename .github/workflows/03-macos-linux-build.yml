@@ -189,7 +189,7 @@ jobs:
           echo "Reproducing under LLDB:"
           lldb --batch \
             -o run \
-            -o 'thread backtrace all' \
+            -k 'thread backtrace all' \
             -- "$(command -v python)" -X faulthandler \
             "$GITHUB_WORKSPACE/.github/scripts/macos_x64_python_smoke.py"
         shell: bash
