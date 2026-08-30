@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
 import platform
 import tempfile
@@ -11,12 +12,15 @@ import zvec
 
 
 def main() -> None:
+    faulthandler.enable(all_threads=True)
     machine = platform.machine().lower()
     if machine not in {"x86_64", "amd64"}:
         raise RuntimeError(f"expected an x86_64 runtime, got {machine}")
+    logging.info("macOS x64 smoke: imported zvec on %s", machine)
 
     with tempfile.TemporaryDirectory(prefix="zvec-macos-x64-") as temp_dir:
         collection_path = Path(temp_dir) / "smoke_collection"
+        logging.info("macOS x64 smoke: creating schema")
         schema = zvec.CollectionSchema(
             name="macos_x64_smoke",
             vectors=[
@@ -34,6 +38,7 @@ def main() -> None:
             ],
         )
 
+        logging.info("macOS x64 smoke: creating collection")
         collection = zvec.create_and_open(str(collection_path), schema)
         documents = [
             zvec.Doc(
@@ -59,15 +64,19 @@ def main() -> None:
             ),
         ]
 
+        logging.info("macOS x64 smoke: inserting documents")
         write_results = collection.insert(documents)
         if len(write_results) != len(documents) or not all(
             result.ok() for result in write_results
         ):
             raise RuntimeError(f"insert failed: {write_results}")
 
+        logging.info("macOS x64 smoke: flushing collection")
         collection.flush()
+        logging.info("macOS x64 smoke: optimizing collection")
         collection.optimize()
 
+        logging.info("macOS x64 smoke: querying dense and sparse vectors")
         dense_results = collection.query(
             zvec.Query(field_name="dense", vector=[0.1, 0.2, 0.3, 0.4]),
             topk=3,
@@ -83,6 +92,7 @@ def main() -> None:
                 f"expected {len(documents)} docs, got {collection.stats.doc_count}"
             )
 
+        logging.info("macOS x64 smoke: closing and reopening collection")
         collection.close()
         reopened = zvec.open(str(collection_path))
         try:

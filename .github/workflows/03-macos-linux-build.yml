@@ -172,7 +172,26 @@ jobs:
         if: matrix.platform == 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE"
-          python .github/scripts/macos_x64_python_smoke.py
+          python -X faulthandler -c \
+            "import platform, zvec; print('Imported zvec on', platform.machine(), zvec.__version__)"
+          python -X faulthandler .github/scripts/macos_x64_python_smoke.py
+        shell: bash
+
+      - name: Diagnose macOS x64 Python native crash
+        if: failure() && matrix.platform == 'macos-x64'
+        run: |
+          echo "Recent macOS crash reports:"
+          find "$HOME/Library/Logs/DiagnosticReports" \
+            -type f -mmin -15 \
+            \( -name 'Python*.ips' -o -name 'Python*.crash' \) \
+            -print -exec tail -n 500 {} \; 2>/dev/null || true
+
+          echo "Reproducing under LLDB:"
+          lldb --batch \
+            -o run \
+            -o 'thread backtrace all' \
+            -- "$(command -v python)" -X faulthandler \
+            "$GITHUB_WORKSPACE/.github/scripts/macos_x64_python_smoke.py"
         shell: bash
 
       - name: Run C++ Examples
