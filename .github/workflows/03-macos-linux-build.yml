@@ -141,15 +141,38 @@ jobs:
         shell: bash
 
       - name: Run C++ Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . --target unittest --parallel $NPROC
         shell: bash
 
+      - name: Run macOS x64 C++ compatibility tests
+        if: matrix.platform == 'macos-x64'
+        run: |
+          test "$(uname -m)" = "x86_64"
+          df -h /
+          cd "$GITHUB_WORKSPACE/build"
+          cmake --build . \
+            --target shared_api_test c_api_test \
+            --parallel "$NPROC"
+          ctest --output-on-failure \
+            -R '^(shared_api_test|c_api_test)$' \
+            --parallel 1
+        shell: bash
+
       - name: Run Python Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/
+        shell: bash
+
+      - name: Run macOS x64 Python compatibility smoke test
+        if: matrix.platform == 'macos-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python .github/scripts/macos_x64_python_smoke.py
         shell: bash
 
       - name: Run C++ Examples
@@ -226,6 +249,7 @@ jobs:
         shell: bash
 
       - name: Run DiskAnn C++ Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
           ctest -R diskann --output-on-failure --parallel $NPROC
