@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
 """End-to-end compatibility smoke test for the macOS x86_64 wheel."""
 
 from __future__ import annotations
 
+import logging
 import platform
 import tempfile
 from pathlib import Path
@@ -95,11 +95,12 @@ def main() -> None:
         finally:
             reopened.close()
 
-    print(
+    logging.info(
         "macOS x64 Python smoke: imported, inserted, optimized, queried dense/sparse, "
         "and reopened successfully"
     )
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     main()
