@@ -415,7 +415,13 @@ class SegmentImpl : public Segment,
 
   bool sealed_{false};
 
-  mutable std::mutex seg_mtx_;
+  // Guards the segment state rewritten by Insert/Update/Upsert/Delete and the
+  // buffer-full flush() they trigger under this lock: doc_ids_, memory_store_,
+  // persist_stores_, the vector indexer maps and the block metadata. Read-only
+  // accessors (Fetch, get_global_doc_id) take it shared. NOT covered: the
+  // segment-switch dump()/flush(), which rewrites the same state without
+  // seg_mtx_ and is serialized only by the collection's write_mtx_.
+  mutable std::shared_mutex seg_mtx_;
 
   // segment column lock
   mutable std::shared_mutex seg_col_mtx_;
@@ -1023,7 +1029,12 @@ Doc::Ptr SegmentImpl::Fetch(
     uint64_t g_doc_id,
     const std::optional<std::vector<std::string>> &output_fields,
     bool include_vector) {
-  std::lock_guard lock(seg_mtx_);
+  // Read-only: shared so concurrent Fetch calls do not serialize. Excludes
+  // Insert/Update/Upsert/Delete and the buffer-full flush they trigger under
+  // this lock. NOT excluded: the segment-switch dump()/flush(), which resets
+  // memory_store_ without seg_mtx_ (serialized by the collection's write_mtx_
+  // only) -- see the seg_mtx_ member comment.
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
 
   if (g_doc_id > segment_meta_->max_doc_id()) {
     LOG_ERROR("g_doc_id[%zu] not exist in segment[%d] ", (size_t)g_doc_id,
@@ -4192,7 +4203,7 @@ Status SegmentImpl::recover() {
   LOG_INFO("WAL recovery started: path[%s], segment[%d]", wal_file_path.c_str(),
            id());
 
-  std::lock_guard<std::mutex> lock(seg_mtx_);
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
   while (true) {
     std::string buf = recover_wal_file->next();
@@ -4418,7 +4429,8 @@ BlockID SegmentImpl::allocate_block_id() {
 }
 
 Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t segment_doc_id) const {
-  std::lock_guard lock(seg_mtx_);
+  // Read-only lookup into doc_ids_; shared for the same reason as Fetch.
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
   if (segment_doc_id >= doc_ids_.size()) {
     return tl::make_unexpected(
         Status::InvalidArgument("segment_doc_id out of range"));

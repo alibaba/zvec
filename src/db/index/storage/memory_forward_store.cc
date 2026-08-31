@@ -93,27 +93,33 @@ bool MemForwardStore::validate(const std::vector<std::string> &columns) const {
 
 // Notice: This function just convert the docs to arrow::ArrayBuilder, not clean
 // the cache_.
+arrow::Status MemForwardStore::appendDocToBuilder(
+    const Doc &doc, RecordBatchBuilderPtr &rb_builder) {
+  auto &fields = physic_schema_->fields();
+
+  // global doc_id
+  auto gid_builder =
+      dynamic_cast<arrow::UInt64Builder *>(rb_builder->GetField(0));
+  ARROW_RETURN_NOT_OK(gid_builder->Append(doc.doc_id()));
+
+  // user id(pk)
+  auto uid_builder =
+      dynamic_cast<arrow::StringBuilder *>(rb_builder->GetField(1));
+  ARROW_RETURN_NOT_OK(uid_builder->Append(doc.pk()));
+
+  // other fields
+  for (size_t idx = 2; idx < fields.size(); ++idx) {
+    auto field = fields[idx];
+    auto builder = rb_builder->GetField(idx);
+    ARROW_RETURN_NOT_OK(AppendFieldValueToBuilder(doc, field, builder));
+  }
+  return arrow::Status::OK();
+}
+
 arrow::Status MemForwardStore::convertToBuilder(
     RecordBatchBuilderPtr &rb_builder) {
   for (const auto &doc : cache_) {
-    auto &fields = physic_schema_->fields();
-
-    // global doc_id
-    auto gid_builder =
-        dynamic_cast<arrow::UInt64Builder *>(rb_builder->GetField(0));
-    ARROW_RETURN_NOT_OK(gid_builder->Append(doc.doc_id()));
-
-    // user id(pk)
-    auto uid_builder =
-        dynamic_cast<arrow::StringBuilder *>(rb_builder->GetField(1));
-    ARROW_RETURN_NOT_OK(uid_builder->Append(doc.pk()));
-
-    // other fields
-    for (size_t idx = 2; idx < fields.size(); ++idx) {
-      auto field = fields[idx];
-      auto builder = rb_builder->GetField(idx);
-      ARROW_RETURN_NOT_OK(AppendFieldValueToBuilder(doc, field, builder));
-    }
+    ARROW_RETURN_NOT_OK(appendDocToBuilder(doc, rb_builder));
   }
   return arrow::Status::OK();
 }
@@ -155,25 +161,70 @@ arrow::Result<RecordBatchPtr> MemForwardStore::convertToRecordBatch() {
   return batch;
 }
 
-arrow::Result<TablePtr> MemForwardStore::convertToTable(
-    const std::vector<std::string> &columns, const std::vector<int> &indices) {
-  std::shared_ptr<arrow::RecordBatch> batch;
-  ARROW_ASSIGN_OR_RAISE(batch, convertToRecordBatch());
-  std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches = batches_;
-  if (batch->num_rows() > 0) {
-    all_batches.push_back(batch);
+bool MemForwardStore::locateSingleSource(const std::vector<int> &indices,
+                                         RecordBatchPtr *source,
+                                         std::vector<int> *local_rows) {
+  if (indices.empty()) {
+    return false;
+  }
+  for (int idx : indices) {
+    if (idx < 0) {
+      return false;
+    }
   }
 
-  if (all_batches.empty()) {
-    return arrow::Table::MakeEmpty(physic_schema_, nullptr);
+  // Row ids run over batches_ in order and then over the not-yet-batched
+  // cache_, matching the order the full-store path below builds.
+  int64_t base = 0;
+  for (const auto &batch : batches_) {
+    if (indices[0] < base + batch->num_rows()) {
+      for (int idx : indices) {
+        if (idx < base || idx >= base + batch->num_rows()) {
+          return false;  // spans more than this batch
+        }
+      }
+      local_rows->clear();
+      for (int idx : indices) {
+        local_rows->push_back(static_cast<int>(idx - base));
+      }
+      *source = batch;
+      return true;
+    }
+    base += batch->num_rows();
   }
 
-  // Combine all batches into a single table
-  std::shared_ptr<arrow::Table> combined_table;
-  ARROW_ASSIGN_OR_RAISE(combined_table,
-                        arrow::Table::FromRecordBatches(all_batches));
+  for (int idx : indices) {
+    if (idx < base || static_cast<size_t>(idx - base) >= cache_.size()) {
+      return false;
+    }
+  }
+  // Build a batch out of just the requested cache rows.
+  auto rb_builder = createBuilder();
+  if (rb_builder == nullptr) {
+    return false;
+  }
+  for (int idx : indices) {
+    if (!appendDocToBuilder(cache_[static_cast<size_t>(idx - base)], rb_builder)
+             .ok()) {
+      return false;
+    }
+  }
+  auto result = rb_builder->Flush(false);
+  if (!result.ok()) {
+    return false;
+  }
+  *source = result.ValueOrDie();
+  local_rows->clear();
+  for (size_t i = 0; i < indices.size(); ++i) {
+    local_rows->push_back(static_cast<int>(i));
+  }
+  return true;
+}
 
-  std::shared_ptr<arrow::Table> filtered_table = combined_table;
+arrow::Result<TablePtr> MemForwardStore::applyRowAndColumnSelection(
+    const TablePtr &table, const std::vector<int> &indices,
+    const std::vector<std::string> &columns) {
+  std::shared_ptr<arrow::Table> filtered_table = table;
   if (!indices.empty()) {
     // Filter rows by indices if provided
     std::shared_ptr<arrow::Array> index_array;
@@ -181,7 +232,7 @@ arrow::Result<TablePtr> MemForwardStore::convertToTable(
     ARROW_RETURN_NOT_OK(builder.AppendValues(indices));
     ARROW_RETURN_NOT_OK(builder.Finish(&index_array));
 
-    arrow::Datum input_datum(combined_table);
+    arrow::Datum input_datum(table);
     arrow::Datum index_datum(index_array);
 
     arrow::compute::ExecContext ctx;
@@ -211,6 +262,38 @@ arrow::Result<TablePtr> MemForwardStore::convertToTable(
     }
   }
   return selected_table;
+}
+
+arrow::Result<TablePtr> MemForwardStore::convertToTable(
+    const std::vector<std::string> &columns, const std::vector<int> &indices) {
+  // Fast path: when every requested row sits in one source, only that source is
+  // materialised. Point fetches always land here, so their cost stops growing
+  // with how much data the store holds.
+  RecordBatchPtr single_source;
+  std::vector<int> single_rows;
+  if (locateSingleSource(indices, &single_source, &single_rows)) {
+    ARROW_ASSIGN_OR_RAISE(auto single_table, arrow::Table::FromRecordBatches(
+                                                 {std::move(single_source)}));
+    return applyRowAndColumnSelection(single_table, single_rows, columns);
+  }
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  ARROW_ASSIGN_OR_RAISE(batch, convertToRecordBatch());
+  std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches = batches_;
+  if (batch->num_rows() > 0) {
+    all_batches.push_back(batch);
+  }
+
+  if (all_batches.empty()) {
+    return arrow::Table::MakeEmpty(physic_schema_, nullptr);
+  }
+
+  // Combine all batches into a single table
+  std::shared_ptr<arrow::Table> combined_table;
+  ARROW_ASSIGN_OR_RAISE(combined_table,
+                        arrow::Table::FromRecordBatches(all_batches));
+
+  return applyRowAndColumnSelection(combined_table, indices, columns);
 }
 
 Status MemForwardStore::flush() {
@@ -328,7 +411,7 @@ Status MemForwardStore::close() {
 }
 
 TablePtr MemForwardStore::get_table() {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
   std::shared_ptr<arrow::RecordBatch> batch =
       convertToRecordBatch().ValueOrDie();
   std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches = batches_;
@@ -345,7 +428,7 @@ TablePtr MemForwardStore::get_table() {
 
 TablePtr MemForwardStore::fetch(const std::vector<std::string> &columns,
                                 const std::vector<int> &indices) {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
 
   if (!validate(columns)) {
     return nullptr;
@@ -434,7 +517,7 @@ TablePtr MemForwardStore::fetch(const std::vector<std::string> &columns,
 
 ExecBatchPtr MemForwardStore::fetch(const std::vector<std::string> &columns,
                                     int index) {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
 
   if (!validate(columns)) {
     return nullptr;
@@ -468,7 +551,7 @@ ExecBatchPtr MemForwardStore::fetch(const std::vector<std::string> &columns,
 
 RecordBatchReaderPtr MemForwardStore::scan(
     const std::vector<std::string> &columns) {
-  std::lock_guard lock(cache_mtx_);
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
 
   if (!validate(columns)) {
     return nullptr;

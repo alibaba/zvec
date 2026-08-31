@@ -1,0 +1,197 @@
+// Regression test for concurrent point reads.
+//
+// Guards two things at once:
+//  1. The segment-list read path (CollectionImpl::fetch -> get_all_segments):
+//     before the write_mtx_ fix, readers raced the writer's segment switch,
+//     which crashes on Linux (SIGSEGV inside the Arrow table rebuild) and
+//     silently corrupts results elsewhere.
+//  2. Concurrent readers on both storage paths, which the former exclusive
+//     seg_mtx_/cache_mtx_ never allowed: the vector indexer path and the
+//     MemForwardStore::cache_ path.
+//
+// Two load shapes are exercised because they reach different code:
+//  - with a writer, flush() moves the preloaded docs into persisted blocks,
+//    so reads go through the mmap path;
+//  - without a writer, every doc stays in MemForwardStore::cache_, so every
+//    read enters the shared cache_mtx_ critical section.
+//
+// The check is content-based, not just crash-based: every fetched doc is
+// compared field by field against the deterministic doc the generator
+// produces for that id, so silent corruption fails the test.
+
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <random>
+#include <string>
+#include <thread>
+#include <vector>
+#include <gtest/gtest.h>
+#include <zvec/ailego/utility/file_helper.h>
+#include "index/utils/utils.h"
+#include "zvec/db/collection.h"
+
+namespace zvec {
+namespace test {
+
+namespace {
+
+const char *kPath = "concurrent_fetch_col";
+
+constexpr uint32_t kMaxBufferSize = 8 * 1024 * 1024;  // force frequent flush()
+// Small enough that the writer crosses segment switches even when it is
+// starved by the readers: on the unfixed baseline 4 readers throttle the
+// writer to ~2.5k docs/s, so 40k docs/segment would mean no switch at all
+// within the run window — and the segment switch (dump()) is exactly where
+// the baseline crashes. 4k keeps several switches inside every window.
+constexpr uint64_t kMaxDocPerSegment = 4000;
+constexpr int kStableDocs = 3000;  // pre-loaded, must always read back exactly
+constexpr int kWriteBatch = 100;
+constexpr int kRunSeconds = 8;
+
+struct ReaderResult {
+  long fetches{0};
+  long null_docs{0};
+  long mismatches{0};
+  long errors{0};
+  std::string first_problem;
+};
+
+void Note(ReaderResult *r, const std::string &msg) {
+  if (r->first_problem.empty()) r->first_problem = msg;
+}
+
+}  // namespace
+
+class ConcurrentFetchTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    zvec::ailego::MemoryLimitPool::get_instance().init(4 * 1024ll * 1024ll *
+                                                       1024ll);
+    ailego::FileHelper::RemoveDirectory(kPath);
+  }
+  void TearDown() override {
+    ailego::FileHelper::RemoveDirectory(kPath);
+  }
+};
+
+TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  schema->set_max_doc_count_per_segment(kMaxDocPerSegment);
+  auto options = CollectionOptions{false, true, kMaxBufferSize};
+
+  // Two workloads, because they exercise different code:
+  //  - with a writer, flush() moves the stable docs into persisted blocks, so
+  //    reads go through the mmap path and barely touch MemForwardStore;
+  //  - without a writer, all stable docs stay in MemForwardStore::cache_, so
+  //    every read enters the now-shared cache_mtx_ critical section. Only this
+  //    second workload actually stresses concurrent reads of cache_.
+  for (bool with_writer : {true, false}) {
+    for (int readers : {4, 8}) {
+      // Rebuilt per run so the no-writer case starts with everything still in
+      // cache_ rather than flushed by a previous run.
+      ailego::FileHelper::RemoveDirectory(kPath);
+      auto collection = TestHelper::CreateCollectionWithDoc(
+          kPath, *schema, options, 0, kStableDocs, false);
+      ASSERT_NE(collection, nullptr);
+
+      std::atomic<bool> stop{false};
+      std::atomic<long> docs_written{0};
+      std::vector<ReaderResult> results(readers);
+
+      auto t0 = std::chrono::steady_clock::now();
+
+      // Writer keeps the segment mutating: inserts, flush() when the 8MB buffer
+      // fills, and a segment switch every 40k docs.
+      std::thread writer;
+      if (with_writer) {
+        writer = std::thread([&] {
+          uint64_t next_id = kStableDocs + 1000000;  // never collides w/ probes
+          while (!stop.load(std::memory_order_relaxed)) {
+            std::vector<Doc> docs;
+            docs.reserve(kWriteBatch);
+            for (int i = 0; i < kWriteBatch; i++) {
+              docs.push_back(TestHelper::CreateDoc(next_id + i, *schema));
+            }
+            auto res = collection->insert(docs);
+            if (!res.has_value()) break;
+            next_id += kWriteBatch;
+            docs_written.fetch_add(kWriteBatch, std::memory_order_relaxed);
+          }
+        });
+      }
+
+      std::vector<std::thread> threads;
+      for (int t = 0; t < readers; t++) {
+        threads.emplace_back([&, t] {
+          std::mt19937 rng(static_cast<unsigned>(t) * 7919u + 13u);
+          std::uniform_int_distribution<int> pick(0, kStableDocs - 1);
+          auto *r = &results[t];
+          while (!stop.load(std::memory_order_relaxed)) {
+            int id = pick(rng);
+            auto expect =
+                TestHelper::CreateDoc(static_cast<uint64_t>(id), *schema);
+            auto fetched = collection->fetch({expect.pk()});
+            r->fetches++;
+            if (!fetched.has_value()) {
+              r->errors++;
+              Note(r, "fetch returned error: " + fetched.error().message());
+              continue;
+            }
+            auto it = fetched.value().find(expect.pk());
+            if (it == fetched.value().end() || it->second == nullptr) {
+              r->null_docs++;
+              Note(r, "doc " + expect.pk() + " came back null");
+              continue;
+            }
+            // Content check: any silent corruption of the forward columns or
+            // the vector payload shows up here.
+            if (*it->second != expect) {
+              r->mismatches++;
+              Note(r, "doc " + expect.pk() + " content mismatch");
+            }
+          }
+        });
+      }
+
+      std::this_thread::sleep_for(std::chrono::seconds(kRunSeconds));
+      stop.store(true);
+      if (with_writer) writer.join();
+      for (auto &th : threads) th.join();
+
+      double elapsed =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+              .count();
+
+      long total = 0, nulls = 0, mism = 0, errs = 0;
+      std::string problem;
+      for (auto &r : results) {
+        total += r.fetches;
+        nulls += r.null_docs;
+        mism += r.mismatches;
+        errs += r.errors;
+        if (problem.empty()) problem = r.first_problem;
+      }
+
+      std::printf(
+          "writer=%-3s readers=%d  fetches=%ld (%.0f/s)  writes=%ld "
+          "(%.0f docs/s)  null=%ld mismatch=%ld error=%ld\n",
+          with_writer ? "yes" : "no", readers, total, total / elapsed,
+          docs_written.load(), docs_written.load() / elapsed, nulls, mism,
+          errs);
+      if (!problem.empty()) {
+        std::printf("  first problem: %s\n", problem.c_str());
+      }
+
+      EXPECT_GT(total, 0);
+      EXPECT_EQ(nulls, 0) << problem;
+      EXPECT_EQ(mism, 0) << problem;
+      EXPECT_EQ(errs, 0) << problem;
+
+      collection.reset();
+    }
+  }
+}
+
+}  // namespace test
+}  // namespace zvec
