@@ -12,8 +12,9 @@
 // Two load shapes are exercised because they reach different code:
 //  - with a writer, flush() moves the preloaded docs into persisted blocks,
 //    so reads go through the mmap path;
-//  - without a writer, every doc stays in MemForwardStore::cache_, so every
-//    read enters the shared cache_mtx_ critical section.
+//  - without a writer, the preloaded docs stay in MemForwardStore's in-memory
+//    rows (mostly batches_, tail in cache_), every read takes the shared
+//    cache_mtx_ critical section.
 //
 // The check is content-based, not just crash-based: every fetched doc is
 // compared field by field against the deterministic doc the generator
@@ -48,6 +49,10 @@ constexpr uint64_t kMaxDocPerSegment = 4000;
 constexpr int kStableDocs = 3000;  // pre-loaded, must always read back exactly
 constexpr int kWriteBatch = 100;
 constexpr int kRunSeconds = 8;
+// Bounds disk growth on fast machines: 50k docs ≈ 12 segments. Above the
+// baseline's ~2.5k docs/s × 8s (= 20k), so it never truncates the baseline
+// run before its first segment switch — the discriminating window is intact.
+constexpr long kMaxWriterDocs = 50000;
 
 struct ReaderResult {
   long fetches{0};
@@ -83,13 +88,13 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
   // Two workloads, because they exercise different code:
   //  - with a writer, flush() moves the stable docs into persisted blocks, so
   //    reads go through the mmap path and barely touch MemForwardStore;
-  //  - without a writer, all stable docs stay in MemForwardStore::cache_, so
-  //    every read enters the now-shared cache_mtx_ critical section. Only this
-  //    second workload actually stresses concurrent reads of cache_.
+  //  - without a writer, the stable docs stay in MemForwardStore's in-memory
+  //    rows (mostly batches_, tail in cache_), every read takes the shared
+  //    cache_mtx_ critical section.
   for (bool with_writer : {true, false}) {
     for (int readers : {4, 8}) {
-      // Rebuilt per run so the no-writer case starts with everything still in
-      // cache_ rather than flushed by a previous run.
+      // Rebuilt per run so the no-writer case starts with everything still
+      // in the in-memory store rather than flushed by a previous run.
       ailego::FileHelper::RemoveDirectory(kPath);
       auto collection = TestHelper::CreateCollectionWithDoc(
           kPath, *schema, options, 0, kStableDocs, false);
@@ -97,24 +102,31 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
 
       std::atomic<bool> stop{false};
       std::atomic<long> docs_written{0};
+      std::atomic<long> writer_errors{0};
       std::vector<ReaderResult> results(readers);
 
       auto t0 = std::chrono::steady_clock::now();
 
       // Writer keeps the segment mutating: inserts, flush() when the 8MB buffer
-      // fills, and a segment switch every 40k docs.
+      // fills, and a segment switch every 4k docs (bounded: see
+      // kMaxWriterDocs).
       std::thread writer;
       if (with_writer) {
         writer = std::thread([&] {
           uint64_t next_id = kStableDocs + 1000000;  // never collides w/ probes
-          while (!stop.load(std::memory_order_relaxed)) {
+          while (!stop.load(std::memory_order_relaxed) &&
+                 docs_written.load(std::memory_order_relaxed) <
+                     kMaxWriterDocs) {
             std::vector<Doc> docs;
             docs.reserve(kWriteBatch);
             for (int i = 0; i < kWriteBatch; i++) {
               docs.push_back(TestHelper::CreateDoc(next_id + i, *schema));
             }
             auto res = collection->insert(docs);
-            if (!res.has_value()) break;
+            if (!res.has_value()) {
+              writer_errors.fetch_add(1, std::memory_order_relaxed);
+              break;
+            }
             next_id += kWriteBatch;
             docs_written.fetch_add(kWriteBatch, std::memory_order_relaxed);
           }
@@ -187,6 +199,17 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
       EXPECT_EQ(nulls, 0) << problem;
       EXPECT_EQ(mism, 0) << problem;
       EXPECT_EQ(errs, 0) << problem;
+      if (with_writer) {
+        // The with-writer shape is vacuous unless the writer actually ran and
+        // crossed at least one segment switch (the dump() path is where the
+        // baseline crashes): fail loudly instead of degrading to a no-writer
+        // run when inserts error out or the writer is starved.
+        EXPECT_EQ(writer_errors.load(), 0) << problem;
+        EXPECT_GT(docs_written.load(), 0);
+        EXPECT_GE(docs_written.load(),
+                  static_cast<long>(kMaxDocPerSegment) - kStableDocs)
+            << "no segment switch inside the run window";
+      }
 
       collection.reset();
     }
