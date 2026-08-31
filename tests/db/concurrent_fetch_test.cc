@@ -9,7 +9,7 @@
 //     seg_mtx_/cache_mtx_ never allowed: the vector indexer path and the
 //     MemForwardStore::cache_ path.
 //
-// Two load shapes are exercised because they reach different code:
+// Two workloads are exercised because they reach different code:
 //  - with a writer, flush() moves the preloaded docs into persisted blocks,
 //    so reads go through the mmap path;
 //  - without a writer, the preloaded docs stay in MemForwardStore's in-memory
@@ -85,12 +85,8 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
   schema->set_max_doc_count_per_segment(kMaxDocPerSegment);
   auto options = CollectionOptions{false, true, kMaxBufferSize};
 
-  // Two workloads, because they exercise different code:
-  //  - with a writer, flush() moves the stable docs into persisted blocks, so
-  //    reads go through the mmap path and barely touch MemForwardStore;
-  //  - without a writer, the stable docs stay in MemForwardStore's in-memory
-  //    rows (mostly batches_, tail in cache_), every read takes the shared
-  //    cache_mtx_ critical section.
+  // The with-writer workload reads mostly persisted blocks (mmap); the
+  // no-writer one reads the in-memory store under the shared cache_mtx_.
   for (bool with_writer : {true, false}) {
     for (int readers : {4, 8}) {
       // Rebuilt per run so the no-writer case starts with everything still
@@ -107,8 +103,7 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
 
       auto t0 = std::chrono::steady_clock::now();
 
-      // Writer keeps the segment mutating: inserts, flush() when the 8MB buffer
-      // fills, and a segment switch every 4k docs (bounded: see
+      // Insert, flush and switch segments continuously (bounded by
       // kMaxWriterDocs).
       std::thread writer;
       if (with_writer) {

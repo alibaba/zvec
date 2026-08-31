@@ -209,7 +209,7 @@ class CollectionImpl : public Collection {
   Result<std::unique_ptr<DocIterator::Impl>> prepare_iterate(
       const IteratorOptions &options);
 
-  //! Snapshots the segment list. Takes write_mtx_ (shared) because
+  //! Collects the segment list under a shared write_mtx_, because
   //! writing_segment_ and the doc_ids_ that doc_count() reads are mutated by
   //! Insert under the exclusive write_mtx_.
   std::vector<Segment::Ptr> get_all_segments() const;

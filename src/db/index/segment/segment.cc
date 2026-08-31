@@ -1031,9 +1031,7 @@ Doc::Ptr SegmentImpl::Fetch(
     bool include_vector) {
   // Read-only: shared so concurrent Fetch calls do not serialize. Excludes
   // Insert/Update/Upsert/Delete and the buffer-full flush they trigger under
-  // this lock. NOT excluded: the segment-switch dump()/flush(), which resets
-  // memory_store_ without seg_mtx_ (serialized by the collection's write_mtx_
-  // only) -- see the seg_mtx_ member comment.
+  // this lock; for what is NOT covered, see the seg_mtx_ member comment.
   std::shared_lock<std::shared_mutex> lock(seg_mtx_);
 
   if (g_doc_id > segment_meta_->max_doc_id()) {
