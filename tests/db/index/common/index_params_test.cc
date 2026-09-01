@@ -199,6 +199,27 @@ TEST(IndexParamsTest, IVFIndexParams) {
   EXPECT_EQ(params.n_list(), 64);
 }
 
+TEST(IndexParamsTest, DiskAnnIndexParams) {
+  DiskAnnIndexParams params(MetricType::L2, 48, 80, 16, QuantizeType::FP16,
+                            QuantizerParam(true));
+
+  EXPECT_EQ(IndexType::DISKANN, params.type());
+  EXPECT_EQ(MetricType::L2, params.metric_type());
+  EXPECT_EQ(48, params.max_degree());
+  EXPECT_EQ(80, params.list_size());
+  EXPECT_EQ(16, params.pq_chunk_num());
+  EXPECT_EQ(QuantizeType::FP16, params.quantize_type());
+  EXPECT_TRUE(params.quantizer_param().enable_rotate());
+
+  auto cloned = params.clone();
+  auto *cloned_diskann = dynamic_cast<DiskAnnIndexParams *>(cloned.get());
+  ASSERT_NE(nullptr, cloned_diskann);
+  EXPECT_EQ(params, *cloned_diskann);
+
+  cloned_diskann->set_list_size(40);
+  EXPECT_NE(params, *cloned_diskann);
+}
+
 #if RABITQ_SUPPORTED
 TEST(IndexParamsTest, IvfRabitqIndexParams) {
   IvfRabitqIndexParams params(MetricType::COSINE, 32, 1, 5);

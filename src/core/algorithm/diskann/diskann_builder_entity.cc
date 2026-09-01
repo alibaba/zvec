@@ -14,6 +14,7 @@
 
 #include "diskann_builder_entity.h"
 #include <iostream>
+#include <numeric>
 #include "diskann_algorithm.h"
 #include "diskann_util.h"
 
@@ -77,7 +78,7 @@ int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
 
   uint32_t neighbor_cnt = 0;
-
+  // Parentheses select the size/value constructor.
   std::vector<diskann_id_t> neighbor(max_build_degree_, 0);
 
   neighbors_buffer_.append(reinterpret_cast<const char *>(&neighbor_cnt),
