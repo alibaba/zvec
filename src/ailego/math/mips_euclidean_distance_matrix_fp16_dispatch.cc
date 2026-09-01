@@ -24,14 +24,6 @@ float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEON(
 float MipsEuclideanDistanceSphericalInjectionFp16NEON(const Float16 *lhs,
                                                       const Float16 *rhs,
                                                       size_t size, float e2);
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEONFP16(
-    const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2);
-float MipsEuclideanDistanceSphericalInjectionFp16NEONFP16(const Float16 *lhs,
-                                                          const Float16 *rhs,
-                                                          size_t size,
-                                                          float e2);
-#endif
 #endif
 
 #if defined(__AVX512F__)
@@ -60,12 +52,6 @@ float MipsEuclideanDistanceSphericalInjectionFp16Scalar(
 void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
 #if defined(__ARM_NEON)
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.FP16) {
-    *out = MipsEuclideanDistanceSphericalInjectionFp16NEONFP16(p, q, dim, e2);
-    return;
-  }
-#endif  //__ARM_FEATURE_FP16_VECTOR_ARITHMETIC
   *out = MipsEuclideanDistanceSphericalInjectionFp16NEON(p, q, dim, e2);
 #else
 #if defined(__AVX512F__)
@@ -90,13 +76,6 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
     float *out) {
 #if defined(__ARM_NEON)
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.FP16) {
-    *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEONFP16(
-        p, q, dim, m, e2);
-    return;
-  }
-#endif  //__ARM_FEATURE_FP16_VECTOR_ARITHMETIC
   *out =
       MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEON(p, q, dim, m, e2);
 #else

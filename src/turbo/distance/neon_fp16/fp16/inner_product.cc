@@ -27,9 +27,8 @@ namespace {
 
 // Accumulate lhs·rhs with native FP16 lane arithmetic (vfmaq_f16, 8 lanes
 // per op), widening to FP32 only for the final horizontal reduction. Four
-// independent accumulators hide the FMA latency; this matches the
-// accumulation strategy of the ailego NEONFP16 kernels, trading a little
-// precision (FP16-domain sums) for 2x FMA throughput over the widening path.
+// independent accumulators hide the FMA latency. This trades a little
+// precision (FP16-domain sums) for 2x FMA throughput over a widening path.
 inline float inner_product_fp16_accum(const float16_t *lhs,
                                       const float16_t *rhs, size_t dim) {
   float16x8_t sum0 = vdupq_n_f16(0.0f);

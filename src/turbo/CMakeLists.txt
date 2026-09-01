@@ -1,17 +1,68 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
+include(CheckCXXSourceCompiles)
 
-if(NOT ANDROID AND AUTO_DETECT_ARCH)
-    if (HOST_ARCH MATCHES "^(x86|x64)$")
-        setup_compiler_march_for_x86(TURBO_MARCH_FLAG_SSE TURBO_MARCH_FLAG_AVX2 TURBO_MARCH_FLAG_AVX512 TURBO_MARCH_FLAG_AVX512FP16)
-    elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
-        # ARM64 architecture - NEON is enabled by default on aarch64.
-        # Probe the NEON FP16 march flag (armv8.2-a+fp16) for the runtime-
-        # dispatched native FP16 kernels; falls back to armv8-a when the
-        # compiler cannot target FEAT_FP16.
-        setup_compiler_march_for_arm(TURBO_MARCH_FLAG_NEON TURBO_MARCH_FLAG_NEON_FP16)
-        message(STATUS "turbo: ARM64 detected, NEON FP16 march flag: ${TURBO_MARCH_FLAG_NEON_FP16}")
-    endif()
+# HOST_ARCH is only populated by the shared AUTO_DETECT_ARCH path. Resolve the
+# CMake target locally as well so Turbo's ARM dispatch also works for Android
+# cross builds and explicitly selected architectures.
+set(_TURBO_TARGET_ARCH "${HOST_ARCH}")
+if(NOT _TURBO_TARGET_ARCH)
+  string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _TURBO_SYSTEM_PROCESSOR)
+  if(_TURBO_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|x64)$")
+    set(_TURBO_TARGET_ARCH x64)
+  elseif(_TURBO_SYSTEM_PROCESSOR MATCHES "^(i[3-6]86|x86)$")
+    set(_TURBO_TARGET_ARCH x86)
+  elseif(_TURBO_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(_TURBO_TARGET_ARCH arm64)
+  elseif(_TURBO_SYSTEM_PROCESSOR MATCHES "^(arm|armv7|armv7-a|armv7l)$")
+    set(_TURBO_TARGET_ARCH arm)
+  else()
+    set(_TURBO_TARGET_ARCH unknown)
+  endif()
+endif()
+
+if(NOT ANDROID AND AUTO_DETECT_ARCH AND
+   _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
+  setup_compiler_march_for_x86(
+    TURBO_MARCH_FLAG_SSE
+    TURBO_MARCH_FLAG_AVX2
+    TURBO_MARCH_FLAG_AVX512
+    TURBO_MARCH_FLAG_AVX512FP16)
+endif()
+
+set(ZVEC_TURBO_ARM_FP16_SUPPORTED OFF)
+set(TURBO_MARCH_FLAG_NEON_FP16 "")
+if(NOT IOS AND NOT MSVC AND _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
+  # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
+  # FEAT_FP16, while existing Ailego distance implementations stay untouched.
+  set(TURBO_MARCH_FLAG_NEON_FP16 "-march=armv8-a")
+  set(_TURBO_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+  set(CMAKE_REQUIRED_FLAGS
+    "${_TURBO_SAVED_CMAKE_REQUIRED_FLAGS} -march=armv8.2-a+fp16")
+  check_cxx_source_compiles([=[
+    #include <arm_neon.h>
+    #if !defined(__aarch64__)
+    #error "AArch64 target required"
+    #endif
+    #if !defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+    #error "ARM FP16 vector arithmetic macro missing"
+    #endif
+    int main() {
+      float16x8_t value = vdupq_n_f16(1.0f);
+      value = vfmaq_f16(value, value, value);
+      return vgetq_lane_u16(vreinterpretq_u16_f16(value), 0) == 0;
+    }
+  ]=] ZVEC_TURBO_COMPILER_SUPPORTS_ARM_FP16)
+  set(CMAKE_REQUIRED_FLAGS "${_TURBO_SAVED_CMAKE_REQUIRED_FLAGS}")
+
+  if(ZVEC_TURBO_COMPILER_SUPPORTS_ARM_FP16)
+    set(TURBO_MARCH_FLAG_NEON_FP16 "-march=armv8.2-a+fp16")
+    set(ZVEC_TURBO_ARM_FP16_SUPPORTED ON)
+  endif()
+
+  message(STATUS
+    "turbo: NEON FP16 march flag: ${TURBO_MARCH_FLAG_NEON_FP16}, "
+    "native kernels: ${ZVEC_TURBO_ARM_FP16_SUPPORTED}")
 endif()
 
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
@@ -20,46 +71,50 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 # set_source_files_properties is directory-scoped, so it must be called in the
 # same directory that adds the sources to a target (i.e. here, not in a
 # subdirectory).
-if(NOT ANDROID AND AUTO_DETECT_ARCH)
-    if (HOST_ARCH MATCHES "^(x86|x64)$")
-        # SSE
-        file(GLOB_RECURSE SSE_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse/*.cc)
-        set_source_files_properties(
-            ${SSE_SRCS}
-            PROPERTIES
-            COMPILE_FLAGS "${TURBO_MARCH_FLAG_SSE}"
-        )
+if(NOT ANDROID AND AUTO_DETECT_ARCH AND
+   _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
+    # SSE
+    file(GLOB_RECURSE SSE_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse/*.cc)
+    set_source_files_properties(
+        ${SSE_SRCS}
+        PROPERTIES
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_SSE}"
+    )
 
-        # AVX2
-        file(GLOB_RECURSE AVX2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx2/*.cc)
-        set_source_files_properties(
-            ${AVX2_SRCS}
-            PROPERTIES
-            COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
-        )
+    # AVX2
+    file(GLOB_RECURSE AVX2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx2/*.cc)
+    set_source_files_properties(
+        ${AVX2_SRCS}
+        PROPERTIES
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
+    )
 
-        # AVX512
-        file(GLOB_RECURSE AVX512_SRCS
-            ${CMAKE_CURRENT_SOURCE_DIR}/conversion/avx512/*.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc
-        )
-        set_source_files_properties(
-            ${AVX512_SRCS}
-            PROPERTIES
-            COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
-        )
-    elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
-        # NEON FP16 (FEAT_FP16): selected at runtime in turbo.cc via the
-        # CpuFeatures FP16 flag; when the compiler cannot target
-        # armv8.2-a+fp16 the kernels compile as scalar delegates.
-        file(GLOB_RECURSE NEON_FP16_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon_fp16/*.cc)
-        set_source_files_properties(
-            ${NEON_FP16_SRCS}
-            PROPERTIES
-            COMPILE_FLAGS "${TURBO_MARCH_FLAG_NEON_FP16}"
-        )
-    endif()
+    # AVX512
+    file(GLOB_RECURSE AVX512_SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/conversion/avx512/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc
+    )
+    set_source_files_properties(
+        ${AVX512_SRCS}
+        PROPERTIES
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
+    )
+endif()
+
+if(NOT IOS AND NOT MSVC AND _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
+    file(GLOB_RECURSE NEON_FP16_SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon_fp16/*.cc)
+    set_source_files_properties(
+        ${NEON_FP16_SRCS}
+        PROPERTIES
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_NEON_FP16}"
+    )
+endif()
+
+set(ZVEC_TURBO_DEFS)
+if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
+    list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
 
 set(ZVEC_TURBO_LIBRARY_OPTIONS)
@@ -76,6 +131,7 @@ cc_library(
     NAME zvec_turbo STATIC STRICT ALWAYS_LINK PACKED
     ${ZVEC_TURBO_LIBRARY_OPTIONS}
     SRCS ${ALL_SRCS}
+    DEFS ${ZVEC_TURBO_DEFS}
     LIBS zvec_ailego
     INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )

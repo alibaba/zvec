@@ -168,11 +168,13 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::squared_euclidean_fp16_distance,
      avx512_vnni::squared_euclidean_fp16_batch_distance, nullptr,
      kCpuFeatureAvx512Dq | kCpuFeatureF16c},
+#if defined(ZVEC_HAVE_ARM_FP16_KERNEL)
     {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean,
      neon_fp16::squared_euclidean_fp16_distance_neon_fp16,
      neon_fp16::squared_euclidean_fp16_batch_distance_neon_fp16, nullptr,
      kCpuFeatureNeonFp16},
+#endif
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kScalar,
      MetricType::kSquaredEuclidean,
      scalar::squared_euclidean_raw_uint8_distance,
@@ -267,7 +269,8 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint8_batch_distance,
      avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess},
 
-    // --- fp16 (NEON-FP16, AVX512, AVX2, scalar) ---
+// --- fp16 (NEON-FP16, AVX512, AVX2, scalar) ---
+#if defined(ZVEC_HAVE_ARM_FP16_KERNEL)
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean,
      neon_fp16::squared_euclidean_fp16_distance_neon_fp16,
@@ -282,6 +285,7 @@ constexpr KernelSet kKernelTable[] = {
      neon_fp16::inner_product_fp16_distance_neon_fp16,
      neon_fp16::inner_product_fp16_batch_distance_neon_fp16, nullptr,
      kCpuFeatureNeonFp16},
+#endif
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp16_distance_avx512,

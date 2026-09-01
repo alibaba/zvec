@@ -363,3 +363,31 @@ TEST(Fp16Quantizer, NeonDistanceMatchesScalar) {
   // required than for the x86 kernels (which widen to FP32 before the FMA).
   check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON, 2.0e-2f);
 }
+
+TEST(Fp16Quantizer, AutoDispatchSelectsNeonFp16) {
+  using RawDistance = void (*)(const void *, const void *, size_t, float *);
+  const turbo::MetricType metrics[] = {
+      turbo::MetricType::kSquaredEuclidean,
+      turbo::MetricType::kCosine,
+      turbo::MetricType::kInnerProduct,
+  };
+
+  for (const auto metric : metrics) {
+    const auto neon = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kNEON);
+    if (!neon.dist) {
+      GTEST_SKIP() << "NEON FP16 kernels unavailable on this CPU";
+    }
+    const auto automatic = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kAuto);
+    ASSERT_TRUE(automatic.dist);
+
+    const auto *neon_target = neon.dist.target<RawDistance>();
+    const auto *auto_target = automatic.dist.target<RawDistance>();
+    ASSERT_TRUE(neon_target);
+    ASSERT_TRUE(auto_target);
+    EXPECT_EQ(*neon_target, *auto_target);
+  }
+}
