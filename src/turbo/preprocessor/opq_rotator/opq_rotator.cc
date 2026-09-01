@@ -123,8 +123,8 @@ void OpqRotator::train(const void * /*data*/, size_t /*num*/,
 void OpqRotator::apply(const float *in, float *out) const {
   // ctx is the dim x dim row-major rotation matrix itself.
   void *ctx = const_cast<float *>(matrix_.data());
-  kernels_.rotate(in, out, static_cast<size_t>(dim_),
-                  static_cast<size_t>(dim_), ctx);
+  kernels_.rotate(in, out, static_cast<size_t>(dim_), static_cast<size_t>(dim_),
+                  ctx);
 }
 
 void OpqRotator::apply_inverse(const float *in, float *out) const {
