@@ -32,9 +32,13 @@ endif()
 
 set(ZVEC_TURBO_ARM_FP16_SUPPORTED OFF)
 set(TURBO_MARCH_FLAG_NEON_FP16 "")
-if(NOT IOS AND NOT MSVC AND _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
+if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
+   _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while existing Ailego distance implementations stay untouched.
+  # Android is kept even though build_android.sh sets AUTO_DETECT_ARCH=OFF:
+  # that switch guards the host-oriented march detection, while this probe
+  # runs against the actual (cross) target toolchain.
   # No fallback march is injected on probe failure: armv8-a is already the
   # aarch64 default, and forcing it onto 32-bit arm targets would be wrong.
   set(_TURBO_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
@@ -103,7 +107,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
     )
 endif()
 
-if(NOT IOS AND NOT MSVC AND _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
+if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
+   _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
     file(GLOB_RECURSE NEON_FP16_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon_fp16/*.cc)
     set_source_files_properties(
