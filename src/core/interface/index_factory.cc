@@ -132,6 +132,14 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
       }
       return param;
     }
+    case IndexType::kDiskAnn: {
+      DiskAnnIndexParam::Pointer param = std::make_shared<DiskAnnIndexParam>();
+      if (!param->deserialize_from_json(json_str)) {
+        LOG_ERROR("Failed to deserialize diskann index param");
+        return nullptr;
+      }
+      return param;
+    }
     case IndexType::kVamana: {
       VamanaIndexParam::Pointer param = std::make_shared<VamanaIndexParam>();
       if (!param->deserialize_from_json(json_str)) {

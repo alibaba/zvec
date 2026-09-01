@@ -766,6 +766,20 @@ const char *zvec_get_default_jieba_dict_dir(void) {
 // I/O Backend Introspection
 // =============================================================================
 
+static_assert(
+    static_cast<uint32_t>(zvec::ailego::IOBackendType::kPread) ==
+    ZVEC_IO_BACKEND_TYPE_PREAD);
+static_assert(
+    static_cast<uint32_t>(zvec::ailego::IOBackendType::kLibAio) ==
+    ZVEC_IO_BACKEND_TYPE_LIBAIO);
+static_assert(
+    static_cast<uint32_t>(zvec::ailego::IOBackendType::kIoUring) ==
+    ZVEC_IO_BACKEND_TYPE_IO_URING);
+static_assert(
+    static_cast<uint32_t>(
+        zvec::ailego::IOBackendType::kWindowsOverlapped) ==
+    ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED);
+
 zvec_io_backend_type_t zvec_get_io_backend_type(void) {
   auto type = zvec::ailego::current_io_backend_type();
   return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));

@@ -47,7 +47,8 @@ class DiskAnnContext : public IndexContext,
     kUnknownContext = 0,
     kSearcherContext = 1,
     kBuilderContext = 2,
-    kReducerContext = 3
+    kReducerContext = 3,
+    kFetchContext = 4
   };
 
   //! Construct
@@ -56,6 +57,11 @@ class DiskAnnContext : public IndexContext,
 
   //! Destructor
   virtual ~DiskAnnContext();
+
+  //! Create a lightweight context for reading vectors by id.
+  static Pointer create_fetch_context(const IndexMeta &meta,
+                                      const IndexMetric::Pointer &measure,
+                                      const DiskAnnEntity::Pointer &entity);
 
  public:
   //! Init
@@ -190,8 +196,16 @@ class DiskAnnContext : public IndexContext,
     return sector_buffer_;
   }
 
+  inline size_t sector_buffer_size() const {
+    return sector_buffer_size_;
+  }
+
   inline IOContext &io_ctx() {
     return io_ctx_;
+  }
+
+  ContextType context_type() const {
+    return static_cast<ContextType>(type_);
   }
 
   inline void resize_results(size_t size) {
@@ -346,6 +360,8 @@ class DiskAnnContext : public IndexContext,
     }
   }
 
+  int resize_fetch_sector_buffer(const DiskAnnEntity::Pointer &entity);
+
  private:
   constexpr static uint32_t kInvalidMgic = -1U;
 
@@ -368,7 +384,7 @@ class DiskAnnContext : public IndexContext,
   uint32_t group_num_{0};
   std::map<std::string, TopkHeap> group_topk_heaps_{};
 
-  IOContext io_ctx_{0};
+  IOContext io_ctx_{};
   SearchStats query_stats_;
 
   float *pq_table_dist_buffer_{nullptr};
@@ -377,6 +393,7 @@ class DiskAnnContext : public IndexContext,
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};
   void *sector_buffer_{nullptr};
+  size_t sector_buffer_size_{0};
 
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};

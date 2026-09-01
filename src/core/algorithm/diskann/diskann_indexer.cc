@@ -14,14 +14,48 @@
 
 #include "diskann_indexer.h"
 #include <algorithm>
+#include <exception>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <new>
 #include <set>
 #include <tuple>
 #include <unordered_set>
+#include <zvec/ailego/io/file.h>
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+// DiskAnnContext instances are pooled above the indexer and can therefore
+// outlive the reader that prepared their lazy Windows file handle. Keep that
+// handle across all I/O batches in one logical operation, then release it on
+// every return path (including exceptions). POSIX readers intentionally keep
+// their backend queue resources for reuse.
+class IOContextReleaseGuard {
+ public:
+  IOContextReleaseGuard(AlignedFileReader &reader, IOContext &ctx,
+                        bool enabled = true)
+      : reader_(reader), ctx_(ctx), enabled_(enabled) {}
+
+  ~IOContextReleaseGuard() {
+    if (enabled_) {
+      reader_.release_io_ctx(ctx_);
+    }
+  }
+
+  IOContextReleaseGuard(const IOContextReleaseGuard &) = delete;
+  IOContextReleaseGuard &operator=(const IOContextReleaseGuard &) = delete;
+
+ private:
+  AlignedFileReader &reader_;
+  IOContext &ctx_;
+  bool enabled_;
+};
+
+}  // namespace
 
 DiskAnnIndexer::DiskAnnIndexer(const IndexMeta &meta) {
   meta_ = meta;
@@ -30,40 +64,168 @@ DiskAnnIndexer::DiskAnnIndexer(const IndexMeta &meta) {
 DiskAnnIndexer::~DiskAnnIndexer() {
   destroy_io_ctx(init_ctx_);
   if (centroid_data_) {
-    free(centroid_data_);
+    DiskAnnUtil::free_aligned(centroid_data_);
   }
-  DiskAnnUtil::free_aligned(coord_cache_buf_);
+  reset_cache_storage();
 }
 
 int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
-  entity_ = &entity;
-
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
+  if (!storage || !vector_segment) {
+    LOG_ERROR("DiskAnn storage or vector segment is missing");
+    return IndexError_InvalidFormat;
+  }
+
+  const uint64_t stored_max_node_size = entity.max_node_size();
+  if (stored_max_node_size == 0 ||
+      stored_max_node_size > (std::numeric_limits<uint32_t>::max)() ||
+      stored_max_node_size < sizeof(uint32_t) ||
+      meta_.element_size() > stored_max_node_size - sizeof(uint32_t)) {
+    LOG_ERROR("Invalid DiskAnn node size: node=%llu vector=%u",
+              static_cast<unsigned long long>(stored_max_node_size),
+              static_cast<unsigned>(meta_.element_size()));
+    return IndexError_InvalidFormat;
+  }
+
+  const uint64_t stored_max_degree = entity.max_degree();
+  const uint64_t neighbor_bytes =
+      stored_max_node_size - sizeof(uint32_t) - meta_.element_size();
+  if (stored_max_degree > (std::numeric_limits<uint32_t>::max)() ||
+      stored_max_degree > neighbor_bytes / sizeof(diskann_id_t)) {
+    LOG_ERROR("Invalid DiskAnn node capacity: node=%llu vector=%u degree=%llu",
+              static_cast<unsigned long long>(stored_max_node_size),
+              static_cast<unsigned>(meta_.element_size()),
+              static_cast<unsigned long long>(stored_max_degree));
+    return IndexError_InvalidFormat;
+  }
+
+  const uint64_t expected_node_per_sector =
+      stored_max_node_size <= DiskAnnUtil::kSectorSize
+          ? DiskAnnUtil::kSectorSize / stored_max_node_size
+          : 0;
+  if (entity.node_per_sector() != expected_node_per_sector) {
+    LOG_ERROR(
+        "Invalid DiskAnn node layout: node=%llu nodes_per_sector=%llu "
+        "expected=%llu",
+        static_cast<unsigned long long>(stored_max_node_size),
+        static_cast<unsigned long long>(entity.node_per_sector()),
+        static_cast<unsigned long long>(expected_node_per_sector));
+    return IndexError_InvalidFormat;
+  }
+
+  auto cached_file = storage->file();
+#if defined(_WIN32) || defined(_WIN64)
+  // Windows DiskAnn must be able to close the single buffered handle before
+  // opening its unbuffered IOCP handles.  FileReadStorage's
+  // alone_file_handle mode gives every Segment an independent handle, which
+  // cannot be closed through IndexStorage and may be retained by the caller.
+  if (!cached_file) {
+    LOG_ERROR(
+        "DiskAnn on Windows requires FileReadStorage with "
+        "proxima.file.read_storage.alone_file_handle disabled");
+    return IndexError_InvalidArgument;
+  }
+#endif
+
+  max_node_size_ = static_cast<uint32_t>(stored_max_node_size);
+  sector_num_per_node_ =
+      DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
+  if (sector_num_per_node_ == 0 ||
+      beam_width_ > DiskAnnUtil::kMaxSectorReadNum / sector_num_per_node_) {
+    LOG_ERROR("DiskAnn node size exceeds the search buffer capacity");
+    return IndexError_InvalidArgument;
+  }
 
   pq_table_ = entity.get_pq_table();
+  entity_ = entity.clone();
+  if (!entity_) {
+    LOG_ERROR("Failed to clone in-memory DiskAnn entity");
+    return IndexError_NoMemory;
+  }
 
   index_segment_offset_ = vector_segment->data_offset();
 
-  reader_.reset(new LinuxAlignedFileReader());
+  const auto file_path = storage->file_path();
+  int ret = 0;
+  reader_.reset(new PlatformAlignedFileReader());
+#if defined(_WIN32) || defined(_WIN64)
+  // Drop every Segment reference created by entity.load() before checking the
+  // File control block. Without an external alias, only cached_file and the
+  // FileReadStorage itself remain as owners.
+  entity.release_storage();
+  vector_segment.reset();
+  if (cached_file.use_count() != 2) {
+    LOG_ERROR(
+        "DiskAnn on Windows cannot load while the caller retains the "
+        "FileReadStorage file or one of its segments");
+    return IndexError_InvalidArgument;
+  }
 
-  auto file_path = storage->file_path();
-  reader_->open(file_path);
+  // Capture the exact file object that supplied the in-memory metadata before
+  // releasing FileReadStorage. Reopening file_path after cleanup could bind
+  // graph reads to a replacement file while PQ/keys still belong to the old
+  // one.
+  ret = static_cast<WindowsAlignedFileReader *>(reader_.get())
+            ->open_from_handle(file_path, cached_file->native_handle());
+#else
+  if (cached_file) {
+    // POSIX atomic replacement leaves an open descriptor bound to the old
+    // inode. Capture an independent descriptor before cleanup so graph reads
+    // use the same file object that supplied the in-memory metadata.
+    ret = static_cast<LinuxAlignedFileReader *>(reader_.get())
+              ->open_from_handle(file_path, cached_file->native_handle());
+  } else {
+    // Preserve support for FileReadStorage's alone_file_handle mode. Its
+    // Segment abstraction does not expose a descriptor, so retain the
+    // origin/main ordering and bind the path before releasing the storage.
+    reader_->open(file_path);
+  }
+#endif
+  if (ret != 0) {
+    LOG_ERROR("Failed to capture DiskAnn index file, ret=%d", ret);
+    return ret;
+  }
 
-  storage->cleanup();
+  ret = storage->cleanup();
+#if !defined(_WIN32) && !defined(_WIN64)
+  entity.release_storage();
+  vector_segment.reset();
+#endif
+  storage.reset();
+  if (ret != 0) {
+    reader_->close();
+    LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
+    return ret;
+  }
 
-  int ret = setup_io_ctx(init_ctx_);
+#if defined(_WIN32) || defined(_WIN64)
+  // Windows cannot keep an ordinary buffered alias to this file object beside
+  // DiskAnn's unbuffered handles without a severe random-read regression. The
+  // preflight check above avoids consuming the storage on an ordinary
+  // ownership error. Check again after cleanup so an unexpected remaining
+  // owner cannot make the successful load retain a buffered handle.
+  if (cached_file.use_count() != 1) {
+    reader_->close();
+    LOG_ERROR(
+        "DiskAnn on Windows cannot load while the caller retains the "
+        "FileReadStorage file or one of its segments");
+    return IndexError_InvalidArgument;
+  }
+#endif
+  // Releasing the last internal reference closes the buffered source handle.
+  // POSIX caller-owned aliases remain valid; Windows has rejected them above.
+  cached_file.reset();
+
+  ret = setup_io_ctx(init_ctx_);
   if (ret != 0) {
     LOG_ERROR("setup io ctx error");
     return ret;
   }
 
-  max_node_size_ = entity.max_node_size();
   disk_bytes_per_point_ = meta_.element_size();
 
   node_per_sector_ = entity.node_per_sector();
-  aligned_dim_ = meta_.dimension();
-
   pq_chunk_num_ = entity.pq_chunk_num();
 
   medoid_ = entity.medoid();
@@ -76,15 +238,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 
   doc_cnt_ = entity.doc_cnt();
 
-  max_degree_ = entity.max_degree();
-
-  sector_num_per_node_ =
-      DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  if (beam_width_ * sector_num_per_node_ > DiskAnnUtil::kMaxSectorReadNum) {
-    LOG_ERROR("Beamwidth can not be higher than kMaxSectorReadNum");
-
-    return IndexError_InvalidArgument;
-  }
+  max_degree_ = static_cast<uint32_t>(stored_max_degree);
 
   centroid_stride_ = DiskAnnUtil::round_up(meta_.element_size(), 32);
   DiskAnnUtil::alloc_aligned(&centroid_data_,
@@ -136,11 +290,21 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
     const std::vector<diskann_id_t> &node_ids,
     std::vector<void *> &coord_buffers,
     std::vector<std::pair<uint32_t, diskann_id_t *>> &neighbor_buffers) {
-  std::vector<AlignedRead> read_reqs;
   std::vector<bool> retval(node_ids.size(), true);
+  if (coord_buffers.size() != node_ids.size() ||
+      neighbor_buffers.size() != node_ids.size()) {
+    LOG_ERROR(
+        "read_nodes: node, coordinate, and neighbor buffer counts must "
+        "match");
+    std::fill(retval.begin(), retval.end(), false);
+    return retval;
+  }
   if (node_ids.empty()) {
     return retval;
   }
+
+  std::vector<AlignedRead> read_reqs;
+  read_reqs.reserve(node_ids.size());
 
   uint8_t *buf = nullptr;
   auto sector_num =
@@ -195,6 +359,14 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
           DiskAnnUtil::offset_to_node_neighbor(node_buf, meta_.element_size());
       uint32_t neighbor_num = *node_neighbor;
 
+      if (neighbor_num > max_degree_) {
+        LOG_ERROR(
+            "read_nodes: node %u has %u neighbors, exceeding max degree %u",
+            node_ids[i], neighbor_num, max_degree_);
+        retval[i] = false;
+        continue;
+      }
+
       neighbor_buffers[i].first = neighbor_num;
       memcpy(neighbor_buffers[i].second, node_neighbor + 1,
              neighbor_num * sizeof(diskann_id_t));
@@ -206,76 +378,228 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   return retval;
 }
 
-int DiskAnnIndexer::load_cache_list(
-    const std::vector<diskann_id_t> &node_list) {
-  LOG_INFO("Loading the cache list into memory");
+void DiskAnnIndexer::reset_cache_storage() {
+  // The maps contain pointers into the two backing buffers. Drop the maps
+  // first so no stale pointer remains observable while storage is replaced.
+  coord_cache_.clear();
+  neighbor_cache_.clear();
+  DiskAnnUtil::free_aligned(coord_cache_buf_);
+  coord_cache_buf_ = nullptr;
+  std::vector<diskann_id_t>().swap(neighbor_cache_buffer_);
+}
 
-  size_t num_cached_nodes = node_list.size();
-  if (num_cached_nodes == 0) {
+uint32_t DiskAnnIndexer::effective_cache_node_count(
+    uint32_t requested_nodes) const {
+  uint64_t max_nodes = 0;
+  if (doc_cnt_ != 0) {
+    max_nodes =
+        doc_cnt_ / 10 + (doc_cnt_ % 10 >= 5 ? static_cast<uint64_t>(1) : 0);
+    max_nodes = std::max<uint64_t>(1, max_nodes);
+  }
+  const uint32_t effective_nodes =
+      static_cast<uint32_t>(std::min<uint64_t>(requested_nodes, max_nodes));
+  if (effective_nodes != requested_nodes) {
+    LOG_WARN(
+        "Reducing nodes to cache from: %u, to: (10 percent of total nodes: "
+        "%u)",
+        requested_nodes, effective_nodes);
+  }
+  return effective_nodes;
+}
+
+int DiskAnnIndexer::prepare_cache_storage(size_t capacity,
+                                          CacheLoadState &state) {
+  reset_cache_storage();
+  state = {};
+  state.capacity = capacity;
+
+  if (capacity == 0) {
     return 0;
   }
 
-  neighbor_cache_buffer_.resize(num_cached_nodes * (max_degree_ + 1), 0);
+  const uint64_t neighbor_entries_per_node_u64 =
+      static_cast<uint64_t>(max_degree_) + 1;
+  if (neighbor_entries_per_node_u64 > std::numeric_limits<size_t>::max()) {
+    LOG_ERROR("DiskANN node cache neighbor stride overflow");
+    return IndexError_InvalidArgument;
+  }
+  const size_t neighbor_entries_per_node =
+      static_cast<size_t>(neighbor_entries_per_node_u64);
+  const size_t max_neighbor_entries =
+      std::numeric_limits<size_t>::max() / sizeof(diskann_id_t);
+  if (capacity > max_neighbor_entries / neighbor_entries_per_node) {
+    LOG_ERROR("DiskANN node cache neighbor allocation size overflow");
+    return IndexError_InvalidArgument;
+  }
 
-  size_t coord_cache_buf_len = num_cached_nodes * aligned_dim_;
-  DiskAnnUtil::alloc_aligned((void **)&coord_cache_buf_,
-                             coord_cache_buf_len * meta_.unit_size(),
-                             8 * meta_.unit_size());
-  if (coord_cache_buf_ == nullptr) {
-    LOG_ERROR("Failed to allocate coordinate cache buffer");
-    neighbor_cache_buffer_.clear();
+  const size_t element_size = meta_.element_size();
+  if (element_size == 0 || meta_.unit_size() == 0 ||
+      capacity > std::numeric_limits<size_t>::max() / element_size) {
+    LOG_ERROR("DiskANN node cache coordinate byte size overflow");
+    reset_cache_storage();
+    return IndexError_InvalidArgument;
+  }
+  const size_t coord_cache_bytes = capacity * element_size;
+
+  try {
+    state.slots.reserve(capacity);
+    neighbor_cache_buffer_.resize(capacity * neighbor_entries_per_node, 0);
+  } catch (const std::exception &e) {
+    LOG_ERROR("Failed to allocate DiskANN node cache storage: %s", e.what());
+    reset_cache_storage();
+    state = {};
     return IndexError_NoMemory;
   }
 
-  memset(coord_cache_buf_, 0, coord_cache_buf_len * meta_.unit_size());
+  DiskAnnUtil::alloc_aligned(&coord_cache_buf_, coord_cache_bytes,
+                             8 * meta_.unit_size());
+  if (coord_cache_buf_ == nullptr) {
+    LOG_ERROR("Failed to allocate coordinate cache buffer");
+    reset_cache_storage();
+    return IndexError_NoMemory;
+  }
+  return 0;
+}
 
-  constexpr size_t BLOCK_SIZE = 8;
-  size_t num_blocks = DiskAnnUtil::div_round_up(num_cached_nodes, BLOCK_SIZE);
-  for (size_t block = 0; block < num_blocks; block++) {
-    size_t start_idx = block * BLOCK_SIZE;
-    size_t end_idx = std::min(num_cached_nodes, (block + 1) * BLOCK_SIZE);
+int DiskAnnIndexer::load_cache_list(CacheLoadState &state) {
+  LOG_INFO("Loading the remaining cache nodes into memory");
 
-    std::vector<diskann_id_t> nodes_to_read;
-    std::vector<void *> coord_buffers;
-    std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers;
-    for (size_t node_idx = start_idx; node_idx < end_idx; node_idx++) {
-      nodes_to_read.push_back(node_list[node_idx]);
+  std::vector<size_t> pending_slots;
+  pending_slots.reserve(state.slots.size());
+  for (size_t i = 0; i < state.slots.size(); ++i) {
+    if (!state.slots[i].loaded) {
+      pending_slots.push_back(i);
+    }
+  }
+  std::sort(pending_slots.begin(), pending_slots.end(),
+            [&state](size_t lhs, size_t rhs) {
+              return state.slots[lhs].id < state.slots[rhs].id;
+            });
+
+  const size_t neighbor_entries_per_node = static_cast<size_t>(max_degree_) + 1;
+  const size_t batch_size = static_cast<size_t>(
+      DiskAnnUtil::cache_load_batch_size(sector_num_per_node_));
+  const size_t num_blocks =
+      DiskAnnUtil::div_round_up(pending_slots.size(), batch_size);
+
+  std::vector<diskann_id_t> nodes_to_read;
+  std::vector<void *> coord_buffers;
+  std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers;
+  nodes_to_read.reserve(batch_size);
+  coord_buffers.reserve(batch_size);
+  neighbor_buffers.reserve(batch_size);
+
+  for (size_t block = 0; block < num_blocks; ++block) {
+    const size_t start_idx = block * batch_size;
+    const size_t end_idx =
+        std::min(pending_slots.size(), (block + 1) * batch_size);
+
+    nodes_to_read.clear();
+    coord_buffers.clear();
+    neighbor_buffers.clear();
+    for (size_t i = start_idx; i < end_idx; ++i) {
+      const size_t slot_idx = pending_slots[i];
+      nodes_to_read.push_back(state.slots[slot_idx].id);
       coord_buffers.push_back(reinterpret_cast<uint8_t *>(coord_cache_buf_) +
-                              node_idx * meta_.element_size());
+                              slot_idx * meta_.element_size());
       neighbor_buffers.emplace_back(
-          0, neighbor_cache_buffer_.data() + node_idx * (max_degree_ + 1));
+          0,
+          neighbor_cache_buffer_.data() + slot_idx * neighbor_entries_per_node);
     }
 
-    auto read_status =
+    const auto read_status =
         read_nodes(nodes_to_read, coord_buffers, neighbor_buffers);
-
-    for (size_t i = 0; i < read_status.size(); i++) {
-      if (read_status[i] == true) {
-        coord_cache_.insert(std::make_pair(nodes_to_read[i], coord_buffers[i]));
-        neighbor_cache_.insert(
-            std::make_pair(nodes_to_read[i], neighbor_buffers[i]));
+    for (size_t i = 0; i < read_status.size(); ++i) {
+      if (read_status[i]) {
+        const size_t slot_idx = pending_slots[start_idx + i];
+        state.slots[slot_idx].loaded = true;
+        state.slots[slot_idx].neighbor_count = neighbor_buffers[i].first;
       }
     }
   }
 
-  LOG_INFO("Load Cache List Done");
+  // Publish both maps together only after all optional I/O has completed.
+  // Their values point into fixed-capacity buffers that will not move.
+  std::vector<size_t> loaded_slots;
+  loaded_slots.reserve(state.slots.size());
+  for (size_t i = 0; i < state.slots.size(); ++i) {
+    if (state.slots[i].loaded) {
+      loaded_slots.push_back(i);
+    }
+  }
+  std::sort(loaded_slots.begin(), loaded_slots.end(),
+            [&state](size_t lhs, size_t rhs) {
+              return state.slots[lhs].id < state.slots[rhs].id;
+            });
+
+  try {
+    for (size_t slot_idx : loaded_slots) {
+      const CacheSlot &slot = state.slots[slot_idx];
+      void *coord = reinterpret_cast<uint8_t *>(coord_cache_buf_) +
+                    slot_idx * meta_.element_size();
+      diskann_id_t *neighbors =
+          neighbor_cache_buffer_.data() + slot_idx * neighbor_entries_per_node;
+      coord_cache_.emplace_hint(coord_cache_.end(), slot.id, coord);
+      neighbor_cache_.emplace_hint(
+          neighbor_cache_.end(), slot.id,
+          std::make_pair(slot.neighbor_count, neighbors));
+    }
+  } catch (const std::exception &e) {
+    LOG_ERROR("Failed to publish DiskANN node cache: %s", e.what());
+    reset_cache_storage();
+    return IndexError_NoMemory;
+  }
+
+  const size_t failed_nodes = state.slots.size() - loaded_slots.size();
+  if (failed_nodes != 0) {
+    LOG_WARN(
+        "DiskANN node cache preload completed with read failures: "
+        "selected_nodes=%zu loaded_nodes=%zu failed_nodes=%zu",
+        state.slots.size(), loaded_slots.size(), failed_nodes);
+  }
 
   return 0;
 }
 
-void DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
-                                      std::vector<diskann_id_t> &node_list) {
-  std::set<diskann_id_t> node_set;
-
-  size_t tenp_cnt = static_cast<uint64_t>(std::round(doc_cnt_ * 0.1));
-  if (num_nodes_to_cache > tenp_cnt) {
-    LOG_WARN(
-        "Reducing nodes to cache from: %zu, to: (10 percent of total nodes: "
-        "%zu)",
-        (size_t)num_nodes_to_cache, (size_t)tenp_cnt);
-
-    num_nodes_to_cache = tenp_cnt == 0 ? 1 : tenp_cnt;
+int DiskAnnIndexer::configure_cache(uint32_t cache_node_num) {
+  cache_node_num = effective_cache_node_count(cache_node_num);
+  if (cache_node_num == 0) {
+    reset_cache_storage();
+    return 0;
   }
+
+  CacheLoadState state;
+  int ret = prepare_cache_storage(cache_node_num, state);
+  if (ret != 0) {
+    return ret;
+  }
+
+  ailego::ElapsedTime cache_timer;
+  LOG_INFO("Caching %u nodes around medoid(s)", cache_node_num);
+  ret = cache_bfs_levels(cache_node_num, state);
+  if (ret != 0) {
+    reset_cache_storage();
+    return ret;
+  }
+  ret = load_cache_list(state);
+  if (ret != 0) {
+    return ret;
+  }
+
+  const size_t selected_nodes = state.slots.size();
+  const size_t loaded_nodes = coord_cache_.size();
+  LOG_INFO(
+      "Load Cache List Done: requested_nodes=%u selected_nodes=%zu "
+      "loaded_nodes=%zu failed_nodes=%zu elapsed_ms=%llu",
+      cache_node_num, selected_nodes, loaded_nodes,
+      selected_nodes - loaded_nodes,
+      static_cast<unsigned long long>(cache_timer.milli_seconds()));
+  return 0;
+}
+
+int DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
+                                     CacheLoadState &state) {
+  std::set<diskann_id_t> node_set;
 
   LOG_INFO("Begin to cache %zu Nodes", (size_t)num_nodes_to_cache);
 
@@ -310,6 +634,15 @@ void DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
 
     std::sort(nodes_to_expand.begin(), nodes_to_expand.end());
 
+    if (nodes_to_expand.size() > state.capacity - state.slots.size()) {
+      LOG_ERROR("DiskANN node cache BFS exceeded its allocated capacity");
+      return IndexError_Runtime;
+    }
+    const size_t first_slot = state.slots.size();
+    for (diskann_id_t id : nodes_to_expand) {
+      state.slots.push_back(CacheSlot{id, 0, false});
+    }
+
     bool finish_flag = false;
 
     constexpr uint64_t BLOCK_SIZE = 1024;
@@ -323,42 +656,42 @@ void DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
 
       std::vector<diskann_id_t> nodes_to_read(nodes_to_expand.begin() + start,
                                               nodes_to_expand.begin() + end);
-      std::vector<void *> coord_buffers(block_size, nullptr);
+      std::vector<void *> coord_buffers;
+      coord_buffers.reserve(block_size);
 
-      std::vector<std::pair<uint32_t, std::vector<diskann_id_t>>>
-          neighbor_buffers;
+      std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers;
       neighbor_buffers.reserve(block_size);
-
+      const size_t neighbor_entries_per_node =
+          static_cast<size_t>(max_degree_) + 1;
       for (size_t i = 0; i < block_size; i++) {
-        neighbor_buffers.emplace_back(
-            0, std::vector<diskann_id_t>(max_degree_ + 1));
+        const size_t slot_idx = first_slot + start + i;
+        coord_buffers.push_back(reinterpret_cast<uint8_t *>(coord_cache_buf_) +
+                                slot_idx * meta_.element_size());
+        neighbor_buffers.emplace_back(0,
+                                      neighbor_cache_buffer_.data() +
+                                          slot_idx * neighbor_entries_per_node);
       }
 
-      std::vector<std::pair<uint32_t, diskann_id_t *>> neighbor_buffers_ptr;
-      neighbor_buffers_ptr.reserve(block_size);
-      for (size_t i = 0; i < block_size; i++) {
-        neighbor_buffers_ptr.emplace_back(neighbor_buffers[i].first,
-                                          neighbor_buffers[i].second.data());
-      }
+      const auto read_status =
+          read_nodes(nodes_to_read, coord_buffers, neighbor_buffers);
 
-      auto read_status =
-          read_nodes(nodes_to_read, coord_buffers, neighbor_buffers_ptr);
-
-      for (uint32_t i = 0; i < read_status.size(); i++) {
-        if (read_status[i] == false) {
+      for (size_t i = 0; i < read_status.size(); i++) {
+        if (!read_status[i]) {
           continue;
-        } else {
-          neighbor_buffers[i].first = neighbor_buffers_ptr[i].first;
-          uint32_t neighbor_num = neighbor_buffers[i].first;
-          diskann_id_t *neighbors = neighbor_buffers[i].second.data();
+        }
 
-          for (uint32_t j = 0; j < neighbor_num && !finish_flag; j++) {
-            if (node_set.find(neighbors[j]) == node_set.end()) {
-              cur_level.insert(neighbors[j]);
-            }
-            if (cur_level.size() + node_set.size() >= num_nodes_to_cache) {
-              finish_flag = true;
-            }
+        const size_t slot_idx = first_slot + start + i;
+        state.slots[slot_idx].loaded = true;
+        state.slots[slot_idx].neighbor_count = neighbor_buffers[i].first;
+
+        const uint32_t neighbor_num = neighbor_buffers[i].first;
+        diskann_id_t *neighbors = neighbor_buffers[i].second;
+        for (uint32_t j = 0; j < neighbor_num && !finish_flag; j++) {
+          if (node_set.find(neighbors[j]) == node_set.end()) {
+            cur_level.insert(neighbors[j]);
+          }
+          if (cur_level.size() + node_set.size() >= num_nodes_to_cache) {
+            finish_flag = true;
           }
         }
       }
@@ -377,23 +710,22 @@ void DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
   ailego_assert(node_set.size() + cur_level.size() == num_nodes_to_cache ||
                 cur_level.size() == 0);
 
-  node_list.clear();
-  node_list.reserve(node_set.size() + cur_level.size());
-
-  for (auto node : node_set) {
-    node_list.push_back(node);
+  std::vector<diskann_id_t> final_level(cur_level.begin(), cur_level.end());
+  std::sort(final_level.begin(), final_level.end());
+  if (final_level.size() > state.capacity - state.slots.size()) {
+    LOG_ERROR("DiskANN node cache frontier exceeded its allocated capacity");
+    return IndexError_Runtime;
+  }
+  for (diskann_id_t id : final_level) {
+    state.slots.push_back(CacheSlot{id, 0, false});
   }
 
-  for (auto node : cur_level) {
-    node_list.push_back(node);
-  }
-
-  size_t total_size = node_list.size();
+  const size_t total_size = state.slots.size();
   LOG_INFO("Level: %zu, Cached Size: %zu, Total Cached Size: %zu",
            (size_t)level, (size_t)(total_size - prev_node_set_size),
            (size_t)total_size);
 
-  return;
+  return 0;
 }
 
 int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
@@ -707,10 +1039,20 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
                                std::string &vector) {
   DiskAnnContext *ctx = dynamic_cast<DiskAnnContext *>(context.get());
+  if (ctx == nullptr) {
+    LOG_ERROR("get_vector: invalid DiskAnn context");
+    return IndexError_InvalidArgument;
+  }
 
   auto &stats = ctx->query_stats();
 
   IOContext &io_ctx = ctx->io_ctx();
+  // Search contexts are owned by an external pool and may outlive this index.
+  // Fetch contexts, however, are owned by the provider/iterator that also owns
+  // the reader; retaining their private handle avoids reopening it per vector.
+  IOContextReleaseGuard release_guard(
+      *reader_, io_ctx,
+      ctx->context_type() == DiskAnnContext::kSearcherContext);
 
   uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
 
@@ -718,6 +1060,23 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       node_per_sector_ > 0
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
+  const size_t sector_read_size =
+      static_cast<size_t>(sector_num_per_node) * DiskAnnUtil::kSectorSize;
+  const size_t node_offset =
+      node_per_sector_ == 0
+          ? 0
+          : static_cast<size_t>(id % node_per_sector_) * max_node_size_;
+  if (sector_num_per_node == 0 || sector_buffer == nullptr ||
+      sector_read_size > ctx->sector_buffer_size() ||
+      node_offset > sector_read_size ||
+      meta_.element_size() > sector_read_size - node_offset) {
+    LOG_ERROR(
+        "get_vector: invalid sector buffer range, read=%zu offset=%zu "
+        "vector=%u available=%zu",
+        sector_read_size, node_offset,
+        static_cast<unsigned>(meta_.element_size()), ctx->sector_buffer_size());
+    return IndexError_InvalidArgument;
+  }
 
   ailego::ElapsedTime query_timer;
   ailego::ElapsedTime io_timer;
@@ -755,8 +1114,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
             DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
                                          DiskAnnUtil::kSectorSize, id) *
                 DiskAnnUtil::kSectorSize,
-        sector_num_per_node * DiskAnnUtil::kSectorSize,
-        frontier_neighbor.second);
+        sector_read_size, frontier_neighbor.second);
 
     stats.disk_page_reads++;
     stats.io_num++;
@@ -771,8 +1129,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       return IndexError_Runtime;
     }
 
-    uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
-        node_per_sector_, max_node_size_, frontier_neighbor.second, id);
+    uint8_t *node_disk_buf = frontier_neighbor.second + node_offset;
 
     void *node_fp_coords = node_disk_buf;
 
@@ -801,7 +1158,38 @@ int DiskAnnIndexer::knn_search(DiskAnnContext *ctx) {
   return 0;
 }
 
+void DiskAnnIndexer::release_io_ctx(DiskAnnContext *ctx) {
+  if (reader_ && ctx) {
+    reader_->release_io_ctx(ctx->io_ctx());
+  }
+}
+
 int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
+  int error_code = IndexError_Runtime;
+  try {
+    return cached_beam_search_impl(ctx);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("cached_beam_search: memory allocation failed");
+    error_code = IndexError_NoMemory;
+  } catch (const std::exception &e) {
+    LOG_ERROR("cached_beam_search: unexpected exception: %s", e.what());
+  } catch (...) {
+    LOG_ERROR("cached_beam_search: unknown exception");
+  }
+
+  // An exception may occur after an asynchronous batch has been submitted.
+  // Recreate the context only after destroy_io_ctx has cancelled and waited
+  // for all requests, so the caller can safely reuse or destroy this context.
+  IOContext &io_ctx = ctx->io_ctx();
+  destroy_io_ctx(io_ctx);
+  if (setup_io_ctx(io_ctx) != 0) {
+    LOG_ERROR("cached_beam_search: failed to recreate I/O context");
+  }
+  ctx->set_error(true);
+  return error_code;
+}
+
+int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   auto &stats = ctx->query_stats();
   auto &dc = ctx->dist_calculator();
   auto &topk_heap = ctx->topk_heap();

@@ -105,7 +105,7 @@ int DiskAnnReducerEntity::load_key_segment() {
     return IndexError_InvalidFormat;
   }
 
-  size_t key_data_len = doc_cnt() * sizeof(key_t);
+  size_t key_data_len = doc_cnt() * sizeof(diskann_key_t);
 
   // load key mapping
   key_mapping_segment_ = container_->get(kDiskAnnKeyMappingSegmentId);

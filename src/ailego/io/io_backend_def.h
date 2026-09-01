@@ -48,6 +48,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
       return "libaio";
     case IOBackendType::kPread:
       return "pread";
+    case IOBackendType::kWindowsOverlapped:
+      return "windows_overlapped";
   }
   return "unknown";
 }
@@ -71,6 +73,9 @@ inline const char *IOBackendDescription(IOBackendType type) {
 #else
       return "Synchronous pread() I/O backend.";
 #endif
+    case IOBackendType::kWindowsOverlapped:
+      return "windows_overlapped: Windows unbuffered overlapped I/O backend "
+             "using per-context I/O completion ports.";
   }
   return "Unknown I/O backend.";
 }
@@ -92,7 +97,9 @@ class IOBackend {
   IOBackendType available() {
     std::call_once(probe_once_, [this]() {
       IOBackendType selected = IOBackendType::kPread;
-#if defined(__linux) || defined(__linux__)
+#if defined(_WIN32) || defined(_WIN64)
+      selected = IOBackendType::kWindowsOverlapped;
+#elif defined(__linux) || defined(__linux__)
       if (io_uring_supported()) {
         selected = IOBackendType::kIoUring;
       } else if (LibAioLoader::Instance().load() &&

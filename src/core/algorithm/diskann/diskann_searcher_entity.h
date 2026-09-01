@@ -35,6 +35,7 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   const DiskAnnEntity::Pointer clone() const override;
 
   void clear();
+  void release_storage();
   int load(const IndexMeta &meta, IndexStorage::Pointer storage);
   int load_pq_segment();
   int load_header_segment();
@@ -59,44 +60,10 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
     return entrypoints_;
   }
 
-  std::pair<uint32_t, const diskann_id_t *> get_neighbors(
-      diskann_id_t id) const override;
-
   diskann_id_t get_id(diskann_key_t key) const override;
   diskann_key_t get_key(diskann_id_t id) const override;
-  const void *get_vector(diskann_id_t id) const override;
 
  private:
-  DiskAnnSearcherEntity(
-      const DiskAnnMetaHeader &meta_header, const DiskAnnPqMeta &pq_meta,
-      const SegmentPointer &meta_segment, const SegmentPointer &pq_meta_segment,
-      const SegmentPointer &pq_data_segment,
-      const SegmentPointer &vector_segment, const SegmentPointer &key_segment,
-      const SegmentPointer &key_mapping_segment,
-      const SegmentPointer &entrypoint_segment, uint32_t num_threads,
-      uint32_t list_size, uint32_t cache_nodes_num, bool warm_up,
-      uint32_t beam_size, const IndexMeta meta, PQTable::Pointer pq_table,
-      const std::string &key_buffer, const std::string &key_mapping_buffer,
-      const std::vector<diskann_id_t> &entrypoints)
-      : DiskAnnEntity(meta_header, pq_meta),
-        meta_segment_(meta_segment),
-        pq_meta_segment_(pq_meta_segment),
-        pq_data_segment_(pq_data_segment),
-        vector_segment_(vector_segment),
-        key_segment_(key_segment),
-        key_mapping_segment_(key_mapping_segment),
-        entrypoint_segment_{entrypoint_segment},
-        num_threads_{num_threads},
-        list_size_{list_size},
-        cache_nodes_num_{cache_nodes_num},
-        warm_up_{warm_up},
-        beam_size_{beam_size},
-        meta_{meta},
-        pq_table_{pq_table},
-        key_buffer_{key_buffer},
-        key_mapping_buffer_{key_mapping_buffer},
-        entrypoints_{entrypoints} {}
-
   IndexStorage::Pointer storage_{};
 
   SegmentPointer meta_segment_{nullptr};
@@ -107,18 +74,11 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   SegmentPointer key_mapping_segment_{nullptr};
   SegmentPointer entrypoint_segment_{nullptr};
 
-  uint32_t num_threads_{1};
-  uint32_t list_size_{200};
-  uint32_t cache_nodes_num_{0};
-
-  bool warm_up_{false};
-  uint32_t beam_size_{2};
-
   IndexMeta meta_;
 
   PQTable::Pointer pq_table_;
-  std::string key_buffer_;
-  std::string key_mapping_buffer_;
+  std::shared_ptr<const std::string> key_buffer_;
+  std::shared_ptr<const std::string> key_mapping_buffer_;
   std::vector<diskann_id_t> entrypoints_;
 };
 

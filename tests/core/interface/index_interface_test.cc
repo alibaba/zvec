@@ -51,6 +51,25 @@ TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
+TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
+  auto param = DiskAnnIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(768)
+                   .with_max_degree(48)
+                   .with_list_size(80)
+                   .with_pq_chunk_num(16)
+                   .build();
+
+  auto restored =
+      IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json());
+  auto diskann = std::dynamic_pointer_cast<DiskAnnIndexParam>(restored);
+  ASSERT_NE(nullptr, diskann);
+  EXPECT_EQ(48, diskann->max_degree);
+  EXPECT_EQ(80, diskann->list_size);
+  EXPECT_EQ(16, diskann->pq_chunk_num);
+}
+
 #if RABITQ_SUPPORTED
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
   auto make_param = [](int nlist, int sample_count) {
