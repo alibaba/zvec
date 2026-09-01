@@ -31,6 +31,7 @@
 #include "avx2/record_quantized_int8/inner_product.h"
 #include "avx2/record_quantized_int8/squared_euclidean.h"
 #include "avx2/rotate/fht/fht.h"
+#include "avx2/rotate/opq/opq.h"
 #include "avx512/fp16/cosine.h"
 #include "avx512/fp16/inner_product.h"
 #include "avx512/fp16/squared_euclidean.h"
@@ -47,6 +48,7 @@
 #include "avx512/record_quantized_int8/inner_product.h"
 #include "avx512/record_quantized_int8/squared_euclidean.h"
 #include "avx512/rotate/fht/fht.h"
+#include "avx512/rotate/opq/opq.h"
 #include "avx512_vnni/fp16/squared_euclidean.h"
 #include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
@@ -528,11 +530,19 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
       return {scalar::fht_rotate, scalar::fht_unrotate};
     }
 
-    case RotateType::kOpq:
+    case RotateType::kOpq: {
       // OPQ applies a dense orthogonal matrix: rotate is R * x, unrotate is
-      // R^T * x, with the matrix passed directly as ctx.  Scalar-only for
-      // now; ISA-specific GEMV kernels may join the cascade later.
+      // R^T * x, with the matrix passed directly as ctx.
+      if (CpuSupports(CpuArchType::kAVX512) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+        return {avx512::opq_rotate_avx512, avx512::opq_unrotate_avx512};
+      }
+      if (CpuSupports(CpuArchType::kAVX2) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+        return {avx2::opq_rotate_avx2, avx2::opq_unrotate_avx2};
+      }
       return {scalar::opq_rotate, scalar::opq_unrotate};
+    }
   }
 
   assert(false && "unsupported RotateType");
