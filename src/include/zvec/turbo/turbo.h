@@ -166,6 +166,7 @@ enum class QuantizeType {
 
 enum class RotateType : uint16_t {
   kFht = 1,  //!< O(d log d) FHT-based Kac random rotation
+  kOpq = 2,  //!< O(d^2) dense orthogonal matrix, trained from the data
 };
 
 enum class CpuArchType {

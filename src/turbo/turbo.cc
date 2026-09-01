@@ -31,6 +31,7 @@
 #include "avx2/record_quantized_int8/inner_product.h"
 #include "avx2/record_quantized_int8/squared_euclidean.h"
 #include "avx2/rotate/fht/fht.h"
+#include "avx2/rotate/opq/opq.h"
 #include "avx512/fp16/cosine.h"
 #include "avx512/fp16/inner_product.h"
 #include "avx512/fp16/squared_euclidean.h"
@@ -47,6 +48,7 @@
 #include "avx512/record_quantized_int8/inner_product.h"
 #include "avx512/record_quantized_int8/squared_euclidean.h"
 #include "avx512/rotate/fht/fht.h"
+#include "avx512/rotate/opq/opq.h"
 #include "avx512_vnni/fp16/squared_euclidean.h"
 #include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
@@ -76,6 +78,7 @@
 #include "scalar/record_quantized_int8/inner_product.h"
 #include "scalar/record_quantized_int8/squared_euclidean.h"
 #include "scalar/rotate/fht/fht.h"
+#include "scalar/rotate/opq/opq.h"
 #include "sse/rotate/fht/fht.h"
 
 namespace zvec::turbo {
@@ -525,6 +528,20 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
         return {neon::fht_rotate_neon, neon::fht_unrotate_neon};
       }
       return {scalar::fht_rotate, scalar::fht_unrotate};
+    }
+
+    case RotateType::kOpq: {
+      // Dense orthogonal matrix: rotate = R * x, unrotate = R^T * x; ctx is
+      // the matrix itself.
+      if (CpuSupports(CpuArchType::kAVX512) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+        return {avx512::opq_rotate_avx512, avx512::opq_unrotate_avx512};
+      }
+      if (CpuSupports(CpuArchType::kAVX2) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+        return {avx2::opq_rotate_avx2, avx2::opq_unrotate_avx2};
+      }
+      return {scalar::opq_rotate, scalar::opq_unrotate};
     }
   }
 
