@@ -35,7 +35,8 @@ set(TURBO_MARCH_FLAG_NEON_FP16 "")
 if(NOT IOS AND NOT MSVC AND _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while existing Ailego distance implementations stay untouched.
-  set(TURBO_MARCH_FLAG_NEON_FP16 "-march=armv8-a")
+  # No fallback march is injected on probe failure: armv8-a is already the
+  # aarch64 default, and forcing it onto 32-bit arm targets would be wrong.
   set(_TURBO_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
   set(CMAKE_REQUIRED_FLAGS
     "${_TURBO_SAVED_CMAKE_REQUIRED_FLAGS} -march=armv8.2-a+fp16")
