@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "diskann_searcher.h"
+#include <limits>
+#include <ailego/pattern/defer.h>
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 #include "diskann_params.h"
@@ -45,13 +47,28 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
     return IndexError_NoReady;
   }
 
-  params_ = search_params;
-  list_size_ = 200;
-  cache_nodes_num_ = 0;
   log_diskann_io_backend();
 
-  params_.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
-  params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);
+  uint32_t list_size = 200;
+  uint32_t cache_nodes_num = 0;
+  search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
+  long long configured_cache_nodes = 0;
+  if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
+                        &configured_cache_nodes)) {
+    if (configured_cache_nodes < 0 ||
+        static_cast<unsigned long long>(configured_cache_nodes) >
+            std::numeric_limits<uint32_t>::max()) {
+      LOG_ERROR("cache_node_num must be in [0, UINT32_MAX]");
+      return IndexError_InvalidArgument;
+    }
+    cache_nodes_num = static_cast<uint32_t>(configured_cache_nodes);
+  }
+
+  // Commit only after every value has been validated. A failed re-init must
+  // leave either the previous valid configuration or STATE_INIT untouched.
+  params_ = search_params;
+  list_size_ = list_size;
+  cache_nodes_num_ = cache_nodes_num;
   state_ = STATE_INITED;
   return 0;
 }
@@ -112,23 +129,13 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     return res;
   }
 
-  if (cache_nodes_num_ != 0) {
-    std::vector<diskann_id_t> node_list;
-    LOG_INFO("Caching %u nodes around medoid(s)", cache_nodes_num_);
-
-    diskann_indexer_->cache_bfs_levels(cache_nodes_num_, node_list);
-
-    ret = diskann_indexer_->load_cache_list(node_list);
-    if (ret != 0) {
-      return ret;
-    }
-
-    node_list.clear();
-    node_list.shrink_to_fit();
+  ret = diskann_indexer_->configure_cache(cache_nodes_num_);
+  if (ret != 0) {
+    return ret;
   }
 
   if (measure) {
-    measure_ = measure;
+    measure_ = std::move(measure);
   } else {
     measure_ = IndexFactory::CreateMetric(meta_.metric_name());
     if (!measure_) {
@@ -229,6 +236,7 @@ int DiskAnnSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -283,6 +291,7 @@ int DiskAnnSearcher::search_bf_impl(const void *query,
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -343,6 +352,7 @@ int DiskAnnSearcher::search_bf_by_p_keys_impl(
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;

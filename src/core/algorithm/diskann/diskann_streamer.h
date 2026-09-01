@@ -18,8 +18,6 @@
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 
-class LinuxAlignedFileReader;
-
 namespace zvec {
 namespace core {
 
@@ -116,7 +114,7 @@ class DiskAnnStreamer : public IndexStreamer {
   //! Create a searcher context
   ContextPointer create_context() const override;
 
-  //! Create a vector iterator backed by the on-disk vector segment.
+  //! Create a vector iterator backed by the aligned DiskAnn file reader.
   //! Used by the merge code path (``MixedStreamerReducer``) to walk every
   //! vector held by this streamer.
   IndexSearcher::Provider::Pointer create_provider(void) const override;
@@ -163,13 +161,11 @@ class DiskAnnStreamer : public IndexStreamer {
   uint32_t list_size_{200};
   uint32_t cache_nodes_num_{0};
 
-  bool warm_up_{false};
-  uint32_t beam_size_{2};
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
 
-  // Fetches share the expensive I/O context, while returned MemoryBlocks own
+  // Fetches share a lightweight I/O context, while returned MemoryBlocks own
   // independent copies so their lifetime does not depend on this buffer.
   mutable std::mutex fetch_mutex_;
   mutable ContextPointer fetch_ctx_{};

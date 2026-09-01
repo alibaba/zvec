@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "diskann_streamer.h"
+#include <limits>
+#include <ailego/pattern/defer.h>
 #include "diskann_context.h"
 #include "diskann_index_provider.h"
 #include "diskann_indexer.h"
@@ -47,15 +49,29 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
     return IndexError_NoReady;
   }
 
-  meta_ = meta;
-  params_ = search_params;
-  list_size_ = 200;
-  cache_nodes_num_ = 0;
-
   log_diskann_io_backend();
 
-  params_.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
-  params_.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);
+  uint32_t list_size = 200;
+  uint32_t cache_nodes_num = 0;
+  search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
+  long long configured_cache_nodes = 0;
+  if (search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM,
+                        &configured_cache_nodes)) {
+    if (configured_cache_nodes < 0 ||
+        static_cast<unsigned long long>(configured_cache_nodes) >
+            std::numeric_limits<uint32_t>::max()) {
+      LOG_ERROR("cache_node_num must be in [0, UINT32_MAX]");
+      return IndexError_InvalidArgument;
+    }
+    cache_nodes_num = static_cast<uint32_t>(configured_cache_nodes);
+  }
+
+  // Commit only after every value has been validated. A failed re-init must
+  // leave either the previous valid configuration or STATE_INIT untouched.
+  meta_ = meta;
+  params_ = search_params;
+  list_size_ = list_size;
+  cache_nodes_num_ = cache_nodes_num;
   state_ = STATE_INITED;
   return 0;
 }
@@ -119,19 +135,9 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return res;
   }
 
-  if (cache_nodes_num_ != 0) {
-    std::vector<diskann_id_t> node_list;
-    LOG_INFO("Caching %u nodes around medoid(s)", cache_nodes_num_);
-
-    diskann_indexer_->cache_bfs_levels(cache_nodes_num_, node_list);
-
-    ret = diskann_indexer_->load_cache_list(node_list);
-    if (ret != 0) {
-      return ret;
-    }
-
-    node_list.clear();
-    node_list.shrink_to_fit();
+  ret = diskann_indexer_->configure_cache(cache_nodes_num_);
+  if (ret != 0) {
+    return ret;
   }
 
   measure_ = IndexFactory::CreateMetric(meta_.metric_name());
@@ -238,6 +244,7 @@ int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -292,6 +299,7 @@ int DiskAnnStreamer::search_bf_impl(const void *query,
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -352,6 +360,7 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
   if (ret != 0) {
     return ret;
   }
+  AILEGO_DEFER(diskann_indexer_.get(), &DiskAnnIndexer::release_io_ctx, ctx);
   if (ailego_unlikely(!group_options_valid(ctx))) {
     LOG_ERROR("Group search requires a callback and a positive group topk");
     return IndexError_InvalidArgument;
@@ -429,20 +438,12 @@ int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
 
   std::lock_guard<std::mutex> lock(fetch_mutex_);
   if (!fetch_ctx_) {
-    fetch_ctx_ = create_context();
+    const DiskAnnEntity::Pointer fetch_entity = entity_.clone();
+    fetch_ctx_ =
+        DiskAnnContext::create_fetch_context(meta_, measure_, fetch_entity);
     if (!fetch_ctx_) {
-      LOG_ERROR("Failed to create context for get_vector_by_id");
+      LOG_ERROR("Failed to create fetch context for get_vector_by_id");
       return IndexError_Runtime;
-    }
-  } else {
-    auto *ctx = dynamic_cast<DiskAnnContext *>(fetch_ctx_.get());
-    if (!ctx) {
-      LOG_ERROR("Cast fetch context to DiskAnnContext failed");
-      return IndexError_Cast;
-    }
-    int ret = ensure_compatible_context(fetch_ctx_, ctx);
-    if (ret != 0) {
-      return ret;
     }
   }
 
@@ -473,8 +474,14 @@ IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider(void) const {
     LOG_ERROR("Failed to clone DiskAnn entity for provider");
     return nullptr;
   }
-  return IndexProvider::Pointer(new (std::nothrow) DiskAnnIndexProvider(
-      meta_, entity, "DiskAnnStreamer"));
+  std::unique_ptr<DiskAnnIndexProvider> provider(
+      new (std::nothrow) DiskAnnIndexProvider(
+          meta_, measure_, entity, diskann_indexer_, "DiskAnnStreamer"));
+  if (!provider || !provider->ready()) {
+    LOG_ERROR("Failed to initialize DiskAnn provider dependencies");
+    return nullptr;
+  }
+  return IndexProvider::Pointer(provider.release());
 }
 
 IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {

@@ -38,6 +38,7 @@ from zvec import (
         (IndexType.HNSW, "HNSW"),
         (IOBackendType.PREAD, "PREAD"),
         (IOBackendType.IO_URING, "IO_URING"),
+        (IOBackendType.WINDOWS_OVERLAPPED, "WINDOWS_OVERLAPPED"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
         (StatusCode.OK, "OK"),
@@ -54,6 +55,7 @@ def test_enum_names(member, name):
         (IndexType.HNSW, 1),
         (IOBackendType.PREAD, 0),
         (IOBackendType.IO_URING, 2),
+        (IOBackendType.WINDOWS_OVERLAPPED, 3),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
         (StatusCode.OK, 0),
@@ -119,7 +121,9 @@ def test_index_type_has_member(member):
     assert member in IndexType.__members__
 
 
-@pytest.mark.parametrize("member", ["PREAD", "LIBAIO", "IO_URING"])
+@pytest.mark.parametrize(
+    "member", ["PREAD", "LIBAIO", "IO_URING", "WINDOWS_OVERLAPPED"]
+)
 def test_io_backend_type_has_member(member):
     assert member in IOBackendType.__members__
 
@@ -128,7 +132,10 @@ def test_current_io_backend_type():
     backend = zvec.io_backend_type()
     assert isinstance(backend, IOBackendType)
     assert zvec.io_backend_description()
-    if platform.system() == "Darwin":
+    if platform.system() == "Windows":
+        assert backend == IOBackendType.WINDOWS_OVERLAPPED
+        assert "overlapped" in zvec.io_backend_description().lower()
+    elif platform.system() == "Darwin":
         assert backend == IOBackendType.PREAD
         assert "pread" in zvec.io_backend_description().lower()
 

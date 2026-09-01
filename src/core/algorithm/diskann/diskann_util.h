@@ -17,6 +17,10 @@
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_entity.h"
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <malloc.h>
+#endif
+
 namespace zvec {
 namespace core {
 
@@ -24,6 +28,13 @@ class DiskAnnUtil {
  public:
   static constexpr uint64_t kSectorSize = 4096;
   static constexpr uint64_t kMaxSectorReadNum = 128;
+
+  static constexpr uint64_t cache_load_batch_size(
+      uint64_t sector_num_per_node) {
+    return sector_num_per_node == 0 || sector_num_per_node > kMaxSectorReadNum
+               ? 1
+               : kMaxSectorReadNum / sector_num_per_node;
+  }
 
  public:
   static inline size_t div_round_up(size_t x, size_t y) {
@@ -39,19 +50,26 @@ class DiskAnnUtil {
       *ptr = nullptr;
       return;
     }
+#if defined(_WIN32) || defined(_WIN64)
+    *ptr = ::_aligned_malloc(size, align);
+#else
     // Unlike aligned_alloc(), posix_memalign() does not require size to be an
     // integral multiple of alignment and is available on Linux and macOS.
     if (::posix_memalign(ptr, align, size) != 0) {
       *ptr = nullptr;
     }
+#endif
   }
 
   static inline void free_aligned(void *ptr) {
     if (ptr == nullptr) {
       return;
     }
-
+#if defined(_WIN32) || defined(_WIN64)
+    ::_aligned_free(ptr);
+#else
     free(ptr);
+#endif
   }
 
   template <typename T>
