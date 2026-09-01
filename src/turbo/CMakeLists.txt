@@ -5,9 +5,12 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
     if (HOST_ARCH MATCHES "^(x86|x64)$")
         setup_compiler_march_for_x86(TURBO_MARCH_FLAG_SSE TURBO_MARCH_FLAG_AVX2 TURBO_MARCH_FLAG_AVX512 TURBO_MARCH_FLAG_AVX512FP16)
     elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
-        # ARM64 architecture - NEON is enabled by default on aarch64,
-        # no special march flags needed.
-        message(STATUS "turbo: ARM64 detected, NEON enabled by default")
+        # ARM64 architecture - NEON is enabled by default on aarch64.
+        # Probe the NEON FP16 march flag (armv8.2-a+fp16) for the runtime-
+        # dispatched native FP16 kernels; falls back to armv8-a when the
+        # compiler cannot target FEAT_FP16.
+        setup_compiler_march_for_arm(TURBO_MARCH_FLAG_NEON TURBO_MARCH_FLAG_NEON_FP16)
+        message(STATUS "turbo: ARM64 detected, NEON FP16 march flag: ${TURBO_MARCH_FLAG_NEON_FP16}")
     endif()
 endif()
 
@@ -45,6 +48,16 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             ${AVX512_SRCS}
             PROPERTIES
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
+        )
+    elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
+        # NEON FP16 (FEAT_FP16): selected at runtime in turbo.cc via the
+        # CpuFeatures FP16 flag; when the compiler cannot target
+        # armv8.2-a+fp16 the kernels compile as scalar delegates.
+        file(GLOB_RECURSE NEON_FP16_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon_fp16/*.cc)
+        set_source_files_properties(
+            ${NEON_FP16_SRCS}
+            PROPERTIES
+            COMPILE_FLAGS "${TURBO_MARCH_FLAG_NEON_FP16}"
         )
     endif()
 endif()

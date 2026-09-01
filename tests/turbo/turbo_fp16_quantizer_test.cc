@@ -42,14 +42,16 @@ static float reference_cosine(const float *a, const float *b, size_t dim) {
 }
 
 // SIMD kernels may reorder accumulation; allow a small relative tolerance.
-static void expect_simd_near(float actual, float expected) {
-  const float tolerance = 1.0e-4f * std::max(1.0f, std::abs(expected));
+static void expect_simd_near(float actual, float expected,
+                             float rel_tolerance = 1.0e-4f) {
+  const float tolerance = rel_tolerance * std::max(1.0f, std::abs(expected));
   EXPECT_NEAR(actual, expected, tolerance);
 }
 
 // Verify that the `arch` distance kernels match the scalar kernels for all
 // metrics across a range of dimensions.
-static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
+static void check_simd_distance_matches_scalar(turbo::CpuArchType arch,
+                                               float rel_tolerance = 1.0e-4f) {
   const struct {
     turbo::MetricType type;
     const char *name;
@@ -108,7 +110,7 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
         float actual = 0.0f;
         scalar.dist(encoded[i].data(), encoded[0].data(), dim, &expected);
         simd.dist(encoded[i].data(), encoded[0].data(), dim, &actual);
-        expect_simd_near(actual, expected);
+        expect_simd_near(actual, expected, rel_tolerance);
       }
 
       std::vector<const void *> candidates(kVectorCount - 1);
@@ -122,7 +124,7 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
                  actual.data());
       for (size_t i = 0; i < candidates.size(); ++i) {
-        expect_simd_near(actual[i], expected[i]);
+        expect_simd_near(actual[i], expected[i], rel_tolerance);
       }
     }
   }
@@ -353,4 +355,11 @@ TEST(Fp16Quantizer, Avx2DistanceMatchesScalar) {
 
 TEST(Fp16Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
+}
+
+TEST(Fp16Quantizer, NeonDistanceMatchesScalar) {
+  // The NEON FP16 kernels accumulate in the FP16 domain (vfmaq_f16) while
+  // the scalar reference accumulates in FP32, so a looser tolerance is
+  // required than for the x86 kernels (which widen to FP32 before the FMA).
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON, 2.0e-2f);
 }

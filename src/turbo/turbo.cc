@@ -59,6 +59,9 @@
 #include "neon/pq_quantizer_int4/pq_distance.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
 #include "neon/rotate/fht/fht.h"
+#include "neon_fp16/fp16/cosine.h"
+#include "neon_fp16/fp16/inner_product.h"
+#include "neon_fp16/fp16/squared_euclidean.h"
 #include "scalar/fp16/cosine.h"
 #include "scalar/fp16/inner_product.h"
 #include "scalar/fp16/squared_euclidean.h"
@@ -120,12 +123,15 @@ constexpr CpuFeatureMask kCpuFeatureNone = 0;
 constexpr CpuFeatureMask kCpuFeatureAvx512Bw = 1U << 0;
 constexpr CpuFeatureMask kCpuFeatureAvx512Dq = 1U << 1;
 constexpr CpuFeatureMask kCpuFeatureF16c = 1U << 2;
+// ARM FEAT_FP16 (half-precision vector arithmetic, armv8.2-a+fp16).
+constexpr CpuFeatureMask kCpuFeatureNeonFp16 = 1U << 3;
 
 bool HasRequiredCpuFeatures(CpuFeatureMask required) {
   const auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
   return ((required & kCpuFeatureAvx512Bw) == 0 || flags.AVX512BW) &&
          ((required & kCpuFeatureAvx512Dq) == 0 || flags.AVX512DQ) &&
-         ((required & kCpuFeatureF16c) == 0 || flags.F16C);
+         ((required & kCpuFeatureF16c) == 0 || flags.F16C) &&
+         ((required & kCpuFeatureNeonFp16) == 0 || flags.FP16);
 }
 
 bool CanUseKernel(CpuArchType requested_arch, CpuArchType kernel_arch,
@@ -162,6 +168,11 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::squared_euclidean_fp16_distance,
      avx512_vnni::squared_euclidean_fp16_batch_distance, nullptr,
      kCpuFeatureAvx512Dq | kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean,
+     neon_fp16::squared_euclidean_fp16_distance_neon_fp16,
+     neon_fp16::squared_euclidean_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kScalar,
      MetricType::kSquaredEuclidean,
      scalar::squared_euclidean_raw_uint8_distance,
@@ -256,7 +267,21 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint8_batch_distance,
      avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess},
 
-    // --- fp16 (AVX512, AVX2, scalar) ---
+    // --- fp16 (NEON-FP16, AVX512, AVX2, scalar) ---
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean,
+     neon_fp16::squared_euclidean_fp16_distance_neon_fp16,
+     neon_fp16::squared_euclidean_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kCosine, neon_fp16::cosine_fp16_distance_neon_fp16,
+     neon_fp16::cosine_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kInnerProduct,
+     neon_fp16::inner_product_fp16_distance_neon_fp16,
+     neon_fp16::inner_product_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp16_distance_avx512,
