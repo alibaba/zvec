@@ -66,3 +66,15 @@ cc_library(
     LIBS zvec_ailego
     INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )
+
+# Eigen (header-only, shipped inside the RaBitQ third-party tree) backs the OPQ
+# rotator only. It must be a SYSTEM include: INCS above maps to a plain
+# target_include_directories, and STRICT turns Eigen's own warnings into errors.
+# Only the headers are consumed -- rabitqlib/rabitqlib_runtime is NOT linked.
+set(TURBO_EIGEN_INC
+    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.1/include)
+foreach(_turbo_tgt zvec_turbo zvec_turbo_objects zvec_turbo_export_objects)
+  if(TARGET ${_turbo_tgt})
+    target_include_directories(${_turbo_tgt} SYSTEM PRIVATE ${TURBO_EIGEN_INC})
+  endif()
+endforeach()
