@@ -26,39 +26,20 @@
 namespace zvec {
 namespace turbo {
 
-// ============================================================================
-// OpqRotator - O(d^2) dense orthogonal rotation trained from the data
-//
-// OPQ alternates two orthogonal sub-problems:
-//   1. fix the codebook, train the rotation matrix   <- this class
-//   2. fix the rotation matrix, train the codebook   <- the PQ quantizer
-//
-// This class only implements step 1: given the original-space training vectors
-// and their reconstruction in the rotated space, fit() solves the orthogonal
-// Procrustes problem for the rotation matrix.  It owns no PQ knowledge (no
-// sub-quantizer count, no centroid count, no k-means) and never calls back
-// into the quantizer: the alternating loop is driven by whoever owns both the
-// codebook and this rotator.
-// ============================================================================
-
+//! OPQ step 1 (fixed codebook -> rotation matrix): solves the orthogonal
+//! Procrustes problem from (x, x_hat) pairs.  Owns no PQ knowledge; the
+//! alternating loop is driven by the quantizer.
 class OpqRotator : public Preprocessor {
  public:
   using Pointer = std::shared_ptr<OpqRotator>;
 
-  //! Create a fully-usable rotator for \p dim dimensions.  The matrix is
-  //! initialized with a random orthogonal matrix (reproducible via \p seed),
-  //! so apply() is a valid rotation even before the first fit().
+  //! Matrix is initialized with a random orthogonal matrix (seeded), so
+  //! apply() is valid even before the first fit().
   static Pointer create(int dim, uint64_t seed = 42);
 
-  //! Typed convenience wrapper around the two-input train() overload: OPQ
-  //! step 1, fix the codebook, train the rotation matrix.  Validates
-  //! arguments and forwards, returning an error code.
-  //! \p x     original-space (already normalized / centered) training matrix,
-  //!          num x in_dim floats, packed.
-  //! \p x_hat reconstruction of the same vectors produced by the caller's
-  //!          current codebook in the ROTATED space, num x out_dim floats.
-  //! Solves argmin_R sum_i ||R * x_i - x_hat_i||^2 subject to R^T R = I and
-  //! replaces the current matrix with the solution.
+  //! \p x      original-space training matrix, num x dim, packed.
+  //! \p x_hat  codebook reconstruction of the same vectors in the ROTATED
+  //!           space, num x dim, packed.
   int fit(const float *x, const float *x_hat, size_t num);
 
   // -- Preprocessor interface ------------------------------------------------
@@ -73,20 +54,16 @@ class OpqRotator : public Preprocessor {
   void apply(const float *in, float *out) const override;
   void apply_inverse(const float *in, float *out) const override;
 
-  //! No-op, as for FhtRotator: OPQ cannot be trained from the data alone, its
-  //! training entry point is the two-input train() below.
+  //! No-op: OPQ cannot be trained from data alone, see the overload below.
   void train(const void *data, size_t num, size_t stride) override;
 
-  //! OPQ step 1 via the Preprocessor contract: \p data is the original-space
-  //! batch x and \p ctx the reconstruction matrix x_hat, both packed fp32
-  //! (\p stride must be 0).  Solves the orthogonal Procrustes problem and
-  //! replaces the current matrix with the solution.
+  //! \p data is the packed fp32 batch x, \p ctx the reconstruction x_hat
+  //! (\p stride must be 0).
   void train(const void *data, void *ctx, size_t num, size_t stride) override;
 
   int serialize(std::string *out) const override;
   int deserialize(const void *data, size_t len) override;
 
-  //! Rotator type tag (kOpq = 2).
   RotateType rotate_type() const {
     return RotateType::kOpq;
   }
@@ -96,11 +73,10 @@ class OpqRotator : public Preprocessor {
 
   int dim_{0};
 
-  //! Rotation matrix R, row-major dim x dim.  apply() computes R * in,
-  //! apply_inverse() computes R^T * in (R is orthogonal).
+  //! Rotation matrix R, row-major dim x dim: apply() = R * in,
+  //! apply_inverse() = R^T * in.
   std::vector<float> matrix_;
 
-  //! ISA-dispatched rotate/unrotate kernels (dense GEMV).
   RotatorKernels kernels_{};
 };
 

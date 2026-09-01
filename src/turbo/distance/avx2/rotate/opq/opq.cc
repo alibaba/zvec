@@ -17,8 +17,6 @@
 #if defined(__AVX2__)
 #include <immintrin.h>
 #else
-// Fallback when the build toolchain cannot emit AVX2 code: reuse the scalar
-// kernel so the function stays correct instead of becoming a no-op stub.
 #include "scalar/rotate/opq/opq.h"
 #endif
 
@@ -27,10 +25,8 @@ namespace zvec::turbo::avx2 {
 void opq_rotate_avx2(const float *in, float *out, size_t in_dim,
                      size_t /*out_dim*/, void *ctx) {
 #if defined(__AVX2__)
-  // ctx is the dim x dim row-major rotation matrix itself.
+  // out = R * in; four independent FMA chains hide the add latency.
   const float *matrix = reinterpret_cast<const float *>(ctx);
-  // One row dot product per output element; four independent FMA chains
-  // (32 floats per iteration) hide the add latency of a single accumulator.
   constexpr size_t kChunk = 32;
   for (size_t r = 0; r < in_dim; ++r) {
     const float *row = matrix + r * in_dim;
@@ -50,7 +46,6 @@ void opq_rotate_avx2(const float *in, float *out, size_t in_dim,
                              _mm256_loadu_ps(in + c + 24), acc3);
     }
     acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
-    // Horizontal reduction of the eight lanes.
     __m128 lo = _mm256_castps256_ps128(acc0);
     __m128 hi = _mm256_extractf128_ps(acc0, 1);
     lo = _mm_add_ps(lo, hi);
@@ -70,9 +65,7 @@ void opq_rotate_avx2(const float *in, float *out, size_t in_dim,
 void opq_unrotate_avx2(const float *in, float *out, size_t in_dim,
                        size_t /*out_dim*/, void *ctx) {
 #if defined(__AVX2__)
-  // out = R^T * in written as outer-product accumulation: for each column
-  // coefficient x[c], a broadcast multiply-add over the contiguous row R[c].
-  // Both the matrix row and the output are streamed sequentially.
+  // out = R^T * in via broadcast outer-product accumulation.
   const float *matrix = reinterpret_cast<const float *>(ctx);
   constexpr size_t kChunk = 32;
   for (size_t r = 0; r < in_dim; ++r) {

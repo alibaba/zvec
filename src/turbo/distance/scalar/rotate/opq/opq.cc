@@ -18,10 +18,8 @@ namespace zvec::turbo::scalar {
 
 void opq_rotate(const float *in, float *out, size_t in_dim, size_t /*out_dim*/,
                 void *ctx) {
-  // ctx is the dim x dim row-major rotation matrix itself.
+  // ctx is the dim x dim row-major rotation matrix; out = R * in.
   const float *matrix = reinterpret_cast<const float *>(ctx);
-  // One dot product per output element; the row-major layout keeps the inner
-  // loop sequential so it auto-vectorizes.
   for (size_t r = 0; r < in_dim; ++r) {
     const float *row = matrix + r * in_dim;
     float acc = 0.0f;
@@ -34,10 +32,9 @@ void opq_rotate(const float *in, float *out, size_t in_dim, size_t /*out_dim*/,
 
 void opq_unrotate(const float *in, float *out, size_t in_dim,
                   size_t /*out_dim*/, void *ctx) {
-  // ctx is the dim x dim row-major rotation matrix itself.
+  // out = R^T * in via outer-product accumulation, keeping all accesses
+  // sequential.
   const float *matrix = reinterpret_cast<const float *>(ctx);
-  // out = R^T * in, written as an outer-product accumulation so both the
-  // matrix rows and the output stay sequential (column access would stride).
   for (size_t r = 0; r < in_dim; ++r) {
     out[r] = 0.0f;
   }

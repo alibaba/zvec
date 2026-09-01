@@ -17,11 +17,8 @@
 #include <cstring>
 #include <limits>
 #include <random>
-// Eigen is used ONLY inside this translation unit: the header exposes no Eigen
-// type, and this file is compiled with the baseline ISA flags (it lives outside
-// distance/{sse,avx2,avx512*}), so the ISA-sensitive inline functions of Eigen
-// cannot be emitted twice with different -march flags.  See the comment in
-// src/core/quantizer/rotator/matrix_rotator.cc for the ODR hazard this avoids.
+// Eigen stays inside this translation unit (baseline ISA flags) to avoid the
+// ODR hazard described in src/core/quantizer/rotator/matrix_rotator.cc.
 #include <rabitqlib/third/Eigen/Dense>
 
 namespace zvec {
@@ -34,14 +31,11 @@ using RowMajorMatrix =
 using ConstRowMajorMap = Eigen::Map<const RowMajorMatrix>;
 using RowMajorMap = Eigen::Map<RowMajorMatrix>;
 
-//! Rows accumulated per block when building the d x d cross-covariance.
-//! Blocking keeps the double-precision cast buffer bounded while still
-//! accumulating the sum in double (a plain float GEMM over 65k rows loses
-//! several digits, which shows up as a non-orthogonal fit result).
+//! Rows per block when accumulating the cross-covariance in double; a plain
+//! float GEMM over many rows loses enough precision to break orthogonality.
 constexpr Eigen::Index kAccumBlockRows = 1024;
 
-//! Generate a random orthogonal dim x dim matrix (row-major) as the Q factor
-//! of the Householder QR decomposition of a random Gaussian matrix.
+//! Random orthogonal dim x dim matrix (Q factor of a Gaussian Householder QR).
 void random_orthogonal_matrix(float *out, int dim, uint64_t seed) {
   std::mt19937_64 gen(seed);
   std::normal_distribution<float> dist(0.0f, 1.0f);
@@ -57,10 +51,6 @@ void random_orthogonal_matrix(float *out, int dim, uint64_t seed) {
 
 }  // namespace
 
-// ============================================================================
-// OpqRotator method implementations
-// ============================================================================
-
 OpqRotator::Pointer OpqRotator::create(int dim, uint64_t seed) {
   if (dim <= 0) return nullptr;
 
@@ -72,13 +62,9 @@ OpqRotator::Pointer OpqRotator::create(int dim, uint64_t seed) {
   return r;
 }
 
-// ---------------------------------------------------------------------------
-// train / fit  (OPQ step 1: fixed codebook -> rotation matrix)
-// ---------------------------------------------------------------------------
-
+// OPQ step 1: fixed codebook -> rotation matrix.  data/ctx are packed fp32
+// (x, x_hat) pairs; stride must be 0.
 void OpqRotator::train(const void *data, void *ctx, size_t num, size_t stride) {
-  // Packed fp32 (x, x_hat) pairs only; the typed fit() wrapper enforces the
-  // same contract with an error code.
   assert(data && ctx && num > 0 && dim_ > 0 && stride == 0);
   (void)stride;  // assert compiles out under NDEBUG
   const float *x = reinterpret_cast<const float *>(data);
@@ -87,7 +73,7 @@ void OpqRotator::train(const void *data, void *ctx, size_t num, size_t stride) {
   const Eigen::Index dim = static_cast<Eigen::Index>(dim_);
   const Eigen::Index rows = static_cast<Eigen::Index>(num);
 
-  // M = X^T * X_hat, accumulated in double over row blocks.
+  // M = X^T * X_hat
   Eigen::MatrixXd m = Eigen::MatrixXd::Zero(dim, dim);
   for (Eigen::Index begin = 0; begin < rows; begin += kAccumBlockRows) {
     const Eigen::Index block = std::min(kAccumBlockRows, rows - begin);
@@ -96,8 +82,7 @@ void OpqRotator::train(const void *data, void *ctx, size_t num, size_t stride) {
     m.noalias() += xb.cast<double>().transpose() * xhb.cast<double>();
   }
 
-  // maximize trace(R * M) subject to R^T R = I  =>  R = V * U^T for the SVD
-  // M = U * S * V^T, which is the minimizer of sum_i ||R * x_i - x_hat_i||^2.
+  // Orthogonal Procrustes: R = V * U^T for the SVD M = U * S * V^T.
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(
       m, Eigen::ComputeFullU | Eigen::ComputeFullV);
   const Eigen::MatrixXd r = svd.matrixV() * svd.matrixU().transpose();
@@ -113,15 +98,10 @@ int OpqRotator::fit(const float *x, const float *x_hat, size_t num) {
 
 void OpqRotator::train(const void * /*data*/, size_t /*num*/,
                        size_t /*stride*/) {
-  // No-op: OPQ needs (x, x_hat) pairs, see fit().
+  // OPQ needs (x, x_hat) pairs, see the two-input train() overload.
 }
 
-// ---------------------------------------------------------------------------
-// apply / apply_inverse
-// ---------------------------------------------------------------------------
-
 void OpqRotator::apply(const float *in, float *out) const {
-  // ctx is the dim x dim row-major rotation matrix itself.
   void *ctx = const_cast<float *>(matrix_.data());
   kernels_.rotate(in, out, static_cast<size_t>(dim_), static_cast<size_t>(dim_),
                   ctx);
@@ -132,10 +112,6 @@ void OpqRotator::apply_inverse(const float *in, float *out) const {
   kernels_.unrotate(in, out, static_cast<size_t>(dim_),
                     static_cast<size_t>(dim_), ctx);
 }
-
-// ---------------------------------------------------------------------------
-// serialize / deserialize
-// ---------------------------------------------------------------------------
 
 int OpqRotator::serialize(std::string *out) const {
   if (!out) return kErrInvalidArgument;
@@ -161,7 +137,6 @@ int OpqRotator::serialize(std::string *out) const {
 int OpqRotator::deserialize(const void *data, size_t len) {
   if (!data || len < sizeof(RotatorSerHeader)) return kErrInvalidArgument;
 
-  // Aligned header copy, see from_blob().
   RotatorSerHeader hdr;
   std::memcpy(&hdr, data, sizeof(RotatorSerHeader));
   if (hdr.magic != kRotatorMagic) return kErrUnsupported;
@@ -169,30 +144,24 @@ int OpqRotator::deserialize(const void *data, size_t len) {
   if (static_cast<RotateType>(hdr.rotator_type) != RotateType::kOpq) {
     return kErrUnsupported;
   }
-
-  // OPQ keeps dimensionality unchanged, and the dimension must be
-  // representable as int (the matrix is dim x dim floats).
   if (hdr.in_dim == 0 ||
       hdr.in_dim > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
     return kErrInvalidArgument;
   }
   if (hdr.out_dim != hdr.in_dim) return kErrInvalidArgument;
 
-  // Length check via subtraction to avoid size_t overflow on 32-bit
-  // (len >= sizeof(header) was guaranteed above, so the subtraction is safe).
+  // Subtraction is safe: len >= sizeof(header) was checked above.
   if (hdr.payload_size > len - sizeof(RotatorSerHeader)) {
     return kErrInvalidArgument;
   }
 
-  // The payload must hold exactly the dim x dim rotation matrix: apply() reads
-  // all of it, so any shorter payload would read out of bounds.
+  // apply() reads the whole matrix, so the payload must match exactly.
   const size_t elements =
       static_cast<size_t>(hdr.in_dim) * static_cast<size_t>(hdr.in_dim);
   const size_t expected_bytes = elements * sizeof(float);
   if (hdr.payload_size != expected_bytes) return kErrInvalidArgument;
 
-  // Commit only after the payload copy, so a malformed blob cannot leave a
-  // half-updated rotator behind (deserialize may target a live object).
+  // Copy before committing so a malformed blob never half-updates the object.
   std::vector<float> new_matrix(elements);
   std::memcpy(new_matrix.data(),
               reinterpret_cast<const char *>(data) + sizeof(RotatorSerHeader),

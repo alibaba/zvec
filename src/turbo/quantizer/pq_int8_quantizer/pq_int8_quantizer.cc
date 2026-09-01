@@ -140,9 +140,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
-  // Optional OPQ rotation: the codebook is trained in the rotated space and
-  // every encode/query path applies the same rotation.  The rotator only
-  // solves for the matrix (OPQ step 1); the alternating loop lives in train().
+  // Optional OPQ rotation: the codebook trains in the rotated space and all
+  // encode/query paths apply the same rotation.
   std::string rotate_type;
   params.get("rotate_type", &rotate_type);
   if (!rotate_type.empty() && rotate_type != "none") {
@@ -311,11 +310,9 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
     }
   }
 
-  // OPQ: alternate the two orthogonal sub-problems.  Step 2 (fix the rotation,
-  // train the codebook) is train_all_chunks() below; step 1 (fix the codebook,
-  // train the rotation) is the preprocessor's two-input train().  The loop
-  // lives here because the
-  // codebook belongs to the quantizer -- the rotator only solves for R.
+  // OPQ alternating loop: step 2 (fix rotation -> codebook) is
+  // train_all_chunks(); step 1 (fix codebook -> rotation) is the
+  // preprocessor's two-input train().
   if (preprocessor_ && num > 0) {
     const float *base = reinterpret_cast<const float *>(all_data.data());
     const size_t total = num * original_dim_;
@@ -551,7 +548,7 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     vec = centered_vec_storage.data();
   }
 
-  // OPQ: rotate last, mirroring train() (normalize -> center -> rotate).
+  // OPQ: rotate last, mirroring train().
   std::vector<float> rotated_vec_storage;
   vec = apply_rotation(vec, &rotated_vec_storage);
 
@@ -788,11 +785,8 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
     for (size_t i = 0; i < centroid_num; ++i) {
       std::memcpy(buf.data(), src + i * original_dim_,
                   original_dim_ * sizeof(T));
-      //! Rotate the coarse centroid too: the rotation is orthogonal, so
-      //! ||q - c - r||^2 == ||Rq - Rc - Rr||^2 and the decomposition holds as
-      //! long as query, centroid and codebook all live in the rotated space.
-      //! OPQ is gated to fp32 in init(), hence the constexpr branch.
-      //! Zero-mean is gated out above.
+      //! Rotation is orthogonal, so L2 decomposition holds in the rotated
+      //! space.  OPQ is gated to fp32 in init(), hence the constexpr branch.
       if constexpr (std::is_same_v<T, float>) {
         if (preprocessor_) {
           rotated.resize(original_dim_);
@@ -997,8 +991,7 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
     }
   }
 
-  // Undo the OPQ rotation FIRST: the code was produced in the rotated space,
-  // while zero-mean centering and the Cosine norm were applied before it.
+  // Undo the rotation first: codes live in the rotated space.
   if (preprocessor_) {
     std::vector<float> rotated(result, result + original_dim_);
     preprocessor_->apply_inverse(rotated.data(), result);
@@ -1199,8 +1192,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
     std::memcpy(centroid_.data(), ptr, centroid_bytes);
     ptr += centroid_bytes;
   }
-  // Restore the OPQ rotation matrix.  The blob carries its own header, so no
-  // extra length field is needed, and the init() params are irrelevant here.
+  // Restore the rotation matrix; the blob carries its own header.
   if (payload.rotate_type != 0) {
     if (payload.rotate_type != static_cast<uint8_t>(RotateType::kOpq)) {
       return kErrUnsupported;

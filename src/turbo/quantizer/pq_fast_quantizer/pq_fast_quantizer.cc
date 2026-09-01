@@ -149,9 +149,8 @@ int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
-  // Optional OPQ rotation: the codebook is trained in the rotated space and
-  // every encode/query path applies the same rotation.  The rotator only
-  // solves for the matrix (OPQ step 1); the alternating loop lives in train().
+  // Optional OPQ rotation: the codebook trains in the rotated space and all
+  // encode/query paths apply the same rotation.
   std::string rotate_type;
   params.get("rotate_type", &rotate_type);
   if (!rotate_type.empty() && rotate_type != "none") {
@@ -341,11 +340,9 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
-  // OPQ: alternate the two orthogonal sub-problems.  Step 2 (fix the rotation,
-  // train the codebook) is train_all_chunks() below; step 1 (fix the codebook,
-  // train the rotation) is the preprocessor's two-input train().  The loop
-  // lives here because the
-  // codebook belongs to the quantizer -- the rotator only solves for R.
+  // OPQ alternating loop: step 2 (fix rotation -> codebook) is
+  // train_all_chunks(); step 1 (fix codebook -> rotation) is the
+  // preprocessor's two-input train().
   if (preprocessor_ && num > 0) {
     const float *base = reinterpret_cast<const float *>(all_data.data());
     const size_t total = num * original_dim_;
@@ -528,7 +525,7 @@ void PqFastQuantizer::quantize_data(const void *input, void *output) const {
     vec = centered_vec_storage.data();
   }
 
-  // OPQ: rotate last, mirroring train() (normalize -> center -> rotate).
+  // OPQ: rotate last, mirroring train().
   std::vector<float> rotated_vec_storage;
   vec = apply_rotation(vec, &rotated_vec_storage);
 
@@ -623,8 +620,7 @@ void PqFastQuantizer::compute_float_lut(const void *input, float *lut) const {
     query = centered_query_storage.data();
   }
 
-  // OPQ: rotate last, exactly as quantize_data() does.  preprocess_query()
-  // must stay in lockstep with this chain.
+  // OPQ: rotate last, as quantize_data() does.
   std::vector<float> rotated_query_storage;
   query = apply_rotation(query, &rotated_query_storage);
 
@@ -1147,8 +1143,7 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
     ptr += centroid_bytes;
   }
 
-  // Restore the OPQ rotation matrix.  The blob carries its own header, so no
-  // extra length field is needed, and the init() params are irrelevant here.
+  // Restore the rotation matrix; the blob carries its own header.
   if (payload.rotate_type != 0) {
     if (payload.rotate_type != static_cast<uint8_t>(RotateType::kOpq)) {
       return kErrUnsupported;

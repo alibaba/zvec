@@ -531,8 +531,8 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
     }
 
     case RotateType::kOpq: {
-      // OPQ applies a dense orthogonal matrix: rotate is R * x, unrotate is
-      // R^T * x, with the matrix passed directly as ctx.
+      // Dense orthogonal matrix: rotate = R * x, unrotate = R^T * x; ctx is
+      // the matrix itself.
       if (CpuSupports(CpuArchType::kAVX512) &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
         return {avx512::opq_rotate_avx512, avx512::opq_unrotate_avx512};
