@@ -46,6 +46,15 @@ class DiskAnnCacheTestPeer {
     searcher->diskann_indexer_->reader_ = std::move(reader);
   }
 
+  static std::shared_ptr<AlignedFileReader> reader(DiskAnnStreamer *streamer) {
+    return streamer->diskann_indexer_->reader_;
+  }
+
+  static void set_reader(DiskAnnStreamer *streamer,
+                         std::shared_ptr<AlignedFileReader> reader) {
+    streamer->diskann_indexer_->reader_ = std::move(reader);
+  }
+
   static int configure_cache(DiskAnnSearcher *searcher,
                              uint32_t cache_node_num) {
     return searcher->diskann_indexer_->configure_cache(cache_node_num);
@@ -1735,9 +1744,11 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
 
   // I/O failures from the indexer must be propagated by the streamer instead
   // of being converted into a successful search with incomplete results.
-  std::error_code truncate_ec;
-  std::filesystem::resize_file(path, 0, truncate_ec);
-  ASSERT_FALSE(truncate_ec);
+  auto *diskann_streamer = dynamic_cast<DiskAnnStreamer *>(streamer.get());
+  ASSERT_NE(diskann_streamer, nullptr);
+  DiskAnnCacheTestPeer::set_reader(
+      diskann_streamer, std::make_shared<FailingAlignedFileReader>(
+                            DiskAnnCacheTestPeer::reader(diskann_streamer)));
   EXPECT_NE(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
 
   // Closing/unloading releases the index and makes all query entry points
@@ -2315,14 +2326,16 @@ TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
   }
   ASSERT_EQ(0, cached_searcher->unload());
 
-  std::error_code truncate_ec;
-  std::filesystem::resize_file(path, 0, truncate_ec);
-  ASSERT_FALSE(truncate_ec);
-  std::string vector_after_truncate;
+  auto *diskann_searcher = dynamic_cast<DiskAnnSearcher *>(searcher.get());
+  ASSERT_NE(diskann_searcher, nullptr);
+  DiskAnnCacheTestPeer::set_reader(
+      diskann_searcher, std::make_shared<FailingAlignedFileReader>(
+                            DiskAnnCacheTestPeer::reader(diskann_searcher)));
+  std::string vector_after_failure;
   EXPECT_EQ(IndexError_Runtime,
             searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,
-                                 vector_after_truncate));
-  EXPECT_TRUE(vector_after_truncate.empty());
+                                 vector_after_failure));
+  EXPECT_TRUE(vector_after_failure.empty());
 }
 
 TEST_F(DiskAnnSearcherTest, TestFp16EntrypointTurbo) {

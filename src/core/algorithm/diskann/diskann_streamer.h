@@ -159,6 +159,8 @@ class DiskAnnStreamer : public IndexStreamer {
                                 DiskAnnContext *&ctx) const;
 
  private:
+  friend class DiskAnnCacheTestPeer;
+
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
   IndexMetric::Pointer measure_{};
