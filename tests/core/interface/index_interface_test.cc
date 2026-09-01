@@ -51,6 +51,7 @@ TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
+#if DISKANN_SUPPORTED
 TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   auto param = DiskAnnIndexParamBuilder()
                    .with_metric_type(MetricType::kL2sq)
@@ -69,6 +70,7 @@ TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   EXPECT_EQ(80, diskann->list_size);
   EXPECT_EQ(16, diskann->pq_chunk_num);
 }
+#endif
 
 #if RABITQ_SUPPORTED
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
