@@ -1217,20 +1217,25 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
   ASSERT_EQ(
       0, source->open(source_name, {StorageOptions::StorageType::kMMAP, true}));
 
+  // Documents must stay far apart in FP16 space: the FP16 resolution at this
+  // magnitude is ~5e-4, so vectors spaced more finely than that quantize to
+  // (nearly) the same codes and their cosine scores tie. Tied scores leave the
+  // top-k order up to the enumeration order of each search path (full scan vs
+  // brute force over refiner candidates), which makes the key/vector
+  // comparisons below depend on the SIMD kernel in use.
   std::vector<std::vector<float>> vectors(kVectorCount,
                                           std::vector<float>(kDimension));
   for (uint32_t i = 0; i < kVectorCount; ++i) {
     for (uint32_t d = 0; d < kDimension; ++d) {
-      const float base = 0.25F + static_cast<float>(d) * 0.017F;
-      const int32_t offset = static_cast<int32_t>((i * 37 + d * 19) % 97) - 48;
-      vectors[i][d] = base + static_cast<float>(offset) * 0.00011F;
+      vectors[i][d] =
+          0.05F + static_cast<float>(((i + 1) * (d + 3)) % 53) * 0.017F;
     }
     ASSERT_EQ(0, source->add(VectorData{DenseVector{vectors[i].data()}}, i));
   }
 
   std::vector<float> query = vectors[7];
   for (uint32_t d = 0; d < kDimension; ++d) {
-    query[d] += static_cast<float>(static_cast<int32_t>(d % 5) - 2) * 0.00017F;
+    query[d] += static_cast<float>(static_cast<int32_t>(d % 5) - 2) * 0.002F;
   }
   std::vector<uint16_t> native_query(kDimension);
   zvec::ailego::FloatHelper::ToFP16(query.data(), query.size(),
