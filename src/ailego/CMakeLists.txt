@@ -91,17 +91,31 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
     endforeach()
     elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
         if(NOT MSVC)
-            set(MATH_MARCH_FLAG_NEON "-march=armv8-a")
+            setup_compiler_march_for_arm(MATH_MARCH_FLAG_NEON MATH_MARCH_FLAG_NEON_FP16)
+            message(STATUS "best compiler march - neon: " ${MATH_MARCH_FLAG_NEON} ", neon fp16: " ${MATH_MARCH_FLAG_NEON_FP16})
 
             file(GLOB_RECURSE MATH_FILES_NEON
-              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.cc
-              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
-              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
-              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
               ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.cc
               ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.c
               ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.cc
               ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.c
+            )
+
+            # The *_neonfp16.cc kernels need the FP16-capable march so that
+            # __ARM_FEATURE_FP16_VECTOR_ARITHMETIC is defined and native FP16
+            # arithmetic is emitted. The dispatch files are compiled with the
+            # same march (mirroring the x86 avx512fp16 setup) so they can see
+            # the macro and declare/call the NEONFP16 kernels; they gate the
+            # calls at runtime on CpuFeatures FP16 (FEAT_FP16, HWCAP_ASIMDHP).
+            file(GLOB_RECURSE MATH_FILES_NEON_FP16
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neonfp16.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neonfp16.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neonfp16.cc
+              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neonfp16.c
             )
 
             foreach(MATH_FILE ${MATH_FILES_NEON})
@@ -109,6 +123,14 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
                   ${MATH_FILE}
                   PROPERTIES
                   COMPILE_FLAGS "${MATH_MARCH_FLAG_NEON}"
+              )
+            endforeach()
+
+            foreach(MATH_FILE ${MATH_FILES_NEON_FP16})
+              set_source_files_properties(
+                  ${MATH_FILE}
+                  PROPERTIES
+                  COMPILE_FLAGS "${MATH_MARCH_FLAG_NEON_FP16}"
               )
             endforeach()
         else()

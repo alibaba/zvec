@@ -25,6 +25,12 @@ namespace ailego {
 float InnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs, size_t size);
 float MinusInnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs,
                                 size_t size);
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+float InnerProductFp16NEONFP16(const Float16 *lhs, const Float16 *rhs,
+                               size_t size);
+float MinusInnerProductFp16NEONFP16(const Float16 *lhs, const Float16 *rhs,
+                                    size_t size);
+#endif
 #endif
 
 #if defined(__AVX__)
@@ -57,6 +63,12 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                 const ValueType *q, size_t dim,
                                                 float *out) {
 #if defined(__ARM_NEON)
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.FP16) {
+    *out = InnerProductFp16NEONFP16(m, q, dim);
+    return;
+  }
+#endif  //__ARM_FEATURE_FP16_VECTOR_ARITHMETIC
   *out = InnerProductFp16NEON(m, q, dim);
 #else
 #if defined(__AVX512FP16__)
@@ -87,6 +99,12 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                      const ValueType *q,
                                                      size_t dim, float *out) {
 #if defined(__ARM_NEON)
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.FP16) {
+    *out = MinusInnerProductFp16NEONFP16(m, q, dim);
+    return;
+  }
+#endif  //__ARM_FEATURE_FP16_VECTOR_ARITHMETIC
   *out = MinusInnerProductFp16NEON(m, q, dim);
 #else
 #if defined(__AVX512FP16__)
