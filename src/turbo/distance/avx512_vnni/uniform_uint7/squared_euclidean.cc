@@ -176,10 +176,9 @@ void uniform_squared_euclidean_uint7_distance(const void *a, const void *b,
 // ---------------------------------------------------------------------------
 // Public: batch squared Euclidean distance (uint7, no tail, no preprocessing)
 // ---------------------------------------------------------------------------
-void uniform_squared_euclidean_uint7_batch_distance(const void *const *vectors,
-                                                    const void *query, size_t n,
-                                                    size_t dim,
-                                                    float *distances) {
+void uniform_squared_euclidean_uint7_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
   static constexpr size_t batch_size = 4;
   static constexpr size_t prefetch_step = 2;
 
@@ -216,7 +215,8 @@ void uniform_squared_euclidean_uint7_distance(const void * /*a*/,
 
 void uniform_squared_euclidean_uint7_batch_distance(
     const void *const * /*vectors*/, const void * /*query*/, size_t /*n*/,
-    size_t /*dim*/, float * /*distances*/) {}
+    size_t /*dim*/, float * /*distances*/,
+    const void *const * /*extra_values*/) {}
 
 }  // namespace zvec::turbo::avx512_vnni
 

@@ -119,8 +119,9 @@ TEST(UniformUint8Metric, UsesExactBuildAndQueryDistance) {
 
   const auto prepared_stored_query = PrepareQuery(metric, second);
   const void *stored_vectors[] = {first.data()};
+  const void *stored_extra_values[] = {first.data() + first_codes.size()};
   metric->batch_distance()(stored_vectors, prepared_stored_query.data(), 1,
-                           first.size(), &distance);
+                           first.size(), &distance, stored_extra_values);
   EXPECT_FLOAT_EQ(static_cast<float>(SquaredL2(first_codes, second_codes)),
                   distance);
 
@@ -161,11 +162,14 @@ TEST(UniformUint8Metric, QueryBatchMatchesScalarAcrossKernelBoundaries) {
     const auto query = EncodeQuery(query_codes);
     std::vector<std::vector<int8_t>> vectors;
     std::vector<const void *> vector_pointers;
+    std::vector<const void *> extra_value_pointers;
     vectors.reserve(kVectorCount);
     vector_pointers.reserve(kVectorCount);
+    extra_value_pointers.reserve(kVectorCount);
     for (const auto &codes : vector_codes) {
       vectors.push_back(EncodeRecord(codes));
       vector_pointers.push_back(vectors.back().data());
+      extra_value_pointers.push_back(vectors.back().data() + dimension);
     }
 
     auto metric = CreateMetric(dimension);
@@ -178,15 +182,66 @@ TEST(UniformUint8Metric, QueryBatchMatchesScalarAcrossKernelBoundaries) {
     const auto prepared_query = PrepareQuery(metric, query);
 
     std::vector<float> distances(kVectorCount);
-    query_metric->batch_distance()(vector_pointers.data(),
-                                   prepared_query.data(), kVectorCount,
-                                   dimension + kTailBytes, distances.data());
+    query_metric->batch_distance()(
+        vector_pointers.data(), prepared_query.data(), kVectorCount,
+        dimension + kTailBytes, distances.data(), extra_value_pointers.data());
     for (size_t i = 0; i < kVectorCount; ++i) {
       EXPECT_FLOAT_EQ(
           static_cast<float>(SquaredL2(vector_codes[i], query_codes)),
           distances[i])
           << "dimension=" << dimension << ", vector=" << i;
     }
+  }
+}
+
+TEST(UniformUint8Metric, QueryBatchConsumesSeparateExtraValues) {
+  constexpr size_t kVectorCount = 5;
+  constexpr size_t kDimension = 129;
+  std::vector<uint8_t> query_codes(kDimension);
+  std::vector<std::vector<uint8_t>> record_codes(
+      kVectorCount, std::vector<uint8_t>(kDimension));
+  for (size_t d = 0; d < kDimension; ++d) {
+    query_codes[d] = static_cast<uint8_t>((d * 37 + 11) & 0xff);
+    for (size_t i = 0; i < kVectorCount; ++i) {
+      record_codes[i][d] =
+          static_cast<uint8_t>((d * (19 + i * 12) + i * 41) & 0xff);
+    }
+  }
+
+  auto metric = CreateMetric(kDimension);
+  ASSERT_TRUE(metric);
+  EXPECT_EQ(kTailBytes, metric->extra_values_size_per_vector());
+  auto query_metric = metric->query_metric();
+  ASSERT_TRUE(query_metric);
+  EXPECT_EQ(kTailBytes, query_metric->extra_values_size_per_vector());
+  auto batch_distance = query_metric->batch_distance();
+  ASSERT_TRUE(batch_distance);
+
+  const auto prepared_query =
+      PrepareQuery(query_metric, EncodeQuery(query_codes));
+  std::vector<std::vector<int8_t>> vector_bodies;
+  std::vector<uint32_t> extra_values(kVectorCount);
+  std::vector<const void *> vector_pointers;
+  std::vector<const void *> extra_value_pointers;
+  vector_bodies.reserve(kVectorCount);
+  vector_pointers.reserve(kVectorCount);
+  extra_value_pointers.reserve(kVectorCount);
+  for (size_t i = 0; i < kVectorCount; ++i) {
+    const auto encoded = EncodeRecord(record_codes[i]);
+    vector_bodies.emplace_back(encoded.begin(), encoded.begin() + kDimension);
+    std::memcpy(&extra_values[i], encoded.data() + kDimension,
+                sizeof(extra_values[i]));
+    vector_pointers.push_back(vector_bodies.back().data());
+    extra_value_pointers.push_back(&extra_values[i]);
+  }
+
+  std::vector<float> distances(kVectorCount);
+  batch_distance(vector_pointers.data(), prepared_query.data(), kVectorCount,
+                 kDimension + kTailBytes, distances.data(),
+                 extra_value_pointers.data());
+  for (size_t i = 0; i < kVectorCount; ++i) {
+    EXPECT_FLOAT_EQ(static_cast<float>(SquaredL2(record_codes[i], query_codes)),
+                    distances[i]);
   }
 }
 
@@ -221,11 +276,14 @@ TEST(UniformUint8Metric, TurboBatchCallWritesEveryDistanceWhenAvailable) {
 
   std::vector<std::vector<int8_t>> records;
   std::vector<const void *> record_pointers;
+  std::vector<const void *> extra_value_pointers;
   records.reserve(kVectorCount);
   record_pointers.reserve(kVectorCount);
+  extra_value_pointers.reserve(kVectorCount);
   for (const auto &codes : record_codes) {
     records.push_back(EncodeRecord(codes));
     record_pointers.push_back(records.back().data());
+    extra_value_pointers.push_back(records.back().data() + query_codes.size());
   }
 
   std::vector<float> distances(kVectorCount,
@@ -242,7 +300,8 @@ TEST(UniformUint8Metric, TurboBatchCallWritesEveryDistanceWhenAvailable) {
   auto prepared_query = query;
   preprocess(prepared_query.data(), prepared_query.size());
   batch_distance(record_pointers.data(), prepared_query.data(), kVectorCount,
-                 query_codes.size() + kTailBytes, distances.data());
+                 query_codes.size() + kTailBytes, distances.data(),
+                 extra_value_pointers.data());
 
   for (size_t i = 0; i < kVectorCount; ++i) {
     EXPECT_FLOAT_EQ(static_cast<float>(SquaredL2(record_codes[i], query_codes)),
@@ -281,9 +340,13 @@ TEST(UniformUint8Metric,
 
     const void *records[kVectorCount] = {record.data(), record.data(),
                                          record.data(), record.data()};
+    const void *extra_values[kVectorCount] = {
+        record.data() + kDimension, record.data() + kDimension,
+        record.data() + kDimension, record.data() + kDimension};
     float batch_distances[kVectorCount] = {};
     query_metric->batch_distance()(records, prepared_query.data(), kVectorCount,
-                                   kDimension + kTailBytes, batch_distances);
+                                   kDimension + kTailBytes, batch_distances,
+                                   extra_values);
     for (float distance : batch_distances) {
       EXPECT_FLOAT_EQ(static_cast<float>(expected), distance);
     }
@@ -325,9 +388,13 @@ TEST(UniformUint8Metric, ExactQueryDistanceFallsBackAboveTurboDimensionLimit) {
 
     const void *records[kVectorCount] = {record.data(), record.data(),
                                          record.data(), record.data()};
+    const void *extra_values[kVectorCount] = {
+        record.data() + kDimension, record.data() + kDimension,
+        record.data() + kDimension, record.data() + kDimension};
     float distances[kVectorCount] = {};
     query_metric->batch_distance()(records, prepared_query.data(), kVectorCount,
-                                   kDimension + kTailBytes, distances);
+                                   kDimension + kTailBytes, distances,
+                                   extra_values);
     for (float distance : distances) {
       EXPECT_FLOAT_EQ(static_cast<float>(expected), distance);
     }

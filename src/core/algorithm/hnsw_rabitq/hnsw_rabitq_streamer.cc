@@ -374,16 +374,35 @@ int HnswRabitqStreamer::open(IndexStorage::Pointer stg) {
     return IndexError_InvalidArgument;
   }
 
+  const size_t add_extra_values_size = metric_->extra_values_size_per_vector();
+  if (add_extra_values_size != 0) {
+    LOG_ERROR(
+        "HnswRabitq does not support metric-managed extra values for graph "
+        "construction, metric=%s extra_values_size=%zu",
+        meta_.metric_name().c_str(), add_extra_values_size);
+    return IndexError_Unsupported;
+  }
+
   add_distance_ = metric_->distance();
   add_batch_distance_ = metric_->batch_distance();
 
   search_distance_ = add_distance_;
   search_batch_distance_ = add_batch_distance_;
 
-  if (metric_->query_metric() && metric_->query_metric()->distance() &&
-      metric_->query_metric()->batch_distance()) {
-    search_distance_ = metric_->query_metric()->distance();
-    search_batch_distance_ = metric_->query_metric()->batch_distance();
+  const auto query_metric = metric_->query_metric();
+  if (query_metric && query_metric->distance() &&
+      query_metric->batch_distance()) {
+    const size_t search_extra_values_size =
+        query_metric->extra_values_size_per_vector();
+    if (search_extra_values_size != 0) {
+      LOG_ERROR(
+          "HnswRabitq does not support metric-managed extra values for "
+          "search, metric=%s extra_values_size=%zu",
+          meta_.metric_name().c_str(), search_extra_values_size);
+      return IndexError_Unsupported;
+    }
+    search_distance_ = query_metric->distance();
+    search_batch_distance_ = query_metric->batch_distance();
   }
 
   state_ = STATE_OPENED;

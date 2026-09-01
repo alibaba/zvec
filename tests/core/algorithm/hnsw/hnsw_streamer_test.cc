@@ -22,6 +22,8 @@
 #endif
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -43,6 +45,19 @@ namespace zvec {
 namespace core {
 
 constexpr size_t static dim = 16;
+
+std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
+  std::string record(dimension + sizeof(uint32_t), '\0');
+  uint32_t sum_squared = 0;
+  for (size_t d = 0; d < dimension; ++d) {
+    const uint8_t code =
+        static_cast<uint8_t>((seed * 73U + d * 29U + d * seed * 3U) & 0xffU);
+    record[d] = static_cast<char>(static_cast<int>(code) - 128);
+    sum_squared += static_cast<uint32_t>(code) * code;
+  }
+  std::memcpy(record.data() + dimension, &sum_squared, sizeof(sum_squared));
+  return record;
+}
 
 class HnswStreamerTest : public testing::Test {
  protected:
@@ -896,6 +911,60 @@ TEST_F(HnswStreamerTest, TestAddAndSearch) {
   EXPECT_GT(recall, 0.80f);
   EXPECT_GT(topk1Recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
+}
+
+TEST_F(HnswStreamerTest, TestUniformUint8BatchExtraValues) {
+  constexpr size_t kOriginalDimension = 128;
+  constexpr size_t kEncodedDimension = kOriginalDimension + sizeof(uint32_t);
+  constexpr uint32_t kCount = 64;
+  constexpr uint32_t kProbe = 37;
+
+  ailego::Params metric_params;
+  metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+
+  ailego::Params params;
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+  params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16U);
+  params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, kCount);
+  params.set(PARAM_HNSW_STREAMER_EF, kCount);
+  params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 1U);
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestUniformUint8BatchExtraValues", true));
+
+  auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  auto context = streamer->create_context();
+  ASSERT_NE(nullptr, context);
+  for (uint32_t id = 0; id < kCount; ++id) {
+    const auto record = EncodeUniformUint8Record(kOriginalDimension, id);
+    ASSERT_EQ(
+        0, streamer->add_with_id_impl(id, record.data(), query_meta, context));
+  }
+
+  const auto query = EncodeUniformUint8Record(kOriginalDimension, kProbe);
+  context->set_topk(1);
+  ASSERT_EQ(0, streamer->search_impl(query.data(), query_meta, context));
+  ASSERT_EQ(1U, context->result().size());
+  EXPECT_EQ(kProbe, context->result()[0].key());
+  EXPECT_FLOAT_EQ(0.0F, context->result()[0].score());
+
+  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), query_meta, context));
+  ASSERT_EQ(1U, context->result().size());
+  EXPECT_EQ(kProbe, context->result()[0].key());
+  EXPECT_FLOAT_EQ(0.0F, context->result()[0].score());
+
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
 }
 
 TEST_F(HnswStreamerTest, TestKnnSearchRandomData) {

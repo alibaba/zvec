@@ -14,6 +14,7 @@
 #pragma once
 
 #include <zvec/core/framework/index_meta.h>
+#include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_provider.h>
 #include "hnsw_entity.h"
 
@@ -181,30 +182,27 @@ class HnswDistCalculator {
     return dist(lhs, rhs);
   }
 
-  void batch_dist(const void **vecs, size_t num, dist_t *distances) {
+  void batch_dist(const void **vecs, size_t num, dist_t *distances,
+                  const void **extra_values) {
     compare_cnt_++;
 
-    batch_distance_(vecs, query_, num, dim_, distances);
+    batch_distance_(vecs, query_, num, dim_, distances, extra_values);
   }
 
-  inline dist_t batch_dist(node_id_t id) {
+  inline dist_t batch_dist(const void *feat, const void *extra_values) {
     compare_cnt_++;
 
-    IndexStorage::MemoryBlock vec_block;
-    int ret = get_vector(id, vec_block);
-    if (ailego_unlikely(ret != 0)) {
-      LOG_ERROR("Get nullptr vector, id=%u", id);
-      error_ = true;
-      return 0.0f;
-    }
-    const void *feat = vec_block.data();
     if (ailego_unlikely(feat == nullptr)) {
-      LOG_ERROR("Get nullptr vector, id=%u", id);
+      LOG_ERROR("Get nullptr vector");
       error_ = true;
       return 0.0f;
     }
     dist_t score = 0;
-    batch_distance_(&feat, query_, 1, dim_, &score);
+    if (extra_values != nullptr) {
+      batch_distance_(&feat, query_, 1, dim_, &score, &extra_values);
+    } else {
+      batch_distance_(&feat, query_, 1, dim_, &score, nullptr);
+    }
 
     return score;
   }

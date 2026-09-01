@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -46,6 +47,7 @@ class VamanaStreamerEntity : public VamanaEntity {
   const VamanaEntity::Pointer clone() const override;
   key_t get_key(node_id_t id) const override;
   const void *get_vector(node_id_t id) const override;
+  const void *get_extra_values(node_id_t id) const override;
   int get_vector(const node_id_t id,
                  IndexStorage::MemoryBlock &block) const override;
   int get_vector(const node_id_t *ids, uint32_t count,
@@ -146,6 +148,18 @@ class VamanaStreamerEntity : public VamanaEntity {
   template <typename MemBlock>
   inline int get_vector_typed(const node_id_t *ids, uint32_t count,
                               std::vector<MemBlock> &vec_blocks) const;
+
+  ailego_force_inline const void *get_extra_values_from_vector(
+      const void *vector) const {
+    return extra_values_size() == 0
+               ? nullptr
+               : static_cast<const char *>(vector) + vector_data_size();
+  }
+
+  ailego_force_inline const void *get_extra_values_ptr(
+      node_id_t /*id*/, const void *vector) const {
+    return get_extra_values_from_vector(vector);
+  }
 
   template <typename MemBlock>
   inline key_t get_key_typed(node_id_t id) const;
@@ -515,6 +529,16 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return get_node_chunk_base(chunk_idx) + offset;
   }
 
+  ailego_force_inline const void *get_extra_values_ptr(node_id_t id) const {
+    if (extra_values_size() == 0) return nullptr;
+    return static_cast<const char *>(get_vector_ptr(id)) + vector_data_size();
+  }
+
+  ailego_force_inline const void *get_extra_values_ptr(
+      node_id_t /*id*/, const void *vector) const {
+    return get_extra_values_from_vector(vector);
+  }
+
  private:
   ailego_force_inline const char *get_node_chunk_base(
       uint32_t chunk_idx) const {
@@ -578,11 +602,10 @@ class VamanaBufferPoolStreamerEntity : public VamanaStreamerEntity {
 };
 
 // --- Typed entity subclass for contiguous memory mode ---
-// Splits node data into two dense arrays during build:
-//   1. vector_base_: flat vector array (stride = vector_size)
-//   2. graph_base_:  key + neighbors  (stride = graph_stride_)
-// Total memory = vector_size + graph_stride_ per node (same as original
-// node_size), but each access pattern gets optimal cache locality.
+// Splits node data into three independent contiguous regions during open:
+//   1. vector_base_: cache-line-aligned vector bodies
+//   2. extra_values_base_: optional packed trailing metadata
+//   3. graph_base_: packed per-node [key | degree | adjacency] rows
 class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
  public:
   using VamanaMmapStreamerEntity::VamanaMmapStreamerEntity;
@@ -608,6 +631,11 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     vector_stride_ = 0;
     graph_memory_.reset();
     graph_base_ = nullptr;
+    graph_stride_ = 0;
+    graph_capacity_ = 0;
+    extra_values_memory_.reset();
+    extra_values_base_ = nullptr;
+    extra_values_stride_ = 0;
     LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
   }
 
@@ -632,13 +660,30 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
   }
 
+  key_t get_key(node_id_t id) const override {
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return use_key_info_map_ ? packed_key(id) : id;
+    }
+    return VamanaMmapStreamerEntity::get_key(id);
+  }
+
+  const Neighbors get_neighbors(node_id_t id) const override {
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return Neighbors(*packed_degree(id), packed_adjacency(id));
+    }
+    return VamanaMmapStreamerEntity::get_neighbors(id);
+  }
+
+  int update_neighbors(
+      node_id_t id,
+      const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
+
+  void add_neighbor(node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
+
   ailego_force_inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
-    if (ailego_likely(graph_base_ != nullptr)) {
-      // graph layout: [key (sizeof(key_t)) | NeighborsHeader + neighbors]
-      const char *ptr =
-          graph_base_ + static_cast<size_t>(id) * graph_stride_ + sizeof(key_t);
-      MmapMemoryBlock block(const_cast<char *>(ptr));
-      return TypedNeighbors(std::move(block));
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return TypedNeighbors(*packed_degree(id), packed_adjacency(id));
     }
     return VamanaMmapStreamerEntity::get_neighbors_typed(id);
   }
@@ -659,11 +704,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
-    if (ailego_likely(graph_base_ != nullptr)) {
-      if (!use_key_info_map_) return id;
-      // key is at offset 0 within each graph node
-      const char *ptr = graph_base_ + static_cast<size_t>(id) * graph_stride_;
-      return *reinterpret_cast<const key_t *>(ptr);
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return use_key_info_map_ ? packed_key(id) : id;
     }
     return VamanaMmapStreamerEntity::get_key_typed(id);
   }
@@ -673,10 +715,28 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! alignment even when vector_size is not a multiple of 64.  The padding is
   //! purely in-memory and does NOT affect the on-disk index file layout.
   ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
-    if (ailego_likely(vector_base_ != nullptr)) {
+    if (ailego_likely(vector_base_ != nullptr && id < graph_capacity_)) {
       return vector_base_ + static_cast<size_t>(id) * vector_stride_;
     }
     return VamanaMmapStreamerEntity::get_vector_ptr(id);
+  }
+
+  const void *get_extra_values(node_id_t id) const override {
+    return get_extra_values_ptr(id);
+  }
+
+  ailego_force_inline const void *get_extra_values_ptr(node_id_t id) const {
+    if (extra_values_size() == 0) return nullptr;
+    if (ailego_likely(extra_values_base_ != nullptr && id < graph_capacity_)) {
+      return extra_values_base_ +
+             static_cast<size_t>(id) * extra_values_stride_;
+    }
+    return VamanaMmapStreamerEntity::get_extra_values_ptr(id);
+  }
+
+  ailego_force_inline const void *get_extra_values_ptr(
+      node_id_t id, const void * /*vector*/) const {
+    return get_extra_values_ptr(id);
   }
 
  protected:
@@ -690,24 +750,63 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     }
   };
 
-  //! Flat vector array: vectors stored densely with per-vector stride
+  //! Flat vector array: vector bodies stored with per-vector stride
   //! padded up to kVectorAlignment (64B) to keep each vector's starting
   //! address cache-line aligned. Base is page-aligned by the allocator.
   std::shared_ptr<char> vector_memory_{};
   char *vector_base_{nullptr};
-  //! Per-vector stride = AlignUp(vector_size(), kVectorAlignment).
+  //! Per-vector stride = AlignUp(vector_data_size(), kVectorAlignment).
   size_t vector_stride_{0};
 
-  //! Graph array: [key | neighbors] stored densely (stride = graph_stride_).
+  //! Packed graph rows: [key | degree | adjacency[max_degree]]. Rows are not
+  //! padded, so odd rows may contain an unaligned key; packed_key() uses
+  //! memcpy to avoid undefined behavior.
   std::shared_ptr<char> graph_memory_{};
   char *graph_base_{nullptr};
-  size_t graph_stride_{0};  // sizeof(key_t) + neighbors_size()
+  size_t graph_stride_{0};
+  uint32_t graph_capacity_{0};
+
+  //! Optional packed trailing record metadata, such as UniformUint8's norm.
+  std::shared_ptr<char> extra_values_memory_{};
+  char *extra_values_base_{nullptr};
+  size_t extra_values_stride_{0};
 
   //! Cache-line alignment used for per-vector stride in the flat array.
   static constexpr size_t kVectorAlignment = 64;
 
  private:
   static char *allocate_contiguous(size_t size);
+
+  ailego_force_inline const char *packed_graph_row(node_id_t id) const {
+    return graph_base_ + static_cast<size_t>(id) * graph_stride_;
+  }
+
+  ailego_force_inline key_t packed_key(node_id_t id) const {
+    key_t key;
+    std::memcpy(&key, packed_graph_row(id), sizeof(key));
+    return key;
+  }
+
+  ailego_force_inline const uint32_t *packed_degree(node_id_t id) const {
+    return reinterpret_cast<const uint32_t *>(packed_graph_row(id) +
+                                              sizeof(key_t));
+  }
+
+  ailego_force_inline uint32_t *mutable_packed_degree(node_id_t id) {
+    return reinterpret_cast<uint32_t *>(
+        graph_base_ + static_cast<size_t>(id) * graph_stride_ + sizeof(key_t));
+  }
+
+  ailego_force_inline const node_id_t *packed_adjacency(node_id_t id) const {
+    return reinterpret_cast<const node_id_t *>(
+        packed_graph_row(id) + sizeof(key_t) + sizeof(uint32_t));
+  }
+
+  ailego_force_inline node_id_t *mutable_packed_adjacency(node_id_t id) {
+    return reinterpret_cast<node_id_t *>(
+        graph_base_ + static_cast<size_t>(id) * graph_stride_ + sizeof(key_t) +
+        sizeof(uint32_t));
+  }
 };
 
 }  // namespace core

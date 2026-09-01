@@ -39,7 +39,7 @@ void pq_sdc_int4_distance_avx512(const void *a, const void *b,
 // each using 16-wide _mm512_i32gather_ps. 4 independent __m512
 // accumulators maximize ILP.
 void pq_adc_int4_batch_distance_avx512(const void **candidates, const void *lut,
-                                       size_t num, size_t num_chunk,
-                                       float *out);
+                                       size_t num, size_t num_chunk, float *out,
+                                       const void **extra_values);
 
 }  // namespace zvec::turbo::avx512

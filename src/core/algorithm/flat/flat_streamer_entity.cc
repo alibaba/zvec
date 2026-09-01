@@ -31,11 +31,27 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   }
 
   auto &vector_ptrs = scratch->vector_ptrs;
+  auto &extra_values = scratch->extra_values;
   auto &vector_keys = scratch->vector_keys;
   auto &distances = scratch->distances;
+  auto &query_buffer = scratch->query_buffer;
+  const size_t extra_size = extra_values_size();
+  const bool has_extra_values = extra_size != 0;
+  const size_t vector_data_size = meta().element_size() - extra_size;
+  const void *batch_query = query;
+  if (const auto &preprocess = batch_query_preprocess();
+      preprocess != nullptr) {
+    const size_t query_size = meta().dimension();
+    query_buffer.resize(query_size);
+    std::memcpy(query_buffer.data(), query, query_size);
+    preprocess(query_buffer.data(), query_size);
+    batch_query = query_buffer.data();
+  }
   vector_ptrs.clear();
+  extra_values.clear();
   vector_keys.clear();
   vector_ptrs.reserve(batch_size);
+  if (has_extra_values) extra_values.reserve(batch_size);
   vector_keys.reserve(batch_size);
 
   auto evaluate_batch = [&]() {
@@ -45,8 +61,9 @@ int FlatContiguousStreamerEntity::evaluate_distances(
     distances.resize(vector_ptrs.size());
     const auto &batch_distance_func = batch_distance();
     if (batch_distance_func) {
-      batch_distance_func(vector_ptrs.data(), query, vector_ptrs.size(),
-                          meta().dimension(), distances.data());
+      batch_distance_func(vector_ptrs.data(), batch_query, vector_ptrs.size(),
+                          meta().dimension(), distances.data(),
+                          has_extra_values ? extra_values.data() : nullptr);
     } else {
       const auto &distance_func = distance();
       for (size_t i = 0; i < vector_ptrs.size(); ++i) {
@@ -61,11 +78,16 @@ int FlatContiguousStreamerEntity::evaluate_distances(
       heap->emplace(vector_keys[i], distances[i]);
     }
     vector_ptrs.clear();
+    extra_values.clear();
     vector_keys.clear();
   };
 
   auto append = [&](uint64_t key, const void *vector) {
     vector_ptrs.push_back(vector);
+    if (has_extra_values) {
+      extra_values.push_back(static_cast<const char *>(vector) +
+                             vector_data_size);
+    }
     vector_keys.push_back(key);
     if (vector_ptrs.size() == batch_size) {
       evaluate_batch();
@@ -164,6 +186,14 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   column_distance_ =
       metric->distance_matrix(meta_.header.block_vector_count, 1);
   batch_distance_ = metric->batch_distance();
+  batch_query_preprocess_ = metric->get_query_preprocess_func();
+  extra_values_size_ = metric->extra_values_size_per_vector();
+  if (extra_values_size_ != 0 &&
+      extra_values_size_ >= index_meta_.element_size()) {
+    LOG_ERROR("Invalid Flat vector layout, vector_size=%u extra_size=%zu",
+              index_meta_.element_size(), extra_values_size_);
+    return IndexError_InvalidArgument;
+  }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
             index_meta_.metric_name().c_str());
@@ -186,6 +216,8 @@ int FlatStreamerEntity::close(void) {
   meta_.header.block_count = 0;
   meta_.header.block_size = 0;
   meta_.header.linear_body_size = 0;
+  batch_query_preprocess_ = nullptr;
+  extra_values_size_ = 0;
 
   return 0;
 }

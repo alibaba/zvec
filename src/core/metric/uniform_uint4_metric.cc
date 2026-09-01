@@ -40,7 +40,8 @@ void UniformUint4SquaredEuclidean(const void *lhs, const void *rhs,
 void UniformUint4SquaredEuclideanBatch(const void *const *vectors,
                                        const void *query, size_t count,
                                        size_t encoded_dimension,
-                                       float *distances) {
+                                       float *distances,
+                                       const void *const * /*extra_values*/) {
   for (size_t i = 0; i < count; ++i) {
     UniformUint4SquaredEuclidean(vectors[i], query, encoded_dimension,
                                  distances + i);

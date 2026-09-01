@@ -113,7 +113,7 @@ TEST(SquaredEuclideanMetric, RawUint8) {
 
   const void *rows[] = {row0.data(), row1.data()};
   float batch[2] = {};
-  metric->batch_distance()(rows, query.data(), 2, kDimension, batch);
+  metric->batch_distance()(rows, query.data(), 2, kDimension, batch, nullptr);
   EXPECT_FLOAT_EQ(batch[0], static_cast<float>(expected0));
   EXPECT_FLOAT_EQ(batch[1], static_cast<float>(expected1));
 }
@@ -135,7 +135,7 @@ TEST(SquaredEuclideanMetric, RawFp16) {
 
   const void *rows[] = {row.data(), query.data()};
   float batch[2] = {};
-  metric->batch_distance()(rows, query.data(), 2, kDimension, batch);
+  metric->batch_distance()(rows, query.data(), 2, kDimension, batch, nullptr);
   EXPECT_FLOAT_EQ(4.0F, batch[0]);
   EXPECT_FLOAT_EQ(0.0F, batch[1]);
 }
@@ -241,7 +241,7 @@ TEST(TurboDispatch, RawDistanceAndConversionUseUnifiedRegistry) {
   float fp16_distances[2] = {};
   ASSERT_TRUE(fp16_scalar.batch);
   fp16_scalar.batch(fp16_rows, fp16_query.data(), 2, fp16_query.size(),
-                    fp16_distances);
+                    fp16_distances, nullptr);
   EXPECT_FLOAT_EQ(4.0F, fp16_distances[0]);
   EXPECT_FLOAT_EQ(0.0F, fp16_distances[1]);
 

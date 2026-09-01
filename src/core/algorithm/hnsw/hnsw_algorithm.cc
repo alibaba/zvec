@@ -42,7 +42,7 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
 
   level_t cur_level = cur_max_level;
-  dist_t dist = ctx->dist_calculator().batch_dist(entry_point);
+  dist_t dist = ctx->batch_dist(entry_point);
   for (; cur_level > level; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
@@ -104,6 +104,7 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
   const bool use_provider = dc.has_provider();
+  const bool has_extra_values = ctx->has_extra_values();
   while (true) {
     const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
     if (ailego_unlikely(ctx->debugging())) {
@@ -133,17 +134,26 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
 
     std::vector<float> dists(size);
     std::vector<const void *> neighbor_vecs(size);
+    std::vector<const void *> neighbor_extra_values(has_extra_values ? size
+                                                                     : 0);
     if (ailego_unlikely(use_provider)) {
       for (uint32_t i = 0; i < size; ++i) {
         neighbor_vecs[i] = provider_vec_blocks[i].data();
+        if (has_extra_values) {
+          neighbor_extra_values[i] = ctx->get_extra_values(neighbor_vecs[i]);
+        }
       }
     } else {
       for (uint32_t i = 0; i < size; ++i) {
         neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+        if (has_extra_values) {
+          neighbor_extra_values[i] = ctx->get_extra_values(neighbor_vecs[i]);
+        }
       }
     }
 
-    dc.batch_dist(neighbor_vecs.data(), size, dists.data());
+    dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
+                  has_extra_values ? neighbor_extra_values.data() : nullptr);
 
     for (uint32_t i = 0; i < size; ++i) {
       dist_t cur_dist = dists[i];
@@ -203,9 +213,9 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 template <typename EntityType, typename HeapType>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
                            VisitFilter &visit, HnswDistCalculator &dc,
-                           uint32_t topk, uint32_t ef, node_id_t entry_point,
-                           dist_t entry_dist, uint32_t prefetch_lines,
-                           uint32_t prefetch_offset) {
+                           HnswContext *ctx, uint32_t topk, uint32_t ef,
+                           node_id_t entry_point, dist_t entry_dist,
+                           uint32_t prefetch_lines, uint32_t prefetch_offset) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
@@ -218,6 +228,9 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
   std::vector<node_id_t> neighbor_ids(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
+  const bool has_extra_values = ctx->has_extra_values();
+  std::vector<const void *> neighbor_extra_values(
+      has_extra_values ? buf_capacity : 0);
 
   while (pool.has_next()) {
     auto current_node = pool.pop();
@@ -230,6 +243,9 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
       neighbor_ids.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
+      if (has_extra_values) {
+        neighbor_extra_values.resize(buf_capacity);
+      }
     }
 
     const uint32_t po =
@@ -249,6 +265,9 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
       }
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
+      if (has_extra_values) {
+        neighbor_extra_values[unvisited_count] = ctx->get_extra_values(vec_ptr);
+      }
       unvisited_count++;
     }
 
@@ -259,11 +278,16 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
       visit.set_visited(node);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+      if (has_extra_values) {
+        neighbor_extra_values[unvisited_count] =
+            ctx->get_extra_values(neighbor_vecs[unvisited_count]);
+      }
       unvisited_count++;
     }
 
     if (unvisited_count == 0) continue;
-    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
+                  has_extra_values ? neighbor_extra_values.data() : nullptr);
 
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
@@ -293,6 +317,9 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
   std::vector<IndexStorage::MemoryBlock> provider_vec_blocks;
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
+  const bool has_extra_values = ctx->has_extra_values();
+  std::vector<const void *> neighbor_extra_values(
+      has_extra_values ? buf_capacity : 0);
 
   const bool use_provider = dc.has_provider();
   if (ailego_unlikely(use_provider)) {
@@ -332,6 +359,9 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
       neighbor_vec_blocks.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
+      if (has_extra_values) {
+        neighbor_extra_values.resize(buf_capacity);
+      }
     }
 
     uint32_t size = 0;
@@ -369,10 +399,16 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     if (ailego_unlikely(use_provider)) {
       for (uint32_t i = 0; i < size; ++i) {
         neighbor_vecs[i] = provider_vec_blocks[i].data();
+        if (has_extra_values) {
+          neighbor_extra_values[i] = ctx->get_extra_values(neighbor_vecs[i]);
+        }
       }
     } else {
       for (uint32_t i = 0; i < size; ++i) {
         neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+        if (has_extra_values) {
+          neighbor_extra_values[i] = ctx->get_extra_values(neighbor_vecs[i]);
+        }
       }
     }
 
@@ -384,7 +420,8 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
       }
     }
 
-    dc.batch_dist(neighbor_vecs.data(), size, dists.data());
+    dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
+                  has_extra_values ? neighbor_extra_values.data() : nullptr);
 
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
@@ -456,12 +493,12 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
 
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
-        fast_search_neighbors(entity, bpool, visit, dc, topk_v, ef_v,
+        fast_search_neighbors(entity, bpool, visit, dc, ctx, topk_v, ef_v,
                               *entry_point, *dist, prefetch_lines, ctx->po());
         copy_pool_to_topk(bpool, topk);
       } else {
         auto &lpool = ctx->pool();
-        fast_search_neighbors(entity, lpool, visit, dc, topk_v, ef_v,
+        fast_search_neighbors(entity, lpool, visit, dc, ctx, topk_v, ef_v,
                               *entry_point, *dist, prefetch_lines, ctx->po());
         copy_pool_to_topk(lpool, topk);
       }
@@ -565,10 +602,17 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 
       std::vector<float> dists(size);
       std::vector<const void *> neighbor_vecs(size);
+      const bool has_extra_values = ctx->has_extra_values();
+      std::vector<const void *> neighbor_extra_values(has_extra_values ? size
+                                                                       : 0);
       for (uint32_t i = 0; i < size; ++i) {
         neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+        if (has_extra_values) {
+          neighbor_extra_values[i] = ctx->get_extra_values(neighbor_vecs[i]);
+        }
       }
-      dc.batch_dist(neighbor_vecs.data(), size, dists.data());
+      dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
+                    has_extra_values ? neighbor_extra_values.data() : nullptr);
 
       for (uint32_t i = 0; i < size; ++i) {
         node_id_t node = neighbor_ids[i];
