@@ -83,6 +83,7 @@ enum class QuantizeType : int32_t {
   QT_INT8 = 2,
   QT_INT4 = 3,
   QT_RABITQ = 4,
+  QT_TURBO_INT8 = 5,
 };
 
 //! Mirrors proto enum MetricType.

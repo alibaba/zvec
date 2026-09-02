@@ -17,6 +17,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include <turbo/quantizer/quantizer.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 #include "utility/utility_params.h"
 
@@ -308,9 +309,11 @@ int Index::Init(const BaseIndexParam &param) {
   }
 
   // must after quantizer handled. e.g., cosine doesn't support int8 quantizer
-  if (CreateAndInitMetric(param) != 0) {
-    LOG_ERROR("Failed to create and init metric");
-    return core::IndexError_Runtime;
+  if (turbo_quantizer_ == nullptr) {
+    if (CreateAndInitMetric(param) != 0) {
+      LOG_ERROR("Failed to create and init metric");
+      return core::IndexError_Runtime;
+    }
   }
 
   if (CreateAndInitStreamer(param) != 0) {
@@ -645,7 +648,16 @@ int Index::_dense_fetch(const uint32_t doc_id,
   // for int4, unit_size * dim != element_size
   out_vector_buffer.resize(input_vector_meta_.element_size());
 
-  if (reformer_ != nullptr) {
+  if (turbo_quantizer_ != nullptr) {
+    // The stored record is int8 codes + quantizer tail; dequantize restores
+    // the original FP32 vector (cosine layouts also denormalize by the
+    // stored norm).
+    if (turbo_quantizer_->dequantize(vector, streamer_vector_meta_,
+                                      &out_vector_buffer) != 0) {
+      LOG_ERROR("Failed to dequantize vector");
+      return core::IndexError_Runtime;
+    }
+  } else if (reformer_ != nullptr) {
     if (reformer_->revert(vector, streamer_vector_meta_, &out_vector_buffer) !=
         0) {
       LOG_ERROR("Failed to convert vector");
@@ -694,6 +706,21 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
+  if (turbo_quantizer_ != nullptr) {
+    core::IndexQueryMeta new_meta;
+    auto *new_vector = context->mutable_features();
+    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
+                                    new_vector, &new_meta) != 0) {
+      LOG_ERROR("Failed to quantize vector with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
+                                    context) != 0) {
+      LOG_ERROR("Failed to add vector");
+      return core::IndexError_Runtime;
+    }
+    return 0;
+  }
   if (reformer_ != nullptr) {
     core::IndexQueryMeta new_meta;
     auto *new_vector = context->mutable_features();
@@ -774,7 +801,15 @@ int Index::_dense_search(const VectorData &vector_data,
   auto vector = dense_vector.data;
   // Check if need to transform feature
   core::IndexQueryMeta new_meta = input_vector_meta_;
-  if (reformer_ != nullptr) {
+  if (turbo_quantizer_ != nullptr) {
+    auto *new_vector = context->mutable_features();
+    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
+                                    new_vector, &new_meta) != 0) {
+      LOG_ERROR("Failed to quantize query with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    vector = new_vector->data();
+  } else if (reformer_ != nullptr) {
     auto *new_vector = context->mutable_features();
     if (reformer_->transform(dense_vector.data, input_vector_meta_, new_vector,
                              &new_meta) != 0) {
@@ -817,7 +852,7 @@ int Index::_dense_search(const VectorData &vector_data,
     result->doc_list_ = std::move(context->result());
   }
 
-  if (metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -946,7 +981,7 @@ int Index::_sparse_search(const VectorData &vector_data,
     result->doc_list_ = std::move(context->result());
   }
 
-  if (metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {

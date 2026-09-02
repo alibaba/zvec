@@ -317,6 +317,8 @@ TEST(QuantizeTypeCodeBookTest, WireToCppConversion) {
             QuantizeType::INT8);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(wire::QuantizeType::QT_RABITQ),
             QuantizeType::RABITQ);
+  EXPECT_EQ(QuantizeTypeCodeBook::Get(wire::QuantizeType::QT_TURBO_INT8),
+            QuantizeType::TURBO_INT8);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(wire::QuantizeType::QT_UNDEFINED),
             QuantizeType::UNDEFINED);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(static_cast<wire::QuantizeType>(999)),
@@ -333,6 +335,8 @@ TEST(QuantizeTypeCodeBookTest, CppToWireConversion) {
             wire::QuantizeType::QT_INT8);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::RABITQ),
             wire::QuantizeType::QT_RABITQ);
+  EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::TURBO_INT8),
+            wire::QuantizeType::QT_TURBO_INT8);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::UNDEFINED),
             wire::QuantizeType::QT_UNDEFINED);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(static_cast<QuantizeType>(999)),
@@ -345,6 +349,8 @@ TEST(QuantizeTypeCodeBookTest, CppToStringConversion) {
   EXPECT_EQ(QuantizeTypeCodeBook::AsString(QuantizeType::INT4), "INT4");
   EXPECT_EQ(QuantizeTypeCodeBook::AsString(QuantizeType::INT8), "INT8");
   EXPECT_EQ(QuantizeTypeCodeBook::AsString(QuantizeType::RABITQ), "RABITQ");
+  EXPECT_EQ(QuantizeTypeCodeBook::AsString(QuantizeType::TURBO_INT8),
+            "TURBO_INT8");
   EXPECT_EQ(QuantizeTypeCodeBook::AsString(QuantizeType::UNDEFINED),
             "UNDEFINED");
   EXPECT_EQ(QuantizeTypeCodeBook::AsString(static_cast<QuantizeType>(999)),

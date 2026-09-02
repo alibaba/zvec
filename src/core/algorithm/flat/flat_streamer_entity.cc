@@ -917,14 +917,18 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
   if (index_meta.data_type() != index_meta_.data_type() ||
       index_meta.dimension() != index_meta_.dimension() ||
       index_meta.element_size() != index_meta_.element_size() ||
-      index_meta.metric_name() != index_meta_.metric_name()) {
+      index_meta.metric_name() != index_meta_.metric_name() ||
+      index_meta.quantizer_name() != index_meta_.quantizer_name()) {
     LOG_ERROR(
-        "Unmatch IndexMeta, Index(type=%u dim=%u elemsize=%u "
-        "metric=%s) Setting(type=%u dim=%u elemsize=%u metric=%s)",
+        "Unmatch IndexMeta, Index(type=%u dim=%u elemsize=%u metric=%s "
+        "quantizer=%s) Setting(type=%u dim=%u elemsize=%u metric=%s "
+        "quantizer=%s)",
         index_meta.data_type(), index_meta.dimension(),
         index_meta.element_size(), index_meta.metric_name().c_str(),
-        index_meta_.data_type(), index_meta_.dimension(),
-        index_meta_.element_size(), index_meta_.metric_name().c_str());
+        index_meta.quantizer_name().c_str(), index_meta_.data_type(),
+        index_meta_.dimension(), index_meta_.element_size(),
+        index_meta_.metric_name().c_str(),
+        index_meta_.quantizer_name().c_str());
     return IndexError_Mismatch;
   }
   // Segment Size can be reconfigurable

@@ -36,6 +36,10 @@
 #include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
 
+namespace zvec::turbo {
+class Quantizer;
+}  // namespace zvec::turbo
+
 namespace zvec::core_interface {
 
 class ZVEC_CORE_API IndexFactory;
@@ -225,6 +229,10 @@ class ZVEC_CORE_API Index {
   core::IndexReformer::Pointer reformer_{};
   core::IndexConverter::Pointer converter_{};  // for build()
   core::IndexMetric::Pointer metric_{};        // to do normalization
+  // Turbo quantizer for the FLAT-on-turbo path: quantizes records and
+  // queries and computes distances via turbo SIMD batch kernels. When set,
+  // converter_/reformer_/metric_ stay null.
+  std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
   size_t context_index_;
   core::IndexStorage::Pointer storage_{};

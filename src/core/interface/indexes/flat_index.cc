@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <zvec/core/interface/index.h>
+#include <turbo/quantizer/quantizer.h>
 #include "algorithm/flat/flat_utility.h"
 
 namespace zvec::core_interface {
@@ -25,6 +26,42 @@ int FlatIndex::CreateAndInitConverterReformer(
   const auto storage_type = flat_param.storage_data_type;
   if (storage_type == DataType::DT_UNDEFINED ||
       storage_type == flat_param.data_type) {
+    if (quantizer_param.type == QuantizerType::kTurboInt8) {
+      if (flat_param.is_sparse || flat_param.data_type != DataType::DT_FP32 ||
+          (flat_param.metric_type != MetricType::kCosine &&
+           flat_param.metric_type != MetricType::kL2sq)) {
+        LOG_ERROR(
+            "Turbo INT8 quantizer requires dense FP32 input with Cosine or "
+            "L2 metric");
+        return core::IndexError_Unsupported;
+      }
+      if (quantizer_param.enable_rotate) {
+        LOG_ERROR("Turbo INT8 quantizer does not support enable_rotate");
+        return core::IndexError_Unsupported;
+      }
+      turbo_quantizer_ = core::IndexFactory::CreateQuantizer("Int8Quantizer");
+      if (!turbo_quantizer_) {
+        LOG_ERROR("Failed to create turbo Int8Quantizer");
+        return core::IndexError_Runtime;
+      }
+      if (turbo_quantizer_->init(proxima_index_meta_,
+                                  ailego::Params{}) != 0) {
+        LOG_ERROR("Failed to init turbo Int8Quantizer");
+        turbo_quantizer_.reset();
+        return core::IndexError_Runtime;
+      }
+      // Adopt the quantized meta (DT_INT8 with the record tail) and record
+      // the quantizer in the meta attachment so the layout round-trips
+      // through the persisted segment meta.
+      proxima_index_meta_ = turbo_quantizer_->meta();
+      proxima_index_meta_.set_quantizer("Int8Quantizer", 0,
+                                        ailego::Params{});
+      streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
+                                      proxima_index_meta_.dimension());
+      streamer_vector_meta_.set_extra_meta_size(
+          proxima_index_meta_.extra_meta_size());
+      return core::IndexError_Success;
+    }
     return Index::CreateAndInitConverterReformer(quantizer_param, index_param);
   }
 
@@ -71,6 +108,15 @@ int FlatIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (ailego_unlikely(!streamer_)) {
     LOG_ERROR("Failed to create streamer");
     return core::IndexError_Runtime;
+  }
+  if (turbo_quantizer_ != nullptr && !is_sparse_) {
+    if (ailego_unlikely(streamer_->init(proxima_index_meta_,
+                                         proxima_index_params_,
+                                         turbo_quantizer_) != 0)) {
+      LOG_ERROR("Failed to init streamer with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    return 0;
   }
   if (ailego_unlikely(
           streamer_->init(proxima_index_meta_, proxima_index_params_) != 0)) {

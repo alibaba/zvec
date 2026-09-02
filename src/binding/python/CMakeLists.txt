@@ -98,6 +98,10 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_metric_static>
             -Wl,-force_load,$<TARGET_FILE:core_utility_static>
             -Wl,-force_load,$<TARGET_FILE:core_quantizer_static>
+            # turbo quantizer registrations (Int8Quantizer etc.) are only
+            # reachable through factory lookups, so the archive must be
+            # force-loaded or the static linker drops the registration objects
+            -Wl,-force_load,$<TARGET_FILE:zvec_turbo>
             zvec
     )
     target_link_libraries(_zvec PRIVATE

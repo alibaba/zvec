@@ -1021,6 +1021,42 @@ TEST(ManifestCodecGolden, VamanaTwoPassBuild) {
   EXPECT_EQ(*decoded_enabled, enabled);
 }
 
+TEST(ManifestCodecGolden, FlatTurboInt8Quantize) {
+  // TURBO_INT8 (wire value 5) was added after the golden bytes were archived,
+  // so it has no legacy byte fixture: manifests written before it existed
+  // carry no such value, and the new value must round trip.
+  FlatIndexParams turbo(MetricType::COSINE, QuantizeType::TURBO_INT8,
+                        QuantizerParam(), true);
+  FlatIndexParams legacy(MetricType::COSINE, QuantizeType::INT8);
+
+  std::string encoded_turbo;
+  ManifestCodec::EncodeIndexParams(&turbo, &encoded_turbo);
+  std::string encoded_legacy;
+  ManifestCodec::EncodeIndexParams(&legacy, &encoded_legacy);
+  EXPECT_NE(encoded_turbo, encoded_legacy);
+
+  const auto decoded_turbo =
+      ManifestCodec::DecodeIndexParams(encoded_turbo);
+  ASSERT_NE(decoded_turbo, nullptr);
+  ASSERT_EQ(decoded_turbo->type(), IndexType::FLAT);
+  const auto *flat =
+      dynamic_cast<const FlatIndexParams *>(decoded_turbo.get());
+  ASSERT_NE(flat, nullptr);
+  EXPECT_EQ(flat->metric_type(), MetricType::COSINE);
+  EXPECT_EQ(flat->quantize_type(), QuantizeType::TURBO_INT8);
+  EXPECT_TRUE(flat->use_contiguous_memory());
+  EXPECT_EQ(*decoded_turbo, turbo);
+
+  // An unknown quantize value on the wire must fall back to UNDEFINED rather
+  // than being mistaken for a legacy quantizer.
+  const auto decoded_legacy =
+      ManifestCodec::DecodeIndexParams(encoded_legacy);
+  ASSERT_NE(decoded_legacy, nullptr);
+  EXPECT_EQ(dynamic_cast<const FlatIndexParams *>(decoded_legacy.get())
+                ->quantize_type(),
+            QuantizeType::INT8);
+}
+
 TEST(ManifestCodecGolden, RefineFlatStorageParams) {
   HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::INT8, true,
                        QuantizerParam(true), true, DataType::VECTOR_UINT8);

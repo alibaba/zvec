@@ -153,6 +153,24 @@ class TestFlatIndexParam:
         assert param.quantize_type == QuantizeType.INT8
         assert param.use_contiguous_memory is True
 
+    def test_turbo_int8(self):
+        param = FlatIndexParam(
+            metric_type=MetricType.COSINE,
+            quantize_type=QuantizeType.TURBO_INT8,
+            use_contiguous_memory=True,
+        )
+        assert param.metric_type == MetricType.COSINE
+        assert param.quantize_type == QuantizeType.TURBO_INT8
+        assert param.use_contiguous_memory is True
+        assert param.to_dict()["quantize_type"] == "TURBO_INT8"
+        assert "TURBO_INT8" in repr(param)
+        import pickle
+
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.quantize_type == QuantizeType.TURBO_INT8
+        assert restored.metric_type == MetricType.COSINE
+        assert restored.use_contiguous_memory is True
+
     @pytest.mark.parametrize(
         "attr", ["metric_type", "quantize_type", "use_contiguous_memory"]
     )

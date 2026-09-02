@@ -335,6 +335,11 @@ void MixedStreamerReducer::add_vec(int *result) {
   auto target_streamer_query_meta = IndexQueryMeta{
       IndexMeta::MetaType::MT_DENSE, target_streamer_->meta().data_type(),
       target_streamer_->meta().dimension()};
+  // Quantizer-encoded layouts append an extra meta tail per record
+  // (e.g. turbo Int8Quantizer); without it the element size would not match
+  // the streamer meta and every add would be rejected.
+  target_streamer_query_meta.set_extra_meta_size(
+      target_streamer_->meta().extra_meta_size());
   const bool need_convert = (!is_target_and_source_same_reformer_) &&
                             target_streamer_reformer_ != nullptr;
 

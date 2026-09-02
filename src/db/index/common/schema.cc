@@ -33,7 +33,7 @@ namespace zvec {
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
-      QuantizeType::RABITQ}},
+      QuantizeType::RABITQ, QuantizeType::TURBO_INT8}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -215,6 +215,31 @@ Status FieldSchema::validate() const {
         return Status::InvalidArgument(
             "schema validate failed: IVF index does not support RABITQ "
             "quantization; use the dedicated IVF_RABITQ index instead");
+      }
+
+      if (vector_index_params->quantize_type() == QuantizeType::TURBO_INT8) {
+        if (index_params_->type() != IndexType::FLAT) {
+          return Status::InvalidArgument(
+              "schema validate failed: TURBO_INT8 quantize is only supported "
+              "by the FLAT index, but field[",
+              name_, "]'s index type is ", IndexTypeCodeBook::AsString(
+                                               index_params_->type()));
+        }
+        if (vector_index_params->metric_type() != MetricType::COSINE &&
+            vector_index_params->metric_type() != MetricType::L2) {
+          return Status::InvalidArgument(
+              "schema validate failed: TURBO_INT8 quantize only supports "
+              "COSINE or L2 metric, but field[",
+              name_, "]'s metric type is ",
+              MetricTypeCodeBook::AsString(
+                  vector_index_params->metric_type()));
+        }
+        if (vector_index_params->quantizer_param().enable_rotate()) {
+          return Status::InvalidArgument(
+              "schema validate failed: TURBO_INT8 quantize does not support "
+              "enable_rotate, but field[",
+              name_, "]'s quantizer_param has it enabled");
+        }
       }
 
       if (index_params_->type() == IndexType::DISKANN) {

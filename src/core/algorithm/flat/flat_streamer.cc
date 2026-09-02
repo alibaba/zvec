@@ -45,15 +45,20 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
   meta_ = imeta;
   meta_.set_streamer("FlatStreamer", 0U, params);
 
-  int error_code = InitializeMetric(meta_, &metric_);
-  if (error_code != 0) {
-    LOG_ERROR("Failed to initialize index metric %s, error=%d, %s",
-              meta_.metric_name().c_str(), error_code,
-              IndexError::What(error_code));
-    return error_code;
-  }
-  if (metric_->query_metric()) {
-    metric_ = metric_->query_metric();
+  // With a turbo quantizer the distances are computed by the quantizer's
+  // SIMD kernels; the metric cannot describe the quantized layout
+  // (e.g. Cosine rejects DT_INT8), so skip metric setup entirely.
+  if (!quantizer_) {
+    int error_code = InitializeMetric(meta_, &metric_);
+    if (error_code != 0) {
+      LOG_ERROR("Failed to initialize index metric %s, error=%d, %s",
+                meta_.metric_name().c_str(), error_code,
+                IndexError::What(error_code));
+      return error_code;
+    }
+    if (metric_->query_metric()) {
+      metric_ = metric_->query_metric();
+    }
   }
 
   // 参数设置
@@ -94,7 +99,7 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
     }
   }
 
-  if (!VerifyMetric(meta_)) {
+  if (!quantizer_ && !VerifyMetric(meta_)) {
     LOG_ERROR("Invalid index metric %s.", meta_.metric_name().c_str());
     return IndexError_InvalidArgument;
   }
@@ -350,7 +355,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
                                              uint32_t count,
                                              Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
-  ailego_assert(metric_->is_matched(meta_, qmeta));
+  ailego_assert(quantizer_ || metric_->is_matched(meta_, qmeta));
 
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
@@ -392,7 +397,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
-  ailego_assert(metric_->is_matched(meta_, qmeta));
+  ailego_assert(quantizer_ || metric_->is_matched(meta_, qmeta));
 
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());

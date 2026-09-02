@@ -72,6 +72,8 @@ static std::string quantize_type_to_string(const QuantizeType type) {
       return "FP16";
     case QuantizeType::RABITQ:
       return "RABITQ";
+    case QuantizeType::TURBO_INT8:
+      return "TURBO_INT8";
     default:
       return "UNDEFINED";
   }
