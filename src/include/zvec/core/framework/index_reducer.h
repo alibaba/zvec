@@ -218,10 +218,11 @@ class IndexStreamerReducer : public IndexReducerBase {
       const IndexStreamer::Pointer streamer,
       const IndexConverter::Pointer converter,
       const IndexReformer::Pointer reformer = nullptr,
-      const IndexQueryMeta &original_query_meta = IndexQueryMeta()) = 0;
+      const IndexQueryMeta &original_query_meta = IndexQueryMeta(),
+      const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr) = 0;
   virtual int feed_streamer_with_reformer(
-      IndexStreamer::Pointer streamer,
-      const IndexReformer::Pointer reformer) = 0;
+      IndexStreamer::Pointer streamer, const IndexReformer::Pointer reformer,
+      const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr) = 0;
 
   ~IndexStreamerReducer(void) override = default;
 };

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end tests for the FLAT TURBO_INT8 quantize path."""
+"""End-to-end tests for the FLAT turbo INT8 quantize path."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _make_schema(name: str, metric: MetricType) -> CollectionSchema:
                 dimension=DIMENSION,
                 index_param=FlatIndexParam(
                     metric_type=metric,
-                    quantize_type=QuantizeType.TURBO_INT8,
+                    quantize_type=QuantizeType.INT8,
                     use_contiguous_memory=True,
                 ),
             )
@@ -72,9 +72,7 @@ def _insert(collection, vectors) -> None:
 
 
 def _query_rows(collection, vector):
-    hits = collection.query(
-        Query(field_name="dense", vector=vector), topk=TOPK
-    )
+    hits = collection.query(Query(field_name="dense", vector=vector), topk=TOPK)
     return [(hit.id, hit.score) for hit in hits]
 
 
@@ -105,11 +103,11 @@ def test_turbo_int8_flat_search_reopen(tmp_path, metric):
 
     for pre, post in zip(before, after_optimize):
         assert [row[0] for row in pre] == [row[0] for row in post]
-        for (p, q) in zip(pre, post):
+        for p, q in zip(pre, post):
             assert p[1] == pytest.approx(q[1], abs=1e-5)
     for pre, post in zip(before, after_reopen):
         assert [row[0] for row in pre] == [row[0] for row in post]
-        for (p, q) in zip(pre, post):
+        for p, q in zip(pre, post):
             assert p[1] == pytest.approx(q[1], abs=1e-5)
 
 
@@ -166,46 +164,41 @@ def test_turbo_int8_fetch_dequantizes(tmp_path):
     collection.close()
 
 
-def test_turbo_int8_rejects_rotate_and_ip_metric(tmp_path):
-    with pytest.raises(Exception):
-        zvec.create_and_open(
-            path=str(tmp_path / "turbo_rotate"),
+def test_int8_rotate_and_ip_fall_back_to_legacy(tmp_path):
+    # enable_rotate and IP cannot be expressed by the turbo quantizer; INT8
+    # falls back to the legacy converter path and must keep working.
+    cases = [
+        (MetricType.COSINE, True, "int8_rotate"),
+        (MetricType.IP, False, "int8_ip"),
+    ]
+    vectors = _random_vectors(DOC_COUNT, DIMENSION, seed=2031)
+    for metric, rotate, name in cases:
+        quantizer_param = zvec.QuantizerParam(enable_rotate=True) if rotate else None
+        index_param = FlatIndexParam(
+            metric_type=metric,
+            quantize_type=QuantizeType.INT8,
+            **({"quantizer_param": quantizer_param} if rotate else {}),
+        )
+        collection = zvec.create_and_open(
+            path=str(tmp_path / name),
             schema=CollectionSchema(
-                name="turbo_rotate",
+                name=name,
                 fields=[FieldSchema("ordinal", DataType.INT64)],
                 vectors=[
                     VectorSchema(
                         "dense",
                         DataType.VECTOR_FP32,
                         dimension=DIMENSION,
-                        index_param=FlatIndexParam(
-                            metric_type=MetricType.COSINE,
-                            quantize_type=QuantizeType.TURBO_INT8,
-                            quantizer_param=zvec.QuantizerParam(
-                                enable_rotate=True
-                            ),
-                        ),
+                        index_param=index_param,
                     )
                 ],
             ),
+            option=CollectionOption(read_only=False),
         )
+        _insert(collection, vectors)
+        collection.optimize()
 
-    with pytest.raises(Exception):
-        zvec.create_and_open(
-            path=str(tmp_path / "turbo_ip"),
-            schema=CollectionSchema(
-                name="turbo_ip",
-                fields=[FieldSchema("ordinal", DataType.INT64)],
-                vectors=[
-                    VectorSchema(
-                        "dense",
-                        DataType.VECTOR_FP32,
-                        dimension=DIMENSION,
-                        index_param=FlatIndexParam(
-                            metric_type=MetricType.IP,
-                            quantize_type=QuantizeType.TURBO_INT8,
-                        ),
-                    )
-                ],
-            ),
-        )
+        rows = _query_rows(collection, vectors[17])
+        assert len(rows) == TOPK
+        assert rows[0][0] == "17"
+        collection.close()

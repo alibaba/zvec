@@ -18,12 +18,12 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
-#include "tests/test_util.h"
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "tests/test_util.h"
 
 using namespace zvec::core_interface;
 
@@ -36,8 +36,7 @@ constexpr uint32_t kTopK = 10;
 std::vector<std::vector<float>> RandomVectors(size_t count, uint32_t dim) {
   std::mt19937 gen(2026);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-  std::vector<std::vector<float>> vectors(count,
-                                          std::vector<float>(dim, 0.0f));
+  std::vector<std::vector<float>> vectors(count, std::vector<float>(dim, 0.0f));
   for (auto &vec : vectors) {
     float norm = 0.0f;
     for (uint32_t i = 0; i < dim; ++i) {
@@ -61,7 +60,7 @@ float CosineDistance(const std::vector<float> &a, const std::vector<float> &b) {
 }
 
 float L2SquaredDistance(const std::vector<float> &a,
-                         const std::vector<float> &b) {
+                        const std::vector<float> &b) {
   float sum = 0.0f;
   for (size_t i = 0; i < a.size(); ++i) {
     float diff = a[i] - b[i];
@@ -74,8 +73,7 @@ float L2SquaredDistance(const std::vector<float> &a,
 std::vector<std::pair<uint32_t, float>> BruteForceTopK(
     const std::vector<std::vector<float>> &vectors,
     const std::vector<float> &query, uint32_t topk,
-    float (*distance)(const std::vector<float> &,
-                      const std::vector<float> &)) {
+    float (*distance)(const std::vector<float> &, const std::vector<float> &)) {
   std::vector<std::pair<uint32_t, float>> scored;
   scored.reserve(vectors.size());
   for (size_t i = 0; i < vectors.size(); ++i) {
@@ -99,8 +97,7 @@ FlatIndexParam::Pointer MakeParam(MetricType metric, QuantizerType quantizer,
       .with_data_type(DataType::DT_FP32)
       .with_dimension(kDimension)
       .with_is_sparse(false)
-      .with_quantizer_param(
-          QuantizerParam(quantizer, enable_rotate))
+      .with_quantizer_param(QuantizerParam(quantizer, enable_rotate))
       .build();
 }
 
@@ -111,8 +108,7 @@ struct SearchOutcome {
 
 SearchOutcome RunSearch(Index *index, const std::vector<float> &query) {
   SearchOutcome outcome;
-  auto query_param =
-      FlatQueryParamBuilder().with_topk(kTopK).build();
+  auto query_param = FlatQueryParamBuilder().with_topk(kTopK).build();
   SearchResult result;
   VectorData vector_data;
   vector_data.vector = DenseVector{query.data()};
@@ -125,11 +121,11 @@ SearchOutcome RunSearch(Index *index, const std::vector<float> &query) {
 
 // Adds the corpus, searches a query, compares against brute-force truth.
 // Returns nullptr-checked index; the caller closes it.
-void CheckTopKAgainstBruteForce(
-    Index *index, const std::vector<std::vector<float>> &vectors,
-    const std::vector<float> &query,
-    float (*distance)(const std::vector<float> &,
-                      const std::vector<float> &)) {
+void CheckTopKAgainstBruteForce(Index *index,
+                                const std::vector<std::vector<float>> &vectors,
+                                const std::vector<float> &query,
+                                float (*distance)(const std::vector<float> &,
+                                                  const std::vector<float> &)) {
   auto got = RunSearch(index, query);
   ASSERT_EQ(kTopK, got.rows.size());
   auto want = BruteForceTopK(vectors, query, kTopK, distance);
@@ -159,7 +155,7 @@ TEST(FlatTurboInt8Index, CosineAddSearchReopenFetch) {
   zvec::test_util::RemoveTestFiles(index_name);
   auto vectors = RandomVectors(kVectorCount, kDimension);
 
-  auto param = MakeParam(MetricType::kCosine, QuantizerType::kTurboInt8);
+  auto param = MakeParam(MetricType::kCosine, QuantizerType::kInt8);
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(
@@ -197,9 +193,8 @@ TEST(FlatTurboInt8Index, CosineAddSearchReopenFetch) {
   // reopen with identical params: turbo path must be rebuilt from the param
   auto reopened_index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, reopened_index);
-  ASSERT_EQ(0, reopened_index->open(index_name,
-                                    {StorageOptions::StorageType::kMMAP,
-                                     false}));
+  ASSERT_EQ(0, reopened_index->open(
+                   index_name, {StorageOptions::StorageType::kMMAP, false}));
   SearchResult after;
   ASSERT_EQ(0, reopened_index->search(query_data, query_param, &after));
   auto after_rows = ScoredRows(&after);
@@ -225,7 +220,7 @@ TEST(FlatTurboInt8Index, L2AddSearchReopen) {
   zvec::test_util::RemoveTestFiles(index_name);
   auto vectors = RandomVectors(kVectorCount, kDimension);
 
-  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kTurboInt8);
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kInt8);
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(
@@ -250,9 +245,8 @@ TEST(FlatTurboInt8Index, L2AddSearchReopen) {
 
   auto reopened_index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, reopened_index);
-  ASSERT_EQ(0, reopened_index->open(index_name,
-                                    {StorageOptions::StorageType::kMMAP,
-                                     false}));
+  ASSERT_EQ(0, reopened_index->open(
+                   index_name, {StorageOptions::StorageType::kMMAP, false}));
   SearchResult after;
   ASSERT_EQ(0, reopened_index->search(query_data, query_param, &after));
   auto after_rows = ScoredRows(&after);
@@ -266,26 +260,49 @@ TEST(FlatTurboInt8Index, L2AddSearchReopen) {
   zvec::test_util::RemoveTestFiles(index_name);
 }
 
-TEST(FlatTurboInt8Index, RejectsUnsupportedCombinations) {
-  // enable_rotate is not supported by the turbo quantizer
-  EXPECT_EQ(nullptr,
-            IndexFactory::CreateAndInitIndex(
-                *MakeParam(MetricType::kCosine, QuantizerType::kTurboInt8,
-                           /*enable_rotate=*/true)));
-  // inner product is not supported
-  EXPECT_EQ(nullptr,
-            IndexFactory::CreateAndInitIndex(
-                *MakeParam(MetricType::kInnerProduct,
-                           QuantizerType::kTurboInt8)));
+// enable_rotate and inner product cannot be expressed by the turbo
+// quantizer; INT8 must fall back to the legacy converter path and still work
+// end to end.
+void CheckLegacyFallback(MetricType metric, bool enable_rotate) {
+  const std::string index_name{"flat_int8_legacy_fallback.index"};
+  zvec::test_util::RemoveTestFiles(index_name);
+  auto vectors = RandomVectors(kVectorCount, kDimension);
+
+  auto param = MakeParam(metric, QuantizerType::kInt8, enable_rotate);
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(
+      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    VectorData vector_data;
+    vector_data.vector = DenseVector{vectors[i].data()};
+    ASSERT_EQ(0, index->add(vector_data, static_cast<uint32_t>(i)));
+  }
+  ASSERT_EQ(0, index->train());
+
+  auto got = RunSearch(index.get(), vectors[7]);
+  ASSERT_EQ(kTopK, got.rows.size());
+  EXPECT_EQ(7u, got.rows[0].first);
+  ASSERT_EQ(0, index->close());
+
+  zvec::test_util::RemoveTestFiles(index_name);
 }
 
-TEST(FlatTurboInt8Index, RejectsLegacyReopenOfTurboLayout) {
+TEST(FlatTurboInt8Index, RotateFallsBackToLegacyConverter) {
+  CheckLegacyFallback(MetricType::kCosine, /*enable_rotate=*/true);
+}
+
+TEST(FlatTurboInt8Index, InnerProductFallsBackToLegacyConverter) {
+  CheckLegacyFallback(MetricType::kInnerProduct, /*enable_rotate=*/false);
+}
+
+TEST(FlatTurboInt8Index, RotateReopenOfTurboLayoutRejected) {
   const std::string index_name{"flat_turbo_int8_cross.index"};
   zvec::test_util::RemoveTestFiles(index_name);
   auto vectors = RandomVectors(kVectorCount, kDimension);
 
-  // create with the turbo quantizer
-  auto turbo_param = MakeParam(MetricType::kCosine, QuantizerType::kTurboInt8);
+  // INT8 (no rotate) writes the turbo quantizer layout
+  auto turbo_param = MakeParam(MetricType::kCosine, QuantizerType::kInt8);
   auto index = IndexFactory::CreateAndInitIndex(*turbo_param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(
@@ -298,35 +315,17 @@ TEST(FlatTurboInt8Index, RejectsLegacyReopenOfTurboLayout) {
   ASSERT_EQ(0, index->train());
   ASSERT_EQ(0, index->close());
 
-  // reopening with the legacy INT8 converter params must fail loudly:
-  // the stored quantized layout cannot be decoded by the legacy path
-  auto legacy_param = MakeParam(MetricType::kCosine, QuantizerType::kInt8);
+  // INT8 + enable_rotate builds the legacy converter meta instead; the
+  // stored turbo layout must be rejected by the open-time meta guard rather
+  // than silently miscomputed. The rejection also proves the plain INT8
+  // create above routed to the turbo quantizer (a legacy layout would match
+  // these reopen params and open successfully).
+  auto legacy_param = MakeParam(MetricType::kCosine, QuantizerType::kInt8,
+                                /*enable_rotate=*/true);
   auto legacy_index = IndexFactory::CreateAndInitIndex(*legacy_param);
   ASSERT_NE(nullptr, legacy_index);
-  EXPECT_NE(0, legacy_index->open(index_name, {StorageOptions::StorageType::kMMAP,
-                                               false}));
-
-  zvec::test_util::RemoveTestFiles(index_name);
-}
-
-TEST(FlatTurboInt8Index, LegacyInt8PathUnchanged) {
-  const std::string index_name{"flat_legacy_int8.index"};
-  zvec::test_util::RemoveTestFiles(index_name);
-  auto vectors = RandomVectors(kVectorCount, kDimension);
-
-  auto param = MakeParam(MetricType::kCosine, QuantizerType::kInt8);
-  auto index = IndexFactory::CreateAndInitIndex(*param);
-  ASSERT_NE(nullptr, index);
-  ASSERT_EQ(
-      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
-  for (size_t i = 0; i < vectors.size(); ++i) {
-    VectorData vector_data;
-    vector_data.vector = DenseVector{vectors[i].data()};
-    ASSERT_EQ(0, index->add(vector_data, static_cast<uint32_t>(i)));
-  }
-  ASSERT_EQ(0, index->train());
-  CheckTopKAgainstBruteForce(index.get(), vectors, vectors[7], CosineDistance);
-  ASSERT_EQ(0, index->close());
+  EXPECT_NE(0, legacy_index->open(index_name,
+                                  {StorageOptions::StorageType::kMMAP, false}));
 
   zvec::test_util::RemoveTestFiles(index_name);
 }

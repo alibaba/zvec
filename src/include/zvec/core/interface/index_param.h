@@ -103,9 +103,6 @@ enum class QuantizerType {
   kUniformUint7 = 8,
   // Global uniform quantization with the full uint8 code range [0, 255].
   kUniformUint8 = 9,
-  // Per-record affine int8 quantization backed by turbo SIMD batch kernels.
-  // Flat only; see FlatIndex::CreateAndInitConverterReformer.
-  kTurboInt8 = 10,
 };
 
 struct ZVEC_CORE_API SerializableBase {

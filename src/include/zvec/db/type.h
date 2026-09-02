@@ -81,9 +81,6 @@ enum class QuantizeType : uint32_t {
   INT8 = 2,
   INT4 = 3,
   RABITQ = 4,
-  // Per-record affine int8 quantization with turbo SIMD batch kernels.
-  // Flat index only, COSINE/L2 metric, dense FP32 input.
-  TURBO_INT8 = 5,
 };
 
 enum class MetricType : uint32_t {
