@@ -47,6 +47,9 @@
 #include "avx512/record_quantized_int8/inner_product.h"
 #include "avx512/record_quantized_int8/squared_euclidean.h"
 #include "avx512/rotate/fht/fht.h"
+#include "avx512_fp16/fp16/cosine.h"
+#include "avx512_fp16/fp16/inner_product.h"
+#include "avx512_fp16/fp16/squared_euclidean.h"
 #include "avx512_vnni/fp16/squared_euclidean.h"
 #include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
@@ -99,6 +102,13 @@ static bool CpuSupports(CpuArchType arch) {
       return flags.AVX512F;
     case CpuArchType::kAVX512VNNI:
       return flags.AVX512_VNNI;
+    case CpuArchType::kAVX512FP16:
+      // CPUID says the CPU can run FP16 instructions; the extra call checks
+      // that the FP16 kernels were actually compiled in (needs GCC >= 12 /
+      // Clang >= 14), otherwise they are no-op stubs. See
+      // avx512_fp16/fp16/inner_product.h.
+      return flags.AVX512F && flags.AVX512_FP16 &&
+             avx512_fp16::fp16_distance_kernels_available();
     case CpuArchType::kNEON:
       return flags.NEON;
     default:
@@ -151,12 +161,16 @@ struct KernelSet {
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
-    // --- raw physical storage (AVX512, then scalar fallback) ---
+    // --- raw physical storage (AVX512-FP16/AVX512, then scalar fallback) ---
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
      avx512_vnni::squared_euclidean_uint8_batch_distance, nullptr,
      kCpuFeatureAvx512Bw},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512FP16,
+     MetricType::kSquaredEuclidean,
+     avx512_fp16::squared_euclidean_fp16_distance,
+     avx512_fp16::squared_euclidean_fp16_batch_distance, nullptr},
     {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_fp16_distance,
@@ -256,7 +270,17 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint8_batch_distance,
      avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess},
 
-    // --- fp16 (AVX512, AVX2, scalar) ---
+    // --- fp16 (AVX512-FP16, AVX512, AVX2, scalar) ---
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
+     MetricType::kSquaredEuclidean,
+     avx512_fp16::squared_euclidean_fp16_distance,
+     avx512_fp16::squared_euclidean_fp16_batch_distance, nullptr},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
+     MetricType::kCosine, avx512_fp16::cosine_fp16_distance,
+     avx512_fp16::cosine_fp16_batch_distance, nullptr},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
+     MetricType::kInnerProduct, avx512_fp16::inner_product_fp16_distance,
+     avx512_fp16::inner_product_fp16_batch_distance, nullptr},
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp16_distance_avx512,
