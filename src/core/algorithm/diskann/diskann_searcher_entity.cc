@@ -136,6 +136,12 @@ int DiskAnnSearcherEntity::load_pq_segment() {
 
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
+
+  int ret = normalize_pq_meta();
+  if (ret != 0) {
+    return ret;
+  }
+
   if (pq_meta_.chunk_num == 0 || meta_header_.doc_cnt == 0 ||
       pq_meta_.quantizer_meta_buffer_size == 0 ||
       pq_meta_.chunk_num > meta_.dimension()) {
@@ -172,6 +178,44 @@ int DiskAnnSearcherEntity::load_pq_segment() {
     LOG_ERROR("Failed to allocate DiskAnn PQ code buffer");
     return IndexError_NoMemory;
   }
+
+  return 0;
+}
+
+int DiskAnnSearcherEntity::normalize_pq_meta() {
+  // The header carries no version, so the layouts are told apart by the payload
+  // behind it: the current one starts with the turbo quantizer magic.
+  const void *data = nullptr;
+  uint32_t magic = 0;
+  if (pq_meta_segment_->read(sizeof(DiskAnnPqMeta), &data, sizeof(magic)) !=
+      sizeof(magic)) {
+    // Truncated payload: let the caller's validation report the format error.
+    return 0;
+  }
+  memcpy(&magic, data, sizeof(magic));
+  if (magic == turbo::kQuantizerMagic) {
+    return 0;
+  }
+
+  DiskAnnLegacyPqMeta legacy;
+  memcpy(&legacy, &pq_meta_, sizeof(legacy));
+  if (legacy.chunk_num == 0 || legacy.full_pivot_data_size == 0 ||
+      legacy.centroid_data_size == 0) {
+    LOG_ERROR("Unrecognized DiskAnn PQ metadata layout");
+    return IndexError_InvalidFormat;
+  }
+
+  // Normalize onto the current header so that everything downstream only sees a
+  // chunk count and an opaque payload; the chunk offset array is always
+  // chunk_num + 1 uint32 entries, its size field was never written.
+  pq_meta_.clear();
+  pq_meta_.chunk_num = legacy.chunk_num;
+  pq_meta_.quantizer_meta_buffer_size =
+      legacy.full_pivot_data_size + legacy.centroid_data_size +
+      (legacy.chunk_num + 1) * sizeof(uint32_t);
+
+  LOG_INFO("DiskAnn index carries the legacy PQ codebook layout, chunk_num=%zu",
+           (size_t)pq_meta_.chunk_num);
 
   return 0;
 }

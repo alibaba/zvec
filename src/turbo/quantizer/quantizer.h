@@ -161,6 +161,14 @@ class Quantizer {
     return 0;
   }
 
+  //! Adopt a codebook built outside this quantizer, on an already initialized
+  //! instance: `data` holds raw centroids in the quantizer's own in-memory
+  //! layout, which the caller has to match.  Used for codebooks persisted in a
+  //! foreign layout, e.g. by an index older than this serialization format.
+  virtual int import_codebook(const void * /*data*/, size_t /*len*/) {
+    return kErrUnsupported;
+  }
+
  protected:
   //! Subclasses must declare which QuantizeType they implement.
   explicit Quantizer(QuantizeType type) : type_(type) {}

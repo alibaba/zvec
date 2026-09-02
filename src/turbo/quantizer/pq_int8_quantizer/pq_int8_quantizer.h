@@ -126,6 +126,10 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
 
   int deserialize(const void *data, size_t len) override;
 
+  //! Adopt an externally built codebook: `len` bytes laid out as
+  //! [num_chunk][256][chunk_dim] in the input data type, matching centroids_.
+  int import_codebook(const void *data, size_t len) override;
+
  private:
   //! Train a single chunk (KMeans, k=256) on the sub-vectors.
   //! Templated on the data type T (float or ailego::Float16) so that

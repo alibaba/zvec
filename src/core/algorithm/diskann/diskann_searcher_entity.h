@@ -47,7 +47,8 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
   //! Read the serialized PQ quantizer meta buffer from the PQ meta segment.
   //! The quantizer itself is constructed by the searcher/streamer and handed
-  //! to the indexer; the entity only owns the persisted bytes.
+  //! to the indexer; the entity only owns the persisted bytes.  For a legacy
+  //! layout the raw codebook is returned instead (see DiskAnnUtil).
   int read_pq_quantizer_meta_buffer(std::string *meta_buffer) const;
 
   const uint8_t *pq_codes() const {
@@ -69,6 +70,12 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
   diskann_id_t get_id(diskann_key_t key) const override;
   diskann_key_t get_key(diskann_id_t id) const override;
+
+ private:
+  //! Interpret the PQ meta header just read into pq_meta_.  Legacy indexes
+  //! carry DiskAnnLegacyPqMeta in the same bytes; on success pq_meta_ holds the
+  //! normalized chunk count and payload size for both layouts.
+  int normalize_pq_meta();
 
  private:
   IndexStorage::Pointer storage_{};

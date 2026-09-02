@@ -1065,6 +1065,22 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   return 0;
 }
 
+int PqInt8Quantizer::import_codebook(const void *data, size_t len) {
+  // init() owns the geometry, so the codebook size is fully determined; a
+  // mismatch means the caller repacked against a different layout.
+  if (!initialized_ || data == nullptr) return kErrUnsupported;
+  if (len != centroids_.size()) return kErrUnsupported;
+
+  std::memcpy(centroids_.data(), data, len);
+
+  // Same derivations as deserialize(); dist_table_ stays unbuilt because SDC is
+  // only used while building.
+  build_centroid_ptrs_cache();
+  compute_sub_centroid_norms();
+
+  return 0;
+}
+
 INDEX_FACTORY_REGISTER_QUANTIZER(PqInt8Quantizer);
 
 // ---------------------------------------------------------------------------
