@@ -1242,14 +1242,17 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
     for (uint32_t d = 0; d < kDimension; ++d) {
       const float base = 0.25F + static_cast<float>(d) * 0.017F;
       const int32_t offset = static_cast<int32_t>((i * 37 + d * 19) % 97) - 48;
-      vectors[i][d] = base + static_cast<float>(offset) * 0.00011F;
+      // Keep the per-doc spacing above the fp16 ULP at these magnitudes
+      // (~2.4e-4..4.9e-4); sub-ULP spacing quantizes docs to tied scores,
+      // whose ordering then depends on candidate insertion order.
+      vectors[i][d] = base + static_cast<float>(offset) * 0.0025F;
     }
     ASSERT_EQ(0, source->add(VectorData{DenseVector{vectors[i].data()}}, i));
   }
 
   std::vector<float> query = vectors[7];
   for (uint32_t d = 0; d < kDimension; ++d) {
-    query[d] += static_cast<float>(static_cast<int32_t>(d % 5) - 2) * 0.00017F;
+    query[d] += static_cast<float>(static_cast<int32_t>(d % 5) - 2) * 0.0004F;
   }
   std::vector<uint16_t> native_query(kDimension);
   zvec::ailego::FloatHelper::ToFP16(query.data(), query.size(),
