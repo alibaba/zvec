@@ -200,7 +200,7 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kSquaredEuclidean, scalar::squared_euclidean_fp16_distance,
      scalar::squared_euclidean_fp16_batch_distance, nullptr},
 
-    // --- record-quantized int8 (AVX512-VNNI, AVX512, AVX2, SSE, NEON, scalar) ---
+    // --- record-quantized int8 (VNNI, AVX512, AVX2, SSE, NEON, scalar) ---
     {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_int8_distance,
