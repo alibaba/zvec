@@ -390,15 +390,17 @@ TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
     float actual = 0.0f;
     scalar.dist(lhs.data(), rhs.data(), lhs.size(), &expected);
     sse.dist(lhs.data(), rhs.data(), lhs.size(), &actual);
-    expect_simd_near(actual, expected);
+    expect_simd_near(actual, expected, turbo::CpuArchType::kSSE);
 
     const void *vectors[] = {lhs.data(), rhs.data()};
     float expected_batch[2] = {};
     float actual_batch[2] = {};
     scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch);
     sse.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch);
-    expect_simd_near(actual_batch[0], expected_batch[0]);
-    expect_simd_near(actual_batch[1], expected_batch[1]);
+    expect_simd_near(actual_batch[0], expected_batch[0],
+                     turbo::CpuArchType::kSSE);
+    expect_simd_near(actual_batch[1], expected_batch[1],
+                     turbo::CpuArchType::kSSE);
   }
 }
 
