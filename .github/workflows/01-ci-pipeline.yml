@@ -79,6 +79,12 @@ jobs:
       platform: macos-x64
       os: macos-15-intel
 
+  build-and-test-sdk-macos-x64:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Smoke-test Prebuilt SDK (macos-x64)
+    needs: [lint, clang-tidy]
+    uses: ./.github/workflows/_build_macos_x64_sdk.yml
+
   build-and-test-wheel-macos-x64:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test Wheel (macos-x64)
