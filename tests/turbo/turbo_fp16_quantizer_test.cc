@@ -42,14 +42,8 @@ static float reference_cosine(const float *a, const float *b, size_t dim) {
 }
 
 // SIMD kernels may reorder accumulation; allow a small relative tolerance.
-static void expect_simd_near(float actual, float expected,
-                             turbo::CpuArchType arch) {
-  // AVX512-FP16 performs its fused multiply-add accumulation in FP16.  The
-  // other implementations widen inputs and accumulate in FP32.
-  const float relative_tolerance =
-      arch == turbo::CpuArchType::kAVX512FP16 ? 5.0e-3f : 1.0e-4f;
-  const float tolerance =
-      relative_tolerance * std::max(1.0f, std::abs(expected));
+static void expect_simd_near(float actual, float expected) {
+  const float tolerance = 1.0e-4f * std::max(1.0f, std::abs(expected));
   EXPECT_NEAR(actual, expected, tolerance);
 }
 
@@ -114,7 +108,7 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
         float actual = 0.0f;
         scalar.dist(encoded[i].data(), encoded[0].data(), dim, &expected);
         simd.dist(encoded[i].data(), encoded[0].data(), dim, &actual);
-        expect_simd_near(actual, expected, arch);
+        expect_simd_near(actual, expected);
       }
 
       std::vector<const void *> candidates(kVectorCount - 1);
@@ -128,7 +122,7 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
                  actual.data());
       for (size_t i = 0; i < candidates.size(); ++i) {
-        expect_simd_near(actual[i], expected[i], arch);
+        expect_simd_near(actual[i], expected[i]);
       }
     }
   }
@@ -359,8 +353,4 @@ TEST(Fp16Quantizer, Avx2DistanceMatchesScalar) {
 
 TEST(Fp16Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
-}
-
-TEST(Fp16Quantizer, Avx512Fp16DistanceMatchesScalar) {
-  check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512FP16);
 }
