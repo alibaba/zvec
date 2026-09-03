@@ -54,6 +54,8 @@
 #include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
+#include "avx512_vnni/uniform_uint4/quantize.h"
+#include "avx512_vnni/uniform_uint4/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint7/quantize.h"
 #include "avx512_vnni/uniform_uint7/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint8/squared_euclidean.h"
@@ -300,6 +302,12 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint8_batch_distance,
      avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess},
 
+    // --- uniform-quantized uint4 (packed; AVX512-VNNI only) ---
+    {QuantizeType::kUniformUint4, DataType::kInt4, CpuArchType::kAVX512VNNI,
+     MetricType::kSquaredEuclidean,
+     avx512_vnni::uniform_squared_euclidean_uint4_distance,
+     avx512_vnni::uniform_squared_euclidean_uint4_batch_distance, nullptr},
+
     // --- fp16 (AVX512-FP16, AVX512, AVX2, NEON, scalar) ---
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
      MetricType::kSquaredEuclidean,
@@ -484,13 +492,23 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
 }
 
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
-  if (data_type == DataType::kInt8) {
+  if (data_type == DataType::kUint7) {
     // Quantize uses AVX-512F (no VNNI required), but we gate on the same
     // AVX512_VNNI flag for now since the kernel lives in the avx512_vnni
     // directory and is compiled with the same march flag.
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
       return avx512_vnni::uniform_uint7_quantize;
     }
+  }
+  return nullptr;
+}
+
+UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type) {
+  // TODO: unify uniform_uint4_quantize/uniform_uint4_quantize param list and
+  // merge get_uniform_quantize_func/get_uniform_uint4_quantize_func
+  if (data_type == DataType::kUint4 &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+    return avx512_vnni::uniform_uint4_quantize;
   }
   return nullptr;
 }
