@@ -360,7 +360,7 @@ TEST(Fp16Quantizer, Avx2DistanceMatchesScalar) {
 }
 
 TEST(Fp16Quantizer, SseDistanceMatchesScalar) {
-  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE);
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE2);
 }
 
 TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
@@ -379,28 +379,28 @@ TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
     const auto scalar = turbo::get_distance_kernels(
         metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
         turbo::CpuArchType::kScalar);
-    const auto sse = turbo::get_distance_kernels(metric, turbo::DataType::kFp16,
-                                                 turbo::QuantizeType::kFp16,
-                                                 turbo::CpuArchType::kSSE);
-    if (!sse.dist) {
-      GTEST_SKIP() << "SSE kernels unavailable on this CPU";
+    const auto sse2 = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kSSE2);
+    if (!sse2.dist) {
+      GTEST_SKIP() << "SSE2 kernels unavailable on this CPU";
     }
 
     float expected = 0.0f;
     float actual = 0.0f;
     scalar.dist(lhs.data(), rhs.data(), lhs.size(), &expected);
-    sse.dist(lhs.data(), rhs.data(), lhs.size(), &actual);
-    expect_simd_near(actual, expected, turbo::CpuArchType::kSSE);
+    sse2.dist(lhs.data(), rhs.data(), lhs.size(), &actual);
+    expect_simd_near(actual, expected, turbo::CpuArchType::kSSE2);
 
     const void *vectors[] = {lhs.data(), rhs.data()};
     float expected_batch[2] = {};
     float actual_batch[2] = {};
     scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch);
-    sse.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch);
+    sse2.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch);
     expect_simd_near(actual_batch[0], expected_batch[0],
-                     turbo::CpuArchType::kSSE);
+                     turbo::CpuArchType::kSSE2);
     expect_simd_near(actual_batch[1], expected_batch[1],
-                     turbo::CpuArchType::kSSE);
+                     turbo::CpuArchType::kSSE2);
   }
 }
 

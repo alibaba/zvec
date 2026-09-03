@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "sse/record_quantized_int4/distance.h"
+#include "sse2/record_quantized_int4/distance.h"
 #include <cstdint>
-#include "sse/simd.h"
+#include "sse2/simd.h"
 #if ZVEC_TURBO_SSE2
 #include <array>
 #include <zvec/ailego/internal/platform.h>
 #endif
 
-namespace zvec::turbo::sse {
+namespace zvec::turbo::sse2 {
 
 #if ZVEC_TURBO_SSE2
 namespace {
@@ -146,8 +146,8 @@ void raw_inner_product_batch(const void *const *vectors, const uint8_t *query,
 }  // namespace
 #endif
 
-void inner_product_int4_distance_sse(const void *a, const void *b, size_t dim,
-                                     float *distance) {
+void inner_product_int4_distance_sse2(const void *a, const void *b, size_t dim,
+                                      float *distance) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
@@ -174,9 +174,9 @@ void inner_product_int4_distance_sse(const void *a, const void *b, size_t dim,
 #endif
 }
 
-void inner_product_int4_batch_distance_sse(const void *const *vectors,
-                                           const void *query, size_t n,
-                                           size_t dim, float *distances) {
+void inner_product_int4_batch_distance_sse2(const void *const *vectors,
+                                            const void *query, size_t n,
+                                            size_t dim, float *distances) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
@@ -205,8 +205,8 @@ void inner_product_int4_batch_distance_sse(const void *const *vectors,
 #endif
 }
 
-void squared_euclidean_int4_distance_sse(const void *a, const void *b,
-                                         size_t dim, float *distance) {
+void squared_euclidean_int4_distance_sse2(const void *a, const void *b,
+                                          size_t dim, float *distance) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
@@ -236,9 +236,9 @@ void squared_euclidean_int4_distance_sse(const void *a, const void *b,
 #endif
 }
 
-void squared_euclidean_int4_batch_distance_sse(const void *const *vectors,
-                                               const void *query, size_t n,
-                                               size_t dim, float *distances) {
+void squared_euclidean_int4_batch_distance_sse2(const void *const *vectors,
+                                                const void *query, size_t n,
+                                                size_t dim, float *distances) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
@@ -271,8 +271,8 @@ void squared_euclidean_int4_batch_distance_sse(const void *const *vectors,
 #endif
 }
 
-void cosine_int4_distance_sse(const void *a, const void *b, size_t dim,
-                              float *distance) {
+void cosine_int4_distance_sse2(const void *a, const void *b, size_t dim,
+                               float *distance) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 40;
   if (dim <= kTailUnits) {
@@ -299,9 +299,9 @@ void cosine_int4_distance_sse(const void *a, const void *b, size_t dim,
 #endif
 }
 
-void cosine_int4_batch_distance_sse(const void *const *vectors,
-                                    const void *query, size_t n, size_t dim,
-                                    float *distances) {
+void cosine_int4_batch_distance_sse2(const void *const *vectors,
+                                     const void *query, size_t n, size_t dim,
+                                     float *distances) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 40;
   if (dim <= kTailUnits) {
@@ -330,4 +330,4 @@ void cosine_int4_batch_distance_sse(const void *const *vectors,
 #endif
 }
 
-}  // namespace zvec::turbo::sse
+}  // namespace zvec::turbo::sse2

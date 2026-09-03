@@ -93,11 +93,11 @@
 #include "scalar/record_quantized_int8/inner_product.h"
 #include "scalar/record_quantized_int8/squared_euclidean.h"
 #include "scalar/rotate/fht/fht.h"
-#include "sse/fp16/distance.h"
-#include "sse/fp32/distance.h"
-#include "sse/record_quantized_int4/distance.h"
-#include "sse/record_quantized_int8/distance.h"
-#include "sse/rotate/fht/fht.h"
+#include "sse2/fp16/distance.h"
+#include "sse2/fp32/distance.h"
+#include "sse2/record_quantized_int4/distance.h"
+#include "sse2/record_quantized_int8/distance.h"
+#include "sse2/rotate/fht/fht.h"
 
 namespace zvec::turbo {
 
@@ -112,7 +112,7 @@ static bool CpuSupports(CpuArchType arch) {
   switch (arch) {
     case CpuArchType::kScalar:
       return true;
-    case CpuArchType::kSSE:
+    case CpuArchType::kSSE2:
       return flags.SSE2;
     case CpuArchType::kAVX2:
       return flags.AVX2;
@@ -202,7 +202,7 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kSquaredEuclidean, scalar::squared_euclidean_fp16_distance,
      scalar::squared_euclidean_fp16_batch_distance, nullptr},
 
-    // --- record-quantized int8 (VNNI, AVX512, AVX2, SSE, NEON, scalar) ---
+    // --- record-quantized int8 (VNNI, AVX512, AVX2, SSE2, NEON, scalar) ---
     {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_int8_distance,
@@ -233,15 +233,15 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kAVX2,
      MetricType::kInnerProduct, avx2::inner_product_int8_distance_avx2,
      avx2::inner_product_int8_batch_distance_avx2, nullptr},
-    {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kSSE,
-     MetricType::kSquaredEuclidean, sse::squared_euclidean_int8_distance_sse,
-     sse::squared_euclidean_int8_batch_distance_sse, nullptr},
-    {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kSSE,
-     MetricType::kCosine, sse::cosine_int8_distance_sse,
-     sse::cosine_int8_batch_distance_sse, nullptr},
-    {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kSSE,
-     MetricType::kInnerProduct, sse::inner_product_int8_distance_sse,
-     sse::inner_product_int8_batch_distance_sse, nullptr},
+    {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kSSE2,
+     MetricType::kSquaredEuclidean, sse2::squared_euclidean_int8_distance_sse2,
+     sse2::squared_euclidean_int8_batch_distance_sse2, nullptr},
+    {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kSSE2,
+     MetricType::kCosine, sse2::cosine_int8_distance_sse2,
+     sse2::cosine_int8_batch_distance_sse2, nullptr},
+    {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::inner_product_int8_distance_sse2,
+     sse2::inner_product_int8_batch_distance_sse2, nullptr},
     {QuantizeType::kRecord, DataType::kInt8, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_int8_distance,
      neon::squared_euclidean_int8_batch_distance, nullptr},
@@ -261,7 +261,7 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kInnerProduct, scalar::inner_product_int8_distance,
      scalar::inner_product_int8_batch_distance, nullptr},
 
-    // --- record-quantized int4 (AVX512, AVX2, SSE, NEON, scalar) ---
+    // --- record-quantized int4 (AVX512, AVX2, SSE2, NEON, scalar) ---
     {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_int4_distance_avx512,
@@ -283,15 +283,15 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kAVX2,
      MetricType::kInnerProduct, avx2::inner_product_int4_distance_avx2,
      avx2::inner_product_int4_batch_distance_avx2, nullptr},
-    {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kSSE,
-     MetricType::kSquaredEuclidean, sse::squared_euclidean_int4_distance_sse,
-     sse::squared_euclidean_int4_batch_distance_sse, nullptr},
-    {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kSSE,
-     MetricType::kCosine, sse::cosine_int4_distance_sse,
-     sse::cosine_int4_batch_distance_sse, nullptr},
-    {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kSSE,
-     MetricType::kInnerProduct, sse::inner_product_int4_distance_sse,
-     sse::inner_product_int4_batch_distance_sse, nullptr},
+    {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kSSE2,
+     MetricType::kSquaredEuclidean, sse2::squared_euclidean_int4_distance_sse2,
+     sse2::squared_euclidean_int4_batch_distance_sse2, nullptr},
+    {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kSSE2,
+     MetricType::kCosine, sse2::cosine_int4_distance_sse2,
+     sse2::cosine_int4_batch_distance_sse2, nullptr},
+    {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::inner_product_int4_distance_sse2,
+     sse2::inner_product_int4_batch_distance_sse2, nullptr},
     {QuantizeType::kRecord, DataType::kInt4, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_int4_distance,
      neon::squared_euclidean_int4_batch_distance, nullptr},
@@ -363,15 +363,15 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX2,
      MetricType::kInnerProduct, avx2::inner_product_fp16_distance_avx2,
      avx2::inner_product_fp16_batch_distance_avx2, nullptr, kCpuFeatureF16c},
-    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE,
-     MetricType::kSquaredEuclidean, sse::squared_euclidean_fp16_distance_sse,
-     sse::squared_euclidean_fp16_batch_distance_sse, nullptr},
-    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE,
-     MetricType::kCosine, sse::cosine_fp16_distance_sse,
-     sse::cosine_fp16_batch_distance_sse, nullptr},
-    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE,
-     MetricType::kInnerProduct, sse::inner_product_fp16_distance_sse,
-     sse::inner_product_fp16_batch_distance_sse, nullptr},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kSquaredEuclidean, sse2::squared_euclidean_fp16_distance_sse2,
+     sse2::squared_euclidean_fp16_batch_distance_sse2, nullptr},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kCosine, sse2::cosine_fp16_distance_sse2,
+     sse2::cosine_fp16_batch_distance_sse2, nullptr},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::inner_product_fp16_distance_sse2,
+     sse2::inner_product_fp16_batch_distance_sse2, nullptr},
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_fp16_distance,
      neon::squared_euclidean_fp16_batch_distance, nullptr},
@@ -391,7 +391,7 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kInnerProduct, scalar::inner_product_fp16_distance,
      scalar::inner_product_fp16_batch_distance, nullptr},
 
-    // --- fp32 (AVX512, AVX2, SSE, NEON, scalar) ---
+    // --- fp32 (AVX512, AVX2, SSE2, NEON, scalar) ---
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp32_distance_avx512,
@@ -411,15 +411,15 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kAVX2,
      MetricType::kInnerProduct, avx2::inner_product_fp32_distance_avx2,
      avx2::inner_product_fp32_batch_distance_avx2, nullptr},
-    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSSE,
-     MetricType::kSquaredEuclidean, sse::squared_euclidean_fp32_distance_sse,
-     sse::squared_euclidean_fp32_batch_distance_sse, nullptr},
-    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSSE,
-     MetricType::kCosine, sse::cosine_fp32_distance_sse,
-     sse::cosine_fp32_batch_distance_sse, nullptr},
-    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSSE,
-     MetricType::kInnerProduct, sse::inner_product_fp32_distance_sse,
-     sse::inner_product_fp32_batch_distance_sse, nullptr},
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSSE2,
+     MetricType::kSquaredEuclidean, sse2::squared_euclidean_fp32_distance_sse2,
+     sse2::squared_euclidean_fp32_batch_distance_sse2, nullptr},
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSSE2,
+     MetricType::kCosine, sse2::cosine_fp32_distance_sse2,
+     sse2::cosine_fp32_batch_distance_sse2, nullptr},
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::inner_product_fp32_distance_sse2,
+     sse2::inner_product_fp32_batch_distance_sse2, nullptr},
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_fp32_distance,
      neon::squared_euclidean_fp32_batch_distance, nullptr},
@@ -646,9 +646,9 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
         return {avx2::fht_rotate_avx2, avx2::fht_unrotate_avx2};
       }
-      if (CpuSupports(CpuArchType::kSSE) &&
-          IsArchMatch(cpu_arch_type, CpuArchType::kSSE)) {
-        return {sse::fht_rotate_sse, sse::fht_unrotate_sse};
+      if (CpuSupports(CpuArchType::kSSE2) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kSSE2)) {
+        return {sse2::fht_rotate_sse2, sse2::fht_unrotate_sse2};
       }
       if (CpuSupports(CpuArchType::kNEON) &&
           IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {

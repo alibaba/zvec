@@ -15,7 +15,7 @@
 #pragma once
 
 // MSVC does not define __SSE2__ for its x64 target even though SSE2 is part of
-// the ABI. Keep this in sync with the kSSE runtime gate, which checks SSE2.
+// the ABI. Keep this in sync with the kSSE2 runtime gate, which checks SSE2.
 #if defined(__SSE2__) || defined(_M_X64) || \
     (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define ZVEC_TURBO_SSE2 1
@@ -29,7 +29,7 @@
 #include <cstdint>
 #include <zvec/ailego/utility/float_helper.h>
 
-namespace zvec::turbo::sse::internal {
+namespace zvec::turbo::sse2::internal {
 
 inline float horizontal_sum(__m128 value) {
   const __m128 high = _mm_movehl_ps(value, value);
@@ -86,6 +86,6 @@ inline __m128 load_fp16_4(const ailego::Float16 *values) {
   return _mm_castsi128_ps(select(exponent_is_special, special, finite));
 }
 
-}  // namespace zvec::turbo::sse::internal
+}  // namespace zvec::turbo::sse2::internal
 
 #endif  // ZVEC_TURBO_SSE2

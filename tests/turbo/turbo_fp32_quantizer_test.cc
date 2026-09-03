@@ -298,7 +298,7 @@ TEST(Fp32Quantizer, Avx2DistanceMatchesScalar) {
 }
 
 TEST(Fp32Quantizer, SseDistanceMatchesScalar) {
-  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE);
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE2);
 }
 
 TEST(Fp32Quantizer, Avx512DistanceMatchesScalar) {

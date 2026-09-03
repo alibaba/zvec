@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "sse/fp32/distance.h"
-#include "sse/simd.h"
+#include "sse2/fp32/distance.h"
+#include "sse2/simd.h"
 
 #if ZVEC_TURBO_SSE2
 #include <array>
 #include <zvec/ailego/internal/platform.h>
 #endif
 
-namespace zvec::turbo::sse {
+namespace zvec::turbo::sse2 {
 
 #if ZVEC_TURBO_SSE2
 namespace {
@@ -130,8 +130,8 @@ void distance_batch(const void *const *vectors, const void *query, size_t n,
 }  // namespace
 #endif
 
-void squared_euclidean_fp32_distance_sse(const void *a, const void *b,
-                                         size_t dim, float *distance) {
+void squared_euclidean_fp32_distance_sse2(const void *a, const void *b,
+                                          size_t dim, float *distance) {
 #if ZVEC_TURBO_SSE2
   *distance = distance_impl<true>(static_cast<const float *>(a),
                                   static_cast<const float *>(b), dim);
@@ -143,9 +143,9 @@ void squared_euclidean_fp32_distance_sse(const void *a, const void *b,
 #endif
 }
 
-void squared_euclidean_fp32_batch_distance_sse(const void *const *vectors,
-                                               const void *query, size_t n,
-                                               size_t dim, float *distances) {
+void squared_euclidean_fp32_batch_distance_sse2(const void *const *vectors,
+                                                const void *query, size_t n,
+                                                size_t dim, float *distances) {
 #if ZVEC_TURBO_SSE2
   distance_batch<true>(vectors, query, n, dim, distances);
 #else
@@ -157,8 +157,8 @@ void squared_euclidean_fp32_batch_distance_sse(const void *const *vectors,
 #endif
 }
 
-void inner_product_fp32_distance_sse(const void *a, const void *b, size_t dim,
-                                     float *distance) {
+void inner_product_fp32_distance_sse2(const void *a, const void *b, size_t dim,
+                                      float *distance) {
 #if ZVEC_TURBO_SSE2
   *distance = distance_impl<false>(static_cast<const float *>(a),
                                    static_cast<const float *>(b), dim);
@@ -170,9 +170,9 @@ void inner_product_fp32_distance_sse(const void *a, const void *b, size_t dim,
 #endif
 }
 
-void inner_product_fp32_batch_distance_sse(const void *const *vectors,
-                                           const void *query, size_t n,
-                                           size_t dim, float *distances) {
+void inner_product_fp32_batch_distance_sse2(const void *const *vectors,
+                                            const void *query, size_t n,
+                                            size_t dim, float *distances) {
 #if ZVEC_TURBO_SSE2
   distance_batch<false>(vectors, query, n, dim, distances);
 #else
@@ -184,18 +184,18 @@ void inner_product_fp32_batch_distance_sse(const void *const *vectors,
 #endif
 }
 
-void cosine_fp32_distance_sse(const void *a, const void *b, size_t dim,
-                              float *distance) {
-  inner_product_fp32_distance_sse(a, b, dim, distance);
+void cosine_fp32_distance_sse2(const void *a, const void *b, size_t dim,
+                               float *distance) {
+  inner_product_fp32_distance_sse2(a, b, dim, distance);
 #if ZVEC_TURBO_SSE2
   *distance += 1.0f;
 #endif
 }
 
-void cosine_fp32_batch_distance_sse(const void *const *vectors,
-                                    const void *query, size_t n, size_t dim,
-                                    float *distances) {
-  inner_product_fp32_batch_distance_sse(vectors, query, n, dim, distances);
+void cosine_fp32_batch_distance_sse2(const void *const *vectors,
+                                     const void *query, size_t n, size_t dim,
+                                     float *distances) {
+  inner_product_fp32_batch_distance_sse2(vectors, query, n, dim, distances);
 #if ZVEC_TURBO_SSE2
   for (size_t i = 0; i < n; ++i) {
     distances[i] += 1.0f;
@@ -203,4 +203,4 @@ void cosine_fp32_batch_distance_sse(const void *const *vectors,
 #endif
 }
 
-}  // namespace zvec::turbo::sse
+}  // namespace zvec::turbo::sse2

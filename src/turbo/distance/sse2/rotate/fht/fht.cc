@@ -23,11 +23,11 @@
 #include <cstring>
 #include "common/fht_common.h"
 #include "scalar/rotate/fht/fht.h"
-#include "sse/simd.h"
+#include "sse2/simd.h"
 
-namespace zvec::turbo::sse {
+namespace zvec::turbo::sse2 {
 
-void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
+void fht_flip_sign_sse2(const uint8_t *flip, float *data, size_t dim) {
 #if ZVEC_TURBO_SSE2
   size_t simd_end = dim & ~3u;
   size_t flip_bytes = (dim + 7) / 8;
@@ -63,7 +63,7 @@ void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
 #endif
 }
 
-void fht_kacs_walk_sse(float *data, size_t len) {
+void fht_kacs_walk_sse2(float *data, size_t len) {
 #if ZVEC_TURBO_SSE2
   size_t half = len / 2;
   size_t base = len % 2;
@@ -91,7 +91,7 @@ void fht_kacs_walk_sse(float *data, size_t len) {
 #endif
 }
 
-void fht_inv_kacs_walk_sse(float *data, size_t len) {
+void fht_inv_kacs_walk_sse2(float *data, size_t len) {
 #if ZVEC_TURBO_SSE2
   size_t half = len / 2;
   size_t base = len % 2;
@@ -120,7 +120,7 @@ void fht_inv_kacs_walk_sse(float *data, size_t len) {
 #endif
 }
 
-void fht_vec_rescale_sse(float *data, size_t n, float factor) {
+void fht_vec_rescale_sse2(float *data, size_t n, float factor) {
 #if ZVEC_TURBO_SSE2
   const __m128 fac = _mm_set1_ps(factor);
   size_t simd_end = n & ~3u;
@@ -139,12 +139,12 @@ void fht_vec_rescale_sse(float *data, size_t n, float factor) {
 #endif
 }
 
-void fht_rotate_sse(const float *in, float *out, size_t in_dim,
-                    size_t /*out_dim*/, void *ctx) {
+void fht_rotate_sse2(const float *in, float *out, size_t in_dim,
+                     size_t /*out_dim*/, void *ctx) {
 #if ZVEC_TURBO_SSE2
   static constexpr FhtPrimitives kPrim = {
-      fht_flip_sign_sse, scalar::fht_inplace, fht_kacs_walk_sse,
-      fht_inv_kacs_walk_sse, fht_vec_rescale_sse};
+      fht_flip_sign_sse2, scalar::fht_inplace, fht_kacs_walk_sse2,
+      fht_inv_kacs_walk_sse2, fht_vec_rescale_sse2};
   fht_rotate_impl(in, out, in_dim, ctx, kPrim);
 #else
   (void)in;
@@ -154,12 +154,12 @@ void fht_rotate_sse(const float *in, float *out, size_t in_dim,
 #endif
 }
 
-void fht_unrotate_sse(const float *in, float *out, size_t in_dim,
-                      size_t /*out_dim*/, void *ctx) {
+void fht_unrotate_sse2(const float *in, float *out, size_t in_dim,
+                       size_t /*out_dim*/, void *ctx) {
 #if ZVEC_TURBO_SSE2
   static constexpr FhtPrimitives kPrim = {
-      fht_flip_sign_sse, scalar::fht_inplace, fht_kacs_walk_sse,
-      fht_inv_kacs_walk_sse, fht_vec_rescale_sse};
+      fht_flip_sign_sse2, scalar::fht_inplace, fht_kacs_walk_sse2,
+      fht_inv_kacs_walk_sse2, fht_vec_rescale_sse2};
   fht_unrotate_impl(in, out, in_dim, ctx, kPrim);
 #else
   (void)in;
@@ -169,4 +169,4 @@ void fht_unrotate_sse(const float *in, float *out, size_t in_dim,
 #endif
 }
 
-}  // namespace zvec::turbo::sse
+}  // namespace zvec::turbo::sse2

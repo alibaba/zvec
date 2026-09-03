@@ -379,7 +379,7 @@ TEST(Int4Quantizer, Avx2DistanceMatchesScalar) {
 }
 
 TEST(Int4Quantizer, SseDistanceMatchesScalar) {
-  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE);
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE2);
 }
 
 TEST(Int4Quantizer, Avx512DistanceMatchesScalar) {
