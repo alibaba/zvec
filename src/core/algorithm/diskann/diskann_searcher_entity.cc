@@ -197,8 +197,12 @@ int DiskAnnSearcherEntity::normalize_pq_meta() {
     return 0;
   }
 
+  // Reinterpret the very same header bytes under the legacy layout; the void *
+  // casts keep the compiler from treating this as a copy between the two
+  // (non-trivial, but layout-compatible) struct types.
   DiskAnnLegacyPqMeta legacy;
-  memcpy(&legacy, &pq_meta_, sizeof(legacy));
+  memcpy(static_cast<void *>(&legacy), static_cast<const void *>(&pq_meta_),
+         sizeof(legacy));
   if (legacy.chunk_num == 0 || legacy.full_pivot_data_size == 0 ||
       legacy.centroid_data_size == 0) {
     LOG_ERROR("Unrecognized DiskAnn PQ metadata layout");
