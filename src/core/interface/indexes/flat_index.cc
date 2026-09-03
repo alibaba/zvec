@@ -15,10 +15,126 @@
 #include <memory>
 #include <string>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/flat/flat_index_format.h"
 #include "algorithm/flat/flat_utility.h"
 
 namespace zvec::core_interface {
+
+namespace {
+
+//! Read the IndexMeta persisted in the flat linear meta segment without
+//! initializing a streamer. Returns non-zero when the storage or segment
+//! cannot be read (e.g. the index file does not exist yet).
+int ReadPersistedFlatIndexMeta(const std::string &file_path,
+                               const StorageOptions &storage_options,
+                               core::IndexMeta *out) {
+  const char *storage_name = nullptr;
+  switch (storage_options.type) {
+    case StorageOptions::StorageType::kMMAP:
+      storage_name = "MMapFileStorage";
+      break;
+    case StorageOptions::StorageType::kBufferPool:
+      storage_name = "BufferStorage";
+      break;
+    default:
+      return core::IndexError_Unsupported;
+  }
+  auto storage = core::IndexFactory::CreateStorage(storage_name);
+  if (!storage || storage->init(ailego::Params{}) != 0 ||
+      storage->open(file_path, false) != 0) {
+    return core::IndexError_Runtime;
+  }
+  int ret = core::IndexError_InvalidFormat;
+  do {
+    auto segment = storage->get(core::FLAT_LINEAR_META_SEG_ID);
+    if (!segment || segment->data_size() < sizeof(core::StreamerLinearMeta)) {
+      break;
+    }
+    core::IndexStorage::MemoryBlock data_block;
+    if (segment->read(0, data_block, segment->data_size()) !=
+        segment->data_size()) {
+      break;
+    }
+    const auto *mt =
+        reinterpret_cast<const core::StreamerLinearMeta *>(data_block.data());
+    if (mt->header.index_meta_size == 0 ||
+        mt->header.index_meta_size + sizeof(*mt) > segment->data_size()) {
+      break;
+    }
+    if (!out->deserialize(mt->index_meta_data(), mt->header.index_meta_size)) {
+      break;
+    }
+    ret = core::IndexError_Success;
+  } while (false);
+  storage->close();
+  return ret;
+}
+
+}  // namespace
+
+int FlatIndex::open(const std::string &file_path,
+                    StorageOptions storage_options) {
+  // Pre-turbo versions persisted FLAT INT8 through the converter/reformer
+  // pipeline, whose stored meta carries no quantizer attachment. Peek the
+  // persisted meta and rebuild the legacy pipeline so those indexes stay
+  // loadable; anything unreadable keeps the turbo path and gets validated
+  // by the streamer's open-time meta guard as before.
+  if (turbo_quantizer_ != nullptr && !storage_options.create_new) {
+    core::IndexMeta persisted_meta;
+    if (ReadPersistedFlatIndexMeta(file_path, storage_options,
+                                   &persisted_meta) == 0 &&
+        persisted_meta.quantizer_name().empty()) {
+      LOG_INFO(
+          "Persisted flat index %s uses the legacy INT8 layout, falling back "
+          "to the converter pipeline",
+          file_path.c_str());
+      int ret = FallbackToLegacyInt8Pipeline();
+      if (ret != 0) {
+        return ret;
+      }
+    }
+  }
+  return Index::open(file_path, storage_options);
+}
+
+int FlatIndex::FallbackToLegacyInt8Pipeline(void) {
+  turbo_quantizer_.reset();
+  streamer_.reset();
+
+  // Redo the Index::Init() setup down the legacy branch.
+  proxima_index_meta_.clear();
+  proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
+  proxima_index_meta_.set_meta_type(is_sparse_
+                                        ? core::IndexMeta::MetaType::MT_SPARSE
+                                        : core::IndexMeta::MetaType::MT_DENSE);
+  input_vector_meta_.set_meta(proxima_index_meta_.data_type(),
+                              proxima_index_meta_.dimension());
+  input_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
+  streamer_vector_meta_ = input_vector_meta_;
+
+  if (ParseMetricName(param_) != 0) {
+    LOG_ERROR("Failed to parse metric name");
+    return core::IndexError_Runtime;
+  }
+  const auto quantizer_param = param_.quantizer_param
+                                   ? param_.quantizer_param
+                                   : std::make_shared<QuantizerParam>();
+  if (Index::CreateAndInitConverterReformer(*quantizer_param, param_) != 0) {
+    LOG_ERROR("Failed to create and init legacy converter");
+    return core::IndexError_Runtime;
+  }
+  if (CreateAndInitMetric(param_) != 0) {
+    LOG_ERROR("Failed to create and init metric");
+    return core::IndexError_Runtime;
+  }
+  if (CreateAndInitStreamer(param_) != 0) {
+    LOG_ERROR("Failed to create and init streamer");
+    return core::IndexError_Runtime;
+  }
+  return core::IndexError_Success;
+}
 
 int FlatIndex::CreateAndInitConverterReformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {

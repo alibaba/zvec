@@ -19,6 +19,8 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_framework.h>
+#include <zvec/core/framework/index_streamer.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param.h>
@@ -328,4 +330,107 @@ TEST(FlatTurboInt8Index, RotateReopenOfTurboLayoutRejected) {
                                   {StorageOptions::StorageType::kMMAP, false}));
 
   zvec::test_util::RemoveTestFiles(index_name);
+}
+
+namespace {
+
+// Builds an INT8 flat index file the way pre-turbo versions persisted it:
+// through the converter/reformer pipeline, whose stored meta carries no
+// quantizer attachment.
+void BuildLegacyInt8IndexFile(const std::string &path, MetricType metric,
+                              const std::vector<std::vector<float>> &vectors) {
+  namespace core = zvec::core;
+  core::IndexMeta meta(core::IndexMeta::DataType::DT_FP32, kDimension);
+  meta.set_meta_type(core::IndexMeta::MetaType::MT_DENSE);
+  meta.set_metric(metric == MetricType::kCosine ? "Cosine" : "SquaredEuclidean",
+                  0, zvec::ailego::Params());
+  const std::string converter_name = metric == MetricType::kCosine
+                                         ? "CosineInt8Converter"
+                                         : "Int8StreamingConverter";
+  meta.set_converter(converter_name, 0, zvec::ailego::Params());
+  auto converter = core::IndexFactory::CreateConverter(converter_name);
+  ASSERT_NE(nullptr, converter);
+  ASSERT_EQ(0, converter->init(meta, zvec::ailego::Params()));
+  core::IndexMeta quantized_meta = converter->meta();
+  ASSERT_FALSE(quantized_meta.reformer_name().empty());
+  auto reformer =
+      core::IndexFactory::CreateReformer(quantized_meta.reformer_name());
+  ASSERT_NE(nullptr, reformer);
+  ASSERT_EQ(0, reformer->init(quantized_meta.reformer_params()));
+
+  auto streamer = core::IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(quantized_meta, zvec::ailego::Params()));
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(zvec::ailego::Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_NE(nullptr, context);
+  core::IndexQueryMeta fp32_meta(core::IndexMeta::DT_FP32, kDimension);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    std::string converted;
+    core::IndexQueryMeta new_meta;
+    ASSERT_EQ(0, reformer->convert(vectors[i].data(), fp32_meta, &converted,
+                                   &new_meta));
+    ASSERT_EQ(0,
+              streamer->add_with_id_impl(static_cast<uint32_t>(i),
+                                         converted.data(), new_meta, context));
+  }
+  ASSERT_EQ(0, streamer->flush(0));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
+// A legacy INT8 index must reopen through the interface with the same
+// params: FlatIndex::open detects the missing quantizer attachment in the
+// persisted meta and falls back to the converter pipeline instead of
+// failing the streamer's open-time meta guard.
+void CheckLegacyLayoutReopen(MetricType metric) {
+  const std::string index_name{"flat_int8_legacy_layout.index"};
+  zvec::test_util::RemoveTestFiles(index_name);
+  auto vectors = RandomVectors(kVectorCount, kDimension);
+  BuildLegacyInt8IndexFile(index_name, metric, vectors);
+  if (::testing::Test::HasFatalFailure()) {
+    return;
+  }
+
+  auto param = MakeParam(metric, QuantizerType::kInt8);
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(
+      0, index->open(index_name, {StorageOptions::StorageType::kMMAP, false}));
+
+  auto got = RunSearch(index.get(), vectors[7]);
+  ASSERT_EQ(kTopK, got.rows.size());
+  EXPECT_EQ(7u, got.rows[0].first);
+
+  // fetch must revert through the legacy reformer
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, index->fetch(7, &fetched));
+  const auto *fetched_vector = reinterpret_cast<const float *>(
+      std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
+  for (uint32_t i = 0; i < kDimension; ++i) {
+    EXPECT_NEAR(vectors[7][i], fetched_vector[i], 5e-2f);
+  }
+
+  // legacy indexes stay writable after the fallback
+  VectorData vector_data;
+  vector_data.vector = DenseVector{vectors[3].data()};
+  ASSERT_EQ(0, index->add(vector_data, static_cast<uint32_t>(kVectorCount)));
+  ASSERT_EQ(0, index->close());
+
+  zvec::test_util::RemoveTestFiles(index_name);
+}
+
+}  // namespace
+
+TEST(FlatTurboInt8Index, CosineLegacyLayoutReopenFallsBack) {
+  CheckLegacyLayoutReopen(MetricType::kCosine);
+}
+
+TEST(FlatTurboInt8Index, L2LegacyLayoutReopenFallsBack) {
+  CheckLegacyLayoutReopen(MetricType::kL2sq);
 }

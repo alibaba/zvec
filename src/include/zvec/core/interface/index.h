@@ -250,6 +250,11 @@ class ZVEC_CORE_API FlatIndex : public Index {
   // FlatIndex(const FlatIndexParam &param) : param_(param) {}
   // FlatIndex(FlatIndexParam &&param) : param(std::move(param)) {}
 
+  //! Open the index. A persisted legacy INT8 layout (created before the
+  //! turbo Int8Quantizer, i.e. no quantizer attachment in the stored meta)
+  //! falls back to the converter/reformer pipeline for compatibility.
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -262,6 +267,10 @@ class ZVEC_CORE_API FlatIndex : public Index {
                           core::IndexContext::Pointer &context) override;
 
  private:
+  //! Rebuild the legacy INT8 converter/reformer/metric/streamer pipeline,
+  //! dropping the turbo quantizer.
+  int FallbackToLegacyInt8Pipeline(void);
+
   FlatIndexParam param_{};
 };
 
