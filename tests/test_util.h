@@ -35,10 +35,17 @@
 namespace zvec {
 namespace test_util {
 
+// system() is declared warn_unused_result; the return value is irrelevant for
+// best-effort cleanup in tests.
+inline void RunShellCommand(const std::string &command) {
+  int ret = system(command.c_str());
+  (void)ret;
+}
+
 inline void RemoveTestPath(const std::string &path) {
   if (!ailego::FileHelper::RemovePath(path.c_str())) {
 #ifdef _WIN32
-    system(("rmdir /s /q \"" + path + "\" 2>NUL").c_str());
+    RunShellCommand("rmdir /s /q \"" + path + "\" 2>NUL");
 #endif
   }
 }
@@ -47,7 +54,7 @@ inline void RemoveTestFiles(const std::string &pattern) {
   if (pattern.find('*') != std::string::npos ||
       pattern.find('?') != std::string::npos) {
 #ifdef _WIN32
-    system(("del /f /q " + pattern + " 2>NUL").c_str());
+    RunShellCommand("del /f /q " + pattern + " 2>NUL");
 #elif defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_SIMULATOR)
     glob_t globbuf;
     if (glob(pattern.c_str(), 0, nullptr, &globbuf) == 0) {
@@ -57,7 +64,7 @@ inline void RemoveTestFiles(const std::string &pattern) {
       globfree(&globbuf);
     }
 #else
-    system(("rm -rf " + pattern).c_str());
+    RunShellCommand("rm -rf " + pattern);
 #endif
   } else {
     ailego::FileHelper::RemovePath(pattern.c_str());
