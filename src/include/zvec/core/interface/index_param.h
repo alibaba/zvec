@@ -103,6 +103,8 @@ enum class QuantizerType {
   kUniformUint7 = 8,
   // Global uniform quantization with the full uint8 code range [0, 255].
   kUniformUint8 = 9,
+  // Global uniform quantization with packed 4-bit codes in [0, 15].
+  kUniformUint4 = 10,
 };
 
 struct ZVEC_CORE_API SerializableBase {

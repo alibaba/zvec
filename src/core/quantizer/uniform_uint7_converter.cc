@@ -306,7 +306,7 @@ class UniformUint7Converter : public IndexConverter {
           scale_(scale),
           bias_(bias),
           quantize_func_(
-              turbo::get_uniform_quantize_func(turbo::DataType::kInt8)) {}
+              turbo::get_uniform_quantize_func(turbo::DataType::kUint7)) {}
 
     size_t count(void) const override {
       return front_->count();
