@@ -205,12 +205,12 @@ void TestMipsRepeatedQuadraticInjectionMatrix(void) {
   }
   float squared_l2_norm = 0.0f;
   for (size_t i = 0; i < matrix_size; i += dimension) {
-    float score;
+    float score{0.0};
     SquaredNorm2Matrix<float, 1>::Compute(&matrix1[i], dimension, &score);
     squared_l2_norm = std::max(squared_l2_norm, score);
   }
   for (size_t i = 0; i < query_matrix_size; i += dimension) {
-    float score;
+    float score{0.0};
     SquaredNorm2Matrix<float, 1>::Compute(&query1[i], dimension, &score);
     squared_l2_norm = std::max(squared_l2_norm, score);
   }
@@ -668,12 +668,12 @@ void TestMipsSphericalInjectionMatrix(void) {
   }
   float squared_l2_norm = 0.0f;
   for (size_t i = 0; i < matrix_size; i += dimension) {
-    float score;
+    float score{0.0};
     SquaredNorm2Matrix<float, 1>::Compute(&matrix1[i], dimension, &score);
     squared_l2_norm = std::max(squared_l2_norm, score);
   }
   for (size_t i = 0; i < query_matrix_size; i += dimension) {
-    float score;
+    float score{0.0};
     SquaredNorm2Matrix<float, 1>::Compute(&query1[i], dimension, &score);
     squared_l2_norm = std::max(squared_l2_norm, score);
   }
