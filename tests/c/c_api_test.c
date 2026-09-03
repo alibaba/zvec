@@ -5235,7 +5235,7 @@ void test_performance_benchmarks(void) {
           // Create random vector
           float vec[128];
           for (int j = 0; j < 128; j++) {
-            vec[j] = (float)rand() / RAND_MAX;
+            vec[j] = (float)rand() / (float)RAND_MAX;
           }
           zvec_doc_add_field_by_value(batch_docs[i], "vec",
                                       ZVEC_DATA_TYPE_VECTOR_FP32, vec,
@@ -5276,7 +5276,7 @@ void test_performance_benchmarks(void) {
       // Test query performance
       float query_vec[128];
       for (int i = 0; i < 128; i++) {
-        query_vec[i] = (float)rand() / RAND_MAX;
+        query_vec[i] = (float)rand() / (float)RAND_MAX;
       }
 
       zvec_vector_query_t *query = zvec_vector_query_create();

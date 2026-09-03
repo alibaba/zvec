@@ -21,6 +21,9 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #if TARGET_OS_IOS || TARGET_OS_SIMULATOR
+// system() is marked unavailable by the iOS SDK, so it must not be referenced
+// at all, even from code paths that are never taken on this platform.
+#define ZVEC_TEST_NO_SYSTEM 1
 #include <glob.h>
 #endif
 #endif
@@ -35,12 +38,14 @@
 namespace zvec {
 namespace test_util {
 
+#ifndef ZVEC_TEST_NO_SYSTEM
 // system() is declared warn_unused_result; the return value is irrelevant for
 // best-effort cleanup in tests.
 inline void RunShellCommand(const std::string &command) {
   int ret = system(command.c_str());
   (void)ret;
 }
+#endif
 
 inline void RemoveTestPath(const std::string &path) {
   if (!ailego::FileHelper::RemovePath(path.c_str())) {
@@ -55,7 +60,7 @@ inline void RemoveTestFiles(const std::string &pattern) {
       pattern.find('?') != std::string::npos) {
 #ifdef _WIN32
     RunShellCommand("del /f /q " + pattern + " 2>NUL");
-#elif defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_SIMULATOR)
+#elif defined(ZVEC_TEST_NO_SYSTEM)
     glob_t globbuf;
     if (glob(pattern.c_str(), 0, nullptr, &globbuf) == 0) {
       for (size_t i = 0; i < globbuf.gl_pathc; ++i) {

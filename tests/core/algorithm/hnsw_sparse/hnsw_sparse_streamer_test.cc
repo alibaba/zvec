@@ -153,8 +153,8 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
 
   int totalHits = 0;
   int totalCnts = 0;
@@ -2118,8 +2118,8 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
   }
 
   size_t topk = 20;
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -2268,8 +2268,8 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
 
   int totalHits = 0;
   int totalCnts = 0;
@@ -2391,8 +2391,8 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
 
   int totalHits = 0;
   int totalCnts = 0;

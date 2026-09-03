@@ -321,8 +321,8 @@ TEST_F(HnswStreamerTest, TestKnnSearch) {
   size_t topk = 200;
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -849,8 +849,8 @@ TEST_F(HnswStreamerTest, TestAddAndSearch) {
   size_t topk = 200;
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -2440,8 +2440,8 @@ TEST_F(HnswStreamerTest, TestBruteForceSetupInContext) {
   }
 
   size_t topk = 200;
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -2591,8 +2591,8 @@ TEST_F(HnswStreamerTest, TestKnnSearchCosine) {
   size_t topk = 200;
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -3948,8 +3948,8 @@ TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
   size_t topk = 200;
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -4127,7 +4127,7 @@ TEST_F(HnswStreamerTest, TestContiguousMultiThreadSearch) {
     ASSERT_EQ(0, builder->init(meta, build_params));
     ASSERT_EQ(0, builder->open(storage));
 
-    auto addVector = [&builder, dim_mt](int baseKey, size_t addCnt) {
+    auto addVector = [&builder](int baseKey, size_t addCnt) {
       NumericalVector<float> vec(dim_mt);
       IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim_mt);
       size_t succAdd = 0;
