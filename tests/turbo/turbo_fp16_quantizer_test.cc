@@ -98,7 +98,13 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       constexpr size_t kVectorCount = 7;
       std::mt19937 gen(
           static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
-      std::uniform_real_distribution<float> dist(-4.0f, 5.0f);
+      // Small integer components are exactly representable in FP16, so even
+      // the AVX512-FP16 kernels (which accumulate in FP16) produce exact
+      // partial sums and match the scalar kernels deterministically.
+      // Fractional data would make the FP16 accumulation error scale with
+      // sum(|a_i * b_i|), which the relative tolerance (based on the
+      // cancellation-reduced result) cannot bound reliably.
+      std::uniform_int_distribution<int> dist(-4, 5);
       std::vector<std::vector<float>> raw(kVectorCount,
                                           std::vector<float>(dim));
       std::vector<std::string> encoded(
@@ -106,7 +112,7 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
           std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
       for (size_t i = 0; i < kVectorCount; ++i) {
         for (float &value : raw[i]) {
-          value = dist(gen);
+          value = static_cast<float>(dist(gen));
         }
         quantizer->quantize_data(raw[i].data(), encoded[i].data());
       }
