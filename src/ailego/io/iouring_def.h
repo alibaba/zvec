@@ -118,11 +118,17 @@ struct io_uring_sqe {
     uint32_t rw_flags;  // read/write flags (union of all flag types)
   };
   uint64_t user_data;  // data to be passed back at completion time
+  // Deviation from <linux/io_uring.h>: the buffer descriptor is a named type
+  // declared outside the union below. An unnamed struct inside an anonymous
+  // union is a GNU extension (-Wnested-anon-types under -Wpedantic), and
+  // standard C++ forbids declaring a named type inside an anonymous union.
+  // Layout is unaffected: still 4 bytes at offset 40 within a 64-byte sqe.
+  struct buf_desc {
+    uint16_t buf_index;  // index into fixed buffers, if used
+    uint16_t personality;
+  };
   union {
-    struct {
-      uint16_t buf_index;  // index into fixed buffers, if used
-      uint16_t personality;
-    } buf;
+    buf_desc buf;
     uint64_t __pad2[3];
   };
 };
