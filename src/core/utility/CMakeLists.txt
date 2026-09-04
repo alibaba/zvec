@@ -30,7 +30,7 @@ cc_library(
     NAME core_utility 
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
-    LIBS core_framework zvec_ailego
+    LIBS zvec_ailego core_framework
     INCS . ${PROJECT_ROOT_DIR}/src/core
     LDFLAGS "${CORE_UTILITY_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"

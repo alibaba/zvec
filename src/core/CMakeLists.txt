@@ -46,10 +46,7 @@ if(NOT DISKANN_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
 endif()
 
-# Ordered dependents-first: zvec_turbo links zvec_ailego, so listing zvec_ailego
-# ahead of it makes CMake repeat the archive on the link line to keep a valid
-# order (Apple's ld then warns "ignoring duplicate libraries").
-set(ZVEC_CORE_LIBS zvec_turbo zvec_ailego sparsehash magic_enum rabitqlib)
+set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
 # The DiskAnn runtime loader uses dlopen/dlsym, so link libdl on Linux.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})

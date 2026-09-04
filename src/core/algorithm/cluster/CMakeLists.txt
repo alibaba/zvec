@@ -12,7 +12,7 @@ endif()
 cc_library(
     NAME core_knn_cluster STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
-    LIBS core_framework zvec_ailego
+    LIBS zvec_ailego core_framework
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/cluster
     LDFLAGS "${CORE_KNN_CLUSTER_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"
