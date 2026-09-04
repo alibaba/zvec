@@ -89,10 +89,9 @@ void squared_euclidean_uint8_distance(const void *lhs, const void *rhs,
                    distance);
 }
 
-void squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                            const void *query, size_t count,
-                                            size_t dimension,
-                                            float *distances) {
+void squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t count,
+    size_t dimension, float *distances, const void *const * /*extra_values*/) {
   constexpr size_t kBatch = 4;
   const auto *query_uint8 = static_cast<const uint8_t *>(query);
   for (size_t i = 0; i < std::min(count, kBatch); ++i) {
@@ -126,10 +125,9 @@ void squared_euclidean_uint8_distance(const void *lhs, const void *rhs,
   *distance = static_cast<float>(sum);
 }
 
-void squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                            const void *query, size_t count,
-                                            size_t dimension,
-                                            float *distances) {
+void squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t count,
+    size_t dimension, float *distances, const void *const * /*extra_values*/) {
   for (size_t i = 0; i < count; ++i) {
     squared_euclidean_uint8_distance(vectors[i], query, dimension,
                                      distances + i);

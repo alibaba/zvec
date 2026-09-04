@@ -131,12 +131,12 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   MatrixBatchDistance batch_distance() const override {
     MatrixDistance dist_func = distance();
 
-    return
-        [=](const void **m, const void *q, size_t num, size_t dim, float *out) {
-          for (size_t i = 0; i < num; ++i) {
-            dist_func(m[i], q, dim, out + i);
-          }
-        };
+    return [=](const void **m, const void *q, size_t num, size_t dim,
+               float *out, const void ** /*extra_values*/) {
+      for (size_t i = 0; i < num; ++i) {
+        dist_func(m[i], q, dim, out + i);
+      }
+    };
   }
 
 

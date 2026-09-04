@@ -18,9 +18,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 #endif
+#include <array>
+#include <cstdint>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <random>
+#include <string>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include "tests/test_util.h"
@@ -38,6 +44,19 @@ namespace zvec {
 namespace core {
 
 constexpr size_t kDim = 16;
+
+std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
+  std::string record(dimension + sizeof(uint32_t), '\0');
+  uint32_t sum_squared = 0;
+  for (size_t d = 0; d < dimension; ++d) {
+    const uint8_t code =
+        static_cast<uint8_t>((seed * 73U + d * 29U + d * seed * 3U) & 0xffU);
+    record[d] = static_cast<char>(static_cast<int>(code) - 128);
+    sum_squared += static_cast<uint32_t>(code) * code;
+  }
+  std::memcpy(record.data() + dimension, &sum_squared, sizeof(sum_squared));
+  return record;
+}
 
 class VamanaStreamerTest : public testing::Test {
  protected:
@@ -458,6 +477,275 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
   }
   float recall = totalHits * 1.0f / totalCnts;
   EXPECT_GT(recall, 0.90f);
+}
+
+TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
+  constexpr size_t kOriginalDimension = 128;
+  constexpr size_t kEncodedDimension = kOriginalDimension + sizeof(uint32_t);
+  constexpr size_t kCount = 192;
+  constexpr uint64_t kKeyBase = 10000;
+
+  ailego::Params metric_params;
+  metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+
+  const auto create_streamer = [&](bool contiguous) {
+    ailego::Params params;
+    params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 32U);
+    params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE,
+               static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+    params.set(PARAM_VAMANA_STREAMER_EF, static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    params.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, contiguous);
+    auto result = IndexFactory::CreateStreamer("VamanaStreamer");
+    if (result == nullptr || result->init(meta, params) != 0) {
+      return IndexStreamer::Pointer{};
+    }
+    return result;
+  };
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguousPackedLayout.index", true));
+
+  {
+    auto builder = create_streamer(false);
+    ASSERT_TRUE(builder);
+    ASSERT_EQ(0, builder->open(storage));
+    auto context = builder->create_context();
+    ASSERT_TRUE(context);
+    IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+    for (size_t i = 0; i < kCount; ++i) {
+      const auto record = EncodeUniformUint8Record(kOriginalDimension,
+                                                   static_cast<uint32_t>(i));
+      ASSERT_EQ(0, builder->add_impl(kKeyBase + i, record.data(), query_meta,
+                                     context));
+    }
+    ASSERT_EQ(0, builder->flush(0));
+    ASSERT_EQ(0, builder->close());
+  }
+
+  auto searcher = create_streamer(true);
+  ASSERT_TRUE(searcher);
+  ASSERT_EQ(0, searcher->open(storage));
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  for (const size_t probe : {size_t{0}, size_t{17}, size_t{91}, kCount - 1}) {
+    const uint64_t expected_key = kKeyBase + probe;
+    const auto query = EncodeUniformUint8Record(kOriginalDimension,
+                                                static_cast<uint32_t>(probe));
+
+    auto graph_context = searcher->create_context();
+    ASSERT_TRUE(graph_context);
+    graph_context->set_topk(1);
+    ASSERT_EQ(0,
+              searcher->search_impl(query.data(), query_meta, graph_context));
+    ASSERT_EQ(1U, graph_context->result().size());
+    EXPECT_EQ(expected_key, graph_context->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, graph_context->result()[0].score());
+
+    // A valid filter selects the dual-heap graph path. Keep only the exact
+    // probe in the result while still allowing traversal through every node.
+    auto filtered_context = searcher->create_context();
+    ASSERT_TRUE(filtered_context);
+    filtered_context->set_topk(1);
+    filtered_context->set_filter(
+        [expected_key](uint64_t key) { return key != expected_key; });
+    ASSERT_EQ(
+        0, searcher->search_impl(query.data(), query_meta, filtered_context));
+    ASSERT_EQ(1U, filtered_context->result().size());
+    EXPECT_EQ(expected_key, filtered_context->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, filtered_context->result()[0].score());
+
+    auto brute_force_context = searcher->create_context();
+    ASSERT_TRUE(brute_force_context);
+    brute_force_context->set_topk(1);
+    ASSERT_EQ(0, searcher->search_bf_impl(query.data(), query_meta,
+                                          brute_force_context));
+    ASSERT_EQ(1U, brute_force_context->result().size());
+    EXPECT_EQ(expected_key, brute_force_context->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, brute_force_context->result()[0].score());
+  }
+
+  ASSERT_EQ(0, searcher->close());
+}
+
+TEST_F(VamanaStreamerTest, TestContiguousKeepsInt8RecordTailInline) {
+  constexpr size_t kOriginalDimension = 128;
+  constexpr size_t kCount = 96;
+  constexpr uint64_t kKeyBase = 20000;
+
+  IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kOriginalDimension);
+  raw_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+
+  auto converter = IndexFactory::CreateConverter("Int8StreamingConverter");
+  ASSERT_TRUE(converter);
+  ASSERT_EQ(0, converter->init(raw_meta, ailego::Params()));
+  const IndexMeta record_meta = converter->meta();
+  ASSERT_GT(record_meta.element_size(), kOriginalDimension);
+
+  auto metric = IndexFactory::CreateMetric(record_meta.metric_name());
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(record_meta, record_meta.metric_params()));
+  EXPECT_EQ(0U, metric->extra_values_size_per_vector());
+
+  auto reformer = IndexFactory::CreateReformer(record_meta.reformer_name());
+  ASSERT_TRUE(reformer);
+  ASSERT_EQ(0, reformer->init(record_meta.reformer_params()));
+
+  const auto create_streamer = [&](bool contiguous) {
+    ailego::Params params;
+    params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 32U);
+    params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE,
+               static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+    params.set(PARAM_VAMANA_STREAMER_EF, static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    params.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, contiguous);
+    auto result = IndexFactory::CreateStreamer("VamanaStreamer");
+    if (result == nullptr || result->init(record_meta, params) != 0) {
+      return IndexStreamer::Pointer{};
+    }
+    return result;
+  };
+
+  std::vector<std::vector<float>> vectors(
+      kCount, std::vector<float>(kOriginalDimension));
+  for (size_t i = 0; i < kCount; ++i) {
+    uint32_t state = static_cast<uint32_t>(i + 1);
+    for (size_t d = 0; d < kOriginalDimension; ++d) {
+      state = state * 1664525U + 1013904223U;
+      vectors[i][d] =
+          static_cast<float>(static_cast<int32_t>(state >> 8U)) / 8388608.0f;
+    }
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguousInt8Record.index", true));
+
+  IndexQueryMeta raw_query_meta(IndexMeta::DataType::DT_FP32,
+                                kOriginalDimension);
+  {
+    auto builder = create_streamer(false);
+    ASSERT_TRUE(builder);
+    ASSERT_EQ(0, builder->open(storage));
+    auto context = builder->create_context();
+    ASSERT_TRUE(context);
+    for (size_t i = 0; i < kCount; ++i) {
+      std::string record;
+      IndexQueryMeta encoded_meta;
+      ASSERT_EQ(0, reformer->convert(vectors[i].data(), raw_query_meta, &record,
+                                     &encoded_meta));
+      ASSERT_EQ(record_meta.element_size(), record.size());
+      ASSERT_EQ(0, builder->add_impl(kKeyBase + i, record.data(), encoded_meta,
+                                     context));
+    }
+    ASSERT_EQ(0, builder->flush(0));
+    ASSERT_EQ(0, builder->close());
+  }
+
+  auto searcher = create_streamer(true);
+  ASSERT_TRUE(searcher);
+  ASSERT_EQ(0, searcher->open(storage));
+  const std::array<size_t, 4> probes{{0, 17, 53, kCount - 1}};
+  for (size_t probe : probes) {
+    std::string query;
+    IndexQueryMeta query_meta;
+    ASSERT_EQ(0, reformer->transform(vectors[probe].data(), raw_query_meta,
+                                     &query, &query_meta));
+    ASSERT_EQ(record_meta.element_size(), query.size());
+
+    auto graph_context = searcher->create_context();
+    ASSERT_TRUE(graph_context);
+    graph_context->set_topk(1);
+    ASSERT_EQ(0,
+              searcher->search_impl(query.data(), query_meta, graph_context));
+    ASSERT_EQ(1U, graph_context->result().size());
+    EXPECT_EQ(kKeyBase + probe, graph_context->result()[0].key());
+    EXPECT_NEAR(0.0f, graph_context->result()[0].score(), 1e-4f);
+
+    auto brute_force_context = searcher->create_context();
+    ASSERT_TRUE(brute_force_context);
+    brute_force_context->set_topk(1);
+    ASSERT_EQ(0, searcher->search_bf_impl(query.data(), query_meta,
+                                          brute_force_context));
+    ASSERT_EQ(1U, brute_force_context->result().size());
+    EXPECT_EQ(kKeyBase + probe, brute_force_context->result()[0].key());
+    EXPECT_NEAR(0.0f, brute_force_context->result()[0].score(), 1e-4f);
+  }
+
+  ASSERT_EQ(0, searcher->close());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(VamanaStreamerTest, TestContiguousPackedGraphTracksNeighborUpdates) {
+  constexpr uint32_t kMaxDegree = 8;
+  constexpr uint32_t kCount = 12;
+
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, kMaxDegree);
+  params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, kCount);
+  params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+  auto builder = CreateVamanaStreamer(params);
+  ASSERT_TRUE(builder);
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(
+      0, storage->open(dir_ + "TestContiguousPackedGraphUpdates.index", true));
+  ASSERT_EQ(0, builder->open(storage));
+
+  auto context = builder->create_context();
+  ASSERT_TRUE(context);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDim);
+  for (uint32_t i = 0; i < kCount; ++i) {
+    std::array<float, kDim> vector{};
+    for (size_t d = 0; d < vector.size(); ++d) {
+      vector[d] = static_cast<float>(i * 17U + d);
+    }
+    ASSERT_EQ(0, builder->add_impl(i, vector.data(), query_meta, context));
+  }
+  ASSERT_EQ(0, builder->flush(0));
+  ASSERT_EQ(0, builder->close());
+  builder.reset();
+
+  IndexStreamer::Stats stats;
+  VamanaContiguousStreamerEntity entity(stats);
+  entity.set_use_key_info_map(true);
+  entity.set_vector_size(index_meta_ptr_->element_size());
+  entity.set_max_degree(kMaxDegree);
+  entity.set_search_list_size(kCount);
+  entity.set_max_occlusion_size(VamanaEntity::kDefaultMaxOcclusionSize);
+  ASSERT_EQ(0, entity.init(kCount));
+  ASSERT_EQ(0, entity.open(storage, 0, false));
+  ASSERT_EQ(0, entity.build_contiguous_memory());
+
+  const std::vector<std::pair<node_id_t, dist_t>> replacement = {{1U, 1.0F},
+                                                                 {2U, 2.0F}};
+  ASSERT_EQ(0, entity.update_neighbors(0U, replacement));
+  auto neighbors = entity.get_neighbors(0U);
+  ASSERT_EQ(2U, neighbors.size());
+  EXPECT_EQ(1U, neighbors[0]);
+  EXPECT_EQ(2U, neighbors[1]);
+
+  entity.add_neighbor(0U, 2U, 3U);
+  neighbors = entity.get_neighbors(0U);
+  ASSERT_EQ(3U, neighbors.size());
+  EXPECT_EQ(3U, neighbors[2]);
+
+  entity.degrade_to_mmap();
+  neighbors = entity.get_neighbors(0U);
+  ASSERT_EQ(3U, neighbors.size());
+  EXPECT_EQ(1U, neighbors[0]);
+  EXPECT_EQ(2U, neighbors[1]);
+  EXPECT_EQ(3U, neighbors[2]);
+  ASSERT_EQ(0, entity.close());
 }
 
 TEST_F(VamanaStreamerTest, TestContiguousMultiThreadSearch) {

@@ -428,7 +428,7 @@ void PqFastQuantizer::quantize_data(const void *input, void *output) const {
     // const_cast: .data() returns const void* const* but the kernel expects
     // const void** and never modifies the pointer array.
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
-                 kNumCentroids, sub_dim_, dists);
+                 kNumCentroids, sub_dim_, dists, nullptr);
 
     // Argmin: find nearest centroid.  Seeding with +infinity skips NaN
     // distances from dead centroids; a dists[0] seed would pin them to 0
@@ -508,7 +508,7 @@ void PqFastQuantizer::compute_float_lut(const void *input, float *lut) const {
     const void *sub_query =
         query_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size;
     batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_query,
-              kNumCentroids, sub_dim_, lut + m * kNumCentroids);
+              kNumCentroids, sub_dim_, lut + m * kNumCentroids, nullptr);
   }
 
   // For Cosine, pre-scale the L2 entries by 0.5 so that every ADC path sums
@@ -603,7 +603,7 @@ void PqFastQuantizer::compute_sub_centroid_norms() {
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), zero.data(),
-                 k, sub_dim_, sub_centroid_norms_.data() + m * k);
+                 k, sub_dim_, sub_centroid_norms_.data() + m * k, nullptr);
   }
 }
 
@@ -651,7 +651,7 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
       const auto &centroid_ptrs = centroid_ptrs_cache_[m];
       ip_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                    buf_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size,
-                   kNumCentroids, sub_dim_, dists);
+                   kNumCentroids, sub_dim_, dists, nullptr);
       const float *rn = sub_centroid_norms_.data() + m * kNumCentroids;
       float *out_m = row + m * kNumCentroids;
       for (uint32_t j = 0; j < kNumCentroids; ++j) {
@@ -699,7 +699,7 @@ int PqFastQuantizer::quantize_precomputed_query(const void *query,
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     ip_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                  prep_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size,
-                 kNumCentroids, sub_dim_, dists);
+                 kNumCentroids, sub_dim_, dists, nullptr);
     float *lut_m = lut + m * kNumCentroids;
     for (uint32_t j = 0; j < kNumCentroids; ++j) {
       lut_m[j] = 2.0f * dists[j];

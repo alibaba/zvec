@@ -66,7 +66,7 @@ class DistanceImpl {
   //! is bound.
   void batch(const void **candidates, size_t num, float *out) const {
     if (batch_func_) {
-      batch_func_(candidates, query_storage_.data(), num, dim_, out);
+      batch_func_(candidates, query_storage_.data(), num, dim_, out, nullptr);
       return;
     }
     for (size_t i = 0; i < num; ++i) {

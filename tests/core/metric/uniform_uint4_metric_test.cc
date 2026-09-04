@@ -66,7 +66,7 @@ TEST(UniformUint4Metric, PairAndBatchMatchScalarExactly) {
       EXPECT_EQ(expected[i], pair);
     }
     batch_distance(pointers.data(), query.data(), count, encoded_dimension,
-                   actual.data());
+                   actual.data(), nullptr);
     EXPECT_EQ(expected, actual) << "logical_dimension=" << logical_dimension;
   }
 }

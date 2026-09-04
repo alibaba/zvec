@@ -278,15 +278,33 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
 
   add_distance_ = metric_->distance();
   add_batch_distance_ = metric_->batch_distance();
+  const size_t extra_values_size = metric_->extra_values_size_per_vector();
+  if (extra_values_size != 0 && extra_values_size >= entity_->vector_size()) {
+    LOG_ERROR("Invalid Vamana vector layout, vector_size=%zu extra_size=%zu",
+              entity_->vector_size(), extra_values_size);
+    cleanup_on_error();
+    return IndexError_InvalidArgument;
+  }
   search_distance_ = add_distance_;
   search_batch_distance_ = add_batch_distance_;
 
   const auto query_metric = metric_->query_metric();
   if (query_metric && query_metric->distance() &&
       query_metric->batch_distance()) {
+    const size_t query_extra_values_size =
+        query_metric->extra_values_size_per_vector();
+    if (query_extra_values_size != extra_values_size) {
+      LOG_ERROR(
+          "Vamana query metric layout mismatch, stored_extra_size=%zu "
+          "query_extra_size=%zu",
+          extra_values_size, query_extra_values_size);
+      cleanup_on_error();
+      return IndexError_InvalidArgument;
+    }
     search_distance_ = query_metric->distance();
     search_batch_distance_ = query_metric->batch_distance();
   }
+  entity_->set_extra_values_size(extra_values_size);
 
   // Create algorithm based on entity storage mode
   switch (entity_->storage_mode()) {
