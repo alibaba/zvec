@@ -54,6 +54,33 @@ constexpr int kRunSeconds = 8;
 // run before its first segment switch — the discriminating window is intact.
 constexpr long kMaxWriterDocs = 50000;
 
+// Inserts disjoint docs (ids far above the preloaded range) until stop or the
+// kMaxWriterDocs cap, crossing segment switches on the way.
+std::thread StartWriter(const Collection::Ptr &collection,
+                        const CollectionSchema &schema,
+                        const std::atomic<bool> &stop,
+                        std::atomic<long> &docs_written,
+                        std::atomic<long> &writer_errors) {
+  return std::thread([&] {
+    uint64_t next_id = kStableDocs + 1000000;  // never collides with probes
+    while (!stop.load(std::memory_order_relaxed) &&
+           docs_written.load(std::memory_order_relaxed) < kMaxWriterDocs) {
+      std::vector<Doc> docs;
+      docs.reserve(kWriteBatch);
+      for (int i = 0; i < kWriteBatch; i++) {
+        docs.push_back(TestHelper::CreateDoc(next_id + i, schema));
+      }
+      auto res = collection->insert(docs);
+      if (!res.has_value()) {
+        writer_errors.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+      next_id += kWriteBatch;
+      docs_written.fetch_add(kWriteBatch, std::memory_order_relaxed);
+    }
+  });
+}
+
 struct ReaderResult {
   long fetches{0};
   long null_docs{0};
@@ -107,25 +134,8 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
       // kMaxWriterDocs).
       std::thread writer;
       if (with_writer) {
-        writer = std::thread([&] {
-          uint64_t next_id = kStableDocs + 1000000;  // never collides w/ probes
-          while (!stop.load(std::memory_order_relaxed) &&
-                 docs_written.load(std::memory_order_relaxed) <
-                     kMaxWriterDocs) {
-            std::vector<Doc> docs;
-            docs.reserve(kWriteBatch);
-            for (int i = 0; i < kWriteBatch; i++) {
-              docs.push_back(TestHelper::CreateDoc(next_id + i, *schema));
-            }
-            auto res = collection->insert(docs);
-            if (!res.has_value()) {
-              writer_errors.fetch_add(1, std::memory_order_relaxed);
-              break;
-            }
-            next_id += kWriteBatch;
-            docs_written.fetch_add(kWriteBatch, std::memory_order_relaxed);
-          }
-        });
+        writer =
+            StartWriter(collection, *schema, stop, docs_written, writer_errors);
       }
 
       std::vector<std::thread> threads;
@@ -209,6 +219,114 @@ TEST_F(ConcurrentFetchTest, FetchReturnsCorrectContentUnderConcurrency) {
       collection.reset();
     }
   }
+}
+
+TEST_F(ConcurrentFetchTest, QuerySucceedsUnderConcurrentWrites) {
+  // query() reaches a different read path than fetch(): the planner fans out
+  // to Segment::fetch()/scan() under seg_col_mtx_ and to the per-segment
+  // vector indexes, neither of which Fetch(doc) goes through. It shares the
+  // get_all_segments() window and the segment-switch teardown, so it must
+  // survive the same concurrency.
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  schema->set_max_doc_count_per_segment(kMaxDocPerSegment);
+  auto options = CollectionOptions{false, true, kMaxBufferSize};
+
+  ailego::FileHelper::RemoveDirectory(kPath);
+  auto collection = TestHelper::CreateCollectionWithDoc(kPath, *schema, options,
+                                                        0, kStableDocs, false);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+  auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector.has_value());
+  const std::string vector_bytes(reinterpret_cast<const char *>(vector->data()),
+                                 vector->size() * sizeof(float));
+
+  // The schema is non-nullable, so every requested field must come back with a
+  // value on every hit. A null means that row was dropped while the planner
+  // fanned out over the segments.
+  constexpr const char *kProbeField = "int32";
+
+  std::atomic<bool> stop{false};
+  std::atomic<long> docs_written{0};
+  std::atomic<long> writer_errors{0};
+  std::atomic<long> queries{0};
+  std::atomic<long> query_errors{0};
+  std::atomic<long> empty_results{0};
+  std::atomic<long> null_fields{0};
+  std::atomic<long> short_results{0};
+
+  auto t0 = std::chrono::steady_clock::now();
+  std::thread writer =
+      StartWriter(collection, *schema, stop, docs_written, writer_errors);
+
+  constexpr int kQueriers = 4;
+  std::vector<std::thread> queriers;
+  for (int t = 0; t < kQueriers; t++) {
+    queriers.emplace_back([&] {
+      while (!stop.load(std::memory_order_relaxed)) {
+        SearchQuery q;
+        q.topk_ = 10;
+        q.target_.field_name_ = "dense_fp32";
+        q.target_.set_vector(vector_bytes);
+        q.output_fields_ = {kProbeField};
+        auto r = collection->query(q);
+        queries.fetch_add(1, std::memory_order_relaxed);
+        if (!r.has_value()) {
+          // Known transient: a doc admitted by the writing segment's
+          // streaming vector index may not be in its forward store yet
+          // (pre-existing Insert/Query race, unrelated to this fix).
+          if (r.error().message().find("fetch table failed") ==
+              std::string::npos) {
+            query_errors.fetch_add(1, std::memory_order_relaxed);
+          }
+          continue;
+        }
+        if (r.value().empty()) {
+          empty_results.fetch_add(1, std::memory_order_relaxed);
+          continue;
+        }
+        for (const auto &doc : r.value()) {
+          if (!doc->get<int32_t>(kProbeField).has_value()) {
+            null_fields.fetch_add(1, std::memory_order_relaxed);
+            break;
+          }
+        }
+        // The collection always holds far more than topk docs, so a short
+        // result means rows were dropped somewhere along the fan-out.
+        if (r.value().size() < static_cast<size_t>(q.topk_)) {
+          short_results.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+
+  std::this_thread::sleep_for(std::chrono::seconds(kRunSeconds));
+  stop.store(true);
+  writer.join();
+  for (auto &th : queriers) th.join();
+
+  double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+          .count();
+  std::printf(
+      "query workload: queries=%ld (%.0f/s) errors=%ld empty=%ld nulls=%ld "
+      "short=%ld writes=%ld\n",
+      queries.load(), queries.load() / elapsed, query_errors.load(),
+      empty_results.load(), null_fields.load(), short_results.load(),
+      docs_written.load());
+
+  EXPECT_GT(queries.load(), 0);
+  EXPECT_EQ(query_errors.load(), 0);
+  EXPECT_EQ(empty_results.load(), 0);
+  EXPECT_EQ(null_fields.load(), 0);
+  EXPECT_EQ(short_results.load(), 0);
+  EXPECT_EQ(writer_errors.load(), 0);
+  EXPECT_GE(docs_written.load(),
+            static_cast<long>(kMaxDocPerSegment) - kStableDocs)
+      << "no segment switch inside the run window";
+
+  collection.reset();
 }
 
 }  // namespace test

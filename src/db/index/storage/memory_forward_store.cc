@@ -93,7 +93,7 @@ bool MemForwardStore::validate(const std::vector<std::string> &columns) const {
 
 // Notice: This function just convert the docs to arrow::ArrayBuilder, not clean
 // the cache_.
-arrow::Status MemForwardStore::appendDocToBuilder(
+arrow::Status MemForwardStore::append_doc_to_builder(
     const Doc &doc, RecordBatchBuilderPtr &rb_builder) {
   auto &fields = physic_schema_->fields();
 
@@ -119,7 +119,7 @@ arrow::Status MemForwardStore::appendDocToBuilder(
 arrow::Status MemForwardStore::convertToBuilder(
     RecordBatchBuilderPtr &rb_builder) {
   for (const auto &doc : cache_) {
-    ARROW_RETURN_NOT_OK(appendDocToBuilder(doc, rb_builder));
+    ARROW_RETURN_NOT_OK(append_doc_to_builder(doc, rb_builder));
   }
   return arrow::Status::OK();
 }
@@ -161,9 +161,9 @@ arrow::Result<RecordBatchPtr> MemForwardStore::convertToRecordBatch() {
   return batch;
 }
 
-bool MemForwardStore::locateSingleSource(const std::vector<int> &indices,
-                                         RecordBatchPtr *source,
-                                         std::vector<int> *local_rows) {
+bool MemForwardStore::locate_single_source(const std::vector<int> &indices,
+                                           RecordBatchPtr *source,
+                                           std::vector<int> *local_rows) {
   if (indices.empty()) {
     return false;
   }
@@ -204,7 +204,8 @@ bool MemForwardStore::locateSingleSource(const std::vector<int> &indices,
     return false;
   }
   for (int idx : indices) {
-    if (!appendDocToBuilder(cache_[static_cast<size_t>(idx - base)], rb_builder)
+    if (!append_doc_to_builder(cache_[static_cast<size_t>(idx - base)],
+                               rb_builder)
              .ok()) {
       return false;
     }
@@ -221,7 +222,7 @@ bool MemForwardStore::locateSingleSource(const std::vector<int> &indices,
   return true;
 }
 
-arrow::Result<TablePtr> MemForwardStore::applyRowAndColumnSelection(
+arrow::Result<TablePtr> MemForwardStore::apply_row_and_column_selection(
     const TablePtr &table, const std::vector<int> &indices,
     const std::vector<std::string> &columns) {
   std::shared_ptr<arrow::Table> filtered_table = table;
@@ -271,10 +272,10 @@ arrow::Result<TablePtr> MemForwardStore::convertToTable(
   // with how much data the store holds.
   RecordBatchPtr single_source;
   std::vector<int> single_rows;
-  if (locateSingleSource(indices, &single_source, &single_rows)) {
+  if (locate_single_source(indices, &single_source, &single_rows)) {
     ARROW_ASSIGN_OR_RAISE(auto single_table, arrow::Table::FromRecordBatches(
                                                  {std::move(single_source)}));
-    return applyRowAndColumnSelection(single_table, single_rows, columns);
+    return apply_row_and_column_selection(single_table, single_rows, columns);
   }
 
   std::shared_ptr<arrow::RecordBatch> batch;
@@ -293,12 +294,15 @@ arrow::Result<TablePtr> MemForwardStore::convertToTable(
   ARROW_ASSIGN_OR_RAISE(combined_table,
                         arrow::Table::FromRecordBatches(all_batches));
 
-  return applyRowAndColumnSelection(combined_table, indices, columns);
+  return apply_row_and_column_selection(combined_table, indices, columns);
 }
 
 Status MemForwardStore::flush() {
   std::lock_guard lock(cache_mtx_);
+  return flush_locked();
+}
 
+Status MemForwardStore::flush_locked() {
   if (cache_.empty() && batches_.empty()) {
     return Status::OK();
   }
@@ -395,8 +399,11 @@ Status MemForwardStore::flush() {
 }
 
 Status MemForwardStore::close() {
+  // Exclusive: flush_locked() below and the clears at the end rewrite
+  // cache_/batches_, which concurrent readers hold this lock shared for.
+  std::lock_guard lock(cache_mtx_);
   if (!cache_.empty() || !batches_.empty()) {
-    flush();
+    flush_locked();
   }
   if (writer_) {
     auto status = writer_->Close();

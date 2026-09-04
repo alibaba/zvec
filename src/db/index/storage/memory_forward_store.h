@@ -145,23 +145,24 @@ class MemForwardStore : public BaseForwardStore {
   /// \param doc The document to append
   /// \param builder The builder to append into
   /// \return arrow::Status indicating success or failure
-  arrow::Status appendDocToBuilder(const Doc &doc,
-                                   RecordBatchBuilderPtr &builder);
+  arrow::Status append_doc_to_builder(const Doc &doc,
+                                      RecordBatchBuilderPtr &builder);
 
   /// Locate the single source holding every requested row
   /// \param indices The requested row ids
   /// \param source Receives a batch containing those rows
   /// \param local_rows Receives their offsets inside that batch
   /// \return true when one source covers all of them, false otherwise
-  bool locateSingleSource(const std::vector<int> &indices,
-                          RecordBatchPtr *source, std::vector<int> *local_rows);
+  bool locate_single_source(const std::vector<int> &indices,
+                            RecordBatchPtr *source,
+                            std::vector<int> *local_rows);
 
   /// Apply row filtering and column projection to a table
   /// \param table The table to narrow
   /// \param indices The rows to keep, empty to keep all
   /// \param columns The columns to keep, empty to keep all
   /// \return A Result containing the narrowed Table or an error status
-  arrow::Result<TablePtr> applyRowAndColumnSelection(
+  arrow::Result<TablePtr> apply_row_and_column_selection(
       const TablePtr &table, const std::vector<int> &indices,
       const std::vector<std::string> &columns);
 
@@ -170,10 +171,13 @@ class MemForwardStore : public BaseForwardStore {
   /// \return true if all columns are valid, false otherwise
   bool validate(const std::vector<std::string> &columns) const;
 
+  /// flush() without locking; callers must hold cache_mtx_ exclusively
+  Status flush_locked();
+
  private:
-  /// Guards cache_, batches_ and num_rows_, which insert() and flush() rewrite.
-  /// Read-only accessors (get_table, fetch, scan) take it shared so concurrent
-  /// readers do not serialize against each other.
+  /// Guards cache_, batches_ and num_rows_, which insert(), flush() and
+  /// close() rewrite. Read-only accessors (get_table, fetch, scan) take it
+  /// shared so concurrent readers do not serialize against each other.
   std::shared_mutex cache_mtx_;
 
   /// Cache of documents waiting to be flushed
