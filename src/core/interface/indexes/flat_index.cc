@@ -84,11 +84,14 @@ std::string SelectTurboQuantizerName(const QuantizerParam &quantizer_param,
     return {};
   }
   const auto metric = flat_param.metric_type;
-  // InnerProduct stays on the legacy pipeline: the turbo raw IP kernels
-  // return the negated dot product (distance convention) while the legacy
-  // metric surfaces the raw score to callers.
   const bool l2_or_cosine =
       metric == MetricType::kL2sq || metric == MetricType::kCosine;
+  // The turbo raw IP kernels return the negated dot product (distance
+  // convention); the fp32/fp16 quantizers surface the caller-facing score
+  // through normalize_score(), so InnerProduct rides the turbo path there.
+  // The affine int8/int4 quantizers stay L2/Cosine only.
+  const bool l2_cosine_or_ip =
+      l2_or_cosine || metric == MetricType::kInnerProduct;
 
   const auto storage_type = flat_param.storage_data_type;
   if (storage_type == DataType::DT_UNDEFINED ||
@@ -97,9 +100,9 @@ std::string SelectTurboQuantizerName(const QuantizerParam &quantizer_param,
       case QuantizerType::kNone:
         // Raw FP32 records on the turbo Fp32Quantizer (identity transform
         // with SIMD batch distance kernels).
-        return l2_or_cosine ? "Fp32Quantizer" : "";
+        return l2_cosine_or_ip ? "Fp32Quantizer" : "";
       case QuantizerType::kFP16:
-        return l2_or_cosine ? "Fp16Quantizer" : "";
+        return l2_cosine_or_ip ? "Fp16Quantizer" : "";
       case QuantizerType::kInt8:
         // Per-record affine int8 + SIMD batch distance kernels.
         return l2_or_cosine ? "Int8Quantizer" : "";
@@ -112,7 +115,7 @@ std::string SelectTurboQuantizerName(const QuantizerParam &quantizer_param,
   }
   if (storage_type == DataType::DT_FP16 &&
       quantizer_param.type == QuantizerType::kNone) {
-    return l2_or_cosine ? "Fp16Quantizer" : "";
+    return l2_cosine_or_ip ? "Fp16Quantizer" : "";
   }
   return {};
 }
