@@ -44,6 +44,21 @@ repos:
 
   - repo: local
     hooks:
+      - id: clang-tidy
+        name: clang-tidy (C++)
+        description: >-
+          Static analysis on changed C/C++ files, mirroring the CI clang-tidy
+          check. Uses the repo .clang-tidy config and the CMake compilation
+          database (build/compile_commands.json); files not in the database are
+          skipped. Configure a build with
+          `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` to enable it.
+        entry: python3 scripts/run_clang_tidy.py
+        language: system
+        types_or: [c++, c]
+        exclude: >-
+          ^(thirdparty/|build/|src/db/sqlengine/antlr/gen/|src/db/index/column/fts_column/gen/)
+        require_serial: true
+
       - id: branch-name-check
         name: Check branch name format
         entry: >-
