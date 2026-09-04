@@ -10,7 +10,12 @@ cc_library(
     NAME core_knn_vamana
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
-    LIBS core_framework core_knn_hnsw sparsehash
+    # core_framework is intentionally not listed: cc_library already appends the
+    # ALWAYS_LINK deps reached through core_knn_hnsw (core_utility, then
+    # core_framework) in dependency order. Naming it here would pin it ahead of
+    # core_utility, and CMake would then repeat the archive to keep the link
+    # order valid (Apple's ld warns "ignoring duplicate libraries").
+    LIBS core_knn_hnsw sparsehash
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
     LDFLAGS "${CORE_KNN_VAMANA_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"

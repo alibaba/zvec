@@ -91,20 +91,26 @@ endif()
 # FAT mode: embed ALL libraries (including third-party) statically
 # This creates a truly self-contained library with zero external dependencies
 # Users only need to link libzvec_c_api.so without installing any dependencies
+#
+# zvec_turbo is listed ahead of zvec_ailego because it links against it. A
+# dependency named before its dependent forces CMake to repeat the archive on
+# the link line to keep the order valid, which Apple's ld reports as
+# "ignoring duplicate libraries". Order does not matter inside the
+# whole-archive/force_load group, so every branch can use the same order.
 if(MSVC)
     target_link_options(zvec_c_api PRIVATE
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
     )
 
     target_link_libraries(zvec_c_api
         PRIVATE
             zvec
             zvec_core
-            zvec_ailego
             zvec_turbo
+            zvec_ailego
             ${ZVEC_CXX_STD_LIB}
             Threads::Threads
     )
@@ -112,8 +118,8 @@ elseif(APPLE)
     target_link_options(zvec_c_api PRIVATE
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
     )
     
     # Link the libraries themselves (without force_load flags)
@@ -121,8 +127,8 @@ elseif(APPLE)
         PRIVATE
             zvec
             zvec_core
+            zvec_turbo  # Required by zvec_core (metric module)
             zvec_ailego
-            zvec_turbo
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
@@ -138,8 +144,8 @@ else()
             ${ZVEC_WHOLE_ARCHIVE_PREFIX}
                 zvec
                 zvec_core
-                zvec_ailego
                 zvec_turbo  # Required by zvec_core (metric module)
+                zvec_ailego
             ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
             Threads::Threads
             ${CMAKE_DL_LIBS}

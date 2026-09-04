@@ -38,8 +38,8 @@ cc_library(
   INCS . ${CMAKE_CURRENT_BINARY_DIR}
   PUBINCS ${PROJECT_ROOT_DIR}/src/include/
   LIBS
-    zvec_ailego
     zvec_core
+    zvec_ailego
     glog
     roaring
     rocksdb

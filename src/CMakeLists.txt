@@ -225,11 +225,16 @@ if(BUILD_ZVEC_AILEGO_SHARED)
 endif()
 
 if(BUILD_ZVEC_CORE_SHARED)
+    # LIBS is ordered dependents-first (zvec_turbo links zvec_ailego). Listing a
+    # dependency ahead of its dependent makes CMake repeat the archive on the
+    # link line to keep the order valid, which Apple's ld reports as
+    # "ignoring duplicate libraries". Order is irrelevant inside the
+    # whole-archive/force_load group itself, so this is safe.
     zvec_add_all_in_one_shared(zvec_core_shared zvec_core
         LIBS
             zvec_core
-            zvec_ailego
             zvec_turbo
+            zvec_ailego
         EXPORT_COMPONENTS
             zvec_core
             zvec_ailego
@@ -242,8 +247,8 @@ if(BUILD_ZVEC_SHARED)
         LIBS
             zvec
             zvec_core
-            zvec_ailego
             zvec_turbo
+            zvec_ailego
         EXPORT_COMPONENTS
             zvec
             zvec_ailego

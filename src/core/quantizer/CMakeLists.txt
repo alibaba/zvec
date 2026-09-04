@@ -10,7 +10,7 @@ cc_library(
         NAME core_quantizer 
         STATIC SHARED STRICT ALWAYS_LINK
         SRCS *.cc rotator/*.cc
-        LIBS zvec_ailego zvec_turbo core_framework
+        LIBS core_framework zvec_turbo zvec_ailego
         INCS . ${PROJECT_ROOT_DIR}/src/core
         LDFLAGS "${CORE_QUANTIZER_LDFLAGS}"
         VERSION "${PROXIMA_ZVEC_VERSION}"

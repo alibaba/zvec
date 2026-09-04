@@ -14,11 +14,20 @@ if(DISKANN_SUPPORTED)
   cc_directory(diskann)
 else()
   message(STATUS "not build diskann")
-  # Empty stub library for unsupported platforms
+  # Empty stub library for unsupported platforms.
+  # The marker below gives the object file one symbol with external linkage.
+  # Apple's ranlib/ld warn about archives whose members define no global symbol
+  # ("has no symbols" / "table of contents is empty"), and a namespace-scope
+  # const needs the extern declaration to get external linkage in C++.
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/diskann_stub.cc
     "// Stub implementation for unsupported platforms\n"
     "// DiskAnn supports Linux (x86_64/ARM64) and macOS ARM64\n"
-    "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
+    "namespace zvec {\n"
+    "namespace core {\n"
+    "extern const char kDiskannStubMarker;\n"
+    "const char kDiskannStubMarker = 0;\n"
+    "}  // namespace core\n"
+    "}  // namespace zvec\n"
   )
 
   if(MSVC)
@@ -56,11 +65,17 @@ if(RABITQ_SUPPORTED)
   cc_directory(ivf_rabitq)
 else()
   message(STATUS "NOT BUILD RABITQ")
-  # Empty stub library for unsupported platforms
+  # Empty stub libraries for unsupported platforms. See the diskann stub above
+  # for why each one defines a marker symbol with external linkage.
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/rabitq_stub.cc
     "// Stub implementation for unsupported platforms\n"
     "// RaBitQ only supports Linux x86_64\n"
-    "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
+    "namespace zvec {\n"
+    "namespace core {\n"
+    "extern const char kHnswRabitqStubMarker;\n"
+    "const char kHnswRabitqStubMarker = 0;\n"
+    "}  // namespace core\n"
+    "}  // namespace zvec\n"
   )
 
   cc_library(
@@ -75,7 +90,12 @@ else()
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
     "// Stub implementation for unsupported platforms\n"
     "// IVF RaBitQ only supports Linux x86_64\n"
-    "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
+    "namespace zvec {\n"
+    "namespace core {\n"
+    "extern const char kIvfRabitqStubMarker;\n"
+    "const char kIvfRabitqStubMarker = 0;\n"
+    "}  // namespace core\n"
+    "}  // namespace zvec\n"
   )
 
   if(MSVC)
