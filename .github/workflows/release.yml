@@ -74,6 +74,7 @@ jobs:
           # Every platform must have produced its archive, otherwise the
           # release below would silently ship an incomplete SDK set.
           expected=(
+            zvec-sdk-osx-amd64.tar.gz
             zvec-sdk-osx-arm64.tar.gz
             zvec-sdk-linux-amd64.tar.gz
             zvec-sdk-linux-arm64.tar.gz

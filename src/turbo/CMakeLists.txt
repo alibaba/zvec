@@ -24,10 +24,22 @@ endif()
 if(NOT ANDROID AND AUTO_DETECT_ARCH AND
    _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
   setup_compiler_march_for_x86(
-    TURBO_MARCH_FLAG_SSE
+    TURBO_MARCH_FLAG_SSE2
     TURBO_MARCH_FLAG_AVX2
     TURBO_MARCH_FLAG_AVX512
     TURBO_MARCH_FLAG_AVX512FP16)
+  # kSSE2 is gated by SSE2 at runtime. Keep these translation units at
+  # that exact baseline so auto-vectorized scalar tails cannot acquire
+  # instructions from the broader corei7 profile returned above.
+  if(MSVC AND _TURBO_TARGET_ARCH STREQUAL "x86")
+    set(TURBO_MARCH_FLAG_SSE2 "/arch:SSE2")
+  elseif(NOT MSVC)
+    if(_TURBO_TARGET_ARCH STREQUAL "x64")
+      set(TURBO_MARCH_FLAG_SSE2 "-march=x86-64")
+    else()
+      set(TURBO_MARCH_FLAG_SSE2 "-march=i686 -msse2")
+    endif()
+  endif()
 endif()
 
 set(ZVEC_TURBO_ARM_FP16_SUPPORTED OFF)
@@ -35,7 +47,8 @@ set(TURBO_MARCH_FLAG_NEON_FP16 "")
 if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
-  # FEAT_FP16, while existing Ailego distance implementations stay untouched.
+  # FEAT_FP16, while the plain NEON kernels (which widen to FP32) and the
+  # existing Ailego distance implementations stay untouched.
   # Android is kept even though build_android.sh sets AUTO_DETECT_ARCH=OFF:
   # that switch guards the host-oriented march detection, while this probe
   # runs against the actual (cross) target toolchain.
@@ -78,12 +91,12 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 # subdirectory).
 if(NOT ANDROID AND AUTO_DETECT_ARCH AND
    _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
-    # SSE
-    file(GLOB_RECURSE SSE_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse/*.cc)
+    # SSE2
+    file(GLOB_RECURSE SSE2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse2/*.cc)
     set_source_files_properties(
-        ${SSE_SRCS}
+        ${SSE2_SRCS}
         PROPERTIES
-        COMPILE_FLAGS "${TURBO_MARCH_FLAG_SSE}"
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_SSE2}"
     )
 
     # AVX2
@@ -92,6 +105,16 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
         ${AVX2_SRCS}
         PROPERTIES
         COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
+    )
+
+    # AVX512-FP16
+    file(GLOB_RECURSE AVX512FP16_SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_fp16/*.cc
+    )
+    set_source_files_properties(
+        ${AVX512FP16_SRCS}
+        PROPERTIES
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512FP16}"
     )
 
     # AVX512
