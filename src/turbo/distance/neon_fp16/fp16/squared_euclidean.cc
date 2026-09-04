@@ -76,11 +76,11 @@ void squared_euclidean_fp16_distance_neon_fp16(const void *a, const void *b,
 }
 
 // Batch version of squared_euclidean_fp16_distance_neon_fp16.
-void squared_euclidean_fp16_batch_distance_neon_fp16(const void *const *vectors,
-                                                     const void *query,
-                                                     size_t n, size_t dim,
-                                                     float *distances) {
+void squared_euclidean_fp16_batch_distance_neon_fp16(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values) {
 #if ZVEC_TURBO_FP16_NEON
+  (void)extra_values;
   const float16_t *typed_query = reinterpret_cast<const float16_t *>(query);
   for (size_t i = 0; i < n; ++i) {
     distances[i] = squared_euclidean_fp16_accum(
@@ -88,7 +88,7 @@ void squared_euclidean_fp16_batch_distance_neon_fp16(const void *const *vectors,
   }
 #else
   scalar::squared_euclidean_fp16_batch_distance(vectors, query, n, dim,
-                                                distances);
+                                                distances, extra_values);
 #endif
 }
 

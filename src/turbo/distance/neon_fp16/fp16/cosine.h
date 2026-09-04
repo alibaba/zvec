@@ -26,6 +26,7 @@ void cosine_fp16_distance_neon_fp16(const void *a, const void *b, size_t dim,
 // Batch version of cosine_fp16_distance_neon_fp16.
 void cosine_fp16_batch_distance_neon_fp16(const void *const *vectors,
                                           const void *query, size_t n,
-                                          size_t dim, float *distances);
+                                          size_t dim, float *distances,
+                                          const void *const *extra_values);
 
 }  // namespace zvec::turbo::neon_fp16

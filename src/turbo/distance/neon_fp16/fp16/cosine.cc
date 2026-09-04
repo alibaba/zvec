@@ -29,9 +29,10 @@ void cosine_fp16_distance_neon_fp16(const void *a, const void *b, size_t dim,
 
 void cosine_fp16_batch_distance_neon_fp16(const void *const *vectors,
                                           const void *query, size_t n,
-                                          size_t dim, float *distances) {
-  inner_product_fp16_batch_distance_neon_fp16(vectors, query, n, dim,
-                                              distances);
+                                          size_t dim, float *distances,
+                                          const void *const *extra_values) {
+  inner_product_fp16_batch_distance_neon_fp16(vectors, query, n, dim, distances,
+                                              extra_values);
   // inner_product batch returns -real_IP per element; cosine = 1 - real_IP =
   // 1 + d.
   for (size_t i = 0; i < n; i++) {
