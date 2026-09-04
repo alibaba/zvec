@@ -26,6 +26,15 @@
 //                           which exposes neither float16_t nor the v*_f16
 //                           intrinsics outside ARMv8.2 FP16. Use for FP16
 //                           kernels and other GCC/Clang-only extensions.
+//   AILEGO_MACOS_X86_64   - native macOS on Intel x86_64. Excludes iOS and
+//                           other Apple targets, including simulators.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX && defined(__x86_64__)
+#define AILEGO_MACOS_X86_64 1
+#endif
+#endif
+
 #if defined(__aarch64__) || defined(_M_ARM64)
 #define AILEGO_ARM64 1
 #endif
