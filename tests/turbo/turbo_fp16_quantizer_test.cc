@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <random>
 #include <string>
@@ -96,7 +98,13 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       constexpr size_t kVectorCount = 7;
       std::mt19937 gen(
           static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
-      std::uniform_real_distribution<float> dist(-4.0f, 5.0f);
+      // Small integer components are exactly representable in FP16, so even
+      // the AVX512-FP16 kernels (which accumulate in FP16) produce exact
+      // partial sums and match the scalar kernels deterministically.
+      // Fractional data would make the FP16 accumulation error scale with
+      // sum(|a_i * b_i|), which the relative tolerance (based on the
+      // cancellation-reduced result) cannot bound reliably.
+      std::uniform_int_distribution<int> dist(-4, 5);
       std::vector<std::vector<float>> raw(kVectorCount,
                                           std::vector<float>(dim));
       std::vector<std::string> encoded(
@@ -104,7 +112,7 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
           std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
       for (size_t i = 0; i < kVectorCount; ++i) {
         for (float &value : raw[i]) {
-          value = dist(gen);
+          value = static_cast<float>(dist(gen));
         }
         quantizer->quantize_data(raw[i].data(), encoded[i].data());
       }
@@ -355,6 +363,51 @@ TEST(Fp16Quantizer, ScoreSquaredEuclidean) {
 
 TEST(Fp16Quantizer, Avx2DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX2);
+}
+
+TEST(Fp16Quantizer, SseDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE2);
+}
+
+TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
+  const std::array<uint16_t, 7> lhs_bits = {0x0000, 0x8000, 0x0001, 0x8001,
+                                            0x03ff, 0x83ff, 0x0400};
+  const std::array<uint16_t, 7> rhs_bits = {0x3c00, 0xbc00, 0x0002, 0x8002,
+                                            0x0200, 0x8200, 0x8400};
+  std::array<zvec::ailego::Float16, lhs_bits.size()> lhs;
+  std::array<zvec::ailego::Float16, rhs_bits.size()> rhs;
+  std::memcpy(lhs.data(), lhs_bits.data(), sizeof(lhs_bits));
+  std::memcpy(rhs.data(), rhs_bits.data(), sizeof(rhs_bits));
+
+  for (const auto metric :
+       {turbo::MetricType::kSquaredEuclidean, turbo::MetricType::kCosine,
+        turbo::MetricType::kInnerProduct}) {
+    const auto scalar = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kScalar);
+    const auto sse2 = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kSSE2);
+    if (!sse2.dist) {
+      GTEST_SKIP() << "SSE2 kernels unavailable on this CPU";
+    }
+
+    float expected = 0.0f;
+    float actual = 0.0f;
+    scalar.dist(lhs.data(), rhs.data(), lhs.size(), &expected);
+    sse2.dist(lhs.data(), rhs.data(), lhs.size(), &actual);
+    expect_simd_near(actual, expected, turbo::CpuArchType::kSSE2);
+
+    const void *vectors[] = {lhs.data(), rhs.data()};
+    float expected_batch[2] = {};
+    float actual_batch[2] = {};
+    scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch);
+    sse2.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch);
+    expect_simd_near(actual_batch[0], expected_batch[0],
+                     turbo::CpuArchType::kSSE2);
+    expect_simd_near(actual_batch[1], expected_batch[1],
+                     turbo::CpuArchType::kSSE2);
+  }
 }
 
 TEST(Fp16Quantizer, Avx512DistanceMatchesScalar) {
