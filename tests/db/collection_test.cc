@@ -37,6 +37,8 @@
 #ifdef RemoveDirectory
 #undef RemoveDirectory
 #endif
+#else
+#include <unistd.h>
 #endif
 #include <gtest/gtest.h>
 #include <magic_enum/magic_enum.hpp>
@@ -60,7 +62,15 @@
 using namespace zvec;
 using namespace zvec::test;
 
-std::string col_path = "test_collection";
+// Process-unique collection directory: concurrent instances (e.g. ctest and
+// a manual ./bin/collection_test run) would otherwise delete each other's
+// test_collection directory mid-test and crash on missing files.
+#ifdef _WIN32
+std::string col_path =
+    "test_collection_" + std::to_string(GetCurrentProcessId());
+#else
+std::string col_path = "test_collection_" + std::to_string(getpid());
+#endif
 
 class CollectionTest : public ::testing::Test {
  protected:
@@ -72,6 +82,8 @@ class CollectionTest : public ::testing::Test {
 
   void TearDown() override {
     FileHelper::RemoveDirectory(col_path);
+    // clean up the legacy shared path left behind by older test binaries
+    ailego::FileHelper::RemoveDirectory("test_collection");
     ailego::FileHelper::RemoveDirectory("demo");
   }
 };
@@ -149,7 +161,8 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
     options.read_only_ = false;
     options.enable_mmap_ = enable_mmap;
 
-    std::string path = "./demo";
+    // process-unique: concurrent test instances must not share this dir
+    std::string path = col_path;
 
     ailego::FileHelper::RemoveDirectory(path.c_str());
 
