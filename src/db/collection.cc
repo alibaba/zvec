@@ -209,7 +209,13 @@ class CollectionImpl : public Collection {
   Result<std::unique_ptr<DocIterator::Impl>> prepare_iterate(
       const IteratorOptions &options);
 
+  //! Collects the segment list under a shared write_mtx_, because
+  //! writing_segment_ and the doc_ids_ that doc_count() reads are mutated by
+  //! Insert under the exclusive write_mtx_.
   std::vector<Segment::Ptr> get_all_segments() const;
+
+  //! Same as get_all_segments(), for callers that already hold write_mtx_.
+  std::vector<Segment::Ptr> get_all_segments_unsafe() const;
 
   std::vector<Segment::Ptr> get_all_persist_segments() const;
 
@@ -523,7 +529,7 @@ Result<CollectionStats> CollectionImpl::stats() const {
   // of which Insert mutates under the exclusive write_mtx_.
   std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
 
-  auto segments = get_all_segments();
+  auto segments = get_all_segments_unsafe();
 
   CollectionStats stats;
   auto vector_fields = schema_->vector_fields();
@@ -1553,7 +1559,9 @@ Result<WriteResults> CollectionImpl::upsert(std::vector<Doc> &docs) {
 
 Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
                                              Doc::Ptr *doc_out) {
-  auto segments = get_all_segments();
+  // Called from handle_update(), i.e. under write_impl()'s exclusive
+  // write_mtx_.
+  auto segments = get_all_segments_unsafe();
   uint64_t doc_id;
   bool has = id_map_->has(doc.pk(), &doc_id);
   if (!has) {
@@ -2390,6 +2398,11 @@ Segment::Ptr CollectionImpl::local_segment_by_doc_id(
 }
 
 std::vector<Segment::Ptr> CollectionImpl::get_all_segments() const {
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+  return get_all_segments_unsafe();
+}
+
+std::vector<Segment::Ptr> CollectionImpl::get_all_segments_unsafe() const {
   std::vector<Segment::Ptr> segments = get_all_persist_segments();
   if (writing_segment_->doc_count() > 0) {
     segments.push_back(writing_segment_);
@@ -2499,7 +2512,7 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
       // No flushing on read-only collections; include the writing segment
       // (SegmentImpl::scan reads its in-memory block), which is stable since
       // no concurrent writes exist.
-      impl->segments = get_all_segments();
+      impl->segments = get_all_segments_unsafe();
     } else {
       // Seal the writing segment so concurrent writes cannot mutate the
       // snapshot; has_record() also covers delete-only segments.
