@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <set>
 #include <thread>
+#include <type_traits>
 #include <unordered_set>
 #include <ailego/math/distance.h>
 #include <gtest/gtest.h>
@@ -84,6 +85,9 @@ class DiskAnnProviderTestPeer {
 using namespace zvec::core;
 using namespace zvec::ailego;
 using namespace std;
+
+static_assert(!std::is_copy_constructible_v<PlatformAlignedFileReader>);
+static_assert(!std::is_copy_assignable_v<PlatformAlignedFileReader>);
 
 constexpr size_t static dim = 64;
 

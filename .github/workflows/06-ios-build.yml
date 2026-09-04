@@ -10,6 +10,7 @@ permissions:
 jobs:
   build-ios:
     runs-on: macos-15
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -50,8 +51,12 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
             -DCMAKE_OSX_SYSROOT="$SDK_PATH" \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ZVEC_SHARED=OFF \
+            -DBUILD_ZVEC_AILEGO_SHARED=OFF \
+            -DBUILD_ZVEC_CORE_SHARED=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_TOOLS=OFF \
+            -DBUILD_CPP_EXAMPLES=ON \
             -DENABLE_WERROR=ON \
             -DCMAKE_INSTALL_PREFIX="./install" \
             -DIOS=ON \
@@ -60,6 +65,36 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
           cmake --build build_ios_${{ matrix.platform }} --parallel $NPROC
+
+      - name: Build public static C++ examples
+        run: |
+          NPROC=$(sysctl -n hw.ncpu)
+          BUILD_DIR=build_ios_${{ matrix.platform }}
+          cmake --build "$BUILD_DIR" --target zvec_cpp_examples --parallel "$NPROC"
+
+          for example in ailego-example core-example external-vector-example db-example; do
+            example_binary="$BUILD_DIR/bin/$example.app/$example"
+            if [ ! -f "$example_binary" ]; then
+              echo "Missing iOS example binary: $example_binary"
+              exit 1
+            fi
+          done
+
+      - name: Build required DiskAnn test targets
+        run: |
+          NPROC=$(sysctl -n hw.ncpu)
+          BUILD_DIR=build_ios_${{ matrix.platform }}
+          cmake --build "$BUILD_DIR" \
+            --target diskann_mobile_compat_test diskann_mobile_collection_test \
+            --parallel "$NPROC"
+
+          for test_name in diskann_mobile_compat_test diskann_mobile_collection_test; do
+            test_app="$BUILD_DIR/bin/${test_name}.app"
+            if [ ! -d "$test_app" ]; then
+              echo "::error::Missing required iOS DiskAnn test app: $test_app"
+              exit 1
+            fi
+          done
 
       - name: Build test targets
         if: matrix.test_on_simulator
@@ -70,6 +105,11 @@ jobs:
       - name: Boot iOS Simulator
         if: matrix.test_on_simulator
         run: |
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "::error::SIMULATORARM64 tests require an arm64 macOS runner"
+            exit 1
+          fi
+
           DEVICE_ID=$(xcrun simctl list devices available -j \
             | python3 -c "
           import json, sys
@@ -84,6 +124,7 @@ jobs:
           ")
           echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
           xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
           echo "Booted simulator: $DEVICE_ID"
 
       - name: Run all tests on simulator
@@ -92,52 +133,167 @@ jobs:
           FAILED_TESTS=""
           PASSED=0
           TOTAL=0
+          DISKANN_COMPAT_PASSED=0
+          DISKANN_COLLECTION_PASSED=0
+          BUILD_DIR=build_ios_${{ matrix.platform }}
 
-          for APP in build_ios_${{ matrix.platform }}/bin/*_test.app; do
+          for test_name in diskann_mobile_compat_test diskann_mobile_collection_test; do
+            test_app="$BUILD_DIR/bin/${test_name}.app"
+            if [ ! -d "$test_app" ]; then
+              echo "::error::Missing required iOS DiskAnn test app: $test_app"
+              exit 1
+            fi
+          done
+
+          for APP in "$BUILD_DIR"/bin/*_test.app; do
             [ -d "$APP" ] || continue
             TEST_NAME=$(basename "$APP" .app)
+
+            # All test cases in this legacy target are disabled with #if 0.
+            # Do not count an empty GTest binary as an executed test suite.
+            if [ "$TEST_NAME" = "cosine_distance_matrix_int8_test" ]; then
+              echo "::notice::Skipping ${TEST_NAME}: it contains no enabled GTest cases"
+              continue
+            fi
+
             BUNDLE_ID="com.zvec.${TEST_NAME}"
+            LOG_FILE="$RUNNER_TEMP/${TEST_NAME}.log"
             TOTAL=$((TOTAL + 1))
 
             echo "::group::Running ${TEST_NAME}"
             xcrun simctl install "$DEVICE_ID" "$APP"
-            set +eo pipefail
             for attempt in 1 2 3; do
-              xcrun simctl launch --console "$DEVICE_ID" "$BUNDLE_ID" 2>&1 | tee /tmp/${TEST_NAME}.log
-              LAUNCH_EXIT=${PIPESTATUS[0]}
-              if ! grep -q "unknown to FrontBoard" /tmp/${TEST_NAME}.log; then
+              set +e
+              python3 - "$DEVICE_ID" "$BUNDLE_ID" "$LOG_FILE" <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          device_id, bundle_id, log_file = sys.argv[1:]
+          env = os.environ.copy()
+          env["SIMCTL_CHILD_GTEST_COLOR"] = "no"
+          try:
+              result = subprocess.run(
+                  ["xcrun", "simctl", "launch", "--console", device_id, bundle_id],
+                  env=env,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  timeout=600,
+              )
+              output = result.stdout or ""
+              return_code = result.returncode
+          except subprocess.TimeoutExpired as error:
+              output = error.stdout or ""
+              if isinstance(output, bytes):
+                  output = output.decode("utf-8", errors="replace")
+              output += "\nTest timed out after 600 seconds.\n"
+              return_code = 124
+
+          pathlib.Path(log_file).write_text(output, encoding="utf-8")
+          print(output, end="")
+          sys.exit(return_code)
+          PY
+              LAUNCH_EXIT=$?
+              set -e
+
+              SUMMARY_FOUND=0
+              if grep -Eq '^\[==========\][[:space:]]+[0-9]+ tests?[[:space:]]+from[[:space:]]+[0-9]+ test (suites?|cases?)[[:space:]]+ran\.' "$LOG_FILE"; then
+                SUMMARY_FOUND=1
+              elif [ "$TEST_NAME" = "c_api_test" ] && grep -Eq '^Failed: [0-9]+[[:space:]]*$' "$LOG_FILE"; then
+                SUMMARY_FOUND=1
+              fi
+
+              RETRY_REASON=""
+              if grep -q "unknown to FrontBoard" "$LOG_FILE"; then
+                RETRY_REASON="FrontBoard has not registered ${TEST_NAME} yet"
+              elif [ "$LAUNCH_EXIT" -eq 0 ] && [ "$SUMMARY_FOUND" -eq 0 ] && \
+                   ! grep -Eq '^\[  FAILED  \]' "$LOG_FILE"; then
+                RETRY_REASON="${TEST_NAME} exited without a complete test summary"
+              else
                 break
               fi
-              echo "::warning::Attempt ${attempt}/3: FrontBoard has not registered ${TEST_NAME} yet, retrying in 3s..."
-              sleep 3
-            done
-            set -eo pipefail
 
-            if grep -q '\[  FAILED  \]' /tmp/${TEST_NAME}.log; then
+              if [ "$attempt" -eq 3 ]; then
+                break
+              fi
+
+              echo "::warning::Attempt ${attempt}/3: ${RETRY_REASON}; reinstalling and retrying in 3s..."
+              xcrun simctl terminate "$DEVICE_ID" "$BUNDLE_ID" 2>/dev/null || true
+              xcrun simctl uninstall "$DEVICE_ID" "$BUNDLE_ID" 2>/dev/null || true
+              sleep 3
+              xcrun simctl install "$DEVICE_ID" "$APP"
+            done
+
+            EXPECTED_COUNT=""
+            case "$TEST_NAME" in
+              diskann_mobile_compat_test)
+                EXPECTED_COUNT=7
+                ;;
+              diskann_mobile_collection_test)
+                EXPECTED_COUNT=4
+                ;;
+            esac
+
+            if [ "$LAUNCH_EXIT" -eq 124 ]; then
+              echo "::error::${TEST_NAME} timed out after 600 seconds"
+              xcrun simctl terminate "$DEVICE_ID" "$BUNDLE_ID" 2>/dev/null || true
+              FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
+            elif [ "$LAUNCH_EXIT" -ne 0 ]; then
+              echo "::error::${TEST_NAME} launch exited ${LAUNCH_EXIT}"
+              FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
+            elif grep -Eq '^\[  FAILED  \]' "$LOG_FILE"; then
               echo "::error::${TEST_NAME} has failing tests"
               FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
-            elif grep -q '\[  PASSED  \]' /tmp/${TEST_NAME}.log; then
+            elif [ -n "$EXPECTED_COUNT" ] && \
+                 ! grep -Eq "^\\[  PASSED  \\][[:space:]]+${EXPECTED_COUNT} tests?\\.[[:space:]]*$" "$LOG_FILE"; then
+              echo "::error::${TEST_NAME} did not report the required ${EXPECTED_COUNT}/${EXPECTED_COUNT} passing tests"
+              FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
+            elif [ -n "$EXPECTED_COUNT" ] && \
+                 ! grep -Eq "^\\[==========\\][[:space:]]+${EXPECTED_COUNT} tests?[[:space:]]+from[[:space:]]+[1-9][0-9]* test (suites?|cases?)[[:space:]]+ran\\." "$LOG_FILE"; then
+              echo "::error::${TEST_NAME} did not run exactly ${EXPECTED_COUNT} tests"
+              FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
+            elif grep -Eq '^\[==========\][[:space:]]+[1-9][0-9]* tests?[[:space:]]+from[[:space:]]+[1-9][0-9]* test (suites?|cases?)[[:space:]]+ran\.' "$LOG_FILE"; then
               PASSED=$((PASSED + 1))
-            elif grep -qE 'Failed: 0$' /tmp/${TEST_NAME}.log; then
+              if [ "$TEST_NAME" = "diskann_mobile_compat_test" ]; then
+                DISKANN_COMPAT_PASSED=1
+              elif [ "$TEST_NAME" = "diskann_mobile_collection_test" ]; then
+                DISKANN_COLLECTION_PASSED=1
+              fi
+            elif [ "$TEST_NAME" = "c_api_test" ] && \
+                 grep -Eq '^Passed: [1-9][0-9]*[[:space:]]*$' "$LOG_FILE" && \
+                 grep -Eq '^Failed: 0[[:space:]]*$' "$LOG_FILE"; then
               # c_api_test uses a custom test framework (not GTest)
               PASSED=$((PASSED + 1))
-            elif [ "$LAUNCH_EXIT" -eq 0 ]; then
-              echo "::warning::${TEST_NAME} exited 0 but produced no recognisable test summary"
-              PASSED=$((PASSED + 1))
             else
-              echo "::error::${TEST_NAME} exited ${LAUNCH_EXIT} with no test summary"
+              echo "::error::${TEST_NAME} produced no recognisable passing test summary"
               FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
             fi
             echo "::endgroup::"
           done
 
           echo "Test summary: ${PASSED}/${TOTAL} passed"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::No iOS test apps were discovered"
+            exit 1
+          fi
           if [ -n "$FAILED_TESTS" ]; then
             echo "::error::Failed tests:${FAILED_TESTS}"
+            exit 1
+          fi
+          if [ "$DISKANN_COMPAT_PASSED" -ne 1 ] || [ "$DISKANN_COLLECTION_PASSED" -ne 1 ]; then
+            echo "::error::Required DiskAnn tests did not both complete successfully"
+            exit 1
+          fi
+          if [ "$PASSED" -ne "$TOTAL" ]; then
+            echo "::error::Only ${PASSED}/${TOTAL} iOS tests completed successfully"
             exit 1
           fi
 
       - name: Shutdown Simulator
         if: matrix.test_on_simulator && always()
         run: |
-          xcrun simctl shutdown "$DEVICE_ID" || true
+          if [ -n "${DEVICE_ID:-}" ]; then
+            xcrun simctl shutdown "$DEVICE_ID" || true
+          fi

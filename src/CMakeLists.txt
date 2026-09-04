@@ -215,6 +215,89 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     )
 endfunction()
 
+# Mobile public C++ API.  These build-tree targets keep the application and
+# zvec in one C++ runtime when the NDK/iOS toolchain uses a static libc++.
+# Whole-archive is required because module registration is performed by static
+# initializers that otherwise have no referenced symbol at link time.
+function(zvec_add_mobile_static_sdk TARGET_NAME)
+    cmake_parse_arguments(ZVEC_STATIC_SDK "" "" "LIBS" ${ARGN})
+    if(NOT ZVEC_STATIC_SDK_LIBS)
+        message(FATAL_ERROR "zvec_add_mobile_static_sdk requires LIBS")
+    endif()
+
+    foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
+        if(NOT TARGET ${ZVEC_STATIC_SDK_LIB})
+            message(FATAL_ERROR
+                "Target ${ZVEC_STATIC_SDK_LIB} is required by ${TARGET_NAME}")
+        endif()
+    endforeach()
+
+    add_library(${TARGET_NAME} INTERFACE)
+    target_compile_features(${TARGET_NAME} INTERFACE cxx_std_17)
+    target_include_directories(${TARGET_NAME}
+        INTERFACE
+            $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/src/generated>
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
+    )
+
+    if(IOS)
+        set(ZVEC_STATIC_SDK_LINK_OPTIONS)
+        foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
+            list(APPEND ZVEC_STATIC_SDK_LINK_OPTIONS
+                -Wl,-force_load,$<TARGET_FILE:${ZVEC_STATIC_SDK_LIB}>
+            )
+        endforeach()
+        target_link_options(${TARGET_NAME}
+            INTERFACE ${ZVEC_STATIC_SDK_LINK_OPTIONS}
+        )
+        target_link_libraries(${TARGET_NAME}
+            INTERFACE
+                ${ZVEC_STATIC_SDK_LIBS}
+                Threads::Threads
+                ${CMAKE_DL_LIBS}
+        )
+    else()
+        # Keep whole-archive scoped to the SDK archives themselves.  Putting
+        # these flags in target_link_libraries() also encloses transitive
+        # dependencies inserted by CMake, which forces both Arrow's bundled
+        # utf8proc and zvec's standalone utf8proc into the executable.
+        set(ZVEC_STATIC_SDK_LINK_OPTIONS)
+        foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
+            list(APPEND ZVEC_STATIC_SDK_LINK_OPTIONS
+                -Wl,--whole-archive,$<TARGET_FILE:${ZVEC_STATIC_SDK_LIB}>,--no-whole-archive
+            )
+        endforeach()
+        target_link_options(${TARGET_NAME}
+            INTERFACE ${ZVEC_STATIC_SDK_LINK_OPTIONS}
+        )
+        target_link_libraries(${TARGET_NAME}
+            INTERFACE
+                ${ZVEC_STATIC_SDK_LIBS}
+                Threads::Threads
+                ${CMAKE_DL_LIBS}
+        )
+        if(ANDROID)
+            target_link_libraries(${TARGET_NAME} INTERFACE log)
+        endif()
+    endif()
+endfunction()
+
+if(ANDROID OR IOS)
+    zvec_add_mobile_static_sdk(zvec_static_sdk
+        LIBS zvec zvec_core zvec_ailego zvec_turbo
+    )
+    zvec_add_mobile_static_sdk(zvec_core_static_sdk
+        LIBS zvec_core zvec_ailego zvec_turbo
+    )
+    zvec_add_mobile_static_sdk(zvec_ailego_static_sdk
+        LIBS zvec_ailego
+    )
+
+    add_library(zvec::static ALIAS zvec_static_sdk)
+    add_library(zvec::core_static ALIAS zvec_core_static_sdk)
+    add_library(zvec::ailego_static ALIAS zvec_ailego_static_sdk)
+endif()
+
 if(BUILD_ZVEC_AILEGO_SHARED)
     zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
         LIBS
