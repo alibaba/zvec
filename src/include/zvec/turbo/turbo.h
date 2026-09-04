@@ -45,8 +45,9 @@ constexpr uint16_t kQuantizerSerVersion = 1;
 
 using DistanceFunc =
     std::function<void(const void *m, const void *q, size_t dim, float *out)>;
-using BatchDistanceFunc = std::function<void(
-    const void **m, const void *q, size_t num, size_t dim, float *out)>;
+using BatchDistanceFunc =
+    std::function<void(const void **m, const void *q, size_t num, size_t dim,
+                       float *out, const void **extra_values)>;
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
@@ -94,11 +95,9 @@ using CodebookSymmetricDistanceFunc = void (*)(const void *a, const void *b,
 
 // Batch asymmetric: distances for multiple codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
-using CodebookBatchAsymmetricDistanceFunc = void (*)(const void **codes,
-                                                     const void *lut,
-                                                     size_t num,
-                                                     size_t num_chunk,
-                                                     float *out);
+using CodebookBatchAsymmetricDistanceFunc =
+    void (*)(const void **codes, const void *lut, size_t num, size_t num_chunk,
+             float *out, const void **extra_values);
 
 // FastScan ADC kernel: LUT look-up + accumulate over one packed block of 32
 // vectors.  Codes are 4-bit and block-interleaved, the LUT is affine-quantized

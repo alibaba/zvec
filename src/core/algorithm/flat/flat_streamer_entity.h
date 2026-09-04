@@ -33,8 +33,10 @@ namespace core {
 //! Reusable request-local buffers for storage-specific Flat search paths.
 struct FlatSearchScratch {
   std::vector<const void *> vector_ptrs{};
+  std::vector<const void *> extra_values{};
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
+  std::vector<uint8_t> query_buffer{};
 };
 
 /*! Flat Streamer Entity
@@ -192,6 +194,15 @@ class FlatStreamerEntity {
 
   const IndexMetric::MatrixBatchDistance &batch_distance(void) const {
     return batch_distance_;
+  }
+
+  size_t extra_values_size(void) const {
+    return extra_values_size_;
+  }
+
+  const IndexMetric::DistanceBatchQueryPreprocessFunc &batch_query_preprocess(
+      void) const {
+    return batch_query_preprocess_;
   }
 
   int get_vector_by_position(uint32_t id,
@@ -432,6 +443,8 @@ class FlatStreamerEntity {
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc batch_query_preprocess_{};
+  size_t extra_values_size_{0};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};

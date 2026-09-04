@@ -43,7 +43,8 @@ void cosine_int4_distance(const void *a, const void *b, size_t dim,
 }
 
 void cosine_int4_batch_distance(const void *const *vectors, const void *query,
-                                size_t n, size_t dim, float *distances) {
+                                size_t n, size_t dim, float *distances,
+                                const void *const * /*extra_values*/) {
   for (size_t i = 0; i < n; ++i) {
     cosine_int4_distance(vectors[i], query, dim, &distances[i]);
   }

@@ -466,7 +466,7 @@ void check_batch(zvec::turbo::CodebookBatchAsymmetricDistanceFunc fn, float tol,
       }
 
       std::vector<float> got(num, -1.0f);
-      fn(candidates.data(), lut.data(), num, num_sq, got.data());
+      fn(candidates.data(), lut.data(), num, num_sq, got.data(), nullptr);
       for (size_t i = 0; i < num; ++i) {
         EXPECT_NEAR(expected[i], got[i], tol)
             << "batch ADC mismatch for M=" << num_sq << " num=" << num

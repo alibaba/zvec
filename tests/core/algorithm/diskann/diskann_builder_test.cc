@@ -22,6 +22,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
+#include "tests/test_util.h"
 #include "diskann_holder.h"
 #include "diskann_params.h"
 
@@ -52,9 +53,7 @@ void DiskAnnBuilderTest::SetUp(void) {
 }
 
 void DiskAnnBuilderTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", _dir.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(_dir);
 }
 
 TEST_F(DiskAnnBuilderTest, TestGeneral) {

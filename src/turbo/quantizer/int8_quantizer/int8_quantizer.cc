@@ -160,8 +160,9 @@ DistanceImpl Int8Quantizer::distance(const void *query,
     if (batch_func) {
       BatchDistanceFunc batch_base = std::move(batch_func);
       batch_func = [batch_base, offset](const void **m, const void *q,
-                                        size_t num, size_t dim, float *out) {
-        batch_base(m, q, num, dim, out);
+                                        size_t num, size_t dim, float *out,
+                                        const void **extra_values) {
+        batch_base(m, q, num, dim, out, extra_values);
         for (size_t i = 0; i < num; ++i) {
           out[i] += offset;
         }
@@ -196,10 +197,12 @@ void Int8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
       std::string buf(static_cast<const char *>(query), quantized_length());
       dp_query_preprocess_func_(&buf[0], dist_dim_);
       dp_query_batch_func_(const_cast<const void **>(dp_list), buf.data(),
-                           static_cast<size_t>(dp_num), dist_dim_, dist_list);
+                           static_cast<size_t>(dp_num), dist_dim_, dist_list,
+                           nullptr);
     } else {
       dp_query_batch_func_(const_cast<const void **>(dp_list), query,
-                           static_cast<size_t>(dp_num), dist_dim_, dist_list);
+                           static_cast<size_t>(dp_num), dist_dim_, dist_list,
+                           nullptr);
     }
     if (distance_offset_ != 0.0f) {
       for (int i = 0; i < dp_num; ++i) {

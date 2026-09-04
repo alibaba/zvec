@@ -29,7 +29,8 @@ void cosine_int8_distance(const void *a, const void *b, size_t dim,
 // The query must have been preprocessed by cosine_int8_query_preprocess
 // (int8 -> uint8 via +128 shift) before calling this function.
 void cosine_int8_batch_distance(const void *const *vectors, const void *query,
-                                size_t n, size_t dim, float *distances);
+                                size_t n, size_t dim, float *distances,
+                                const void *const *extra_values);
 
 // Preprocess the query vector in-place (shift int8 -> uint8 by adding 128)
 // so that the AVX512-VNNI dpbusd instruction can be used for inner product.

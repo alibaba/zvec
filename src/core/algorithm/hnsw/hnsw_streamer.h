@@ -220,6 +220,12 @@ class HnswStreamer : public IndexStreamer {
   //! current streamer/searcher
   int update_context(HnswContext *ctx) const;
 
+  //! Bind the distance functions and inline record layout used for graph build
+  void bind_add_dist_space(HnswContext *ctx) const;
+
+  //! Bind the distance functions and inline record layout used for search
+  void bind_search_dist_space(HnswContext *ctx) const;
+
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {

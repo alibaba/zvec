@@ -153,8 +153,8 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
 
   int totalHits = 0;
   int totalCnts = 0;
@@ -202,7 +202,7 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   }
   float recall = totalHits * 1.0f / totalCnts;
   float topk1Recall = topk1Hits * 100.0f / cnt;
-  float cost = linearTotalTime * 1.0f / knnTotalTime;
+  // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
            "R@%zd=%f R@1=%f cost=%f\n",
@@ -2118,8 +2118,8 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
   }
 
   size_t topk = 20;
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
   int totalHits = 0;
   int totalCnts = 0;
   int topk1Hits = 0;
@@ -2201,7 +2201,7 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
   }
   float recall = totalHits * 1.0f / totalCnts;
   float topk1Recall = topk1Hits * step * 1.0f / cnt;
-  float cost = linearTotalTime * 1.0f / knnTotalTime;
+  // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
            "R@%zd=%f R@1=%f cost=%f\n",
@@ -2268,8 +2268,8 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
 
   int totalHits = 0;
   int totalCnts = 0;
@@ -2318,7 +2318,7 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
   }
   float recall = totalHits * 1.0f / totalCnts;
   float topk1Recall = topk1Hits * step * 1.0f / cnt;
-  float cost = linearTotalTime * 1.0f / knnTotalTime;
+  // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
            "R@%zd=%f R@1=%f cost=%f\n",
@@ -2391,8 +2391,8 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
   linearCtx->set_topk(topk);
   knnCtx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knnTotalTime = 0;
+  [[maybe_unused]] uint64_t linearTotalTime = 0;
 
   int totalHits = 0;
   int totalCnts = 0;
@@ -2470,7 +2470,7 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
   }
   float recall = totalHits * 1.0f / totalCnts;
   float topk1Recall = topk1Hits * 100.0f / (float(cnt) / 100);
-  float cost = linearTotalTime * 1.0f / knnTotalTime;
+  // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
            "R@%zd=%f R@1=%f cost=%f\n",

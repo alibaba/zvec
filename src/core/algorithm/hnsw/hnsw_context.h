@@ -301,6 +301,32 @@ class HnswContext : public IndexContext {
     return dc_;
   }
 
+  //! Retrieve framework-managed extra values from an inline HNSW record.
+  //! The active layout is bound together with the distance functions because
+  //! graph construction may use records supplied by an external provider.
+  inline const void *get_extra_values(const void *vector) const {
+    return extra_values_size_ == 0
+               ? nullptr
+               : static_cast<const char *>(vector) + vector_data_size_;
+  }
+
+  inline bool has_extra_values(void) const {
+    return extra_values_size_ != 0;
+  }
+
+  //! Fetch a single record at the access layer, then pass both of its fields
+  //! to the distance calculator. Batch paths assemble the same pair in the
+  //! HNSW algorithm while they already own the vector MemoryBlocks.
+  inline dist_t batch_dist(node_id_t id) {
+    IndexStorage::MemoryBlock vector_block;
+    if (ailego_unlikely(dc_.get_vector(id, vector_block) != 0)) {
+      return dc_.batch_dist(nullptr, nullptr);
+    }
+    const void *vector = vector_block.data();
+    return dc_.batch_dist(
+        vector, vector == nullptr ? nullptr : get_extra_values(vector));
+  }
+
   inline TopkHeap &topk_heap() {
     return topk_heap_;
   }
@@ -514,11 +540,23 @@ class HnswContext : public IndexContext {
   //! Bind the space distances are computed in: the metric functions and
   //! the provider that supplies vectors by node id. A null provider makes
   //! distances use the vectors stored in the entity. Callers must pass
-  //! both, so a build space cannot leak into a search by omission
+  //! both plus the record layout, so a build space cannot leak into a search
+  //! by omission
   inline void bind_dist_space(
       const IndexMetric::MatrixDistance &distance,
       const IndexMetric::MatrixBatchDistance &batch_distance,
-      IndexProvider::Pointer provider) {
+      IndexProvider::Pointer provider, size_t vector_size,
+      size_t extra_values_size) {
+    if (ailego_unlikely(extra_values_size != 0 &&
+                        extra_values_size >= vector_size)) {
+      LOG_ERROR("Invalid HNSW vector layout, vector_size=%zu extra_size=%zu",
+                vector_size, extra_values_size);
+      vector_data_size_ = vector_size;
+      extra_values_size_ = 0;
+    } else {
+      vector_data_size_ = vector_size - extra_values_size;
+      extra_values_size_ = extra_values_size;
+    }
     dc_.update_distance(distance, batch_distance);
     dc_.set_provider(std::move(provider));
   }
@@ -566,6 +604,8 @@ class HnswContext : public IndexContext {
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
   const VectorSource *vector_source_{nullptr};
+  size_t vector_data_size_{0};
+  size_t extra_values_size_{0};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};

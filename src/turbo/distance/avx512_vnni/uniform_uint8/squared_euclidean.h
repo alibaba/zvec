@@ -27,13 +27,15 @@ namespace zvec::turbo::avx512_vnni {
 // once-preprocessed raw query and returns exact squared L2:
 //   sum_sq(record_raw) - 2 * dot(record_shifted, query_raw)
 //       + sum_sq(query_raw) - 256 * sum(query_raw)
+// `extra_values` is required for batch search and points at each record's
+// uint32 sum_sq_u8 field; the concrete UniformUint8 kernel never infers it
+// from the vector-body pointer.
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
                                               size_t dim, float *distance);
 
-void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                                    const void *query, size_t n,
-                                                    size_t dim,
-                                                    float *distances);
+void uniform_squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values);
 
 // Convert one canonical shifted query into the batch-query representation:
 //   body: int8(raw - 128) -> uint8(raw)

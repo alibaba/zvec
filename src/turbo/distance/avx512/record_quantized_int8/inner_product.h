@@ -22,6 +22,7 @@ void inner_product_int8_distance_avx512(const void *a, const void *b,
                                         size_t dim, float *distance);
 void inner_product_int8_batch_distance_avx512(const void *const *vectors,
                                               const void *query, size_t n,
-                                              size_t dim, float *distances);
+                                              size_t dim, float *distances,
+                                              const void *const *extra_values);
 
 }  // namespace zvec::turbo::avx512

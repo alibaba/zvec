@@ -60,9 +60,9 @@ void squared_euclidean_int4_distance_avx2(const void *a, const void *b,
 #endif
 }
 
-void squared_euclidean_int4_batch_distance_avx2(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim, float *distances) {
+void squared_euclidean_int4_batch_distance_avx2(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
 #if defined(__AVX2__)
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
