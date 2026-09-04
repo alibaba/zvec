@@ -72,6 +72,51 @@ int ReadPersistedFlatIndexMeta(const std::string &file_path,
   return ret;
 }
 
+//! Pick the turbo quantizer matching the requested flat configuration, or
+//! an empty string when only the legacy converter/metric pipeline can
+//! express it. Turbo quantizers cover dense row-major FP32 input without
+//! rotation; each quantizer additionally supports a fixed metric set.
+std::string SelectTurboQuantizerName(const QuantizerParam &quantizer_param,
+                                     const FlatIndexParam &flat_param) {
+  if (flat_param.is_sparse || quantizer_param.enable_rotate ||
+      flat_param.data_type != DataType::DT_FP32 ||
+      flat_param.major_order == IndexMeta::MO_COLUMN) {
+    return {};
+  }
+  const auto metric = flat_param.metric_type;
+  // InnerProduct stays on the legacy pipeline: the turbo raw IP kernels
+  // return the negated dot product (distance convention) while the legacy
+  // metric surfaces the raw score to callers.
+  const bool l2_or_cosine =
+      metric == MetricType::kL2sq || metric == MetricType::kCosine;
+
+  const auto storage_type = flat_param.storage_data_type;
+  if (storage_type == DataType::DT_UNDEFINED ||
+      storage_type == flat_param.data_type) {
+    switch (quantizer_param.type) {
+      case QuantizerType::kNone:
+        // Raw FP32 records on the turbo Fp32Quantizer (identity transform
+        // with SIMD batch distance kernels).
+        return l2_or_cosine ? "Fp32Quantizer" : "";
+      case QuantizerType::kFP16:
+        return l2_or_cosine ? "Fp16Quantizer" : "";
+      case QuantizerType::kInt8:
+        // Per-record affine int8 + SIMD batch distance kernels.
+        return l2_or_cosine ? "Int8Quantizer" : "";
+      case QuantizerType::kInt4:
+        return l2_or_cosine ? "Int4Quantizer" : "";
+      default:
+        // Uniform/RaBitQ/PQ style quantizers stay on the legacy pipeline.
+        return {};
+    }
+  }
+  if (storage_type == DataType::DT_FP16 &&
+      quantizer_param.type == QuantizerType::kNone) {
+    return l2_or_cosine ? "Fp16Quantizer" : "";
+  }
+  return {};
+}
+
 }  // namespace
 
 int FlatIndex::open(const std::string &file_path,
@@ -87,10 +132,10 @@ int FlatIndex::open(const std::string &file_path,
                                    &persisted_meta) == 0 &&
         persisted_meta.quantizer_name().empty()) {
       LOG_INFO(
-          "Persisted flat index %s uses the legacy INT8 layout, falling back "
-          "to the converter pipeline",
+          "Persisted flat index %s uses a legacy layout, falling back to the "
+          "converter pipeline",
           file_path.c_str());
-      int ret = FallbackToLegacyInt8Pipeline();
+      int ret = FallbackToLegacyPipeline();
       if (ret != 0) {
         return ret;
       }
@@ -99,7 +144,7 @@ int FlatIndex::open(const std::string &file_path,
   return Index::open(file_path, storage_options);
 }
 
-int FlatIndex::FallbackToLegacyInt8Pipeline(void) {
+int FlatIndex::FallbackToLegacyPipeline(void) {
   turbo_quantizer_.reset();
   streamer_.reset();
 
@@ -121,7 +166,7 @@ int FlatIndex::FallbackToLegacyInt8Pipeline(void) {
   const auto quantizer_param = param_.quantizer_param
                                    ? param_.quantizer_param
                                    : std::make_shared<QuantizerParam>();
-  if (Index::CreateAndInitConverterReformer(*quantizer_param, param_) != 0) {
+  if (CreateAndInitLegacyConverterReformer(*quantizer_param, param_) != 0) {
     LOG_ERROR("Failed to create and init legacy converter");
     return core::IndexError_Runtime;
   }
@@ -139,39 +184,43 @@ int FlatIndex::FallbackToLegacyInt8Pipeline(void) {
 int FlatIndex::CreateAndInitConverterReformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &flat_param = dynamic_cast<const FlatIndexParam &>(index_param);
+  // Prefer the turbo quantizer path (quantized records + SIMD batch distance
+  // kernels funneled through the streamer entity) whenever a turbo quantizer
+  // can express the configuration; only the remaining combinations fall
+  // through to the legacy converter/metric pipeline.
+  const std::string quantizer_name =
+      SelectTurboQuantizerName(quantizer_param, flat_param);
+  if (!quantizer_name.empty()) {
+    turbo_quantizer_ = core::IndexFactory::CreateQuantizer(quantizer_name);
+    if (!turbo_quantizer_) {
+      LOG_ERROR("Failed to create turbo %s", quantizer_name.c_str());
+      return core::IndexError_Runtime;
+    }
+    if (turbo_quantizer_->init(proxima_index_meta_, ailego::Params{}) != 0) {
+      LOG_ERROR("Failed to init turbo %s", quantizer_name.c_str());
+      turbo_quantizer_.reset();
+      return core::IndexError_Runtime;
+    }
+    // Adopt the quantized meta (storage data type plus any record tail) and
+    // record the quantizer in the meta attachment so the layout round-trips
+    // through the persisted segment meta.
+    proxima_index_meta_ = turbo_quantizer_->meta();
+    proxima_index_meta_.set_quantizer(quantizer_name, 0, ailego::Params{});
+    streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
+                                   proxima_index_meta_.dimension());
+    streamer_vector_meta_.set_extra_meta_size(
+        proxima_index_meta_.extra_meta_size());
+    return core::IndexError_Success;
+  }
+  return CreateAndInitLegacyConverterReformer(quantizer_param, index_param);
+}
+
+int FlatIndex::CreateAndInitLegacyConverterReformer(
+    const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
+  const auto &flat_param = dynamic_cast<const FlatIndexParam &>(index_param);
   const auto storage_type = flat_param.storage_data_type;
   if (storage_type == DataType::DT_UNDEFINED ||
       storage_type == flat_param.data_type) {
-    // Dense FP32 INT8 with Cosine/L2 runs on the turbo record-quantized
-    // Int8Quantizer (per-record affine int8 + SIMD batch distance kernels).
-    // Combinations the turbo quantizer cannot express (sparse, other data
-    // types or metrics, enable_rotate) fall through to the legacy converter.
-    if (quantizer_param.type == QuantizerType::kInt8 &&
-        !quantizer_param.enable_rotate && !flat_param.is_sparse &&
-        flat_param.data_type == DataType::DT_FP32 &&
-        (flat_param.metric_type == MetricType::kCosine ||
-         flat_param.metric_type == MetricType::kL2sq)) {
-      turbo_quantizer_ = core::IndexFactory::CreateQuantizer("Int8Quantizer");
-      if (!turbo_quantizer_) {
-        LOG_ERROR("Failed to create turbo Int8Quantizer");
-        return core::IndexError_Runtime;
-      }
-      if (turbo_quantizer_->init(proxima_index_meta_, ailego::Params{}) != 0) {
-        LOG_ERROR("Failed to init turbo Int8Quantizer");
-        turbo_quantizer_.reset();
-        return core::IndexError_Runtime;
-      }
-      // Adopt the quantized meta (DT_INT8 with the record tail) and record
-      // the quantizer in the meta attachment so the layout round-trips
-      // through the persisted segment meta.
-      proxima_index_meta_ = turbo_quantizer_->meta();
-      proxima_index_meta_.set_quantizer("Int8Quantizer", 0, ailego::Params{});
-      streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
-                                     proxima_index_meta_.dimension());
-      streamer_vector_meta_.set_extra_meta_size(
-          proxima_index_meta_.extra_meta_size());
-      return core::IndexError_Success;
-    }
     return Index::CreateAndInitConverterReformer(quantizer_param, index_param);
   }
 
