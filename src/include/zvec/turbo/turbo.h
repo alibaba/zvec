@@ -181,7 +181,7 @@ enum class CpuArchType {
   kAuto,
   kScalar,
   // x86 SIMD
-  kSSE,
+  kSSE2,
   kAVX,
   kAVX2,
   kAVX512,
