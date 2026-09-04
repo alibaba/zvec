@@ -60,6 +60,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_metric_static>
             $<TARGET_FILE:core_utility_static>
             $<TARGET_FILE:core_quantizer_static>
+            $<TARGET_FILE:zvec_turbo>
             -Wl,--no-whole-archive
             zvec
             ${CMAKE_DL_LIBS}
@@ -98,6 +99,10 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_metric_static>
             -Wl,-force_load,$<TARGET_FILE:core_utility_static>
             -Wl,-force_load,$<TARGET_FILE:core_quantizer_static>
+            # turbo quantizer registrations (Int8Quantizer etc.) are only
+            # reachable through factory lookups, so the archive must be
+            # force-loaded or the static linker drops the registration objects
+            -Wl,-force_load,$<TARGET_FILE:zvec_turbo>
             zvec
     )
     target_link_libraries(_zvec PRIVATE
@@ -117,6 +122,7 @@ elseif (MSVC)
             core_metric_static
             core_utility_static
             core_quantizer_static
+            zvec_turbo
     )
     target_link_libraries(_zvec PRIVATE
             ${_zvec_whole_archive_libs}

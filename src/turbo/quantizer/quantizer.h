@@ -142,6 +142,18 @@ class Quantizer {
     return DistanceImpl{};
   }
 
+  //! Convert an internal distance into the caller-facing score in place
+  //! (e.g. the InnerProduct kernels rank by the negated dot product).
+  virtual void normalize_score(float * /*score*/) const {}
+
+  //! Convert a caller-facing score into the internal distance in place.
+  virtual void denormalize_score(float * /*score*/) const {}
+
+  //! Whether internal distances differ from caller-facing scores.
+  virtual bool support_score_normalization() const {
+    return false;
+  }
+
   //! Serialize quantizer parameters
   virtual int serialize(std::string * /*out*/) const {
     return 0;

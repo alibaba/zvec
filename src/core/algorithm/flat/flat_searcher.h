@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <memory>
 #include <unordered_map>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_searcher.h>
 #include "flat_distance_matrix.h"
@@ -35,6 +37,13 @@ class FlatSearcher : public IndexSearcher {
     read_block_size_ = FLAT_DEFAULT_READ_BLOCK_SIZE;
     index_params.get(PARAM_FLAT_READ_BLOCK_SIZE, &read_block_size_);
     return 0;
+  }
+
+  //! Initialize Searcher with a turbo quantizer
+  int init(const ailego::Params &index_params,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override {
+    quantizer_ = quantizer;
+    return this->init(index_params);
   }
 
   //! Cleanup Searcher
@@ -150,6 +159,11 @@ class FlatSearcher : public IndexSearcher {
     return distance_matrix_;
   }
 
+  //! Retrieve the turbo quantizer
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer(void) const {
+    return quantizer_;
+  }
+
   //! Clone a features segment
   IndexStorage::Segment::Pointer clone_features_segment(void) const {
     return features_segment_->clone();
@@ -175,6 +189,7 @@ class FlatSearcher : public IndexSearcher {
   mutable std::vector<uint32_t> mapping_{};
   mutable std::mutex mapping_mutex_{};
   FlatDistanceMatrix<BATCH_SIZE> distance_matrix_{};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   IndexSearcher::Stats stats_{};
 };
 

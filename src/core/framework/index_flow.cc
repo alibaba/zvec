@@ -236,6 +236,15 @@ int IndexFlow::load_internal() {
   } else {
     // Using user searcher
     searcher_ = user_searcher_;
+    if (query_quantizer_) {
+      ret = searcher_->init(searcher_->params(), query_quantizer_);
+      if (ret < 0 && ret != IndexError_NotImplemented) {
+        LOG_ERROR("Failed to initialize user searcher %s with quantizer",
+                  searcher_->name().c_str());
+        searcher_ = nullptr;
+        return ret;
+      }
+    }
   }
 
   ret = searcher_->load(storage_, metric_);

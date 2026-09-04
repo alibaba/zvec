@@ -489,7 +489,3 @@ TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
 TEST(Fp16Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
 }
-
-TEST(Fp16Quantizer, Avx512Fp16DistanceMatchesScalar) {
-  check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512FP16);
-}

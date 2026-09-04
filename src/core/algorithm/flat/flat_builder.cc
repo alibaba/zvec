@@ -78,6 +78,31 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
 }
 
 template <size_t BATCH_SIZE>
+int FlatBuilder<BATCH_SIZE>::init(
+    const IndexMeta &meta, const ailego::Params &params,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+  if (!quantizer) {
+    return this->init(meta, params);
+  }
+
+  // The flat builder computes no distances while building; the quantizer
+  // only requires the row major layout.
+  bool column_major_order = false;
+  params.get(PARAM_FLAT_COLUMN_MAJOR_ORDER, &column_major_order);
+  if (column_major_order || meta.major_order() == IndexMeta::MO_COLUMN) {
+    LOG_ERROR("Quantizer distance does not support column index.");
+    return IndexError_Unsupported;
+  }
+
+  int error_code = this->init(meta, params);
+  if (error_code != 0) {
+    return error_code;
+  }
+  meta_.set_major_order(IndexMeta::MO_ROW);
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
 int FlatBuilder<BATCH_SIZE>::build(IndexThreads::Pointer,
                                    IndexHolder::Pointer holder) {
   ailego::ElapsedTime stamp;

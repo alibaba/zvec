@@ -101,17 +101,25 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
   }
 
   column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
-  distance_matrix_.initialize(*measure_);
 
-  if (column_major_order_) {
-    if (!distance_matrix_.is_valid()) {
-      LOG_ERROR("Lack of distance functions to support column index.");
+  if (quantizer_) {
+    if (column_major_order_) {
+      LOG_ERROR("Quantizer distance does not support column index.");
       return IndexError_Unsupported;
     }
   } else {
-    if (!distance_matrix_.is_valid(1, 1)) {
-      LOG_ERROR("Lack of distance functions to support row index.");
-      return IndexError_Unsupported;
+    distance_matrix_.initialize(*measure_);
+
+    if (column_major_order_) {
+      if (!distance_matrix_.is_valid()) {
+        LOG_ERROR("Lack of distance functions to support column index.");
+        return IndexError_Unsupported;
+      }
+    } else {
+      if (!distance_matrix_.is_valid(1, 1)) {
+        LOG_ERROR("Lack of distance functions to support row index.");
+        return IndexError_Unsupported;
+      }
     }
   }
 

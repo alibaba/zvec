@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <magic_enum/magic_enum.hpp>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
@@ -311,9 +312,11 @@ int Index::Init(const BaseIndexParam &param) {
   }
 
   // must after quantizer handled. e.g., cosine doesn't support int8 quantizer
-  if (CreateAndInitMetric(param) != 0) {
-    LOG_ERROR("Failed to create and init metric");
-    return core::IndexError_Runtime;
+  if (turbo_quantizer_ == nullptr) {
+    if (CreateAndInitMetric(param) != 0) {
+      LOG_ERROR("Failed to create and init metric");
+      return core::IndexError_Runtime;
+    }
   }
 
   if (CreateAndInitStreamer(param) != 0) {
@@ -648,7 +651,16 @@ int Index::_dense_fetch(const uint32_t doc_id,
   // for int4, unit_size * dim != element_size
   out_vector_buffer.resize(input_vector_meta_.element_size());
 
-  if (reformer_ != nullptr) {
+  if (turbo_quantizer_ != nullptr) {
+    // The stored record is int8 codes + quantizer tail; dequantize restores
+    // the original FP32 vector (cosine layouts also denormalize by the
+    // stored norm).
+    if (turbo_quantizer_->dequantize(vector, streamer_vector_meta_,
+                                     &out_vector_buffer) != 0) {
+      LOG_ERROR("Failed to dequantize vector");
+      return core::IndexError_Runtime;
+    }
+  } else if (reformer_ != nullptr) {
     if (reformer_->revert(vector, streamer_vector_meta_, &out_vector_buffer) !=
         0) {
       LOG_ERROR("Failed to convert vector");
@@ -697,6 +709,21 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
+  if (turbo_quantizer_ != nullptr) {
+    core::IndexQueryMeta new_meta;
+    auto *new_vector = context->mutable_features();
+    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
+                                   new_vector, &new_meta) != 0) {
+      LOG_ERROR("Failed to quantize vector with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
+                                    context) != 0) {
+      LOG_ERROR("Failed to add vector");
+      return core::IndexError_Runtime;
+    }
+    return 0;
+  }
   if (reformer_ != nullptr) {
     core::IndexQueryMeta new_meta;
     auto *new_vector = context->mutable_features();
@@ -777,7 +804,15 @@ int Index::_dense_search(const VectorData &vector_data,
   auto vector = dense_vector.data;
   // Check if need to transform feature
   core::IndexQueryMeta new_meta = input_vector_meta_;
-  if (reformer_ != nullptr) {
+  if (turbo_quantizer_ != nullptr) {
+    auto *new_vector = context->mutable_features();
+    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
+                                   new_vector, &new_meta) != 0) {
+      LOG_ERROR("Failed to quantize query with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    vector = new_vector->data();
+  } else if (reformer_ != nullptr) {
     auto *new_vector = context->mutable_features();
     if (reformer_->transform(dense_vector.data, input_vector_meta_, new_vector,
                              &new_meta) != 0) {
@@ -820,7 +855,7 @@ int Index::_dense_search(const VectorData &vector_data,
     result->doc_list_ = std::move(context->result());
   }
 
-  if (metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -832,6 +867,55 @@ int Index::_dense_search(const VectorData &vector_data,
         metric_->normalize(doc.mutable_score());
       }
     }
+  } else if (turbo_quantizer_ != nullptr &&
+             turbo_quantizer_->support_score_normalization()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          turbo_quantizer_->normalize_score(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        turbo_quantizer_->normalize_score(doc.mutable_score());
+      }
+    }
+  }
+  if (turbo_quantizer_) {
+    if (context->fetch_vector()) {
+      int revert_err = 0;
+      auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
+        if (revert_err) return;
+        std::string reverted_vector;
+        if (turbo_quantizer_->dequantize(vec, streamer_vector_meta_,
+                                         &reverted_vector) != 0) {
+          LOG_ERROR("Failed to dequantize vector");
+          revert_err = core::IndexError_Runtime;
+          return;
+        }
+        out->push_back(std::move(reverted_vector));
+      };
+      auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
+        out.reserve(docs.size());
+        for (auto &doc : docs) {
+          revert_one(doc.vector(), &out);
+        }
+      };
+      if (has_group_by) {
+        result->group_reverted_vector_list_.reserve(
+            result->group_doc_list_.size());
+        for (auto &group : result->group_doc_list_) {
+          std::vector<std::string> group_vectors;
+          revert_docs(*group.mutable_docs(), group_vectors);
+          result->group_reverted_vector_list_.push_back(
+              std::move(group_vectors));
+        }
+      } else {
+        revert_docs(result->doc_list_, result->reverted_vector_list_);
+      }
+      if (revert_err) return revert_err;
+    }
+    return 0;
   }
   if (reformer_) {
     if (has_group_by) {
@@ -949,7 +1033,7 @@ int Index::_sparse_search(const VectorData &vector_data,
     result->doc_list_ = std::move(context->result());
   }
 
-  if (metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -959,6 +1043,19 @@ int Index::_sparse_search(const VectorData &vector_data,
     } else {
       for (auto &doc : result->doc_list_) {
         metric_->normalize(doc.mutable_score());
+      }
+    }
+  } else if (turbo_quantizer_ != nullptr &&
+             turbo_quantizer_->support_score_normalization()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          turbo_quantizer_->normalize_score(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        turbo_quantizer_->normalize_score(doc.mutable_score());
       }
     }
   }
@@ -1052,15 +1149,15 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     return core::IndexError_Runtime;
   }
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
-                                             reformer_,
-                                             input_vector_meta_) != 0) {
+                                             reformer_, input_vector_meta_,
+                                             turbo_quantizer_) != 0) {
     LOG_ERROR("Failed to set target streamer");
     return core::IndexError_Runtime;
   }
 
   for (const auto &index : indexes) {
-    if (reducer->feed_streamer_with_reformer(index->streamer_,
-                                             index->reformer_) != 0) {
+    if (reducer->feed_streamer_with_reformer(index->streamer_, index->reformer_,
+                                             index->turbo_quantizer_) != 0) {
       LOG_ERROR("Failed to feed streamer");
       return core::IndexError_Runtime;
     }
