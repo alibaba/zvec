@@ -82,6 +82,9 @@
 #if defined(__ARM_FEATURE_CRC32)
 #include <arm_acle.h>
 #endif
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+#endif
 #endif
 
 //! MSVC platform compatibility (before extern "C" so available in C++)
@@ -151,7 +154,8 @@ extern "C" {
 #endif
 
 #if defined(__GNUC__)
-#if defined(__x86_64__) || defined(AILEGO_ARM64) || defined(__ppc64__)
+#if defined(__x86_64__) || defined(AILEGO_ARM64) || defined(__ppc64__) || \
+    (defined(__riscv) && defined(__riscv_xlen) && (__riscv_xlen == 64))
 #define AILEGO_M64
 #else
 #define AILEGO_M32
@@ -288,6 +292,8 @@ static inline int ailego_clz64(uint64_t x) {
 #endif  // __CC_ARM
 #elif defined(__SSE2__)
 #define ailego_yield() _mm_pause()
+#elif defined(__riscv) && defined(__riscv_zihintpause)
+#define ailego_yield() __asm__ __volatile__("pause" ::: "memory")
 #else
 #define ailego_yield() ((void)0)
 #endif  // AILEGO_ARM
@@ -319,7 +325,7 @@ static inline int ailego_clz64(uint64_t x) {
 #if !defined(ailego_malloc)
 #if defined(__AVX512F__)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 64)
-#elif defined(__AVX__)
+#elif defined(__AVX__) || defined(__riscv_vector)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 32)
 #elif defined(__SSE__)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 16)
