@@ -14,7 +14,11 @@
 #pragma once
 
 #include <memory>
+#include <vector>
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
 #include "diskann_entity.h"
 
@@ -27,19 +31,22 @@ class DistCalculator {
 
  public:
   //! Constructor
-  DistCalculator(const DiskAnnEntity *entity,
-                 const IndexMetric::Pointer &measure, uint32_t dim)
+  DistCalculator(const DiskAnnEntity *entity, const IndexMeta &meta,
+                 const IndexMetric::Pointer &measure,
+                 const turbo::Quantizer::Pointer &data_quantizer = nullptr)
       : entity_(entity),
-        distance_(measure->distance()),
         query_(nullptr),
-        dim_(dim),
-        compare_cnt_(0) {}
+        dim_(meta.dimension()),
+        compare_cnt_(0) {
+    bind_distance(meta, measure, data_quantizer);
+  }
 
-  void update(const DiskAnnEntity *entity, const IndexMetric::Pointer &measure,
-              uint32_t dim) {
+  void update(const DiskAnnEntity *entity, const IndexMeta &meta,
+              const IndexMetric::Pointer &measure,
+              const turbo::Quantizer::Pointer &data_quantizer = nullptr) {
     entity_ = entity;
-    distance_ = measure->distance();
-    dim_ = dim;
+    bind_distance(meta, measure, data_quantizer);
+    dim_ = meta.dimension();
   }
 
   inline void update_distance(const IndexMetric::MatrixDistance &distance) {
@@ -111,6 +118,29 @@ class DistCalculator {
     return dist(vec);
   }
 
+  inline void bind_quantizer(const turbo::Quantizer *quantizer,
+                             const uint8_t *codes, uint32_t code_size) {
+    quantizer_ = quantizer;
+    quant_codes_ = codes;
+    quant_code_size_ = code_size;
+  }
+
+  void quantize_query(const void *query_rotated) {
+    quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
+    quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
+    quant_dist_impl_ =
+        quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
+  }
+
+  void quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) {
+    quant_dp_list_.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      quant_dp_list_[i] =
+          quant_codes_ + static_cast<size_t>(ids[i]) * quant_code_size_;
+    }
+    quant_dist_impl_.batch(quant_dp_list_.data(), n, dists);
+  }
+
   inline void clear() {
     compare_cnt_ = 0;
     error_ = false;
@@ -137,15 +167,79 @@ class DistCalculator {
   DistCalculator(const DistCalculator &) = delete;
   DistCalculator &operator=(const DistCalculator &) = delete;
 
+  void bind_distance(const IndexMeta &meta, const IndexMetric::Pointer &measure,
+                     const turbo::Quantizer::Pointer &external_quantizer) {
+    data_quantizer_.reset();
+
+    // An externally constructed quantizer (already initialized by the caller)
+    // takes precedence over the internal factory selection below.
+    if (external_quantizer) {
+      turbo::DistanceImpl impl =
+          external_quantizer->distance("", IndexQueryMeta());
+      if (impl.valid()) {
+        data_quantizer_ = external_quantizer;
+        distance_ = [func = impl.func(),
+                     quant_dim = static_cast<size_t>(data_quantizer_->dim())](
+                        const void *m, const void *q, size_t /*dim*/,
+                        float *out) { func(m, q, quant_dim, out); };
+        return;
+      }
+      LOG_WARN("External data quantizer has no valid distance, falling back");
+    }
+
+    const char *name = nullptr;
+    if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
+      name = "Fp16Quantizer";
+    } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+      name = "Fp32Quantizer";
+    }
+    if (name != nullptr) {
+      turbo::Quantizer::Pointer quantizer = IndexFactory::CreateQuantizer(name);
+      if (quantizer) {
+        IndexMeta quant_meta = meta;
+        // Legacy Cosine layout folds the stored norm into an inflated
+        // dimension; the turbo-quantizer layout keeps the raw dimension and
+        // accounts the norm with extra_meta_size instead.
+        if (meta.metric_name() == "Cosine" && meta.extra_meta_size() == 0) {
+          quant_meta.set_dimension(meta.dimension() -
+                                   sizeof(float) / meta.unit_size());
+        }
+        if (quantizer->init(quant_meta, quant_meta.metric_params()) == 0) {
+          turbo::DistanceImpl impl = quantizer->distance("", IndexQueryMeta());
+          if (impl.valid()) {
+            data_quantizer_ = std::move(quantizer);
+            distance_ = [func = impl.func(), quant_dim = static_cast<size_t>(
+                                                 data_quantizer_->dim())](
+                            const void *m, const void *q, size_t /*dim*/,
+                            float *out) { func(m, q, quant_dim, out); };
+            return;
+          }
+        }
+      }
+    }
+    distance_ = measure->distance();
+  }
+
  private:
   const DiskAnnEntity *entity_;
+
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   IndexMetric::MatrixDistance distance_;
   const void *query_;
   uint32_t dim_;
 
-  uint32_t compare_cnt_;  // record distance compute times
+  uint32_t compare_cnt_;
   bool error_{false};
+
+  const turbo::Quantizer *quantizer_{nullptr};
+  const uint8_t *quant_codes_{nullptr};
+  uint32_t quant_code_size_{0};
+
+  turbo::DistanceImpl quant_dist_impl_{};
+
+  std::vector<const void *> quant_dp_list_;
+  std::vector<uint8_t> quant_query_scratch_;
 };
 
 }  // namespace core

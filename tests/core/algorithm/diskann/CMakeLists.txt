@@ -21,6 +21,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       STRICT
       LIBS zvec_ailego core_framework core_utility core_metric core_quantizer core_knn_cluster core_knn_diskann
       SRCS ${CC_SRCS}
-      INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm/diskann
+      INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm/diskann ${PROJECT_ROOT_DIR}/src/turbo
     )
 endforeach()

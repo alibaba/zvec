@@ -13,11 +13,12 @@
 // limitations under the License.
 #pragma once
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
 #include "diskann_entity.h"
 #include "diskann_file_reader.h"
-#include "diskann_pq_table.h"
 
 namespace zvec {
 namespace core {
@@ -44,8 +45,15 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   int load_key_mapping_segment();
   int load_entrypoint_segment();
 
-  PQTable::Pointer get_pq_table() {
-    return pq_table_;
+  //! Read the serialized PQ quantizer meta buffer from the PQ meta segment.
+  //! The quantizer itself is constructed by the searcher/streamer and handed
+  //! to the indexer; the entity only owns the persisted bytes.  For a legacy
+  //! layout the raw codebook is returned instead (see DiskAnnUtil).
+  int read_pq_quantizer_meta_buffer(std::string *meta_buffer) const;
+
+  const uint8_t *pq_codes() const {
+    return pq_codes_ ? reinterpret_cast<const uint8_t *>(pq_codes_->data())
+                     : nullptr;
   }
 
   IndexStorage::Pointer get_storage() {
@@ -64,6 +72,12 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   diskann_key_t get_key(diskann_id_t id) const override;
 
  private:
+  //! Interpret the PQ meta header just read into pq_meta_.  Legacy indexes
+  //! carry DiskAnnLegacyPqMeta in the same bytes; on success pq_meta_ holds the
+  //! normalized chunk count and payload size for both layouts.
+  int normalize_pq_meta();
+
+ private:
   IndexStorage::Pointer storage_{};
 
   SegmentPointer meta_segment_{nullptr};
@@ -76,7 +90,8 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
   IndexMeta meta_;
 
-  PQTable::Pointer pq_table_;
+  //! Shared so that clone() stays cheap for every search context.
+  std::shared_ptr<const std::string> pq_codes_;
   std::shared_ptr<const std::string> key_buffer_;
   std::shared_ptr<const std::string> key_mapping_buffer_;
   std::vector<diskann_id_t> entrypoints_;

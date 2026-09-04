@@ -983,8 +983,13 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   if (hdr.quant_type != static_cast<uint16_t>(QuantizeType::kPQ)) {
     return kErrUnsupported;
   }
-  // Reject foreign code types (e.g. int4 PQ blobs sharing quant_type == kPQ).
-  if (hdr.data_type != static_cast<uint16_t>(DataType::kInt8)) {
+  // Accept data_type == 0 for backward compat with indices serialized before
+  // the field was populated (zero-initialized default → treat as kInt8).
+  // Note: DataType::kInt4 also equals 0, so a raw kInt4 stamp is
+  // indistinguishable from legacy; foreign PQ layouts must stamp a non-zero
+  // data_type (see QuantizerSerHeader in quantizer.h).
+  if (hdr.data_type != static_cast<uint16_t>(DataType::kInt8) &&
+      hdr.data_type != 0) {
     return kErrUnsupported;
   }
   // The codebook is only decodable under the metric it was trained in.
@@ -1055,6 +1060,22 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   build_centroid_ptrs_cache();
 
   // Pre-compute sub-centroid norms for the precomputed residual table.
+  compute_sub_centroid_norms();
+
+  return 0;
+}
+
+int PqInt8Quantizer::import_codebook(const void *data, size_t len) {
+  // init() owns the geometry, so the codebook size is fully determined; a
+  // mismatch means the caller repacked against a different layout.
+  if (!initialized_ || data == nullptr) return kErrUnsupported;
+  if (len != centroids_.size()) return kErrUnsupported;
+
+  std::memcpy(centroids_.data(), data, len);
+
+  // Same derivations as deserialize(); dist_table_ stays unbuilt because SDC is
+  // only used while building.
+  build_centroid_ptrs_cache();
   compute_sub_centroid_norms();
 
   return 0;

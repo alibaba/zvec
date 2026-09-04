@@ -19,7 +19,6 @@
 #include <zvec/core/framework/index_holder.h>
 #include "diskann_entity.h"
 #include "diskann_file_reader.h"
-#include "diskann_pq_table.h"
 #include "diskann_util.h"
 
 namespace zvec {

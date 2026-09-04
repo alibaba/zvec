@@ -64,16 +64,8 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   int reserve_space(uint32_t docs);
 
-  std::vector<uint8_t> &pq_full_pivot_data() {
-    return pq_full_pivot_data_;
-  }
-
-  std::vector<uint8_t> &pq_centroid() {
-    return pq_centroid_;
-  }
-
-  std::vector<uint32_t> &pq_chunk_offsets() {
-    return pq_chunk_offsets_;
+  std::string &pq_quantizer_meta_buffer() {
+    return pq_quantizer_meta_buffer_;
   }
 
   std::vector<uint8_t> &block_compressed_data() {
@@ -99,9 +91,7 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   IndexMeta meta_;
 
-  std::vector<uint8_t> pq_full_pivot_data_;
-  std::vector<uint8_t> pq_centroid_;
-  std::vector<uint32_t> pq_chunk_offsets_;
+  std::string pq_quantizer_meta_buffer_{};
   std::vector<uint8_t> block_compressed_data_;
 };
 

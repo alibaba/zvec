@@ -76,6 +76,17 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
   return 0;
 }
 
+int DiskAnnStreamer::init(const IndexMeta &meta,
+                          const ailego::Params &search_params,
+                          const turbo::Quantizer::Pointer &quantizer) {
+  int ret = init(meta, search_params);
+  if (ret != 0) {
+    return ret;
+  }
+  data_quantizer_ = quantizer;
+  return 0;
+}
+
 void DiskAnnStreamer::print_debug_info() {}
 
 int DiskAnnStreamer::cleanup() {
@@ -83,6 +94,7 @@ int DiskAnnStreamer::cleanup() {
 
   unload();
   params_.clear();
+  data_quantizer_.reset();
   list_size_ = 200;
   cache_nodes_num_ = 0;
   state_ = STATE_INIT;
@@ -128,9 +140,26 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return ret;
   }
 
+  // Construct the quantizer from the persisted meta buffer here; the entity
+  // only owns the bytes and the indexer receives the ready-to-use quantizer.
+  // The implementation is resolved from the meta buffer header, so any
+  // supported quantize type (PQ today, others later) plugs in transparently.
+  std::string quantizer_meta_buffer;
+  ret = entity_.read_pq_quantizer_meta_buffer(&quantizer_meta_buffer);
+  if (ret != 0) {
+    LOG_ERROR("Read quantizer meta buffer failed, ret=%d", ret);
+    return ret;
+  }
+  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+      quantizer_meta_buffer, meta_,
+      static_cast<uint32_t>(entity_.pq_chunk_num()));
+  if (!quantizer) {
+    return IndexError_NoExist;
+  }
+
   diskann_indexer_ = std::make_shared<DiskAnnIndexer>(meta_);
 
-  int res = diskann_indexer_->init(entity_);
+  int res = diskann_indexer_->init(entity_, std::move(quantizer));
   if (res != 0) {
     return res;
   }
@@ -193,7 +222,7 @@ int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
   }
 
   return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
-                             entity, magic_);
+                             entity, magic_, data_quantizer_);
 }
 
 int DiskAnnStreamer::ensure_compatible_context(ContextPointer &context,
@@ -495,8 +524,8 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx =
-      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx = new (std::nothrow)
+      DiskAnnContext(meta_, measure_, search_ctx_entity, data_quantizer_);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();

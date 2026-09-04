@@ -132,14 +132,6 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
       }
       return param;
     }
-    case IndexType::kDiskAnn: {
-      DiskAnnIndexParam::Pointer param = std::make_shared<DiskAnnIndexParam>();
-      if (!param->deserialize_from_json(json_str)) {
-        LOG_ERROR("Failed to deserialize diskann index param");
-        return nullptr;
-      }
-      return param;
-    }
     case IndexType::kVamana: {
       VamanaIndexParam::Pointer param = std::make_shared<VamanaIndexParam>();
       if (!param->deserialize_from_json(json_str)) {
@@ -148,6 +140,16 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
       }
       return param;
     }
+#if DISKANN_SUPPORTED
+    case IndexType::kDiskAnn: {
+      DiskAnnIndexParam::Pointer param = std::make_shared<DiskAnnIndexParam>();
+      if (!param->deserialize_from_json(json_str)) {
+        LOG_ERROR("Failed to deserialize diskann index param");
+        return nullptr;
+      }
+      return param;
+    }
+#endif
     default:
       LOG_ERROR("Unsupported index type: %s",
                 magic_enum::enum_name(index_type).data());
@@ -222,6 +224,13 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
       json_obj.set("prefetch_lines", ailego::JsonValue(param.prefetch_lines));
     }
     index_type = IndexType::kVamana;
+#if DISKANN_SUPPORTED
+  } else if constexpr (std::is_same_v<QueryParamType, DiskAnnQueryParam>) {
+    if (!omit_empty_value || param.list_size != 0) {
+      json_obj.set("list_size", ailego::JsonValue(param.list_size));
+    }
+    index_type = IndexType::kDiskAnn;
+#endif
   }
 
   json_obj.set("index_type",
@@ -369,6 +378,19 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         return nullptr;
       }
       return param;
+#if DISKANN_SUPPORTED
+    } else if (index_type == IndexType::kDiskAnn) {
+      auto param = std::make_shared<DiskAnnQueryParam>();
+      if (!parse_common_fields(param)) {
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "list_size", param->list_size,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize list_size");
+        return nullptr;
+      }
+      return param;
+#endif
     } else {
       LOG_ERROR("Unsupported index type: %s",
                 magic_enum::enum_name(index_type).data());
@@ -458,5 +480,11 @@ IndexFactory::QueryParamSerializeToJson<IVFRabitqQueryParam>(
 template IVFRabitqQueryParam::Pointer
 IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
     const std::string &json_str);
+#if DISKANN_SUPPORTED
+template std::string IndexFactory::QueryParamSerializeToJson<DiskAnnQueryParam>(
+    const DiskAnnQueryParam &param, bool omit_empty_value);
+template DiskAnnQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
+    DiskAnnQueryParam>(const std::string &json_str);
+#endif
 
 }  // namespace zvec::core_interface
