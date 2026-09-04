@@ -40,9 +40,11 @@ namespace {
 
 using RawDistanceFn = void (*)(const void *, const void *, size_t, float *);
 
-void CompareDistance(RawDistanceFn expected_fn, RawDistanceFn actual_fn,
-                     const void *a, const void *b, size_t dim,
-                     float tolerance) {
+// Only used by the AArch64 branches of the tests below.
+[[maybe_unused]] void CompareDistance(RawDistanceFn expected_fn,
+                                      RawDistanceFn actual_fn, const void *a,
+                                      const void *b, size_t dim,
+                                      float tolerance) {
   float expected = 0.0f;
   float actual = 0.0f;
   expected_fn(a, b, dim, &expected);

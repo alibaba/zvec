@@ -2171,7 +2171,7 @@ TEST(IndexInterface, Score) {
       assert(v1.size() == 3);
       assert(v2.size() == 3);
       float ret = 0.0f;
-      for (int i = 0; i < v1.size(); ++i) {
+      for (size_t i = 0; i < v1.size(); ++i) {
         ret += (v1[i] - v2[i]) * (v1[i] - v2[i]);
       }
       return ret;
