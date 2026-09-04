@@ -15,63 +15,103 @@
 
 #pragma once
 
-#include <sys/stat.h>
-#include <fcntl.h>
+#include <array>
 #include <atomic>
 #include <cassert>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <functional>
-#include <iostream>
 #include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
-#include <queue>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
-#include <zvec/ailego/internal/platform.h>
+#include <thread>
+#include <utility>
+#include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/export.h>
 #include "block_eviction_queue.h"
-#include "concurrentqueue.h"
-
-#if defined(_MSC_VER)
-#include <io.h>
-#endif
 
 namespace zvec {
 namespace ailego {
 
 extern const size_t kVectorPageSize;
 
+#if defined(__linux__)
+class IoUringRing;
+#endif
+
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
-  struct Entry {
+  // Keep every field used by the resident hit/release path in one compact
+  // object. Four entries fit in a 64-byte cache line and no entry straddles a
+  // line, so pinning a page also brings its resident pointer into cache.
+  struct alignas(16) Entry {
+    std::atomic<char *> buffer{nullptr};
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
-    std::atomic<bool> is_dirty;
-    char *buffer;
-    size_t file_offset;
+    std::atomic<bool> referenced;
+    std::atomic<uint8_t> evict_priority{0};
+    std::atomic<uint8_t> ghost_state{0};
   };
+  static_assert(sizeof(Entry) == 16,
+                "VectorPageTable::Entry must stay hot and compact");
+
+  // Metadata that is not needed by a resident cache hit. Field order keeps
+  // the combined hot+cold cost at the previous 40 bytes per page.
+  struct MetadataEntry {
+    size_t next_loaded;
+    size_t file_offset;
+    // High 24 bits: aging epoch; low 8 bits: recent rejected-miss count.
+    std::atomic<uint32_t> admission_state{0};
+    std::atomic<bool> is_dirty;
+    std::atomic<bool> writeback_pending{false};
+    std::atomic<bool> ever_loaded{
+        false};  // true once the page has been loaded at least once
+  };
+  static_assert(sizeof(MetadataEntry) == 24,
+                "VectorPageTable::MetadataEntry must stay compact");
+  static_assert(sizeof(Entry) + sizeof(MetadataEntry) == 40,
+                "VectorPageTable metadata must remain 40 bytes per page");
 
  public:
+  static constexpr uint8_t kLowPriority =
+      BlockEvictionQueue::kProbationPriority;
+  static constexpr uint8_t kNormalPriority =
+      BlockEvictionQueue::kProtectedPriority;
+  static constexpr uint8_t kHighPriority =
+      BlockEvictionQueue::kExplicitHotPriority;
+  static constexpr size_t kPriorityCount = BlockEvictionQueue::kQueueCount;
+
+  enum class LoadClaimResult : uint8_t {
+    kClaimed,
+    kResident,
+    kLoading,
+    kEvicting,
+  };
+
   // Callback invoked by evict_block() to persist a dirty block before its
   // memory is released. Signature: (block_id, buffer, size, file_offset).
   using FlushCallback = std::function<int(block_id_t, char *, size_t, size_t)>;
+  // Writable pools enqueue dirty candidates here instead of performing disk
+  // I/O on the global eviction thread.
+  using WritebackCallback = std::function<bool(block_id_t)>;
 
-  VectorPageTable() {
+  VectorPageTable() : owner_version_(next_owner_version()) {
     BlockEvictionQueue::get_instance().set_valid(this);
   }
   ~VectorPageTable() {
     BlockEvictionQueue::get_instance().set_invalid(this);
-    // Destructor runs without concurrent readers/writers (callers guarantee
-    // no live handles by the time the page table is destroyed), so a relaxed
-    // load is sufficient here.
+    // No readers remain during destruction.
     size_t cnt = segment_count_.load(std::memory_order_relaxed);
     for (size_t i = 0; i < cnt; ++i) {
       delete[] segments_[i];
+      delete[] metadata_segments_[i];
     }
+    MemoryLimitPool::get_instance().release_metadata(metadata_bytes());
   }
 
   VectorPageTable(const VectorPageTable &) = delete;
@@ -79,40 +119,151 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   VectorPageTable(VectorPageTable &&) = delete;
   VectorPageTable &operator=(VectorPageTable &&) = delete;
 
-  //! Initialize the page table to cover `entry_num` entries.
-  //! Returns false (without modifying state) if `entry_num` exceeds the
-  //! statically allocated segment table capacity (kMaxEntries).
+  //! Initialize up to kMaxEntries entries without partial publication.
   bool init(size_t entry_num);
 
-  //! Extend the page table to cover at least `new_entry_num` entries.
-  //! Existing entries stay at their original addresses (no invalidation).
-  //! Safe to call while readers operate on existing pages.
-  //! Returns false (without modifying state) if `new_entry_num` exceeds
-  //! the statically allocated segment table capacity (kMaxEntries).
+  //! Extend without moving existing entries or partial publication.
   bool extend(size_t new_entry_num);
 
-  char *acquire_block(block_id_t block_id);
+  //! Roll back an extension not yet exposed to page users.
+  bool rollback_extend(size_t old_entry_num);
+
+  char *acquire_block(block_id_t block_id, bool record_reuse = true);
+
+  //! Claim an unloaded page before issuing I/O. Exactly one concurrent loader
+  //! may receive kClaimed for a residency cycle.
+  LoadClaimResult try_claim_block_load(block_id_t block_id);
+
+  //! Wait until an in-flight load or eviction publishes a stable state.
+  bool wait_for_block_transition(block_id_t block_id) const;
+
+  //! Publish a page whose loading state is owned by the caller.
+  [[nodiscard]] char *publish_claimed_block(block_id_t block_id, char *buffer,
+                                            size_t file_offset);
+
+  //! Roll an owned loading claim back to the unloaded state after I/O failure.
+  bool cancel_block_load(block_id_t block_id);
 
   void release_block(block_id_t block_id);
 
-  void evict_block(block_id_t block_id) override;
+  bool evict_block(block_id_t block_id) override;
 
-  char *set_block_acquired(block_id_t block_id, char *buffer,
-                           size_t file_offset);
+  void eviction_requeue_failed(eviction_key_t owner_key,
+                               version_t version) override {
+    if (version == owner_version_ &&
+        owner_key < entry_num_.load(std::memory_order_acquire)) {
+      eviction_recovery_needed_.store(true, std::memory_order_release);
+      Entry &e = entry_at(owner_key);
+      e.in_evict_queue.store(false, std::memory_order_relaxed);
+      // Reclaim released pages whose queue slot was consumed.
+      if (e.ref_count.load(std::memory_order_acquire) == 0) {
+        (void)do_evict_block(owner_key, /*force=*/false);
+      }
+    }
+  }
+
+  size_t recover_eviction_queue() override;
+
+  uint8_t eviction_priority(eviction_key_t owner_key) const override {
+    if (owner_key >= entry_num_.load(std::memory_order_acquire)) {
+      return 0;
+    }
+    return entry_at(owner_key).evict_priority.load(std::memory_order_relaxed);
+  }
+
+  //! Reclaim a block without CLOCK second chance.
+  bool force_evict_block(block_id_t block_id);
+
+  //! Reclaim only if the released block is already clean. Unlike teardown
+  //! eviction this never persists or discards a dirty page.
+  bool reclaim_clean_block(block_id_t block_id);
+
+  //! Reclaim loaded entries without scanning untouched file pages.
+  void force_evict_all_loaded();
+
+  void set_evict_priority(block_id_t block_id, uint8_t priority) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    Entry &e = entry_at(block_id);
+    e.evict_priority.store(priority, std::memory_order_relaxed);
+    // Existing queue membership adopts the priority on its next requeue.
+  }
+
+  //! Raise an admission hint without allowing a colder caller to demote an
+  //! already protected page.
+  bool promote_evict_priority(block_id_t block_id, uint8_t priority) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    Entry &e = entry_at(block_id);
+    uint8_t current = e.evict_priority.load(std::memory_order_relaxed);
+    while (current < priority &&
+           !e.evict_priority.compare_exchange_weak(current, priority,
+                                                   std::memory_order_relaxed,
+                                                   std::memory_order_relaxed)) {
+    }
+    if (current >= priority) {
+      return false;
+    }
+    e.referenced.store(true, std::memory_order_relaxed);
+    inc_priority_promotion(priority);
+    // Existing queue membership adopts the priority on its next requeue.
+    return true;
+  }
+
+  void set_adaptive_priority(bool enabled) {
+    adaptive_priority_enabled_ = enabled;
+  }
+
+  [[nodiscard]] char *set_block_acquired(block_id_t block_id, char *buffer,
+                                         size_t file_offset);
 
   void set_flush_callback(FlushCallback cb) {
     flush_callback_ = std::move(cb);
   }
 
+  void set_writeback_callback(WritebackCallback cb) {
+    writeback_callback_ = std::move(cb);
+  }
+
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
+    auto &dirty = metadata_entry_at(block_id).is_dirty;
+    // Page writers hold the page's exclusive latch, while flush keeps its
+    // shared latch through dirty clearing. Avoid repeatedly taking ownership
+    // of the cold metadata cache line once a build page is already dirty.
+    if (!dirty.load(std::memory_order_relaxed)) {
+      dirty.store(true, std::memory_order_relaxed);
+    }
   }
 
   bool is_block_dirty(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
-    return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
+    return metadata_entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
+  }
+
+  bool try_mark_writeback_pending(block_id_t block_id) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    bool expected = false;
+    return metadata_entry_at(block_id)
+        .writeback_pending.compare_exchange_strong(expected, true,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_relaxed);
+  }
+
+  void clear_writeback_pending(block_id_t block_id) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    metadata_entry_at(block_id).writeback_pending.store(
+        false, std::memory_order_release);
+  }
+
+  void record_dirty_flush(size_t count) {
+    inc_dirty_flush(count);
+  }
+
+  //! Clear the dirty flag after a successful batched flush.
+  void clear_dirty(block_id_t block_id) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    metadata_entry_at(block_id).is_dirty.store(false,
+                                               std::memory_order_relaxed);
   }
 
   //! Flush a single dirty block without evicting it. Caller guarantees the
@@ -120,69 +271,153 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   int flush_block(block_id_t block_id) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     Entry &e = entry_at(block_id);
-    char *buffer = e.buffer;
+    MetadataEntry &metadata = metadata_entry_at(block_id);
+    char *buffer = e.buffer.load(std::memory_order_acquire);
     if (!buffer || !flush_callback_) {
       return 0;
     }
-    if (!e.is_dirty.load(std::memory_order_relaxed)) {
+    if (!metadata.is_dirty.load(std::memory_order_relaxed)) {
       return 0;
     }
-    int rc = flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
+    int rc = flush_callback_(block_id, buffer, kVectorPageSize,
+                             metadata.file_offset);
     if (rc == 0) {
-      e.is_dirty.store(false, std::memory_order_relaxed);
+      metadata.is_dirty.store(false, std::memory_order_relaxed);
     }
     return rc;
   }
 
-  //! Returns the current number of entries.  Uses acquire ordering so that
-  //! callers iterating over [0, entry_num()) are guaranteed to see all
-  //! segments_[s] writes performed by a concurrent extend()/init().
+  //! Return the published entry count with initialized segments visible.
   size_t entry_num() const {
     return entry_num_.load(std::memory_order_acquire);
   }
+
+  size_t metadata_bytes() const {
+    return metadata_bytes_for_entries(entry_num());
+  }
+
+  //! Cache observability counters (monotonic, relaxed atomics).
+  struct Stats {
+    uint64_t hit{0};              // estimated cache hits (1/64 sampling)
+    uint64_t evict{0};            // pages actually reclaimed
+    uint64_t second_chance{0};    // pages spared by the CLOCK bit
+    uint64_t dirty_flush{0};      // dirty pages written back on eviction
+    uint64_t ghost_hot_marks{0};  // protected residencies remembered on aging
+    uint64_t ghost_hot_hits{0};   // remembered pages recognized on reload
+    std::array<uint64_t, kPriorityCount> priority_promotions{};
+    std::array<uint64_t, kPriorityCount> priority_demotions{};
+    std::array<uint64_t, kPriorityCount> evictions_by_priority{};
+  };
+  Stats stats() const {
+    Stats s;
+    for (size_t i = 0; i < kCounterShards; ++i) {
+      const CounterShard &c = counters_[i];
+      s.hit += c.hit.load(std::memory_order_relaxed);
+      s.evict += c.evict.load(std::memory_order_relaxed);
+      s.second_chance += c.second_chance.load(std::memory_order_relaxed);
+      s.dirty_flush += c.dirty_flush.load(std::memory_order_relaxed);
+    }
+    s.ghost_hot_marks = ghost_hot_marks_.load(std::memory_order_relaxed);
+    s.ghost_hot_hits = ghost_hot_hits_.load(std::memory_order_relaxed);
+    for (size_t priority = 0; priority < kPriorityCount; ++priority) {
+      s.priority_promotions[priority] =
+          priority_promotions_[priority].load(std::memory_order_relaxed);
+      s.priority_demotions[priority] =
+          priority_demotions_[priority].load(std::memory_order_relaxed);
+      s.evictions_by_priority[priority] =
+          evictions_by_priority_[priority].load(std::memory_order_relaxed);
+    }
+    return s;
+  }
+
+  //! Logical resident pages in each priority tier. Intended for infrequent
+  //! diagnostics; this scans pages that have been loaded at least once.
+  std::array<size_t, kPriorityCount> resident_pages_by_priority() const;
 
   bool is_released(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     return entry_at(block_id).ref_count.load(std::memory_order_relaxed) <= 0;
   }
 
-  inline bool is_dead_block(block_id_t block_id,
-                            version_t /*version*/) override {
+  inline bool is_dead_block(block_id_t block_id, version_t version) override {
+    // Reject stale entries after owner-address reuse.
+    if (version != owner_version_ ||
+        block_id >= entry_num_.load(std::memory_order_acquire)) {
+      return true;
+    }
     const Entry &e = entry_at(block_id);
     return !e.in_evict_queue.load(std::memory_order_relaxed);
   }
 
+  //! Check if a page is loaded (has a non-null buffer).
+  bool is_loaded(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return entry_at(block_id).buffer.load(std::memory_order_acquire) != nullptr;
+  }
+
+  //! Check whether reload requires I/O rather than initial zero-fill.
+  bool is_ever_loaded(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return metadata_entry_at(block_id).ever_loaded.load(
+        std::memory_order_relaxed);
+  }
+
+  bool has_evicted() const {
+    return has_evicted_.load(std::memory_order_relaxed);
+  }
+
+  //! Whether a page is resident or currently changing residency. Used to
+  //! rejoin cache single-flight without recording another admission miss.
+  bool has_residency_activity(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return entry_at(block_id).ref_count.load(std::memory_order_acquire) !=
+           kUnloadedRefCount;
+  }
+
+  //! Return true when an unloaded demand page is worth admitting under
+  //! pressure. Resident/in-flight, protected, and ghost-hot pages always use
+  //! the cache path; cold pages require a second recent miss.
+  bool should_admit_miss(block_id_t block_id, uint32_t epoch);
+
  private:
   // Segmented page table: entries are split across fixed-size segments so
   // that extend() can grow the table without moving existing entries.
-  static constexpr size_t kSegmentShift = 16;  // 65536 entries per segment
+  static constexpr size_t kSegmentShift = 14;  // 16384 entries per segment
   static constexpr size_t kSegmentSize = size_t{1} << kSegmentShift;
   static constexpr size_t kSegmentMask = kSegmentSize - 1;
 
  public:
   static constexpr size_t kMaxSegments =
-      2048;  // up to 128M entries (512GB @ 4K)
-  // Maximum number of entries the segment table can ever hold.  Callers
-  // (e.g. VecBufferPool::extend_file) can use this to pre-validate a target
-  // file size before mutating any on-disk state.
+      8192;  // up to 128M entries (512GB @ 4K)
+  // Capacity used to validate growth before changing the file.
   static constexpr size_t kMaxEntries = kMaxSegments * kSegmentSize;
 
+  //! Heap bytes allocated by the segmented page table for `entry_num`.
+  static size_t metadata_bytes_for_entries(size_t entry_num);
+
  private:
-  // entry_num_ and segment_count_ are mutated by writers in init()/extend()
-  // and observed by readers in entry_num() and the hot-path methods.  They
-  // are atomic to establish a release/acquire synchronization edge with the
-  // (non-atomic) writes to segments_[s] performed prior to the store: any
-  // reader that observes the new entry_num_ is guaranteed to see the
-  // fully-initialized Entry slots in the corresponding segment.
+  // Release/acquire publication makes initialized segment slots visible.
   std::atomic<size_t> entry_num_{0};
   std::atomic<size_t> segment_count_{0};
-  Entry *segments_[kMaxSegments]{};
+  static constexpr size_t kSegmentMetadataBytes =
+      kSegmentSize * (sizeof(Entry) + sizeof(MetadataEntry));
+  static constexpr size_t kSegmentDirectoryBytes =
+      kMaxSegments * (sizeof(Entry *) + sizeof(MetadataEntry *));
+  std::unique_ptr<Entry *[]> segments_{};
+  std::unique_ptr<MetadataEntry *[]> metadata_segments_{};
+  static constexpr size_t kInvalidLoadedBlock =
+      std::numeric_limits<size_t>::max();
+  static constexpr int kUnloadedRefCount = std::numeric_limits<int>::min();
+  static constexpr int kLoadingRefCount = kUnloadedRefCount + 1;
+  static constexpr int kEvictingRefCount = std::numeric_limits<int>::min() / 2;
+  static constexpr uint8_t kNoGhostHistory = 0;
+  static constexpr uint8_t kEvictedHot = 1;
+  static constexpr uint8_t kGhostAdmitted = 2;
+  std::atomic<size_t> loaded_head_{kInvalidLoadedBlock};
+  std::atomic<bool> has_evicted_{false};
+  bool adaptive_priority_enabled_{true};
 
-  // Pair with the release-store on segment_count_ in init()/extend() so
-  // that any reader observing the published segment table also sees the
-  // fully-initialized segments_[s] pointer and Entry slots. Without this
-  // acquire load, segments_[s] can be re-read as nullptr or a torn
-  // pointer on weak memory models (and even reordered on x86 under -O2).
+  // Pair with segment_count_ publication before dereferencing a segment.
   Entry &entry_at(size_t idx) {
     (void)segment_count_.load(std::memory_order_acquire);
     return segments_[idx >> kSegmentShift][idx & kSegmentMask];
@@ -191,86 +426,425 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     (void)segment_count_.load(std::memory_order_acquire);
     return segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
+  MetadataEntry &metadata_entry_at(size_t idx) {
+    (void)segment_count_.load(std::memory_order_acquire);
+    return metadata_segments_[idx >> kSegmentShift][idx & kSegmentMask];
+  }
+  const MetadataEntry &metadata_entry_at(size_t idx) const {
+    (void)segment_count_.load(std::memory_order_acquire);
+    return metadata_segments_[idx >> kSegmentShift][idx & kSegmentMask];
+  }
+
+  // `force` bypasses CLOCK second chance.
+  static void initialize_segment(Entry *entries,
+                                 MetadataEntry *metadata_entries);
+  bool do_evict_block(block_id_t block_id, bool force);
+  static version_t next_owner_version();
+
+  // Prevent stale queue entries from targeting a reused owner address.
+  const version_t owner_version_;
 
   FlushCallback flush_callback_{};
+  WritebackCallback writeback_callback_{};
+  // Scan loaded entries only after a queue insertion failure.
+  std::atomic<bool> eviction_recovery_needed_{false};
+
+  // Shard relaxed statistics to avoid hot-path cache-line contention.
+  static constexpr size_t kCounterShards = 64;  // power of two for masking
+  struct alignas(64) CounterShard {
+    std::atomic<uint64_t> hit{0};
+    std::atomic<uint64_t> evict{0};
+    std::atomic<uint64_t> second_chance{0};
+    std::atomic<uint64_t> dirty_flush{0};
+  };
+  CounterShard counters_[kCounterShards];
+  // Priority transitions happen at most once per residency phase, so they do
+  // not need the per-hit counter sharding above.
+  std::array<std::atomic<uint64_t>, kPriorityCount> priority_promotions_{};
+  std::array<std::atomic<uint64_t>, kPriorityCount> priority_demotions_{};
+  std::array<std::atomic<uint64_t>, kPriorityCount> evictions_by_priority_{};
+  std::atomic<uint64_t> ghost_hot_marks_{0};
+  std::atomic<uint64_t> ghost_hot_hits_{0};
+
+  // Keep each thread on one counter shard.
+  static size_t counter_shard() {
+    static std::atomic<size_t> seq{0};
+    thread_local size_t idx = seq.fetch_add(1, std::memory_order_relaxed);
+    return idx & (kCounterShards - 1);
+  }
+  // Sample and scale hits to avoid an atomic RMW on every acquisition.
+  static constexpr uint32_t kHitSampleRate = 64;
+  static constexpr uint32_t kReusePolicySampleRate = 8;
+  static uint32_t next_hit_sample() {
+    thread_local uint32_t sample_cursor = 0;
+    return sample_cursor++;
+  }
+  void inc_sampled_hit() {
+    counters_[counter_shard()].hit.fetch_add(kHitSampleRate,
+                                             std::memory_order_relaxed);
+  }
+  void inc_evict(uint8_t priority) {
+    has_evicted_.store(true, std::memory_order_relaxed);
+    CounterShard &counter = counters_[counter_shard()];
+    counter.evict.fetch_add(1, std::memory_order_relaxed);
+    if (priority < kPriorityCount) {
+      evictions_by_priority_[priority].fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  void inc_second_chance() {
+    counters_[counter_shard()].second_chance.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+  void inc_dirty_flush() {
+    counters_[counter_shard()].dirty_flush.fetch_add(1,
+                                                     std::memory_order_relaxed);
+  }
+  void inc_dirty_flush(size_t count) {
+    counters_[counter_shard()].dirty_flush.fetch_add(count,
+                                                     std::memory_order_relaxed);
+  }
+  void inc_priority_promotion(uint8_t priority) {
+    if (priority < kPriorityCount) {
+      priority_promotions_[priority].fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  void inc_priority_demotion(uint8_t priority) {
+    if (priority < kPriorityCount) {
+      priority_demotions_[priority].fetch_add(1, std::memory_order_relaxed);
+    }
+  }
 };
 
+class VecBufferPool;
 class VecBufferPoolHandle;
+
+struct VecBufferWriteFragment {
+  size_t file_offset;
+  size_t length;
+  const char *src;
+};
 
 class ZVEC_AILEGO_API VecBufferPool {
  public:
   typedef std::shared_ptr<VecBufferPool> Pointer;
 
-  static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
+  static constexpr size_t kMutexBucketCount = 4UL * 1024UL;
+  static constexpr size_t kWritebackBatchPages = 128;
+  static constexpr uint8_t kLowPriority = VectorPageTable::kLowPriority;
+  static constexpr uint8_t kNormalPriority = VectorPageTable::kNormalPriority;
+  static constexpr uint8_t kHighPriority = VectorPageTable::kHighPriority;
+
+  //! Non-evictable page-table and striped-lock memory required for a pool
+  //! covering `page_count` pages.
+  static size_t metadata_bytes_for_page_count(size_t page_count,
+                                              bool writable = false);
 
   VecBufferPool(const std::string &filename, bool writable = false);
-  ~VecBufferPool() {
-    // Flush any remaining dirty blocks before tearing down memory/fd so that
-    // writes are not silently lost. Safe to call even in read-only mode.
-    (void)this->flush_all();
-    for (size_t i = 0; i < page_table_.entry_num(); ++i) {
-      assert(page_table_.is_released(i));
-      page_table_.evict_block(i);
-    }
-#if defined(_MSC_VER)
-    _close(fd_);
-#else
-    close(fd_);
-#endif
-  }
+  ~VecBufferPool();
 
   int init();
 
+  //! Aggregated cache statistics for this pool.
+  struct Stats {
+    uint64_t hit{0};
+    uint64_t miss{0};
+    uint64_t evict{0};
+    uint64_t second_chance{0};
+    uint64_t dirty_flush{0};
+    uint64_t writeback_requests{0};
+    uint64_t writeback_batches{0};
+    uint64_t writeback_pages{0};
+    uint64_t writeback_failures{0};
+    uint64_t writeback_aio_batches{0};
+    uint64_t writeback_aio_pages{0};
+    uint64_t writeback_aio_fallbacks{0};
+    uint64_t writeback_waits{0};
+    uint64_t writeback_wait_us{0};
+    uint64_t writeback_pending{0};
+    uint64_t writeback_peak_pending{0};
+    uint64_t bypass_reads{0};
+    uint64_t bypass_bytes{0};
+    uint64_t bypass_io_requests{0};
+    uint64_t bypass_rechecks{0};
+    uint64_t bypass_cache_joins{0};
+    uint64_t singleflight_waits{0};
+    uint64_t aio_pages_submitted{0};
+    uint64_t admission_admitted{0};
+    uint64_t admission_rejected{0};
+    uint64_t ghost_hot_marks{0};
+    uint64_t ghost_hot_hits{0};
+    size_t page_table_metadata_bytes{0};
+    size_t page_lock_metadata_bytes{0};
+    size_t writeback_staging_bytes{0};
+    size_t writeback_io_staging_bytes{0};
+    std::array<uint64_t, VectorPageTable::kPriorityCount> priority_promotions{};
+    std::array<uint64_t, VectorPageTable::kPriorityCount> priority_demotions{};
+    std::array<uint64_t, VectorPageTable::kPriorityCount>
+        evictions_by_priority{};
+    double hit_rate() const {
+      uint64_t total = hit + miss;
+      return total ? static_cast<double>(hit) / static_cast<double>(total)
+                   : 0.0;
+    }
+  };
+  Stats stats() const {
+    VectorPageTable::Stats p = page_table_.stats();
+    Stats s;
+    s.hit = p.hit;
+    s.evict = p.evict;
+    s.second_chance = p.second_chance;
+    s.dirty_flush = p.dirty_flush;
+    s.writeback_requests = writeback_requests_.load(std::memory_order_relaxed);
+    s.writeback_batches = writeback_batches_.load(std::memory_order_relaxed);
+    s.writeback_pages = writeback_pages_.load(std::memory_order_relaxed);
+    s.writeback_failures = writeback_failures_.load(std::memory_order_relaxed);
+    s.writeback_aio_batches =
+        writeback_aio_batches_.load(std::memory_order_relaxed);
+    s.writeback_aio_pages =
+        writeback_aio_pages_.load(std::memory_order_relaxed);
+    s.writeback_aio_fallbacks =
+        writeback_aio_fallbacks_.load(std::memory_order_relaxed);
+    s.writeback_waits = writeback_waits_.load(std::memory_order_relaxed);
+    s.writeback_wait_us = writeback_wait_us_.load(std::memory_order_relaxed);
+    s.writeback_pending = writeback_pending_.load(std::memory_order_relaxed);
+    s.writeback_peak_pending =
+        writeback_peak_pending_.load(std::memory_order_relaxed);
+    s.priority_promotions = p.priority_promotions;
+    s.priority_demotions = p.priority_demotions;
+    s.evictions_by_priority = p.evictions_by_priority;
+    s.miss = miss_count_.load(std::memory_order_relaxed);
+    s.bypass_reads = bypass_reads_.load(std::memory_order_relaxed);
+    s.bypass_bytes = bypass_bytes_.load(std::memory_order_relaxed);
+    s.bypass_io_requests = bypass_io_requests_.load(std::memory_order_relaxed);
+    s.bypass_rechecks = bypass_rechecks_.load(std::memory_order_relaxed);
+    s.bypass_cache_joins = bypass_cache_joins_.load(std::memory_order_relaxed);
+    s.singleflight_waits = singleflight_waits_.load(std::memory_order_relaxed);
+    s.aio_pages_submitted =
+        aio_pages_submitted_.load(std::memory_order_relaxed);
+    s.admission_admitted = admission_admitted_.load(std::memory_order_relaxed);
+    s.admission_rejected = admission_rejected_.load(std::memory_order_relaxed);
+    s.ghost_hot_marks = p.ghost_hot_marks;
+    s.ghost_hot_hits = p.ghost_hot_hits;
+    s.page_table_metadata_bytes = page_table_.metadata_bytes();
+    s.page_lock_metadata_bytes = block_mutex_metadata_bytes();
+    s.writeback_staging_bytes = writeback_staging_size_;
+    s.writeback_io_staging_bytes = writeback_io_staging_charge_;
+    return s;
+  }
+
+  //! Log the current cache statistics at INFO level.
+  void log_stats() const;
+
   VecBufferPoolHandle get_handle();
 
-  char *acquire_buffer(block_id_t page_id, int retry = 0);
+  char *acquire_buffer(block_id_t page_id, int retry = 0,
+                       bool record_reuse = true);
+
+  //! Pin scattered pages only when every page is already resident. Rolls back
+  //! all pins on the first miss and never triggers I/O or cache admission.
+  bool try_acquire_resident_pages(const block_id_t *page_ids, size_t count,
+                                  char **pages);
+
+  //! Pin scattered pages; roll back all pins on failure.
+  bool acquire_pages(const block_id_t *page_ids, size_t count, char **pages);
+
+  //! Release one pin per page id acquired by acquire_pages().
+  void release_pages(const block_id_t *page_ids, size_t count);
+
+  //! Observe residency without changing hit or CLOCK state.
+  bool is_page_resident(block_id_t page_id) const {
+    return page_id < page_table_.entry_num() && page_table_.is_loaded(page_id);
+  }
+
+  //! Decide whether a demand miss should enter the cache. Admission control
+  //! activates when the process-wide shared pool is under pressure.
+  bool should_admit_page(block_id_t page_id);
+
+  //! Recheck a rejected page without adding another frequency observation.
+  bool should_join_cache_path(block_id_t page_id) const {
+    return page_id < page_table_.entry_num() &&
+           page_table_.has_residency_activity(page_id);
+  }
+
+  void record_bypass_recheck(size_t checked, size_t joined) {
+    if (checked != 0) {
+      bypass_rechecks_.fetch_add(checked, std::memory_order_relaxed);
+    }
+    if (joined != 0) {
+      bypass_cache_joins_.fetch_add(joined, std::memory_order_relaxed);
+    }
+  }
+
+  //! Account for one successful direct read that bypassed cache admission.
+  void record_bypass_read(size_t length, size_t io_requests = 1) {
+    bypass_reads_.fetch_add(1, std::memory_order_relaxed);
+    bypass_bytes_.fetch_add(length, std::memory_order_relaxed);
+    bypass_io_requests_.fetch_add(io_requests, std::memory_order_relaxed);
+  }
 
   int get_meta(size_t offset, size_t length, char *buffer);
+
+  //! Read without cache admission.
+  bool read_range_bypass(size_t file_offset, size_t length, char *buffer);
 
   //! Write a contiguous range via the page cache; marks touched pages dirty.
   //! Returns 0 on success, -1 on failure (e.g. read-only pool or I/O error).
   int write_range(size_t file_offset, size_t length, const char *src);
 
-  //! Write raw bytes directly via pwrite, bypassing the page cache. Used for
-  //! metadata regions (header/footer/segments_meta) which are only read via
-  //! get_meta() and never cached.
+  //! Apply ordered fragments that all lie in one page under one pin/latch.
+  int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
+
+  //! Write metadata without cache admission.
   int write_meta(size_t offset, size_t length, const char *buffer);
 
   //! Iterate all entries and persist any dirty blocks to disk. Safe to call
   //! repeatedly; no-op in read-only mode.
   int flush_all();
 
-  //! Extend the backing file to `new_size` bytes via ftruncate (no-op if
-  //! already >= new_size), refresh the cached file_size_, and extend the
-  //! page_table to cover the new range.  Returns true on success, false on
-  //! a read-only pool or I/O failure.
+  //! Extend the backing file and page table to `new_size`.
   bool extend_file(size_t new_size);
 
   bool writable() const {
     return writable_;
   }
 
+  bool has_evicted() const {
+    return page_table_.has_evicted();
+  }
+
   size_t file_size() const {
     return file_size_;
   }
 
+  //! Sequentially preload pages into the pool until pool is full.
+  void warmup();
+
+  void prefetch_pages(block_id_t first_page, size_t page_count,
+                      uint8_t priority = kLowPriority);
+
+  void prefetch_pages_aio(block_id_t first_page, size_t page_count,
+                          uint8_t priority = kLowPriority);
+
+  bool set_page_priority(block_id_t page_id, uint8_t priority) {
+    if (page_id >= page_table_.entry_num() || priority > kHighPriority) {
+      return false;
+    }
+    page_table_.set_evict_priority(page_id, priority);
+    return true;
+  }
+
+  bool aio_enabled() const {
+#if defined(__linux__)
+    // Backend contexts are created lazily per calling thread.
+    return aio_enabled_;
+#else
+    return false;
+#endif
+  }
+
+  IOBackendType io_backend_type() const {
+#if defined(__linux__)
+    return io_backend_type_;
+#else
+    return IOBackendType::kPread;
+#endif
+  }
+
+  //! Acquire a resident page without triggering I/O.
+  char *try_acquire_buffer(block_id_t page_id) {
+    assert(page_id < page_table_.entry_num());
+    return page_table_.acquire_block(page_id);
+  }
+
  private:
-  int fd_;
+  friend class VecBufferPoolHandle;
+  void prefetch_pages_sync(block_id_t first_page, size_t page_count,
+                           uint8_t priority);
+  bool load_pages_aio(const block_id_t *page_ids, size_t count,
+                      uint8_t priority);
+  bool enqueue_writeback(block_id_t page_id);
+  void start_writeback();
+  void stop_writeback();
+  void drain_writeback();
+  void writeback_loop();
+  bool flush_writeback_batch(std::vector<block_id_t> &page_ids, char *staging);
+  int writeback_error() const {
+    return writeback_error_.load(std::memory_order_acquire);
+  }
+
+  int fd_;       // page-data channel: O_DIRECT or F_NOCACHE when supported
+  int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
+  size_t initial_file_size_;  // file size at open time; pages beyond this
+                              // are created by extend_file and can skip
+                              // pread on first load (content is zeros).
   std::string file_name_;
   bool writable_{false};
+  bool direct_io_enabled_{false};
+  bool initialized_{false};
+  // One miss per page populated on the cold path.
+  std::atomic<uint64_t> miss_count_{0};
+  std::atomic<uint64_t> bypass_reads_{0};
+  std::atomic<uint64_t> bypass_bytes_{0};
+  std::atomic<uint64_t> bypass_io_requests_{0};
+  std::atomic<uint64_t> bypass_rechecks_{0};
+  std::atomic<uint64_t> bypass_cache_joins_{0};
+  std::atomic<uint64_t> singleflight_waits_{0};
+  std::atomic<uint64_t> aio_pages_submitted_{0};
+  std::atomic<uint64_t> admission_observations_{0};
+  std::atomic<uint64_t> admission_admitted_{0};
+  std::atomic<uint64_t> admission_rejected_{0};
+  std::atomic<uint64_t> writeback_requests_{0};
+  std::atomic<uint64_t> writeback_batches_{0};
+  std::atomic<uint64_t> writeback_pages_{0};
+  std::atomic<uint64_t> writeback_failures_{0};
+  std::atomic<uint64_t> writeback_aio_batches_{0};
+  std::atomic<uint64_t> writeback_aio_pages_{0};
+  std::atomic<uint64_t> writeback_aio_fallbacks_{0};
+  std::atomic<uint64_t> writeback_waits_{0};
+  std::atomic<uint64_t> writeback_wait_us_{0};
+  std::atomic<uint64_t> writeback_pending_{0};
+  std::atomic<uint64_t> writeback_peak_pending_{0};
+  std::atomic<int> writeback_error_{0};
+#if defined(__linux__)
+  IOBackendType io_backend_type_{IOBackendType::kPread};
+  bool aio_enabled_{false};
+#endif
 
  public:
   VectorPageTable page_table_;
 
  private:
-  std::unique_ptr<std::mutex[]> block_mutexes_{};
+  // Serialize writable in-place payload access. Single-flight owns loading.
+  size_t block_mutex_metadata_bytes() const {
+    return block_mutex_count_ * sizeof(std::shared_mutex);
+  }
+  std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
+  size_t block_mutex_count_{0};
+
+  std::thread writeback_thread_{};
+  char *writeback_staging_{nullptr};
+  size_t writeback_staging_size_{0};
+  size_t writeback_io_staging_charge_{0};
+#if defined(__linux__)
+  std::unique_ptr<IoUringRing> writeback_io_uring_{};
+#endif
+  std::mutex writeback_mutex_{};
+  std::condition_variable writeback_cv_{};
+  std::condition_variable writeback_drained_cv_{};
+  std::deque<block_id_t> writeback_queue_{};
+  std::mutex writeback_flush_mutex_{};
+  size_t writeback_inflight_{0};
+  bool writeback_stopping_{false};
 };
 
 class ZVEC_AILEGO_API VecBufferPoolHandle {
  public:
   VecBufferPoolHandle(VecBufferPool &pool) : pool_(pool) {}
-  VecBufferPoolHandle(VecBufferPoolHandle &&other) : pool_(other.pool_) {}
+  explicit VecBufferPoolHandle(std::shared_ptr<VecBufferPool> pool)
+      : pool_owner_(std::move(pool)), pool_(checked_pool(pool_owner_)) {}
+  VecBufferPoolHandle(VecBufferPoolHandle &&other)
+      : pool_owner_(std::move(other.pool_owner_)), pool_(other.pool_) {}
 
   ~VecBufferPoolHandle() = default;
 
@@ -278,11 +852,30 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
 
   char *get_single_page(size_t file_offset, size_t len, size_t &out_page_id);
 
+  bool try_acquire_resident_pages(const block_id_t *page_ids, size_t count,
+                                  char **pages);
+
+  bool acquire_pages(const block_id_t *page_ids, size_t count, char **pages);
+
+  void release_pages(const block_id_t *page_ids, size_t count);
+
   bool read_range(size_t file_offset, size_t len, char *out);
+
+  // Copy a range whose bytes are immutable after publication. Writers may
+  // still update disjoint records in the same page, so pages stay pinned for
+  // the copy but do not need the writable payload latch.
+  bool read_range_immutable(size_t file_offset, size_t len, char *out);
+
+  bool read_range_bypass(size_t file_offset, size_t len, char *out);
+
+  void prefetch_range(size_t file_offset, size_t len,
+                      uint8_t priority = VecBufferPool::kLowPriority);
 
   int get_meta(size_t offset, size_t length, char *buffer);
 
   int write_range(size_t file_offset, size_t len, const char *src);
+
+  int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
 
   int write_meta(size_t offset, size_t length, const char *buffer);
 
@@ -295,6 +888,17 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
   void acquire_one(block_id_t block_id);
 
  private:
+  static VecBufferPool &checked_pool(
+      const std::shared_ptr<VecBufferPool> &pool) {
+    if (!pool) {
+      throw std::invalid_argument(
+          "VecBufferPoolHandle requires a non-null owning pool");
+    }
+    return *pool;
+  }
+
+  // Storage-backed handles own the pool; stack handles remain non-owning.
+  std::shared_ptr<VecBufferPool> pool_owner_{};
   VecBufferPool &pool_;
 };
 
