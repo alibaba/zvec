@@ -110,6 +110,35 @@ static void expect_simd_near(float actual, float expected,
       tolerance = std::max(
           tolerance, std::max(5.0e-3 * result_scale, fp16_error + fp32_error));
     }
+  } else if (arch == turbo::CpuArchType::kNEON) {
+    // On CPUs with FEAT_FP16 the kNEON rows dispatch to the neon_fp16
+    // kernels, which keep their accumulators in FP16 and widen only for the
+    // final horizontal reduction.  Bound the longest FP16 dependency chain.
+    // Inner product / cosine use four 8-lane accumulators over 32-element
+    // blocks with an 8-element tail folded into the first accumulator and a
+    // two-level FP16 combine.  L2 uses two accumulators over 16-element
+    // blocks, a single FP16 combine, plus two additional roundoff units for
+    // the FP16 subtraction and its squared contribution.
+    size_t fp16_depth;
+    if (metric == turbo::MetricType::kSquaredEuclidean) {
+      fp16_depth = dim / 16 + (dim % 16 >= 8 ? 1 : 0);
+      if (fp16_depth != 0) {
+        fp16_depth += 1 + 2;
+      }
+    } else {
+      fp16_depth = dim / 32 + (dim % 32) / 8;
+      if (fp16_depth != 0) {
+        fp16_depth += 2;
+      }
+    }
+    if (fp16_depth != 0) {
+      constexpr double kFp16UnitRoundoff = 1.0 / 2048.0;
+      const double fp16_error =
+          rounding_error_bound(fp16_depth, kFp16UnitRoundoff) *
+          accumulation_scale;
+      tolerance = std::max(
+          tolerance, std::max(2.0e-2 * result_scale, fp16_error + fp32_error));
+    }
   }
 
   EXPECT_NEAR(actual, expected, tolerance)
@@ -488,6 +517,38 @@ TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
 
 TEST(Fp16Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
+}
+
+TEST(Fp16Quantizer, NeonDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON);
+}
+
+TEST(Fp16Quantizer, AutoDispatchSelectsNeonFp16) {
+  using RawDistance = void (*)(const void *, const void *, size_t, float *);
+  const turbo::MetricType metrics[] = {
+      turbo::MetricType::kSquaredEuclidean,
+      turbo::MetricType::kCosine,
+      turbo::MetricType::kInnerProduct,
+  };
+
+  for (const auto metric : metrics) {
+    const auto neon = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kNEON);
+    if (!neon.dist) {
+      GTEST_SKIP() << "NEON FP16 kernels unavailable on this CPU";
+    }
+    const auto automatic = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kAuto);
+    ASSERT_TRUE(automatic.dist);
+
+    const auto *neon_target = neon.dist.target<RawDistance>();
+    const auto *auto_target = automatic.dist.target<RawDistance>();
+    ASSERT_TRUE(neon_target);
+    ASSERT_TRUE(auto_target);
+    EXPECT_EQ(*neon_target, *auto_target);
+  }
 }
 
 TEST(Fp16Quantizer, Avx512Fp16DistanceMatchesScalar) {
