@@ -75,14 +75,14 @@ IndexMeta make_meta(size_t dim) {
 //! the stored codes decode to different vectors.  Encoding through the
 //! quantizer is compared against a brute force search over the on-disk pivots.
 TEST(DiskAnnLegacyPq, EncodeMatchesLegacyPivots) {
-  const size_t DIM = 16;
+  const size_t DIM = 17;
   const uint32_t CHUNK_NUM = 4;
-  const size_t SUB_DIM = DIM / CHUNK_NUM;
+  // Legacy chunking distributes the remainder to the leading chunks.
+  const std::vector<uint32_t> offsets{0, 5, 9, 13, 17};
 
   auto pivots = make_random_pivots(DIM);
   std::vector<float> mean(DIM, 0.0f);
-  auto payload =
-      make_legacy_payload(pivots, mean, make_uniform_offsets(DIM, CHUNK_NUM));
+  auto payload = make_legacy_payload(pivots, mean, offsets);
 
   IndexMeta meta = make_meta(DIM);
   auto quantizer =
@@ -105,8 +105,8 @@ TEST(DiskAnnLegacyPq, EncodeMatchesLegacyPivots) {
     float best_dist = std::numeric_limits<float>::max();
     for (size_t c = 0; c < kClusterNum; ++c) {
       float sum = 0.0f;
-      for (size_t j = 0; j < SUB_DIM; ++j) {
-        float diff = vec[m * SUB_DIM + j] - pivots[c * DIM + m * SUB_DIM + j];
+      for (size_t j = offsets[m]; j < offsets[m + 1]; ++j) {
+        float diff = vec[j] - pivots[c * DIM + j];
         sum += diff * diff;
       }
       if (sum < best_dist) {
@@ -126,9 +126,8 @@ TEST(DiskAnnLegacyPq, EncodeMatchesLegacyPivots) {
   ASSERT_EQ(decoded.size(), DIM * sizeof(float));
   const float *recon = reinterpret_cast<const float *>(decoded.data());
   for (size_t m = 0; m < CHUNK_NUM; ++m) {
-    for (size_t j = 0; j < SUB_DIM; ++j) {
-      EXPECT_FLOAT_EQ(recon[m * SUB_DIM + j],
-                      pivots[code[m] * DIM + m * SUB_DIM + j])
+    for (size_t j = offsets[m]; j < offsets[m + 1]; ++j) {
+      EXPECT_FLOAT_EQ(recon[j], pivots[code[m] * DIM + j])
           << "m=" << m << " j=" << j;
     }
   }
@@ -193,9 +192,9 @@ TEST(DiskAnnLegacyPq, RejectsNonZeroMean) {
       DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta, CHUNK_NUM));
 }
 
-//! Chunks of unequal width have no counterpart in the quantizer, so the index
-//! has to be rebuilt instead of being silently misread.
-TEST(DiskAnnLegacyPq, RejectsNonUniformChunks) {
+//! Only the legacy balanced geometry is supported; arbitrary boundaries would
+//! silently change the meaning of persisted codes.
+TEST(DiskAnnLegacyPq, RejectsInvalidChunkOffsets) {
   const size_t DIM = 16;
   const uint32_t CHUNK_NUM = 4;
 

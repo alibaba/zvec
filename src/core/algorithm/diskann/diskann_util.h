@@ -212,8 +212,9 @@ class DiskAnnUtil {
 
   //! Repack a legacy codebook into the layout the PQ quantizer keeps in memory:
   //! on disk 256 pivot rows of `dim` components, a per-dimension mean and
-  //! chunk_num + 1 chunk offsets; in memory [chunk][256][chunk_dim].  Nothing
-  //! else needs translating, both sides work in squared euclidean space and the
+  //! chunk_num + 1 chunk offsets; in memory each chunk holds [256][its width].
+  //! Leading chunks carry any remainder dimensions, matching legacy chunking.
+  //! Both sides work in squared euclidean space, and the
   //! writers of this layout always persisted a zero mean.
   static int legacy_pq_codebook_to_centroids(const std::string &meta_buffer,
                                              const IndexMeta &quantizer_meta,
@@ -223,10 +224,7 @@ class DiskAnnUtil {
 
     const size_t dim = quantizer_meta.dimension();
     const size_t unit = quantizer_meta.unit_size();
-    if (dim == 0 || unit == 0 || chunk_num == 0 || dim % chunk_num != 0) {
-      // Legacy chunking gave the leading chunks one extra dimension when the
-      // count did not divide the dimension; the quantizer only knows uniform
-      // chunks.
+    if (dim == 0 || unit == 0 || chunk_num == 0 || chunk_num > dim) {
       LOG_ERROR(
           "Legacy DiskAnn PQ codebook with %u chunks over %zu dimensions is "
           "not loadable, rebuild the index",
@@ -234,10 +232,12 @@ class DiskAnnUtil {
       return IndexError_Unsupported;
     }
     const size_t sub_dim = dim / chunk_num;
+    const size_t remainder = dim % chunk_num;
 
     const size_t pivot_bytes = kClusterNum * dim * unit;
     const size_t mean_bytes = dim * unit;
-    const size_t offset_bytes = (chunk_num + 1) * sizeof(uint32_t);
+    const size_t offset_count = static_cast<size_t>(chunk_num) + 1;
+    const size_t offset_bytes = offset_count * sizeof(uint32_t);
     if (meta_buffer.size() != pivot_bytes + mean_bytes + offset_bytes) {
       LOG_ERROR(
           "Legacy DiskAnn PQ codebook size mismatch, expect: %zu, actual: %zu",
@@ -249,13 +249,14 @@ class DiskAnnUtil {
     const char *mean = pivots + pivot_bytes;
     // Copied out instead of cast in place: the offsets are not guaranteed to be
     // aligned inside the buffer.
-    std::vector<uint32_t> offsets(chunk_num + 1, 0);
+    std::vector<uint32_t> offsets(offset_count, 0);
     std::memcpy(offsets.data(), mean + mean_bytes, offset_bytes);
     for (size_t m = 0; m <= chunk_num; ++m) {
-      if (offsets[m] != m * sub_dim) {
+      if (offsets[m] != m * sub_dim + std::min(m, remainder)) {
         LOG_ERROR(
-            "Legacy DiskAnn PQ codebook has non-uniform chunk offsets, rebuild "
-            "the index");
+            "Legacy DiskAnn PQ codebook has invalid chunk offsets at chunk "
+            "%zu, rebuild the index",
+            m);
         return IndexError_Unsupported;
       }
     }
@@ -273,9 +274,11 @@ class DiskAnnUtil {
     centroids->assign(pivot_bytes, '\0');
     char *dest = &(*centroids)[0];
     for (size_t m = 0; m < chunk_num; ++m) {
+      const size_t start = offsets[m];
+      const size_t width = offsets[m + 1] - start;
       for (size_t c = 0; c < kClusterNum; ++c) {
-        std::memcpy(dest + ((m * kClusterNum + c) * sub_dim) * unit,
-                    pivots + (c * dim + m * sub_dim) * unit, sub_dim * unit);
+        std::memcpy(dest + (kClusterNum * start + c * width) * unit,
+                    pivots + (c * dim + start) * unit, width * unit);
       }
     }
 

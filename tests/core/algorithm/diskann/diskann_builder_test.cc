@@ -162,7 +162,7 @@ TEST_F(DiskAnnBuilderTest, SmallDatasetBuildTime) {
 }
 
 TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCount) {
-  constexpr size_t kTestDim = 8;
+  constexpr size_t kTestDim = 17;
   constexpr size_t kDocCnt = 16;
 
   IndexMeta meta(IndexMeta::DataType::DT_FP32, kTestDim);
@@ -209,6 +209,44 @@ TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCount) {
   DiskAnnPqMeta pq_meta{};
   std::memcpy(&pq_meta, data, sizeof(pq_meta));
   EXPECT_EQ(2U, pq_meta.chunk_num);
+}
+
+TEST_F(DiskAnnBuilderTest, PrimeDimensionPreservesDefaultPqChunkCount) {
+  constexpr uint32_t kDim = 17;
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDim);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(kDim);
+  for (size_t i = 0; i < 16; ++i) {
+    ASSERT_TRUE(holder->emplace(i, NumericalVector<float>(kDim, float(i))));
+  }
+  Params params;
+  params.set(PARAM_DISKANN_BUILDER_MAX_DEGREE, 16);
+  params.set(PARAM_DISKANN_BUILDER_LIST_SIZE, 20);
+  params.set(PARAM_DISKANN_BUILDER_THREAD_COUNT, 2);
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+  ASSERT_EQ(0, builder->init(meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+
+  const string path = _dir + "/PrimeDimensionDefaultPq";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(dumper, nullptr);
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->open(path, false));
+  auto segment = storage->get(DiskAnnEntity::kDiskAnnPqMetaSegmentId);
+  ASSERT_NE(segment, nullptr);
+  const void *data = nullptr;
+  ASSERT_EQ(sizeof(DiskAnnPqMeta),
+            segment->read(0, &data, sizeof(DiskAnnPqMeta)));
+  DiskAnnPqMeta pq_meta{};
+  std::memcpy(&pq_meta, data, sizeof(pq_meta));
+  EXPECT_EQ(8U, pq_meta.chunk_num);
 }
 
 TEST_F(DiskAnnBuilderTest, TestImplicitFactoryRegistration) {

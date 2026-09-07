@@ -85,9 +85,9 @@ make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
 // ---------------------------------------------------------------------------
 
 TEST(PqInt8Quantizer, InitInvalidParams) {
-  // dim not divisible by num_chunk
-  auto q = make_pq_quantizer(10, 3);
-  EXPECT_EQ(q, nullptr);
+  // Every chunk must contain at least one dimension.
+  EXPECT_EQ(make_pq_quantizer(10, 11), nullptr);
+  EXPECT_EQ(make_pq_quantizer(0, 1), nullptr);
 
   // num_chunk = 0
   auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
@@ -177,7 +177,7 @@ TEST(PqInt8Quantizer, AdcDistance) {
 }
 
 TEST(PqInt8Quantizer, SdcDistance) {
-  const size_t DIM = 16;
+  const size_t DIM = 17;
   const size_t NSQ = 4;
   const size_t COUNT = 2000;
 
@@ -199,7 +199,14 @@ TEST(PqInt8Quantizer, SdcDistance) {
   quantizer->quantize_data(iter->data(), code2.data());
 
   float sdc_dist = quantizer->calc_distance_dp_dp(code1.data(), code2.data());
-  EXPECT_GE(sdc_dist, 0.0f);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  std::string decoded1, decoded2;
+  ASSERT_EQ(0, quantizer->dequantize(code1.data(), qmeta, &decoded1));
+  ASSERT_EQ(0, quantizer->dequantize(code2.data(), qmeta, &decoded2));
+  EXPECT_NEAR(reference_sq_euclidean(
+                  reinterpret_cast<const float *>(decoded1.data()),
+                  reinterpret_cast<const float *>(decoded2.data()), DIM),
+              sdc_dist, 1e-4f);
 }
 
 TEST(PqInt8Quantizer, DistanceImplAdcAndSdc) {
@@ -240,7 +247,7 @@ TEST(PqInt8Quantizer, DistanceImplAdcAndSdc) {
 }
 
 TEST(PqInt8Quantizer, SerializeDeserialize) {
-  const size_t DIM = 16;
+  const size_t DIM = 17;
   const size_t NSQ = 4;
   const size_t COUNT = 500;
 
@@ -1453,8 +1460,8 @@ TEST(PqInt8Fp16, Dequantize) {
 
 // Verify serialize/deserialize round-trip preserves FP16 PQ codes.
 TEST(PqInt8Fp16, SerializeDeserialize) {
-  const size_t DIM = 16;
-  const size_t NSQ = 4;
+  const size_t DIM = 65;
+  const size_t NSQ = 8;
   const size_t COUNT = 500;
 
   auto quantizer = make_pq_fp16_quantizer(DIM, NSQ);

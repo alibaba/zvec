@@ -290,17 +290,6 @@ int DiskAnnBuilder::calculate_pq_chunk_num() {
     return IndexError_InvalidArgument;
   }
 
-  // PqInt8Quantizer requires uniform sub_dim, so chunk_num must evenly divide
-  // the dimension.  Decrement until it does (guard against zero).
-  while (pq_chunk_num_ > 0 && build_meta_.dimension() % pq_chunk_num_ != 0) {
-    --pq_chunk_num_;
-  }
-  if (pq_chunk_num_ == 0) {
-    LOG_ERROR("Could not resolve a chunk_num that divides dim %u",
-              build_meta_.dimension());
-    return IndexError_InvalidArgument;
-  }
-
   LOG_INFO("Quantizing %u dimension data into %u bytes.",
            build_meta_.dimension(), pq_chunk_num_);
 
