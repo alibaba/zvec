@@ -16,7 +16,6 @@
 
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <zvec/ailego/container/params.h>
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/framework/index_holder.h"
@@ -63,12 +62,14 @@ class VecsIndexHolder : public IndexProvider {
     //! Constructor
     Iterator(const VecsIndexHolder &holder, uint32_t cursor)
         : cursor_(cursor),
+          start_cursor_(cursor),
+          end_cursor_(holder.end_cursor()),
           vecs_reader_(holder.vecs_reader_),
           stop_(holder.stop_) {}
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
-      return !stop_ && cursor_ < vecs_reader_.num_vecs();
+      return !stop_ && cursor_ < end_cursor_;
     }
 
     //! Retrieve primary key
@@ -103,11 +104,13 @@ class VecsIndexHolder : public IndexProvider {
 
     //! Reset the iterator
     virtual void reset(void) {
-      cursor_ = 0;
+      cursor_ = start_cursor_;
     }
 
    private:
     size_t cursor_;
+    const size_t start_cursor_;
+    const size_t end_cursor_;
     const VecsReader &vecs_reader_;
     const bool &stop_;
   };
@@ -126,8 +129,15 @@ class VecsIndexHolder : public IndexProvider {
     return iter;
   }
 
-  //! Retrieve count of elements in holder
+  //! Number of records in the selected iterator range.
   size_t count(void) const override {
+    const size_t end = end_cursor();
+    return end > start_cursor_ ? end - start_cursor_ : 0;
+  }
+
+  //! Exclusive file offset after applying MaxDocs. Random-access methods and
+  //! the streaming benchmark use original file offsets, not selected offsets.
+  size_t end_cursor() const {
     return max_doc_count_ != 0
                ? std::min(max_doc_count_, vecs_reader_.num_vecs())
                : vecs_reader_.num_vecs();
@@ -261,69 +271,6 @@ class VecsIndexHolder : public IndexProvider {
   size_t max_doc_count_{0};
   std::unordered_map<uint64_t, size_t> key_to_index_map_;
 };
-
-// VecsIndexHolder::count() is an absolute upper bound for its manual consumers.
-// Expose the selected [start_cursor, count) range as a regular IndexHolder so
-// quantizer training and lazy encoding see the same number of rows.
-class BoundedVecsIndexHolder : public IndexHolder {
- public:
-  explicit BoundedVecsIndexHolder(VecsIndexHolder::Pointer holder)
-      : holder_(std::move(holder)),
-        start_cursor_(holder_->start_cursor()),
-        count_(holder_->count() > start_cursor_
-                   ? holder_->count() - start_cursor_
-                   : 0) {}
-
-  size_t count() const override {
-    return count_;
-  }
-
-  size_t dimension() const override {
-    return holder_->dimension();
-  }
-
-  IndexMeta::DataType data_type() const override {
-    return holder_->data_type();
-  }
-
-  size_t element_size() const override {
-    return holder_->element_size();
-  }
-
-  bool multipass() const override {
-    return holder_->multipass();
-  }
-
-  IndexHolder::Iterator::Pointer create_iterator() override {
-    return std::make_unique<Iterator>(*holder_, start_cursor_, count_);
-  }
-
- private:
-  class Iterator : public VecsIndexHolder::Iterator {
-   public:
-    Iterator(const VecsIndexHolder &holder, uint32_t start, size_t count)
-        : VecsIndexHolder::Iterator(holder, start), remaining_(count) {}
-
-    bool is_valid() const override {
-      return remaining_ > 0 && VecsIndexHolder::Iterator::is_valid();
-    }
-
-    void next() override {
-      if (remaining_ > 0) {
-        --remaining_;
-        VecsIndexHolder::Iterator::next();
-      }
-    }
-
-   private:
-    size_t remaining_;
-  };
-
-  VecsIndexHolder::Pointer holder_;
-  uint32_t start_cursor_;
-  size_t count_;
-};
-
 
 /*!
  * Vecs Index Sparse Holder

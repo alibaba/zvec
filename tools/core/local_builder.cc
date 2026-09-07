@@ -562,7 +562,8 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
   }
 
   IndexQueryMeta qmeta(holder->data_type(), holder->dimension());
-  uint32_t keep_docs = holder->count() - holder->start_cursor();
+  const size_t keep_docs = holder->count();
+  const size_t end_cursor = holder->end_cursor();
 
   std::function<int(uint64_t, const void *, const IndexQueryMeta &,
                     IndexContext::Pointer &)>
@@ -595,8 +596,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     }
     std::string ovec;
     IndexQueryMeta ometa;
-    for (uint32_t id = idx; id < holder->count() && !stop_now;
-         id += thread_count) {
+    for (uint32_t id = idx; id < end_cursor && !stop_now; id += thread_count) {
       uint64_t key = holder->get_key(id);
       if (retrieval_mode == RM_DENSE) {
         if (reformer) {
@@ -653,7 +653,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
       return errcode;
     }
     LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
-             finished.load() * 100.0f / holder->count());
+             finished.load() * 100.0f / end_cursor);
   }
   if (error.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to build index while waiting finish");
@@ -820,7 +820,6 @@ IndexHolder::Pointer quantize_holder(
   if (name.empty()) {
     return cast_holder;
   }
-  cast_holder = std::make_shared<BoundedVecsIndexHolder>(in_holder);
 
   std::shared_ptr<zvec::turbo::Quantizer> quantizer =
       IndexFactory::CreateQuantizer(name);
@@ -1142,8 +1141,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   }
   if (config_common["KeepDocs"] && config_common["KeepDocs"].as<uint32_t>()) {
     auto keep_docs = config_common["KeepDocs"].as<uint32_t>();
-    if (keep_docs < build_holder->count()) {
-      build_holder->set_start_cursor(build_holder->count() - keep_docs);
+    if (keep_docs < build_holder->end_cursor()) {
+      build_holder->set_start_cursor(build_holder->end_cursor() - keep_docs);
     }
   }
 
