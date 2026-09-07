@@ -122,22 +122,36 @@ TEST(SquaredEuclideanMetric, RawFp16) {
   auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
   ASSERT_TRUE(metric);
 
-  constexpr size_t kDimension = 4;
+  constexpr size_t kDimension = 8;
   IndexMeta meta(IndexMeta::DataType::DT_FP16, kDimension);
   ASSERT_EQ(0, metric->init(meta, ailego::Params()));
 
-  const std::array<uint16_t, kDimension> query = {0x0000, 0x3c00, 0x4000,
-                                                  0x4200};
-  const std::array<uint16_t, kDimension> row = {0x3c00, 0x4000, 0x4200, 0x4400};
+  const std::array<uint16_t, kDimension> query = {
+      0x0000, 0x3c00, 0x4000, 0x4200, 0x0000, 0x0000, 0x0000, 0x0000};
+  const std::array<uint16_t, kDimension> row = {0x3c00, 0x4000, 0x4200, 0x4400,
+                                                0x0000, 0x0000, 0x0000, 0x0000};
   float single = 0.0F;
   metric->distance()(row.data(), query.data(), kDimension, &single);
   EXPECT_FLOAT_EQ(4.0F, single);
+
+  // A native FP16 multiply overflows for 300^2. Raw FP16 storage still has
+  // FP32 distance semantics, so SIMD kernels must widen before squaring.
+  const std::array<uint16_t, kDimension> zero_query = {};
+  const std::array<uint16_t, kDimension> large_row = {
+      0x5cb0, 0x5cb0, 0x5cb0, 0x5cb0, 0x5cb0, 0x5cb0, 0x5cb0, 0x5cb0};
+  metric->distance()(large_row.data(), zero_query.data(), kDimension, &single);
+  EXPECT_FLOAT_EQ(720000.0F, single);
 
   const void *rows[] = {row.data(), query.data()};
   float batch[2] = {};
   metric->batch_distance()(rows, query.data(), 2, kDimension, batch, nullptr);
   EXPECT_FLOAT_EQ(4.0F, batch[0]);
   EXPECT_FLOAT_EQ(0.0F, batch[1]);
+
+  const void *large_rows[] = {large_row.data()};
+  metric->batch_distance()(large_rows, zero_query.data(), 1, kDimension, batch,
+                           nullptr);
+  EXPECT_FLOAT_EQ(720000.0F, batch[0]);
 }
 
 TEST(SquaredEuclideanMetric, RawUint8ConversionSaturates) {

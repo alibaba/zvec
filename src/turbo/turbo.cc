@@ -185,7 +185,7 @@ struct KernelSet {
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
-    // --- raw physical storage (AVX512-FP16/AVX512, then scalar fallback) ---
+    // --- raw physical storage (AVX512-FP16/AVX512/NEON, then scalar) ---
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
@@ -200,13 +200,10 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::squared_euclidean_fp16_distance,
      avx512_vnni::squared_euclidean_fp16_batch_distance, nullptr,
      kCpuFeatureAvx512Dq | kCpuFeatureF16c},
-#if defined(ZVEC_HAVE_ARM_FP16_KERNEL)
+    // Raw storage widens operands so squaring cannot overflow in FP16.
     {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
-     MetricType::kSquaredEuclidean,
-     neon_fp16::squared_euclidean_fp16_distance_neon_fp16,
-     neon_fp16::squared_euclidean_fp16_batch_distance_neon_fp16, nullptr,
-     kCpuFeatureNeonFp16},
-#endif
+     MetricType::kSquaredEuclidean, neon::squared_euclidean_fp16_distance,
+     neon::squared_euclidean_fp16_batch_distance, nullptr},
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kScalar,
      MetricType::kSquaredEuclidean,
      scalar::squared_euclidean_raw_uint8_distance,
