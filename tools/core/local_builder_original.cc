@@ -733,6 +733,7 @@ IndexHolder::Pointer quantize_holder(
   if (name.empty()) {
     return cast_holder;
   }
+  cast_holder = std::make_shared<BoundedVecsIndexHolder>(in_holder);
 
   std::shared_ptr<zvec::turbo::Quantizer> quantizer =
       IndexFactory::CreateQuantizer(name);

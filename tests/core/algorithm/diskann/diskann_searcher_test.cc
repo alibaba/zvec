@@ -305,7 +305,8 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
                      &quantizer_meta_buffer));
     auto pq_quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
         quantizer_meta_buffer, *_index_meta_ptr,
-        static_cast<uint32_t>(malformed_entity.pq_chunk_num()));
+        static_cast<uint32_t>(malformed_entity.pq_chunk_num()),
+        malformed_entity.legacy_pq_layout());
     ASSERT_NE(pq_quantizer, nullptr);
 
     DiskAnnIndexer malformed_indexer(*_index_meta_ptr);

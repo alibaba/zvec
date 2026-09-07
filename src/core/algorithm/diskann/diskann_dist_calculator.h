@@ -171,6 +171,14 @@ class DistCalculator {
                      const turbo::Quantizer::Pointer &external_quantizer) {
     data_quantizer_.reset();
 
+    // load(storage, metric) and IndexFlow can override the persisted metric.
+    // A quantizer chosen for that persisted metric must not replace the
+    // caller's distance function (including an unnamed custom metric).
+    if (measure->name() != meta.metric_name()) {
+      distance_ = measure->distance();
+      return;
+    }
+
     // An externally constructed quantizer (already initialized by the caller)
     // takes precedence over the internal factory selection below.
     if (external_quantizer) {

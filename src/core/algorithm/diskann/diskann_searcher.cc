@@ -69,6 +69,7 @@ int DiskAnnSearcher::init(const ailego::Params &search_params) {
   params_ = search_params;
   list_size_ = list_size;
   cache_nodes_num_ = cache_nodes_num;
+  data_quantizer_.reset();
   state_ = STATE_INITED;
   return 0;
 }
@@ -145,7 +146,8 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
   }
   auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
       quantizer_meta_buffer, meta_,
-      static_cast<uint32_t>(entity_.pq_chunk_num()));
+      static_cast<uint32_t>(entity_.pq_chunk_num()),
+      entity_.legacy_pq_layout());
   if (!quantizer) {
     return IndexError_NoExist;
   }

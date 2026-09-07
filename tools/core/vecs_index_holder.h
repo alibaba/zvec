@@ -16,6 +16,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <zvec/ailego/container/params.h>
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/framework/index_holder.h"
@@ -259,6 +260,68 @@ class VecsIndexHolder : public IndexProvider {
   VecsReader vecs_reader_;
   size_t max_doc_count_{0};
   std::unordered_map<uint64_t, size_t> key_to_index_map_;
+};
+
+// VecsIndexHolder::count() is an absolute upper bound for its manual consumers.
+// Expose the selected [start_cursor, count) range as a regular IndexHolder so
+// quantizer training and lazy encoding see the same number of rows.
+class BoundedVecsIndexHolder : public IndexHolder {
+ public:
+  explicit BoundedVecsIndexHolder(VecsIndexHolder::Pointer holder)
+      : holder_(std::move(holder)),
+        start_cursor_(holder_->start_cursor()),
+        count_(holder_->count() > start_cursor_
+                   ? holder_->count() - start_cursor_
+                   : 0) {}
+
+  size_t count() const override {
+    return count_;
+  }
+
+  size_t dimension() const override {
+    return holder_->dimension();
+  }
+
+  IndexMeta::DataType data_type() const override {
+    return holder_->data_type();
+  }
+
+  size_t element_size() const override {
+    return holder_->element_size();
+  }
+
+  bool multipass() const override {
+    return holder_->multipass();
+  }
+
+  IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<Iterator>(*holder_, start_cursor_, count_);
+  }
+
+ private:
+  class Iterator : public VecsIndexHolder::Iterator {
+   public:
+    Iterator(const VecsIndexHolder &holder, uint32_t start, size_t count)
+        : VecsIndexHolder::Iterator(holder, start), remaining_(count) {}
+
+    bool is_valid() const override {
+      return remaining_ > 0 && VecsIndexHolder::Iterator::is_valid();
+    }
+
+    void next() override {
+      if (remaining_ > 0) {
+        --remaining_;
+        VecsIndexHolder::Iterator::next();
+      }
+    }
+
+   private:
+    size_t remaining_;
+  };
+
+  VecsIndexHolder::Pointer holder_;
+  uint32_t start_cursor_;
+  size_t count_;
 };
 
 

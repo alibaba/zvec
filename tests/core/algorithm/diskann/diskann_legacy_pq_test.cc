@@ -85,8 +85,8 @@ TEST(DiskAnnLegacyPq, EncodeMatchesLegacyPivots) {
   auto payload = make_legacy_payload(pivots, mean, offsets);
 
   IndexMeta meta = make_meta(DIM);
-  auto quantizer =
-      DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta, CHUNK_NUM);
+  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+      payload, meta, CHUNK_NUM, true);
   ASSERT_TRUE(quantizer);
 
   std::mt19937 gen(99);
@@ -145,8 +145,8 @@ TEST(DiskAnnLegacyPq, AdcDistanceMatchesReference) {
       make_legacy_payload(pivots, mean, make_uniform_offsets(DIM, CHUNK_NUM));
 
   IndexMeta meta = make_meta(DIM);
-  auto quantizer =
-      DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta, CHUNK_NUM);
+  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+      payload, meta, CHUNK_NUM, true);
   ASSERT_TRUE(quantizer);
 
   std::mt19937 gen(1234);
@@ -188,8 +188,8 @@ TEST(DiskAnnLegacyPq, RejectsNonZeroMean) {
       make_legacy_payload(pivots, mean, make_uniform_offsets(DIM, CHUNK_NUM));
 
   IndexMeta meta = make_meta(DIM);
-  EXPECT_FALSE(
-      DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta, CHUNK_NUM));
+  EXPECT_FALSE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
+                                                              CHUNK_NUM, true));
 }
 
 //! Only the legacy balanced geometry is supported; arbitrary boundaries would
@@ -205,8 +205,8 @@ TEST(DiskAnnLegacyPq, RejectsInvalidChunkOffsets) {
   auto payload = make_legacy_payload(pivots, mean, offsets);
 
   IndexMeta meta = make_meta(DIM);
-  EXPECT_FALSE(
-      DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta, CHUNK_NUM));
+  EXPECT_FALSE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
+                                                              CHUNK_NUM, true));
 }
 
 TEST(DiskAnnLegacyPq, RejectsTruncatedCodebook) {
@@ -220,20 +220,54 @@ TEST(DiskAnnLegacyPq, RejectsTruncatedCodebook) {
   payload.resize(payload.size() - sizeof(uint32_t));
 
   IndexMeta meta = make_meta(DIM);
-  EXPECT_FALSE(
-      DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta, CHUNK_NUM));
+  EXPECT_FALSE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
+                                                              CHUNK_NUM, true));
 }
 
-//! Only a headerless buffer is treated as legacy; a buffer written by the
-//! quantizer keeps going through deserialize().
+//! Legacy centroid values can match the quantizer magic. The enclosing header
+//! must select import versus deserialize independently of these values.
 TEST(DiskAnnLegacyPq, DetectsQuantizerHeader) {
-  std::string blob(sizeof(turbo::QuantizerSerHeader), '\0');
-  uint32_t magic = turbo::kQuantizerMagic;
-  std::memcpy(&blob[0], &magic, sizeof(magic));
-  EXPECT_FALSE(DiskAnnUtil::is_legacy_pq_meta_buffer(blob));
+  constexpr uint32_t DIM = 5, CHUNKS = 2;
+  IndexMeta meta = make_meta(DIM);
+  meta.set_meta(IndexMeta::DataType::DT_FP16, DIM);
+  std::vector<ailego::Float16> pivots(kClusterNum * DIM, 0.0f);
+  pivots[0] = 202.125f;
+  pivots[1] = 50.625f;
+  std::string payload(reinterpret_cast<const char *>(pivots.data()),
+                      pivots.size() * sizeof(ailego::Float16));
+  uint32_t magic;
+  std::memcpy(&magic, payload.data(), sizeof(magic));
+  ASSERT_EQ(magic, turbo::kQuantizerMagic);
+  payload.append(DIM * sizeof(ailego::Float16), '\0');
+  const uint32_t offsets[] = {0, 3, DIM};
+  payload.append(reinterpret_cast<const char *>(offsets), sizeof(offsets));
 
-  std::string legacy(sizeof(turbo::QuantizerSerHeader), '\0');
-  EXPECT_TRUE(DiskAnnUtil::is_legacy_pq_meta_buffer(legacy));
+  DiskAnnLegacyPqMeta old_header;
+  old_header.chunk_num = CHUNKS;
+  old_header.centroid_data_size = DIM * sizeof(ailego::Float16);
+  old_header.full_pivot_data_size = kClusterNum * old_header.centroid_data_size;
+  DiskAnnPqMeta header;
+  std::memcpy(static_cast<void *>(&header), &old_header, sizeof(header));
+  bool legacy = false;
+  ASSERT_EQ(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
+  ASSERT_TRUE(legacy);
+  ASSERT_EQ(payload.size(), header.quantizer_meta_buffer_size);
+  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+      payload, meta, static_cast<uint32_t>(header.chunk_num), legacy);
+  ASSERT_TRUE(quantizer);
+
+  ASSERT_EQ(0, quantizer->serialize(&payload));
+  header.clear();
+  header.chunk_num = CHUNKS;
+  header.quantizer_meta_buffer_size = payload.size();
+  ASSERT_EQ(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
+  ASSERT_FALSE(legacy);
+  EXPECT_TRUE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
+                                                             CHUNKS, legacy));
+
+  ++old_header.full_pivot_data_size;
+  std::memcpy(static_cast<void *>(&header), &old_header, sizeof(header));
+  EXPECT_NE(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
 }
 
 }  // namespace core

@@ -452,6 +452,14 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize prefetch_lines");
         return nullptr;
       }
+#if DISKANN_SUPPORTED
+    } else if constexpr (std::is_same_v<QueryParamType, DiskAnnQueryParam>) {
+      if (!extract_value_from_json(json_obj, "list_size", param->list_size,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize list_size");
+        return nullptr;
+      }
+#endif
     } else {
       LOG_ERROR("Unsupported index type: %s",
                 magic_enum::enum_name(index_type).data());

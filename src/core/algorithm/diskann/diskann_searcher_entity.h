@@ -51,6 +51,10 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   //! layout the raw codebook is returned instead (see DiskAnnUtil).
   int read_pq_quantizer_meta_buffer(std::string *meta_buffer) const;
 
+  bool legacy_pq_layout() const {
+    return legacy_pq_layout_;
+  }
+
   const uint8_t *pq_codes() const {
     return pq_codes_ ? reinterpret_cast<const uint8_t *>(pq_codes_->data())
                      : nullptr;
@@ -72,12 +76,6 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   diskann_key_t get_key(diskann_id_t id) const override;
 
  private:
-  //! Interpret the PQ meta header just read into pq_meta_.  Legacy indexes
-  //! carry DiskAnnLegacyPqMeta in the same bytes; on success pq_meta_ holds the
-  //! normalized chunk count and payload size for both layouts.
-  int normalize_pq_meta();
-
- private:
   IndexStorage::Pointer storage_{};
 
   SegmentPointer meta_segment_{nullptr};
@@ -89,6 +87,7 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   SegmentPointer entrypoint_segment_{nullptr};
 
   IndexMeta meta_;
+  bool legacy_pq_layout_{false};
 
   //! Shared so that clone() stays cheap for every search context.
   std::shared_ptr<const std::string> pq_codes_;

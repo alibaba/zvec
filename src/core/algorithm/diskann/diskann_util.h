@@ -199,15 +199,47 @@ class DiskAnnUtil {
     return 0;
   }
 
-  //! True when the buffer has no quantizer header: indexes dumped before the
-  //! codebook moved into the quantizer stored the raw PQ codebook here.
-  static bool is_legacy_pq_meta_buffer(const std::string &meta_buffer) {
-    if (meta_buffer.size() < sizeof(uint32_t)) {
-      return false;
+  //! Resolve the layout from the DiskAnn header, not from centroid values.
+  //! The legacy chunk count occupies bytes reserved as zero by current writers.
+  //! Preserve this result when interpreting the payload: valid legacy pivots
+  //! can start with the very same bytes as kQuantizerMagic.
+  static int normalize_pq_meta(const IndexMeta &meta, DiskAnnPqMeta *pq_meta,
+                               bool *legacy_layout) {
+    *legacy_layout = false;
+    DiskAnnLegacyPqMeta legacy;
+    std::memcpy(static_cast<void *>(&legacy), pq_meta, sizeof(legacy));
+    IndexMeta init_meta;
+    int ret = quantizer_init_meta(meta, &init_meta);
+    if (ret != 0) {
+      return ret;
     }
-    uint32_t magic = 0;
-    std::memcpy(&magic, meta_buffer.data(), sizeof(magic));
-    return magic != turbo::kQuantizerMagic;
+    if (legacy.chunk_num == 0) {
+      if (pq_meta->chunk_num == 0 ||
+          pq_meta->chunk_num > init_meta.dimension() ||
+          pq_meta->quantizer_meta_buffer_size <
+              sizeof(turbo::QuantizerSerHeader)) {
+        return IndexError_InvalidFormat;
+      }
+      return 0;
+    }
+
+    const uint64_t mean_bytes =
+        uint64_t{init_meta.dimension()} * init_meta.unit_size();
+    if (legacy.chunk_num > init_meta.dimension() || mean_bytes == 0 ||
+        legacy.centroid_data_size != mean_bytes ||
+        legacy.full_pivot_data_size != 256 * mean_bytes) {
+      LOG_ERROR("Invalid legacy DiskAnn PQ metadata");
+      return IndexError_InvalidFormat;
+    }
+
+    *legacy_layout = true;
+    pq_meta->clear();
+    pq_meta->chunk_num = legacy.chunk_num;
+    // Legacy writers left chunk_offsets_size unset.
+    pq_meta->quantizer_meta_buffer_size =
+        legacy.full_pivot_data_size + legacy.centroid_data_size +
+        (legacy.chunk_num + 1) * sizeof(uint32_t);
+    return 0;
   }
 
   //! Repack a legacy codebook into the layout the PQ quantizer keeps in memory:
@@ -289,12 +321,11 @@ class DiskAnnUtil {
   //! implementation from the meta buffer header instead of a hardcoded type.
   //! Contract: the quantizer is initialized with the meta derived from
   //! `index_meta` before deserialize(), so the metric policy comes from the
-  //! meta instead of the default-constructed one.  A headerless buffer holds
-  //! the legacy PQ codebook and is adopted after repacking.
+  //! meta instead of the default-constructed one. The layout comes from the
+  //! DiskAnn header; legacy codebooks are adopted after repacking.
   static turbo::Quantizer::Pointer create_quantizer_from_meta_buffer(
-      std::string &meta_buffer, const IndexMeta &index_meta,
-      uint32_t chunk_num) {
-    const bool legacy = is_legacy_pq_meta_buffer(meta_buffer);
+      std::string &meta_buffer, const IndexMeta &index_meta, uint32_t chunk_num,
+      bool legacy) {
     const char *name = legacy ? "PqInt8Quantizer"
                               : quantizer_name_from_meta_buffer(meta_buffer);
     if (name == nullptr) {

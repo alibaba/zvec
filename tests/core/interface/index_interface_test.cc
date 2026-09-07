@@ -1680,6 +1680,19 @@ TEST(IndexInterface, Serialize) {
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
   }
+#if DISKANN_SUPPORTED
+  {
+    DiskAnnQueryParam param;
+    param.topk = 12;
+    param.list_size = 80;
+    const auto json = IndexFactory::QueryParamSerializeToJson(param);
+    const auto parsed =
+        IndexFactory::QueryParamDeserializeFromJson<DiskAnnQueryParam>(json);
+    ASSERT_NE(nullptr, parsed);
+    EXPECT_EQ(param.topk, parsed->topk);
+    EXPECT_EQ(param.list_size, parsed->list_size);
+  }
+#endif
 }
 
 TEST(IndexInterface, Failure) {

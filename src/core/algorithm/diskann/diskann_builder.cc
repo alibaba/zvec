@@ -89,6 +89,10 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     params.get(PARAM_DISKANN_BUILDER_MAX_TRAIN_SAMPLE_COUNT,
                &max_train_sample_count_);
   }
+  if (max_train_sample_count_ == 0) {
+    LOG_ERROR("Max train sample count must be positive");
+    return IndexError_InvalidArgument;
+  }
 
   if (params.has(PARAM_DISKANN_BUILDER_TRAIN_SAMPLE_RATIO)) {
     params.get(PARAM_DISKANN_BUILDER_TRAIN_SAMPLE_RATIO, &train_sample_ratio_);
@@ -391,8 +395,28 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
     return ret;
   }
 
-  // PqInt8Quantizer accepts FP16 holders directly (widened internally).
-  ret = quantizer_->train(holder_);
+  // Preserve the legacy trainer's bounded prefix sample. The turbo trainer
+  // collects its entire input before subsampling, so cap that input first.
+  IndexHolder::Pointer training_holder = holder_;
+  if (holder_->count() > max_train_sample_count_) {
+    auto iter = holder_->create_iterator();
+    if (!iter) {
+      LOG_ERROR("Create training iterator failed");
+      return IndexError_Runtime;
+    }
+    auto sample = std::make_shared<RandomAccessIndexHolder>(build_meta_);
+    sample->reserve(max_train_sample_count_);
+    for (; iter->is_valid() && sample->count() < max_train_sample_count_;
+         iter->next()) {
+      sample->emplace(iter->key(), iter->data());
+    }
+    if (sample->count() != max_train_sample_count_) {
+      LOG_ERROR("Training holder ended before the requested sample count");
+      return IndexError_Runtime;
+    }
+    training_holder = std::move(sample);
+  }
+  ret = quantizer_->train(std::move(training_holder));
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
     return ret;

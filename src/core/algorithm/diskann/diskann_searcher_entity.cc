@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "diskann_searcher_entity.h"
+#include "diskann_util.h"
 
 namespace zvec {
 namespace core {
@@ -26,6 +27,7 @@ void DiskAnnSearcherEntity::clear() {
   meta_.clear();
   meta_header_ = {};
   pq_meta_ = {};
+  legacy_pq_layout_ = false;
 }
 
 void DiskAnnSearcherEntity::release_storage() {
@@ -50,6 +52,7 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
   entity->meta_header_ = meta_header_;
   entity->pq_meta_ = pq_meta_;
   entity->meta_ = meta_;
+  entity->legacy_pq_layout_ = legacy_pq_layout_;
   entity->pq_codes_ = pq_codes_;
   entity->key_buffer_ = key_buffer_;
   entity->key_mapping_buffer_ = key_mapping_buffer_;
@@ -137,7 +140,8 @@ int DiskAnnSearcherEntity::load_pq_segment() {
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
 
-  int ret = normalize_pq_meta();
+  int ret =
+      DiskAnnUtil::normalize_pq_meta(meta_, &pq_meta_, &legacy_pq_layout_);
   if (ret != 0) {
     return ret;
   }
@@ -178,48 +182,6 @@ int DiskAnnSearcherEntity::load_pq_segment() {
     LOG_ERROR("Failed to allocate DiskAnn PQ code buffer");
     return IndexError_NoMemory;
   }
-
-  return 0;
-}
-
-int DiskAnnSearcherEntity::normalize_pq_meta() {
-  // The header carries no version, so the layouts are told apart by the payload
-  // behind it: the current one starts with the turbo quantizer magic.
-  const void *data = nullptr;
-  uint32_t magic = 0;
-  if (pq_meta_segment_->read(sizeof(DiskAnnPqMeta), &data, sizeof(magic)) !=
-      sizeof(magic)) {
-    // Truncated payload: let the caller's validation report the format error.
-    return 0;
-  }
-  memcpy(&magic, data, sizeof(magic));
-  if (magic == turbo::kQuantizerMagic) {
-    return 0;
-  }
-
-  // Reinterpret the very same header bytes under the legacy layout; the void *
-  // casts keep the compiler from treating this as a copy between the two
-  // (non-trivial, but layout-compatible) struct types.
-  DiskAnnLegacyPqMeta legacy;
-  memcpy(static_cast<void *>(&legacy), static_cast<const void *>(&pq_meta_),
-         sizeof(legacy));
-  if (legacy.chunk_num == 0 || legacy.full_pivot_data_size == 0 ||
-      legacy.centroid_data_size == 0) {
-    LOG_ERROR("Unrecognized DiskAnn PQ metadata layout");
-    return IndexError_InvalidFormat;
-  }
-
-  // Normalize onto the current header so that everything downstream only sees a
-  // chunk count and an opaque payload; the chunk offset array is always
-  // chunk_num + 1 uint32 entries, its size field was never written.
-  pq_meta_.clear();
-  pq_meta_.chunk_num = legacy.chunk_num;
-  pq_meta_.quantizer_meta_buffer_size =
-      legacy.full_pivot_data_size + legacy.centroid_data_size +
-      (legacy.chunk_num + 1) * sizeof(uint32_t);
-
-  LOG_INFO("DiskAnn index carries the legacy PQ codebook layout, chunk_num=%zu",
-           (size_t)pq_meta_.chunk_num);
 
   return 0;
 }
