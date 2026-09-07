@@ -1,0 +1,69 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "neon/fp32/squared_euclidean.h"
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
+#include <arm_neon.h>
+#else
+#include "scalar/fp32/squared_euclidean.h"
+#endif
+
+namespace zvec::turbo::neon {
+
+void squared_euclidean_fp32_distance(const void *a, const void *b, size_t dim,
+                                     float *distance) {
+#if defined(AILEGO_ARM64_NEON)
+  const float *lhs = reinterpret_cast<const float *>(a);
+  const float *rhs = reinterpret_cast<const float *>(b);
+  const float *last = lhs + dim;
+  const float *last_aligned = lhs + ((dim >> 3) << 3);
+
+  float32x4_t sum0 = vdupq_n_f32(0.0f);
+  float32x4_t sum1 = vdupq_n_f32(0.0f);
+
+  for (; lhs != last_aligned; lhs += 8, rhs += 8) {
+    const float32x4_t diff0 = vsubq_f32(vld1q_f32(lhs), vld1q_f32(rhs));
+    const float32x4_t diff1 = vsubq_f32(vld1q_f32(lhs + 4), vld1q_f32(rhs + 4));
+    sum0 = vfmaq_f32(sum0, diff0, diff0);
+    sum1 = vfmaq_f32(sum1, diff1, diff1);
+  }
+  if (last - lhs >= 4) {
+    const float32x4_t diff = vsubq_f32(vld1q_f32(lhs), vld1q_f32(rhs));
+    sum0 = vfmaq_f32(sum0, diff, diff);
+    lhs += 4;
+    rhs += 4;
+  }
+
+  float result = vaddvq_f32(vaddq_f32(sum0, sum1));
+  for (; lhs != last; ++lhs, ++rhs) {
+    const float diff = *lhs - *rhs;
+    result += diff * diff;
+  }
+  *distance = result;
+#else
+  scalar::squared_euclidean_fp32_distance(a, b, dim, distance);
+#endif
+}
+
+void squared_euclidean_fp32_batch_distance(const void *const *vectors,
+                                           const void *query, size_t n,
+                                           size_t dim, float *distances) {
+  for (size_t i = 0; i < n; ++i) {
+    squared_euclidean_fp32_distance(vectors[i], query, dim, &distances[i]);
+  }
+}
+
+}  // namespace zvec::turbo::neon
