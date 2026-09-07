@@ -417,7 +417,8 @@ class SegmentImpl : public Segment,
 
   mutable std::mutex seg_mtx_;
 
-  // segment column lock
+  // Serializes block publication with fetch/indexer snapshot readers.
+  // When both locks are needed, acquire seg_mtx_ before seg_col_mtx_.
   mutable std::shared_mutex seg_col_mtx_;
 
   bool need_destroyed_{false};
@@ -901,9 +902,14 @@ Status SegmentImpl::internal_insert(Doc &doc) {
     return s;
   }
 
-  auto &mem_block = segment_meta_->writing_forward_block().value();
-  mem_block.max_doc_id_ = g_doc_id;
-  mem_block.doc_count_ = mem_block.doc_count_ + 1;
+  {
+    // Combined indexers and scalar readers copy this metadata under the
+    // column lock. Publish the row only after its scalar/vector writes finish.
+    std::unique_lock<std::shared_mutex> col_lock(seg_col_mtx_);
+    auto &mem_block = segment_meta_->writing_forward_block().value();
+    mem_block.max_doc_id_ = g_doc_id;
+    mem_block.doc_count_ = mem_block.doc_count_ + 1;
+  }
 
   doc_ids_.push_back(g_doc_id);
 
@@ -1263,6 +1269,9 @@ Doc::Ptr SegmentImpl::Fetch(
   if (!include_vector) {
     return doc;
   }
+  // Segment switching can dump a block without seg_mtx_. Keep the block
+  // offsets and indexer lookup in the same snapshot as the flush handoff.
+  std::shared_lock<std::shared_mutex> col_lock(seg_col_mtx_);
   for (const auto &field : collection_schema_->vector_fields()) {
     int block_idx = find_persist_block_id(BlockType::VECTOR_INDEX,
                                           segment_doc_id, field->name());
@@ -1343,6 +1352,9 @@ Doc::Ptr SegmentImpl::Fetch(
 
 CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
     const std::string &field_name) const {
+  // Copy indexers and their block metadata together; flush/init can run
+  // concurrently with query planning.
+  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
   std::vector<VectorColumnIndexer::Ptr> indexers;
   auto iter = vector_indexers_.find(field_name);
   if (iter != vector_indexers_.end()) {
@@ -1367,6 +1379,7 @@ CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
 
 CombinedVectorColumnIndexer::Ptr SegmentImpl::get_quant_combined_vector_indexer(
     const std::string &field_name) const {
+  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
   std::vector<VectorColumnIndexer::Ptr> indexers;
   auto iter = quant_vector_indexers_.find(field_name);
   if (iter != quant_vector_indexers_.end()) {
@@ -1419,6 +1432,7 @@ VectorColumnIndexer::Ptr SegmentImpl::get_memory_quant_vector_indexer(
 
 std::vector<VectorColumnIndexer::Ptr> SegmentImpl::get_vector_indexer(
     const std::string &field_name) const {
+  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
   auto iter = vector_indexers_.find(field_name);
   if (iter != vector_indexers_.end()) {
     return iter->second;
@@ -1428,6 +1442,7 @@ std::vector<VectorColumnIndexer::Ptr> SegmentImpl::get_vector_indexer(
 
 std::vector<VectorColumnIndexer::Ptr> SegmentImpl::get_quant_vector_indexer(
     const std::string &field_name) const {
+  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
   std::vector<VectorColumnIndexer::Ptr> col_indexers;
   auto iter = quant_vector_indexers_.find(field_name);
   if (iter != quant_vector_indexers_.end()) {
@@ -2142,6 +2157,9 @@ Status SegmentImpl::flush() {
 
   if (memory_store_) {
     // update segment meta with memory components
+    // Readers must see either the memory block or its persisted replacement,
+    // including the new empty writing-block metadata.
+    std::unique_lock<std::shared_mutex> col_lock(seg_col_mtx_);
     s = finish_memory_components();
     CHECK_RETURN_STATUS(s);
 
@@ -2362,8 +2380,7 @@ TablePtr SegmentImpl::fetch_normal(
   std::map<int, std::map<std::string, std::vector<std::pair<int, int>>>>
       block_request_map;
 
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
-
+  // The multi-row fetch caller holds seg_col_mtx_ for this entire snapshot.
   const auto &block_offsets = get_persist_block_offsets(BlockType::SCALAR);
   const auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
 
@@ -2553,6 +2570,7 @@ TablePtr SegmentImpl::fetch_normal(
 
 TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
                             const std::vector<int> &segment_doc_ids) const {
+  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
   if (!validate(columns)) {
     return nullptr;
   }
@@ -2673,6 +2691,9 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
       }
     }
   } else {
+    // The multi-row fallback takes seg_col_mtx_ itself. A shared
+    // mutex is not recursive, even when both acquisitions are shared.
+    lock.unlock();
     auto table = fetch(columns, std::vector<int>{segment_doc_id});
     if (table) {
       std::vector<arrow::Datum> datums;
@@ -4061,6 +4082,7 @@ VectorColumnIndexer::Ptr SegmentImpl::create_vector_indexer(
 }
 
 Status SegmentImpl::init_memory_components() {
+  std::unique_lock<std::shared_mutex> col_lock(seg_col_mtx_);
   // Roll back any partially-created components on failure so a failed init
   // leaves memory_store_ null (the caller's `if (!memory_store_)` retry guard
   // depends on it) and never gets flushed on close.
@@ -4328,6 +4350,8 @@ Status SegmentImpl::append_wal(const Doc &doc) {
 }
 
 Status SegmentImpl::finish_memory_components() {
+  // flush() holds seg_col_mtx_ exclusively through this transfer and the
+  // installation of the next writing block.
   auto block = segment_meta_->writing_forward_block().value();
 
   // close for loading persist block
