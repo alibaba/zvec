@@ -46,7 +46,8 @@ struct BaseDistanceBatchWithScoreUnquantized {
 
   // If Distance has ComputeBatch, use it; otherwise fall back to _ComputeBatch.
   static inline void ComputeBatch(const ValueType **m, const ValueType *q,
-                                  size_t num, size_t dim, float *out) {
+                                  size_t num, size_t dim, float *out,
+                                  const void ** /*extra_values*/) {
     // if constexpr (detail::HasComputeBatch<Distance, ValueType>::value) {
     //   return Distance::ComputeBatch(m, q, num, dim, out);
     // }

@@ -1240,6 +1240,13 @@ TEST(IndexInterface, Fp16CosineRefinementMatchesFp16Storage) {
   ASSERT_EQ(
       0, source->open(source_name, {StorageOptions::StorageType::kMMAP, true}));
 
+  // Documents must stay far apart in FP16 space: vectors spaced more finely
+  // than the FP16 resolution quantize to (nearly) the same codes and their
+  // cosine scores tie. Tied scores leave the top-k order up to the
+  // enumeration order of each search path (full scan vs brute force over
+  // refiner candidates), which makes the key/vector comparisons below depend
+  // on the SIMD kernel in use. Integer-valued components are exact in FP16
+  // and keep neighboring scores well separated.
   std::vector<std::vector<float>> vectors(kVectorCount,
                                           std::vector<float>(kDimension));
   for (uint32_t i = 0; i < kVectorCount; ++i) {
@@ -2166,7 +2173,7 @@ TEST(IndexInterface, Score) {
       assert(v1.size() == 3);
       assert(v2.size() == 3);
       float ret = 0.0f;
-      for (int i = 0; i < v1.size(); ++i) {
+      for (size_t i = 0; i < v1.size(); ++i) {
         ret += (v1[i] - v2[i]) * (v1[i] - v2[i]);
       }
       return ret;

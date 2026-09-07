@@ -175,7 +175,8 @@ void pq_sdc_int4_distance_avx512(const void *a_v, const void *b_v,
 
 void pq_adc_int4_batch_distance_avx512(const void **candidates_v,
                                        const void *lut_v, size_t num,
-                                       size_t num_chunk, float *out) {
+                                       size_t num_chunk, float *out,
+                                       const void ** /*extra_values*/) {
 #if defined(__AVX512F__)
   constexpr int kNumCentroids = 16;
   constexpr int kChunkSize = 16;

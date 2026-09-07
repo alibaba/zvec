@@ -386,7 +386,7 @@ void PqInt8Quantizer::compute_dist_table() {
       batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                 reinterpret_cast<const uint8_t *>(centroid_i) +
                     static_cast<size_t>(i) * d * element_size(),
-                k, d, table_m + i * k);
+                k, d, table_m + i * k, nullptr);
     }
   }
 }
@@ -402,7 +402,7 @@ void PqInt8Quantizer::compute_sub_centroid_norms() {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     // const_cast: see compute_dist_table for rationale.
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), zero.data(),
-                 k, chunk_dim(m), sub_centroid_norms_.data() + m * k);
+                 k, chunk_dim(m), sub_centroid_norms_.data() + m * k, nullptr);
   }
 }
 
@@ -465,7 +465,7 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 
     // Compute L2 distances from this sub-vector to all 256 centroids.
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
-                 kNumCentroids, chunk_dim(m), dists);
+                 kNumCentroids, chunk_dim(m), dists, nullptr);
 
     // Argmin: find nearest centroid.  Seeding with +infinity skips NaN
     // distances from dead centroids; a dists[0] seed would pin them to 0
@@ -545,7 +545,7 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
     const void *sub_query =
         query_bytes + static_cast<size_t>(chunk_offsets_[m]) * elem_size;
     batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_query,
-              kNumCentroids, chunk_dim(m), lut + m * kNumCentroids);
+              kNumCentroids, chunk_dim(m), lut + m * kNumCentroids, nullptr);
   }
 
   // Cosine: the LUT holds ||q_m - c_m[j]||^2 on L2-normalized vectors, and
@@ -578,7 +578,7 @@ void PqInt8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
   // ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
   // const_cast: batch_adc_fn_ expects const void**; kernel is read-only.
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
-                static_cast<size_t>(dp_num), num_chunk_, dist_list);
+                static_cast<size_t>(dp_num), num_chunk_, dist_list, nullptr);
   // Cosine LUT is pre-scaled by 0.5 in quantize_query, so the batch ADC sums
   // are already cosine distances -- no conversion applied here.
 }
@@ -601,7 +601,7 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
   // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
   // const_cast: see calc_distance_dp_query_batch for rationale.
   batch_adc_fn_(const_cast<const void **>(dp_list), lut.data(),
-                static_cast<size_t>(dp_num), num_chunk_, dist_list);
+                static_cast<size_t>(dp_num), num_chunk_, dist_list, nullptr);
 }
 
 float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
@@ -691,7 +691,7 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
         ip_batch_fn_(
             const_cast<const void **>(centroid_ptrs.data()),
             buf_bytes + static_cast<size_t>(chunk_offsets_[m]) * elem_size,
-            kNumCentroids, chunk_dim(m), dists);
+            kNumCentroids, chunk_dim(m), dists, nullptr);
         const float *rn = sub_centroid_norms_.data() + m * kNumCentroids;
         float *out_m = row + m * kNumCentroids;
         for (uint32_t j = 0; j < kNumCentroids; ++j) {
@@ -801,7 +801,7 @@ int PqInt8Quantizer::quantize_precomputed_query(const void *query,
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     // const_cast: see compute_dist_table for rationale.
     ip_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub,
-                 kNumCentroids, chunk_dim(m), dists);
+                 kNumCentroids, chunk_dim(m), dists, nullptr);
     float *lut_m = lut + m * kNumCentroids;
     for (uint32_t j = 0; j < kNumCentroids; ++j) {
       lut_m[j] = 2.0f * dists[j];

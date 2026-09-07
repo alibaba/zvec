@@ -1059,7 +1059,7 @@ TEST(QuantizedIntegerMetric, TestInt8Cosine) {
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
     float v2;
     compute_batch(reinterpret_cast<const void **>(&mi), qi, 1,
-                  holder2->dimension(), &v2);
+                  holder2->dimension(), &v2, nullptr);
     // printf("%f %f\n", v1, v2);
     ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 

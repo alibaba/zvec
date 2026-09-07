@@ -12,26 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This file is compiled with per-file -march=corei7 (set in CMakeLists.txt)
-// so that SSE2 intrinsics are available. When the build toolchain cannot emit
-// SSE2 code, each function falls back to a no-op stub guarded by
-// #if defined(__SSE2__).
+// This file is compiled with the per-file SSE2 baseline set in CMakeLists.txt.
+// When the build toolchain cannot emit SSE2 code, each function falls back to
+// a no-op stub guarded by ZVEC_TURBO_SSE2.
 
 #include "fht.h"
-#if defined(__SSE2__)
-#include <emmintrin.h>
-#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include "common/fht_common.h"
 #include "scalar/rotate/fht/fht.h"
+#include "sse2/simd.h"
 
-namespace zvec::turbo::sse {
+namespace zvec::turbo::sse2 {
 
-void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
-#if defined(__SSE2__)
+void fht_flip_sign_sse2(const uint8_t *flip, float *data, size_t dim) {
+#if ZVEC_TURBO_SSE2
   size_t simd_end = dim & ~3u;
   size_t flip_bytes = (dim + 7) / 8;
   for (size_t i = 0; i < simd_end; i += 4) {
@@ -66,8 +63,8 @@ void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
 #endif
 }
 
-void fht_kacs_walk_sse(float *data, size_t len) {
-#if defined(__SSE2__)
+void fht_kacs_walk_sse2(float *data, size_t len) {
+#if ZVEC_TURBO_SSE2
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -94,8 +91,8 @@ void fht_kacs_walk_sse(float *data, size_t len) {
 #endif
 }
 
-void fht_inv_kacs_walk_sse(float *data, size_t len) {
-#if defined(__SSE2__)
+void fht_inv_kacs_walk_sse2(float *data, size_t len) {
+#if ZVEC_TURBO_SSE2
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -123,8 +120,8 @@ void fht_inv_kacs_walk_sse(float *data, size_t len) {
 #endif
 }
 
-void fht_vec_rescale_sse(float *data, size_t n, float factor) {
-#if defined(__SSE2__)
+void fht_vec_rescale_sse2(float *data, size_t n, float factor) {
+#if ZVEC_TURBO_SSE2
   const __m128 fac = _mm_set1_ps(factor);
   size_t simd_end = n & ~3u;
   for (size_t i = 0; i < simd_end; i += 4) {
@@ -142,12 +139,12 @@ void fht_vec_rescale_sse(float *data, size_t n, float factor) {
 #endif
 }
 
-void fht_rotate_sse(const float *in, float *out, size_t in_dim,
-                    size_t /*out_dim*/, void *ctx) {
-#if defined(__SSE2__)
+void fht_rotate_sse2(const float *in, float *out, size_t in_dim,
+                     size_t /*out_dim*/, void *ctx) {
+#if ZVEC_TURBO_SSE2
   static constexpr FhtPrimitives kPrim = {
-      fht_flip_sign_sse, scalar::fht_inplace, fht_kacs_walk_sse,
-      fht_inv_kacs_walk_sse, fht_vec_rescale_sse};
+      fht_flip_sign_sse2, scalar::fht_inplace, fht_kacs_walk_sse2,
+      fht_inv_kacs_walk_sse2, fht_vec_rescale_sse2};
   fht_rotate_impl(in, out, in_dim, ctx, kPrim);
 #else
   (void)in;
@@ -157,12 +154,12 @@ void fht_rotate_sse(const float *in, float *out, size_t in_dim,
 #endif
 }
 
-void fht_unrotate_sse(const float *in, float *out, size_t in_dim,
-                      size_t /*out_dim*/, void *ctx) {
-#if defined(__SSE2__)
+void fht_unrotate_sse2(const float *in, float *out, size_t in_dim,
+                       size_t /*out_dim*/, void *ctx) {
+#if ZVEC_TURBO_SSE2
   static constexpr FhtPrimitives kPrim = {
-      fht_flip_sign_sse, scalar::fht_inplace, fht_kacs_walk_sse,
-      fht_inv_kacs_walk_sse, fht_vec_rescale_sse};
+      fht_flip_sign_sse2, scalar::fht_inplace, fht_kacs_walk_sse2,
+      fht_inv_kacs_walk_sse2, fht_vec_rescale_sse2};
   fht_unrotate_impl(in, out, in_dim, ctx, kPrim);
 #else
   (void)in;
@@ -172,4 +169,4 @@ void fht_unrotate_sse(const float *in, float *out, size_t in_dim,
 #endif
 }
 
-}  // namespace zvec::turbo::sse
+}  // namespace zvec::turbo::sse2

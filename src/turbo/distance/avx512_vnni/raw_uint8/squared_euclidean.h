@@ -21,10 +21,8 @@ namespace zvec::turbo::avx512_vnni {
 void squared_euclidean_uint8_distance(const void *lhs, const void *rhs,
                                       std::size_t dimension, float *distance);
 
-void squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                            const void *query,
-                                            std::size_t count,
-                                            std::size_t dimension,
-                                            float *distances);
+void squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, std::size_t count,
+    std::size_t dimension, float *distances, const void *const *extra_values);
 
 }  // namespace zvec::turbo::avx512_vnni

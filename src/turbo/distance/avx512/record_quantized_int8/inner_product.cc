@@ -53,9 +53,9 @@ void inner_product_int8_distance_avx512(const void *a, const void *b,
 #endif
 }
 
-void inner_product_int8_batch_distance_avx512(const void *const *vectors,
-                                              const void *query, size_t n,
-                                              size_t dim, float *distances) {
+void inner_product_int8_batch_distance_avx512(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
 #if defined(__AVX512F__) && defined(__AVX512BW__)
   constexpr size_t kTailBytes = 20;
   if (dim <= kTailBytes) {

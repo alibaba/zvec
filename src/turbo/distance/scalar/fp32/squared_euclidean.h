@@ -26,6 +26,7 @@ void squared_euclidean_fp32_distance(const void *a, const void *b, size_t dim,
 // Batch version of squared euclidean FP32.
 void squared_euclidean_fp32_batch_distance(const void *const *vectors,
                                            const void *query, size_t n,
-                                           size_t dim, float *distances);
+                                           size_t dim, float *distances,
+                                           const void *const *extra_values);
 
 }  // namespace zvec::turbo::scalar
