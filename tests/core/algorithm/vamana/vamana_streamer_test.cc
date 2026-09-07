@@ -296,7 +296,10 @@ TEST_F(VamanaStreamerTest, TestOpenClose) {
 }
 
 TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
-  constexpr size_t dim = 32;
+  // static: gives dim static storage duration so the addVector lambda below
+  // needs no capture for it (MSVC otherwise demands one, C3493, while Clang
+  // warns the capture is unused).
+  constexpr size_t static dim = 32;
   IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
 
@@ -320,7 +323,7 @@ TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
   ASSERT_EQ(0, storage->open(dir_ + "TestKnnMultiThread", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer, dim](int baseKey, size_t addCnt) {
+  auto addVector = [&streamer](int baseKey, size_t addCnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
     size_t succAdd = 0;
