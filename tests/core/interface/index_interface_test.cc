@@ -32,6 +32,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
@@ -1232,7 +1233,9 @@ TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
 
 class InspectableIVFIndex : public IVFIndex {
  public:
-  int initialize(const BaseIndexParam &param) {
+  int initialize(const BaseIndexParam &param, uint32_t train_sample_count = 0) {
+    proxima_index_params_.set(zvec::core::PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT,
+                              train_sample_count);
     return Init(param);
   }
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
@@ -1279,6 +1282,11 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
   };
   for (const auto &[metric, quantizer] : cases) {
     for (const bool merge : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "metric=" << static_cast<int>(metric)
+                   << " quantizer=" << static_cast<int>(quantizer.type)
+                   << " rotate=" << quantizer.enable_rotate
+                   << " merge=" << merge);
       const std::string path = "ivf_release_build_state.index";
       const std::string source_path = "ivf_release_build_source.index";
       zvec::test_util::RemoveTestFiles(path);
@@ -1291,7 +1299,14 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
                        .with_n_list(1)
                        .build();
       auto inspected = std::make_shared<InspectableIVFIndex>();
-      ASSERT_EQ(0, inspected->initialize(*param));
+      // This tests build-state lifetime and converter persistence, not
+      // quantized centroid arithmetic. OptKmeans currently averages INT8
+      // record metadata as integer coordinates, which can corrupt scale/bias
+      // with randomly rotated input. Train the single INT8 centroid from one
+      // sample; all kCount distinct vectors still go through build and dump.
+      const uint32_t train_sample_count =
+          quantizer.type == QuantizerType::kInt8 ? 1 : 0;
+      ASSERT_EQ(0, inspected->initialize(*param, train_sample_count));
       Index::Pointer target = inspected;
       auto build_state = inspected->build_state();
       ASSERT_EQ(0,
@@ -1337,6 +1352,9 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       ASSERT_EQ(0, target->search(VectorData{DenseVector{vector.data()}},
                                   query_param, &result));
       ASSERT_EQ(4u, result.doc_list_.size());
+      for (const auto &doc : result.doc_list_) {
+        EXPECT_TRUE(std::isfinite(doc.score()));
+      }
       ASSERT_EQ(0, target->close());
       auto reopened = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, reopened);
