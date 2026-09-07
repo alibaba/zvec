@@ -282,6 +282,8 @@ class ZVEC_CORE_API IVFIndex : public Index {
   int GenerateHolder();
 
  private:
+  int DumpAndOpen();
+
   IVFIndexParam param_{};
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;

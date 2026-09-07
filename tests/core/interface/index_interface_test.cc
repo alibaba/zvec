@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -1155,6 +1156,200 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
   remove_files(first_name);
   remove_files(second_name);
   remove_files(target_name);
+}
+
+TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
+  constexpr uint32_t kDim = 16;
+  constexpr uint32_t kCount = 67;
+  const std::string paths[] = {"ordinal_flat.index", "ordinal_ivf.index",
+                               "ordinal_target.index"};
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDim)
+                        .build();
+  auto ivf_param = IVFIndexParamBuilder()
+                       .with_metric_type(MetricType::kL2sq)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_dimension(kDim)
+                       .with_n_list(4)
+                       .build();
+  for (const auto &path : paths) zvec::test_util::RemoveTestFiles(path);
+  std::vector<Index::Pointer> sources;
+  std::vector<std::string> expected;
+  for (uint32_t s = 0; s < 2; ++s) {
+    auto source = s == 0 ? IndexFactory::CreateAndInitIndex(*flat_param)
+                         : IndexFactory::CreateAndInitIndex(*ivf_param);
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(
+        0, source->open(paths[s], {StorageOptions::StorageType::kMMAP, true}));
+    for (uint32_t i = 0; i < kCount; ++i) {
+      std::vector<float> vec(kDim);
+      for (uint32_t d = 0; d < kDim; ++d) {
+        vec[d] = static_cast<float>((i * 47 + d * 29 + s * 71) % 311) - 23.25F;
+      }
+      ASSERT_EQ(0, source->add(VectorData{DenseVector{vec.data()}}, i));
+      if (i != 3 && i != 66) {
+        expected.emplace_back(reinterpret_cast<const char *>(vec.data()),
+                              kDim * sizeof(float));
+      }
+    }
+    if (s == 1) ASSERT_EQ(0, source->train());
+    sources.push_back(std::move(source));
+  }
+  auto target = IndexFactory::CreateAndInitIndex(*ivf_param);
+  ASSERT_NE(nullptr, target);
+  ASSERT_EQ(0,
+            target->open(paths[2], {StorageOptions::StorageType::kMMAP, true}));
+  IndexFilter filter;
+  filter.set([](uint64_t id) { return id % 67 == 3 || id % 67 == 66; });
+  ASSERT_EQ(0, target->merge(sources, filter, {4, nullptr}));
+  for (auto &source : sources) ASSERT_EQ(0, source->close());
+  sources.clear();
+  for (int pass = 0; pass < 2; ++pass) {
+    ASSERT_EQ(expected.size(), target->get_doc_count());
+    for (uint32_t id = 0; id < expected.size(); ++id) {
+      VectorDataBuffer actual;
+      ASSERT_EQ(0, target->fetch(id, &actual));
+      EXPECT_EQ(expected[id],
+                std::get<DenseVectorBuffer>(actual.vector_buffer).data);
+    }
+    auto query = IVFQueryParamBuilder().with_topk(1).with_nprobe(4).build();
+    SearchResult result;
+    ASSERT_EQ(0, target->search(VectorData{DenseVector{expected[7].data()}},
+                                query, &result));
+    ASSERT_EQ(1u, result.doc_list_.size());
+    EXPECT_EQ(7u, result.doc_list_[0].key());
+    ASSERT_EQ(0, target->close());
+    if (pass == 0) {
+      target = IndexFactory::CreateAndInitIndex(*ivf_param);
+      ASSERT_EQ(0, target->open(paths[2],
+                                {StorageOptions::StorageType::kMMAP, false}));
+    }
+  }
+  for (const auto &path : paths) zvec::test_util::RemoveTestFiles(path);
+}
+
+class InspectableIVFIndex : public IVFIndex {
+ public:
+  int initialize(const BaseIndexParam &param) { return Init(param); }
+  std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
+    return builder_;
+  }
+};
+
+TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
+  const std::string parent = "ivf_dump_missing_parent";
+  zvec::test_util::RemoveTestFiles(parent);
+  // FileDumper creates missing directories, so use a regular file as the
+  // parent to make creating the output fail on every platform.
+  std::ofstream blocker(parent);
+  ASSERT_TRUE(blocker.good());
+  blocker.close();
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_n_list(1)
+                   .build();
+  auto inspected = std::make_shared<InspectableIVFIndex>();
+  ASSERT_EQ(0, inspected->initialize(*param));
+  Index::Pointer target = inspected;
+  auto build_state = inspected->build_state();
+  ASSERT_EQ(0, target->open(parent + "/index",
+                            {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(16, 1.0F);
+  ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+  EXPECT_NE(0, target->train());
+  EXPECT_FALSE(build_state.expired());
+  EXPECT_FALSE(target->is_trained());
+  zvec::test_util::RemoveTestFiles(parent);
+}
+
+TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
+  constexpr uint32_t kDimension = 16;
+  constexpr uint32_t kCount = 64;
+  const std::vector<std::pair<MetricType, QuantizerParam>> cases = {
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kFP16)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kFP16)},
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kInt8, true)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kInt8, true)},
+  };
+  for (const auto &[metric, quantizer] : cases) {
+    for (const bool merge : {false, true}) {
+      const std::string path = "ivf_release_build_state.index";
+      const std::string source_path = "ivf_release_build_source.index";
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(source_path);
+      auto param = IVFIndexParamBuilder()
+                       .with_metric_type(metric)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_quantizer_param(quantizer)
+                       .with_dimension(kDimension)
+                       .with_n_list(1)
+                       .build();
+      auto inspected = std::make_shared<InspectableIVFIndex>();
+      ASSERT_EQ(0, inspected->initialize(*param));
+      Index::Pointer target = inspected;
+      auto build_state = inspected->build_state();
+      ASSERT_EQ(0, target->open(path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+      auto source_param = FlatIndexParamBuilder()
+                              .with_metric_type(metric)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_dimension(kDimension)
+                              .build();
+      auto source = IndexFactory::CreateAndInitIndex(*source_param);
+      ASSERT_NE(nullptr, source);
+      ASSERT_EQ(0, source->open(source_path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+      std::vector<float> vector(kDimension);
+      for (uint32_t i = 0; i < kCount; ++i) {
+        for (uint32_t d = 0; d < kDimension; ++d) {
+          vector[d] = static_cast<float>(i + d + 1);
+        }
+        ASSERT_EQ(0, (merge ? source : target)
+                         ->add(VectorData{DenseVector{vector.data()}}, i));
+      }
+      ASSERT_EQ(0, merge ? target->merge({source}, {}) : target->train());
+      EXPECT_TRUE(build_state.expired());
+      ASSERT_EQ(kCount, target->get_doc_count());
+      ASSERT_EQ(0, target->merge({}, {}));
+      // Calling train after the successful build must not try to rebuild
+      // from the input cache that has already been released.
+      ASSERT_EQ(0, target->train());
+
+      VectorDataBuffer before;
+      ASSERT_EQ(0, target->fetch(7, &before));
+      const auto &before_data =
+          std::get<DenseVectorBuffer>(before.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), before_data.size());
+      for (uint32_t d = 0; d < kDimension; ++d) {
+        EXPECT_NEAR(static_cast<float>(8 + d),
+                    reinterpret_cast<const float *>(before_data.data())[d],
+                    quantizer.type == QuantizerType::kFP16 ? 0.02F : 0.3F);
+      }
+      auto query_param =
+          IVFQueryParamBuilder().with_topk(4).with_nprobe(1).build();
+      SearchResult result;
+      ASSERT_EQ(0, target->search(VectorData{DenseVector{vector.data()}},
+                                  query_param, &result));
+      ASSERT_EQ(4u, result.doc_list_.size());
+      ASSERT_EQ(0, target->close());
+      auto reopened = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, reopened);
+      ASSERT_EQ(0, reopened->open(path,
+                                  {StorageOptions::StorageType::kMMAP, false}));
+      VectorDataBuffer after;
+      ASSERT_EQ(0, reopened->fetch(7, &after));
+      EXPECT_EQ(before_data,
+                std::get<DenseVectorBuffer>(after.vector_buffer).data);
+      ASSERT_EQ(0, reopened->close());
+      ASSERT_EQ(0, source->close());
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(source_path);
+    }
+  }
 }
 
 TEST(IndexInterface, FlatStorageDataTypeConvertsFp32InputAndQuery) {

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "merged_provider_index_holder.h"
+#include <algorithm>
 #include <limits>
 #include <new>
 #include <utility>
@@ -184,6 +185,128 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   mutable const void *data_{nullptr};
   mutable bool data_prepared_{false};
 };
+
+class MergedProviderIndexHolder::OrdinalReader final
+    : public OrdinalAccessHolder::Reader {
+ public:
+  explicit OrdinalReader(MergedProviderIndexHolder *owner) : owner_(owner) {}
+
+  int init() {
+    // Build only a key map, on demand. Other builders pay neither this pass
+    // nor these eight bytes per kept vector. Filter decisions are never rerun.
+    keys_.reserve(owner_->count());
+    source_ends_.reserve(owner_->sources_.size());
+    for (size_t source_index = 0; source_index < owner_->sources_.size();
+         ++source_index) {
+      auto provider = owner_->acquire_provider(source_index, true);
+      if (!provider) {
+        return owner_->status();
+      }
+      auto iter = provider->create_iterator();
+      if (!iter) {
+        return fail(IndexError_Runtime);
+      }
+      const auto &source = owner_->sources_[source_index];
+      size_t ordinal = 0;
+      for (; iter->is_valid(); iter->next(), ++ordinal) {
+        if (owner_->canceled()) {
+          return fail(IndexError_Canceled);
+        }
+        if (ordinal >= source.iterated_count) {
+          return fail(IndexError_Mismatch);
+        }
+        if (owner_->keep(source_index, ordinal)) {
+          keys_.push_back(iter->key());
+        }
+      }
+      if (ordinal != source.iterated_count) {
+        return fail(IndexError_Mismatch);
+      }
+      source_ends_.push_back(keys_.size());
+    }
+    return keys_.size() == owner_->count() ? 0 : fail(IndexError_Mismatch);
+  }
+
+  int read(size_t ordinal, uint64_t *key, const void **data) override {
+    if (!key || !data) {
+      return IndexError_InvalidArgument;
+    }
+    *data = nullptr;
+    if (ordinal >= keys_.size()) {
+      return IndexError_OutOfRange;
+    }
+    if (owner_->status() != 0) {
+      return owner_->status();
+    }
+    if (owner_->canceled()) {
+      return fail(IndexError_Canceled);
+    }
+    const size_t source_index =
+        std::upper_bound(source_ends_.begin(), source_ends_.end(), ordinal) -
+        source_ends_.begin();
+    if (!provider_ || source_index != source_index_) {
+      // Drop the old provider before acquiring another: never retain all
+      // source-specific buffers just to enable random reads.
+      reset();
+      provider_ = owner_->acquire_provider(source_index, true);
+      if (!provider_) {
+        return owner_->status();
+      }
+      source_index_ = source_index;
+    }
+    *data = provider_->get_vector(keys_[ordinal]);
+    if (!*data) {
+      return fail(IndexError_Runtime);
+    }
+    *key = ordinal;  // Same dense rewritten key as the merged iterator.
+    return 0;
+  }
+
+  void reset() override {
+    provider_.reset();
+  }
+
+ private:
+  int fail(int status) {
+    owner_->set_status(status);
+    return status;
+  }
+
+  MergedProviderIndexHolder *owner_;
+  std::vector<uint64_t> keys_{};
+  std::vector<size_t> source_ends_{};
+  IndexProvider::Pointer provider_{};
+  size_t source_index_{0};
+};
+
+int MergedProviderIndexHolder::create_ordinal_reader(
+    OrdinalAccessHolder::Reader::Pointer *reader) {
+  if (!reader || !initialized_) {
+    return IndexError_InvalidArgument;
+  }
+  if (status() != 0) {
+    return status();
+  }
+  // Reverted/converted vectors still use the materialized builder path.
+  for (const auto &source : sources_) {
+    if (source.need_revert) {
+      return IndexError_NotImplemented;
+    }
+  }
+  if (canceled()) {
+    set_status(IndexError_Canceled);
+    return status();
+  }
+  std::unique_ptr<OrdinalReader> result(new (std::nothrow) OrdinalReader(this));
+  if (!result) {
+    return IndexError_NoMemory;
+  }
+  int ret = result->init();
+  if (ret == 0) {
+    *reader = std::move(result);
+  }
+  return ret;
+}
 
 MergedProviderIndexHolder::MergedProviderIndexHolder(
     IndexQueryMeta output_meta, std::vector<Source> sources)

@@ -18,6 +18,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
 #include "cluster_params.h"
+#include "holder_cluster.h"
 
 namespace zvec {
 namespace core {
@@ -156,59 +157,87 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
   size_t train_sample_count = std::max(
       sample_count_, static_cast<uint32_t>(sample_ratio_ * holder->count()));
 
-  IndexFeatures::Pointer features;
-  if (train_sample_count > 0) {
-    LOG_INFO(
-        "Train sampling, SampleCount=%u, SampleRatio=%f, HolderCount=%lu, "
-        "TrainCount=%lu",
-        sample_count_, sample_ratio_, holder->count(), train_sample_count);
-
-    auto sampler = std::make_shared<SampleIndexFeatures<CompactIndexFeatures>>(
-        meta_, train_sample_count);
-    size_t pre_reserve = train_sample_count < holder->count()
-                             ? train_sample_count
-                             : holder->count();
-    sampler->reserve(pre_reserve);
-    for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-         iter->next()) {
-      sampler->emplace(iter->data());
-    }
-    features = sampler;
-    stats_.set_trained_count(train_sample_count);
-  } else {
-    LOG_INFO(
-        "Do no sampling, SampleCount=%u, SampleRatio=%f, "
-        "HolderCount=%lu, TrainCount=%lu",
-        sample_count_, sample_ratio_, holder->count(), holder->count());
-
-    auto no_sampler = std::make_shared<CompactIndexFeatures>(meta_);
-    for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-         iter->next()) {
-      no_sampler->emplace(iter->data());
-    }
-
-    features = no_sampler;
-    stats_.set_trained_count(holder->count());
-  }
-  stats_.set_discarded_count(0);
-
-  // Holder is not needed, cleanup it.
-  holder.reset();
-
-  int result = cluster_->mount(features);
-  if (result != 0) {
-    LOG_ERROR("Failed to mount features of cluster[%s], error: %d, %s",
-              class_name_.c_str(), result, IndexError::What(result));
-    return result;
-  }
-
   centroids_.clear();
-  result = cluster_->cluster(std::move(threads), centroids_);
+  int result = IndexError_NotImplemented;
+  if (train_sample_count == 0) {
+    auto streaming_cluster = dynamic_cast<HolderCluster *>(cluster_.get());
+    if (streaming_cluster) {
+      // A previous fallback train may still have features mounted. They are
+      // not needed by a new one-shot train and must not overlap its matrix.
+      result = cluster_->reset();
+      if (result != 0) {
+        return result;
+      }
+      result = streaming_cluster->cluster_holder(threads, holder, centroids_);
+      if (result == 0) {
+        stats_.set_trained_count(holder->count());
+        LOG_INFO("Trained directly from holder, HolderCount=%lu",
+                 holder->count());
+      }
+    }
+  }
+
+  // Only an unsupported capability may fall back. Real read/validation errors
+  // must propagate, rather than retrying an already consumed holder.
+  if (result == IndexError_NotImplemented) {
+    IndexFeatures::Pointer features;
+    if (train_sample_count > 0) {
+      LOG_INFO(
+          "Train sampling, SampleCount=%u, SampleRatio=%f, HolderCount=%lu, "
+          "TrainCount=%lu",
+          sample_count_, sample_ratio_, holder->count(), train_sample_count);
+
+      auto sampler =
+          std::make_shared<SampleIndexFeatures<CompactIndexFeatures>>(
+              meta_, train_sample_count);
+      size_t pre_reserve = train_sample_count < holder->count()
+                               ? train_sample_count
+                               : holder->count();
+      sampler->reserve(pre_reserve);
+      for (auto iter = holder->create_iterator(); iter && iter->is_valid();
+           iter->next()) {
+        sampler->emplace(iter->data());
+      }
+      features = sampler;
+      stats_.set_trained_count(train_sample_count);
+    } else {
+      LOG_INFO(
+          "Do no sampling, SampleCount=%u, SampleRatio=%f, "
+          "HolderCount=%lu, TrainCount=%lu",
+          sample_count_, sample_ratio_, holder->count(), holder->count());
+
+      auto no_sampler = std::make_shared<CompactIndexFeatures>(meta_);
+      // A multipass holder normally knows its size. Avoid repeatedly
+      // reallocating the full training corpus as features are appended.
+      if (holder->count() != static_cast<size_t>(-1)) {
+        no_sampler->reserve(holder->count());
+      }
+      for (auto iter = holder->create_iterator(); iter && iter->is_valid();
+           iter->next()) {
+        no_sampler->emplace(iter->data());
+      }
+
+      features = no_sampler;
+      stats_.set_trained_count(holder->count());
+    }
+
+    holder.reset();
+    result = cluster_->mount(features);
+    if (result != 0) {
+      LOG_ERROR("Failed to mount features of cluster[%s], error: %d, %s",
+                class_name_.c_str(), result, IndexError::What(result));
+      return result;
+    }
+    result = cluster_->cluster(std::move(threads), centroids_);
+  }
+
+  holder.reset();
   if (result != 0) {
     LOG_ERROR("Failed to cluster features of cluster[%s], error: %d, %s",
               class_name_.c_str(), result, IndexError::What(result));
     return result;
   }
+  stats_.set_discarded_count(0);
 
   // check build result
   std::vector<size_t> level_size;

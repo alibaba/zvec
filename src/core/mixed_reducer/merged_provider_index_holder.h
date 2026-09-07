@@ -24,6 +24,7 @@
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "utility/ordinal_access_holder.h"
 
 namespace zvec {
 namespace core {
@@ -31,7 +32,8 @@ namespace core {
 /*! A multi-pass holder that presents multiple source providers as one dense
  *  sequence without materializing all source vectors.
  */
-class MergedProviderIndexHolder final : public IndexHolder {
+class MergedProviderIndexHolder final : public IndexHolder,
+                                        public OrdinalAccessHolder {
  public:
   typedef std::shared_ptr<MergedProviderIndexHolder> Pointer;
 
@@ -63,6 +65,8 @@ class MergedProviderIndexHolder final : public IndexHolder {
   size_t element_size(void) const override;
   bool multipass(void) const override;
   IndexHolder::Iterator::Pointer create_iterator(void) override;
+  int create_ordinal_reader(
+      OrdinalAccessHolder::Reader::Pointer *reader) override;
 
   size_t filtered_count(void) const;
   int status(void) const;
@@ -73,6 +77,7 @@ class MergedProviderIndexHolder final : public IndexHolder {
 
  private:
   class Iterator;
+  class OrdinalReader;
 
   IndexProvider::Pointer acquire_provider(size_t source_index,
                                           bool validate_planned_count);

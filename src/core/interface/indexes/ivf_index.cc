@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <string>
+#include <ailego/pattern/defer.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/ivf/ivf_params.h"
 #include "holder_builder.h"
@@ -162,20 +163,68 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
 }
 
 int IVFIndex::train() {
-  GenerateHolder();
-  builder_->train(holder_);
-  builder_->build(holder_);
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+  if (is_trained_) {
+    return 0;
+  }
+  int ret = GenerateHolder();
+  if (ret != 0) {
+    return ret;
+  }
+  ret = builder_->train(holder_);
+  if (ret != 0) {
+    return ret;
+  }
+  ret = builder_->build(holder_);
+  if (ret != 0) {
+    return ret;
+  }
+  return DumpAndOpen();
+}
 
-  dumper->create(file_path_);
-  builder_->dump(dumper);
+int IVFIndex::DumpAndOpen() {
+  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+  if (!dumper) {
+    return core::IndexError_NoExist;
+  }
+
+  int ret = dumper->create(file_path_);
+  if (ret != 0) {
+    return ret;
+  }
+  AILEGO_DEFER([&]() {
+    if (dumper) dumper->close();
+  });
+  ret = builder_->dump(dumper);
+  if (ret != 0) {
+    return ret;
+  }
   // Dump converter state (e.g., rotator for INT8+rotate) to dumper
   if (converter_ && converter_->dump(dumper) != 0) {
     LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
     return core::IndexError_Runtime;
   }
-  dumper->close();
-  int ret = storage_->open(file_path_, false);
+  ret = dumper->close();
+  if (ret != 0) {
+    return ret;
+  }
+  dumper.reset();
+
+  // The persisted index owns the trained state now. Drop the old builder's
+  // full vector holder, labels and quantizers before opening the new index.
+  // Keep the interface's builder-backed path initialized. Direct users of
+  // IVFBuilder can still dump the same build more than once.
+  auto next_builder = core::IndexFactory::CreateBuilder("IVFBuilder");
+  if (!next_builder) {
+    return core::IndexError_NoExist;
+  }
+  ret = next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
+                           proxima_index_params_);
+  if (ret != 0) {
+    return ret;
+  }
+  builder_ = std::move(next_builder);
+
+  ret = storage_->open(file_path_, false);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
               core::IndexError::What(ret));
@@ -191,6 +240,8 @@ int IVFIndex::train() {
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
+  holder_.reset();
+  decltype(doc_cache_)().swap(doc_cache_);
   return 0;
 }
 
@@ -240,36 +291,13 @@ int IVFIndex::_prepare_for_search(
 
 int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
                     const IndexFilter &filter, const MergeOptions &options) {
+  if (indexes.empty()) {
+    return 0;
+  }
   int pre_ret = Index::merge(indexes, filter, options);
   if (pre_ret != 0) {
     return pre_ret;
   }
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
-
-  dumper->create(file_path_);
-  builder_->dump(dumper);
-  // Dump converter state (e.g., rotator for INT8+rotate) to dumper
-  if (converter_ && converter_->dump(dumper) != 0) {
-    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  dumper->close();
-  int ret = storage_->open(file_path_, false);
-  if (ret != 0) {
-    LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
-  }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  // Load reformer data from storage (e.g., rotation matrix)
-  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
-    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  is_trained_ = true;
-  return 0;
+  return DumpAndOpen();
 }
 }  // namespace zvec::core_interface

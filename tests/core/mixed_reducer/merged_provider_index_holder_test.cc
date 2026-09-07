@@ -242,6 +242,167 @@ TEST(MergedProviderIndexHolderTest, RejectsUnreformedMetaMismatch) {
   EXPECT_EQ(IndexError_Mismatch, holder.init(IndexFilter()));
 }
 
+TEST(MergedProviderIndexHolderTest, OrdinalReadsReuseFilterAndOneProvider) {
+  auto lifetime = std::make_shared<ProviderLifetimeStats>();
+  std::vector<MergedProviderIndexHolder::Source> sources;
+  sources.emplace_back(MakeSource(MakeStreamer({}, lifetime)));
+  sources.emplace_back(
+      MakeSource(MakeStreamer({{7, 10.0f}, {19, 11.0f}}, lifetime)));
+  sources.emplace_back(MakeSource(MakeStreamer({{0, 12.0f}}, lifetime)));
+  sources.emplace_back(
+      MakeSource(MakeStreamer({{8, 20.0f}, {99, 21.0f}}, lifetime)));
+  size_t filter_calls = 0;
+  IndexFilter filter;
+  filter.set([&](uint64_t key) {
+    ++filter_calls;
+    return key == 19 || key == 2;  // Drop a document and an entire source.
+  });
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      std::move(sources));
+  ASSERT_EQ(0, holder.init(filter));
+  ASSERT_EQ(3u, holder.count());
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+  ASSERT_NE(nullptr, reader);
+  EXPECT_EQ(0u, lifetime->live_count);
+  const auto expected = ReadAll(&holder);
+  for (size_t ordinal : {2u, 0u, 1u, 0u, 2u}) {
+    uint64_t key = 99;
+    const void *data = nullptr;
+    ASSERT_EQ(0, reader->read(ordinal, &key, &data));
+    EXPECT_EQ(expected[ordinal].first, key);
+    EXPECT_FLOAT_EQ(expected[ordinal].second,
+                    static_cast<const float *>(data)[0]);
+    EXPECT_EQ(1u, lifetime->live_count);
+  }
+  uint64_t key = 0;
+  const void *data = nullptr;
+  EXPECT_EQ(IndexError_OutOfRange, reader->read(3, &key, &data));
+  EXPECT_EQ(IndexError_InvalidArgument, reader->read(0, nullptr, &data));
+  reader->reset();
+  EXPECT_EQ(0u, lifetime->live_count);
+  ASSERT_EQ(0, reader->read(0, &key, &data));
+  reader.reset();
+  EXPECT_EQ(0u, lifetime->live_count);
+  EXPECT_EQ(1u, lifetime->peak_live_count);
+  EXPECT_EQ(5u, filter_calls);
+  EXPECT_EQ(0, holder.status());
+}
+
+TEST(MergedProviderIndexHolderTest, OrdinalReadsRejectChangedOrMissingSource) {
+  // Changes while planning the key map or when reopening for dump must fail;
+  // they must not silently read a different document or emit partial success.
+  for (const size_t change_at : {1u, 2u}) {
+    for (const int failure : {0, 1, 2, 3}) {
+      auto lifetime = std::make_shared<ProviderLifetimeStats>();
+      auto owner = std::make_shared<TestStreamer>(
+          [change_at, failure](size_t created) -> IndexProvider::Pointer {
+            if (created < change_at) {
+              return MakeProvider({{7, 10.0f}});
+            }
+            if (failure == 0) return nullptr;
+            if (failure == 1) return MakeProvider({});
+            if (failure == 2) return MakeProvider({{7, 10.0f}}, kDimension + 1);
+            return MakeProvider({{8, 10.0f}});  // Same count, old key missing.
+          },
+          lifetime);
+      MergedProviderIndexHolder holder(
+          IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+          {MakeSource(owner)});
+      ASSERT_EQ(0, holder.init(IndexFilter()));
+      OrdinalAccessHolder::Reader::Pointer reader;
+      const int ret = holder.create_ordinal_reader(&reader);
+      if (change_at == 1 && failure != 3) {
+        EXPECT_NE(0, ret);
+        EXPECT_EQ(nullptr, reader);
+      } else {
+        ASSERT_EQ(0, ret);
+        uint64_t key = 0;
+        const void *data = nullptr;
+        const int read_ret = reader->read(0, &key, &data);
+        // A changed key before mapping belongs to the new consistent pass;
+        // losing a mapped key after mapping is an error.
+        if (change_at == 1 && failure == 3) {
+          EXPECT_EQ(0, read_ret);
+        } else {
+          EXPECT_NE(0, read_ret);
+          EXPECT_EQ(nullptr, data);
+          EXPECT_EQ(read_ret, holder.status());
+        }
+      }
+      reader.reset();
+      EXPECT_EQ(0u, lifetime->live_count);
+      EXPECT_EQ(1u, lifetime->peak_live_count);
+    }
+  }
+}
+
+TEST(MergedProviderIndexHolderTest,
+     OrdinalReaderHonorsCancellationAndEmptyInput) {
+  std::atomic<bool> stop{false};
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {MakeSource(MakeStreamer({{0, 10.0f}}))});
+  ASSERT_EQ(0, holder.init(IndexFilter(), &stop));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+  stop = true;
+  uint64_t key = 0;
+  const void *data = nullptr;
+  EXPECT_EQ(IndexError_Canceled, reader->read(0, &key, &data));
+  EXPECT_EQ(IndexError_Canceled, holder.status());
+
+  MergedProviderIndexHolder empty(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension), {});
+  EXPECT_EQ(IndexError_InvalidArgument, empty.create_ordinal_reader(&reader));
+  ASSERT_EQ(0, empty.init(IndexFilter()));
+  ASSERT_EQ(0, empty.create_ordinal_reader(&reader));
+  EXPECT_EQ(IndexError_OutOfRange, reader->read(0, &key, &data));
+}
+
+TEST(MergedProviderIndexHolderTest,
+     OrdinalReaderDeclinesReformationBeforeAnyPass) {
+  class CopyReformer : public IndexReformer {
+   public:
+    int init(const ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    int load(IndexStorage::Pointer) override {
+      return 0;
+    }
+    int unload() override {
+      return 0;
+    }
+    int revert(const void *in, const IndexQueryMeta &meta,
+               std::string *out) const override {
+      ++reads;
+      out->assign(static_cast<const char *>(in), meta.element_size());
+      return 0;
+    }
+    mutable size_t reads{0};
+  };
+  auto lifetime = std::make_shared<ProviderLifetimeStats>();
+  auto reformer = std::make_shared<CopyReformer>();
+  auto source = MakeSource(MakeStreamer({{0, 10.0f}}, lifetime));
+  source.need_revert = true;
+  source.reformer = reformer;
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension), {source});
+  ASSERT_EQ(0, holder.init(IndexFilter()));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  EXPECT_EQ(IndexError_NotImplemented, holder.create_ordinal_reader(&reader));
+  EXPECT_EQ(nullptr, reader);
+  EXPECT_EQ(1u, lifetime->created_count);
+  EXPECT_EQ(1u, reformer->reads);
+  EXPECT_EQ(0, holder.status());
+  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 10.0f}}),
+            ReadAll(&holder));
+}
+
 TEST(MergedProviderIndexHolderTest, StopsDuringFilterPlanning) {
   std::vector<MergedProviderIndexHolder::Source> sources;
   sources.emplace_back(MakeSource(MakeStreamer({{0, 10.0f}})));
