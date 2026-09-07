@@ -15,8 +15,8 @@
 
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_meta.h>
-#include "ivf_centroid_index.h"
 #include "utility/ordinal_access_holder.h"
+#include "ivf_centroid_index.h"
 
 namespace zvec {
 namespace core {

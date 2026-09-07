@@ -97,10 +97,16 @@ class DeferredLabelThreads : public IndexThreads {
     std::vector<ClosureHandler> tasks_;
   };
 
-  size_t count() const override { return 1; }
-  int indexof_this() const override { return 0; }
+  size_t count() const override {
+    return 1;
+  }
+  int indexof_this() const override {
+    return 0;
+  }
   void stop() override {}
-  void submit(ClosureHandler &&task) override { task->run(); }
+  void submit(ClosureHandler &&task) override {
+    task->run();
+  }
   IndexThreads::TaskGroup::Pointer make_group() override {
     auto group = std::make_shared<Group>();
     groups.emplace_back(group);
@@ -123,9 +129,9 @@ TEST_F(IVFBuilderTest, LabelQueueIsBoundedForHighDimensionalVectors) {
     prepare_index_holder(0, 4103);
     IVFBuilder builder;
     ASSERT_EQ(0, builder.init(index_meta_, params_));
-    ASSERT_EQ(0, builder.train(
-                     std::make_shared<SingleQueueIndexThreads>(1, false),
-                     holder_));
+    ASSERT_EQ(0,
+              builder.train(std::make_shared<SingleQueueIndexThreads>(1, false),
+                            holder_));
     auto deferred = std::make_shared<DeferredLabelThreads>();
     ASSERT_EQ(0, builder.build(deferred, holder_));
     ASSERT_FALSE(deferred->groups.empty());

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_builder.h"
-#include <ailego/pattern/defer.h>
 #include <algorithm>
 #include <limits>
+#include <ailego/pattern/defer.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "ivf_dumper.h"
@@ -671,7 +671,8 @@ int IVFBuilder::build_label_index(IndexThreads *threads,
   }
   // Bound copied vectors by bytes, including queued and running batches.
   // A single vector larger than the budget is still allowed to make progress.
-  const size_t window_size = std::max<size_t>(1, kLabelMemoryBudget / elem_size);
+  const size_t window_size =
+      std::max<size_t>(1, kLabelMemoryBudget / elem_size);
   size_t window_count = 0;
   std::shared_ptr<VectorList> vectors = std::make_shared<VectorList>();
   ivf_assert(vectors, IndexError_NoMemory);

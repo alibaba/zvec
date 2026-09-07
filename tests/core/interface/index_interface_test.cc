@@ -1232,7 +1232,9 @@ TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
 
 class InspectableIVFIndex : public IVFIndex {
  public:
-  int initialize(const BaseIndexParam &param) { return Init(param); }
+  int initialize(const BaseIndexParam &param) {
+    return Init(param);
+  }
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
     return builder_;
   }
@@ -1292,8 +1294,8 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       ASSERT_EQ(0, inspected->initialize(*param));
       Index::Pointer target = inspected;
       auto build_state = inspected->build_state();
-      ASSERT_EQ(0, target->open(path,
-                                {StorageOptions::StorageType::kMMAP, true}));
+      ASSERT_EQ(0,
+                target->open(path, {StorageOptions::StorageType::kMMAP, true}));
       auto source_param = FlatIndexParamBuilder()
                               .with_metric_type(metric)
                               .with_data_type(DataType::DT_FP32)
@@ -1338,8 +1340,8 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       ASSERT_EQ(0, target->close());
       auto reopened = IndexFactory::CreateAndInitIndex(*param);
       ASSERT_NE(nullptr, reopened);
-      ASSERT_EQ(0, reopened->open(path,
-                                  {StorageOptions::StorageType::kMMAP, false}));
+      ASSERT_EQ(
+          0, reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
       VectorDataBuffer after;
       ASSERT_EQ(0, reopened->fetch(7, &after));
       EXPECT_EQ(before_data,

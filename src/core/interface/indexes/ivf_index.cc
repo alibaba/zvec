@@ -217,8 +217,9 @@ int IVFIndex::DumpAndOpen() {
   if (!next_builder) {
     return core::IndexError_NoExist;
   }
-  ret = next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
-                           proxima_index_params_);
+  ret =
+      next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
+                         proxima_index_params_);
   if (ret != 0) {
     return ret;
   }

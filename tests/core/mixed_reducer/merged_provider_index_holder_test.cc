@@ -191,8 +191,7 @@ std::vector<std::pair<uint64_t, float>> ReadAll(
 TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   auto lifetime = std::make_shared<ProviderLifetimeStats>();
   auto first = MakeStreamer({{0, 10.0f}, {1, 11.0f}}, lifetime);
-  auto second =
-      MakeStreamer({{0, 20.0f}, {1, 21.0f}, {2, 22.0f}}, lifetime);
+  auto second = MakeStreamer({{0, 20.0f}, {1, 21.0f}, {2, 22.0f}}, lifetime);
 
   std::vector<MergedProviderIndexHolder::Source> sources;
   sources.emplace_back(MakeSource(first));
@@ -443,9 +442,8 @@ TEST(MergedProviderIndexHolderTest, RejectsProviderCountChangeBetweenPasses) {
   auto lifetime = std::make_shared<ProviderLifetimeStats>();
   auto owner = std::make_shared<TestStreamer>(
       [](size_t create_count) {
-        return create_count == 0
-                   ? MakeProvider({{0, 10.0f}, {1, 11.0f}})
-                   : MakeProvider({{0, 10.0f}});
+        return create_count == 0 ? MakeProvider({{0, 10.0f}, {1, 11.0f}})
+                                 : MakeProvider({{0, 10.0f}});
       },
       lifetime);
   std::vector<MergedProviderIndexHolder::Source> sources;
