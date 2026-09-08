@@ -21,6 +21,7 @@
 #include <numeric>
 #include <random>
 #include <unordered_map>
+#include <utility>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
 #if RABITQ_SUPPORTED
@@ -1246,6 +1247,13 @@ class InspectableIVFIndex : public IVFIndex {
   zvec::core::IndexHolder::Pointer converted_input() const {
     return converter_ ? converter_->result() : nullptr;
   }
+  void replace_builder(zvec::core::IndexBuilder::Pointer builder) {
+    builder_ = std::move(builder);
+  }
+  zvec::core::IndexReformer::Pointer replace_reformer(
+      zvec::core::IndexReformer::Pointer reformer) {
+    return std::exchange(reformer_, std::move(reformer));
+  }
 };
 
 TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
@@ -1275,7 +1283,201 @@ TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
   EXPECT_FALSE(build_state.expired());
   EXPECT_NE(nullptr, inspected->converted_input());
   EXPECT_FALSE(target->is_trained());
+  // The pending snapshot must not silently ignore newly added records.
+  EXPECT_NE(0, target->add(VectorData{DenseVector{vector.data()}}, 1));
+  auto converted_input = inspected->converted_input();
+  EXPECT_NE(0, target->train());
+  EXPECT_EQ(converted_input, inspected->converted_input());
+  converted_input.reset();
   zvec::test_util::RemoveTestFiles(parent);
+  ASSERT_EQ(0, target->train());
+  EXPECT_TRUE(target->is_trained());
+  EXPECT_TRUE(build_state.expired());
+  EXPECT_EQ(nullptr, inspected->converted_input());
+  EXPECT_EQ(1u, target->get_doc_count());
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, target->fetch(0, &fetched));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                        vector.size() * sizeof(float)),
+            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  ASSERT_EQ(0, target->close());
+  zvec::test_util::RemoveTestFiles(parent);
+}
+
+class FailOnceIVFBuilder : public zvec::core::IndexBuilder {
+ public:
+  explicit FailOnceIVFBuilder(Pointer delegate)
+      : delegate_(std::move(delegate)) {}
+  int train(zvec::core::IndexThreads::Pointer threads,
+            zvec::core::IndexHolder::Pointer holder) override {
+    ++train_calls;
+    return delegate_->train(std::move(threads), std::move(holder));
+  }
+  int build(zvec::core::IndexThreads::Pointer threads,
+            zvec::core::IndexHolder::Pointer holder) override {
+    ++build_calls;
+    if (std::exchange(fail_build, false)) return zvec::core::IndexError_Runtime;
+    return delegate_->build(std::move(threads), std::move(holder));
+  }
+  int dump(const zvec::core::IndexDumper::Pointer &dumper) override {
+    ++dump_calls;
+    if (std::exchange(fail_dump, false))
+      return zvec::core::IndexError_WriteData;
+    return delegate_->dump(dumper);
+  }
+  const Stats &stats() const override {
+    return delegate_->stats();
+  }
+  int cleanup() override {
+    return delegate_->cleanup();
+  }
+  bool fail_build{false};
+  bool fail_dump{false};
+  int train_calls{0};
+  int build_calls{0};
+  int dump_calls{0};
+
+ private:
+  Pointer delegate_;
+};
+
+TEST(IndexInterface, IvfRetriesOnlyTheIncompleteBuildStage) {
+  const std::string path = "ivf_retry_build_stage.index";
+  for (bool fail_build : {false, true}) {
+    SCOPED_TRACE(fail_build);
+    zvec::test_util::RemoveTestFiles(path);
+    auto param = IVFIndexParamBuilder()
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(16)
+                     .with_n_list(1)
+                     .build();
+    auto inspected = std::make_shared<InspectableIVFIndex>();
+    ASSERT_EQ(0, inspected->initialize(*param));
+    auto builder =
+        std::make_shared<FailOnceIVFBuilder>(inspected->build_state().lock());
+    inspected->replace_builder(builder);
+    builder->fail_build = fail_build;
+    builder->fail_dump = !fail_build;
+    Index::Pointer target = inspected;
+    ASSERT_EQ(0,
+              target->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<float> vector(16, 0.125F);
+    ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+    EXPECT_NE(0, target->train());
+    EXPECT_FALSE(target->is_trained());
+    ASSERT_EQ(0, target->train());
+    EXPECT_EQ(1, builder->train_calls);
+    EXPECT_EQ(fail_build ? 2 : 1, builder->build_calls);
+    EXPECT_EQ(fail_build ? 1 : 2, builder->dump_calls);
+    EXPECT_EQ(1u, target->get_doc_count());
+    ASSERT_EQ(0, target->train());
+    EXPECT_EQ(1, builder->train_calls);
+    ASSERT_EQ(0, target->close());
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+TEST(IndexInterface, IvfRetriesOpeningWithoutRebuildingOrRedumping) {
+  class FailingLoadReformer : public zvec::core::IndexReformer {
+   public:
+    int init(const zvec::ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    int unload() override {
+      return 0;
+    }
+    int load(zvec::core::IndexStorage::Pointer) override {
+      return zvec::core::IndexError_ReadData;
+    }
+  };
+  const std::string path = "ivf_retry_open.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_n_list(1)
+                   .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                   .build();
+  auto inspected = std::make_shared<InspectableIVFIndex>();
+  ASSERT_EQ(0, inspected->initialize(*param));
+  Index::Pointer target = inspected;
+  auto build_state = inspected->build_state();
+  auto reformer =
+      inspected->replace_reformer(std::make_shared<FailingLoadReformer>());
+  ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(16, 0.125F);
+  ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+  EXPECT_NE(0, target->train());
+  EXPECT_FALSE(target->is_trained());
+  EXPECT_TRUE(build_state.expired());
+  EXPECT_NE(nullptr, inspected->converted_input());
+  auto next_builder = inspected->build_state();
+  inspected->replace_reformer(std::move(reformer));
+  ASSERT_EQ(0, target->train());
+  EXPECT_FALSE(next_builder.expired());
+  EXPECT_EQ(nullptr, inspected->converted_input());
+  EXPECT_EQ(1u, target->get_doc_count());
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, target->fetch(0, &fetched));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                        vector.size() * sizeof(float)),
+            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  ASSERT_EQ(0, target->close());
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+TEST(IndexInterface, IvfFailedMergeCanResumeDumpOrRestartWithNewInputs) {
+  const std::string parent = "ivf_merge_retry_parent";
+  const std::string source_path = "ivf_merge_retry_source.index";
+  zvec::test_util::RemoveTestFiles(source_path);
+  auto source_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(16)
+                          .build();
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(16, 0.125F);
+  for (uint32_t id = 0; id < 4; ++id) {
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{vector.data()}}, id));
+  }
+  for (bool restart_merge : {false, true}) {
+    SCOPED_TRACE(restart_merge);
+    zvec::test_util::RemoveTestFiles(parent);
+    std::ofstream blocker(parent);
+    ASSERT_TRUE(blocker.good());
+    blocker.close();
+    auto param = IVFIndexParamBuilder()
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(16)
+                     .with_n_list(1)
+                     .build();
+    auto target = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, target);
+    ASSERT_EQ(0, target->open(parent + "/index",
+                              {StorageOptions::StorageType::kMMAP, true}));
+    EXPECT_NE(0, target->merge({source}, {}));
+    EXPECT_FALSE(target->is_trained());
+    zvec::test_util::RemoveTestFiles(parent);
+    IndexFilter filter;
+    filter.set([](uint64_t id) { return id >= 2; });
+    ASSERT_EQ(
+        0, restart_merge ? target->merge({source}, filter) : target->train());
+    EXPECT_TRUE(target->is_trained());
+    EXPECT_EQ(restart_merge ? 2u : 4u, target->get_doc_count());
+    ASSERT_EQ(0, target->close());
+    zvec::test_util::RemoveTestFiles(parent);
+  }
+  ASSERT_EQ(0, source->close());
+  zvec::test_util::RemoveTestFiles(source_path);
 }
 
 TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {

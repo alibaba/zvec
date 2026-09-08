@@ -206,8 +206,12 @@ class UniformUint4Converter : public IndexConverter,
         }
         size_t actual_records = 0;
         for (; iter->is_valid(); iter->next(), ++actual_records) {
+          const void *record = iter->data();
+          if (!record || !iter->is_valid()) {
+            return IndexError_ReadData;
+          }
           for (size_t d = 0; d < original_dimension_; ++d) {
-            const float value = SourceValue(iter->data(), source_type, d);
+            const float value = SourceValue(record, source_type, d);
             if (!std::isfinite(value)) {
               LOG_ERROR(
                   "UniformUint4Converter: non-finite training "
@@ -244,8 +248,12 @@ class UniformUint4Converter : public IndexConverter,
       if (!iter) return IndexError_Runtime;
       record_count = 0;
       for (; iter->is_valid(); iter->next(), ++record_count) {
+        const void *record = iter->data();
+        if (!record || !iter->is_valid()) {
+          return IndexError_ReadData;
+        }
         for (size_t d = 0; d < original_dimension_; ++d) {
-          const float value = SourceValue(iter->data(), source_type, d);
+          const float value = SourceValue(record, source_type, d);
           if (!std::isfinite(value)) return IndexError_InvalidArgument;
           minimum_ = std::min(minimum_, value);
           maximum = std::max(maximum, value);

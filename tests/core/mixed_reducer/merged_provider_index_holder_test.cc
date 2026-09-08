@@ -191,6 +191,83 @@ std::vector<std::pair<uint64_t, float>> ReadAll(
   return docs;
 }
 
+class ReadFailureReformer : public IndexReformer {
+ public:
+  int init(const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return 0;
+  }
+  int load(IndexStorage::Pointer) override {
+    return 0;
+  }
+  int unload() override {
+    return 0;
+  }
+  int revert(const void *in, const IndexQueryMeta &meta,
+             std::string *out) const override {
+    if (fail && *static_cast<const float *>(in) == failed_value) {
+      return IndexError_ReadData;
+    }
+    out->assign(static_cast<const char *>(in), meta.element_size());
+    return 0;
+  }
+  bool fail{false};
+  float failed_value{0.0F};
+};
+
+TEST(MergedProviderIndexHolderTest, FailedReadKeepsRepeatedDataCallsSafe) {
+  auto source = MakeSource(MakeStreamer({{0, 0.0F}, {1, 1.0F}}));
+  auto reformer = std::make_shared<ReadFailureReformer>();
+  source.reformer = reformer;
+  source.need_revert = true;
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension), {source});
+  ASSERT_EQ(0, holder.init({}));
+  auto iter = holder.create_iterator();
+  ASSERT_NE(nullptr, iter);
+  ASSERT_TRUE(iter->is_valid());
+  reformer->fail = true;
+  const void *data = iter->data();
+  ASSERT_NE(nullptr, data);
+  EXPECT_FALSE(iter->is_valid());
+  EXPECT_EQ(IndexError_ReadData, holder.status());
+  EXPECT_EQ(
+      std::string(holder.element_size(), 0),
+      std::string(static_cast<const char *>(data), holder.element_size()));
+  EXPECT_EQ(data, iter->data());
+  // An error remains terminal even though the current pointer stays safe.
+  iter->next();
+  EXPECT_FALSE(iter->is_valid());
+  EXPECT_EQ(nullptr, holder.create_iterator());
+}
+
+TEST(MergedProviderIndexHolderTest, UniformUint4RejectsFailedVectorReads) {
+  // A failure on the last record must not train successfully from zeros.
+  for (float failed_value : {0.0F, 2.0F}) {
+    SCOPED_TRACE(failed_value);
+    auto source = MakeSource(MakeStreamer({{0, 0.0F}, {1, 1.0F}, {2, 2.0F}}));
+    auto reformer = std::make_shared<ReadFailureReformer>();
+    source.reformer = reformer;
+    source.need_revert = true;
+    auto holder = std::make_shared<MergedProviderIndexHolder>(
+        IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+        std::vector<MergedProviderIndexHolder::Source>{source});
+    ASSERT_EQ(0, holder->init({}));
+    auto converter = IndexFactory::CreateConverter("UniformUint4Converter");
+    ASSERT_NE(nullptr, converter);
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+    ASSERT_EQ(0, converter->init(meta, {}));
+    reformer->failed_value = failed_value;
+    reformer->fail = true;
+    EXPECT_EQ(IndexError_ReadData, converter->train(holder));
+    EXPECT_EQ(IndexError_ReadData, holder->status());
+    EXPECT_EQ(0u, converter->stats().trained_count());
+  }
+}
+
 TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   auto lifetime = std::make_shared<ProviderLifetimeStats>();
   auto first = MakeStreamer({{0, 10.0f}, {1, 11.0f}}, lifetime);

@@ -45,11 +45,13 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   }
 
   const void *data(void) const override {
-    if (!this->is_valid()) {
-      return nullptr;
-    }
+    // Consumers may read one record more than once before next(). Keep the
+    // failure placeholder stable too, even though fail() invalidates us.
     if (data_prepared_) {
       return data_;
+    }
+    if (!this->is_valid()) {
+      return nullptr;
     }
     if (owner_->canceled()) {
       return this->fail(IndexError_Canceled, "Read vector canceled");

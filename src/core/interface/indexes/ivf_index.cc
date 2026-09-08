@@ -140,8 +140,8 @@ int IVFIndex::GenerateHolder() {
 }
 
 int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
-  if (is_trained_) {
-    LOG_ERROR("this IVF index is trained");
+  if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
+    LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
@@ -167,66 +167,89 @@ int IVFIndex::train() {
   if (is_trained_) {
     return 0;
   }
-  int ret = GenerateHolder();
-  if (ret != 0) {
-    return ret;
+  if (build_stage_ == BuildStage::kCollecting) {
+    int ret = GenerateHolder();
+    if (ret != 0) {
+      return ret;
+    }
+    ret = builder_->train(holder_);
+    if (ret != 0) {
+      return ret;
+    }
+    build_stage_ = BuildStage::kTrained;
   }
-  ret = builder_->train(holder_);
-  if (ret != 0) {
-    return ret;
-  }
-  ret = builder_->build(holder_);
-  if (ret != 0) {
-    return ret;
+  if (build_stage_ == BuildStage::kTrained) {
+    int ret = builder_->build(holder_);
+    if (ret != 0) {
+      return ret;
+    }
+    build_stage_ = BuildStage::kBuilt;
   }
   return DumpAndOpen();
 }
 
-int IVFIndex::DumpAndOpen() {
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
-  if (!dumper) {
-    return core::IndexError_NoExist;
-  }
-
-  int ret = dumper->create(file_path_);
-  if (ret != 0) {
-    return ret;
-  }
-  AILEGO_DEFER([&]() {
-    if (dumper) dumper->close();
-  });
-  ret = builder_->dump(dumper);
-  if (ret != 0) {
-    return ret;
-  }
-  // Dump converter state (e.g., rotator for INT8+rotate) to dumper
-  if (converter_ && converter_->dump(dumper) != 0) {
-    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  ret = dumper->close();
-  if (ret != 0) {
-    return ret;
-  }
-  dumper.reset();
-
-  // The persisted index owns the trained state now. Drop the old builder's
-  // full vector holder, labels and quantizers before opening the new index.
-  // Keep the interface's builder-backed path initialized. Direct users of
-  // IVFBuilder can still dump the same build more than once.
+int IVFIndex::ResetBuilder() {
   auto next_builder = core::IndexFactory::CreateBuilder("IVFBuilder");
   if (!next_builder) {
     return core::IndexError_NoExist;
   }
-  ret =
+  int ret =
       next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
                          proxima_index_params_);
   if (ret != 0) {
     return ret;
   }
   builder_ = std::move(next_builder);
+  return 0;
+}
 
-  ret = storage_->open(file_path_, false);
+int IVFIndex::DumpAndOpen() {
+  if (build_stage_ == BuildStage::kBuilt) {
+    auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+    if (!dumper) {
+      return core::IndexError_NoExist;
+    }
+
+    int ret = dumper->create(file_path_);
+    if (ret != 0) {
+      return ret;
+    }
+    AILEGO_DEFER([&]() {
+      if (dumper) dumper->close();
+    });
+    ret = builder_->dump(dumper);
+    if (ret != 0) {
+      return ret;
+    }
+    // Dump converter state (e.g., rotator for INT8+rotate) to dumper
+    if (converter_ && converter_->dump(dumper) != 0) {
+      LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
+      return core::IndexError_Runtime;
+    }
+    ret = dumper->close();
+    if (ret != 0) {
+      return ret;
+    }
+    dumper.reset();
+
+    // Release the full builder state before opening the persisted index.
+    // If opening fails, retry only open: the replacement builder is empty.
+    ret = ResetBuilder();
+    if (ret != 0) {
+      return ret;
+    }
+    build_stage_ = BuildStage::kDumped;
+  } else if (build_stage_ != BuildStage::kDumped) {
+    return core::IndexError_NoReady;
+  }
+
+  AILEGO_DEFER([&]() {
+    if (!is_trained_) {
+      if (streamer_) streamer_->close();
+      storage_->close();
+    }
+  });
+  int ret = storage_->open(file_path_, false);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
               core::IndexError::What(ret));
@@ -302,10 +325,21 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
   if (indexes.empty()) {
     return 0;
   }
+  // A new merge (including a retry) rebuilds from its explicit inputs. Do not
+  // reuse a partially trained builder or silently resume different inputs.
+  int ret = ResetBuilder();
+  if (ret != 0) {
+    return ret;
+  }
+  build_stage_ = BuildStage::kCollecting;
   int pre_ret = Index::merge(indexes, filter, options);
   if (pre_ret != 0) {
     return pre_ret;
   }
+  build_stage_ = BuildStage::kBuilt;
+  // Index::merge marks the reduce phase complete. IVF is not usable until
+  // dump/open finishes; train() may resume that phase if it fails.
+  is_trained_ = false;
   return DumpAndOpen();
 }
 }  // namespace zvec::core_interface
