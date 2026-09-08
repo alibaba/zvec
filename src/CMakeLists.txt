@@ -255,6 +255,8 @@ function(zvec_add_mobile_static_sdk TARGET_NAME)
                 ${ZVEC_STATIC_SDK_LIBS}
                 Threads::Threads
                 ${CMAKE_DL_LIBS}
+                # Arrow's iOS timezone implementation uses CoreFoundation.
+                "-framework CoreFoundation"
         )
     else()
         # Keep whole-archive scoped to the SDK archives themselves.  Putting
