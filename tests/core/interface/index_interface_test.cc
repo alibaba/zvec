@@ -1243,6 +1243,63 @@ TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
   for (const auto &path : paths) zvec::test_util::RemoveTestFiles(path);
 }
 
+TEST(IndexInterface, BuilderCacheFetchRejectsMissingDocuments) {
+  std::vector<BaseIndexParam::Pointer> params{
+      IVFIndexParamBuilder()
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(16)
+          .with_n_list(1)
+          .build()};
+#if DISKANN_SUPPORTED
+  params.push_back(DiskAnnIndexParamBuilder()
+                       .with_metric_type(MetricType::kL2sq)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_dimension(16)
+                       .with_max_degree(8)
+                       .with_list_size(16)
+                       .with_pq_chunk_num(1)
+                       .build());
+#endif
+  const std::string path = "builder_cache_fetch.index";
+  for (const auto &param : params) {
+    SCOPED_TRACE(static_cast<int>(param->index_type));
+    zvec::test_util::RemoveTestFiles(path);
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    VectorDataBuffer fetched;
+    auto expect_missing = [&](uint32_t id, int error) {
+      fetched.vector_buffer = DenseVectorBuffer{"unchanged"};
+      EXPECT_EQ(error, index->fetch(id, &fetched));
+      EXPECT_EQ("unchanged",
+                std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    };
+    expect_missing(0, zvec::core::IndexError_OutOfRange);
+    expect_missing(std::numeric_limits<uint32_t>::max(),
+                   zvec::core::IndexError_OutOfRange);
+    std::vector<float> vector(16, 0.125F);
+    const std::string expected(reinterpret_cast<const char *>(vector.data()),
+                               vector.size() * sizeof(float));
+    ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, 3));
+    expect_missing(0, zvec::core::IndexError_NoExist);
+    expect_missing(2, zvec::core::IndexError_NoExist);
+    expect_missing(4, zvec::core::IndexError_OutOfRange);
+    ASSERT_EQ(0, index->fetch(3, &fetched));
+    EXPECT_EQ(expected,
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    for (uint32_t id = 0; id < 3; ++id) {
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, id));
+    }
+    ASSERT_EQ(0, index->train());
+    ASSERT_EQ(0, index->fetch(3, &fetched));
+    EXPECT_EQ(expected,
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    ASSERT_EQ(0, index->close());
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
 TEST(IndexInterface, IvfRejectsMergeIntoReadyIndexWithoutChangingFile) {
   const std::string path = "ivf_ready_merge.index";
   const std::string source_path = "ivf_ready_merge_source.index";
@@ -1432,7 +1489,7 @@ TEST(IndexInterface, DiskAnnReleasesBuildStateAndPreservesStoredVectors) {
 TEST(IndexInterface, DiskAnnPreservesBuildStateWhenDumpFails) {
   const std::string parent = "diskann_dump_blocked_parent";
   const std::string source_path = "diskann_dump_failure_source.index";
-  for (bool merge : {false, true}) {
+  for (bool merge : {true, false}) {
     SCOPED_TRACE(merge);
     zvec::test_util::RemoveTestFiles(parent);
     zvec::test_util::RemoveTestFiles(source_path);
@@ -1473,6 +1530,19 @@ TEST(IndexInterface, DiskAnnPreservesBuildStateWhenDumpFails) {
     EXPECT_FALSE(target->is_trained());
     EXPECT_FALSE(build_state.expired());
     EXPECT_NE(nullptr, inspected->converted_input());
+    VectorDataBuffer fetched;
+    if (merge) {
+      // A failed merge has no doc_cache_ entries to serve fetch from.
+      EXPECT_EQ(zvec::core::IndexError_OutOfRange, target->fetch(0, &fetched));
+    } else {
+      ASSERT_EQ(0, target->fetch(3, &fetched));
+      std::vector<float> expected(16, 4.0F / 64.0F);
+      EXPECT_EQ(std::string(reinterpret_cast<const char *>(expected.data()),
+                            expected.size() * sizeof(float)),
+                std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    }
+    EXPECT_EQ(zvec::core::IndexError_OutOfRange,
+              target->fetch(std::numeric_limits<uint32_t>::max(), &fetched));
     target.reset();
     inspected.reset();
     EXPECT_TRUE(build_state.expired());
@@ -1715,6 +1785,8 @@ TEST(IndexInterface, IvfFailedMergeCanResumeDumpOrRestartWithNewInputs) {
                               {StorageOptions::StorageType::kMMAP, true}));
     EXPECT_NE(0, target->merge({source}, {}));
     EXPECT_FALSE(target->is_trained());
+    VectorDataBuffer fetched;
+    EXPECT_EQ(zvec::core::IndexError_OutOfRange, target->fetch(0, &fetched));
     zvec::test_util::RemoveTestFiles(parent);
     IndexFilter filter;
     filter.set([](uint64_t id) { return id >= 2; });
@@ -1722,6 +1794,10 @@ TEST(IndexInterface, IvfFailedMergeCanResumeDumpOrRestartWithNewInputs) {
         0, restart_merge ? target->merge({source}, filter) : target->train());
     EXPECT_TRUE(target->is_trained());
     EXPECT_EQ(restart_merge ? 2u : 4u, target->get_doc_count());
+    ASSERT_EQ(0, target->fetch(0, &fetched));
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                          vector.size() * sizeof(float)),
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
     ASSERT_EQ(0, target->close());
     zvec::test_util::RemoveTestFiles(parent);
   }

@@ -281,6 +281,14 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
   if (is_trained_) {
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // A failed merge has no cached input; sparse doc IDs also leave holes.
+    if (doc_id >= doc_cache_.size()) {
+      return core::IndexError_OutOfRange;
+    }
+    if (doc_cache_[doc_id].first == kInvalidKey) {
+      return core::IndexError_NoExist;
+    }
     DenseVectorBuffer dense_vector_buffer;
     std::string &out_vector_buffer = dense_vector_buffer.data;
     out_vector_buffer = doc_cache_[doc_id].second;
