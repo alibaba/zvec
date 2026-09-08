@@ -203,6 +203,10 @@ class OrdinalTestHolder : public IndexHolder, public OrdinalAccessHolder {
       ++owner_->reads;
       if (owner_->read_error) return owner_->read_error;
       if (id >= owner_->vectors_.size()) return IndexError_OutOfRange;
+      if (owner_->null_data) {
+        *data = nullptr;
+        return 0;
+      }
       buffer_.assign(1, '\0');
       buffer_.append(owner_->vectors_[id]);
       *key = owner_->keys_[id];
@@ -222,18 +226,236 @@ class OrdinalTestHolder : public IndexHolder, public OrdinalAccessHolder {
       OrdinalAccessHolder::Reader::Pointer *reader) override {
     ++reader_creations;
     if (create_error) return create_error;
+    if (null_reader) return 0;
     reader->reset(new OrdinalReader(this));
     return 0;
   }
   size_t reader_creations{0}, iterations{0}, reads{0}, resets{0},
       extra_count{0};
   int create_error{0}, read_error{0};
+  bool null_reader{false}, null_data{false};
 
  private:
   IndexHolder::Pointer delegate_;
   std::vector<uint64_t> keys_;
   std::vector<std::string> vectors_;
 };
+
+TEST_F(IVFBuilderTest, HalfFloatOrdinalReaderConvertsLazilyAndRetainsSource) {
+  // Exercise vectorized conversion plus a tail, negative/fractional values,
+  // and the source reader's deliberately unaligned, reused storage.
+  dimension_ = 129;
+  index_meta_.set_meta(IndexMeta::DataType::DT_FP32, dimension_);
+  auto input =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+          dimension_);
+  for (size_t i = 0; i < 7; ++i) {
+    NumericalVector<float> vec(dimension_);
+    for (size_t j = 0; j < dimension_; ++j) {
+      vec[j] = (static_cast<float>(i * 13 + j) - 60.0f) / 1000.0f;
+    }
+    input->emplace(100 + i * 3, vec);
+  }
+  auto source = std::make_shared<OrdinalTestHolder>(input);
+  std::weak_ptr<OrdinalTestHolder> weak = source;
+  auto converter = IndexFactory::CreateConverter("HalfFloatConverter");
+  ASSERT_NE(nullptr, converter);
+  ASSERT_EQ(0, converter->init(index_meta_, Params()));
+  ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, source));
+  auto converted = converter->result();
+  auto *ordinal = dynamic_cast<OrdinalAccessHolder *>(converted.get());
+  ASSERT_NE(nullptr, ordinal);
+  std::vector<std::string> expected;
+  for (auto iter = converted->create_iterator(); iter->is_valid();
+       iter->next()) {
+    expected.emplace_back(static_cast<const char *>(iter->data()),
+                          converted->element_size());
+  }
+  source->iterations = 0;
+  OrdinalAccessHolder::Reader::Pointer reader, other;
+  ASSERT_EQ(0, ordinal->create_ordinal_reader(&reader));
+  ASSERT_EQ(0, ordinal->create_ordinal_reader(&other));
+  EXPECT_EQ(0u, source->iterations);
+  EXPECT_EQ(0u, source->reads);
+  EXPECT_EQ(2u, source->reader_creations);
+  source.reset();
+  converted.reset();
+  converter.reset();
+  EXPECT_FALSE(weak.expired());
+  for (size_t id : {6u, 0u, 3u, 0u}) {
+    uint64_t key = 0;
+    const void *data = nullptr;
+    ASSERT_EQ(0, reader->read(id, &key, &data));
+    ASSERT_NE(nullptr, data);
+    EXPECT_EQ(100 + id * 3, key);
+    EXPECT_EQ(expected[id], std::string(static_cast<const char *>(data),
+                                        expected[id].size()));
+  }
+  uint64_t key = 0;
+  const void *data = nullptr, *other_data = nullptr;
+  ASSERT_EQ(0, reader->read(1, &key, &data));
+  ASSERT_EQ(0, other->read(2, &key, &other_data));
+  // Another reader must not overwrite the first reader's converted output.
+  EXPECT_EQ(expected[1],
+            std::string(static_cast<const char *>(data), expected[1].size()));
+  reader->reset();
+  EXPECT_EQ(1u, weak.lock()->resets);
+  ASSERT_EQ(0, reader->read(6, &key, &data));
+  EXPECT_EQ(expected[6],
+            std::string(static_cast<const char *>(data), expected[6].size()));
+  other.reset();
+  reader.reset();
+  EXPECT_TRUE(weak.expired());
+}
+
+TEST_F(IVFBuilderTest, HalfFloatOrdinalReaderPreservesErrorsAndFallback) {
+  prepare_index_holder(100, 7);
+  auto converter = IndexFactory::CreateConverter("HalfFloatConverter");
+  ASSERT_NE(nullptr, converter);
+  ASSERT_EQ(0, converter->init(index_meta_, Params()));
+  auto source = std::make_shared<OrdinalTestHolder>(holder_);
+  ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, source));
+  auto converted = converter->result();
+  auto *ordinal = dynamic_cast<OrdinalAccessHolder *>(converted.get());
+  ASSERT_NE(nullptr, ordinal);
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, ordinal->create_ordinal_reader(&reader));
+  auto *original = reader.get();
+  EXPECT_EQ(IndexError_InvalidArgument,
+            ordinal->create_ordinal_reader(nullptr));
+  for (int error :
+       {IndexError_NotImplemented, IndexError_Runtime, IndexError_Canceled}) {
+    source->create_error = error;
+    EXPECT_EQ(error, ordinal->create_ordinal_reader(&reader));
+    EXPECT_EQ(original, reader.get());
+  }
+  source->create_error = 0;
+  source->null_reader = true;
+  EXPECT_EQ(IndexError_Runtime, ordinal->create_ordinal_reader(&reader));
+  EXPECT_EQ(original, reader.get());
+  source->null_reader = false;
+  EXPECT_EQ(0u, source->iterations);
+  EXPECT_EQ(0u, source->reads);
+
+  uint64_t key = 999;
+  const void *data = nullptr;
+  EXPECT_EQ(IndexError_InvalidArgument, reader->read(0, nullptr, &data));
+  EXPECT_EQ(IndexError_InvalidArgument, reader->read(0, &key, nullptr));
+  EXPECT_EQ(IndexError_OutOfRange, reader->read(7, &key, &data));
+  EXPECT_EQ(0u, source->reads);
+  for (int error : {IndexError_Runtime, IndexError_Canceled}) {
+    source->read_error = error;
+    EXPECT_EQ(error, reader->read(0, &key, &data));
+    EXPECT_EQ(nullptr, data);
+    EXPECT_EQ(999u, key);
+  }
+  source->read_error = 0;
+  source->null_data = true;
+  EXPECT_EQ(IndexError_Runtime, reader->read(0, &key, &data));
+  EXPECT_EQ(nullptr, data);
+  source->null_data = false;
+  ASSERT_EQ(0, reader->read(0, &key, &data));
+  ASSERT_NE(nullptr, data);
+
+  // An ordinary multipass source has no ordinal capability. Declining it
+  // must leave the existing reader intact and sequential conversion usable.
+  ASSERT_EQ(0, converter->transform(holder_));
+  auto fallback = converter->result();
+  auto *unsupported = dynamic_cast<OrdinalAccessHolder *>(fallback.get());
+  ASSERT_NE(nullptr, unsupported);
+  EXPECT_EQ(IndexError_NotImplemented,
+            unsupported->create_ordinal_reader(&reader));
+  EXPECT_EQ(original, reader.get());
+  auto iter = fallback->create_iterator();
+  size_t count = 0;
+  for (; iter->is_valid(); iter->next()) {
+    ASSERT_NE(nullptr, iter->data());
+    ++count;
+  }
+  EXPECT_EQ(7u, count);
+}
+
+TEST_F(IVFBuilderTest, HalfFloatOrdinalSourceIsBorrowedAndDumpCanRetry) {
+  for (bool store_original : {false, true}) {
+    // Exactly representable, bounded coordinates avoid FP16 distance overflow.
+    prepare_index_holder(100, 7);
+    params_.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "1");
+    params_.set(PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT, 4u);
+    params_.set(PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES, store_original);
+    auto source = std::make_shared<OrdinalTestHolder>(holder_);
+    std::weak_ptr<OrdinalTestHolder> weak = source;
+    auto converter = IndexFactory::CreateConverter("HalfFloatConverter");
+    ASSERT_NE(nullptr, converter);
+    ASSERT_EQ(0, converter->init(index_meta_, Params()));
+    ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, source));
+    auto converted = converter->result();
+    auto meta = converter->meta();
+    IVFBuilder builder;
+    ASSERT_EQ(0, builder.init(meta, params_));
+    ASSERT_EQ(0, builder.train(threads_, converted));
+    source->iterations = 0;
+    source->create_error = IndexError_Runtime;
+    EXPECT_EQ(IndexError_Runtime, builder.build(threads_, converted));
+    EXPECT_EQ(0u, source->iterations);
+    source->create_error = 0;
+    source->reader_creations = 0;
+    ASSERT_EQ(0, builder.build(threads_, converted));
+    EXPECT_EQ(1u, source->reader_creations);
+    EXPECT_EQ(1u, source->iterations);  // Labels only, no materialization pass.
+    EXPECT_EQ(0u, source->reads);
+
+    source->read_error = IndexError_Runtime;
+    auto failed_dumper = IndexFactory::CreateDumper("MemoryDumper");
+    ASSERT_EQ(0, failed_dumper->create("fp16_ordinal_failure"));
+    EXPECT_EQ(IndexError_Runtime, builder.dump(failed_dumper));
+    EXPECT_EQ(1u, source->resets);
+    EXPECT_EQ(0u, builder.stats().dumped_count());
+    ASSERT_EQ(0, failed_dumper->close());
+    source->read_error = 0;
+    source->reads = 0;
+    source->resets = 0;
+    source.reset();
+    converter.reset();
+    converted.reset();
+    EXPECT_FALSE(weak.expired());
+    for (size_t pass = 1; pass <= 2; ++pass) {
+      const std::string path = "ivf_fp16_ordinal_source.index";
+      auto dumper = IndexFactory::CreateDumper("FileDumper");
+      ASSERT_EQ(0, dumper->create(path));
+      ASSERT_EQ(0, builder.dump(dumper));
+      ASSERT_EQ(0, dumper->close());
+      EXPECT_EQ(7u * pass * (store_original ? 2 : 1), weak.lock()->reads);
+      EXPECT_EQ(pass, weak.lock()->resets);
+      auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+      ASSERT_EQ(0, storage->init(Params()));
+      ASSERT_EQ(0, storage->open(path, false));
+      auto streamer = IndexFactory::CreateStreamer("IVFStreamer");
+      ASSERT_EQ(0, streamer->init(meta, Params()));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto provider = streamer->create_provider();
+      ASSERT_NE(nullptr, provider);
+      auto expected_converter =
+          IndexFactory::CreateConverter("HalfFloatConverter");
+      ASSERT_EQ(0, expected_converter->init(index_meta_, Params()));
+      ASSERT_EQ(0,
+                IndexConverter::TrainAndTransform(expected_converter, holder_));
+      auto expected = expected_converter->result();
+      for (auto iter = expected->create_iterator(); iter->is_valid();
+           iter->next()) {
+        const void *actual = provider->get_vector(iter->key());
+        ASSERT_NE(nullptr, actual);
+        EXPECT_EQ(0,
+                  std::memcmp(actual, iter->data(), expected->element_size()));
+      }
+      provider.reset();
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, storage->close());
+      File::RemovePath(path);
+    }
+    ASSERT_EQ(0, builder.cleanup());
+    EXPECT_TRUE(weak.expired());
+  }
+}
 
 TEST_F(IVFBuilderTest, OrdinalSourceIsReadAtDumpAndRetainedForRepeatedDumps) {
   for (bool store_original : {false, true}) {
