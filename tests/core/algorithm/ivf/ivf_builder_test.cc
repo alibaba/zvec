@@ -116,7 +116,9 @@ class DeferredLabelThreads : public IndexThreads {
 };
 
 TEST_F(IVFBuilderTest, LabelQueueIsBoundedForHighDimensionalVectors) {
+  constexpr uint32_t kVectorCount = 4103;
   for (const bool convert : {false, true}) {
+    SCOPED_TRACE(convert ? "FP16" : "FP32");
     dimension_ = 1024;
     index_meta_.set_meta(IndexMeta::DataType::DT_FP32, dimension_);
     params_.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "1");
@@ -126,7 +128,19 @@ TEST_F(IVFBuilderTest, LabelQueueIsBoundedForHighDimensionalVectors) {
     }
     // Covers multiple byte windows and a final partial batch. The converter
     // also exercises a holder whose iterator reuses a temporary vector.
-    prepare_index_holder(0, 4103);
+    // Keep coordinates bounded to avoid native FP16 distance accumulation
+    // overflow: this test targets queue memory, not numerical range limits.
+    auto holder =
+        std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+            dimension_);
+    for (uint32_t i = 0; i < kVectorCount; ++i) {
+      NumericalVector<float> vec(dimension_);
+      for (size_t j = 0; j < dimension_; ++j) {
+        vec[j] = static_cast<float>(i) / kVectorCount;
+      }
+      holder->emplace(i, vec);
+    }
+    holder_ = std::move(holder);
     IVFBuilder builder;
     ASSERT_EQ(0, builder.init(index_meta_, params_));
     ASSERT_EQ(0,
@@ -140,12 +154,12 @@ TEST_F(IVFBuilderTest, LabelQueueIsBoundedForHighDimensionalVectors) {
     EXPECT_LE(group->max_pending, convert ? 205u : 103u);
     EXPECT_GT(group->submitted, group->max_pending);
     EXPECT_TRUE(group->is_finished());
-    EXPECT_EQ(4103u, builder.stats().built_count());
+    EXPECT_EQ(kVectorCount, builder.stats().built_count());
     auto dumper = IndexFactory::CreateDumper("MemoryDumper");
     ASSERT_NE(nullptr, dumper);
     ASSERT_EQ(0, dumper->create("label_queue"));
     ASSERT_EQ(0, builder.dump(dumper));
-    EXPECT_EQ(4103u, builder.stats().dumped_count());
+    EXPECT_EQ(kVectorCount, builder.stats().dumped_count());
     ASSERT_EQ(0, dumper->close());
   }
 }
