@@ -44,6 +44,7 @@ void pq_sdc_int8_distance(const void *a, const void *b, const void *dist_table,
 // offsets and 4 independent accumulators for ILP.
 // Falls back to scalar per-code loop for the remaining candidates.
 void pq_adc_int8_batch_distance(const void **candidates, const void *lut,
-                                size_t num, size_t num_chunk, float *out);
+                                size_t num, size_t num_chunk, float *out,
+                                const void **extra_values);
 
 }  // namespace zvec::turbo::scalar

@@ -302,6 +302,9 @@ class CollectionImpl : public Collection {
   int active_iterators_{0};
   // Signalled when the count reaches zero; close_internal waits on it.
   std::condition_variable_any iterator_cv_;
+  // Guards writes and every read that includes the mutable writing segment.
+  // Readers take this shared for the complete query/fetch operation so the
+  // segment's forward store, indexes and metadata form one visible state.
   mutable std::shared_mutex write_mtx_;
   // Serializes maintenance operations (optimize, schema DDL, close and
   // destroy) without holding schema_handle_mtx_, so a maintenance
@@ -1768,8 +1771,13 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
   query.output_fields_ = std::vector<std::string>{};
   query.include_doc_id_ = true;
 
-  auto ret =
-      sql_engine_->execute(schema_, std::move(query), get_all_segments());
+  // A query must see a stable writing segment. Writers publish the forward
+  // store, scalar/vector indexes and segment metadata in several steps while
+  // holding write_mtx_ exclusively.
+  auto ret = [&]() {
+    std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+    return sql_engine_->execute(schema_, std::move(query), get_all_segments());
+  }();
   if (!ret.has_value()) {
     return ret.error();
   }
@@ -1793,6 +1801,7 @@ Result<DocPtrList> CollectionImpl::query(const SearchQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   return query_unsafe(query);
 }
 
@@ -1802,6 +1811,7 @@ Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   return query_unsafe(query);
 }
 
@@ -1813,6 +1823,7 @@ CollectionImpl::query_result_snapshot_impl(const Query &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   auto docs = query_unsafe(query);
   if (!docs) {
     return tl::make_unexpected(docs.error());
@@ -1949,6 +1960,7 @@ Result<GroupResults> CollectionImpl::group_by_query(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   auto segments = get_all_segments();
   if (segments.empty()) {
     return GroupResults();
@@ -1981,6 +1993,7 @@ Result<DocPtrMap> CollectionImpl::fetch(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   auto segments = get_all_segments();
 
   DocPtrMap results;
@@ -2015,6 +2028,7 @@ Result<std::string> CollectionImpl::debug_get_hnsw_storage_mode(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   // Try all segments (including the writing one). The first segment that has
   // a fully-built HNSW index wins; if only a building segment exists we still
   // surface its current storage mode so that tests can observe the entity

@@ -585,9 +585,9 @@ float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
   size_t end1 = m_sparse_count / 8 * 8;
   size_t end2 = q_sparse_count / 8 * 8;
 
-  // On musl the default thread stack is only 128KB (vs glibc's 8MB), so keep
-  // the 256KB working set off the stack. On glibc a normal stack array is fine.
-#ifdef ZVEC_ON_MUSL
+  // Musl and Intel macOS worker threads have small default stacks, so keep the
+  // 256KB working set off the stack. On glibc a normal stack array is fine.
+#if defined(ZVEC_ON_MUSL) || defined(AILEGO_MACOS_X86_64)
   static thread_local uint16_t fixed_buffer_1[MAX_SPARSE_BUFFER_LENGTH];
   static thread_local uint16_t fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
 #else

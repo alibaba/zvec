@@ -47,13 +47,16 @@ struct IndexMetric : public IndexModule {
       const void *m_sparse_data, const void *q_sparse_data, float *out)>;
 
 
-  //! Matrix Batch Distance Function
+  //! Matrix Batch Distance Function. `extra_values[i]` corresponds to `m[i]`;
+  //! callers pass nullptr when the metric has no per-vector extra values.
   typedef void (*MatrixBatchDistanceHandle)(const void **m, const void *q,
-                                            size_t num, size_t dim, float *out);
+                                            size_t num, size_t dim, float *out,
+                                            const void **extra_values);
 
   //! Matrix Batch Distance Function Object
-  using MatrixBatchDistance = std::function<void(
-      const void **m, const void *q, size_t num, size_t dim, float *out)>;
+  using MatrixBatchDistance =
+      std::function<void(const void **m, const void *q, size_t num, size_t dim,
+                         float *out, const void **extra_values)>;
 
   //! Destructor
   ~IndexMetric(void) override {}
@@ -84,6 +87,12 @@ struct IndexMetric : public IndexModule {
   //! Retrieve distance function for query
   virtual MatrixBatchDistance batch_distance(void) const {
     return nullptr;
+  }
+
+  //! Number of trailing bytes per stored record that a storage backend may
+  //! split into an extra-values column.
+  virtual size_t extra_values_size_per_vector(void) const {
+    return 0;
   }
 
   //! Retrieve distance function for index features

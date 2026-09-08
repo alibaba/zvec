@@ -13,9 +13,19 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <cstring>
 #include <iostream>
+#include <string>
+#include <vector>
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_entity.h"
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <malloc.h>
+#endif
 
 namespace zvec {
 namespace core {
@@ -24,6 +34,13 @@ class DiskAnnUtil {
  public:
   static constexpr uint64_t kSectorSize = 4096;
   static constexpr uint64_t kMaxSectorReadNum = 128;
+
+  static constexpr uint64_t cache_load_batch_size(
+      uint64_t sector_num_per_node) {
+    return sector_num_per_node == 0 || sector_num_per_node > kMaxSectorReadNum
+               ? 1
+               : kMaxSectorReadNum / sector_num_per_node;
+  }
 
  public:
   static inline size_t div_round_up(size_t x, size_t y) {
@@ -39,19 +56,26 @@ class DiskAnnUtil {
       *ptr = nullptr;
       return;
     }
+#if defined(_WIN32) || defined(_WIN64)
+    *ptr = ::_aligned_malloc(size, align);
+#else
     // Unlike aligned_alloc(), posix_memalign() does not require size to be an
     // integral multiple of alignment and is available on Linux and macOS.
     if (::posix_memalign(ptr, align, size) != 0) {
       *ptr = nullptr;
     }
+#endif
   }
 
   static inline void free_aligned(void *ptr) {
     if (ptr == nullptr) {
       return;
     }
-
+#if defined(_WIN32) || defined(_WIN64)
+    ::_aligned_free(ptr);
+#else
     free(ptr);
+#endif
   }
 
   template <typename T>
@@ -107,6 +131,239 @@ class DiskAnnUtil {
     return sector_buf + (node_per_sector == 0
                              ? 0
                              : (node_id % node_per_sector) * max_nodesize_);
+  }
+
+  //! Resolve the quantizer implementation name from a serialized quantizer
+  //! meta buffer (see turbo::QuantizerSerHeader).  Extend the mapping here when
+  //! DiskAnn supports a new quantize type.
+  static const char *quantizer_name_from_meta_buffer(
+      const std::string &meta_buffer) {
+    if (meta_buffer.size() < sizeof(turbo::QuantizerSerHeader)) {
+      return nullptr;
+    }
+    turbo::QuantizerSerHeader hdr;
+    std::memcpy(&hdr, meta_buffer.data(), sizeof(hdr));
+    if (hdr.magic != turbo::kQuantizerMagic) {
+      return nullptr;
+    }
+    switch (static_cast<turbo::QuantizeType>(hdr.quant_type)) {
+      case turbo::QuantizeType::kPQ:
+        return "PqInt8Quantizer";
+      case turbo::QuantizeType::kFp16:
+        return "Fp16Quantizer";
+      case turbo::QuantizeType::kFp32:
+        return "Fp32Quantizer";
+      default:
+        return nullptr;
+    }
+  }
+
+  //! Derive the meta the quantizer is initialized with from the index meta,
+  //! mirroring the conversion done at build time: InnerProduct and Cosine
+  //! are trained/searched in SquaredEuclidean space.  Two Cosine layouts are
+  //! supported: the legacy one folds the stored norm into an inflated
+  //! dimension, while the new one keeps the raw dimension and accounts the
+  //! norm with extra_meta_size.
+  static int quantizer_init_meta(const IndexMeta &meta, IndexMeta *out) {
+    *out = meta;
+    if (meta.metric_name() == "InnerProduct") {
+      out->set_metric("SquaredEuclidean", 0, ailego::Params());
+    } else if (meta.metric_name() == "Cosine") {
+      out->set_metric("SquaredEuclidean", 0, ailego::Params());
+
+      if (meta.data_type() != IndexMeta::DataType::DT_FP32 &&
+          meta.data_type() != IndexMeta::DataType::DT_FP16) {
+        LOG_ERROR("Unsupported cosine data type: %u", meta.data_type());
+        return IndexError_Unsupported;
+      }
+
+      if (meta.extra_meta_size() > 0) {
+        // New layout: the dimension is already the raw one; drop the tail
+        // so element_size() covers the raw vector only, as in the legacy
+        // conversion below.
+        out->set_extra_meta_size(0);
+      } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+        if (meta.dimension() <= 1) {
+          LOG_ERROR("Invalid FP32 cosine dimension: %u", meta.dimension());
+          return IndexError_InvalidArgument;
+        }
+        out->set_dimension(meta.dimension() - 1);
+      } else {
+        if (meta.dimension() <= 2) {
+          LOG_ERROR("Invalid FP16 cosine dimension: %u", meta.dimension());
+          return IndexError_InvalidArgument;
+        }
+        out->set_dimension(meta.dimension() - 2);
+      }
+    }
+    return 0;
+  }
+
+  //! Resolve the layout from the DiskAnn header, not from centroid values.
+  //! The legacy chunk count occupies bytes reserved as zero by current writers.
+  //! Preserve this result when interpreting the payload: valid legacy pivots
+  //! can start with the very same bytes as kQuantizerMagic.
+  static int normalize_pq_meta(const IndexMeta &meta, DiskAnnPqMeta *pq_meta,
+                               bool *legacy_layout) {
+    *legacy_layout = false;
+    DiskAnnLegacyPqMeta legacy;
+    std::memcpy(static_cast<void *>(&legacy), pq_meta, sizeof(legacy));
+    IndexMeta init_meta;
+    int ret = quantizer_init_meta(meta, &init_meta);
+    if (ret != 0) {
+      return ret;
+    }
+    if (legacy.chunk_num == 0) {
+      if (pq_meta->chunk_num == 0 ||
+          pq_meta->chunk_num > init_meta.dimension() ||
+          pq_meta->quantizer_meta_buffer_size <
+              sizeof(turbo::QuantizerSerHeader)) {
+        return IndexError_InvalidFormat;
+      }
+      return 0;
+    }
+
+    const uint64_t mean_bytes =
+        uint64_t{init_meta.dimension()} * init_meta.unit_size();
+    if (legacy.chunk_num > init_meta.dimension() || mean_bytes == 0 ||
+        legacy.centroid_data_size != mean_bytes ||
+        legacy.full_pivot_data_size != 256 * mean_bytes) {
+      LOG_ERROR("Invalid legacy DiskAnn PQ metadata");
+      return IndexError_InvalidFormat;
+    }
+
+    *legacy_layout = true;
+    pq_meta->clear();
+    pq_meta->chunk_num = legacy.chunk_num;
+    // Legacy writers left chunk_offsets_size unset.
+    pq_meta->quantizer_meta_buffer_size =
+        legacy.full_pivot_data_size + legacy.centroid_data_size +
+        (legacy.chunk_num + 1) * sizeof(uint32_t);
+    return 0;
+  }
+
+  //! Repack a legacy codebook into the layout the PQ quantizer keeps in memory:
+  //! on disk 256 pivot rows of `dim` components, a per-dimension mean and
+  //! chunk_num + 1 chunk offsets; in memory each chunk holds [256][its width].
+  //! Leading chunks carry any remainder dimensions, matching legacy chunking.
+  //! Both sides work in squared euclidean space, and the
+  //! writers of this layout always persisted a zero mean.
+  static int legacy_pq_codebook_to_centroids(const std::string &meta_buffer,
+                                             const IndexMeta &quantizer_meta,
+                                             uint32_t chunk_num,
+                                             std::string *centroids) {
+    constexpr size_t kClusterNum = 256;
+
+    const size_t dim = quantizer_meta.dimension();
+    const size_t unit = quantizer_meta.unit_size();
+    if (dim == 0 || unit == 0 || chunk_num == 0 || chunk_num > dim) {
+      LOG_ERROR(
+          "Legacy DiskAnn PQ codebook with %u chunks over %zu dimensions is "
+          "not loadable, rebuild the index",
+          chunk_num, dim);
+      return IndexError_Unsupported;
+    }
+    const size_t sub_dim = dim / chunk_num;
+    const size_t remainder = dim % chunk_num;
+
+    const size_t pivot_bytes = kClusterNum * dim * unit;
+    const size_t mean_bytes = dim * unit;
+    const size_t offset_count = static_cast<size_t>(chunk_num) + 1;
+    const size_t offset_bytes = offset_count * sizeof(uint32_t);
+    if (meta_buffer.size() != pivot_bytes + mean_bytes + offset_bytes) {
+      LOG_ERROR(
+          "Legacy DiskAnn PQ codebook size mismatch, expect: %zu, actual: %zu",
+          pivot_bytes + mean_bytes + offset_bytes, meta_buffer.size());
+      return IndexError_InvalidFormat;
+    }
+
+    const char *pivots = meta_buffer.data();
+    const char *mean = pivots + pivot_bytes;
+    // Copied out instead of cast in place: the offsets are not guaranteed to be
+    // aligned inside the buffer.
+    std::vector<uint32_t> offsets(offset_count, 0);
+    std::memcpy(offsets.data(), mean + mean_bytes, offset_bytes);
+    for (size_t m = 0; m <= chunk_num; ++m) {
+      if (offsets[m] != m * sub_dim + std::min(m, remainder)) {
+        LOG_ERROR(
+            "Legacy DiskAnn PQ codebook has invalid chunk offsets at chunk "
+            "%zu, rebuild the index",
+            m);
+        return IndexError_Unsupported;
+      }
+    }
+
+    // The quantizer is initialized without a mean, so a residual codebook would
+    // be decoded against the wrong origin.
+    if (std::any_of(mean, mean + mean_bytes,
+                    [](char byte) { return byte != 0; })) {
+      LOG_ERROR(
+          "Legacy DiskAnn PQ codebook carries a non-zero mean, rebuild the "
+          "index");
+      return IndexError_Unsupported;
+    }
+
+    centroids->assign(pivot_bytes, '\0');
+    char *dest = &(*centroids)[0];
+    for (size_t m = 0; m < chunk_num; ++m) {
+      const size_t start = offsets[m];
+      const size_t width = offsets[m + 1] - start;
+      for (size_t c = 0; c < kClusterNum; ++c) {
+        std::memcpy(dest + (kClusterNum * start + c * width) * unit,
+                    pivots + (c * dim + start) * unit, width * unit);
+      }
+    }
+
+    return 0;
+  }
+
+  //! Construct the quantizer persisted in `meta_buffer`, picking the
+  //! implementation from the meta buffer header instead of a hardcoded type.
+  //! Contract: the quantizer is initialized with the meta derived from
+  //! `index_meta` before deserialize(), so the metric policy comes from the
+  //! meta instead of the default-constructed one. The layout comes from the
+  //! DiskAnn header; legacy codebooks are adopted after repacking.
+  static turbo::Quantizer::Pointer create_quantizer_from_meta_buffer(
+      std::string &meta_buffer, const IndexMeta &index_meta, uint32_t chunk_num,
+      bool legacy) {
+    const char *name = legacy ? "PqInt8Quantizer"
+                              : quantizer_name_from_meta_buffer(meta_buffer);
+    if (name == nullptr) {
+      LOG_ERROR("Unsupported or corrupted quantizer meta buffer");
+      return turbo::Quantizer::Pointer();
+    }
+    auto quantizer = IndexFactory::CreateQuantizer(name);
+    if (!quantizer) {
+      LOG_ERROR("Create quantizer %s failed", name);
+      return turbo::Quantizer::Pointer();
+    }
+    IndexMeta init_meta;
+    if (quantizer_init_meta(index_meta, &init_meta) != 0) {
+      return turbo::Quantizer::Pointer();
+    }
+    ailego::Params params;
+    params.set("num_chunk", chunk_num);
+    if (quantizer->init(init_meta, params) != 0) {
+      LOG_ERROR("Quantizer %s init failed", name);
+      return turbo::Quantizer::Pointer();
+    }
+    if (legacy) {
+      std::string centroids;
+      if (legacy_pq_codebook_to_centroids(meta_buffer, init_meta, chunk_num,
+                                          &centroids) != 0) {
+        return turbo::Quantizer::Pointer();
+      }
+      if (quantizer->import_codebook(centroids.data(), centroids.size()) != 0) {
+        LOG_ERROR("Quantizer %s legacy codebook import failed", name);
+        return turbo::Quantizer::Pointer();
+      }
+      return quantizer;
+    }
+    if (quantizer->deserialize(meta_buffer) != 0) {
+      LOG_ERROR("Quantizer %s deserialize failed", name);
+      return turbo::Quantizer::Pointer();
+    }
+    return quantizer;
   }
 };
 

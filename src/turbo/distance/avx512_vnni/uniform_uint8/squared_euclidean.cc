@@ -77,10 +77,11 @@ static inline void uniform_sq_l2_uint8_scalar_single(const void *vector,
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 
-static inline uint32_t tail(const void *vector, size_t orig_dim) {
+static inline uint32_t load_extra_value(const void *extra_values) {
+  ailego_assert_with(extra_values != nullptr,
+                     "UniformUint8 batch distance requires extra values");
   uint32_t value = 0;
-  std::memcpy(&value, reinterpret_cast<const uint8_t *>(vector) + orig_dim,
-              sizeof(value));
+  std::memcpy(&value, extra_values, sizeof(value));
   return value;
 }
 
@@ -243,7 +244,8 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i accumulator0,
 
 static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     const void *const *vectors, const uint8_t *raw_query, size_t orig_dim,
-    int32_t correction, const void *const *prefetch_vectors, float *distances) {
+    int32_t correction, const void *const *extra_values,
+    const void *const *prefetch_vectors, float *distances) {
   __m512i accumulator0 = _mm512_setzero_si512();
   __m512i accumulator1 = _mm512_setzero_si512();
   __m512i accumulator2 = _mm512_setzero_si512();
@@ -309,8 +311,8 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
   }
 
   alignas(16) const uint32_t tails[4] = {
-      tail(vector0, orig_dim), tail(vector1, orig_dim), tail(vector2, orig_dim),
-      tail(vector3, orig_dim)};
+      load_extra_value(extra_values[0]), load_extra_value(extra_values[1]),
+      load_extra_value(extra_values[2]), load_extra_value(extra_values[3])};
   const __m128i sum_squared =
       _mm_load_si128(reinterpret_cast<const __m128i *>(tails));
 
@@ -325,7 +327,7 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
 
 static ailego_force_inline void uniform_sq_l2_uint8_single(
     const void *vector, const uint8_t *raw_query, size_t orig_dim,
-    int32_t correction, float *distance) {
+    int32_t correction, const void *extra_values, float *distance) {
   const auto *record = reinterpret_cast<const int8_t *>(vector);
   __m512i accumulator = _mm512_setzero_si512();
   size_t d = 0;
@@ -340,18 +342,21 @@ static ailego_force_inline void uniform_sq_l2_uint8_single(
   for (; d < orig_dim; ++d) {
     dot_product += static_cast<int>(record[d]) * static_cast<int>(raw_query[d]);
   }
-  *distance = static_cast<float>(static_cast<int64_t>(tail(vector, orig_dim)) -
-                                 2 * dot_product + correction);
+  *distance =
+      static_cast<float>(static_cast<int64_t>(load_extra_value(extra_values)) -
+                         2 * dot_product + correction);
 }
 
 }  // namespace
 
 #endif
 
-void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                                    const void *query, size_t n,
-                                                    size_t dim,
-                                                    float *distances) {
+static void uniform_squared_euclidean_uint8_batch_distance_impl(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values) {
+#if !defined(__AVX512VNNI__) && !(defined(_MSC_VER) && defined(__AVX512F__))
+  (void)extra_values;
+#endif
   const size_t orig_dim = original_dim(dim);
   if (orig_dim == 0) {
     for (size_t i = 0; i < n; ++i) {
@@ -383,11 +388,12 @@ void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
           prefetch_index < n ? vectors[prefetch_index] : nullptr;
     }
     uniform_sq_l2_uint8_batch4(vectors + i, raw_query, orig_dim, correction,
-                               prefetch_vectors, distances + i);
+                               extra_values + i, prefetch_vectors,
+                               distances + i);
   }
   for (; i < n; ++i) {
     uniform_sq_l2_uint8_single(vectors[i], raw_query, orig_dim, correction,
-                               distances + i);
+                               extra_values[i], distances + i);
   }
 #else
   const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
@@ -396,6 +402,15 @@ void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
                                       distances + i);
   }
 #endif
+}
+
+void uniform_squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values) {
+  ailego_assert_with(extra_values != nullptr,
+                     "UniformUint8 batch distance requires extra values");
+  uniform_squared_euclidean_uint8_batch_distance_impl(vectors, query, n, dim,
+                                                      distances, extra_values);
 }
 
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {

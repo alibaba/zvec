@@ -13,14 +13,15 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c)
 # loaded at runtime via dlopen()/dlsym() (see libaio_loader.h), so we do NOT
 # link against -laio. On Linux, ${CMAKE_DL_LIBS} provides the system-level
 # dependency for dlopen/dlsym/dlclose. macOS ARM64 uses pread and needs no
-# extra I/O backend library.
-set(CORE_KNN_DISKANN_LIBS core_framework core_knn_cluster)
+# extra I/O backend library. Windows overlapped I/O is built in and likewise
+# needs no extra backend library.
+set(CORE_KNN_DISKANN_LIBS zvec_ailego core_framework core_knn_cluster)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$")
     list(APPEND CORE_KNN_DISKANN_LIBS ${CMAKE_DL_LIBS})
 endif()
 
-if(NOT APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CORE_KNN_DISKANN_LDFLAGS
         "-Wl,--exclude-libs,libparquet.a:libarrow.a:libarrow_bundled_dependencies.a")
 endif()
@@ -34,3 +35,11 @@ cc_library(
     LDFLAGS "${CORE_KNN_DISKANN_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"
 )
+if(MSVC)
+    # NOMINMAX must reach the _objects target, since _add_library() compiles
+    # sources there; the SHARED/STATIC targets only bundle object files and a
+    # PRIVATE define on them never reaches the compiler. Without this, the
+    # windows.h min/max macros collide with std::min/std::max and
+    # numeric_limits<T>::max()/min() (error C4003).
+    target_compile_definitions(core_knn_diskann_objects PRIVATE NOMINMAX)
+endif()

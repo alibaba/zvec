@@ -167,6 +167,83 @@ TEST(DiskAnnFileReaderTest, ReadBeforeOpenReturnsError) {
   EXPECT_NE(reader.read(requests, ctx, false), 0);
 }
 
+TEST(DiskAnnFileReaderTest,
+     OpenFromHandleSurvivesPathReplacementBeforeHandoff) {
+  TemporaryFile original;
+  TemporaryFile replacement;
+  ASSERT_GE(original.fd(), 0);
+  ASSERT_GE(replacement.fd(), 0);
+
+  std::vector<uint8_t> original_data(kPageSize, 0x3a);
+  std::vector<uint8_t> replacement_data(kPageSize, 0xc7);
+  ASSERT_TRUE(original.write_all(original_data.data(), original_data.size()));
+  ASSERT_TRUE(
+      replacement.write_all(replacement_data.data(), replacement_data.size()));
+
+  const int source_flags_before = ::fcntl(original.fd(), F_GETFL);
+  ASSERT_GE(source_flags_before, 0);
+
+  // The original descriptor represents FileReadStorage after it supplied
+  // metadata. Replace the path first to prove the handoff follows the open
+  // file object rather than resolving the path again.
+  ASSERT_EQ(::rename(replacement.path(), original.path()), 0);
+
+  LinuxAlignedFileReader original_reader;
+  ASSERT_EQ(original_reader.open_from_handle(original.path(), original.fd()),
+            0);
+  const int source_flags_after = ::fcntl(original.fd(), F_GETFL);
+  ASSERT_GE(source_flags_after, 0);
+  EXPECT_EQ(source_flags_after, source_flags_before);
+
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{{0, kPageSize, output.get()}};
+  IOContext ctx{};
+  ASSERT_EQ(setup_io_ctx(ctx), 0);
+
+  ASSERT_EQ(original_reader.read(requests, ctx, false), 0);
+  EXPECT_EQ(std::memcmp(output.get(), original_data.data(), kPageSize), 0);
+
+  LinuxAlignedFileReader replacement_reader;
+  replacement_reader.open(original.path());
+  ASSERT_EQ(replacement_reader.read(requests, ctx, false), 0);
+  EXPECT_EQ(std::memcmp(output.get(), replacement_data.data(), kPageSize), 0);
+
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  original_reader.close();
+  replacement_reader.close();
+}
+
+#if defined(__linux__) || defined(__linux) || defined(__APPLE__) || \
+    defined(__MACH__)
+TEST(DiskAnnFileReaderTest, OpenFromHandleDoesNotChangeSourceFlags) {
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+
+  std::vector<uint8_t> source(kPageSize, 0x6b);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+
+  const int flags_before = ::fcntl(file.fd(), F_GETFL);
+  ASSERT_GE(flags_before, 0);
+#if defined(__linux__) || defined(__linux)
+  ASSERT_EQ(flags_before & O_DIRECT, 0);
+#endif
+
+  LinuxAlignedFileReader reader;
+  ASSERT_EQ(reader.open_from_handle(file.path(), file.fd()), 0);
+
+  const int flags_after = ::fcntl(file.fd(), F_GETFL);
+  ASSERT_GE(flags_after, 0);
+  EXPECT_EQ(flags_after, flags_before);
+
+  // An unaligned one-byte read remains valid on the caller's buffered handle.
+  uint8_t byte = 0;
+  ASSERT_EQ(::pread(file.fd(), &byte, 1, 0), 1);
+  EXPECT_EQ(byte, 0x6b);
+  reader.close();
+}
+#endif
+
 #if defined(__APPLE__) || defined(__MACH__)
 TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
   TemporaryFile file;

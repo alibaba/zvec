@@ -433,12 +433,19 @@ bool DiskAnnIndexParam::DeserializeFromJsonObject(
     return false;
   }
 
+  DESERIALIZE_VALUE_FIELD(json_obj, max_degree);
+  DESERIALIZE_VALUE_FIELD(json_obj, list_size);
+  DESERIALIZE_VALUE_FIELD(json_obj, pq_chunk_num);
+
   return true;
 }
 
 ailego::JsonObject DiskAnnIndexParam::SerializeToJsonObject(
     bool omit_empty_value) const {
   auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set("max_degree", ailego::JsonValue(max_degree));
+  json_obj.set("list_size", ailego::JsonValue(list_size));
+  json_obj.set("pq_chunk_num", ailego::JsonValue(pq_chunk_num));
   return json_obj;
 }
 

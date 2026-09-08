@@ -227,11 +227,12 @@ Status FieldSchema::validate() const {
         //
         // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
         // synchronous pread() if neither async backend is available. On macOS,
-        // DiskAnn uses synchronous pread().
+        // DiskAnn uses synchronous pread(); Windows uses overlapped I/O.
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/ARM64) and macOS (ARM64).");
+            "Linux (x86_64/ARM64), macOS (ARM64), and Windows "
+            "(x86_64).");
 #endif
       }
 

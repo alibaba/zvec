@@ -157,12 +157,21 @@ class VamanaEntity {
   inline size_t vector_size() const {
     return header_.graph.vector_size;
   }
+  inline size_t extra_values_size() const {
+    return extra_values_size_;
+  }
+  inline size_t vector_data_size() const {
+    return vector_size() - extra_values_size_;
+  }
   inline size_t node_size() const {
     return header_.graph.node_size;
   }
 
   void set_vector_size(size_t size) {
     header_.graph.vector_size = size;
+  }
+  void set_extra_values_size(size_t size) {
+    extra_values_size_ = size < vector_size() ? size : 0;
   }
   void set_max_degree(uint32_t val) {
     header_.graph.max_degree = val;
@@ -211,6 +220,7 @@ class VamanaEntity {
 
   virtual int cleanup() {
     header_.clear();
+    extra_values_size_ = 0;
     return 0;
   }
 
@@ -221,6 +231,7 @@ class VamanaEntity {
   // Pure virtual interface
   virtual key_t get_key(node_id_t id) const = 0;
   virtual const void *get_vector(node_id_t id) const = 0;
+  virtual const void *get_extra_values(node_id_t id) const = 0;
   virtual int get_vector(const node_id_t id,
                          IndexStorage::MemoryBlock &block) const = 0;
   virtual int get_vector(const node_id_t *ids, uint32_t count,
@@ -360,6 +371,9 @@ class VamanaEntity {
 
  protected:
   VamanaHeader header_{};
+  // Runtime-only layout metadata supplied by the query metric. The persisted
+  // vector_size remains the complete encoded record size for compatibility.
+  size_t extra_values_size_{0};
 };
 
 }  // namespace core

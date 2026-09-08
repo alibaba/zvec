@@ -35,6 +35,12 @@ env:
   ZVEC_CHECKOUT_REF: ${{ inputs.tag != '' && inputs.tag || github.ref }}
 
 jobs:
+  build-macos-x64:
+    name: Build (osx-amd64)
+    uses: ./.github/workflows/_build_macos_x64_sdk.yml
+    with:
+      tag: ${{ inputs.tag }}
+
   build:
     name: Build (${{ matrix.os_name }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
@@ -55,6 +61,7 @@ jobs:
             arch: arm64
             ext: tar.gz
             container: ''
+            cmake_platform_args: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             os_name: linux
@@ -90,6 +97,7 @@ jobs:
       # would be overridden by an INSTALL_DIR environment variable.
       ZVEC_INSTALL_DIR: ${{ github.workspace }}/install
       ZVEC_DIST_DIR: ${{ github.workspace }}/dist
+      ZVEC_PLATFORM_ARGS: ${{ matrix.cmake_platform_args || '' }}
 
     steps:
       - name: Checkout code
@@ -161,6 +169,7 @@ jobs:
             -DBUILD_ZVEC_CORE_SHARED=ON \
             -DBUILD_ZVEC_AILEGO_SHARED=ON \
             -DENABLE_WERROR=OFF \
+            $ZVEC_PLATFORM_ARGS \
             $ZVEC_VERSION_DEFINE
 
       - name: Build and install SDK

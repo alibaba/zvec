@@ -18,8 +18,6 @@
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 
-class LinuxAlignedFileReader;
-
 namespace zvec {
 namespace core {
 
@@ -33,6 +31,13 @@ class DiskAnnStreamer : public IndexStreamer {
 
   DiskAnnStreamer(const DiskAnnStreamer &) = delete;
   DiskAnnStreamer &operator=(const DiskAnnStreamer &) = delete;
+
+  //! Initialize Streamer with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller; it takes precedence
+  //! over the internal factory selection for full-precision distance
+  //! (graph rerank / linear search).
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
 
  protected:
   //! Initialize Searcher
@@ -116,7 +121,7 @@ class DiskAnnStreamer : public IndexStreamer {
   //! Create a searcher context
   ContextPointer create_context() const override;
 
-  //! Create a vector iterator backed by the on-disk vector segment.
+  //! Create a vector iterator backed by the aligned DiskAnn file reader.
   //! Used by the merge code path (``MixedStreamerReducer``) to walk every
   //! vector held by this streamer.
   IndexSearcher::Provider::Pointer create_provider(void) const override;
@@ -154,6 +159,8 @@ class DiskAnnStreamer : public IndexStreamer {
                                 DiskAnnContext *&ctx) const;
 
  private:
+  friend class DiskAnnCacheTestPeer;
+
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
   IndexMetric::Pointer measure_{};
@@ -163,13 +170,15 @@ class DiskAnnStreamer : public IndexStreamer {
   uint32_t list_size_{200};
   uint32_t cache_nodes_num_{0};
 
-  bool warm_up_{false};
-  uint32_t beam_size_{2};
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
 
-  // Fetches share the expensive I/O context, while returned MemoryBlocks own
+  //! Externally constructed quantizer for full-precision distance, forwarded
+  //! to every context's DistCalculator (may be empty).
+  turbo::Quantizer::Pointer data_quantizer_{};
+
+  // Fetches share a lightweight I/O context, while returned MemoryBlocks own
   // independent copies so their lifetime does not depend on this buffer.
   mutable std::mutex fetch_mutex_;
   mutable ContextPointer fetch_ctx_{};

@@ -132,6 +132,8 @@ class IOBackendType:
     - PREAD: Synchronous pread() — no async I/O.
     - LIBAIO: libaio loaded at runtime via dlopen().
     - IO_URING: io_uring via raw kernel syscalls (zero dependency).
+    - WINDOWS_OVERLAPPED: Windows unbuffered overlapped I/O using per-context
+      I/O completion ports.
 
     Examples:
         >>> from zvec.typing import IOBackendType
@@ -146,14 +148,19 @@ class IOBackendType:
       LIBAIO
 
       IO_URING
+
+      WINDOWS_OVERLAPPED
     """
 
-    IO_URING: typing.ClassVar[IOBackendType]  # value = <IOBackendType.IO_URING: 2>
-    LIBAIO: typing.ClassVar[IOBackendType]  # value = <IOBackendType.LIBAIO: 1>
     PREAD: typing.ClassVar[IOBackendType]  # value = <IOBackendType.PREAD: 0>
+    LIBAIO: typing.ClassVar[IOBackendType]  # value = <IOBackendType.LIBAIO: 1>
+    IO_URING: typing.ClassVar[IOBackendType]  # value = <IOBackendType.IO_URING: 2>
+    WINDOWS_OVERLAPPED: typing.ClassVar[
+        IOBackendType
+    ]  # value = <IOBackendType.WINDOWS_OVERLAPPED: 3>
     __members__: typing.ClassVar[
         dict[str, IOBackendType]
-    ]  # value = {'PREAD': <IOBackendType.PREAD: 0>, 'LIBAIO': <IOBackendType.LIBAIO: 1>, 'IO_URING': <IOBackendType.IO_URING: 2>}
+    ]  # value includes PREAD, LIBAIO, IO_URING, and WINDOWS_OVERLAPPED
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...

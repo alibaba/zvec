@@ -218,6 +218,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kUniformUint8:
           converter_name = "UniformUint8Converter";
           break;
+        case QuantizerType::kUniformUint4:
+          converter_name = "UniformUint4Converter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;

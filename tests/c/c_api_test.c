@@ -162,10 +162,15 @@ void test_io_backend_functions(void) {
   TEST_ASSERT(
       strcmp(zvec_get_io_backend_type_name(ZVEC_IO_BACKEND_TYPE_IO_URING),
              "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED),
+                     "windows_overlapped") == 0);
   TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(999), "unknown") == 0);
 
   zvec_io_backend_type_t current = zvec_get_io_backend_type();
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(_WIN32)
+  TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED);
+#elif defined(__APPLE__) && defined(__MACH__)
   TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD);
 #else
   TEST_ASSERT(current == ZVEC_IO_BACKEND_TYPE_PREAD ||
@@ -5230,7 +5235,7 @@ void test_performance_benchmarks(void) {
           // Create random vector
           float vec[128];
           for (int j = 0; j < 128; j++) {
-            vec[j] = (float)rand() / RAND_MAX;
+            vec[j] = (float)rand() / (float)RAND_MAX;
           }
           zvec_doc_add_field_by_value(batch_docs[i], "vec",
                                       ZVEC_DATA_TYPE_VECTOR_FP32, vec,
@@ -5271,7 +5276,7 @@ void test_performance_benchmarks(void) {
       // Test query performance
       float query_vec[128];
       for (int i = 0; i < 128; i++) {
-        query_vec[i] = (float)rand() / RAND_MAX;
+        query_vec[i] = (float)rand() / (float)RAND_MAX;
       }
 
       zvec_vector_query_t *query = zvec_vector_query_create();

@@ -13,11 +13,24 @@
 // limitations under the License.
 
 #include "diskann_searcher_entity.h"
+#include "diskann_util.h"
 
 namespace zvec {
 namespace core {
 
 void DiskAnnSearcherEntity::clear() {
+  release_storage();
+  pq_codes_.reset();
+  key_buffer_.reset();
+  key_mapping_buffer_.reset();
+  entrypoints_.clear();
+  meta_.clear();
+  meta_header_ = {};
+  pq_meta_ = {};
+  legacy_pq_layout_ = false;
+}
+
+void DiskAnnSearcherEntity::release_storage() {
   storage_.reset();
   meta_segment_.reset();
   pq_meta_segment_.reset();
@@ -26,68 +39,26 @@ void DiskAnnSearcherEntity::clear() {
   key_segment_.reset();
   key_mapping_segment_.reset();
   entrypoint_segment_.reset();
-  pq_table_.reset();
-  key_buffer_.clear();
-  key_mapping_buffer_.clear();
-  entrypoints_.clear();
-  meta_.clear();
-  meta_header_ = {};
-  pq_meta_ = {};
 }
 
 const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
-  auto meta_segment = meta_segment_->clone();
-  if (ailego_unlikely(!meta_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnMetaSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto pq_meta_segment = pq_meta_segment_->clone();
-  if (ailego_unlikely(!pq_meta_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnPqMetaSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto pq_data_segment = pq_data_segment_->clone();
-  if (ailego_unlikely(!pq_data_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnPqDataSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto vector_segment = vector_segment_->clone();
-  if (ailego_unlikely(!vector_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnVectorSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto key_segment = key_segment_->clone();
-  if (ailego_unlikely(!key_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnKeySegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto key_mapping_segment = key_mapping_segment_->clone();
-  if (ailego_unlikely(!key_mapping_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnKeyMappingSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  auto entrypoint_segment = entrypoint_segment_->clone();
-  if (ailego_unlikely(!entrypoint_segment)) {
-    LOG_ERROR("clone segment %s failed", kDiskAnnEntryPointSegmentId.c_str());
-    return DiskAnnEntity::Pointer();
-  }
-
-  DiskAnnSearcherEntity *entity = new (std::nothrow) DiskAnnSearcherEntity(
-      meta_header_, pq_meta_, meta_segment, pq_meta_segment, pq_data_segment,
-      vector_segment, key_segment, key_mapping_segment, entrypoint_segment,
-      num_threads_, list_size_, cache_nodes_num_, warm_up_, beam_size_, meta_,
-      pq_table_, key_buffer_, key_mapping_buffer_, entrypoints_);
+  std::unique_ptr<DiskAnnSearcherEntity> entity(new (std::nothrow)
+                                                    DiskAnnSearcherEntity());
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("DiskAnnSearcherEntity new failed");
+    return DiskAnnEntity::Pointer();
   }
 
-  return DiskAnnEntity::Pointer(entity);
+  entity->meta_header_ = meta_header_;
+  entity->pq_meta_ = pq_meta_;
+  entity->meta_ = meta_;
+  entity->legacy_pq_layout_ = legacy_pq_layout_;
+  entity->pq_codes_ = pq_codes_;
+  entity->key_buffer_ = key_buffer_;
+  entity->key_mapping_buffer_ = key_mapping_buffer_;
+  entity->entrypoints_ = entrypoints_;
+
+  return DiskAnnEntity::Pointer(entity.release());
 }
 
 int DiskAnnSearcherEntity::load(const IndexMeta &meta,
@@ -168,60 +139,25 @@ int DiskAnnSearcherEntity::load_pq_segment() {
 
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
+
+  int ret =
+      DiskAnnUtil::normalize_pq_meta(meta_, &pq_meta_, &legacy_pq_layout_);
+  if (ret != 0) {
+    return ret;
+  }
+
   if (pq_meta_.chunk_num == 0 || meta_header_.doc_cnt == 0 ||
-      pq_meta_.full_pivot_data_size == 0 || pq_meta_.centroid_data_size == 0 ||
+      pq_meta_.quantizer_meta_buffer_size == 0 ||
       pq_meta_.chunk_num > meta_.dimension()) {
     LOG_ERROR("Invalid empty DiskAnn PQ metadata");
     return IndexError_InvalidFormat;
   }
 
-  // 2. read full pivot data
-  std::vector<uint8_t> full_pivot_data;
-  full_pivot_data.resize(pq_meta_.full_pivot_data_size);
+  // The serialized quantizer meta buffer follows the PQ meta in this segment;
+  // it is NOT parsed here.  The searcher/streamer reads it on demand via
+  // read_pq_quantizer_meta_buffer() and constructs the quantizer itself.
 
-  read_size =
-      pq_meta_segment_->read(offset, &data, pq_meta_.full_pivot_data_size);
-  if (read_size != pq_meta_.full_pivot_data_size) {
-    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(pq_meta_.full_pivot_data_size), (size_t)read_size);
-    return IndexError_ReadData;
-  }
-  memcpy(&(full_pivot_data[0]), data, read_size);
-  offset += read_size;
-
-  // 3. read centroid
-  std::vector<uint8_t> centroid;
-  centroid.resize(pq_meta_.centroid_data_size);
-
-  read_size =
-      pq_meta_segment_->read(offset, &data, pq_meta_.centroid_data_size);
-  if (read_size != pq_meta_.centroid_data_size) {
-    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(pq_meta_.centroid_data_size), (size_t)read_size);
-    return IndexError_ReadData;
-  }
-  memcpy(&(centroid[0]), data, read_size);
-  offset += read_size;
-
-  // 4. chunk offset
-  std::vector<uint32_t> chunk_offsets;
-  chunk_offsets.resize(pq_meta_.chunk_num + 1);
-
-  read_size = pq_meta_segment_->read(
-      offset, &data, (pq_meta_.chunk_num + 1) * sizeof(uint32_t));
-  if (read_size != (pq_meta_.chunk_num + 1) * sizeof(uint32_t)) {
-    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)((pq_meta_.chunk_num + 1) * sizeof(uint32_t)),
-              (size_t)read_size);
-    return IndexError_ReadData;
-  }
-  memcpy(&(chunk_offsets[0]), data, read_size);
-
-  // load pq data
-  std::vector<uint8_t> pq_data;
+  // 2. load pq codes (uint8[chunk_num] per vector)
   pq_data_segment_ = storage_->get(DiskAnnEntity::kDiskAnnPqDataSegmentId);
   if (!pq_data_segment_) {
     LOG_ERROR("Miss or invalid segment %s",
@@ -229,24 +165,47 @@ int DiskAnnSearcherEntity::load_pq_segment() {
     return IndexError_InvalidFormat;
   }
 
-  pq_data.resize(meta_header_.doc_cnt * pq_meta_.chunk_num);
+  size_t code_bytes = meta_header_.doc_cnt * pq_meta_.chunk_num;
 
-  void *pq_data_ptr = &pq_data[0];
-  read_size = pq_data_segment_->fetch(
-      0, pq_data_ptr, meta_header_.doc_cnt * pq_meta_.chunk_num);
+  try {
+    auto pq_codes = std::make_shared<std::string>(code_bytes, '\0');
+    read_size = pq_data_segment_->fetch(0, &(*pq_codes)[0], code_bytes);
+    if (read_size != code_bytes) {
+      LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
+                DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(), code_bytes,
+                (size_t)read_size);
 
-  if (read_size != meta_header_.doc_cnt * pq_meta_.chunk_num) {
+      return IndexError_ReadData;
+    }
+    pq_codes_ = std::move(pq_codes);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to allocate DiskAnn PQ code buffer");
+    return IndexError_NoMemory;
+  }
+
+  return 0;
+}
+
+int DiskAnnSearcherEntity::read_pq_quantizer_meta_buffer(
+    std::string *meta_buffer) const {
+  if (!meta_buffer || !pq_meta_segment_) {
+    return IndexError_InvalidArgument;
+  }
+
+  // The meta buffer is stored right after the DiskAnnPqMeta header in the
+  // segment.
+  const void *data = nullptr;
+  size_t read_size = pq_meta_segment_->read(
+      sizeof(DiskAnnPqMeta), &data, pq_meta_.quantizer_meta_buffer_size);
+  if (read_size != pq_meta_.quantizer_meta_buffer_size) {
     LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
               DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(meta_header_.doc_cnt * pq_meta_.chunk_num),
-              (size_t)read_size);
-
+              (size_t)(pq_meta_.quantizer_meta_buffer_size), (size_t)read_size);
     return IndexError_ReadData;
   }
 
-  pq_table_ = std::make_shared<PQTable>(meta_, pq_meta_.chunk_num);
-
-  return pq_table_->init(full_pivot_data, centroid, chunk_offsets, pq_data);
+  meta_buffer->assign(reinterpret_cast<const char *>(data), read_size);
+  return 0;
 }
 
 int DiskAnnSearcherEntity::load_header_segment() {
@@ -298,8 +257,14 @@ int DiskAnnSearcherEntity::load_key_segment() {
     return IndexError_ReadData;
   }
 
-  key_buffer_.resize(key_data_len);
-  memcpy(&(key_buffer_[0]), data, key_data_len);
+  try {
+    auto key_buffer = std::make_shared<std::string>(key_data_len, '\0');
+    memcpy(&(*key_buffer)[0], data, key_data_len);
+    key_buffer_ = std::move(key_buffer);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to allocate DiskAnn key buffer");
+    return IndexError_NoMemory;
+  }
 
   return 0;
 }
@@ -359,8 +324,15 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
     return IndexError_ReadData;
   }
 
-  key_mapping_buffer_.resize(key_mapping_data_len);
-  memcpy(&(key_mapping_buffer_[0]), data, key_mapping_data_len);
+  try {
+    auto key_mapping_buffer =
+        std::make_shared<std::string>(key_mapping_data_len, '\0');
+    memcpy(&(*key_mapping_buffer)[0], data, key_mapping_data_len);
+    key_mapping_buffer_ = std::move(key_mapping_buffer);
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Failed to allocate DiskAnn key mapping buffer");
+    return IndexError_NoMemory;
+  }
 
   return 0;
 }
@@ -368,10 +340,10 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
 //! Get vector local id by key
 diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
   const diskann_id_t *key_mapping_data_ptr =
-      reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_.data());
+      reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_->data());
 
   const diskann_key_t *key_data_ptr =
-      reinterpret_cast<const diskann_key_t *>(key_buffer_.data());
+      reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
 
   //! Do binary search
   diskann_id_t start = 0UL;
@@ -397,66 +369,9 @@ diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
 
 diskann_key_t DiskAnnSearcherEntity::get_key(diskann_id_t id) const {
   const diskann_key_t *key_data_ptr =
-      reinterpret_cast<const diskann_key_t *>(key_buffer_.data());
+      reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
 
   return key_data_ptr[id];
-}
-
-const void *DiskAnnSearcherEntity::get_vector(diskann_id_t id) const {
-  if (!vector_segment_) {
-    LOG_ERROR("Vector segment is null");
-    return nullptr;
-  }
-
-  uint64_t sector_offset =
-      DiskAnnUtil::get_node_sector(node_per_sector(), max_node_size(),
-                                   DiskAnnUtil::kSectorSize, id) *
-      DiskAnnUtil::kSectorSize;
-  uint64_t within_sector_offset =
-      (node_per_sector() == 0 ? 0 : (id % node_per_sector()) * max_node_size());
-  uint64_t total_offset = sector_offset + within_sector_offset;
-
-  size_t read_size = meta_.element_size();
-  const void *vec;
-  if (ailego_unlikely(vector_segment_->read(total_offset, &vec, read_size) !=
-                      read_size)) {
-    LOG_ERROR("Read vector from segment failed, id: %u, offset: %llu", id,
-              (unsigned long long)total_offset);
-    return nullptr;
-  }
-
-  return vec;
-}
-
-std::pair<uint32_t, const diskann_id_t *> DiskAnnSearcherEntity::get_neighbors(
-    diskann_id_t id) const {
-  if (!vector_segment_) {
-    return std::make_pair(0, nullptr);
-  }
-
-  uint64_t read_sector_offset =
-      DiskAnnUtil::get_node_sector(node_per_sector(), max_node_size(),
-                                   DiskAnnUtil::kSectorSize, id) *
-      DiskAnnUtil::kSectorSize;
-  uint64_t node_vec_offset =
-      read_sector_offset +
-      (node_per_sector() == 0 ? 0 : (id % node_per_sector()) * max_node_size());
-
-  const void *data;
-  if (ailego_unlikely(
-          vector_segment_->read(node_vec_offset, &data, max_node_size()) !=
-          max_node_size())) {
-    LOG_ERROR("Read neighbors from segment failed");
-    return {0, nullptr};
-  }
-
-  const uint8_t *data_ptr = reinterpret_cast<const uint8_t *>(data);
-  const diskann_id_t *node_neighbor =
-      reinterpret_cast<const diskann_id_t *>(data_ptr + meta_.element_size());
-
-  auto neighbor_num = *node_neighbor;
-
-  return std::make_pair(neighbor_num, node_neighbor + 1);
 }
 
 }  // namespace core

@@ -160,7 +160,10 @@ class HnswRabitqAddDistCalculator {
   void batch_dist(const void **vecs, size_t num, dist_t *distances) {
     compare_cnt_++;
 
-    batch_distance_(vecs, query_, num, dim_, distances);
+    // HnswRabitqStreamer::open() rejects every distance space with
+    // framework-managed extra values, so nullptr is part of this calculator's
+    // invariant rather than a per-call layout decision.
+    batch_distance_(vecs, query_, num, dim_, distances, nullptr);
   }
 
   inline dist_t batch_dist(node_id_t id) {
@@ -173,7 +176,7 @@ class HnswRabitqAddDistCalculator {
       return 0.0f;
     }
     dist_t score = 0;
-    batch_distance_(&feat, query_, 1, dim_, &score);
+    batch_distance_(&feat, query_, 1, dim_, &score, nullptr);
 
     return score;
   }

@@ -24,7 +24,7 @@ using diskann_key_t = uint64_t;
 using diskann_id_t = uint32_t;
 
 constexpr diskann_id_t kInvalidId = static_cast<diskann_id_t>(-1);
-constexpr diskann_key_t kInvalidKey = static_cast<key_t>(-1);
+constexpr diskann_key_t kInvalidKey = static_cast<diskann_key_t>(-1);
 
 struct VectorInfo {
   float dist_;
@@ -83,11 +83,9 @@ struct DiskAnnMetaHeader {
 
 struct DiskAnnPqMeta {
  public:
-  uint64_t full_pivot_data_size{0};
-  uint64_t centroid_data_size{0};
-  uint64_t chunk_offsets_size{0};
+  uint64_t quantizer_meta_buffer_size{0};
   uint64_t chunk_num{0};
-  uint8_t reserved[128];
+  uint8_t reserved[144];
 
   DiskAnnPqMeta() {
     clear();
@@ -103,6 +101,28 @@ static_assert(sizeof(DiskAnnMetaHeader) == 4096,
 
 static_assert(sizeof(DiskAnnPqMeta) % 32 == 0,
               "DiskAnnPqMeta size must be a multiple of 32 bytes");
+
+//! PQ metadata of indexes dumped before the codebook moved into the turbo
+//! quantizer's own serialization format.  It occupies the same bytes as
+//! DiskAnnPqMeta, but the payload behind it is the raw codebook instead of a
+//! quantizer meta buffer.  Read-only: nothing writes this layout anymore.
+struct DiskAnnLegacyPqMeta {
+ public:
+  uint64_t full_pivot_data_size{0};
+  uint64_t centroid_data_size{0};
+  //! Never populated by the writers of this layout: always 0, so the chunk
+  //! offset length has to be derived from chunk_num.
+  uint64_t chunk_offsets_size{0};
+  uint64_t chunk_num{0};
+  uint8_t reserved[128];
+
+  DiskAnnLegacyPqMeta() {
+    memset(this, 0, sizeof(DiskAnnLegacyPqMeta));
+  }
+};
+
+static_assert(sizeof(DiskAnnLegacyPqMeta) == sizeof(DiskAnnPqMeta),
+              "DiskAnnLegacyPqMeta must overlay DiskAnnPqMeta exactly");
 
 class DiskAnnEntity {
  public:

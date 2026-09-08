@@ -68,7 +68,7 @@ jobs:
       - name: Set up environment variables
         run: |
           # Set number of processors for parallel builds
-          if [[ "${{ matrix.platform }}" == "macos-arm64" ]]; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
             NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
           else
             NPROC=$(nproc 2>/dev/null || echo 2)
@@ -136,15 +136,57 @@ jobs:
         shell: bash
 
       - name: Run C++ Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . --target unittest --parallel $NPROC
         shell: bash
 
+      - name: Run macOS x64 C++ compatibility tests
+        if: matrix.platform == 'macos-x64'
+        run: |
+          test "$(uname -m)" = "x86_64"
+          df -h /
+          cd "$GITHUB_WORKSPACE/build"
+          cmake --build . \
+            --target shared_api_test c_api_test \
+            --parallel "$NPROC"
+          ctest --output-on-failure \
+            -R '^(shared_api_test|c_api_test)$' \
+            --parallel 1
+        shell: bash
+
       - name: Run Python Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/
+        shell: bash
+
+      - name: Run macOS x64 Python compatibility smoke test
+        if: matrix.platform == 'macos-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -X faulthandler -c \
+            "import platform, zvec; print('Imported zvec on', platform.machine(), zvec.__version__)"
+          python -X faulthandler .github/scripts/macos_x64_python_smoke.py
+        shell: bash
+
+      - name: Diagnose macOS x64 Python native crash
+        if: failure() && matrix.platform == 'macos-x64'
+        run: |
+          echo "Recent macOS crash reports:"
+          find "$HOME/Library/Logs/DiagnosticReports" \
+            -type f -mmin -15 \
+            \( -name 'Python*.ips' -o -name 'Python*.crash' \) \
+            -print -exec tail -n 500 {} \; 2>/dev/null || true
+
+          echo "Reproducing under LLDB:"
+          lldb --batch \
+            -o run \
+            -k 'thread backtrace all' \
+            -- "$(command -v python)" -X faulthandler \
+            "$GITHUB_WORKSPACE/.github/scripts/macos_x64_python_smoke.py"
         shell: bash
 
       - name: Run C++ Examples
@@ -221,6 +263,7 @@ jobs:
         shell: bash
 
       - name: Run DiskAnn C++ Tests
+        if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
           ctest -R diskann --output-on-failure --parallel $NPROC

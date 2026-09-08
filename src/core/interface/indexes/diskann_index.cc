@@ -96,14 +96,12 @@ int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_.max_degree = std::min(100, param_.max_degree);
   param_.list_size = std::min(100, param_.list_size);
   param_.pq_chunk_num = std::min(1024, param_.pq_chunk_num);
-
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_DEGREE,
                             param_.max_degree);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_LIST_SIZE,
                             param_.list_size);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM,
                             param_.pq_chunk_num);
-
   builder_ = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("DiskAnnStreamer");
 

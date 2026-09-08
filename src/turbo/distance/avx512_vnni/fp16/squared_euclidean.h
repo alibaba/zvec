@@ -25,6 +25,7 @@ void squared_euclidean_fp16_distance(const void *lhs, const void *rhs,
 void squared_euclidean_fp16_batch_distance(const void *const *vectors,
                                            const void *query, std::size_t count,
                                            std::size_t dimension,
-                                           float *distances);
+                                           float *distances,
+                                           const void *const *extra_values);
 
 }  // namespace zvec::turbo::avx512_vnni

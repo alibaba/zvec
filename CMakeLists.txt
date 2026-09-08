@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0077 NEW)
+# Some thirdparty subdirectories declare cmake_minimum_required < 3.25, which would
+# leave CMP0141 unset for them and make them ignore CMAKE_MSVC_DEBUG_INFORMATION_FORMAT.
+# Force NEW as the default so /Z7 (see below) is applied uniformly across the whole tree.
+set(CMAKE_POLICY_DEFAULT_CMP0141 NEW)
 project(zvec)
 set(CC_CXX_STANDARD 17)
 
@@ -7,13 +11,13 @@ if(MSVC)
     set(INTTYPES_FORMAT VC7)
     add_compile_options(/utf-8)
     # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
-    # Use CACHE FORCE so it propagates into thirdparty subdirectories that call project().
-    foreach(_cfg DEBUG RELWITHDEBINFO)
-        foreach(_lang C CXX)
-            string(REPLACE "/Zi" "/Z7" _flags "${CMAKE_${_lang}_FLAGS_${_cfg}}")
-            set(CMAKE_${_lang}_FLAGS_${_cfg} "${_flags}" CACHE STRING "" FORCE)
-        endforeach()
-    endforeach()
+    # Since CMake 3.25 (CMP0141=NEW) the debug info format is no longer part of
+    # CMAKE_*_FLAGS_<CFG> but is driven by this abstract variable and appended at the end of
+    # the compile command. Patching /Zi->/Z7 in the flag strings is therefore a no-op and the
+    # abstract default (/Zi) would clash with thirdparty /Z7, producing warning D9025.
+    # CACHE FORCE so it propagates into thirdparty subdirectories that call project().
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
+        "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>" CACHE STRING "" FORCE)
     add_compile_options(/EHsc) # def c++ exception behavior
     add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
     add_compile_options(/we4716) # -Werror=return-type
@@ -160,8 +164,10 @@ message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 # DiskAnn support:
 #   - Linux x86_64 and ARM64 with io_uring, libaio, or pread
 #   - macOS ARM64 (Apple Silicon) with synchronous pread
+#   - Windows x86_64 with overlapped I/O
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" AND NOT ANDROID AND NOT IOS)
-    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS))
+    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS)
+    OR (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
