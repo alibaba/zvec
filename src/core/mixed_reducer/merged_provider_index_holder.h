@@ -72,7 +72,7 @@ class MergedProviderIndexHolder final : public IndexHolder,
   int status(void) const;
 
   // The reducer clears this after synchronous train/build finishes because a
-  // builder (notably DiskANN) may retain the holder until a later dump call.
+  // provider-backed IVF builder may retain the holder until a later dump call.
   void set_stop_flag(std::atomic<bool> *stop_flag);
 
  private:

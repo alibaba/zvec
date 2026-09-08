@@ -18,7 +18,6 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
-#include "utility/releasable_converter.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
@@ -273,12 +272,10 @@ int IVFIndex::DumpAndOpen() {
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
-  // Converter results can retain the merged holder and every source streamer
-  // even after the old builder is gone. Keep only the trained converter state.
-  if (auto *releasable =
-          dynamic_cast<core::ReleasableConverter *>(converter_.get())) {
-    releasable->release_result();
-  }
+  // Only the reformer is needed after the persisted index is ready. Destroy
+  // the build-only converter and its input ownership chain, but keep it on
+  // every failure path so dump/open can be retried with the trained state.
+  converter_.reset();
   holder_.reset();
   decltype(doc_cache_)().swap(doc_cache_);
   return 0;

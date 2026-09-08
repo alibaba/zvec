@@ -1417,6 +1417,9 @@ class InspectableIVFIndex : public IVFIndex {
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
     return builder_;
   }
+  std::weak_ptr<zvec::core::IndexConverter> conversion_state() const {
+    return converter_;
+  }
   zvec::core::IndexHolder::Pointer converted_input() const {
     return converter_ ? converter_->result() : nullptr;
   }
@@ -1450,10 +1453,13 @@ TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
   auto build_state = inspected->build_state();
   ASSERT_EQ(0, target->open(parent + "/index",
                             {StorageOptions::StorageType::kMMAP, true}));
+  auto conversion_state = inspected->conversion_state();
+  ASSERT_FALSE(conversion_state.expired());
   std::vector<float> vector(16, 1.0F);
   ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
   EXPECT_NE(0, target->train());
   EXPECT_FALSE(build_state.expired());
+  EXPECT_FALSE(conversion_state.expired());
   EXPECT_NE(nullptr, inspected->converted_input());
   EXPECT_FALSE(target->is_trained());
   // The pending snapshot must not silently ignore newly added records.
@@ -1466,6 +1472,7 @@ TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
   ASSERT_EQ(0, target->train());
   EXPECT_TRUE(target->is_trained());
   EXPECT_TRUE(build_state.expired());
+  EXPECT_TRUE(conversion_state.expired());
   EXPECT_EQ(nullptr, inspected->converted_input());
   EXPECT_EQ(1u, target->get_doc_count());
   VectorDataBuffer fetched;
@@ -1582,17 +1589,21 @@ TEST(IndexInterface, IvfRetriesOpeningWithoutRebuildingOrRedumping) {
   auto build_state = inspected->build_state();
   auto reformer =
       inspected->replace_reformer(std::make_shared<FailingLoadReformer>());
+  auto conversion_state = inspected->conversion_state();
+  ASSERT_FALSE(conversion_state.expired());
   ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP, true}));
   std::vector<float> vector(16, 0.125F);
   ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
   EXPECT_NE(0, target->train());
   EXPECT_FALSE(target->is_trained());
   EXPECT_TRUE(build_state.expired());
+  EXPECT_FALSE(conversion_state.expired());
   EXPECT_NE(nullptr, inspected->converted_input());
   auto next_builder = inspected->build_state();
   inspected->replace_reformer(std::move(reformer));
   ASSERT_EQ(0, target->train());
   EXPECT_FALSE(next_builder.expired());
+  EXPECT_TRUE(conversion_state.expired());
   EXPECT_EQ(nullptr, inspected->converted_input());
   EXPECT_EQ(1u, target->get_doc_count());
   VectorDataBuffer fetched;
@@ -1663,8 +1674,12 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
   constexpr uint32_t kDimension = 16;
   constexpr uint32_t kCount = 64;
   const std::vector<std::pair<MetricType, QuantizerParam>> cases = {
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kNone)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kNone)},
       {MetricType::kL2sq, QuantizerParam(QuantizerType::kFP16)},
       {MetricType::kCosine, QuantizerParam(QuantizerType::kFP16)},
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kInt8)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kInt8)},
       {MetricType::kL2sq, QuantizerParam(QuantizerType::kInt8, true)},
       {MetricType::kCosine, QuantizerParam(QuantizerType::kInt8, true)},
   };
@@ -1687,7 +1702,7 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
                        .with_n_list(1)
                        .build();
       auto inspected = std::make_shared<InspectableIVFIndex>();
-      // This tests build-state lifetime and converter persistence, not
+      // This tests build-state release and reformer persistence, not
       // quantized centroid arithmetic. OptKmeans currently averages INT8
       // record metadata as integer coordinates, which can corrupt scale/bias
       // with randomly rotated input. Train the single INT8 centroid from one
@@ -1697,6 +1712,10 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       ASSERT_EQ(0, inspected->initialize(*param, train_sample_count));
       Index::Pointer target = inspected;
       auto build_state = inspected->build_state();
+      auto conversion_state = inspected->conversion_state();
+      EXPECT_EQ(metric != MetricType::kCosine &&
+                    quantizer.type == QuantizerType::kNone,
+                conversion_state.expired());
       ASSERT_EQ(0,
                 target->open(path, {StorageOptions::StorageType::kMMAP, true}));
       auto source_param = FlatIndexParamBuilder()
@@ -1718,6 +1737,7 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       }
       ASSERT_EQ(0, merge ? target->merge({source}, {}) : target->train());
       EXPECT_TRUE(build_state.expired());
+      EXPECT_TRUE(conversion_state.expired());
       EXPECT_EQ(nullptr, inspected->converted_input());
       // Releasing the caller's source must also release its streamer, without
       // needing to destroy the successfully built target index.
@@ -1760,6 +1780,16 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       ASSERT_EQ(0, reopened->fetch(7, &after));
       EXPECT_EQ(before_data,
                 std::get<DenseVectorBuffer>(after.vector_buffer).data);
+      SearchResult reopened_result;
+      ASSERT_EQ(0, reopened->search(VectorData{DenseVector{vector.data()}},
+                                    query_param, &reopened_result));
+      ASSERT_EQ(result.doc_list_.size(), reopened_result.doc_list_.size());
+      for (size_t i = 0; i < result.doc_list_.size(); ++i) {
+        EXPECT_EQ(result.doc_list_[i].key(),
+                  reopened_result.doc_list_[i].key());
+        EXPECT_FLOAT_EQ(result.doc_list_[i].score(),
+                        reopened_result.doc_list_[i].score());
+      }
       ASSERT_EQ(0, reopened->close());
       zvec::test_util::RemoveTestFiles(path);
       zvec::test_util::RemoveTestFiles(source_path);
@@ -2008,29 +2038,18 @@ TEST(IndexInterface, Fp16CosineRefinementMatchesFp16Storage) {
               direct_result.reverted_vector_list_.size());
     ASSERT_EQ(direct_result.reverted_vector_list_.size(),
               refined_result.reverted_vector_list_.size());
-    // FP16 cosine can produce equal scores. Direct search and refinement scan
-    // candidates in different orders, so align refined results by key instead
-    // of requiring an unspecified stable order for ties.
-    std::unordered_map<uint64_t, size_t> refined_positions;
-    for (size_t i = 0; i < refined_result.doc_list_.size(); ++i) {
-      ASSERT_TRUE(
-          refined_positions.emplace(refined_result.doc_list_[i].key(), i)
-              .second);
-    }
     for (size_t i = 0; i < direct_result.doc_list_.size(); ++i) {
-      auto refined_it =
-          refined_positions.find(direct_result.doc_list_[i].key());
-      ASSERT_NE(refined_positions.end(), refined_it);
-      const size_t refined_i = refined_it->second;
+      EXPECT_EQ(direct_result.doc_list_[i].key(),
+                refined_result.doc_list_[i].key());
       EXPECT_NEAR(direct_result.doc_list_[i].score(),
-                  refined_result.doc_list_[refined_i].score(), 1e-6F);
+                  refined_result.doc_list_[i].score(), 1e-6F);
 
       ASSERT_EQ(kDimension * sizeof(float),
-                refined_result.reverted_vector_list_[refined_i].size());
+                refined_result.reverted_vector_list_[i].size());
       ASSERT_EQ(kDimension * sizeof(float),
                 direct_result.reverted_vector_list_[i].size());
       const auto *restored = reinterpret_cast<const float *>(
-          refined_result.reverted_vector_list_[refined_i].data());
+          refined_result.reverted_vector_list_[i].data());
       const auto *direct_restored = reinterpret_cast<const float *>(
           direct_result.reverted_vector_list_[i].data());
       for (uint32_t d = 0; d < kDimension; ++d) {
