@@ -208,6 +208,14 @@ jobs:
               RETRY_REASON=""
               if grep -q "unknown to FrontBoard" "$LOG_FILE"; then
                 RETRY_REASON="FrontBoard has not registered ${TEST_NAME} yet"
+              elif [ "$LAUNCH_EXIT" -eq 3 ] && [ "$SUMMARY_FOUND" -eq 1 ] && \
+                   grep -Fq 'domain=FBSOpenApplicationServiceErrorDomain, code=3' "$LOG_FILE" && \
+                   grep -Fq 'The process did launch, but has since exited or crashed.' "$LOG_FILE" && \
+                   grep -Eq '^\[  PASSED  \][[:space:]]+[1-9][0-9]* tests?\.' "$LOG_FILE" && \
+                   ! grep -Eq '^\[  FAILED  \]' "$LOG_FILE"; then
+                # Short tests can finish before FrontBoard confirms the launch.
+                # Retry this case, but still require a clean launch and test result.
+                RETRY_REASON="${TEST_NAME} finished before FrontBoard confirmed its launch"
               elif [ "$LAUNCH_EXIT" -eq 0 ] && [ "$SUMMARY_FOUND" -eq 0 ] && \
                    ! grep -Eq '^\[  FAILED  \]' "$LOG_FILE"; then
                 RETRY_REASON="${TEST_NAME} exited without a complete test summary"
