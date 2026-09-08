@@ -31,25 +31,20 @@ class NumericalVectorArray {
   using ValueType = typename NumericalVector<T>::ValueType;
 
   //! Constructor
-  NumericalVectorArray(void) {}
+  NumericalVectorArray(void) = default;
 
   //! Constructor
   explicit NumericalVectorArray(size_t dim) : dimension_(dim) {}
 
   //! Constructor
-  NumericalVectorArray(const NumericalVectorArray &rhs)
-      : dimension_(rhs.dimension_), buffer_(rhs.buffer_) {}
+  NumericalVectorArray(const NumericalVectorArray &rhs) = default;
 
   //! Constructor
   NumericalVectorArray(NumericalVectorArray &&rhs)
       : dimension_(rhs.dimension_), buffer_(std::move(rhs.buffer_)) {}
 
   //! Assignment
-  NumericalVectorArray &operator=(const NumericalVectorArray &rhs) {
-    dimension_ = rhs.dimension_;
-    buffer_ = rhs.buffer_;
-    return *this;
-  }
+  NumericalVectorArray &operator=(const NumericalVectorArray &rhs) = default;
 
   //! Assignment
   NumericalVectorArray &operator=(NumericalVectorArray &&rhs) {
@@ -208,7 +203,7 @@ class NibbleVectorArray {
   using StoreType = typename NibbleVector<T>::StoreType;
 
   //! Constructor
-  NibbleVectorArray(void) {}
+  NibbleVectorArray(void) = default;
 
   //! Constructor
   explicit NibbleVectorArray(size_t dim)
@@ -217,19 +212,14 @@ class NibbleVectorArray {
                    << 1) {}
 
   //! Constructor
-  NibbleVectorArray(const NibbleVectorArray &rhs)
-      : dimension_(rhs.dimension_), buffer_(rhs.buffer_) {}
+  NibbleVectorArray(const NibbleVectorArray &rhs) = default;
 
   //! Constructor
   NibbleVectorArray(NibbleVectorArray &&rhs)
       : dimension_(rhs.dimension_), buffer_(std::move(rhs.buffer_)) {}
 
   //! Assignment
-  NibbleVectorArray &operator=(const NibbleVectorArray &rhs) {
-    dimension_ = rhs.dimension_;
-    buffer_ = rhs.buffer_;
-    return *this;
-  }
+  NibbleVectorArray &operator=(const NibbleVectorArray &rhs) = default;
 
   //! Assignment
   NibbleVectorArray &operator=(NibbleVectorArray &&rhs) {
@@ -386,7 +376,7 @@ class BinaryVectorArray {
   using ValueType = typename BinaryVector<T>::ValueType;
 
   //! Constructor
-  BinaryVectorArray(void) {}
+  BinaryVectorArray(void) = default;
 
   //! Constructor
   explicit BinaryVectorArray(size_t dim)
@@ -394,19 +384,14 @@ class BinaryVectorArray {
                    (sizeof(ValueType) << 3) * (sizeof(ValueType) << 3)) {}
 
   //! Constructor
-  BinaryVectorArray(const BinaryVectorArray &rhs)
-      : dimension_(rhs.dimension_), buffer_(rhs.buffer_) {}
+  BinaryVectorArray(const BinaryVectorArray &rhs) = default;
 
   //! Constructor
   BinaryVectorArray(BinaryVectorArray &&rhs)
       : dimension_(rhs.dimension_), buffer_(std::move(rhs.buffer_)) {}
 
   //! Assignment
-  BinaryVectorArray &operator=(const BinaryVectorArray &rhs) {
-    dimension_ = rhs.dimension_;
-    buffer_ = rhs.buffer_;
-    return *this;
-  }
+  BinaryVectorArray &operator=(const BinaryVectorArray &rhs) = default;
 
   //! Assignment
   BinaryVectorArray &operator=(BinaryVectorArray &&rhs) {

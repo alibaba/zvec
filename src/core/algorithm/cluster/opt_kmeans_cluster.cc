@@ -26,10 +26,10 @@ namespace core {
 class OptKmeansAlgorithm : public IndexCluster {
  public:
   //! Constructor
-  OptKmeansAlgorithm(void) {}
+  OptKmeansAlgorithm(void) = default;
 
   //! Destructor
-  ~OptKmeansAlgorithm(void) override {}
+  ~OptKmeansAlgorithm(void) override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;
@@ -495,10 +495,10 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NumericalKmeansAlgorithm(void) {}
+  NumericalKmeansAlgorithm(void) = default;
 
   //! Destructor
-  ~NumericalKmeansAlgorithm(void) override {}
+  ~NumericalKmeansAlgorithm(void) override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -628,10 +628,10 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NibbleKmeansAlgorithm(void) {}
+  NibbleKmeansAlgorithm(void) = default;
 
   //! Destructor
-  ~NibbleKmeansAlgorithm(void) override {}
+  ~NibbleKmeansAlgorithm(void) override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -762,10 +762,10 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NumericalInnerProductKmeansAlgorithm(void) {}
+  NumericalInnerProductKmeansAlgorithm(void) = default;
 
   //! Destructor
-  ~NumericalInnerProductKmeansAlgorithm(void) override {}
+  ~NumericalInnerProductKmeansAlgorithm(void) override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -896,10 +896,10 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NibbleInnerProductKmeansAlgorithm(void) {}
+  NibbleInnerProductKmeansAlgorithm(void) = default;
 
   //! Destructor
-  ~NibbleInnerProductKmeansAlgorithm(void) override {}
+  ~NibbleInnerProductKmeansAlgorithm(void) override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -1023,10 +1023,10 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster(
 class OptKmeansCluster : public IndexCluster {
  public:
   //! Constructor
-  OptKmeansCluster(void) {}
+  OptKmeansCluster(void) = default;
 
   //! Destructor
-  ~OptKmeansCluster(void) override {}
+  ~OptKmeansCluster(void) override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;

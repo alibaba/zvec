@@ -23,20 +23,17 @@ namespace core {
 class IndexFilter {
  public:
   //! Constructor
-  IndexFilter(void) {}
+  IndexFilter(void) = default;
 
   //! Constructor
-  IndexFilter(const IndexFilter &rhs) : filter_(rhs.filter_) {}
+  IndexFilter(const IndexFilter &rhs) = default;
 
   //! Constructor
   IndexFilter(IndexFilter &&rhs)
       : filter_(std::forward<decltype(filter_)>(rhs.filter_)) {}
 
   //! Copy assignment operator
-  IndexFilter &operator=(const IndexFilter &rhs) {
-    filter_ = rhs.filter_;
-    return *this;
-  }
+  IndexFilter &operator=(const IndexFilter &rhs) = default;
 
   //! Copy assignment operator
   IndexFilter &operator=(IndexFilter &&rhs) {

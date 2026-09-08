@@ -181,12 +181,13 @@ class Factory {
     return vec;
   }
 
- private:
+ public:
   //! Disable them
-  Factory(const Factory &);
-  Factory(Factory &&);
-  Factory &operator=(const Factory &);
+  Factory(const Factory &) = delete;
+  Factory(Factory &&) = delete;
+  Factory &operator=(const Factory &) = delete;
 
+ private:
   /*! Key Comparer
    */
   struct KeyComparer {

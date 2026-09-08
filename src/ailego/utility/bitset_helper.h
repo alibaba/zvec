@@ -26,7 +26,7 @@ namespace ailego {
 class BitsetHelper {
  public:
   //! Constructor
-  BitsetHelper(void) {}
+  BitsetHelper(void) = default;
 
   //! Constructor
   BitsetHelper(void *buf, size_t len)

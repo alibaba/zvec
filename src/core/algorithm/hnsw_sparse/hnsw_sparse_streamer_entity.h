@@ -494,10 +494,12 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     return 0;
   }
 
- private:
+ public:
   HnswSparseStreamerEntity(const HnswSparseStreamerEntity &) = delete;
   HnswSparseStreamerEntity &operator=(const HnswSparseStreamerEntity &) =
       delete;
+
+ private:
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  private:

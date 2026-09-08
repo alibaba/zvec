@@ -327,7 +327,7 @@ class ZVEC_AILEGO_API ThreadPool {
         : handle(std::move(h)), group(std::move(g)), control(c) {}
 
     // Constructor
-    Task(void) {}
+    Task(void) = default;
 
     //! Members
     ClosureHandler handle{};
@@ -386,12 +386,13 @@ class ZVEC_AILEGO_API ThreadPool {
     }
   }
 
- private:
+ public:
   //! Disable them
   ThreadPool(const ThreadPool &) = delete;
   ThreadPool(ThreadPool &&) = delete;
   ThreadPool &operator=(const ThreadPool &) = delete;
 
+ private:
   //! Members
   std::queue<Task> queue_{};
   std::atomic_bool stopping_{false};

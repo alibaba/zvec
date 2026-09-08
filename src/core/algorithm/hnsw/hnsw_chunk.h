@@ -102,10 +102,10 @@ class ChunkBroker {
     max_chunks_size_ = max_chunks_size;
   }
 
- private:
   ChunkBroker(const ChunkBroker &) = delete;
   ChunkBroker &operator=(const ChunkBroker &) = delete;
 
+ private:
   struct HnswChunkMeta {
     HnswChunkMeta(void) {
       memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));

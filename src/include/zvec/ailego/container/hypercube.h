@@ -26,10 +26,10 @@ namespace ailego {
 class Hypercube {
  public:
   //! Constructor
-  Hypercube(void) : cubes_() {}
+  Hypercube(void) = default;
 
   //! Constructor
-  Hypercube(const Hypercube &rhs) : cubes_(rhs.cubes_) {}
+  Hypercube(const Hypercube &rhs) = default;
 
   //! Constructor
   Hypercube(Hypercube &&rhs) : cubes_() {
@@ -37,13 +37,10 @@ class Hypercube {
   }
 
   //! Destructor
-  ~Hypercube(void) {}
+  ~Hypercube(void) = default;
 
   //! Assignment
-  Hypercube &operator=(const Hypercube &rhs) {
-    cubes_ = rhs.cubes_;
-    return *this;
-  }
+  Hypercube &operator=(const Hypercube &rhs) = default;
 
   //! Assignment
   Hypercube &operator=(Hypercube &&rhs) {

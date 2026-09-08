@@ -24,7 +24,7 @@ class QueryFieldInfo {
  public:
   using Ptr = std::shared_ptr<QueryFieldInfo>;
 
-  QueryFieldInfo() {}
+  QueryFieldInfo() = default;
 
   QueryFieldInfo(const std::string &m_field_name, const std::string &m_alias,
                  const std::string &m_func_name,
@@ -35,7 +35,7 @@ class QueryFieldInfo {
         func_param_(m_func_param),
         func_param_asterisk_(m_func_param_asterisk) {}
 
-  ~QueryFieldInfo() {}
+  ~QueryFieldInfo() = default;
 
   void set_field_name(const std::string &value) {
     field_name_ = value;

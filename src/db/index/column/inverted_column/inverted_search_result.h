@@ -50,7 +50,7 @@ class InvertedSearchResult
   }
 
 
-  explicit InvertedSearchResult() {}
+  explicit InvertedSearchResult() = default;
 
 
   explicit InvertedSearchResult(roaring_bitmap_t *bitmap) : bitmap_(bitmap) {}

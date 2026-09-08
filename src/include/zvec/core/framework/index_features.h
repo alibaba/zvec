@@ -30,7 +30,7 @@ struct IndexFeatures {
   typedef std::shared_ptr<IndexFeatures> Pointer;
 
   //! Destructor
-  virtual ~IndexFeatures(void) {}
+  virtual ~IndexFeatures(void) = default;
 
   //! Retrieve feature via index
   virtual const void *element(size_t i) const = 0;
@@ -379,10 +379,10 @@ class GapIndexFeatures : public IndexFeatures {
     return feature_size_;
   }
 
- private:
   //! Disable them
   GapIndexFeatures(void) = delete;
 
+ private:
   //! Members
   std::vector<std::string> features_;
   size_t bucket_limit_;
@@ -509,10 +509,10 @@ class CompactIndexFeatures : public IndexFeatures {
     return feature_size_;
   }
 
- private:
   //! Disable them
   CompactIndexFeatures(void) = delete;
 
+ private:
   //! Members
   std::string features_;
   size_t feature_size_;
@@ -590,10 +590,10 @@ class SampleIndexFeatures : public TBase {
     total_ = 0;
   }
 
- private:
   //! Disable them
   SampleIndexFeatures(void) = delete;
 
+ private:
   //! Members
   size_t samples_;
   size_t total_;

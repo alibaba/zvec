@@ -18,7 +18,7 @@
 namespace zvec {
 namespace core {
 
-HnswSparseSearcherEntity::HnswSparseSearcherEntity() {}
+HnswSparseSearcherEntity::HnswSparseSearcherEntity() = default;
 
 int HnswSparseSearcherEntity::cleanup(void) {
   container_.reset();

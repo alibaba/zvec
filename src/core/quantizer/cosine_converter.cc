@@ -82,7 +82,7 @@ class CosineConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -297,7 +297,7 @@ class CosineConverter : public IndexConverter {
         dst_type_(IndexMeta::DataType::DT_UNDEFINED) {}
 
   //! Destructor
-  ~CosineConverter() override {}
+  ~CosineConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {

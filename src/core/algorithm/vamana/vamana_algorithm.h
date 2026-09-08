@@ -109,10 +109,11 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   void reverse_update_neighbor(node_id_t id, node_id_t neighbor_id, dist_t dist,
                                VamanaContext *ctx);
 
- private:
+ public:
   VamanaAlgorithm(const VamanaAlgorithm &) = delete;
   VamanaAlgorithm &operator=(const VamanaAlgorithm &) = delete;
 
+ private:
   static constexpr uint32_t kLockCnt{1U << 8};
   static constexpr uint32_t kLockMask{kLockCnt - 1U};
 

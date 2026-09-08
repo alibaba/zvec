@@ -20,7 +20,7 @@
 namespace zvec {
 namespace core {
 
-FlatSparseSearcherEntity::FlatSparseSearcherEntity() {}
+FlatSparseSearcherEntity::FlatSparseSearcherEntity() = default;
 
 int FlatSparseSearcherEntity::load(const IndexStorage::Pointer &container,
                                    const IndexMeta &index_meta) {

@@ -42,7 +42,7 @@ uint32_t ZVecCachedSQLParser::Miss{0};
 ZVecCachedSQLParser::ZVecCachedSQLParser(uint32_t cache_count)
     : cache_count_(cache_count) {}
 
-ZVecCachedSQLParser::~ZVecCachedSQLParser() {}
+ZVecCachedSQLParser::~ZVecCachedSQLParser() = default;
 
 SQLInfo::Ptr ZVecCachedSQLParser::parse(const std::string &query,
                                         bool need_formatted_tree) {

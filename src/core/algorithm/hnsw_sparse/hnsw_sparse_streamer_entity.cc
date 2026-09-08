@@ -25,7 +25,7 @@ namespace core {
 HnswSparseStreamerEntity::HnswSparseStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {}
 
-HnswSparseStreamerEntity::~HnswSparseStreamerEntity() {}
+HnswSparseStreamerEntity::~HnswSparseStreamerEntity() = default;
 
 int HnswSparseStreamerEntity::init(uint64_t max_index_size,
                                    size_t max_doc_cnt) {

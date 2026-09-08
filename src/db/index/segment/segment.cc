@@ -2846,7 +2846,7 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
   }
 }
 
-SegmentImpl::CombinedRecordBatchReader::~CombinedRecordBatchReader() {}
+SegmentImpl::CombinedRecordBatchReader::~CombinedRecordBatchReader() = default;
 
 std::shared_ptr<arrow::Schema> SegmentImpl::CombinedRecordBatchReader::schema()
     const {

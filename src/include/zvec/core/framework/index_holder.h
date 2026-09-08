@@ -39,7 +39,7 @@ struct IndexHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    virtual ~Iterator(void) = default;
 
     //! Retrieve pointer of data
     virtual const void *data(void) const = 0;
@@ -55,7 +55,7 @@ struct IndexHolder {
   };
 
   //! Destructor
-  virtual ~IndexHolder(void) {}
+  virtual ~IndexHolder(void) = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   virtual size_t count(void) const = 0;
@@ -96,7 +96,7 @@ struct IndexHybridHolder : public IndexHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override = 0;
@@ -121,7 +121,7 @@ struct IndexHybridHolder : public IndexHolder {
   };
 
   //! Destructor
-  ~IndexHybridHolder(void) override {}
+  ~IndexHybridHolder(void) override = default;
 
   //! Retrieve sparse count summing up over all the docs
   virtual size_t total_sparse_count(void) const = 0;
@@ -143,7 +143,7 @@ struct IndexSparseHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    virtual ~Iterator(void) = default;
 
     //! Test if the iterator is valid
     virtual bool is_valid(void) const = 0;
@@ -165,7 +165,7 @@ struct IndexSparseHolder {
   };
 
   //! Destructor
-  virtual ~IndexSparseHolder(void) {}
+  virtual ~IndexSparseHolder(void) = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   virtual size_t count(void) const = 0;
@@ -206,7 +206,7 @@ class OnePassNumericalIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -286,10 +286,11 @@ class OnePassNumericalIndexHolder : public IndexHolder {
     return true;
   }
 
- private:
+ public:
   //! Disable them
   OnePassNumericalIndexHolder(void) = delete;
 
+ private:
   //! Members
   size_t dimension_{0};
   std::list<std::pair<uint64_t, ailego::NumericalVector<T>>> features_;
@@ -313,7 +314,7 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -411,9 +412,11 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
   size_t dimension_{0};
   std::vector<std::pair<uint64_t, ailego::NumericalVector<T>>> features_;
 
- private:
+ public:
   //! Disable them
   MultiPassNumericalIndexHolder(void) = delete;
+
+ private:
 };
 
 /*! One-Pass Binary Index Holder
@@ -434,7 +437,7 @@ class OnePassBinaryIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -514,10 +517,11 @@ class OnePassBinaryIndexHolder : public IndexHolder {
     return true;
   }
 
- private:
+ public:
   //! Disable them
   OnePassBinaryIndexHolder(void) = delete;
 
+ private:
   //! Members
   size_t dimension_{0};
   std::list<std::pair<uint64_t, ailego::BinaryVector<T>>> features_;
@@ -541,7 +545,7 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -639,9 +643,11 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
   size_t dimension_{0};
   std::vector<std::pair<uint64_t, ailego::BinaryVector<T>>> features_;
 
- private:
+ public:
   //! Disable them
   MultiPassBinaryIndexHolder(void) = delete;
+
+ private:
 };
 
 /*! One-Pass Index Hybrid Holder
@@ -662,7 +668,7 @@ class OnePassIndexHybridHolderBase : public IndexHybridHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -775,10 +781,11 @@ class OnePassIndexHybridHolderBase : public IndexHybridHolder {
     return true;
   }
 
- private:
+ public:
   //! Disable them
   OnePassIndexHybridHolderBase(void) = delete;
 
+ private:
   //! Members
   size_t dimension_{0};
   std::list<std::pair<uint64_t, ailego::HybridVector<T>>> features_;
@@ -803,7 +810,7 @@ class MultiPassIndexHybridHolderBase : public IndexHybridHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -921,10 +928,11 @@ class MultiPassIndexHybridHolderBase : public IndexHybridHolder {
     features_.reserve(size);
   }
 
- private:
+ public:
   //! Disable them
   MultiPassIndexHybridHolderBase(void) = delete;
 
+ private:
   //! Members
   size_t dimension_{0};
   std::vector<std::pair<uint64_t, ailego::HybridVector<T>>> features_;
@@ -949,7 +957,7 @@ class OnePassIndexSparseHolderBase : public IndexSparseHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
@@ -988,7 +996,7 @@ class OnePassIndexSparseHolderBase : public IndexSparseHolder {
   };
 
   //! Constructor
-  OnePassIndexSparseHolderBase() {}
+  OnePassIndexSparseHolderBase() = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count(void) const override {
@@ -1059,7 +1067,7 @@ class MultiPassIndexSparseHolderBase : public IndexSparseHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
@@ -1098,7 +1106,7 @@ class MultiPassIndexSparseHolderBase : public IndexSparseHolder {
   };
 
   //! Constructor
-  MultiPassIndexSparseHolderBase() {}
+  MultiPassIndexSparseHolderBase() = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count(void) const override {
@@ -1679,7 +1687,7 @@ class RandomAccessIndexHolder : public IndexHolder {
     Iterator(RandomAccessIndexHolder *owner) : holder_(owner) {}
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -1764,10 +1772,11 @@ class RandomAccessIndexHolder : public IndexHolder {
     return keys_[id];
   }
 
- private:
+ public:
   //! Disable them
   RandomAccessIndexHolder(void) = delete;
 
+ private:
   //! Members
   CompactIndexFeatures::Pointer features_{};
   std::vector<uint64_t> keys_{};

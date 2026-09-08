@@ -40,7 +40,7 @@ class IndexThreads {
     using Pointer = std::shared_ptr<TaskGroup>;
 
     //! Destructor
-    virtual ~TaskGroup(void) {}
+    virtual ~TaskGroup(void) = default;
 
     //! Submit a task to be executed asynchronous
     virtual void submit(ailego::ClosureHandler &&task) = 0;
@@ -53,7 +53,7 @@ class IndexThreads {
   };
 
   //! Destructor
-  virtual ~IndexThreads(void) {}
+  virtual ~IndexThreads(void) = default;
 
   //! Retrieve thread count in pool
   virtual size_t count(void) const = 0;
@@ -123,7 +123,7 @@ class SingleQueueIndexThreads : public IndexThreads {
   SingleQueueIndexThreads(void) : SingleQueueIndexThreads{false} {}
 
   //! Destructor
-  ~SingleQueueIndexThreads(void) override {}
+  ~SingleQueueIndexThreads(void) override = default;
 
   //! Retrieve thread count in pool
   size_t count(void) const override {
@@ -153,13 +153,14 @@ class SingleQueueIndexThreads : public IndexThreads {
     return pool_.indexof_this();
   }
 
- private:
-  static constexpr size_t kMaxQueueSize = 4096u;
-
+ public:
   //! Disable them
   SingleQueueIndexThreads(const SingleQueueIndexThreads &) = delete;
   SingleQueueIndexThreads(SingleQueueIndexThreads &&) = delete;
   SingleQueueIndexThreads &operator=(const SingleQueueIndexThreads &) = delete;
+
+ private:
+  static constexpr size_t kMaxQueueSize = 4096u;
 
   //! Members
   ailego::ThreadPool pool_{};

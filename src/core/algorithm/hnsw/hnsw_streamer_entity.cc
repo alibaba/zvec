@@ -26,7 +26,7 @@ namespace core {
 HnswStreamerEntity::HnswStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {}
 
-HnswStreamerEntity::~HnswStreamerEntity() {}
+HnswStreamerEntity::~HnswStreamerEntity() = default;
 
 int HnswStreamerEntity::init(size_t max_doc_cnt) {
   if (std::pow(scaling_factor(), kMaxGraphLayers) < max_doc_cnt) {

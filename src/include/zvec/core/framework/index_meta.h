@@ -75,42 +75,8 @@ class IndexMeta {
 
   //! Constructor
   IndexMeta(const IndexMeta &rhs)
-      : meta_type_{rhs.meta_type_},
-        major_order_(rhs.major_order_),
-        data_type_(rhs.data_type_),
-        dimension_(rhs.dimension_),
-        unit_size_(rhs.unit_size_),
-        element_size_(rhs.element_size_),
-        extra_meta_size_(rhs.extra_meta_size_),
-        space_id_(rhs.space_id_),
-        metric_revision_(rhs.metric_revision_),
-        converter_revision_(rhs.converter_revision_),
-        reformer_revision_(rhs.reformer_revision_),
-        quantizer_revision_(rhs.quantizer_revision_),
-        trainer_revision_(rhs.trainer_revision_),
-        builder_revision_(rhs.builder_revision_),
-        reducer_revision_(rhs.reducer_revision_),
-        searcher_revision_(rhs.searcher_revision_),
-        streamer_revision_(rhs.streamer_revision_),
-        metric_name_(rhs.metric_name_),
-        converter_name_(rhs.converter_name_),
-        reformer_name_(rhs.reformer_name_),
-        quantizer_name_(rhs.quantizer_name_),
-        trainer_name_(rhs.trainer_name_),
-        builder_name_(rhs.builder_name_),
-        reducer_name_(rhs.reducer_name_),
-        searcher_name_(rhs.searcher_name_),
-        streamer_name_(rhs.streamer_name_),
-        metric_params_(rhs.metric_params_),
-        converter_params_(rhs.converter_params_),
-        reformer_params_(rhs.reformer_params_),
-        quantizer_params_(rhs.quantizer_params_),
-        trainer_params_(rhs.trainer_params_),
-        builder_params_(rhs.builder_params_),
-        reducer_params_(rhs.reducer_params_),
-        searcher_params_(rhs.searcher_params_),
-        streamer_params_(rhs.streamer_params_),
-        attributes_(rhs.attributes_) {}
+
+      = default;
 
   //! Constructor
   IndexMeta(IndexMeta &&rhs)
@@ -688,7 +654,7 @@ class IndexMeta {
 class IndexQueryMeta {
  public:
   //! Constructor
-  IndexQueryMeta(void) {}
+  IndexQueryMeta(void) = default;
 
   //! Constructor
   IndexQueryMeta(IndexMeta::MetaType meta_type, IndexMeta::DataType data_type,

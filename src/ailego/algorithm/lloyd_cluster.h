@@ -103,10 +103,10 @@ class LloydCluster {
         spherical_{spherical} {}
 
   //! Constructor
-  LloydCluster(void) {}
+  LloydCluster(void) = default;
 
   //! Destructor
-  ~LloydCluster(void) {}
+  ~LloydCluster(void) = default;
 
   //! Append a feature
   void append(const StoreType *arr, size_t dim) {

@@ -32,7 +32,7 @@ struct IndexBundle {
   typedef std::shared_ptr<IndexBundle> Pointer;
 
   //! Destructor
-  virtual ~IndexBundle(void) {}
+  virtual ~IndexBundle(void) = default;
 
   //! Retrieve index buffer via key
   virtual ailego::BlobWrap get(const std::string &key) const = 0;

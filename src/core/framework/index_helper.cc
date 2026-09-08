@@ -110,7 +110,7 @@ class TwoPassIndexHolder : public IndexHolder {
         : holder_(owner), front_iter_(std::move(iter)) {}
 
     //! Destructor
-    ~FirstPassIterator(void) override {}
+    ~FirstPassIterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -151,7 +151,7 @@ class TwoPassIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~SecondPassIterator(void) override {}
+    ~SecondPassIterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -229,10 +229,10 @@ class TwoPassIndexHolder : public IndexHolder {
     return nullptr;
   }
 
- private:
   //! Disable them
   TwoPassIndexHolder(void) = delete;
 
+ private:
   //! Members
   IndexHolder::Pointer front_{};
   std::list<std::pair<uint64_t, std::string>> features_{};

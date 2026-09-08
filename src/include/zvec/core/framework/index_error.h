@@ -92,12 +92,13 @@ class IndexError {
     return (&error);
   }
 
- private:
+ public:
   //! Disable them
   IndexError(const IndexError &) = delete;
   IndexError(IndexError &&) = delete;
   IndexError &operator=(const IndexError &) = delete;
 
+ private:
   //! Error code map
   std::map<int, const IndexError::Code *> map_;
 };

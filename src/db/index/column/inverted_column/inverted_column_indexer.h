@@ -60,6 +60,11 @@ class InvertedColumnIndexer {
   virtual ~InvertedColumnIndexer();
 
 
+  InvertedColumnIndexer(const InvertedColumnIndexer &) = delete;
+  InvertedColumnIndexer(InvertedColumnIndexer &&) = delete;
+  InvertedColumnIndexer &operator=(const InvertedColumnIndexer &) = delete;
+  InvertedColumnIndexer &operator=(InvertedColumnIndexer &&) = delete;
+
  protected:
   explicit InvertedColumnIndexer(const std::string &collection_name,
                                  const FieldSchema &field,
@@ -68,13 +73,7 @@ class InvertedColumnIndexer {
         field_(field),
         path_(context.db_path_),
         ctx_(context),
-        read_only_(read_only) {};
-
-  InvertedColumnIndexer(const InvertedColumnIndexer &) = delete;
-  InvertedColumnIndexer(InvertedColumnIndexer &&) = delete;
-  InvertedColumnIndexer &operator=(const InvertedColumnIndexer &) = delete;
-  InvertedColumnIndexer &operator=(InvertedColumnIndexer &&) = delete;
-
+        read_only_(read_only) {}
 
   // TODO： for ut, remove this
   InvertedColumnIndexer(RocksdbContext &ctx) : ctx_(ctx) {}

@@ -29,7 +29,7 @@ class BlobWrap {
   BlobWrap(void) : buffer_(nullptr), size_(0u) {}
 
   //! Constructor
-  BlobWrap(const BlobWrap &rhs) : buffer_(rhs.buffer_), size_(rhs.size_) {}
+  BlobWrap(const BlobWrap &rhs) = default;
 
   //! Constructor
   BlobWrap(BlobWrap &&rhs) : buffer_(rhs.buffer_), size_(rhs.size_) {
@@ -46,14 +46,10 @@ class BlobWrap {
       : buffer_(const_cast<char *>(buf.data())), size_(buf.size()) {}
 
   //! Destructor
-  ~BlobWrap(void) {}
+  ~BlobWrap(void) = default;
 
   //! Assignment
-  BlobWrap &operator=(const BlobWrap &rhs) {
-    buffer_ = rhs.buffer_;
-    size_ = rhs.size_;
-    return *this;
-  }
+  BlobWrap &operator=(const BlobWrap &rhs) = default;
 
   //! Assignment
   BlobWrap &operator=(BlobWrap &&rhs) {

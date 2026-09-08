@@ -103,11 +103,11 @@ struct VamanaHeader {
 // VamanaEntity: base class for Vamana graph data management
 class VamanaEntity {
  public:
-  VamanaEntity() {}
+  VamanaEntity() = default;
   VamanaEntity(const VamanaHeader &hd) {
     header_ = hd;
   }
-  virtual ~VamanaEntity() {}
+  virtual ~VamanaEntity() = default;
 
   typedef std::shared_ptr<VamanaEntity> Pointer;
 

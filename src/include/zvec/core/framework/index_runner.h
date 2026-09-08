@@ -51,7 +51,7 @@ class IndexRunner : public IndexModule {
    */
   class Stats : public IndexStats {
    public:
-    Stats() {}
+    Stats() = default;
     Stats(const Stats &stats) {
       *this = stats;
     }

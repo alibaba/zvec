@@ -25,7 +25,7 @@ namespace ailego {
 class BinaryQuantizer {
  public:
   //! Constructor
-  BinaryQuantizer(void) {}
+  BinaryQuantizer(void) = default;
 
   //! Feed the training data
   bool feed(const float *vec, size_t dim);
@@ -54,7 +54,6 @@ class BinaryQuantizer {
     return threshold_;
   }
 
- private:
   //! Disable them
   BinaryQuantizer(const BinaryQuantizer &) = delete;
   BinaryQuantizer &operator=(const BinaryQuantizer &) = delete;

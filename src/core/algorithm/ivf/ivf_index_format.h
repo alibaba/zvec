@@ -125,7 +125,7 @@ struct StreamerInvertedMeta {
  */
 struct VectorLocation {
   //! Constructor
-  VectorLocation(void) {}
+  VectorLocation(void) = default;
 
   //! Constructor
   VectorLocation(uint16_t id, bool col, uint32_t off)
@@ -147,7 +147,7 @@ static_assert(sizeof(VectorLocation) == sizeof(uint64_t),
               "VectorLocation must be size of 8 bytes");
 
 struct KeyInfo {
-  KeyInfo(void) {}
+  KeyInfo(void) = default;
   KeyInfo(uint32_t idx, const VectorLocation &loc)
       : centroid_idx(idx), location(loc) {}
   KeyInfo(VectorLocation loc) : location(loc) {}

@@ -108,7 +108,7 @@ class BufferStorage : public IndexStorage {
           capacity_(static_cast<size_t>(info->segment.meta()->data_size +
                                         info->segment.meta()->padding_size)) {}
     //! Destructor
-    ~WrappedSegment(void) override {}
+    ~WrappedSegment(void) override = default;
 
     //! Retrieve size of data
     //!

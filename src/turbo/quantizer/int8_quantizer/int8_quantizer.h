@@ -37,7 +37,7 @@ class Int8Quantizer : public Quantizer {
  public:
   Int8Quantizer() : Quantizer(QuantizeType::kRecord) {}
 
-  virtual ~Int8Quantizer() {}
+  virtual ~Int8Quantizer() = default;
 
  public:
   int init(const core::IndexMeta &meta, const ailego::Params &params) override;

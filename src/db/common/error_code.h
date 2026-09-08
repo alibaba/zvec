@@ -80,12 +80,13 @@ class ErrorCode {
     return (&error);
   }
 
- private:
+ public:
   //! Disable them
   ErrorCode(const ErrorCode &) = delete;
   ErrorCode(ErrorCode &&) = delete;
   ErrorCode &operator=(const ErrorCode &) = delete;
 
+ private:
   //! Error code map
   std::map<int, const ErrorCode::Code *> map_;
 };

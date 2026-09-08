@@ -267,7 +267,7 @@ bool QueryFuncNode::is_matched(const QueryNode &other) const {
 
 //========================================================================
 
-QueryRelNode::QueryRelNode() {}
+QueryRelNode::QueryRelNode() = default;
 
 void QueryRelNode::set_rel_type(RelType value) {
   rel_type_ = value;

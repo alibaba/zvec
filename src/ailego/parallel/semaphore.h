@@ -57,13 +57,13 @@ class Semaphore {
     cond_.notify_one();
   }
 
- private:
   //! Disable them
   Semaphore(const Semaphore &) = delete;
   Semaphore(Semaphore &&) = delete;
   Semaphore &operator=(const Semaphore &) = delete;
   Semaphore &operator=(Semaphore &&) = delete;
 
+ private:
   //! Members
   std::atomic<uint32_t> count_{0};
   std::mutex mutex_{};
@@ -162,13 +162,14 @@ class BinarySemaphores {
     return ailego_ctz64(val);
   }
 
- private:
+ public:
   //! Disable them
   BinarySemaphores(const BinarySemaphores &) = delete;
   BinarySemaphores(BinarySemaphores &&) = delete;
   BinarySemaphores &operator=(const BinarySemaphores &) = delete;
   BinarySemaphores &operator=(BinarySemaphores &&) = delete;
 
+ private:
   //! Members
   uint32_t count_{0};
   BitwiseType mask_{0};

@@ -180,7 +180,7 @@ class SegmentMeta {
   using Ptr = std::shared_ptr<SegmentMeta>;
 
  public:
-  SegmentMeta() {};
+  SegmentMeta() = default;
 
   explicit SegmentMeta(SegmentID id) : id_(id) {}
 

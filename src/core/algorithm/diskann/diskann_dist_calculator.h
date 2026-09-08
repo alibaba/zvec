@@ -163,10 +163,10 @@ class DistCalculator {
     return dim_;
   }
 
- private:
   DistCalculator(const DistCalculator &) = delete;
   DistCalculator &operator=(const DistCalculator &) = delete;
 
+ private:
   void bind_distance(const IndexMeta &meta, const IndexMetric::Pointer &measure,
                      const turbo::Quantizer::Pointer &external_quantizer) {
     data_quantizer_.reset();

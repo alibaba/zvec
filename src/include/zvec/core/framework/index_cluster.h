@@ -50,11 +50,8 @@ struct IndexCluster : public IndexModule {
 
     //! Constructor
     Centroid(const Centroid &rhs)
-        : buffer_(rhs.buffer_),
-          score_(rhs.score_),
-          follows_(rhs.follows_),
-          similars_(rhs.similars_),
-          subitems_(rhs.subitems_) {}
+
+        = default;
 
     //! Constructor
     Centroid(Centroid &&rhs)
@@ -65,14 +62,7 @@ struct IndexCluster : public IndexModule {
           subitems_(std::move(rhs.subitems_)) {}
 
     //! Assignment
-    Centroid &operator=(const Centroid &rhs) {
-      buffer_ = rhs.buffer_;
-      score_ = rhs.score_;
-      follows_ = rhs.follows_;
-      similars_ = rhs.similars_;
-      subitems_ = rhs.subitems_;
-      return *this;
-    }
+    Centroid &operator=(const Centroid &rhs) = default;
 
     //! Assignment
     Centroid &operator=(Centroid &&rhs) {
@@ -233,7 +223,7 @@ struct IndexCluster : public IndexModule {
   typedef std::vector<Centroid> CentroidList;
 
   //! Destructor
-  ~IndexCluster(void) override {}
+  ~IndexCluster(void) override = default;
 
   //! Deserialize centroids from bundle
   static int Deserialize(const IndexMeta &meta, IndexBundle::Pointer bundle,

@@ -26,10 +26,10 @@ namespace core {
 struct MemoryDumper : public IndexDumper {
  public:
   //! Constructor
-  MemoryDumper(void) {}
+  MemoryDumper(void) = default;
 
   //! Destructor
-  ~MemoryDumper(void) override {}
+  ~MemoryDumper(void) override = default;
 
   //! Initialize dumper
   int init(const ailego::Params &) override {

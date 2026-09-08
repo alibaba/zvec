@@ -35,7 +35,7 @@ class IndexConverter : public IndexModule {
    */
   class Stats : public IndexStats {
    public:
-    Stats() {}
+    Stats() = default;
     Stats(const Stats &stats) {
       *this = stats;
     }
@@ -166,7 +166,7 @@ class IndexConverter : public IndexModule {
   };
 
   //! Destructor
-  ~IndexConverter(void) override {}
+  ~IndexConverter(void) override = default;
 
   //! Initialize Converter
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;

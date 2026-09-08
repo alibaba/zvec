@@ -31,7 +31,7 @@ struct DocRange {
   std::string key_{""};
   size_t doc_count_{0};
 
-  DocRange() {}
+  DocRange() = default;
 
   DocRange(const std::string &key, int count) : key_(key), doc_count_(count) {}
 

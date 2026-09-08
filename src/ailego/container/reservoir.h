@@ -46,7 +46,7 @@ class Reservoir {
         pool_(std::move(rhs.pool_)) {}
 
   //! Destructor
-  ~Reservoir(void) {}
+  ~Reservoir(void) = default;
 
   //! Assignment
   Reservoir &operator=(const Reservoir &rhs) {
@@ -125,10 +125,10 @@ class Reservoir {
     ++total_;
   }
 
- private:
   //! Disable them
   Reservoir(void) = delete;
 
+ private:
   //! Members
   size_t samples_;
   size_t total_;

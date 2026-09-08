@@ -44,10 +44,8 @@ class IndexPacker {
 
     //! Constructor
     SegmentMeta(const SegmentMeta &rhs)
-        : data_size_(rhs.data_size_),
-          padding_size_(rhs.padding_size_),
-          data_crc_(rhs.data_crc_),
-          id_(rhs.id_) {}
+
+        = default;
 
     //! Constructor
     SegmentMeta(SegmentMeta &&rhs)

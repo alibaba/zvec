@@ -27,7 +27,7 @@ class BaseInfo {
     table_name_ = value;
   }
 
-  virtual ~BaseInfo() {}
+  virtual ~BaseInfo() = default;
 
   BaseInfo(const BaseInfo &info) {
     table_name_ = info.table_name_;

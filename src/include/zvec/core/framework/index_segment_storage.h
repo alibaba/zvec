@@ -50,7 +50,7 @@ class IndexSegmentStorage : public IndexStorage {
           parent_(parent->clone()) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment(void) override = default;
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -137,7 +137,7 @@ class IndexSegmentStorage : public IndexStorage {
       : parent_(seg) {}
 
   //! Destructor
-  ~IndexSegmentStorage(void) override {}
+  ~IndexSegmentStorage(void) override = default;
 
   //! Initialize container
   int init(const ailego::Params &) override {

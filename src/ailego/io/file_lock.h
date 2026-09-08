@@ -69,13 +69,13 @@ class FileLock {
   //! Unlocking
   static bool Unlock(File::NativeHandle handle);
 
- private:
   //! Disable them
   FileLock(const FileLock &) = delete;
   FileLock(FileLock &&) = delete;
   FileLock &operator=(const FileLock &) = delete;
   FileLock &operator=(FileLock &&) = delete;
 
+ private:
   //! Members
   File::NativeHandle native_handle_;
 };
