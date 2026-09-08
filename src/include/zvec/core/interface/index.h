@@ -419,6 +419,9 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
   int GenerateHolder();
 
  private:
+  int DumpAndOpen();
+  void ReleaseBuildState();
+
   DiskAnnIndexParam param_{};
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;

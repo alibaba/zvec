@@ -325,6 +325,12 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
   if (indexes.empty()) {
     return 0;
   }
+  if (is_trained_) {
+    // Dumping to a loaded index would overwrite its file before the existing
+    // streamer rejects open(). Rebuilding requires a separate target index.
+    LOG_ERROR("Cannot merge into a trained IVF index; use a new target");
+    return core::IndexError_Unsupported;
+  }
   // A new merge (including a retry) rebuilds from its explicit inputs. Do not
   // reuse a partially trained builder or silently resume different inputs.
   int ret = ResetBuilder();

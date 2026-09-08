@@ -1368,6 +1368,135 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   EXPECT_TRUE(vector_after_failure.empty());
 }
 
+TEST_F(DiskAnnSearcherTest, ContextOwnedQuerySurvivesReplacement) {
+  class TrackedContext final : public DiskAnnContext {
+   public:
+    TrackedContext(const IndexMeta &meta, const IndexMetric::Pointer &measure,
+                   const DiskAnnEntity::Pointer &entity, bool &alive)
+        : DiskAnnContext(meta, measure, entity), alive_(alive) {
+      alive_ = true;
+    }
+    ~TrackedContext() override {
+      alive_ = false;
+    }
+
+   private:
+    bool &alive_;
+  };
+  // Exercise both short-string and heap-backed transformed query buffers.
+  for (uint32_t dimension : {2u, 16u}) {
+    SCOPED_TRACE(dimension);
+    IndexMeta meta(IndexMeta::DataType::DT_FP16, dimension);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    auto holder =
+        make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(
+            dimension);
+    for (uint32_t id = 0; id < 16; ++id) {
+      NumericalVector<Float16> vector(dimension);
+      for (uint32_t d = 0; d < dimension; ++d) {
+        vector[d] = static_cast<float>(id + 1) / 64.0f;
+      }
+      ASSERT_TRUE(holder->emplace(id, vector));
+    }
+    Params params;
+    params.set(PARAM_DISKANN_BUILDER_MAX_DEGREE, 8);
+    params.set(PARAM_DISKANN_BUILDER_LIST_SIZE, 16);
+    params.set(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 1);
+    auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+    ASSERT_NE(nullptr, builder);
+    ASSERT_EQ(0, builder->init(meta, params));
+    ASSERT_EQ(0, builder->train(holder));
+    ASSERT_EQ(0, builder->build(holder));
+    const auto path = _dir + "/context_owned_query_" + to_string(dimension);
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(nullptr, dumper);
+    ASSERT_EQ(0, dumper->create(path));
+    ASSERT_EQ(0, builder->dump(dumper));
+    ASSERT_EQ(0, dumper->close());
+    auto storage = IndexFactory::CreateStorage("FileReadStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->open(path, false));
+    auto searcher = IndexFactory::CreateSearcher("DiskAnnSearcher");
+    ASSERT_NE(nullptr, searcher);
+    ASSERT_EQ(0, searcher->init(params));
+    ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+    auto streamer = IndexFactory::CreateStreamer("DiskAnnStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(meta, params));
+    auto streamer_storage = IndexFactory::CreateStorage("FileReadStorage");
+    ASSERT_NE(nullptr, streamer_storage);
+    ASSERT_EQ(0, streamer_storage->open(path, false));
+    ASSERT_EQ(0, streamer->open(streamer_storage));
+    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dimension);
+    for (bool to_streamer : {false, true}) {
+      for (int mode = 0; mode < 3; ++mode) {
+        SCOPED_TRACE(::testing::Message()
+                     << "to_streamer=" << to_streamer << " mode=" << mode);
+        IndexRunner *runner = to_streamer
+                                  ? static_cast<IndexRunner *>(streamer.get())
+                                  : static_cast<IndexRunner *>(searcher.get());
+        auto original = to_streamer ? searcher->create_context()
+                                    : streamer->create_context();
+        ASSERT_NE(nullptr, original);
+        auto *original_ctx = dynamic_cast<DiskAnnContext *>(original.get());
+        ASSERT_NE(nullptr, original_ctx);
+        const auto entity = original_ctx->get_entity().clone();
+        auto measure = IndexFactory::CreateMetric("SquaredEuclidean");
+        ASSERT_NE(nullptr, measure);
+        ASSERT_EQ(0, measure->init(meta, Params()));
+        bool query_owner_alive = false;
+        auto tracked = std::make_unique<TrackedContext>(meta, measure, entity,
+                                                        query_owner_alive);
+        ASSERT_EQ(0, tracked->init(DiskAnnContext::kSearcherContext,
+                                   entity->max_degree(), entity->pq_chunk_num(),
+                                   meta.element_size()));
+        tracked->copy_query_options_from(*original_ctx);
+        tracked->set_magic(original_ctx->magic());
+        original.reset();
+        IndexContext::Pointer context = std::move(tracked);
+        NumericalVector<Float16> queries(dimension * 2);
+        for (uint32_t i = 0; i < 2; ++i) {
+          for (uint32_t d = 0; d < dimension; ++d) {
+            queries[i * dimension + d] = static_cast<float>(i + 1) / 64.0f;
+          }
+        }
+        context->mutable_features()->assign(
+            reinterpret_cast<const char *>(queries.data()),
+            2 * qmeta.element_size());
+        const void *query = context->mutable_features()->data();
+        context->set_topk(1);
+        uint32_t filter_calls = 0;
+        context->set_filter([&](uint64_t) {
+          ++filter_calls;
+          EXPECT_TRUE(query_owner_alive);
+          return false;
+        });
+        if (mode == 0) {
+          ASSERT_EQ(0, runner->search_impl(query, qmeta, 2, context));
+        } else if (mode == 1) {
+          ASSERT_EQ(0, runner->search_bf_impl(query, qmeta, 2, context));
+        } else {
+          ASSERT_EQ(0, runner->search_bf_by_p_keys_impl(
+                           query, {{0, 1, 2}, {0, 1, 2}}, qmeta, 2, context));
+        }
+        EXPECT_GT(filter_calls, 0u);
+        EXPECT_FALSE(query_owner_alive);
+        for (uint32_t i = 0; i < 2; ++i) {
+          ASSERT_EQ(1u, context->result(i).size());
+          const auto &doc = context->result(i)[0];
+          ASSERT_LT(doc.key(), 16u);
+          const float delta = (static_cast<float>(doc.key()) - i) / 64.0f;
+          EXPECT_NEAR(dimension * delta * delta, doc.score(), 1e-5f);
+        }
+      }
+    }
+    ASSERT_EQ(0, streamer->cleanup());
+    ASSERT_EQ(0, searcher->unload());
+    ASSERT_EQ(0, streamer_storage->close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
 TEST_F(DiskAnnSearcherTest, TestFp16Entrypoint) {
   IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, dim);
   fp16_meta.set_metric("SquaredEuclidean", 0, Params());
