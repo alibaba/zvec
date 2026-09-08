@@ -14,6 +14,7 @@
 
 #include <iostream>
 #include <random>
+#include "utility/releasable_converter.h"
 
 // #include <zvec/ailego/container/vector.h>
 // #include <zvec/ailego/container/params.h>
@@ -23,6 +24,83 @@
 #include "zvec/core/framework/index_holder.h"
 
 using namespace zvec::core;
+
+TEST(ReleasableConverter, ReleasesInputWithoutChangingTrainedState) {
+  auto make_input = []() -> IndexHolder::Pointer {
+    auto input =
+        std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+            16);
+    for (uint32_t i = 0; i < 4; ++i) {
+      zvec::ailego::NumericalVector<float> vector(16);
+      for (size_t d = 0; d < 16; ++d) vector[d] = (i + d + 1) / 32.0f;
+      EXPECT_TRUE(input->emplace(i, std::move(vector)));
+    }
+    return input;
+  };
+  auto read_vectors = [](const IndexHolder::Pointer &holder) {
+    std::vector<std::string> vectors;
+    for (auto iter = holder->create_iterator(); iter && iter->is_valid();
+         iter->next()) {
+      vectors.emplace_back(static_cast<const char *>(iter->data()),
+                           holder->element_size());
+    }
+    return vectors;
+  };
+
+  for (const char *name :
+       {"HalfFloatConverter", "CosineNormalizeConverter", "CosineFp16Converter",
+        "CosineInt8Converter", "CosineInt4Converter", "Int8StreamingConverter",
+        "Int4StreamingConverter", "UniformUint7Converter",
+        "UniformUint8Converter", "UniformUint4Converter"}) {
+    SCOPED_TRACE(name);
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, 16);
+    meta.set_metric(
+        std::string(name).find("Cosine") == 0 ? "Cosine" : "SquaredEuclidean",
+        0, zvec::ailego::Params());
+    zvec::ailego::Params params;
+    params.set("integer_streaming.converter.enable_rotate", true);
+    params.set("cosine.converter.enable_rotate", true);
+    auto converter = IndexFactory::CreateConverter(name);
+    ASSERT_NE(nullptr, converter);
+    ASSERT_EQ(0, converter->init(meta, params));
+    auto *releasable = dynamic_cast<ReleasableConverter *>(converter.get());
+    ASSERT_NE(nullptr, releasable);
+    auto input = make_input();
+    std::weak_ptr<IndexHolder> weak_input = input;
+    ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, input));
+    auto retained_result = converter->result();
+    ASSERT_NE(nullptr, retained_result);
+    const auto expected_vectors = read_vectors(retained_result);
+    ASSERT_EQ(4u, expected_vectors.size());
+    std::string expected_meta;
+    converter->meta().serialize(&expected_meta);
+    const auto trained_count = converter->stats().trained_count();
+    const auto transformed_count = converter->stats().transformed_count();
+    input.reset();
+
+    releasable->release_result();
+    // Idempotent, and safe with external readers.
+    releasable->release_result();
+    EXPECT_EQ(nullptr, converter->result());
+    EXPECT_FALSE(weak_input.expired());
+    EXPECT_EQ(expected_vectors, read_vectors(retained_result));
+    retained_result.reset();
+    EXPECT_TRUE(weak_input.expired());
+    std::string actual_meta;
+    converter->meta().serialize(&actual_meta);
+    EXPECT_EQ(expected_meta, actual_meta);
+    EXPECT_EQ(trained_count, converter->stats().trained_count());
+    EXPECT_EQ(transformed_count, converter->stats().transformed_count());
+
+    // Reusing the trained converter without retraining must preserve global
+    // scale/bias and the exact rotation, not merely its output data type.
+    ASSERT_EQ(0, converter->transform(make_input()));
+    ASSERT_NE(nullptr, converter->result());
+    EXPECT_EQ(expected_vectors, read_vectors(converter->result()));
+    releasable->release_result();
+    EXPECT_EQ(nullptr, converter->result());
+  }
+}
 
 TEST(HalfFloatReformer, General) {
   std::random_device rd;

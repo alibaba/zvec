@@ -25,6 +25,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/turbo/turbo.h>
+#include "utility/releasable_converter.h"
 #include "../metric/metric_params.h"
 
 namespace zvec {
@@ -113,7 +114,8 @@ void DecodeSource(const void *record, IndexMeta::DataType data_type,
 
 }  // namespace
 
-class UniformUint4Converter : public IndexConverter {
+class UniformUint4Converter : public IndexConverter,
+                              public ReleasableConverter {
  public:
   UniformUint4Converter(IndexMeta::DataType /*dst_type*/) {}
   ~UniformUint4Converter() override = default;
@@ -292,6 +294,10 @@ class UniformUint4Converter : public IndexConverter {
   }
   IndexHolder::Pointer result(void) const override {
     return holder_;
+  }
+
+  void release_result() override {
+    holder_.reset();
   }
   const IndexMeta &meta(void) const override {
     return meta_;

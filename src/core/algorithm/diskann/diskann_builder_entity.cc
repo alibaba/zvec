@@ -450,6 +450,14 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
 
         if (iter->is_valid()) {
           const void *vec = iter->data();
+          // A provider-backed holder may return a safe placeholder while
+          // invalidating the iterator on a read error. Check after data(),
+          // including for the last vector, before persisting any bytes.
+          if (!vec || !iter->is_valid()) {
+            LOG_ERROR("Failed to read vector while dumping node %zu",
+                      static_cast<size_t>(cur_node_id));
+            return IndexError_ReadData;
+          }
           memcpy(&(node_buf[0]), vec, meta.element_size());
 
           iter->next();
@@ -519,6 +527,11 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
 
       if (iter->is_valid()) {
         const void *vec = iter->data();
+        if (!vec || !iter->is_valid()) {
+          LOG_ERROR("Failed to read vector while dumping node %zu",
+                    static_cast<size_t>(i));
+          return IndexError_ReadData;
+        }
         memcpy(&(multisector_buf[0]), vec, meta.element_size());
 
         iter->next();

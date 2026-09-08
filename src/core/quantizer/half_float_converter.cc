@@ -14,6 +14,7 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/turbo/turbo.h>
+#include "utility/releasable_converter.h"
 
 namespace zvec {
 namespace core {
@@ -140,7 +141,7 @@ class HalfFloatHolder : public IndexHolder {
 
 /*! Half Float Converter
  */
-class HalfFloatConverter : public IndexConverter {
+class HalfFloatConverter : public IndexConverter, public ReleasableConverter {
  public:
   //! Destructor
   ~HalfFloatConverter(void) override {}
@@ -196,6 +197,10 @@ class HalfFloatConverter : public IndexConverter {
   //! Retrieve a holder as result
   IndexHolder::Pointer result(void) const override {
     return holder_;
+  }
+
+  void release_result() override {
+    holder_.reset();
   }
 
   //! Retrieve Index Meta

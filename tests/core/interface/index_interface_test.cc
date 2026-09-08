@@ -1243,6 +1243,9 @@ class InspectableIVFIndex : public IVFIndex {
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
     return builder_;
   }
+  zvec::core::IndexHolder::Pointer converted_input() const {
+    return converter_ ? converter_->result() : nullptr;
+  }
 };
 
 TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
@@ -1256,6 +1259,7 @@ TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
   auto param = IVFIndexParamBuilder()
                    .with_metric_type(MetricType::kL2sq)
                    .with_data_type(DataType::DT_FP32)
+                   .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
                    .with_dimension(16)
                    .with_n_list(1)
                    .build();
@@ -1269,6 +1273,7 @@ TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
   ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
   EXPECT_NE(0, target->train());
   EXPECT_FALSE(build_state.expired());
+  EXPECT_NE(nullptr, inspected->converted_input());
   EXPECT_FALSE(target->is_trained());
   zvec::test_util::RemoveTestFiles(parent);
 }
@@ -1332,6 +1337,14 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       }
       ASSERT_EQ(0, merge ? target->merge({source}, {}) : target->train());
       EXPECT_TRUE(build_state.expired());
+      EXPECT_EQ(nullptr, inspected->converted_input());
+      // Releasing the caller's source must also release its streamer, without
+      // needing to destroy the successfully built target index.
+      std::weak_ptr<zvec::core::IndexStreamer> source_state =
+          source->index_searcher();
+      ASSERT_EQ(0, source->close());
+      source.reset();
+      EXPECT_TRUE(source_state.expired());
       ASSERT_EQ(kCount, target->get_doc_count());
       ASSERT_EQ(0, target->merge({}, {}));
       // Calling train after the successful build must not try to rebuild
@@ -1367,7 +1380,6 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       EXPECT_EQ(before_data,
                 std::get<DenseVectorBuffer>(after.vector_buffer).data);
       ASSERT_EQ(0, reopened->close());
-      ASSERT_EQ(0, source->close());
       zvec::test_util::RemoveTestFiles(path);
       zvec::test_util::RemoveTestFiles(source_path);
     }

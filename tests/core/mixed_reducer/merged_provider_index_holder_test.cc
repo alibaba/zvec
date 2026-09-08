@@ -15,12 +15,14 @@
 #include "mixed_reducer/merged_provider_index_holder.h"
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <functional>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
 
 namespace zvec {
 namespace core {
@@ -105,10 +107,11 @@ class TestStreamer final : public IndexStreamer {
       std::function<IndexProvider::Pointer(size_t create_count)>;
 
   TestStreamer(ProviderFactory provider_factory,
-               std::shared_ptr<ProviderLifetimeStats> stats)
+               std::shared_ptr<ProviderLifetimeStats> stats,
+               size_t dimension = kDimension)
       : provider_factory_(std::move(provider_factory)),
         stats_(std::move(stats)),
-        meta_(IndexMeta::DataType::DT_FP32, kDimension) {}
+        meta_(IndexMeta::DataType::DT_FP32, dimension) {}
 
   int open(IndexStorage::Pointer) override {
     return 0;
@@ -483,6 +486,88 @@ TEST(MergedProviderIndexHolderTest, RejectsProviderMetaChangeBetweenPasses) {
   EXPECT_EQ(IndexError_Mismatch, holder.status());
   EXPECT_EQ(0u, lifetime->live_count);
 }
+
+#if DISKANN_SUPPORTED
+TEST(MergedProviderIndexHolderTest, DiskAnnDumpRejectsLastVectorReadFailure) {
+  class FailingReformer : public IndexReformer {
+   public:
+    int init(const ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    int load(IndexStorage::Pointer) override {
+      return 0;
+    }
+    int unload() override {
+      return 0;
+    }
+    int revert(const void *in, const IndexQueryMeta &meta,
+               std::string *out) const override {
+      if (fail && *static_cast<const float *>(in) == 11.0f) {
+        return IndexError_ReadData;
+      }
+      out->assign(static_cast<const char *>(in), meta.element_size());
+      return 0;
+    }
+    bool fail{false};
+  };
+
+  // Exercise both packed sectors and vectors spanning multiple sectors.
+  for (const size_t dimension : {2u, 1024u}) {
+    SCOPED_TRACE(dimension);
+    std::vector<std::pair<uint64_t, float>> docs;
+    for (uint64_t i = 0; i < 12; ++i) docs.emplace_back(i, float(i));
+    auto source = MakeSource(std::make_shared<TestStreamer>(
+        [docs, dimension](size_t) { return MakeProvider(docs, dimension); },
+        std::make_shared<ProviderLifetimeStats>(), dimension));
+    source.provider_meta =
+        IndexQueryMeta(IndexMeta::DataType::DT_FP32, dimension);
+    auto reformer = std::make_shared<FailingReformer>();
+    source.reformer = reformer;
+    source.need_revert = true;
+    auto holder = std::make_shared<MergedProviderIndexHolder>(
+        source.provider_meta,
+        std::vector<MergedProviderIndexHolder::Source>{source});
+    ASSERT_EQ(0, holder->init(IndexFilter()));
+
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, dimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+    ailego::Params params;
+    params.set("zvec.diskann.builder.max_degree", 8);
+    params.set("zvec.diskann.builder.list_size", 16);
+    params.set("zvec.diskann.builder.max_pq_chunk_num", 1);
+    params.set("zvec.diskann.builder.threads", 2);
+    auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+    ASSERT_NE(nullptr, builder);
+    ASSERT_EQ(0, builder->init(meta, params));
+    ASSERT_EQ(0, builder->train(holder));
+    ASSERT_EQ(0, builder->build(holder));
+    ASSERT_EQ(0, holder->status());
+
+    const std::string path = "merged_holder_diskann_dump.index";
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(nullptr, dumper);
+    ASSERT_EQ(0, dumper->create(path));
+    ASSERT_EQ(0, builder->dump(dumper));
+    ASSERT_EQ(0, dumper->close());
+    EXPECT_EQ(12u, builder->stats().dumped_count());
+
+    // The interface calls builder->dump directly after the reducer is gone.
+    // A failure on the very last data() must not persist its zero placeholder
+    // and report success merely because there is no following loop iteration.
+    reformer->fail = true;
+    ASSERT_EQ(0, dumper->create(path));
+    EXPECT_NE(0, builder->dump(dumper));
+    EXPECT_EQ(IndexError_ReadData, holder->status());
+    // A partial multi-sector dump need not form a valid index package.
+    dumper->close();
+    dumper.reset();
+    EXPECT_EQ(0, std::remove(path.c_str()));
+  }
+}
+#endif
 
 }  // namespace
 }  // namespace core

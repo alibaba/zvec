@@ -19,6 +19,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include "rotator/rotator.h"
+#include "utility/releasable_converter.h"
 #include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
@@ -365,7 +366,8 @@ class IntegerQuantizerConverter : public IndexConverter {
 
 /*! Converter of Integer Streaming Quantizer
  */
-class IntegerStreamingConverter : public IndexConverter {
+class IntegerStreamingConverter : public IndexConverter,
+                                  public ReleasableConverter {
  public:
   //! Constructor
   IntegerStreamingConverter(IndexMeta::DataType dst_type)
@@ -486,6 +488,10 @@ class IntegerStreamingConverter : public IndexConverter {
   //! Retrieve Index Meta
   const IndexMeta &meta(void) const override {
     return meta_;
+  }
+
+  void release_result() override {
+    holder_.reset();
   }
 
  private:

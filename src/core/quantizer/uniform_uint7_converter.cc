@@ -21,6 +21,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/turbo/turbo.h>
+#include "utility/releasable_converter.h"
 #include "../metric/metric_params.h"
 
 namespace zvec {
@@ -33,7 +34,8 @@ namespace core {
  * All vectors share the same quantization parameters, enabling direct int8
  * L2 distance computation without per-vector reconstruction.
  */
-class UniformUint7Converter : public IndexConverter {
+class UniformUint7Converter : public IndexConverter,
+                              public ReleasableConverter {
  public:
   //! Constructor.
   //! `dst_type` is required by the INDEX_FACTORY_REGISTER_CONVERTER_ALIAS
@@ -230,6 +232,10 @@ class UniformUint7Converter : public IndexConverter {
   //! Retrieve a holder as result
   IndexHolder::Pointer result(void) const override {
     return holder_;
+  }
+
+  void release_result() override {
+    holder_.reset();
   }
 
   //! Retrieve Index Meta

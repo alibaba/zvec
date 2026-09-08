@@ -17,6 +17,7 @@
 #include <ailego/pattern/defer.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/ivf/ivf_params.h"
+#include "utility/releasable_converter.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
@@ -241,6 +242,12 @@ int IVFIndex::DumpAndOpen() {
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
+  // Converter results can retain the merged holder and every source streamer
+  // even after the old builder is gone. Keep only the trained converter state.
+  if (auto *releasable =
+          dynamic_cast<core::ReleasableConverter *>(converter_.get())) {
+    releasable->release_result();
+  }
   holder_.reset();
   decltype(doc_cache_)().swap(doc_cache_);
   return 0;

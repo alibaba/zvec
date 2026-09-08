@@ -22,12 +22,14 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index_param.h>
+#include "utility/releasable_converter.h"
 #include "../metric/metric_params.h"
 
 namespace zvec {
 namespace core {
 
-class UniformUint8Converter : public IndexConverter {
+class UniformUint8Converter : public IndexConverter,
+                              public ReleasableConverter {
  public:
   explicit UniformUint8Converter(IndexMeta::DataType /*destination_type*/) {}
 
@@ -188,6 +190,10 @@ class UniformUint8Converter : public IndexConverter {
 
   IndexHolder::Pointer result(void) const override {
     return holder_;
+  }
+
+  void release_result() override {
+    holder_.reset();
   }
 
   const IndexMeta &meta(void) const override {

@@ -20,6 +20,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
 #include "rotator/rotator.h"
+#include "utility/releasable_converter.h"
 #include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
@@ -276,7 +277,7 @@ class CosineConverterHolder : public IndexHolder {
 
 /*! Converter of Cosine
  */
-class CosineConverter : public IndexConverter {
+class CosineConverter : public IndexConverter, public ReleasableConverter {
  public:
   static constexpr size_t NORM_SIZE = sizeof(float);
 
@@ -443,6 +444,10 @@ class CosineConverter : public IndexConverter {
   //! Retrieve a holder as result
   IndexHolder::Pointer result(void) const override {
     return holder_;
+  }
+
+  void release_result() override {
+    holder_.reset();
   }
 
   //! Retrieve Index Meta
