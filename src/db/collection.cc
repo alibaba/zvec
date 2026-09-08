@@ -1090,18 +1090,15 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
   std::vector<SegmentTask::Ptr> tasks;
   if (segments.empty()) return tasks;
 
-  bool rebuild = false;
   size_t current_doc_count = 0;
   size_t current_actual_doc_count = 0;
   for (auto &segment : segments) {
     current_doc_count += segment->doc_count();
     current_actual_doc_count += segment->doc_count(filter);
   }
-  if (current_actual_doc_count <
-      current_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD)) {
-    // if delete ratio is large enough, rebuild
-    rebuild = true;
-  }
+  const bool purge_deleted_docs =
+      current_actual_doc_count <
+      current_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD);
 
   auto max_doc_count_per_segment = schema->max_doc_count_per_segment();
 
@@ -1116,10 +1113,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
     if (!current_group.empty()) {
       SegmentTask::Ptr task;
       bool skip_task{false};
-      if (rebuild) {
+      if (purge_deleted_docs) {
         if (current_actual_doc_count + actual_doc_count >
             max_doc_count_per_segment) {
-          // only create SegmentCompactTask when rebuild=true
+          // Size groups by surviving rows when compaction removes tombstones.
           task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
                           allocate_segment_id_for_tmp_segment(), filter,
@@ -1159,13 +1156,14 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
 
   if (current_group.size() > 0) {
     SegmentTask::Ptr task;
-    if (current_group.size() == 1 && !rebuild) {
+    if (current_group.size() == 1 && !purge_deleted_docs) {
       task = SegmentTask::CreateCreateVectorIndexTask(
           CreateVectorIndexTask{current_group[0], "", nullptr, concurrency});
     } else {
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
-          rebuild ? filter : nullptr, !options_.enable_mmap_, concurrency});
+          purge_deleted_docs ? filter : nullptr, !options_.enable_mmap_,
+          concurrency});
     }
     tasks.push_back(task);
   }
