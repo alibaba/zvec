@@ -51,6 +51,11 @@ BUILD_DIR="build_android_${ABI}"
 # Force CMake reconfigure to pick up any bazel.cmake changes
 rm -f "$BUILD_DIR/CMakeCache.txt"
 
+# With c++_static, disable the C++ shared libraries so C++ consumers link the
+# static SDK into a single executable or JNI library. Otherwise, the app and
+# C++ shared libraries can each embed libc++, making cross-library STL ownership
+# and exception handling unsafe. The shared C API remains available through
+# BUILD_C_BINDINGS.
 cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DANDROID_NDK="$ANDROID_NDK_HOME" \
     -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
