@@ -298,6 +298,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     const auto &target_meta = target_streamer_->meta();
     const bool same_layout =
         target_builder_ == nullptr &&
+        turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
         target_meta.data_type() == source_meta.data_type() &&
         target_meta.dimension() == source_meta.dimension() &&

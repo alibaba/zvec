@@ -946,6 +946,10 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
               mt->header.index_meta_size);
     return IndexError_InvalidFormat;
   }
+  if (!turbo::QuantizerStorageDataTypeMatches(index_meta, index_meta_)) {
+    LOG_ERROR("Unmatched or invalid quantizer storage precision");
+    return IndexError_Mismatch;
+  }
   if (index_meta.data_type() != index_meta_.data_type() ||
       index_meta.dimension() != index_meta_.dimension() ||
       index_meta.element_size() != index_meta_.element_size() ||

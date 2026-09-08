@@ -120,25 +120,56 @@ std::string SelectTurboQuantizerName(const QuantizerParam &quantizer_param,
   return {};
 }
 
+ailego::Params MakeTurboQuantizerParams(const QuantizerParam &quantizer_param,
+                                        const FlatIndexParam &flat_param) {
+  ailego::Params params;
+  if (quantizer_param.type == QuantizerType::kNone &&
+      flat_param.storage_data_type != DataType::DT_UNDEFINED &&
+      flat_param.storage_data_type != flat_param.data_type) {
+    params.set(turbo::QUANTIZER_STORAGE_DATA_TYPE,
+               static_cast<int32_t>(flat_param.storage_data_type));
+  }
+  return params;
+}
+
 }  // namespace
 
 int FlatIndex::open(const std::string &file_path,
                     StorageOptions storage_options) {
-  // Pre-turbo versions persisted FLAT INT8 through the converter/reformer
-  // pipeline, whose stored meta carries no quantizer attachment. Peek the
-  // persisted meta and rebuild the legacy pipeline so those indexes stay
-  // loadable; anything unreadable keeps the turbo path and gets validated
-  // by the streamer's open-time meta guard as before.
-  if (turbo_quantizer_ != nullptr && !storage_options.create_new) {
+  // Restore the persisted encoding while keeping the configured structural
+  // meta for the streamer's open-time compatibility checks.
+  if (turbo_quantizer_ != nullptr) {
     core::IndexMeta persisted_meta;
-    if (ReadPersistedFlatIndexMeta(file_path, storage_options,
-                                   &persisted_meta) == 0 &&
-        persisted_meta.quantizer_name().empty()) {
+    const bool has_persisted_meta =
+        !storage_options.create_new &&
+        ReadPersistedFlatIndexMeta(file_path, storage_options,
+                                   &persisted_meta) == 0;
+    if (has_persisted_meta && persisted_meta.quantizer_name().empty()) {
       LOG_INFO(
           "Persisted flat index %s uses a legacy layout, falling back to the "
           "converter pipeline",
           file_path.c_str());
       int ret = FallbackToLegacyPipeline();
+      if (ret != 0) {
+        return ret;
+      }
+    } else {
+      const std::string quantizer_name = proxima_index_meta_.quantizer_name();
+      ailego::Params quantizer_params = MakeTurboQuantizerParams(
+          param_.quantizer_param ? *param_.quantizer_param : QuantizerParam{},
+          param_);
+      if (has_persisted_meta &&
+          persisted_meta.quantizer_name() == quantizer_name) {
+        // Keep the persisted encoding for queries and subsequent inserts.
+        // New files use configured parameters, even if this object previously
+        // opened an older file with a different storage precision.
+        quantizer_params = persisted_meta.quantizer_params();
+      }
+      int ret = CreateAndInitTurboQuantizer(quantizer_name, quantizer_params);
+      if (ret != 0) {
+        return ret;
+      }
+      ret = CreateAndInitStreamer(param_);
       if (ret != 0) {
         return ret;
       }
@@ -194,28 +225,33 @@ int FlatIndex::CreateAndInitConverterReformer(
   const std::string quantizer_name =
       SelectTurboQuantizerName(quantizer_param, flat_param);
   if (!quantizer_name.empty()) {
-    turbo_quantizer_ = core::IndexFactory::CreateQuantizer(quantizer_name);
-    if (!turbo_quantizer_) {
-      LOG_ERROR("Failed to create turbo %s", quantizer_name.c_str());
-      return core::IndexError_Runtime;
-    }
-    if (turbo_quantizer_->init(proxima_index_meta_, ailego::Params{}) != 0) {
-      LOG_ERROR("Failed to init turbo %s", quantizer_name.c_str());
-      turbo_quantizer_.reset();
-      return core::IndexError_Runtime;
-    }
-    // Adopt the quantized meta (storage data type plus any record tail) and
-    // record the quantizer in the meta attachment so the layout round-trips
-    // through the persisted segment meta.
-    proxima_index_meta_ = turbo_quantizer_->meta();
-    proxima_index_meta_.set_quantizer(quantizer_name, 0, ailego::Params{});
-    streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
-                                   proxima_index_meta_.dimension());
-    streamer_vector_meta_.set_extra_meta_size(
-        proxima_index_meta_.extra_meta_size());
-    return core::IndexError_Success;
+    return CreateAndInitTurboQuantizer(
+        quantizer_name, MakeTurboQuantizerParams(quantizer_param, flat_param));
   }
   return CreateAndInitLegacyConverterReformer(quantizer_param, index_param);
+}
+
+int FlatIndex::CreateAndInitTurboQuantizer(const std::string &name,
+                                           const ailego::Params &params) {
+  auto quantizer = core::IndexFactory::CreateQuantizer(name);
+  if (!quantizer) {
+    LOG_ERROR("Failed to create turbo %s", name.c_str());
+    return core::IndexError_Runtime;
+  }
+  auto meta = proxima_index_meta_;
+  meta.set_quantizer(name, 0, params);
+  if (quantizer->init(meta, params) != 0) {
+    LOG_ERROR("Failed to init turbo %s", name.c_str());
+    return core::IndexError_Runtime;
+  }
+  // The quantizer and persisted segment describe the same encoding options.
+  turbo_quantizer_ = std::move(quantizer);
+  proxima_index_meta_ = turbo_quantizer_->meta();
+  streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
+                                 proxima_index_meta_.dimension());
+  streamer_vector_meta_.set_extra_meta_size(
+      proxima_index_meta_.extra_meta_size());
+  return core::IndexError_Success;
 }
 
 int FlatIndex::CreateAndInitLegacyConverterReformer(

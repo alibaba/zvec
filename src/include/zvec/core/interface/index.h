@@ -252,7 +252,8 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
   //! Open the index. A persisted legacy layout (created before the turbo
   //! quantizers, i.e. no quantizer attachment in the stored meta) falls
-  //! back to the converter/reformer pipeline for compatibility.
+  //! back to the converter/reformer pipeline for compatibility. Turbo indexes
+  //! restore their persisted encoding options for queries and inserts.
   int open(const std::string &file_path,
            StorageOptions storage_options) override;
 
@@ -267,6 +268,10 @@ class ZVEC_CORE_API FlatIndex : public Index {
                           core::IndexContext::Pointer &context) override;
 
  private:
+  //! Initialize the selected quantizer and synchronize encoding metadata.
+  int CreateAndInitTurboQuantizer(const std::string &name,
+                                  const ailego::Params &params);
+
   //! Rebuild the legacy converter/reformer/metric/streamer pipeline,
   //! dropping the turbo quantizer.
   int FallbackToLegacyPipeline(void);
