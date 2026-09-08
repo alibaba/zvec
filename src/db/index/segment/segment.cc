@@ -179,7 +179,7 @@ class SegmentImpl : public Segment,
 
   const IndexFilter::Ptr get_filter() override;
 
-  Status create_all_vector_index(
+  Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
@@ -293,7 +293,7 @@ class SegmentImpl : public Segment,
                                                  BlockID block_id,
                                                  bool is_quantized = false);
 
-  Result<VectorColumnIndexer::Ptr> build_vector_indexer(
+  Result<VectorColumnIndexer::Ptr> merge_vector_indexer(
       const std::string &index_file_path, const std::string &column,
       const FieldSchema &field, int concurrency);
 
@@ -1463,7 +1463,7 @@ const IndexFilter::Ptr SegmentImpl::get_filter() {
   return delete_store_->empty() ? nullptr : filter_;
 }
 
-Status SegmentImpl::create_all_vector_index(
+Status SegmentImpl::create_all_vector_indexes(
     int concurrency, SegmentMeta::Ptr *segment_meta,
     std::unordered_map<std::string, VectorColumnIndexer::Ptr> *vector_indexers,
     std::unordered_map<std::string, VectorColumnIndexer::Ptr>
@@ -1488,7 +1488,7 @@ Status SegmentImpl::create_all_vector_index(
   return Status::OK();
 }
 
-Result<VectorColumnIndexer::Ptr> SegmentImpl::build_vector_indexer(
+Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     const std::string &index_file_path, const std::string &column,
     const FieldSchema &field, int concurrency) {
   VectorColumnIndexer::Ptr vector_indexer =
@@ -1560,7 +1560,7 @@ Status SegmentImpl::create_vector_index(
           index_file_path.c_str());
       FileHelper::RemoveFile(index_file_path);
     }
-    auto vector_indexer = build_vector_indexer(
+    auto vector_indexer = merge_vector_indexer(
         index_file_path, column, *field_with_new_index_params, concurrency);
     if (!vector_indexer.has_value()) {
       return vector_indexer.error();
@@ -1625,7 +1625,7 @@ Status SegmentImpl::create_vector_index(
             index_file_path.c_str());
         FileHelper::RemoveFile(index_file_path);
       }
-      auto vector_indexer = build_vector_indexer(index_file_path, column,
+      auto vector_indexer = merge_vector_indexer(index_file_path, column,
                                                  *field_with_flat, concurrency);
       if (!vector_indexer.has_value()) {
         return vector_indexer.error();
@@ -1674,7 +1674,7 @@ Status SegmentImpl::create_vector_index(
           index_file_path.c_str());
       FileHelper::RemoveFile(index_file_path);
     }
-    auto vector_indexer = build_vector_indexer(
+    auto vector_indexer = merge_vector_indexer(
         index_file_path, column, *field_for_quantize, concurrency);
     if (!vector_indexer.has_value()) {
       return vector_indexer.error();

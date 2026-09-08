@@ -1120,7 +1120,7 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 Status SegmentHelper::ExecuteCreateVectorIndexTask(
     CreateVectorIndexTask &task) {
   if (task.column_to_build_vector_index_ == "") {
-    return task.input_segment_->create_all_vector_index(
+    return task.input_segment_->create_all_vector_indexes(
         task.concurrency_, &task.output_segment_meta_,
         &task.output_vector_indexers_, &task.output_quant_vector_indexers_);
   } else {

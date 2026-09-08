@@ -403,7 +403,7 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status create_all_vector_index(
+  Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segmnet_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
