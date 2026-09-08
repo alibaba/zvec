@@ -710,6 +710,19 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::get_key_typed(id);
   }
 
+  //! Prefetch the complete packed graph record, including key and degree, so
+  //! the degree is resident before get_neighbors_typed() consumes it.
+  ailego_force_inline const char *graph_prefetch_data(node_id_t id) const {
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return packed_graph_row(id);
+    }
+    return nullptr;
+  }
+
+  ailego_force_inline size_t graph_prefetch_size() const {
+    return sizeof(key_t) + sizeof(uint32_t) + max_degree() * sizeof(node_id_t);
+  }
+
   //! Direct vector pointer from flat vector array.
   //! Stride is padded up to kVectorAlignment (64B) to preserve cache-line
   //! alignment even when vector_size is not a multiple of 64.  The padding is

@@ -16,6 +16,7 @@
 #include <string>
 #include <ailego/pattern/defer.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "utility/releasable_converter.h"
 #include "holder_builder.h"
@@ -34,6 +35,13 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 
   proxima_index_params_.set(core::PARAM_IVF_BUILDER_CENTROID_COUNT,
                             param_.nlist);
+  ailego::Params cluster_params;
+  cluster_params.set(core::KMEANS_CLUSTER_MAX_ITERATIONS, param_.niters);
+  cluster_params.set(core::OPTKMEANS_CLUSTER_MAX_ITERATIONS, param_.niters);
+  // Forward n_iters to the first-level IVF clusterer.
+  proxima_index_params_.set(
+      core::PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX + "1",
+      cluster_params);
 
   // TODO: add_vector_with_id & fetch_by_id don't rely on this param
   builder_ = core::IndexFactory::CreateBuilder("IVFBuilder");
