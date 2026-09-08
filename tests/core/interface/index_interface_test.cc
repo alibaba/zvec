@@ -1279,7 +1279,7 @@ TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
   for (const auto &path : paths) zvec::test_util::RemoveTestFiles(path);
 }
 
-TEST(IndexInterface, BuilderCacheFetchRejectsMissingDocuments) {
+TEST(IndexInterface, IvfCacheFetchRejectsMissingDocuments) {
   std::vector<BaseIndexParam::Pointer> params{
       IVFIndexParamBuilder()
           .with_metric_type(MetricType::kL2sq)
@@ -1287,16 +1287,6 @@ TEST(IndexInterface, BuilderCacheFetchRejectsMissingDocuments) {
           .with_dimension(16)
           .with_n_list(1)
           .build()};
-#if DISKANN_SUPPORTED
-  params.push_back(DiskAnnIndexParamBuilder()
-                       .with_metric_type(MetricType::kL2sq)
-                       .with_data_type(DataType::DT_FP32)
-                       .with_dimension(16)
-                       .with_max_degree(8)
-                       .with_list_size(16)
-                       .with_pq_chunk_num(1)
-                       .build());
-#endif
   const std::string path = "builder_cache_fetch.index";
   for (const auto &param : params) {
     SCOPED_TRACE(static_cast<int>(param->index_type));
@@ -1416,178 +1406,6 @@ TEST(IndexInterface, IvfRejectsMergeIntoReadyIndexWithoutChangingFile) {
   zvec::test_util::RemoveTestFiles(source_path);
 }
 
-#if DISKANN_SUPPORTED
-class InspectableDiskAnnIndex : public DiskAnnIndex {
- public:
-  int initialize(const BaseIndexParam &param) {
-    return Init(param);
-  }
-  std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
-    return builder_;
-  }
-  zvec::core::IndexHolder::Pointer converted_input() const {
-    return converter_ ? converter_->result() : nullptr;
-  }
-};
-
-TEST(IndexInterface, DiskAnnReleasesBuildStateAndPreservesStoredVectors) {
-  const std::string path = "diskann_release_build_state.index";
-  const std::string source_path = "diskann_release_build_source.index";
-  for (auto quantizer : {QuantizerType::kNone, QuantizerType::kFP16}) {
-    for (bool merge : {false, true}) {
-      SCOPED_TRACE(::testing::Message()
-                   << "quantizer=" << static_cast<int>(quantizer)
-                   << " merge=" << merge);
-      zvec::test_util::RemoveTestFiles(path);
-      zvec::test_util::RemoveTestFiles(source_path);
-      auto param = DiskAnnIndexParamBuilder()
-                       .with_metric_type(MetricType::kL2sq)
-                       .with_data_type(DataType::DT_FP32)
-                       .with_quantizer_param(QuantizerParam(quantizer))
-                       .with_dimension(16)
-                       .with_max_degree(8)
-                       .with_list_size(16)
-                       .with_pq_chunk_num(1)
-                       .build();
-      auto inspected = std::make_shared<InspectableDiskAnnIndex>();
-      ASSERT_EQ(0, inspected->initialize(*param));
-      Index::Pointer target = inspected;
-      auto build_state = inspected->build_state();
-      ASSERT_EQ(0,
-                target->open(path, {StorageOptions::StorageType::kMMAP, true}));
-      auto source_param = FlatIndexParamBuilder()
-                              .with_metric_type(MetricType::kL2sq)
-                              .with_data_type(DataType::DT_FP32)
-                              .with_dimension(16)
-                              .build();
-      auto source = IndexFactory::CreateAndInitIndex(*source_param);
-      ASSERT_NE(nullptr, source);
-      ASSERT_EQ(0, source->open(source_path,
-                                {StorageOptions::StorageType::kMMAP, true}));
-      for (uint32_t id = 0; id < 64; ++id) {
-        std::vector<float> vector(16, static_cast<float>(id + 1) / 64.0F);
-        ASSERT_EQ(0, (merge ? source : target)
-                         ->add(VectorData{DenseVector{vector.data()}}, id));
-      }
-      IndexFilter filter;
-      filter.set([](uint64_t id) { return id >= 8; });
-      ASSERT_EQ(0, merge ? target->merge({source}, filter) : target->train());
-      EXPECT_TRUE(target->is_trained());
-      EXPECT_TRUE(build_state.expired());
-      EXPECT_EQ(nullptr, inspected->converted_input());
-      // Do not close the source first: its streamer and storage must be
-      // released when the caller drops the source, while the target lives.
-      std::weak_ptr<zvec::core::IndexStreamer> source_state =
-          source->index_searcher();
-      source.reset();
-      EXPECT_TRUE(source_state.expired());
-      std::vector<float> vector(16, 4.0F / 64.0F);
-      const std::string expected(reinterpret_cast<const char *>(vector.data()),
-                                 vector.size() * sizeof(float));
-      const auto bytes = ReadIndexBytesForTest(path);
-      ASSERT_FALSE(bytes.empty());
-      for (bool reopen : {false, true}) {
-        SCOPED_TRACE(reopen);
-        if (reopen) {
-          target = IndexFactory::CreateAndInitIndex(*param);
-          ASSERT_NE(nullptr, target);
-          ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP,
-                                           false, true}));
-        }
-        EXPECT_EQ(merge ? 8u : 64u, target->get_doc_count());
-        ASSERT_EQ(0, target->train());
-        ASSERT_EQ(0, target->merge({}, {}));
-        // Even after releasing builder_, nonempty merge must be rejected
-        // before touching either the inputs or the existing target file.
-        EXPECT_EQ(zvec::core::IndexError_Unsupported,
-                  target->merge({target}, {}));
-        EXPECT_EQ(bytes, ReadIndexBytesForTest(path));
-        VectorDataBuffer fetched;
-        ASSERT_EQ(0, target->fetch(3, &fetched));
-        EXPECT_EQ(expected,
-                  std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
-        auto query = std::make_shared<DiskAnnQueryParam>();
-        query->topk = 1;
-        query->list_size = 16;
-        SearchResult result;
-        ASSERT_EQ(0, target->search(VectorData{DenseVector{vector.data()}},
-                                    query, &result));
-        ASSERT_EQ(1u, result.doc_list_.size());
-        EXPECT_TRUE(std::isfinite(result.doc_list_[0].score()));
-        ASSERT_EQ(0, target->close());
-      }
-      zvec::test_util::RemoveTestFiles(path);
-      zvec::test_util::RemoveTestFiles(source_path);
-    }
-  }
-}
-
-TEST(IndexInterface, DiskAnnPreservesBuildStateWhenDumpFails) {
-  const std::string parent = "diskann_dump_blocked_parent";
-  const std::string source_path = "diskann_dump_failure_source.index";
-  for (bool merge : {true, false}) {
-    SCOPED_TRACE(merge);
-    zvec::test_util::RemoveTestFiles(parent);
-    zvec::test_util::RemoveTestFiles(source_path);
-    // A regular file cannot be used as the output directory.
-    std::ofstream blocker(parent);
-    ASSERT_TRUE(blocker.good());
-    blocker.close();
-    auto param = DiskAnnIndexParamBuilder()
-                     .with_metric_type(MetricType::kL2sq)
-                     .with_data_type(DataType::DT_FP32)
-                     .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
-                     .with_dimension(16)
-                     .with_max_degree(8)
-                     .with_list_size(16)
-                     .with_pq_chunk_num(1)
-                     .build();
-    auto inspected = std::make_shared<InspectableDiskAnnIndex>();
-    ASSERT_EQ(0, inspected->initialize(*param));
-    Index::Pointer target = inspected;
-    auto build_state = inspected->build_state();
-    ASSERT_EQ(0, target->open(parent + "/index",
-                              {StorageOptions::StorageType::kMMAP, true}));
-    auto source_param = FlatIndexParamBuilder()
-                            .with_metric_type(MetricType::kL2sq)
-                            .with_data_type(DataType::DT_FP32)
-                            .with_dimension(16)
-                            .build();
-    auto source = IndexFactory::CreateAndInitIndex(*source_param);
-    ASSERT_NE(nullptr, source);
-    ASSERT_EQ(0, source->open(source_path,
-                              {StorageOptions::StorageType::kMMAP, true}));
-    for (uint32_t id = 0; id < 8; ++id) {
-      std::vector<float> vector(16, static_cast<float>(id + 1) / 64.0F);
-      ASSERT_EQ(0, (merge ? source : target)
-                       ->add(VectorData{DenseVector{vector.data()}}, id));
-    }
-    EXPECT_NE(0, merge ? target->merge({source}, {}) : target->train());
-    EXPECT_FALSE(target->is_trained());
-    EXPECT_FALSE(build_state.expired());
-    EXPECT_NE(nullptr, inspected->converted_input());
-    VectorDataBuffer fetched;
-    if (merge) {
-      // A failed merge has no doc_cache_ entries to serve fetch from.
-      EXPECT_EQ(zvec::core::IndexError_OutOfRange, target->fetch(0, &fetched));
-    } else {
-      ASSERT_EQ(0, target->fetch(3, &fetched));
-      std::vector<float> expected(16, 4.0F / 64.0F);
-      EXPECT_EQ(std::string(reinterpret_cast<const char *>(expected.data()),
-                            expected.size() * sizeof(float)),
-                std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
-    }
-    EXPECT_EQ(zvec::core::IndexError_OutOfRange,
-              target->fetch(std::numeric_limits<uint32_t>::max(), &fetched));
-    target.reset();
-    inspected.reset();
-    EXPECT_TRUE(build_state.expired());
-    ASSERT_EQ(0, source->close());
-    zvec::test_util::RemoveTestFiles(parent);
-    zvec::test_util::RemoveTestFiles(source_path);
-  }
-}
-#endif
 
 class InspectableIVFIndex : public IVFIndex {
  public:

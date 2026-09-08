@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "mixed_streamer_reducer.h"
+#include <cstring>
 #include <ailego/pattern/defer.h>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/logger/logger.h>
@@ -26,6 +27,44 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+template <IndexMeta::DataType DT, typename T>
+int MaterializeMergedInput(const MergedProviderIndexHolder::Pointer &source,
+                           IndexHolder::Pointer *output) {
+  auto snapshot =
+      std::make_shared<MultiPassIndexHolder<DT>>(source->dimension());
+  snapshot->reserve(source->count());
+  auto iter = source->create_iterator();
+  if (!iter) {
+    return source->status() != 0 ? source->status() : IndexError_Runtime;
+  }
+  for (; iter->is_valid(); iter->next()) {
+    const void *data = iter->data();
+    if (source->status() != 0) {
+      return source->status();
+    }
+    if (!data) {
+      return IndexError_ReadData;
+    }
+    ailego::NumericalVector<T> vector(source->dimension());
+    std::memcpy(vector.data(), data, source->element_size());
+    if (!snapshot->emplace(iter->key(), std::move(vector))) {
+      return IndexError_Mismatch;
+    }
+  }
+  if (source->status() != 0) {
+    return source->status();
+  }
+  if (snapshot->count() != source->count()) {
+    return IndexError_Mismatch;
+  }
+  *output = std::move(snapshot);
+  return 0;
+}
+
+}  // namespace
 
 int MixedStreamerReducer::init(const ailego::Params &params) {
   enable_pk_rewrite_ =
@@ -553,7 +592,33 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
   merged_holder_ = holder;
 
   AILEGO_DEFER([&]() { holder->set_stop_flag(nullptr); });
-  return this->IndexBuild(holder);
+  IndexHolder::Pointer target_holder = holder;
+  // Only IVF has been adapted to propagate source read failures during dump.
+  // Other builders retain an owned multipass snapshot, as before, so their
+  // dump paths never depend on a source provider or its deferred error state.
+  if (target_builder_->name() != "IVFBuilder") {
+    switch (holder->data_type()) {
+      case IndexMeta::DataType::DT_FP32:
+        ret = MaterializeMergedInput<IndexMeta::DataType::DT_FP32, float>(
+            holder, &target_holder);
+        break;
+      case IndexMeta::DataType::DT_FP16:
+        ret = MaterializeMergedInput<IndexMeta::DataType::DT_FP16,
+                                     ailego::Float16>(holder, &target_holder);
+        break;
+      case IndexMeta::DataType::DT_INT8:
+        ret = MaterializeMergedInput<IndexMeta::DataType::DT_INT8, int8_t>(
+            holder, &target_holder);
+        break;
+      default:
+        ret = IndexError_Unsupported;
+        break;
+    }
+    if (ret != 0) {
+      return ret;
+    }
+  }
+  return this->IndexBuild(std::move(target_holder));
 }
 
 int MixedStreamerReducer::IndexBuild(IndexHolder::Pointer target_holder) {

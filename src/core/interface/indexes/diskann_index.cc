@@ -17,9 +17,7 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #if DISKANN_SUPPORTED
-#include <ailego/pattern/defer.h>
 #include "algorithm/diskann/diskann_params.h"
-#include "utility/releasable_converter.h"
 #include "holder_builder.h"
 #endif
 
@@ -57,12 +55,6 @@ int DiskAnnIndex::train() {
   LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
-
-int DiskAnnIndex::DumpAndOpen() {
-  return core::IndexError_Unsupported;
-}
-
-void DiskAnnIndex::ReleaseBuildState() {}
 
 int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
                                VectorDataBuffer *vector_data_buffer) {
@@ -218,9 +210,6 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
 }
 
 int DiskAnnIndex::train() {
-  if (is_trained_) {
-    return 0;
-  }
   int ret = GenerateHolder();
   if (ret != 0) {
     LOG_ERROR("Failed to generate holder, err: %s",
@@ -237,38 +226,25 @@ int DiskAnnIndex::train() {
     LOG_ERROR("Failed to build index, err: %s", core::IndexError::What(ret));
     return ret;
   }
-  return DumpAndOpen();
-}
-
-int DiskAnnIndex::DumpAndOpen() {
   auto dumper = core::IndexFactory::CreateDumper("FileDumper");
   if (dumper == nullptr) {
     LOG_ERROR("Failed to create FileDumper");
     return core::IndexError_Runtime;
   }
 
-  int ret = dumper->create(file_path_);
+  ret = dumper->create(file_path_);
   if (ret != 0) {
     LOG_ERROR("Failed to create dumper, path: %s, err: %s", file_path_.c_str(),
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
-  AILEGO_DEFER([&]() {
-    if (dumper) dumper->close();
-  });
   ret = builder_->dump(dumper);
   if (ret != 0) {
     LOG_ERROR("Failed to dump index, path: %s, err: %s", file_path_.c_str(),
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
-  ret = dumper->close();
-  if (ret != 0) {
-    LOG_ERROR("Failed to close dumper, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return ret;
-  }
-  dumper.reset();
+  dumper->close();
   ret = storage_->open(file_path_, false);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
@@ -280,20 +256,7 @@ int DiskAnnIndex::DumpAndOpen() {
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
-  ReleaseBuildState();
   return 0;
-}
-
-void DiskAnnIndex::ReleaseBuildState() {
-  // The interface now reads the persisted index. Core DiskAnnBuilder users
-  // still retain their build state and may dump repeatedly.
-  builder_.reset();
-  if (auto *releasable =
-          dynamic_cast<core::ReleasableConverter *>(converter_.get())) {
-    releasable->release_result();
-  }
-  holder_.reset();
-  decltype(doc_cache_)().swap(doc_cache_);
 }
 
 int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
@@ -301,14 +264,6 @@ int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
   if (is_trained_) {
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
-    std::lock_guard<std::mutex> lock(mutex_);
-    // A failed merge has no cached input; sparse doc IDs also leave holes.
-    if (doc_id >= doc_cache_.size()) {
-      return core::IndexError_OutOfRange;
-    }
-    if (doc_cache_[doc_id].first == kInvalidKey) {
-      return core::IndexError_NoExist;
-    }
     DenseVectorBuffer dense_vector_buffer;
     std::string &out_vector_buffer = dense_vector_buffer.data;
     out_vector_buffer = doc_cache_[doc_id].second;
@@ -360,21 +315,34 @@ int DiskAnnIndex::_prepare_for_search(
 int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
                         const IndexFilter &filter,
                         const MergeOptions &options) {
-  if (indexes.empty()) {
-    return 0;
-  }
-  if (is_trained_) {
-    LOG_ERROR("Cannot merge into a trained DiskAnn index; use a new target");
-    return core::IndexError_Unsupported;
-  }
   int pre_ret = Index::merge(indexes, filter, options);
   if (pre_ret != 0) {
     return pre_ret;
   }
-  // A successful reduce is not yet a usable DiskAnn index. Do not report a
-  // failed dump/open as trained, or release its retained source data.
-  is_trained_ = false;
-  return DumpAndOpen();
+  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+
+  dumper->create(file_path_);
+  int ret = builder_->dump(dumper);
+  if (ret != 0) {
+    LOG_ERROR("Failed to dump index, path: %s, err: %s", file_path_.c_str(),
+              core::IndexError::What(ret));
+    return core::IndexError_Runtime;
+  }
+
+  dumper->close();
+
+  ret = storage_->open(file_path_, false);
+  if (ret != 0) {
+    LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
+              core::IndexError::What(ret));
+    return core::IndexError_Runtime;
+  }
+  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
+    LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
+  }
+  is_trained_ = true;
+  return 0;
 }
 
 #endif  // DISKANN_SUPPORTED

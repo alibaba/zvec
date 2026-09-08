@@ -227,9 +227,8 @@ int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
                              entity, magic_, data_quantizer_);
 }
 
-int DiskAnnStreamer::ensure_compatible_context(
-    ContextPointer &context, DiskAnnContext *&ctx,
-    ContextPointer &previous_context) const {
+int DiskAnnStreamer::ensure_compatible_context(ContextPointer &context,
+                                               DiskAnnContext *&ctx) const {
   if (ctx->magic() == magic_) {
     return 0;
   }
@@ -245,7 +244,6 @@ int DiskAnnStreamer::ensure_compatible_context(
     return IndexError_Cast;
   }
   replacement_ctx->copy_query_options_from(*ctx);
-  previous_context = std::move(context);
   context = std::move(replacement);
   ctx = replacement_ctx;
   return 0;
@@ -273,10 +271,7 @@ int DiskAnnStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     return IndexError_Cast;
   }
 
-  // The query may borrow mutable_features() from the old context. Retain
-  // that owner through the search if switching indexes replaces context.
-  ContextPointer query_owner;
-  int ret = ensure_compatible_context(context, ctx, query_owner);
+  int ret = ensure_compatible_context(context, ctx);
   if (ret != 0) {
     return ret;
   }
@@ -331,10 +326,7 @@ int DiskAnnStreamer::search_bf_impl(const void *query,
     return IndexError_Cast;
   }
 
-  // The query may borrow mutable_features() from the old context. Retain
-  // that owner through the search if switching indexes replaces context.
-  ContextPointer query_owner;
-  int ret = ensure_compatible_context(context, ctx, query_owner);
+  int ret = ensure_compatible_context(context, ctx);
   if (ret != 0) {
     return ret;
   }
@@ -395,10 +387,7 @@ int DiskAnnStreamer::search_bf_by_p_keys_impl(
     return IndexError_InvalidArgument;
   }
 
-  // The query may borrow mutable_features() from the old context. Retain
-  // that owner through the search if switching indexes replaces context.
-  ContextPointer query_owner;
-  int ret = ensure_compatible_context(context, ctx, query_owner);
+  int ret = ensure_compatible_context(context, ctx);
   if (ret != 0) {
     return ret;
   }
@@ -447,8 +436,7 @@ int DiskAnnStreamer::get_vector(uint64_t key, Context::Pointer &context,
     LOG_ERROR("Cast context to DiskAnnContext failed");
     return IndexError_Cast;
   }
-  ContextPointer previous_context;
-  int ret = ensure_compatible_context(context, ctx, previous_context);
+  int ret = ensure_compatible_context(context, ctx);
   if (ret != 0) {
     return ret;
   }

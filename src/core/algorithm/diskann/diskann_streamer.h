@@ -155,8 +155,8 @@ class DiskAnnStreamer : public IndexStreamer {
   //! To share ctx across streamer/searcher, we need to update the context for
   //! current streamer/searcher
   int update_context(DiskAnnContext *ctx) const;
-  int ensure_compatible_context(ContextPointer &context, DiskAnnContext *&ctx,
-                                ContextPointer &previous_context) const;
+  int ensure_compatible_context(ContextPointer &context,
+                                DiskAnnContext *&ctx) const;
 
  private:
   friend class DiskAnnCacheTestPeer;

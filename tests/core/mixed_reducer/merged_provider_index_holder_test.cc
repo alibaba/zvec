@@ -15,7 +15,6 @@
 #include "mixed_reducer/merged_provider_index_holder.h"
 #include <algorithm>
 #include <atomic>
-#include <cstdio>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -23,6 +22,8 @@
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include "mixed_reducer/mixed_reducer_params.h"
+#include "mixed_reducer/mixed_streamer_reducer.h"
 
 namespace zvec {
 namespace core {
@@ -30,14 +31,14 @@ namespace {
 
 constexpr size_t kDimension = 2;
 
+template <IndexMeta::DataType DT = IndexMeta::DataType::DT_FP32,
+          typename T = float>
 IndexProvider::Pointer MakeProvider(
     const std::vector<std::pair<uint64_t, float>> &docs,
     size_t dimension = kDimension) {
-  auto provider =
-      std::make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(
-          dimension);
+  auto provider = std::make_shared<MultiPassIndexProvider<DT>>(dimension);
   for (const auto &doc : docs) {
-    ailego::NumericalVector<float> vector(dimension);
+    ailego::NumericalVector<T> vector(dimension);
     vector[0] = doc.second;
     if (dimension > 1) {
       vector[1] = doc.second + 0.5f;
@@ -108,10 +109,11 @@ class TestStreamer final : public IndexStreamer {
 
   TestStreamer(ProviderFactory provider_factory,
                std::shared_ptr<ProviderLifetimeStats> stats,
-               size_t dimension = kDimension)
+               size_t dimension = kDimension,
+               IndexMeta::DataType data_type = IndexMeta::DataType::DT_FP32)
       : provider_factory_(std::move(provider_factory)),
         stats_(std::move(stats)),
-        meta_(IndexMeta::DataType::DT_FP32, dimension) {}
+        meta_(data_type, dimension) {}
 
   int open(IndexStorage::Pointer) override {
     return 0;
@@ -216,6 +218,160 @@ class ReadFailureReformer : public IndexReformer {
   bool fail{false};
   float failed_value{0.0F};
 };
+
+class RetainingTestBuilder : public IndexBuilder {
+ public:
+  explicit RetainingTestBuilder(
+      const std::string &name = "SnapshotTestBuilder") {
+    set_name(name);
+  }
+  int train(IndexThreads::Pointer, IndexHolder::Pointer) override {
+    ++train_calls;
+    return 0;
+  }
+  int build(IndexThreads::Pointer, IndexHolder::Pointer input) override {
+    holder = std::move(input);
+    return 0;
+  }
+  int cleanup() override {
+    holder.reset();
+    return 0;
+  }
+  const Stats &stats() const override {
+    return stats_;
+  }
+
+  size_t train_calls{0};
+  IndexHolder::Pointer holder;
+
+ private:
+  Stats stats_;
+};
+
+TEST(MergedProviderIndexHolderTest, NonIvfBuildersRetainOwnedInput) {
+  for (auto type : {IndexMeta::DataType::DT_FP32, IndexMeta::DataType::DT_FP16,
+                    IndexMeta::DataType::DT_INT8}) {
+    SCOPED_TRACE(static_cast<int>(type));
+    bool source_available = true;
+    auto lifetime = std::make_shared<ProviderLifetimeStats>();
+    auto source = std::make_shared<TestStreamer>(
+        [&](size_t) -> IndexProvider::Pointer {
+          if (!source_available) return nullptr;
+          const std::vector<std::pair<uint64_t, float>> docs{
+              {5, 1.0F}, {9, 2.0F}, {12, 3.0F}};
+          if (type == IndexMeta::DataType::DT_FP16) {
+            return MakeProvider<IndexMeta::DataType::DT_FP16, ailego::Float16>(
+                docs);
+          }
+          if (type == IndexMeta::DataType::DT_INT8) {
+            return MakeProvider<IndexMeta::DataType::DT_INT8, int8_t>(docs);
+          }
+          return MakeProvider(docs);
+        },
+        lifetime, kDimension, type);
+    auto builder = std::make_shared<RetainingTestBuilder>();
+    auto expected_provider = source->create_provider();
+    std::vector<std::string> expected;
+    for (auto key : {5u, 12u}) {
+      expected.emplace_back(
+          static_cast<const char *>(expected_provider->get_vector(key)),
+          expected_provider->element_size());
+    }
+    expected_provider.reset();
+    {
+      ailego::ThreadPool pool(1, false);
+      MixedStreamerReducer reducer;
+      ailego::Params params;
+      params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+      ASSERT_EQ(0, reducer.init(params));
+      reducer.set_thread_pool(&pool);
+      ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
+                       builder, source, nullptr, nullptr,
+                       IndexQueryMeta(type, kDimension)));
+      ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+      size_t filter_calls = 0;
+      IndexFilter filter;
+      filter.set([&](uint64_t key) {
+        ++filter_calls;
+        return key == 9;
+      });
+      ASSERT_EQ(0, reducer.reduce(filter));
+      EXPECT_EQ(3u, filter_calls);
+    }
+    ASSERT_NE(nullptr, builder->holder);
+    EXPECT_EQ(nullptr,
+              dynamic_cast<MergedProviderIndexHolder *>(builder->holder.get()));
+    EXPECT_EQ(type, builder->holder->data_type());
+    EXPECT_EQ(2u, builder->holder->count());
+    EXPECT_TRUE(builder->holder->multipass());
+    const auto provider_count = lifetime->created_count;
+    std::weak_ptr<TestStreamer> source_owner = source;
+    source_available = false;
+    source.reset();
+    EXPECT_TRUE(source_owner.expired());
+    EXPECT_EQ(0u, lifetime->live_count);
+    // A later dump (including a repeated dump) must not revisit the source.
+    for (size_t pass = 0; pass < 2; ++pass) {
+      auto iter = builder->holder->create_iterator();
+      ASSERT_NE(nullptr, iter);
+      size_t ordinal = 0;
+      for (; iter->is_valid(); iter->next(), ++ordinal) {
+        ASSERT_LT(ordinal, expected.size());
+        EXPECT_EQ(ordinal, iter->key());
+        ASSERT_NE(nullptr, iter->data());
+        EXPECT_EQ(expected[ordinal],
+                  std::string(static_cast<const char *>(iter->data()),
+                              builder->holder->element_size()));
+      }
+      EXPECT_EQ(expected.size(), ordinal);
+    }
+    EXPECT_EQ(provider_count, lifetime->created_count);
+  }
+}
+
+TEST(MergedProviderIndexHolderTest,
+     NonIvfBuildersRejectFailedInputBeforeTraining) {
+  auto source = MakeStreamer({{0, 0.0F}, {1, 1.0F}});
+  auto reformer = std::make_shared<ReadFailureReformer>();
+  reformer->failed_value = 1.0F;
+  reformer->fail = true;
+  auto builder = std::make_shared<RetainingTestBuilder>();
+  ailego::ThreadPool pool(1, false);
+  MixedStreamerReducer reducer;
+  ailego::Params params;
+  params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+  ASSERT_EQ(0, reducer.init(params));
+  reducer.set_thread_pool(&pool);
+  ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
+                   builder, source, nullptr, nullptr,
+                   IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
+  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, reformer));
+  EXPECT_EQ(IndexError_ReadData, reducer.reduce({}));
+  EXPECT_EQ(0u, builder->train_calls);
+  EXPECT_EQ(nullptr, builder->holder);
+}
+
+TEST(MergedProviderIndexHolderTest, IvfBuilderKeepsProviderBackedInput) {
+  auto source = MakeStreamer({{0, 0.0F}, {1, 1.0F}});
+  auto builder = std::make_shared<RetainingTestBuilder>("IVFBuilder");
+  ailego::ThreadPool pool(1, false);
+  MixedStreamerReducer reducer;
+  ailego::Params params;
+  params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+  ASSERT_EQ(0, reducer.init(params));
+  reducer.set_thread_pool(&pool);
+  ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
+                   builder, source, nullptr, nullptr,
+                   IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
+  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+  ASSERT_EQ(0, reducer.reduce({}));
+  ASSERT_NE(nullptr, builder->holder);
+  auto *merged =
+      dynamic_cast<MergedProviderIndexHolder *>(builder->holder.get());
+  ASSERT_NE(nullptr, merged);
+  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 0.0F}, {1, 1.0F}}),
+            ReadAll(merged));
+}
 
 TEST(MergedProviderIndexHolderTest, FailedReadKeepsRepeatedDataCallsSafe) {
   auto source = MakeSource(MakeStreamer({{0, 0.0F}, {1, 1.0F}}));
@@ -564,87 +720,6 @@ TEST(MergedProviderIndexHolderTest, RejectsProviderMetaChangeBetweenPasses) {
   EXPECT_EQ(0u, lifetime->live_count);
 }
 
-#if DISKANN_SUPPORTED
-TEST(MergedProviderIndexHolderTest, DiskAnnDumpRejectsLastVectorReadFailure) {
-  class FailingReformer : public IndexReformer {
-   public:
-    int init(const ailego::Params &) override {
-      return 0;
-    }
-    int cleanup() override {
-      return 0;
-    }
-    int load(IndexStorage::Pointer) override {
-      return 0;
-    }
-    int unload() override {
-      return 0;
-    }
-    int revert(const void *in, const IndexQueryMeta &meta,
-               std::string *out) const override {
-      if (fail && *static_cast<const float *>(in) == 11.0f) {
-        return IndexError_ReadData;
-      }
-      out->assign(static_cast<const char *>(in), meta.element_size());
-      return 0;
-    }
-    bool fail{false};
-  };
-
-  // Exercise both packed sectors and vectors spanning multiple sectors.
-  for (const size_t dimension : {2u, 1024u}) {
-    SCOPED_TRACE(dimension);
-    std::vector<std::pair<uint64_t, float>> docs;
-    for (uint64_t i = 0; i < 12; ++i) docs.emplace_back(i, float(i));
-    auto source = MakeSource(std::make_shared<TestStreamer>(
-        [docs, dimension](size_t) { return MakeProvider(docs, dimension); },
-        std::make_shared<ProviderLifetimeStats>(), dimension));
-    source.provider_meta =
-        IndexQueryMeta(IndexMeta::DataType::DT_FP32, dimension);
-    auto reformer = std::make_shared<FailingReformer>();
-    source.reformer = reformer;
-    source.need_revert = true;
-    auto holder = std::make_shared<MergedProviderIndexHolder>(
-        source.provider_meta,
-        std::vector<MergedProviderIndexHolder::Source>{source});
-    ASSERT_EQ(0, holder->init(IndexFilter()));
-
-    IndexMeta meta(IndexMeta::DataType::DT_FP32, dimension);
-    meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-    ailego::Params params;
-    params.set("zvec.diskann.builder.max_degree", 8);
-    params.set("zvec.diskann.builder.list_size", 16);
-    params.set("zvec.diskann.builder.max_pq_chunk_num", 1);
-    params.set("zvec.diskann.builder.threads", 2);
-    auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
-    ASSERT_NE(nullptr, builder);
-    ASSERT_EQ(0, builder->init(meta, params));
-    ASSERT_EQ(0, builder->train(holder));
-    ASSERT_EQ(0, builder->build(holder));
-    ASSERT_EQ(0, holder->status());
-
-    const std::string path = "merged_holder_diskann_dump.index";
-    auto dumper = IndexFactory::CreateDumper("FileDumper");
-    ASSERT_NE(nullptr, dumper);
-    ASSERT_EQ(0, dumper->create(path));
-    ASSERT_EQ(0, builder->dump(dumper));
-    ASSERT_EQ(0, dumper->close());
-    EXPECT_EQ(12u, builder->stats().dumped_count());
-
-    // The interface calls builder->dump directly after the reducer is gone.
-    // A failure on the very last data() must not persist its zero placeholder
-    // and report success merely because there is no following loop iteration.
-    reformer->fail = true;
-    ASSERT_EQ(0, dumper->create(path));
-    EXPECT_NE(0, builder->dump(dumper));
-    EXPECT_EQ(IndexError_ReadData, holder->status());
-    // A partial multi-sector dump need not form a valid index package.
-    dumper->close();
-    dumper.reset();
-    EXPECT_EQ(0, std::remove(path.c_str()));
-  }
-}
-#endif
 
 }  // namespace
 }  // namespace core
