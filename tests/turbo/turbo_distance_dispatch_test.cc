@@ -15,6 +15,7 @@
 #include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
 #include <zvec/turbo/turbo.h>
+#include "distance/avx512_fp16/fp16/inner_product.h"
 
 namespace zvec::turbo {
 namespace {
@@ -88,6 +89,30 @@ TEST(TurboDistanceDispatchTest, AutoSelectsHighestPriorityKernel) {
   flags.AVX512F = true;
   ExpectDispatch(flags, MetricType::kSquaredEuclidean, DataType::kFp32,
                  QuantizeType::kFp32, CpuArchType::kAVX512);
+}
+
+TEST(TurboDistanceDispatchTest, AutoSelectsBaselineSimdKernels) {
+  for (const auto arch : {CpuArchType::kSSE2, CpuArchType::kNEON}) {
+    SCOPED_TRACE(static_cast<int>(arch));
+    auto flags = ScalarProfile();
+    flags.SSE2 = arch == CpuArchType::kSSE2;
+    flags.NEON = arch == CpuArchType::kNEON;
+
+    ExpectDispatch(flags, MetricType::kSquaredEuclidean, DataType::kFp32,
+                   QuantizeType::kFp32, arch);
+    ExpectDispatch(flags, MetricType::kSquaredEuclidean, DataType::kFp16,
+                   QuantizeType::kFp16, arch);
+    ExpectDispatch(flags, MetricType::kSquaredEuclidean, DataType::kInt8,
+                   QuantizeType::kRecord, arch);
+
+    // FP16 still uses the baseline SIMD kernel without F16C, even when
+    // AVX2 and AVX512 are available.
+    flags.AVX = true;
+    flags.AVX2 = true;
+    flags.AVX512F = true;
+    ExpectDispatch(flags, MetricType::kSquaredEuclidean, DataType::kFp16,
+                   QuantizeType::kFp16, arch);
+  }
 }
 
 TEST(TurboDistanceDispatchTest, HonorsAdditionalCpuFeatureRequirements) {
@@ -171,15 +196,22 @@ TEST(TurboDistanceDispatchTest, NativeAutoDispatchMatchesDetectedFeatures) {
 
   const CpuArchType expected_fp32 = flags.AVX512F ? CpuArchType::kAVX512
                                     : flags.AVX2  ? CpuArchType::kAVX2
+                                    : flags.SSE2  ? CpuArchType::kSSE2
+                                    : flags.NEON  ? CpuArchType::kNEON
                                                   : CpuArchType::kScalar;
   EXPECT_EQ(expected_fp32,
             get_distance_kernel_arch(MetricType::kSquaredEuclidean,
                                      DataType::kFp32, QuantizeType::kFp32));
 
   const CpuArchType expected_fp16 =
-      flags.AVX512F && flags.F16C ? CpuArchType::kAVX512
-      : flags.AVX2 && flags.F16C  ? CpuArchType::kAVX2
-                                  : CpuArchType::kScalar;
+      flags.AVX512F && flags.AVX512_FP16 &&
+              avx512_fp16::fp16_distance_kernels_available()
+          ? CpuArchType::kAVX512FP16
+      : flags.AVX512F && flags.F16C ? CpuArchType::kAVX512
+      : flags.AVX2 && flags.F16C    ? CpuArchType::kAVX2
+      : flags.SSE2                  ? CpuArchType::kSSE2
+      : flags.NEON                  ? CpuArchType::kNEON
+                                    : CpuArchType::kScalar;
   EXPECT_EQ(expected_fp16,
             get_distance_kernel_arch(MetricType::kSquaredEuclidean,
                                      DataType::kFp16, QuantizeType::kFp16));
@@ -188,6 +220,8 @@ TEST(TurboDistanceDispatchTest, NativeAutoDispatchMatchesDetectedFeatures) {
                                     : flags.AVX512F && flags.AVX512BW
                                         ? CpuArchType::kAVX512
                                     : flags.AVX2 ? CpuArchType::kAVX2
+                                    : flags.SSE2 ? CpuArchType::kSSE2
+                                    : flags.NEON ? CpuArchType::kNEON
                                                  : CpuArchType::kScalar;
   EXPECT_EQ(expected_int8,
             get_distance_kernel_arch(MetricType::kSquaredEuclidean,
