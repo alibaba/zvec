@@ -1712,6 +1712,29 @@ TEST_F(BufferPoolTest, WritablePoolDoesNotAdaptReadPriority) {
             pool.stats().priority_promotions[VecBufferPool::kNormalPriority]);
 }
 
+TEST_F(BufferPoolTest, WritablePrefetchUsesClaimedLoadPath) {
+  constexpr size_t kPageCount = 2;
+  InitVecPool(/*capacity_pages=*/4, /*file_pages=*/kPageCount,
+              /*writable=*/true);
+  std::string file = NewFile(kPageCount);
+
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(pool.init(), 0);
+
+  pool.prefetch_pages(/*first_page=*/0, /*page_count=*/kPageCount,
+                      VecBufferPool::kHighPriority);
+
+  EXPECT_EQ(kPageCount, pool.stats().miss);
+  for (block_id_t page_id = 0; page_id < kPageCount; ++page_id) {
+    char *page = pool.try_acquire_buffer(page_id);
+    ASSERT_NE(nullptr, page);
+    ExpectPageContent(page, page_id);
+    EXPECT_EQ(VecBufferPool::kHighPriority,
+              pool.page_table_.eviction_priority(page_id));
+    pool.page_table_.release_block(page_id);
+  }
+}
+
 TEST_F(BufferPoolTest, BypassReadDoesNotAdmitPage) {
   InitVecPool(/*capacity_pages=*/2, /*file_pages=*/4);
   std::string file = NewFile(/*num_pages=*/4);

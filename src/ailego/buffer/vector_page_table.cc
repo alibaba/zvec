@@ -1577,9 +1577,8 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
 
         writeback_waits_.fetch_add(1, std::memory_order_relaxed);
         const auto wait_start = std::chrono::steady_clock::now();
-        const bool capacity_released =
-            MemoryLimitPool::get_instance().wait_for_available(
-                kVectorPageSize, std::chrono::milliseconds(100));
+        (void)MemoryLimitPool::get_instance().wait_for_available(
+            kVectorPageSize, std::chrono::milliseconds(100));
         const auto wait_end = std::chrono::steady_clock::now();
         writeback_wait_us_.fetch_add(
             static_cast<uint64_t>(
@@ -1588,7 +1587,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
                     .count()),
             std::memory_order_relaxed);
         const uint64_t now = writeback_pages_.load(std::memory_order_relaxed);
-        if (capacity_released || now != completed) {
+        if (now != completed) {
           no_progress_waits = 0;
           completed = now;
         } else {
@@ -2472,6 +2471,26 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
 void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
                                         size_t page_count, uint8_t priority) {
   const size_t end_page = first_page + page_count;
+
+  // A writable page can change after a speculative bulk read and be flushed
+  // and evicted before the prefetched copy is installed. Load writable pages
+  // through the normal single-flight path so stale disk contents can never be
+  // published after a concurrent write.
+  if (writable_) {
+    for (size_t page_id = first_page; page_id < end_page; ++page_id) {
+      char *buffer = acquire_buffer(page_id, 0, /*record_reuse=*/false);
+      if (buffer == nullptr) {
+        BlockEvictionQueue::get_instance().recycle();
+        buffer = acquire_buffer(page_id, 0, /*record_reuse=*/false);
+        if (buffer == nullptr) {
+          break;
+        }
+      }
+      page_table_.promote_evict_priority(page_id, priority);
+      page_table_.release_block(page_id);
+    }
+    return;
+  }
 
   static constexpr size_t kChunkPages = 1024;
   const size_t kChunkSize = kChunkPages * kVectorPageSize;
