@@ -1844,12 +1844,17 @@ Args:
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
     extra_params (dict, optional): Additional search parameters. Supported keys:
-        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
-          ``0`` disables prefetching. Default is ``8``.
+        - ``prefetch_offset`` (int): Vector-prefetch prefix size (PO) during
+          pool expansion.
+          The shared default ``8`` is resolved by Vamana from the stored vector
+          size, graph degree, effective line count, and a 6 KiB nominal budget
+          for this phase only. ``0`` disables this prefix, not local-descent,
+          graph-row, or distance-kernel prefetching.
           Values are clamped to ``256``.
         - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-          per neighbour vector (PL). ``0`` (default) uses the auto-derived
-          value ``ceil(dim/64)``. Values are clamped to ``256``.
+          per neighbour vector (PL). The shared default ``0`` makes Vamana use
+          at most two lines, further clamped to the stored vector size. Values
+          are clamped to ``256`` and to the stored vector size.
 )pbdoc")
       .def_property_readonly(
           "ef_search",
@@ -1860,13 +1865,14 @@ Args:
           [](const VamanaQueryParams &self) -> uint32_t {
             return self.prefetch_offset();
           },
-          "int: Graph prefetch offset used by the Vamana fast path.")
+          "int: Requested pool-phase vector-prefetch prefix; the default is "
+          "resolved by Vamana.")
       .def_property_readonly(
           "prefetch_lines",
           [](const VamanaQueryParams &self) -> uint32_t {
             return self.prefetch_lines();
           },
-          "int: Override of prefetch cache lines per vector (0=auto).")
+          "int: Requested cache-line count; zero selects Vamana's default.")
       .def("__repr__",
            [](const VamanaQueryParams &self) -> std::string {
              return "{"

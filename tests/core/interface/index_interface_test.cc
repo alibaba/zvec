@@ -32,7 +32,9 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
+#include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
@@ -47,12 +49,50 @@
 
 using namespace zvec::core_interface;
 
+namespace {
+
+class TestableIVFIndex : public IVFIndex {
+ public:
+  int CreateAndInitStreamerForTest(const BaseIndexParam &param) {
+    return CreateAndInitStreamer(param);
+  }
+
+  const zvec::ailego::Params &proxima_index_params() const {
+    return proxima_index_params_;
+  }
+};
+
+}  // namespace
+
+TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
+  TestableIVFIndex index;
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(8)
+                   .with_n_list(4)
+                   .with_n_iters(37)
+                   .build();
+
+  ASSERT_EQ(0, index.CreateAndInitStreamerForTest(*param));
+
+  zvec::ailego::Params cluster_params;
+  ASSERT_TRUE(index.proxima_index_params().get(
+      zvec::core::PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX + "1",
+      &cluster_params));
+  EXPECT_EQ(37, cluster_params.get_as_int32(
+                    zvec::core::KMEANS_CLUSTER_MAX_ITERATIONS));
+  EXPECT_EQ(37, cluster_params.get_as_int32(
+                    zvec::core::OPTKMEANS_CLUSTER_MAX_ITERATIONS));
+}
+
 TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(5, static_cast<int>(IndexType::kDiskAnn));
   EXPECT_EQ(6, static_cast<int>(IndexType::kVamana));
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
+#if DISKANN_SUPPORTED
 TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   auto param = DiskAnnIndexParamBuilder()
                    .with_metric_type(MetricType::kL2sq)
@@ -71,6 +111,7 @@ TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   EXPECT_EQ(80, diskann->list_size);
   EXPECT_EQ(16, diskann->pq_chunk_num);
 }
+#endif
 
 #if RABITQ_SUPPORTED
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
@@ -1848,6 +1889,19 @@ TEST(IndexInterface, Serialize) {
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
   }
+#if DISKANN_SUPPORTED
+  {
+    DiskAnnQueryParam param;
+    param.topk = 12;
+    param.list_size = 80;
+    const auto json = IndexFactory::QueryParamSerializeToJson(param);
+    const auto parsed =
+        IndexFactory::QueryParamDeserializeFromJson<DiskAnnQueryParam>(json);
+    ASSERT_NE(nullptr, parsed);
+    EXPECT_EQ(param.topk, parsed->topk);
+    EXPECT_EQ(param.list_size, parsed->list_size);
+  }
+#endif
 }
 
 TEST(IndexInterface, Failure) {
