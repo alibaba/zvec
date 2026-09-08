@@ -293,7 +293,6 @@ class SegmentImpl : public Segment,
                                                  BlockID block_id,
                                                  bool is_quantized = false);
 
-  // Build an index over the existing segment rows, including tombstones.
   Result<VectorColumnIndexer::Ptr> build_vector_indexer(
       const std::string &index_file_path, const std::string &column,
       const FieldSchema &field, int concurrency);
@@ -1626,8 +1625,8 @@ Status SegmentImpl::create_vector_index(
             index_file_path.c_str());
         FileHelper::RemoveFile(index_file_path);
       }
-      auto vector_indexer = build_vector_indexer(
-          index_file_path, column, *field_with_flat, concurrency);
+      auto vector_indexer = build_vector_indexer(index_file_path, column,
+                                                 *field_with_flat, concurrency);
       if (!vector_indexer.has_value()) {
         return vector_indexer.error();
       }
