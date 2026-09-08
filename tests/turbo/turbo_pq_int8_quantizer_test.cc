@@ -85,9 +85,9 @@ make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
 // ---------------------------------------------------------------------------
 
 TEST(PqInt8Quantizer, InitInvalidParams) {
-  // dim not divisible by num_chunk
-  auto q = make_pq_quantizer(10, 3);
-  EXPECT_EQ(q, nullptr);
+  // Every chunk must contain at least one dimension.
+  EXPECT_EQ(make_pq_quantizer(10, 11), nullptr);
+  EXPECT_EQ(make_pq_quantizer(0, 1), nullptr);
 
   // num_chunk = 0
   auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
@@ -177,7 +177,7 @@ TEST(PqInt8Quantizer, AdcDistance) {
 }
 
 TEST(PqInt8Quantizer, SdcDistance) {
-  const size_t DIM = 16;
+  const size_t DIM = 17;
   const size_t NSQ = 4;
   const size_t COUNT = 2000;
 
@@ -199,7 +199,14 @@ TEST(PqInt8Quantizer, SdcDistance) {
   quantizer->quantize_data(iter->data(), code2.data());
 
   float sdc_dist = quantizer->calc_distance_dp_dp(code1.data(), code2.data());
-  EXPECT_GE(sdc_dist, 0.0f);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  std::string decoded1, decoded2;
+  ASSERT_EQ(0, quantizer->dequantize(code1.data(), qmeta, &decoded1));
+  ASSERT_EQ(0, quantizer->dequantize(code2.data(), qmeta, &decoded2));
+  EXPECT_NEAR(reference_sq_euclidean(
+                  reinterpret_cast<const float *>(decoded1.data()),
+                  reinterpret_cast<const float *>(decoded2.data()), DIM),
+              sdc_dist, 1e-4f);
 }
 
 TEST(PqInt8Quantizer, DistanceImplAdcAndSdc) {
@@ -240,7 +247,7 @@ TEST(PqInt8Quantizer, DistanceImplAdcAndSdc) {
 }
 
 TEST(PqInt8Quantizer, SerializeDeserialize) {
-  const size_t DIM = 16;
+  const size_t DIM = 17;
   const size_t NSQ = 4;
   const size_t COUNT = 500;
 
@@ -288,8 +295,86 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
   // and is not persisted.
 }
 
-// The header carries the code DataType so that int4 PQ blobs (which share
-// quant_type == kPQ) are rejected instead of being misparsed as int8 codes.
+// Legacy indexes hand their codebook over through import_codebook(), so the
+// in-memory layout it expects stays pinned down: [chunk][cluster][chunk_dim].
+TEST(PqInt8Quantizer, ImportCodebook) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+  const size_t COUNT = 500;
+  const size_t SUB_DIM = DIM / NSQ;
+  const size_t CLUSTER_NUM = 256;
+
+  auto quantizer = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+
+  auto holder = make_random_holder(COUNT, DIM);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  // Read the trained codebook back through dequantize(): a code with the same
+  // cluster in every chunk decodes to that cluster's centroid of each chunk.
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  std::vector<float> codebook(NSQ * CLUSTER_NUM * SUB_DIM, 0.0f);
+  for (size_t c = 0; c < CLUSTER_NUM; ++c) {
+    std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length(),
+                              static_cast<uint8_t>(c));
+    std::string decoded;
+    ASSERT_EQ(0, quantizer->dequantize(code.data(), qmeta, &decoded));
+    ASSERT_EQ(decoded.size(), DIM * sizeof(float));
+    const float *centroids = reinterpret_cast<const float *>(decoded.data());
+    for (size_t m = 0; m < NSQ; ++m) {
+      std::memcpy(&codebook[(m * CLUSTER_NUM + c) * SUB_DIM],
+                  centroids + m * SUB_DIM, SUB_DIM * sizeof(float));
+    }
+  }
+
+  auto q2 = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q2);
+  ASSERT_EQ(
+      0, q2->import_codebook(codebook.data(), codebook.size() * sizeof(float)));
+
+  auto iter = holder->create_iterator();
+  iter->is_valid();
+  std::vector<uint8_t> code1(quantizer->quantized_datapoint_vector_length());
+  std::vector<uint8_t> code2(q2->quantized_datapoint_vector_length());
+  quantizer->quantize_data(iter->data(), code1.data());
+  q2->quantize_data(iter->data(), code2.data());
+
+  for (size_t m = 0; m < NSQ; ++m) {
+    EXPECT_EQ(code1[m], code2[m]) << "m=" << m;
+  }
+
+  size_t lut_len = quantizer->quantized_query_vector_length();
+  std::vector<float> lut1(lut_len / sizeof(float));
+  std::vector<float> lut2(lut_len / sizeof(float));
+  quantizer->quantize_query(iter->data(), lut1.data());
+  q2->quantize_query(iter->data(), lut2.data());
+
+  float adc1 = quantizer->calc_distance_dp_query(code1.data(), lut1.data());
+  float adc2 = q2->calc_distance_dp_query(code2.data(), lut2.data());
+  EXPECT_NEAR(adc1, adc2, 1e-5f);
+}
+
+TEST(PqInt8Quantizer, ImportCodebookRejectsWrongSize) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+
+  // Without init() the geometry is unknown, so there is nothing to import into.
+  auto uninitialized = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(uninitialized);
+  std::vector<float> codebook(NSQ * 256 * (DIM / NSQ), 0.0f);
+  EXPECT_EQ(zvec::turbo::kErrUnsupported,
+            uninitialized->import_codebook(codebook.data(),
+                                           codebook.size() * sizeof(float)));
+
+  auto quantizer = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+  EXPECT_EQ(zvec::turbo::kErrUnsupported,
+            quantizer->import_codebook(nullptr, 0));
+  EXPECT_EQ(zvec::turbo::kErrUnsupported,
+            quantizer->import_codebook(codebook.data(),
+                                       codebook.size() * sizeof(float) - 4));
+}
+
 TEST(PqInt8Quantizer, DeserializeRejectsForeignDataType) {
   const size_t DIM = 16;
   const size_t NSQ = 4;
@@ -310,13 +395,22 @@ TEST(PqInt8Quantizer, DeserializeRejectsForeignDataType) {
   std::memcpy(&hdr, blob.data(), sizeof(hdr));
   EXPECT_EQ(static_cast<uint16_t>(DataType::kInt8), hdr.data_type);
 
-  // Simulate a foreign blob (e.g. int4 PQ) by flipping the code data type.
-  hdr.data_type = static_cast<uint16_t>(DataType::kInt4);
+  // Simulate a foreign blob by flipping the code data type to a non-zero,
+  // non-int8 value.
+  hdr.data_type = static_cast<uint16_t>(DataType::kFp16);
   std::memcpy(blob.data(), &hdr, sizeof(hdr));
 
   auto q2 = make_pq_quantizer(DIM, NSQ);
   ASSERT_TRUE(q2);
   EXPECT_EQ(zvec::turbo::kErrUnsupported, q2->deserialize(blob));
+
+  // Backward compat: data_type == 0 (blobs serialized before the field was
+  // populated) must still be accepted and parsed as int8 codes.
+  hdr.data_type = 0;
+  std::memcpy(blob.data(), &hdr, sizeof(hdr));
+  auto q3 = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q3);
+  EXPECT_EQ(0, q3->deserialize(blob));
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,8 +1460,8 @@ TEST(PqInt8Fp16, Dequantize) {
 
 // Verify serialize/deserialize round-trip preserves FP16 PQ codes.
 TEST(PqInt8Fp16, SerializeDeserialize) {
-  const size_t DIM = 16;
-  const size_t NSQ = 4;
+  const size_t DIM = 65;
+  const size_t NSQ = 8;
   const size_t COUNT = 500;
 
   auto quantizer = make_pq_fp16_quantizer(DIM, NSQ);

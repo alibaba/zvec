@@ -702,6 +702,7 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                        search_batch_distance_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->prepare_query_prefetch();
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);

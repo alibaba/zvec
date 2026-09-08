@@ -16,7 +16,6 @@
 #include <chrono>
 #include <new>
 #include "diskann_params.h"
-#include "diskann_pq_table.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -24,9 +23,10 @@ namespace core {
 
 DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
                                const IndexMetric::Pointer &measure,
-                               const DiskAnnEntity::Pointer &entity)
+                               const DiskAnnEntity::Pointer &entity,
+                               const turbo::Quantizer::Pointer &data_quantizer)
     : IndexContext(measure),
-      dc_(entity.get(), measure, meta.dimension()),
+      dc_(entity.get(), meta, measure, data_quantizer),
       entity_{entity} {}
 
 DiskAnnContext::Pointer DiskAnnContext::create_fetch_context(
@@ -84,7 +84,7 @@ int DiskAnnContext::resize_fetch_sector_buffer(
   return 0;
 }
 
-int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
+int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
                          uint32_t pq_chunk_num, uint32_t element_size) {
   if (!entity_ || element_size == 0) {
     LOG_ERROR("Invalid DiskAnn context parameters");
@@ -115,7 +115,7 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
       break;
 
     case kSearcherContext:
-      if (graph_degree == 0 || pq_chunk_num_ == 0) {
+      if (pq_chunk_num_ == 0) {
         LOG_ERROR("Invalid DiskAnn search context dimensions");
         return IndexError_InvalidArgument;
       }
@@ -127,21 +127,12 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
         return ret;
       }
 
-      DiskAnnUtil::alloc_aligned((void **)&pq_table_dist_buffer_,
-                                 static_cast<size_t>(PQTable::kPQCentroidNum) *
-                                     pq_chunk_num_ * sizeof(float),
-                                 256);
-      DiskAnnUtil::alloc_aligned(
-          (void **)&pq_coord_buffer_,
-          static_cast<size_t>(graph_degree) * pq_chunk_num_ * sizeof(uint8_t),
-          256);
       DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
       sector_buffer_size_ = static_cast<size_t>(DiskAnnUtil::kMaxSectorReadNum *
                                                 DiskAnnUtil::kSectorSize);
       DiskAnnUtil::alloc_aligned((void **)&sector_buffer_, sector_buffer_size_,
                                  DiskAnnUtil::kSectorSize);
-      if (!pq_table_dist_buffer_ || !pq_coord_buffer_ || !coord_buffer_ ||
-          !sector_buffer_) {
+      if (!coord_buffer_ || !sector_buffer_) {
         LOG_ERROR("Failed to allocate DiskAnn search buffers");
         return IndexError_NoMemory;
       }
@@ -185,8 +176,6 @@ DiskAnnContext::~DiskAnnContext() {
   visit_filter_.destroy();
   DiskAnnUtil::free_aligned(query_);
   DiskAnnUtil::free_aligned(query_rotated_);
-  DiskAnnUtil::free_aligned(pq_table_dist_buffer_);
-  DiskAnnUtil::free_aligned(pq_coord_buffer_);
   DiskAnnUtil::free_aligned(coord_buffer_);
   DiskAnnUtil::free_aligned(sector_buffer_);
 }
@@ -198,10 +187,10 @@ int DiskAnnContext::update(const ailego::Params &params) {
   return 0;
 }
 
-int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
-                                   const IndexMetric::Pointer &measure,
-                                   const DiskAnnEntity::Pointer &entity,
-                                   uint32_t magic_num) {
+int DiskAnnContext::update_context(
+    ContextType type, const IndexMeta &meta,
+    const IndexMetric::Pointer &measure, const DiskAnnEntity::Pointer &entity,
+    uint32_t magic_num, const turbo::Quantizer::Pointer &data_quantizer) {
   if (ailego_unlikely(type != static_cast<ContextType>(type_))) {
     LOG_ERROR(
         "DiskAnnContext does not support shared by different type, "
@@ -238,7 +227,7 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
 
   entity_ = entity;
   update_index_metric(measure);
-  dc_.update(entity_.get(), measure, meta.dimension());
+  dc_.update(entity_.get(), meta, measure, data_quantizer);
   magic_ = magic_num;
 
   return 0;

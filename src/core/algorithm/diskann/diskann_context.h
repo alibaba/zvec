@@ -53,7 +53,8 @@ class DiskAnnContext : public IndexContext,
 
   //! Construct
   DiskAnnContext(const IndexMeta &meta, const IndexMetric::Pointer &measure,
-                 const DiskAnnEntity::Pointer &entity);
+                 const DiskAnnEntity::Pointer &entity,
+                 const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Destructor
   virtual ~DiskAnnContext();
@@ -71,7 +72,8 @@ class DiskAnnContext : public IndexContext,
   //! Update context, the context may be shared by different searcher/streamer
   int update_context(ContextType type, const IndexMeta &meta,
                      const IndexMetric::Pointer &measure,
-                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num);
+                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num,
+                     const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Retrieve search result
   const IndexDocumentList &result(void) const override {
@@ -178,14 +180,6 @@ class DiskAnnContext : public IndexContext,
 
   inline void *query_rotated() {
     return query_rotated_;
-  }
-
-  inline float *pq_table_dist_buffer() {
-    return pq_table_dist_buffer_;
-  }
-
-  inline void *pq_coord_buffer() {
-    return pq_coord_buffer_;
   }
 
   inline void *coord_buffer() {
@@ -387,8 +381,6 @@ class DiskAnnContext : public IndexContext,
   IOContext io_ctx_{};
   SearchStats query_stats_;
 
-  float *pq_table_dist_buffer_{nullptr};
-  void *pq_coord_buffer_{nullptr};
   void *query_{nullptr};
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};

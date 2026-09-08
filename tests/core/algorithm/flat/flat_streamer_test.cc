@@ -23,6 +23,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
@@ -941,6 +942,86 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
   ASSERT_EQ(3000, total);
   ASSERT_EQ(0, min);
   ASSERT_EQ(2999, max);
+}
+
+TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
+  MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = IndexFactory::CreateStorage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(dir_ + storage_name, true));
+
+    IndexStreamer::Stats stats;
+    FlatStreamerEntity entity(stats);
+    *entity.mutable_meta() = *index_meta_ptr_;
+    entity.set_block_vector_count(32);
+    entity.set_linear_list_count(1);
+    // Force repeated cache reallocations with a small dataset.
+    entity.set_segment_size(MemoryHelper::PageSize());
+    ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+    std::vector<float> vec(dim, 0.0f);
+    ASSERT_EQ(0, entity.add(0, vec.data(), vec.size() * sizeof(float)));
+
+    std::atomic<uint32_t> published{0};
+    std::atomic<unsigned> ready{0};
+    std::atomic<bool> start{false};
+    std::atomic<bool> done{false};
+    std::vector<std::future<bool>> readers;
+    for (unsigned reader = 0; reader < 3; ++reader) {
+      readers.push_back(std::async(std::launch::async, [&]() {
+        ready.fetch_add(1);
+        while (!start.load()) std::this_thread::yield();
+        unsigned rounds = 0;
+        do {
+          const uint32_t newest = published.load();
+          // Read an old segment and a newly published one during growth.
+          for (uint32_t key : {0U, newest}) {
+            IndexStorage::MemoryBlock block;
+            if (entity.get_vector_by_key(key, block) != 0 || !block.data()) {
+              return false;
+            }
+            const auto *data = static_cast<const float *>(block.data());
+            for (size_t d = 0; d < dim; ++d) {
+              if (data[d] != static_cast<float>(key)) return false;
+            }
+          }
+          ++rounds;
+        } while (!done.load() || rounds < 64);
+        return true;
+      }));
+    }
+    while (ready.load() != readers.size()) std::this_thread::yield();
+    start.store(true);
+    constexpr uint32_t count = 4096;
+    for (uint32_t key = 1; key < count; ++key) {
+      std::fill(vec.begin(), vec.end(), static_cast<float>(key));
+      const int ret = entity.add(key, vec.data(), vec.size() * sizeof(float));
+      EXPECT_EQ(0, ret);
+      if (ret != 0) break;
+      published.store(key);
+    }
+    done.store(true);
+    for (auto &reader : readers) EXPECT_TRUE(reader.get());
+    ASSERT_EQ(count - 1, published.load());
+    ASSERT_TRUE(
+        storage->has(StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, 8)));
+
+    // Verify that each allocated block kept the correct segment ID.
+    for (uint32_t key = 0; key < count; ++key) {
+      IndexStorage::MemoryBlock block;
+      ASSERT_EQ(0, entity.get_vector_by_key(key, block));
+      ASSERT_NE(nullptr, block.data());
+      const auto *data = static_cast<const float *>(block.data());
+      for (size_t d = 0; d < dim; ++d) {
+        ASSERT_FLOAT_EQ(static_cast<float>(key), data[d]);
+      }
+    }
+    ASSERT_EQ(0, entity.flush(0));
+    ASSERT_EQ(0, entity.close());
+    ASSERT_EQ(0, storage->close());
+  }
 }
 
 TEST_F(FlatStreamerTest, TestFilter) {

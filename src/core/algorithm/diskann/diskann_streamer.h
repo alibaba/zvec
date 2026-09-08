@@ -32,6 +32,13 @@ class DiskAnnStreamer : public IndexStreamer {
   DiskAnnStreamer(const DiskAnnStreamer &) = delete;
   DiskAnnStreamer &operator=(const DiskAnnStreamer &) = delete;
 
+  //! Initialize Streamer with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller; it takes precedence
+  //! over the internal factory selection for full-precision distance
+  //! (graph rerank / linear search).
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
+
  protected:
   //! Initialize Searcher
   int init(const IndexMeta &meta, const ailego::Params &params) override;
@@ -152,6 +159,8 @@ class DiskAnnStreamer : public IndexStreamer {
                                 DiskAnnContext *&ctx) const;
 
  private:
+  friend class DiskAnnCacheTestPeer;
+
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
   IndexMetric::Pointer measure_{};
@@ -164,6 +173,10 @@ class DiskAnnStreamer : public IndexStreamer {
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
+
+  //! Externally constructed quantizer for full-precision distance, forwarded
+  //! to every context's DistCalculator (may be empty).
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   // Fetches share a lightweight I/O context, while returned MemoryBlocks own
   // independent copies so their lifetime does not depend on this buffer.

@@ -481,9 +481,13 @@ int FlatStreamerEntity::search_bf(const void *query, const IndexFilter &filter,
 
 FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
   std::vector<IndexStorage::Segment::Pointer> segments;
-  segments.reserve(segments_.size());
-  for (size_t i = 0; i < segments_.size(); ++i) {
-    segments.emplace_back(segments_[i]->clone());
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    segments = segments_;
+  }
+  // Storage operations do not need to hold the cache lock.
+  for (size_t i = 0; i < segments.size(); ++i) {
+    segments[i] = segments[i]->clone();
     if (!segments[i]) {
       LOG_ERROR("Failed to clone segment, index=%zu", i);
       return nullptr;
@@ -497,7 +501,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
   entity->index_meta_ = this->index_meta_;
   entity->storage_ = this->storage_;
   // entity->reformer_ = this->reformer_;
-  entity->segments_ = segments;
+  entity->segments_ = std::move(segments);
   entity->meta_ = this->meta_;
   entity->quantizer_ = this->quantizer_;
   entity->key_info_map_lock_ = this->key_info_map_lock_;
@@ -1110,7 +1114,13 @@ int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
 }
 
 int FlatStreamerEntity::alloc_segment(void) {
-  size_t index = segments_.size();
+  // add()/add_vector_with_id() serialize allocation with mutex_. Keep the
+  // cache lock out of storage allocation, which may wait for reader pins.
+  size_t index;
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    index = segments_.size();
+  }
   if (index == kMaxSegmentId) {
     LOG_ERROR("Failed to alloc new segment, exceed max count %zu",
               kMaxSegmentId);
@@ -1147,7 +1157,10 @@ int FlatStreamerEntity::alloc_segment(void) {
   }
   meta_.segment_count += 1;
   meta_.header.linear_body_size += size;
-  segments_.emplace_back(std::move(segment));
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    segments_.emplace_back(std::move(segment));
+  }
   *stats_.mutable_index_size() += size;
 
   // Update meta information
@@ -1166,15 +1179,23 @@ int FlatStreamerEntity::alloc_segment(void) {
 
 int FlatStreamerEntity::alloc_block(const BlockLocation &next,
                                     BlockLocation *block) {
-  if (segments_.size() <= 1 ||
-      segments_.back()->padding_size() < linear_block_size()) {
+  IndexStorage::Segment::Pointer segment;
+  size_t segment_id;
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    segment_id = segments_.size() - 1;
+    segment = segments_.back();
+  }
+  if (segment_id == 0 || segment->padding_size() < linear_block_size()) {
     int ret = this->alloc_segment();
     if (ailego_unlikely(ret != 0)) {
       return ret;
     }
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    segment_id = segments_.size() - 1;
+    segment = segments_.back();
   }
 
-  auto &segment = segments_.back();
   size_t block_index = segment->data_size() / linear_block_size();
   if (block_index == kMaxBlockId) {
     LOG_ERROR("Failed to alloc block, exceed max count %zu per segment",
@@ -1202,7 +1223,7 @@ int FlatStreamerEntity::alloc_block(const BlockLocation &next,
   }
 
   ++meta_.header.block_count;
-  block->segment_id = segments_.size() - 1;
+  block->segment_id = segment_id;
   block->block_index = (segment->data_size() / linear_block_size()) - 1;
 
   return 0;
@@ -1223,7 +1244,10 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
     return IndexError_IndexFull;
   }
 
-  auto &segment = segments_[block.segment_id];
+  auto segment = get_segment(block.segment_id);
+  if (!segment) {
+    return IndexError_WriteData;
+  }
 
   size_t vector_off =
       get_block_vector_offset(block.block_index, header->vector_count);
