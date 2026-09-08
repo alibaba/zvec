@@ -19,7 +19,6 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <shared_mutex>
 #include <string>
 #include <unordered_set>
@@ -224,13 +223,12 @@ class CollectionImpl : public Collection {
     return tmp_segment_id_allocator_.fetch_add(1);
   }
 
-  // Plan index-only builds or full segment compaction for optimize().
   std::vector<SegmentTask::Ptr> build_optimize_tasks(
       const CollectionSchema::Ptr &schema,
       const std::vector<Segment::Ptr> &segments, int concurrency,
       const IndexFilter::Ptr filter);
 
-  Status execute_segment_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
+  Status execute_optimize_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
 
   std::vector<SegmentTask::Ptr> build_create_vector_index_task(
       const std::vector<Segment::Ptr> &segments, const std::string &column,
@@ -942,13 +940,12 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
     return Status::OK();
   }
 
-  // Phase 2: build indexes or compact segments while readers and writers proceed.
+  // Phase 2: lock-free optimize. Readers and writers proceed freely.
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_optimize_tasks(schema_, persist_segments, options.concurrency_,
                            delete_store_clone->make_filter());
-
-  auto s = execute_segment_tasks(tasks);
+  auto s = execute_optimize_tasks(tasks);
   CHECK_RETURN_STATUS(s);
 
   // End of phase 2 (still lock-free): move built tmp segments to their
@@ -1090,47 +1087,48 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_optimize_tasks(
   std::vector<SegmentTask::Ptr> tasks;
   if (segments.empty()) return tasks;
 
-  size_t current_doc_count = 0;
-  size_t current_actual_doc_count = 0;
+  size_t current_physical_doc_count = 0;
+  size_t current_live_doc_count = 0;
   for (auto &segment : segments) {
-    current_doc_count += segment->doc_count();
-    current_actual_doc_count += segment->doc_count(filter);
+    current_physical_doc_count += segment->doc_count();
+    current_live_doc_count += segment->doc_count(filter);
   }
   const bool purge_deleted_docs =
-      current_actual_doc_count <
-      current_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD);
+      current_live_doc_count <
+      current_physical_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD);
 
   auto max_doc_count_per_segment = schema->max_doc_count_per_segment();
 
   std::vector<Segment::Ptr> current_group;
-  current_doc_count = 0;
-  current_actual_doc_count = 0;
+  current_physical_doc_count = 0;
+  current_live_doc_count = 0;
 
   for (const auto &seg : segments) {
-    uint64_t doc_count = seg->doc_count();
-    uint64_t actual_doc_count = seg->doc_count(filter);
+    const auto seg_physical_doc_count = seg->doc_count();
+    const auto seg_live_doc_count = seg->doc_count(filter);
 
     if (!current_group.empty()) {
       SegmentTask::Ptr task;
       bool skip_task{false};
       if (purge_deleted_docs) {
-        if (current_actual_doc_count + actual_doc_count >
+        if (current_live_doc_count + seg_live_doc_count >
             max_doc_count_per_segment) {
-          // Size groups by surviving rows when compaction removes tombstones.
+          // Compaction physically removes deleted rows.
           task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
                           allocate_segment_id_for_tmp_segment(), filter,
                           !options_.enable_mmap_, concurrency});
         }
       } else {
-        if (current_doc_count + doc_count > max_doc_count_per_segment) {
-          // check current_group size
+        if (current_physical_doc_count + seg_physical_doc_count >
+            max_doc_count_per_segment) {
           if (current_group.size() == 1) {
             task =
                 SegmentTask::CreateCreateVectorIndexTask(CreateVectorIndexTask{
                     current_group[0], "", nullptr, concurrency});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
+            // Merge segments while preserving deleted rows.
             task = SegmentTask::CreateCompactTask(
                 CompactTask{path_, schema, current_group,
                             allocate_segment_id_for_tmp_segment(), nullptr,
@@ -1141,8 +1139,8 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_optimize_tasks(
 
       if (task) {
         current_group.clear();
-        current_doc_count = 0;
-        current_actual_doc_count = 0;
+        current_physical_doc_count = 0;
+        current_live_doc_count = 0;
         if (!skip_task) {
           tasks.push_back(task);
         }
@@ -1150,8 +1148,8 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_optimize_tasks(
     }
 
     current_group.push_back(seg);
-    current_doc_count += doc_count;
-    current_actual_doc_count += actual_doc_count;
+    current_physical_doc_count += seg_physical_doc_count;
+    current_live_doc_count += seg_live_doc_count;
   }
 
   if (current_group.size() > 0) {
@@ -1171,7 +1169,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_optimize_tasks(
   return tasks;
 }
 
-Status CollectionImpl::execute_segment_tasks(
+Status CollectionImpl::execute_optimize_tasks(
     std::vector<SegmentTask::Ptr> &tasks) const {
   Status s;
   for (auto &task : tasks) {
