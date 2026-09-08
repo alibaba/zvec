@@ -266,6 +266,16 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_force_inline inline __attribute__((always_inline))
 #endif
 
+//! Prefetch `lines` consecutive 64-byte cache lines starting at `ptr`.
+//! Uses the same cache hint as ailego_prefetch; zero lines is a no-op.
+static ailego_force_inline void ailego_prefetch_lines(const void *ptr,
+                                                      size_t lines) {
+  const char *data = (const char *)ptr;
+  for (size_t line = 0; line < lines; ++line) {
+    ailego_prefetch(data + line * 64);
+  }
+}
+
 #if defined(AILEGO_M64)
 #define ailego_ctz ailego_ctz64
 #define ailego_clz ailego_clz64

@@ -45,6 +45,66 @@
 
 namespace zvec::turbo::avx512_vnni {
 
+namespace {
+
+// Reduce four zmm int32 accumulators to one xmm holding [s0, s1, s2, s3].
+static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0, __m512i a1,
+                                                         __m512i a2,
+                                                         __m512i a3) {
+  const __m256i b0 = _mm256_add_epi32(_mm512_castsi512_si256(a0),
+                                      _mm512_extracti64x4_epi64(a0, 1));
+  const __m256i b1 = _mm256_add_epi32(_mm512_castsi512_si256(a1),
+                                      _mm512_extracti64x4_epi64(a1, 1));
+  const __m256i b2 = _mm256_add_epi32(_mm512_castsi512_si256(a2),
+                                      _mm512_extracti64x4_epi64(a2, 1));
+  const __m256i b3 = _mm256_add_epi32(_mm512_castsi512_si256(a3),
+                                      _mm512_extracti64x4_epi64(a3, 1));
+  const __m256i c01 = _mm256_hadd_epi32(b0, b1);
+  const __m256i c23 = _mm256_hadd_epi32(b2, b3);
+  const __m256i d = _mm256_hadd_epi32(c01, c23);
+  return _mm_add_epi32(_mm256_castsi256_si128(d),
+                       _mm256_extracti128_si256(d, 1));
+}
+
+// SIFT hot path. The Vamana caller has already prefetched both cache lines of
+// every candidate, so keep the query resident and overlap four independent
+// candidate streams without issuing redundant software prefetches here.
+template <size_t batch_size>
+static ailego_force_inline void uniform_sq_l2_uint7_batch_128(
+    const void *const *vectors, __m512i query0, __m512i query1,
+    float *distances) {
+  static_assert(batch_size >= 1 && batch_size <= 4);
+  const __m512i zero = _mm512_setzero_si512();
+
+  const auto accumulate = [&](size_t index) {
+    const auto *vector = reinterpret_cast<const __m512i *>(vectors[index]);
+    const __m512i diff0 =
+        _mm512_abs_epi8(_mm512_sub_epi8(_mm512_loadu_si512(vector), query0));
+    const __m512i diff1 = _mm512_abs_epi8(
+        _mm512_sub_epi8(_mm512_loadu_si512(vector + 1), query1));
+    __m512i accumulator = _mm512_dpbusd_epi32(zero, diff0, diff0);
+    return _mm512_dpbusd_epi32(accumulator, diff1, diff1);
+  };
+
+  const __m512i a0 = accumulate(0);
+  const __m512i a1 = batch_size >= 2 ? accumulate(1) : zero;
+  const __m512i a2 = batch_size >= 3 ? accumulate(2) : zero;
+  const __m512i a3 = batch_size >= 4 ? accumulate(3) : zero;
+  const __m128 scores = _mm_cvtepi32_ps(reduce_add_4x16_epi32(a0, a1, a2, a3));
+
+  if constexpr (batch_size == 4) {
+    _mm_storeu_ps(distances, scores);
+  } else {
+    alignas(16) float values[4];
+    _mm_store_ps(values, scores);
+    for (size_t i = 0; i < batch_size; ++i) {
+      distances[i] = values[i];
+    }
+  }
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Batch kernel template: compute squared L2 for `batch_size` database vectors
 // against a single query, with software prefetching of future vectors.
@@ -122,6 +182,26 @@ void uniform_squared_euclidean_uint7_distance(const void *a, const void *b,
   const int8_t *lhs = reinterpret_cast<const int8_t *>(a);
   const int8_t *rhs = reinterpret_cast<const int8_t *>(b);
 
+  if (dim == 128) {
+    const __m512i lhs0 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs));
+    const __m512i rhs0 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs));
+    const __m512i lhs1 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs + 64));
+    const __m512i rhs1 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + 64));
+    const __m512i diff0 = _mm512_abs_epi8(_mm512_sub_epi8(lhs0, rhs0));
+    const __m512i diff1 = _mm512_abs_epi8(_mm512_sub_epi8(lhs1, rhs1));
+    const __m512i accumulator0 =
+        _mm512_dpbusd_epi32(_mm512_setzero_si512(), diff0, diff0);
+    const __m512i accumulator1 =
+        _mm512_dpbusd_epi32(_mm512_setzero_si512(), diff1, diff1);
+    *distance = static_cast<float>(
+        _mm512_reduce_add_epi32(_mm512_add_epi32(accumulator0, accumulator1)));
+    return;
+  }
+
   // Four independent accumulators to break the data-dependency chain.
   __m512i acc0 = _mm512_setzero_si512();
   __m512i acc1 = _mm512_setzero_si512();
@@ -179,8 +259,34 @@ void uniform_squared_euclidean_uint7_distance(const void *a, const void *b,
 void uniform_squared_euclidean_uint7_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const * /*extra_values*/) {
-  static constexpr size_t batch_size = 4;
-  static constexpr size_t prefetch_step = 2;
+  if (dim == 128) {
+    const auto *query_vectors = reinterpret_cast<const __m512i *>(query);
+    const __m512i query0 = _mm512_loadu_si512(query_vectors);
+    const __m512i query1 = _mm512_loadu_si512(query_vectors + 1);
+    size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+      uniform_sq_l2_uint7_batch_128<4>(vectors + i, query0, query1,
+                                       distances + i);
+    }
+    switch (n - i) {
+      case 3:
+        uniform_sq_l2_uint7_batch_128<3>(vectors + i, query0, query1,
+                                         distances + i);
+        break;
+      case 2:
+        uniform_sq_l2_uint7_batch_128<2>(vectors + i, query0, query1,
+                                         distances + i);
+        break;
+      case 1:
+        uniform_sq_l2_uint7_batch_128<1>(vectors + i, query0, query1,
+                                         distances + i);
+        break;
+    }
+    return;
+  }
+
+  static constexpr size_t batch_size = 2;
+  const size_t prefetch_step = dim > 256 ? 2 : 4;
 
   size_t i = 0;
   for (; i + batch_size <= n; i += batch_size) {
