@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/turbo/turbo.h>
 #include "zvec/core/framework/index_factory.h"
 
@@ -43,16 +44,77 @@ static float reference_cosine(const float *a, const float *b, size_t dim) {
   return (denom < 1e-12f) ? 1.0f : 1.0f - dot / denom;
 }
 
-// SIMD kernels may reorder accumulation; allow a small relative tolerance.
+static float load_fp16(const void *data, size_t index) {
+  uint16_t bits = 0;
+  std::memcpy(&bits,
+              static_cast<const uint8_t *>(data) + index * sizeof(uint16_t),
+              sizeof(bits));
+  return FloatHelper::ToFP32(bits);
+}
+
+// The forward error of a floating-point sum is proportional to the sum of the
+// absolute terms, not to the (possibly heavily cancelled) final result.
+static double accumulation_magnitude(turbo::MetricType metric, const void *lhs,
+                                     const void *rhs, size_t dim) {
+  double magnitude = 0.0;
+  for (size_t i = 0; i < dim; ++i) {
+    const double a = load_fp16(lhs, i);
+    const double b = load_fp16(rhs, i);
+    if (metric == turbo::MetricType::kSquaredEuclidean) {
+      const double difference = a - b;
+      magnitude += difference * difference;
+    } else {
+      magnitude += std::abs(a * b);
+    }
+  }
+  return magnitude;
+}
+
+static double rounding_error_bound(size_t operation_count,
+                                   double unit_roundoff) {
+  const double accumulated_roundoff = operation_count * unit_roundoff;
+  return accumulated_roundoff / (1.0 - accumulated_roundoff);
+}
+
 static void expect_simd_near(float actual, float expected,
+                             turbo::MetricType metric, const void *lhs,
+                             const void *rhs, size_t dim,
                              turbo::CpuArchType arch) {
-  // AVX512-FP16 performs its fused multiply-add accumulation in FP16.  The
-  // other implementations widen inputs and accumulate in FP32.
-  const float relative_tolerance =
-      arch == turbo::CpuArchType::kAVX512FP16 ? 5.0e-3f : 1.0e-4f;
-  const float tolerance =
-      relative_tolerance * std::max(1.0f, std::abs(expected));
-  EXPECT_NEAR(actual, expected, tolerance);
+  const double magnitude = accumulation_magnitude(metric, lhs, rhs, dim);
+  const double accumulation_scale = std::max(1.0, magnitude);
+  const double result_scale =
+      std::max(1.0, std::abs(static_cast<double>(expected)));
+
+  // FP32 implementations use different reduction orders.  Account for the
+  // error of both the scalar and SIMD reductions, while preserving the
+  // existing result-relative floor for small, well-conditioned inputs.
+  constexpr double kFp32UnitRoundoff = 1.0 / 16777216.0;
+  const double fp32_error = 4.0 *
+                            rounding_error_bound(dim + 32, kFp32UnitRoundoff) *
+                            accumulation_scale;
+  double tolerance = std::max(1.0e-4 * result_scale, fp32_error);
+
+  if (arch == turbo::CpuArchType::kAVX512FP16) {
+    // AVX512-FP16 keeps two 32-lane accumulators in FP16, combines them in
+    // FP16, then widens for horizontal reduction.  Bound the longest FP16
+    // dependency chain.  L2 needs two additional roundoff units for the FP16
+    // subtraction and its squared contribution.
+    size_t fp16_depth = dim / 64 + (dim % 64 >= 32 ? 1 : 0);
+    if (fp16_depth != 0) {
+      fp16_depth += dim >= 64 ? 1 : 0;
+      fp16_depth += metric == turbo::MetricType::kSquaredEuclidean ? 2 : 0;
+      constexpr double kFp16UnitRoundoff = 1.0 / 2048.0;
+      const double fp16_error =
+          rounding_error_bound(fp16_depth, kFp16UnitRoundoff) *
+          accumulation_scale;
+      tolerance = std::max(
+          tolerance, std::max(5.0e-3 * result_scale, fp16_error + fp32_error));
+    }
+  }
+
+  EXPECT_NEAR(actual, expected, tolerance)
+      << "accumulation_magnitude=" << magnitude
+      << ", computed_tolerance=" << tolerance;
 }
 
 // Verify that the `arch` distance kernels match the scalar kernels for all
@@ -98,31 +160,37 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       constexpr size_t kVectorCount = 7;
       std::mt19937 gen(
           static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
-      // Small integer components are exactly representable in FP16, so even
-      // the AVX512-FP16 kernels (which accumulate in FP16) produce exact
-      // partial sums and match the scalar kernels deterministically.
-      // Fractional data would make the FP16 accumulation error scale with
-      // sum(|a_i * b_i|), which the relative tolerance (based on the
-      // cancellation-reduced result) cannot bound reliably.
-      std::uniform_int_distribution<int> dist(-4, 5);
       std::vector<std::vector<float>> raw(kVectorCount,
                                           std::vector<float>(dim));
       std::vector<std::string> encoded(
           kVectorCount,
           std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+      constexpr double kGeneratorRange =
+          static_cast<double>(std::mt19937::max()) -
+          static_cast<double>(std::mt19937::min()) + 1.0;
       for (size_t i = 0; i < kVectorCount; ++i) {
         for (float &value : raw[i]) {
-          value = static_cast<float>(dist(gen));
+          // mt19937 output is standardized, while uniform_real_distribution
+          // is allowed to vary between standard-library implementations. Map
+          // the engine output explicitly to preserve the original [-4, 5)
+          // input range and the cancellation-heavy regression case.
+          const double unit = (static_cast<double>(gen()) -
+                               static_cast<double>(std::mt19937::min())) /
+                              kGeneratorRange;
+          value = static_cast<float>(-4.0 + 9.0 * unit);
         }
         quantizer->quantize_data(raw[i].data(), encoded[i].data());
       }
 
+      std::vector<float> single_actual(kVectorCount - 1);
       for (size_t i = 1; i < kVectorCount; ++i) {
+        SCOPED_TRACE(testing::Message() << "path=single, candidate=" << i);
         float expected = 0.0f;
-        float actual = 0.0f;
         scalar.dist(encoded[i].data(), encoded[0].data(), dim, &expected);
-        simd.dist(encoded[i].data(), encoded[0].data(), dim, &actual);
-        expect_simd_near(actual, expected, arch);
+        simd.dist(encoded[i].data(), encoded[0].data(), dim,
+                  &single_actual[i - 1]);
+        expect_simd_near(single_actual[i - 1], expected, metric.type,
+                         encoded[i].data(), encoded[0].data(), dim, arch);
       }
 
       std::vector<const void *> candidates(kVectorCount - 1);
@@ -132,11 +200,18 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       std::vector<float> expected(candidates.size());
       std::vector<float> actual(candidates.size());
       scalar.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
-                   expected.data());
+                   expected.data(), nullptr);
       simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
-                 actual.data());
+                 actual.data(), nullptr);
       for (size_t i = 0; i < candidates.size(); ++i) {
-        expect_simd_near(actual[i], expected[i], arch);
+        SCOPED_TRACE(testing::Message() << "path=batch, candidate=" << i + 1);
+        if (arch == turbo::CpuArchType::kAVX512FP16) {
+          // The AVX512-FP16 single and batch kernels use the same instruction
+          // sequence per candidate, so their outputs should match exactly.
+          EXPECT_EQ(single_actual[i], actual[i]);
+        }
+        expect_simd_near(actual[i], expected[i], metric.type, candidates[i],
+                         encoded[0].data(), dim, arch);
       }
     }
   }
@@ -396,17 +471,18 @@ TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
     float actual = 0.0f;
     scalar.dist(lhs.data(), rhs.data(), lhs.size(), &expected);
     sse2.dist(lhs.data(), rhs.data(), lhs.size(), &actual);
-    expect_simd_near(actual, expected, turbo::CpuArchType::kSSE2);
+    expect_simd_near(actual, expected, metric, lhs.data(), rhs.data(),
+                     lhs.size(), turbo::CpuArchType::kSSE2);
 
     const void *vectors[] = {lhs.data(), rhs.data()};
     float expected_batch[2] = {};
     float actual_batch[2] = {};
-    scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch);
-    sse2.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch);
-    expect_simd_near(actual_batch[0], expected_batch[0],
-                     turbo::CpuArchType::kSSE2);
-    expect_simd_near(actual_batch[1], expected_batch[1],
-                     turbo::CpuArchType::kSSE2);
+    scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch, nullptr);
+    sse2.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch, nullptr);
+    expect_simd_near(actual_batch[0], expected_batch[0], metric, vectors[0],
+                     rhs.data(), lhs.size(), turbo::CpuArchType::kSSE2);
+    expect_simd_near(actual_batch[1], expected_batch[1], metric, vectors[1],
+                     rhs.data(), lhs.size(), turbo::CpuArchType::kSSE2);
   }
 }
 

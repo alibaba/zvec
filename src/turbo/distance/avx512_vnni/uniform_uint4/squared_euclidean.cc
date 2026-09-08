@@ -92,11 +92,10 @@ void uniform_squared_euclidean_uint4_distance(const void *lhs, const void *rhs,
            encoded_dimension, distance);
 }
 
-void uniform_squared_euclidean_uint4_batch_distance(const void *const *vectors,
-                                                    const void *query,
-                                                    size_t count,
-                                                    size_t encoded_dimension,
-                                                    float *distances) {
+void uniform_squared_euclidean_uint4_batch_distance(
+    const void *const *vectors, const void *query, size_t count,
+    size_t encoded_dimension, float *distances,
+    const void *const * /*extra_values*/) {
   const auto *packed_query = static_cast<const uint8_t *>(query);
   size_t i = 0;
   for (; i + 4 <= count; i += 4) {
@@ -121,7 +120,8 @@ void uniform_squared_euclidean_uint4_distance(const void * /*lhs*/,
 
 void uniform_squared_euclidean_uint4_batch_distance(
     const void *const * /*vectors*/, const void * /*query*/, size_t /*count*/,
-    size_t /*encoded_dimension*/, float * /*distances*/) {}
+    size_t /*encoded_dimension*/, float * /*distances*/,
+    const void *const * /*extra_values*/) {}
 
 }  // namespace zvec::turbo::avx512_vnni
 

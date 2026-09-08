@@ -157,7 +157,8 @@ void Fp32Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
                                                  float *dist_list) const {
   if (dp_query_batch_func_) {
     dp_query_batch_func_(const_cast<const void **>(dp_list), query,
-                         static_cast<size_t>(dp_num), original_dim_, dist_list);
+                         static_cast<size_t>(dp_num), original_dim_, dist_list,
+                         nullptr);
     return;
   }
   for (int i = 0; i < dp_num; ++i) {

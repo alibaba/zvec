@@ -116,9 +116,10 @@ class VamanaDistCalculator {
     return dist(feat, query);
   }
 
-  inline void batch_dist(const void **vecs, uint32_t count, float *dists) {
+  inline void batch_dist(const void **vecs, uint32_t count, float *dists,
+                         const void **extra_values) {
     compare_cnt_ += count;
-    batch_distance_(vecs, query_, count, dim_, dists);
+    batch_distance_(vecs, query_, count, dim_, dists, extra_values);
   }
 
   // Single-node batch distance: compute distance between query and a stored
@@ -132,7 +133,12 @@ class VamanaDistCalculator {
       return 0.0f;
     }
     dist_t score = 0;
-    batch_distance_(&feat, query_, 1, dim_, &score);
+    if (entity_->extra_values_size() != 0) {
+      const void *extra_values = entity_->get_extra_values(id);
+      batch_distance_(&feat, query_, 1, dim_, &score, &extra_values);
+    } else {
+      batch_distance_(&feat, query_, 1, dim_, &score, nullptr);
+    }
     return score;
   }
 
