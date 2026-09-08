@@ -33,7 +33,8 @@ struct Record {
   std::vector<double> decoded;
 };
 
-Record MakeRecord(Encoding encoding, size_t dimension, uint32_t seed) {
+Record MakeRecord(Encoding encoding, size_t dimension, uint32_t seed,
+                  bool include_int8_min) {
   const size_t tail = encoding == Encoding::Uint7   ? 0
                       : encoding == Encoding::Uint8 ? sizeof(uint32_t)
                                                     : 20;
@@ -48,7 +49,11 @@ Record MakeRecord(Encoding encoding, size_t dimension, uint32_t seed) {
     int code = seed % 3 == 0 ? (d % 2 == 0 ? 0 : 255)
                              : (d * 71 + seed * 53 + d * seed * 17) % 256;
     if (encoding == Encoding::Uint7) code /= 2;
-    if (encoding == Encoding::RecordInt8) code -= 128;
+    if (encoding == Encoding::RecordInt8) {
+      code -= 128;
+      // RecordQuantizer emits [-127, 127]; reserve -128 for explicit VNNI.
+      if (!include_int8_min && code == -128) code = -127;
+    }
     record.encoded[d] =
         static_cast<int8_t>(encoding == Encoding::Uint8 ? code - 128 : code);
     record.decoded[d] = encoding == Encoding::RecordInt8
@@ -84,10 +89,10 @@ TEST_P(VamanaQuantizedBatchTest, BatchesAndPrefetchBoundariesMatchReference) {
   for (const size_t dimension : {1U, 63U, 64U, 65U, 127U, 128U, 129U, 255U,
                                  256U, 257U, 959U, 960U, 961U}) {
     SCOPED_TRACE(testing::Message() << "dimension=" << dimension);
-    auto query = MakeRecord(encoding, dimension, 37);
+    auto query = MakeRecord(encoding, dimension, 37, explicit_vnni);
     std::vector<Record> records;
     for (uint32_t i = 0; i < kCount; ++i) {
-      records.push_back(MakeRecord(encoding, dimension, i + 1));
+      records.push_back(MakeRecord(encoding, dimension, i + 1, explicit_vnni));
     }
     const char *name = encoding == Encoding::Uint7   ? "UniformUint7"
                        : encoding == Encoding::Uint8 ? "UniformUint8"
