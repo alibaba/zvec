@@ -62,12 +62,14 @@ class VecsIndexHolder : public IndexProvider {
     //! Constructor
     Iterator(const VecsIndexHolder &holder, uint32_t cursor)
         : cursor_(cursor),
+          start_cursor_(cursor),
+          end_cursor_(holder.end_cursor()),
           vecs_reader_(holder.vecs_reader_),
           stop_(holder.stop_) {}
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
-      return !stop_ && cursor_ < vecs_reader_.num_vecs();
+      return !stop_ && cursor_ < end_cursor_;
     }
 
     //! Retrieve primary key
@@ -102,11 +104,13 @@ class VecsIndexHolder : public IndexProvider {
 
     //! Reset the iterator
     virtual void reset(void) {
-      cursor_ = 0;
+      cursor_ = start_cursor_;
     }
 
    private:
     size_t cursor_;
+    const size_t start_cursor_;
+    const size_t end_cursor_;
     const VecsReader &vecs_reader_;
     const bool &stop_;
   };
@@ -125,8 +129,15 @@ class VecsIndexHolder : public IndexProvider {
     return iter;
   }
 
-  //! Retrieve count of elements in holder
+  //! Number of records in the selected iterator range.
   size_t count(void) const override {
+    const size_t end = end_cursor();
+    return end > start_cursor_ ? end - start_cursor_ : 0;
+  }
+
+  //! Exclusive file offset after applying MaxDocs. Random-access methods and
+  //! the streaming benchmark use original file offsets, not selected offsets.
+  size_t end_cursor() const {
     return max_doc_count_ != 0
                ? std::min(max_doc_count_, vecs_reader_.num_vecs())
                : vecs_reader_.num_vecs();
@@ -260,7 +271,6 @@ class VecsIndexHolder : public IndexProvider {
   size_t max_doc_count_{0};
   std::unordered_map<uint64_t, size_t> key_to_index_map_;
 };
-
 
 /*!
  * Vecs Index Sparse Holder

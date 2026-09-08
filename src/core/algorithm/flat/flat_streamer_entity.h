@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <ailego/parallel/lock.h>
@@ -33,8 +34,10 @@ namespace core {
 //! Reusable request-local buffers for storage-specific Flat search paths.
 struct FlatSearchScratch {
   std::vector<const void *> vector_ptrs{};
+  std::vector<const void *> extra_values{};
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
+  std::vector<uint8_t> query_buffer{};
 };
 
 /*! Flat Streamer Entity
@@ -194,6 +197,15 @@ class FlatStreamerEntity {
     return batch_distance_;
   }
 
+  size_t extra_values_size(void) const {
+    return extra_values_size_;
+  }
+
+  const IndexMetric::DistanceBatchQueryPreprocessFunc &batch_query_preprocess(
+      void) const {
+    return batch_query_preprocess_;
+  }
+
   int get_vector_by_position(uint32_t id,
                              IndexStorage::MemoryBlock &block) const;
 
@@ -259,7 +271,10 @@ class FlatStreamerEntity {
   };
 
   //! Retrive storage segment by index
-  const IndexStorage::Segment::Pointer get_segment(size_t index) const {
+  IndexStorage::Segment::Pointer get_segment(size_t index) const {
+    // Copy the shared_ptr before unlocking: append may reallocate the cache.
+    // Readers can also mutate the cache through the lazy fill below.
+    std::lock_guard<std::mutex> lock(segments_mutex_);
     for (size_t i = segments_.size(); i <= index; ++i) {
       auto segment_id =
           ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, i);
@@ -305,9 +320,10 @@ class FlatStreamerEntity {
 
   //! Update header block of an linear list
   int update_head_block(const BlockLocation &block) {
-    ailego_assert_with(segments_.size() != 0, "Invalid Segments");
-
-    auto &hd_segment = segments_[0];
+    auto hd_segment = get_segment(0);
+    if (!hd_segment) {
+      return IndexError_WriteData;
+    }
     if (hd_segment->write(0, &block, sizeof(block)) != sizeof(block)) {
       LOG_ERROR("Failed to write head block location");
       return IndexError_WriteData;
@@ -355,8 +371,10 @@ class FlatStreamerEntity {
 
   //! Get header block of an linear list
   int get_head_block(IndexStorage::MemoryBlock &header_block) const {
-    ailego_assert_with(segments_.size() != 0, "Invalid Segments");
-    auto &hd_segment = segments_[0];
+    auto hd_segment = get_segment(0);
+    if (!hd_segment) {
+      return IndexError_ReadData;
+    }
     if (hd_segment->read(0, header_block, sizeof(BlockLocation)) !=
         sizeof(BlockLocation)) {
       LOG_ERROR("Failed to read head block location");
@@ -369,7 +387,7 @@ class FlatStreamerEntity {
   int get_block_header(const BlockLocation &block,
                        IndexStorage::MemoryBlock &header_block) const {
     // The header is located in the end of a block to align features
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_header_offset(block.block_index);
     if (segment->read(off, header_block, sizeof(BlockHeader)) !=
@@ -382,7 +400,7 @@ class FlatStreamerEntity {
   int get_block_deletion_map(
       const BlockLocation &block,
       IndexStorage::MemoryBlock &deletion_map_block) const {
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_deletion_map_offset(block.block_index);
     if (segment->read(off, deletion_map_block, sizeof(DeletionMap)) !=
@@ -395,7 +413,7 @@ class FlatStreamerEntity {
 
   int get_block_keys(const BlockLocation &block,
                      IndexStorage::MemoryBlock &keys_block) const {
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_key_offset(block.block_index, 0);
     if (segment->read(off, keys_block,
@@ -409,7 +427,7 @@ class FlatStreamerEntity {
 
   int get_block_vectors(const BlockLocation &block,
                         IndexStorage::MemoryBlock &vector_block) const {
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_vector_offset(block.block_index, 0);
     if (segment->read(off, vector_block,
@@ -428,10 +446,15 @@ class FlatStreamerEntity {
 
   //! Members
   std::mutex mutex_{};
+  // Protects the segment cache, independently of the serialized add path.
+  // Open/close and initial loading require external lifecycle exclusion.
+  mutable std::mutex segments_mutex_{};
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc batch_query_preprocess_{};
+  size_t extra_values_size_{0};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};

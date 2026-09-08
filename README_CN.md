@@ -75,7 +75,7 @@ Zvec 提供多语言官方 SDK：
 ### ✅ 支持的平台
 
 - Linux (x86_64, ARM64; glibc & musl)
-- macOS (ARM64)
+- macOS (ARM64, x86_64)
 - Windows (x86_64)
 
 ### 🛠️ 源码构建

@@ -55,7 +55,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
 }
 
 // Returns a human-readable description for the given backend type. On Linux
-// (excluding Android), kPread includes guidance for enabling io_uring or libaio.
+// (excluding Android), kPread includes guidance for enabling io_uring or
+// libaio.
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kIoUring:

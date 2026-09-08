@@ -45,8 +45,9 @@ constexpr uint16_t kQuantizerSerVersion = 1;
 
 using DistanceFunc =
     std::function<void(const void *m, const void *q, size_t dim, float *out)>;
-using BatchDistanceFunc = std::function<void(
-    const void **m, const void *q, size_t num, size_t dim, float *out)>;
+using BatchDistanceFunc =
+    std::function<void(const void **m, const void *q, size_t num, size_t dim,
+                       float *out, const void **extra_values)>;
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
@@ -55,6 +56,12 @@ using QueryPreprocessFunc =
 // indirect-call overhead on the per-record / per-query hot path.
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
+
+// Packed global uint4 quantization. Two codes are stored per byte (low nibble
+// first), and the logical dimension is padded to a multiple of 128.
+using UniformUint4QuantizeFunc = void (*)(const float *in, size_t dim,
+                                          float minimum, float range,
+                                          uint8_t *out);
 
 // Direct FP32 conversion. The output layout is selected by get_convert_func().
 using ConvertFunc = void (*)(const float *in, size_t dim, void *out);
@@ -88,11 +95,9 @@ using CodebookSymmetricDistanceFunc = void (*)(const void *a, const void *b,
 
 // Batch asymmetric: distances for multiple codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
-using CodebookBatchAsymmetricDistanceFunc = void (*)(const void **codes,
-                                                     const void *lut,
-                                                     size_t num,
-                                                     size_t num_chunk,
-                                                     float *out);
+using CodebookBatchAsymmetricDistanceFunc =
+    void (*)(const void **codes, const void *lut, size_t num, size_t num_chunk,
+             float *out, const void **extra_values);
 
 // FastScan ADC kernel: LUT look-up + accumulate over one packed block of 32
 // vectors.  Codes are 4-bit and block-interleaved, the LUT is affine-quantized
@@ -144,6 +149,8 @@ enum class DataType {
   kFp32,
   kUint8,
   kUnknown,
+  kUint4,
+  kUint7,
 };
 
 enum class QuantizeType {
@@ -161,7 +168,8 @@ enum class QuantizeType {
   // physical representation. Used for kernel dispatch; no serialized
   // quantizer payload is required.
   kRaw = 8,
-  kPQFast = 9,  // 4-bit PQ with FastScan (packed codes + SIMD)
+  kPQFast = 9,         // 4-bit PQ with FastScan (packed codes + SIMD)
+  kUniformUint4 = 10,  // Uniform uint4: two packed codes per byte.
 };
 
 enum class RotateType : uint16_t {
@@ -172,7 +180,7 @@ enum class CpuArchType {
   kAuto,
   kScalar,
   // x86 SIMD
-  kSSE,
+  kSSE2,
   kAVX,
   kAVX2,
   kAVX512,
@@ -219,6 +227,10 @@ ZVEC_TURBO_API DistanceKernels get_distance_kernels(
 // interface can grow to cover other output types (e.g. fp16) in the future.
 ZVEC_TURBO_API UniformQuantizeFunc
 get_uniform_quantize_func(DataType data_type);
+
+// Returns the SIMD packed uint4 quantizer, or nullptr when unavailable.
+ZVEC_TURBO_API UniformUint4QuantizeFunc
+get_uniform_uint4_quantize_func(DataType data_type);
 
 // Returns an optimized fp32 conversion kernel for the requested physical
 // target type, or nullptr when no optimized implementation is available.

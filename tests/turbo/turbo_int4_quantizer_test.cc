@@ -126,9 +126,9 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       std::vector<float> expected(candidates.size());
       std::vector<float> actual(candidates.size());
       scalar.batch(candidates.data(), encoded[0].data(), candidates.size(),
-                   kernel_dim, expected.data());
+                   kernel_dim, expected.data(), nullptr);
       simd.batch(candidates.data(), encoded[0].data(), candidates.size(),
-                 kernel_dim, actual.data());
+                 kernel_dim, actual.data(), nullptr);
       for (size_t i = 0; i < candidates.size(); ++i) {
         expect_simd_near(actual[i], expected[i]);
       }
@@ -376,6 +376,10 @@ TEST(Int4Quantizer, ScoreSquaredEuclidean) {
 
 TEST(Int4Quantizer, Avx2DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX2);
+}
+
+TEST(Int4Quantizer, SseDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kSSE2);
 }
 
 TEST(Int4Quantizer, Avx512DistanceMatchesScalar) {

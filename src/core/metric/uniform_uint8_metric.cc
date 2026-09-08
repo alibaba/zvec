@@ -117,14 +117,40 @@ void UniformUint8StoredQuerySquaredEuclidean(const void *stored_data,
   *distance = static_cast<float>(sum);
 }
 
-void UniformUint8StoredQuerySquaredEuclideanBatch(const void *const *vectors,
-                                                  const void *query,
-                                                  size_t count,
-                                                  size_t encoded_dimension,
-                                                  float *distances) {
+void UniformUint8StoredQuerySquaredEuclideanBatch(
+    const void *const *vectors, const void *query, size_t count,
+    size_t encoded_dimension, float *distances,
+    const void *const *extra_values) {
+  ailego_assert_with(extra_values != nullptr,
+                     "UniformUint8 batch distance requires extra values");
+  const size_t original_dimension = OriginalDimension(encoded_dimension);
+  if (original_dimension == 0 || original_dimension > MAX_DIMENSION) {
+    for (size_t i = 0; i < count; ++i) {
+      UniformUint8StoredQuerySquaredEuclidean(vectors[i], query,
+                                              encoded_dimension, distances + i);
+    }
+    return;
+  }
+
+  int32_t query_correction = 0;
+  std::memcpy(&query_correction,
+              static_cast<const uint8_t *>(query) + original_dimension,
+              sizeof(query_correction));
+  const auto *raw_query = static_cast<const uint8_t *>(query);
   for (size_t i = 0; i < count; ++i) {
-    UniformUint8StoredQuerySquaredEuclidean(vectors[i], query,
-                                            encoded_dimension, distances + i);
+    ailego_assert_with(extra_values[i] != nullptr,
+                       "UniformUint8 batch distance requires extra values");
+    const auto *stored = static_cast<const int8_t *>(vectors[i]);
+    int64_t dot_product = 0;
+    for (size_t d = 0; d < original_dimension; ++d) {
+      dot_product +=
+          static_cast<int>(stored[d]) * static_cast<int>(raw_query[d]);
+    }
+    uint32_t stored_sum_squared = 0;
+    std::memcpy(&stored_sum_squared, extra_values[i],
+                sizeof(stored_sum_squared));
+    distances[i] = static_cast<float>(static_cast<int64_t>(stored_sum_squared) -
+                                      2 * dot_product + query_correction);
   }
 }
 
@@ -212,6 +238,10 @@ class UniformUint8QueryMetric : public IndexMetric {
     return UniformUint8StoredQuerySquaredEuclideanBatch;
   }
 
+  size_t extra_values_size_per_vector(void) const override {
+    return kTailBytes;
+  }
+
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return UniformUint8QueryPreprocessFunc();
   }
@@ -254,8 +284,9 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
   }
 
   // Deliberately inherit the query-oriented batch_distance(). Graph builders
-  // preprocess their private build-query copy before batch comparisons, while
-  // pairwise pruning and Flat use the stored-stored functions above.
+  // and contiguous Flat preprocess their private query copy before batch
+  // comparisons, while pairwise pruning uses the stored-stored functions
+  // above.
 
   Pointer query_metric(void) const override {
     return std::make_shared<UniformUint8QueryMetric>(meta_, params_);

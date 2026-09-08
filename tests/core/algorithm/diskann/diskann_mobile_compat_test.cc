@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
@@ -26,7 +27,6 @@
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_builder.h"
 #include "diskann_file_reader.h"
-#include "diskann_pq_trainer.h"
 #include "diskann_util.h"
 
 namespace zvec::core {
@@ -81,43 +81,49 @@ TEST(DiskAnnMobileCompatTest, AlignedAllocationSupportsUnroundedSize) {
 }
 
 template <typename T>
-void ExpectExactPqPivotCopy(IndexMeta::DataType data_type) {
-  constexpr uint32_t kDimension = 4;
-  constexpr uint32_t kCenterCount = 2;
+void ExpectLegacyPqChunkWidths(IndexMeta::DataType data_type) {
+  constexpr uint32_t kDimension = 5;
+  constexpr uint32_t kCenterCount = 256;
   constexpr uint32_t kChunkCount = 2;
-  const std::vector<uint32_t> chunk_dims{2, 2};
-  const std::vector<uint32_t> chunk_offsets{0, 2, 4};
-  const std::array<std::array<float, 2>, 4> values{{
-      {{1.0F, 2.0F}},
-      {{5.0F, 6.0F}},
-      {{3.0F, 4.0F}},
-      {{7.0F, 8.0F}},
-  }};
+  const std::array<uint32_t, kChunkCount + 1> chunk_offsets{{0, 3, 5}};
 
-  IndexCluster::CentroidList centroids(values.size());
-  for (size_t i = 0; i < values.size(); ++i) {
-    const std::array<T, 2> feature{{T(values[i][0]), T(values[i][1])}};
-    centroids[i].set_feature(feature.data(), sizeof(feature));
+  std::vector<T> pivots(kCenterCount * kDimension);
+  for (size_t i = 0; i < pivots.size(); ++i) {
+    pivots[i] = T(static_cast<float>(i + 1));
   }
 
-  IndexMeta meta(data_type, kDimension);
-  std::vector<uint8_t> pivots;
-  ASSERT_EQ(DiskAnnPqTrainer::convert_pivot_data<T>(
-                meta, kCenterCount, kChunkCount, chunk_dims, chunk_offsets,
-                centroids, pivots),
-            0);
-  ASSERT_EQ(pivots.size(), kCenterCount * meta.element_size());
+  // Legacy indexes store full pivot rows. Import them through the new
+  // quantizer and check that uneven chunks retain their exact components.
+  std::string payload(reinterpret_cast<const char *>(pivots.data()),
+                      pivots.size() * sizeof(T));
+  payload.append(kDimension * sizeof(T), '\0');
+  payload.append(reinterpret_cast<const char *>(chunk_offsets.data()),
+                 sizeof(chunk_offsets));
 
-  std::array<T, kCenterCount * kDimension> actual{};
-  std::memcpy(actual.data(), pivots.data(), pivots.size());
+  IndexMeta meta(data_type, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+      payload, meta, kChunkCount, true);
+  ASSERT_NE(quantizer, nullptr);
+  ASSERT_EQ(quantizer->quantized_datapoint_vector_length(), kChunkCount);
+
+  const std::array<uint8_t, kChunkCount> code{{1, 255}};
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  std::string decoded;
+  ASSERT_EQ(quantizer->dequantize(code.data(), query_meta, &decoded), 0);
+  ASSERT_EQ(decoded.size(), kDimension * sizeof(float));
+
+  std::array<float, kDimension> actual{};
+  std::memcpy(actual.data(), decoded.data(), decoded.size());
+  const std::array<float, kDimension> expected{{6, 7, 8, 1279, 1280}};
   for (size_t i = 0; i < actual.size(); ++i) {
-    EXPECT_FLOAT_EQ(static_cast<float>(actual[i]), static_cast<float>(i + 1));
+    EXPECT_FLOAT_EQ(actual[i], expected[i]);
   }
 }
 
-TEST(DiskAnnMobileCompatTest, PqPivotConversionCopiesExactChunkWidths) {
-  ExpectExactPqPivotCopy<float>(IndexMeta::DataType::DT_FP32);
-  ExpectExactPqPivotCopy<ailego::Float16>(IndexMeta::DataType::DT_FP16);
+TEST(DiskAnnMobileCompatTest, LegacyPqImportPreservesExactChunkWidths) {
+  ExpectLegacyPqChunkWidths<float>(IndexMeta::DataType::DT_FP32);
+  ExpectLegacyPqChunkWidths<ailego::Float16>(IndexMeta::DataType::DT_FP16);
 }
 
 TEST(DiskAnnMobileCompatTest, PortableReaderReadsAlignedBatch) {

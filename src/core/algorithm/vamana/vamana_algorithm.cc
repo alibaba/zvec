@@ -156,8 +156,8 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // surface (LinearPool adapts via push_block and ignores the block_size hint).
 // ============================================================================
 
-// mmap/contiguous variant: resolve vectors via get_vector_ptr
-// and dispatch to the classic pointer-array batch_dist.
+// mmap/contiguous variant: resolve vector bodies and optional extra-values
+// pointers through the entity's layout-specific accessors.
 template <typename EntityType, typename HeapType>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VisitFilter &visit, VamanaDistCalculator &dc,
@@ -176,6 +176,8 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
   std::vector<node_id_t> neighbor_ids(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
+  const bool has_extra_values = entity.extra_values_size() != 0;
+  std::vector<const void *> extra_values(has_extra_values ? buf_capacity : 0);
 
   while (pool.has_next()) {
     auto current_node = pool.pop();
@@ -188,6 +190,9 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
       neighbor_ids.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
+      if (has_extra_values) {
+        extra_values.resize(buf_capacity);
+      }
     }
 
     const uint32_t po =
@@ -206,19 +211,29 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
       }
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
+      if (has_extra_values) {
+        extra_values[unvisited_count] =
+            entity.get_extra_values_ptr(node, vec_ptr);
+      }
       unvisited_count++;
     }
     for (; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
       if (visit.visited(node)) continue;
       visit.set_visited(node);
+      const void *vec_ptr = entity.get_vector_ptr(node);
       neighbor_ids[unvisited_count] = node;
-      neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+      neighbor_vecs[unvisited_count] = vec_ptr;
+      if (has_extra_values) {
+        extra_values[unvisited_count] =
+            entity.get_extra_values_ptr(node, vec_ptr);
+      }
       unvisited_count++;
     }
 
     if (unvisited_count == 0) continue;
-    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
+                  has_extra_values ? extra_values.data() : nullptr);
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
   }
@@ -244,6 +259,8 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
   neighbor_vec_blocks.reserve(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
+  const bool has_extra_values = entity.extra_values_size() != 0;
+  std::vector<const void *> extra_values(has_extra_values ? buf_capacity : 0);
 
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
@@ -290,6 +307,9 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
       neighbor_ids.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
+      if (has_extra_values) {
+        extra_values.resize(buf_capacity);
+      }
     }
 
     // Collect unvisited neighbors (reuse pre-allocated buffer)
@@ -319,8 +339,13 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
     // Batch distance computation (reuse pre-allocated buffers).
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      if (has_extra_values) {
+        extra_values[i] =
+            entity.get_extra_values_ptr(neighbor_ids[i], neighbor_vecs[i]);
+      }
     }
-    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
+                  has_extra_values ? extra_values.data() : nullptr);
 
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       node_id_t node = neighbor_ids[i];

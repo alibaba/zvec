@@ -165,9 +165,9 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
   // std::vector<float> mem1;
   // std::vector<float> mem2;
 
-  // On musl the default thread stack is only 128KB (vs glibc's 8MB), so keep
-  // the 512KB working set off the stack. On glibc a normal stack array is fine.
-#ifdef ZVEC_ON_MUSL
+  // Musl and Intel macOS worker threads have small default stacks, so keep the
+  // 512KB working set off the stack. On glibc a normal stack array is fine.
+#if defined(ZVEC_ON_MUSL) || defined(AILEGO_MACOS_X86_64)
   static thread_local float fixed_buffer_1[MAX_SPARSE_BUFFER_LENGTH];
   static thread_local float fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
 #else

@@ -3046,16 +3046,8 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
                       vector.value().size() * sizeof(float)));
       auto result = collection->query(query);
       if (!result.has_value()) {
-        // Tolerate only the known transient failure: a doc admitted by
-        // the writing segment's streaming vector index may not yet be
-        // visible in its forward store (pre-existing Insert/Query race,
-        // unrelated to Optimize). Any other error is a real regression.
-        const auto &error_msg = result.error().message();
-        if (error_msg.find("fetch table failed") == std::string::npos) {
-          record_error(&query_result, error_msg);
-          break;
-        }
-        continue;
+        record_error(&query_result, result.error().message());
+        break;
       }
       if (result.value().empty()) {
         record_error(&query_result, "query returned no results");

@@ -35,6 +35,7 @@ void pq_sdc_int8_distance_neon(const void *a, const void *b,
 // Batch ADC: compute distances for multiple PQ codes against a shared LUT.
 // Processes 4 candidates per iteration with NEON vector accumulation.
 void pq_adc_int8_batch_distance_neon(const void **candidates, const void *lut,
-                                     size_t num, size_t num_chunk, float *out);
+                                     size_t num, size_t num_chunk, float *out,
+                                     const void **extra_values);
 
 }  // namespace zvec::turbo::neon
