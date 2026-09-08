@@ -38,8 +38,11 @@ struct QuantizerSerHeader {
   uint32_t dim;           // original dim (sanity check)
   uint32_t metric;        // MetricType  (sanity check)
   uint32_t payload_size;  // bytes following the header
-  uint16_t data_type;     // DataType of the stored codes: distinguishes e.g.
-                          // int8 vs int4 PQ blobs sharing quant_type == kPQ
+  uint16_t data_type;     // DataType of the stored codes: distinguishes PQ
+                          // blobs sharing quant_type == kPQ.  0 means "unset"
+                          // (legacy blobs, parsed as int8); non-int8 layouts
+                          // must stamp a non-zero value (raw DataType::kInt4
+                          // equals 0 and therefore cannot be used here)
   uint16_t reserved;      // 0, for future use / alignment
 };
 static_assert(sizeof(QuantizerSerHeader) == 24,
@@ -156,6 +159,14 @@ class Quantizer {
   //! (zero-copy entry point for large payloads such as codebooks/matrices).
   virtual int deserialize(const void * /*data*/, size_t /*len*/) {
     return 0;
+  }
+
+  //! Adopt a codebook built outside this quantizer, on an already initialized
+  //! instance: `data` holds raw centroids in the quantizer's own in-memory
+  //! layout, which the caller has to match.  Used for codebooks persisted in a
+  //! foreign layout, e.g. by an index older than this serialization format.
+  virtual int import_codebook(const void * /*data*/, size_t /*len*/) {
+    return kErrUnsupported;
   }
 
  protected:

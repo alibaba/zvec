@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantized_holder.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -510,7 +511,8 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
   }
 
   IndexQueryMeta qmeta(holder->data_type(), holder->dimension());
-  uint32_t keep_docs = holder->count() - holder->start_cursor();
+  const size_t keep_docs = holder->count();
+  const size_t end_cursor = holder->end_cursor();
 
   auto do_build = [&](size_t idx) {
     AILEGO_DEFER([&]() {
@@ -527,8 +529,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     }
     std::string ovec;
     IndexQueryMeta ometa;
-    for (uint32_t id = idx; id < holder->count() && !stop_now;
-         id += thread_count) {
+    for (uint32_t id = idx; id < end_cursor && !stop_now; id += thread_count) {
       uint64_t key = holder->get_key(id);
       if (retrieval_mode == RM_DENSE) {
         if (reformer) {
@@ -585,7 +586,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
       return errcode;
     }
     LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
-             finished.load() * 100.0f / holder->count());
+             finished.load() * 100.0f / end_cursor);
   }
   if (error.load(std::memory_order_acquire)) {
     cerr << "Failed to build index while waiting finish\n";
@@ -723,48 +724,6 @@ IndexHolder::Pointer convert_holder(const std::string &name,
   return converter->result();
 }
 
-// Holder for turbo-quantized datapoints.  The rows are allocated with the
-// full encoded size in units (raw data + record tail), but the reported
-// dimension stays the raw dimension: turbo quantization does not inflate the
-// dim, the tail is accounted by extra_meta_size in the meta, so the holder
-// must match the meta on dimension() and element_size().
-template <IndexMeta::DataType DT>
-struct QuantizedIndexHolder : public MultiPassIndexHolder<DT> {
-  QuantizedIndexHolder(size_t alloc_dim, size_t raw_dim)
-      : MultiPassIndexHolder<DT>(alloc_dim), raw_dim_(raw_dim) {}
-
-  //! Retrieve dimension
-  size_t dimension(void) const override {
-    return raw_dim_;
-  }
-
- private:
-  size_t raw_dim_{0};
-};
-
-// Quantize every vector of the holder with a turbo quantizer.  The output
-// holder stores the quantized datapoints; index_meta is updated to the
-// quantized layout.  Symmetric to convert_holder for IndexConverter.
-template <IndexMeta::DataType DT, typename T>
-IndexHolder::Pointer fill_quantized_holder(
-    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer,
-    const IndexHolder::Pointer &in_holder, uint32_t alloc_dim,
-    uint32_t raw_dim) {
-  auto out_holder =
-      std::make_shared<QuantizedIndexHolder<DT>>(alloc_dim, raw_dim);
-  auto iter = in_holder->create_iterator();
-  if (!iter) {
-    cerr << "Failed to create iterator for quantize" << endl;
-    return IndexHolder::Pointer();
-  }
-  ailego::NumericalVector<T> vec(alloc_dim);
-  for (; iter->is_valid(); iter->next()) {
-    quantizer->quantize_data(iter->data(), &vec[0]);
-    out_holder->emplace(iter->key(), vec);
-  }
-  return out_holder;
-}
-
 IndexHolder::Pointer quantize_holder(
     const std::string &name, const ailego::Params &params,
     VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
@@ -797,8 +756,7 @@ IndexHolder::Pointer quantize_holder(
   }
 
   // The output meta keeps the raw dimension; the record tail (e.g. scale,
-  // Cosine norm) is accounted by extra_meta_size.  The typed holder is
-  // allocated with the full encoded size in units.
+  // Cosine norm) is accounted by extra_meta_size.
   IndexMeta out_meta = quantizer->meta();
   size_t code_bytes = quantizer->quantized_datapoint_vector_length();
   uint32_t unit = out_meta.unit_size();
@@ -808,7 +766,6 @@ IndexHolder::Pointer quantize_holder(
          << " mismatches meta element size " << out_meta.element_size() << endl;
     return IndexHolder::Pointer();
   }
-  uint32_t alloc_dim = static_cast<uint32_t>(code_bytes / unit);
 
   if (!quantizer->require_train()) {
     out_meta.set_quantizer(name, 0, params);
@@ -819,29 +776,9 @@ IndexHolder::Pointer quantize_holder(
          << endl;
   }
 
-  IndexHolder::Pointer result;
-  switch (out_meta.data_type()) {
-    case IndexMeta::DataType::DT_FP32:
-      result = fill_quantized_holder<IndexMeta::DataType::DT_FP32, float>(
-          quantizer, cast_holder, alloc_dim, out_meta.dimension());
-      break;
-    case IndexMeta::DataType::DT_FP16:
-      result =
-          fill_quantized_holder<IndexMeta::DataType::DT_FP16, ailego::Float16>(
-              quantizer, cast_holder, alloc_dim, out_meta.dimension());
-      break;
-    case IndexMeta::DataType::DT_INT8:
-      result = fill_quantized_holder<IndexMeta::DataType::DT_INT8, int8_t>(
-          quantizer, cast_holder, alloc_dim, out_meta.dimension());
-      break;
-    default:
-      cerr << "Unsupported quantized data type "
-           << static_cast<int>(out_meta.data_type()) << endl;
-      return IndexHolder::Pointer();
-  }
-  if (!result) {
-    return IndexHolder::Pointer();
-  }
+  IndexHolder::Pointer result =
+      std::make_shared<zvec::turbo::QuantizedIndexHolder>(cast_holder,
+                                                          quantizer);
 
   if (out_quantizer) {
     *out_quantizer = quantizer;
@@ -1116,8 +1053,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   }
   if (config_common["KeepDocs"] && config_common["KeepDocs"].as<uint32_t>()) {
     auto keep_docs = config_common["KeepDocs"].as<uint32_t>();
-    if (keep_docs < build_holder->count()) {
-      build_holder->set_start_cursor(build_holder->count() - keep_docs);
+    if (keep_docs < build_holder->end_cursor()) {
+      build_holder->set_start_cursor(build_holder->end_cursor() - keep_docs);
     }
   }
 
