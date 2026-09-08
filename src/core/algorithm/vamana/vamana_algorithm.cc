@@ -179,7 +179,7 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         uint32_t topk, uint32_t ef, node_id_t entry_point,
                         uint32_t prefetch_lines, uint32_t prefetch_offset,
                         Visit visit) {
-  constexpr bool kPrefetchGraph =
+  static constexpr bool kPrefetchGraph =
       std::is_same_v<EntityType, VamanaContiguousStreamerEntity>;
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
