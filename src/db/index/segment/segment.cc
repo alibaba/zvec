@@ -1508,9 +1508,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   } else {
     merge_options.write_concurrency = concurrency;
   }
-  // Forward rows and doc_ids_ are unchanged here. Keep tombstoned vectors
-  // so merged keys still address the same segment rows. Removing rows is
-  // the responsibility of segment compaction, which also rewrites forward data.
+  // Keep tombstoned vectors: forward rows are unchanged.
   s = vector_indexer->Merge(to_merge_indexers, nullptr, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
   s = vector_indexer->Flush();
