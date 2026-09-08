@@ -51,6 +51,7 @@ TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
+#if DISKANN_SUPPORTED
 TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   auto param = DiskAnnIndexParamBuilder()
                    .with_metric_type(MetricType::kL2sq)
@@ -69,6 +70,7 @@ TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   EXPECT_EQ(80, diskann->list_size);
   EXPECT_EQ(16, diskann->pq_chunk_num);
 }
+#endif
 
 #if RABITQ_SUPPORTED
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
@@ -1678,6 +1680,19 @@ TEST(IndexInterface, Serialize) {
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
   }
+#if DISKANN_SUPPORTED
+  {
+    DiskAnnQueryParam param;
+    param.topk = 12;
+    param.list_size = 80;
+    const auto json = IndexFactory::QueryParamSerializeToJson(param);
+    const auto parsed =
+        IndexFactory::QueryParamDeserializeFromJson<DiskAnnQueryParam>(json);
+    ASSERT_NE(nullptr, parsed);
+    EXPECT_EQ(param.topk, parsed->topk);
+    EXPECT_EQ(param.list_size, parsed->list_size);
+  }
+#endif
 }
 
 TEST(IndexInterface, Failure) {
