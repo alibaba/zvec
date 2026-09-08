@@ -30,7 +30,9 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
+#include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
@@ -44,6 +46,43 @@
 #endif
 
 using namespace zvec::core_interface;
+
+namespace {
+
+class TestableIVFIndex : public IVFIndex {
+ public:
+  int CreateAndInitStreamerForTest(const BaseIndexParam &param) {
+    return CreateAndInitStreamer(param);
+  }
+
+  const zvec::ailego::Params &proxima_index_params() const {
+    return proxima_index_params_;
+  }
+};
+
+}  // namespace
+
+TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
+  TestableIVFIndex index;
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(8)
+                   .with_n_list(4)
+                   .with_n_iters(37)
+                   .build();
+
+  ASSERT_EQ(0, index.CreateAndInitStreamerForTest(*param));
+
+  zvec::ailego::Params cluster_params;
+  ASSERT_TRUE(index.proxima_index_params().get(
+      zvec::core::PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX + "1",
+      &cluster_params));
+  EXPECT_EQ(37, cluster_params.get_as_int32(
+                    zvec::core::KMEANS_CLUSTER_MAX_ITERATIONS));
+  EXPECT_EQ(37, cluster_params.get_as_int32(
+                    zvec::core::OPTKMEANS_CLUSTER_MAX_ITERATIONS));
+}
 
 TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(5, static_cast<int>(IndexType::kDiskAnn));
