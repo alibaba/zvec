@@ -14,7 +14,9 @@
 
 #include "zvec_sql_parser.h"
 #include <exception>
+#include <functional>
 #include <memory>
+#include <vector>
 #include <zvec/ailego/logger/logger.h>
 #include "atn/ParserATNSimulator.h"
 #include "db/sqlengine/antlr/gen/SQLLexer.h"
@@ -211,29 +213,152 @@ SelectInfo::Ptr ZVecSQLParser::select_info(VoidPtr node) {
 }
 
 Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
-  SQLParser::Logic_exprContext *logicExprNode =
-      reinterpret_cast<SQLParser::Logic_exprContext *>(node);
-  const std::vector<SQLParser::Logic_exprContext *> &logicExprChildNodes =
-      logicExprNode->logic_expr();
+  // ANTLR represents a flat OR chain as a deeply skewed binary parse tree.
+  // Consume that tree iteratively, flatten each maximal OR run, and rebuild it
+  // as a balanced binary Node tree. This preserves left-to-right evaluation
+  // order while bounding downstream recursive traversals to logarithmic depth.
+  enum class BindType { ROOT, LEFT, RIGHT };
+  struct BindTarget {
+    Node *parent;
+    BindType bind_type;
+  };
+  struct Frame {
+    SQLParser::Logic_exprContext *node;
+    Node *parent;
+    BindType bind_type;
+  };
+  // Preserve the historical shape of ordinary small expressions. Large runs
+  // are normalized so downstream recursive traversals remain stack-safe.
+  constexpr size_t kOrBalanceThreshold = 64;
 
-  if (logicExprNode->OR() != nullptr) {
-    Node::Ptr orExpr = std::make_shared<Node>(NodeOp::T_OR);
-    orExpr->set_left(handle_logic_expr_node(logicExprChildNodes[0]));
-    orExpr->set_right(handle_logic_expr_node(logicExprChildNodes[1]));
-    return orExpr;
-  } else if (logicExprNode->AND() != nullptr) {
-    Node::Ptr andExpr = std::make_shared<Node>(NodeOp::T_AND);
-    andExpr->set_left(handle_logic_expr_node(logicExprChildNodes[0]));
-    andExpr->set_right(handle_logic_expr_node(logicExprChildNodes[1]));
-    return andExpr;
-  } else if (logicExprNode->enclosed_expr() != nullptr) {
-    // enclosed_expr is represented by sub-tree structure
-    return handle_logic_expr_node(logicExprNode->enclosed_expr()->logic_expr());
-  } else if (logicExprNode->relation_expr() != nullptr) {
-    return handle_rel_expr_node(logicExprNode->relation_expr());
+  Node::Ptr root_result;
+  auto attach_node = [&root_result](Node *parent, Node::Ptr child,
+                                    BindType bind_type) {
+    switch (bind_type) {
+      case BindType::ROOT:
+        root_result = std::move(child);
+        break;
+      case BindType::LEFT:
+        parent->set_left(std::move(child));
+        break;
+      case BindType::RIGHT:
+        parent->set_right(std::move(child));
+        break;
+    }
+  };
+
+  std::vector<Frame> stack;
+  stack.push_back({reinterpret_cast<SQLParser::Logic_exprContext *>(node),
+                   nullptr, BindType::ROOT});
+
+  auto unwrap_enclosed = [](SQLParser::Logic_exprContext *context) {
+    while (context != nullptr && context->enclosed_expr() != nullptr) {
+      context = context->enclosed_expr()->logic_expr();
+    }
+    return context;
+  };
+
+  while (!stack.empty()) {
+    Frame frame = stack.back();
+    stack.pop_back();
+
+    SQLParser::Logic_exprContext *logicExprNode = unwrap_enclosed(frame.node);
+    if (logicExprNode == nullptr) {
+      attach_node(frame.parent, nullptr, frame.bind_type);
+      continue;
+    }
+
+    if (logicExprNode->OR() != nullptr) {
+      // An AND subtree remains one operand, preserving precedence and grouping.
+      // Parentheses around OR are safe to flatten because OR is associative.
+      std::vector<SQLParser::Logic_exprContext *> operands;
+      std::vector<SQLParser::Logic_exprContext *> pending{logicExprNode};
+      while (!pending.empty()) {
+        SQLParser::Logic_exprContext *current = unwrap_enclosed(pending.back());
+        pending.pop_back();
+
+        if (current == nullptr || current->OR() == nullptr) {
+          operands.push_back(current);
+          continue;
+        }
+
+        const auto &children = current->logic_expr();
+        if (children.size() != 2U) {
+          err_msg_ = "Parse failed. Invalid OR expression.";
+          operands.clear();
+          break;
+        }
+        // Push right first so operands retain their original left-to-right
+        // order when consumed from the LIFO stack.
+        pending.push_back(children[1]);
+        pending.push_back(children[0]);
+      }
+
+      if (operands.empty()) {
+        attach_node(frame.parent, nullptr, frame.bind_type);
+        continue;
+      }
+
+      if (operands.size() <= kOrBalanceThreshold) {
+        const auto &children = logicExprNode->logic_expr();
+        Node::Ptr expr = std::make_shared<Node>(NodeOp::T_OR);
+        Node *expr_raw = expr.get();
+        attach_node(frame.parent, std::move(expr), frame.bind_type);
+        stack.push_back({children[1], expr_raw, BindType::RIGHT});
+        stack.push_back({children[0], expr_raw, BindType::LEFT});
+        continue;
+      }
+
+      std::vector<BindTarget> operand_targets(
+          operands.size(), BindTarget{nullptr, BindType::ROOT});
+      std::function<void(size_t, size_t, Node *, BindType)>
+          build_balanced_skeleton;
+      build_balanced_skeleton = [&](size_t begin, size_t end, Node *parent,
+                                    BindType bind_type) {
+        if (end - begin == 1U) {
+          operand_targets[begin] = {parent, bind_type};
+          return;
+        }
+
+        const size_t middle = begin + (end - begin) / 2U;
+        Node::Ptr expr = std::make_shared<Node>(NodeOp::T_OR);
+        Node *expr_raw = expr.get();
+        attach_node(parent, std::move(expr), bind_type);
+        build_balanced_skeleton(begin, middle, expr_raw, BindType::LEFT);
+        build_balanced_skeleton(middle, end, expr_raw, BindType::RIGHT);
+      };
+      build_balanced_skeleton(0, operands.size(), frame.parent,
+                              frame.bind_type);
+
+      for (size_t i = operands.size(); i-- > 0;) {
+        stack.push_back({operands[i], operand_targets[i].parent,
+                         operand_targets[i].bind_type});
+      }
+    } else if (logicExprNode->AND() != nullptr) {
+      const auto &children = logicExprNode->logic_expr();
+      if (children.size() != 2U) {
+        err_msg_ = "Parse failed. Invalid AND expression.";
+        attach_node(frame.parent, nullptr, frame.bind_type);
+        continue;
+      }
+
+      Node::Ptr expr = std::make_shared<Node>(NodeOp::T_AND);
+      Node *expr_raw = expr.get();
+      attach_node(frame.parent, std::move(expr), frame.bind_type);
+      // Preserve the parser's exact AND shape because analyzer/optimizer
+      // subroot selection is currently shape-dependent.
+      stack.push_back({children[1], expr_raw, BindType::RIGHT});
+      stack.push_back({children[0], expr_raw, BindType::LEFT});
+    } else if (logicExprNode->relation_expr() != nullptr) {
+      attach_node(frame.parent,
+                  handle_rel_expr_node(logicExprNode->relation_expr()),
+                  frame.bind_type);
+    } else {
+      attach_node(frame.parent, nullptr, frame.bind_type);
+    }
   }
 
-  return nullptr;
+  return root_result;
 }
 
 Node::Ptr ZVecSQLParser::handle_rel_expr_left_node(VoidPtr node) {
