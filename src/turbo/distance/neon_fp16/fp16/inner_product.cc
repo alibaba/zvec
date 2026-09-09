@@ -25,30 +25,39 @@ namespace zvec::turbo::neon_fp16 {
 #if ZVEC_TURBO_FP16_NEON
 namespace {
 
-// Accumulate lhs·rhs with native FP16 lane arithmetic (vfmaq_f16, 8 lanes
-// per op), widening to FP32 only for the final horizontal reduction. Four
-// independent accumulators hide the FMA latency. This trades a little
-// precision (FP16-domain sums) for 2x FMA throughput over a widening path.
+// Widen before multiplying: unrestricted finite FP16 inputs can overflow
+// FP16 products, and long sums can lose small contributions. Four FP32
+// accumulators hide FMA latency without sacrificing the range or precision
+// of the distance arithmetic. Cosine has its own native FP16 implementation.
 inline float inner_product_fp16_accum(const float16_t *lhs,
                                       const float16_t *rhs, size_t dim) {
-  float16x8_t sum0 = vdupq_n_f16(0.0f);
-  float16x8_t sum1 = vdupq_n_f16(0.0f);
-  float16x8_t sum2 = vdupq_n_f16(0.0f);
-  float16x8_t sum3 = vdupq_n_f16(0.0f);
+  float32x4_t sum0 = vdupq_n_f32(0.0f);
+  float32x4_t sum1 = vdupq_n_f32(0.0f);
+  float32x4_t sum2 = vdupq_n_f32(0.0f);
+  float32x4_t sum3 = vdupq_n_f32(0.0f);
   size_t i = 0;
-  for (; i + 32 <= dim; i += 32) {
-    sum0 = vfmaq_f16(sum0, vld1q_f16(lhs + i), vld1q_f16(rhs + i));
-    sum1 = vfmaq_f16(sum1, vld1q_f16(lhs + i + 8), vld1q_f16(rhs + i + 8));
-    sum2 = vfmaq_f16(sum2, vld1q_f16(lhs + i + 16), vld1q_f16(rhs + i + 16));
-    sum3 = vfmaq_f16(sum3, vld1q_f16(lhs + i + 24), vld1q_f16(rhs + i + 24));
+  for (; i + 16 <= dim; i += 16) {
+    const float16x8_t lhs0 = vld1q_f16(lhs + i);
+    const float16x8_t rhs0 = vld1q_f16(rhs + i);
+    const float16x8_t lhs1 = vld1q_f16(lhs + i + 8);
+    const float16x8_t rhs1 = vld1q_f16(rhs + i + 8);
+    sum0 = vfmaq_f32(sum0, vcvt_f32_f16(vget_low_f16(lhs0)),
+                     vcvt_f32_f16(vget_low_f16(rhs0)));
+    sum1 = vfmaq_f32(sum1, vcvt_high_f32_f16(lhs0), vcvt_high_f32_f16(rhs0));
+    sum2 = vfmaq_f32(sum2, vcvt_f32_f16(vget_low_f16(lhs1)),
+                     vcvt_f32_f16(vget_low_f16(rhs1)));
+    sum3 = vfmaq_f32(sum3, vcvt_high_f32_f16(lhs1), vcvt_high_f32_f16(rhs1));
   }
-  for (; i + 8 <= dim; i += 8) {
-    sum0 = vfmaq_f16(sum0, vld1q_f16(lhs + i), vld1q_f16(rhs + i));
+  if (i + 8 <= dim) {
+    const float16x8_t lhs0 = vld1q_f16(lhs + i);
+    const float16x8_t rhs0 = vld1q_f16(rhs + i);
+    sum0 = vfmaq_f32(sum0, vcvt_f32_f16(vget_low_f16(lhs0)),
+                     vcvt_f32_f16(vget_low_f16(rhs0)));
+    sum1 = vfmaq_f32(sum1, vcvt_high_f32_f16(lhs0), vcvt_high_f32_f16(rhs0));
+    i += 8;
   }
-  float16x8_t sum = vaddq_f16(vaddq_f16(sum0, sum1), vaddq_f16(sum2, sum3));
-  float32x4_t sum_f32 = vaddq_f32(vcvt_f32_f16(vget_low_f16(sum)),
-                                  vcvt_f32_f16(vget_high_f16(sum)));
-  float total = vaddvq_f32(sum_f32);
+  float total =
+      vaddvq_f32(vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3)));
   for (; i < dim; ++i) {
     total += static_cast<float>(lhs[i]) * static_cast<float>(rhs[i]);
   }

@@ -386,6 +386,8 @@ constexpr KernelSet kKernelTable[] = {
 #if defined(ZVEC_HAVE_ARM_FP16_KERNEL)
     // FEAT_FP16 kernels: they must precede the plain NEON rows below so that
     // auto-dispatch prefers them whenever the CPU advertises FP16 support.
+    // Cosine keeps native FP16 accumulation for normalized inputs; L2 and
+    // inner product widen arithmetic to FP32 for unrestricted input ranges.
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean,
      neon_fp16::squared_euclidean_fp16_distance_neon_fp16,

@@ -19,7 +19,7 @@
 namespace zvec::turbo::neon_fp16 {
 
 // Compute squared euclidean distance between a single FP16 vector pair using
-// native half-precision vector arithmetic (FEAT_FP16, vfmaq_f16).
+// NEON vector arithmetic with FP32 differences, products and accumulation.
 void squared_euclidean_fp16_distance_neon_fp16(const void *a, const void *b,
                                                size_t dim, float *distance);
 
