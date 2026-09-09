@@ -140,9 +140,8 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
-  // Leave row_id_filter null when there are no deletes or
-  // create_compaction_task with rebuild=false, so downstream merge
-  // can take a faster per-doc path that skips the filter callback entirely.
+  // An empty bitmap means forward rows were retained. Leave the filter null
+  // so vector merging can skip delete checks and reuse compatible indexes.
   std::shared_ptr<RowIdFilter> row_id_filter;
   if (!delete_row_id_bitmap.isEmpty()) {
     row_id_filter = std::make_shared<RowIdFilter>(delete_row_id_bitmap);
@@ -1121,7 +1120,7 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 Status SegmentHelper::ExecuteCreateVectorIndexTask(
     CreateVectorIndexTask &task) {
   if (task.column_to_build_vector_index_ == "") {
-    return task.input_segment_->create_all_vector_index(
+    return task.input_segment_->create_all_vector_indexes(
         task.concurrency_, &task.output_segment_meta_,
         &task.output_vector_indexers_, &task.output_quant_vector_indexers_);
   } else {

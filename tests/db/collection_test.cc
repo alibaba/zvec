@@ -24,6 +24,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -52,6 +53,8 @@
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/options.h"
+#include "zvec/db/query.h"
+#include "zvec/db/query_params.h"
 #include "zvec/db/reranker.h"
 #include "zvec/db/schema.h"
 #include "zvec/db/status.h"
@@ -3998,6 +4001,194 @@ TEST_F(CollectionTest, Feature_Optimize_Rebuild) {
   stats = collection->stats().value();
   ASSERT_EQ(stats.doc_count, max_doc_per_count * 1.5);
   ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"], 1);
+}
+
+namespace {
+
+constexpr int kRowMappingDocCount = 28;
+constexpr int kRowMappingDimension = 32;
+
+Doc MakeRowMappingDoc(int id, int vector_position) {
+  Doc doc;
+  doc.set_pk(TestHelper::MakePK(id));
+  doc.set<int32_t>("marker", vector_position);
+  std::vector<float> vector(kRowMappingDimension, 0.0f);
+  vector[vector_position] = 1.0f;
+  doc.set<std::vector<float>>("embedding", vector);
+  return doc;
+}
+
+CollectionSchema::Ptr MakeRowMappingSchema(const IndexParams::Ptr &params) {
+  auto schema = std::make_shared<CollectionSchema>("row_mapping");
+  schema->add_field(
+      std::make_shared<FieldSchema>("marker", DataType::INT32, false));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "embedding", DataType::VECTOR_FP32, uint32_t{kRowMappingDimension}, false,
+      params));
+  return schema;
+}
+
+void InsertRowMappingDocs(const Collection::Ptr &collection,
+                          bool flush_between_batches = false) {
+  for (int begin : {0, kRowMappingDocCount / 2}) {
+    std::vector<Doc> docs;
+    for (int id = begin; id < begin + kRowMappingDocCount / 2; ++id) {
+      docs.push_back(MakeRowMappingDoc(id, id));
+    }
+    auto result = collection->insert(docs);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    for (const auto &status : result.value()) {
+      ASSERT_TRUE(status.ok()) << status.message();
+    }
+    if (begin == 0 && flush_between_batches) {
+      ASSERT_TRUE(collection->flush().ok());
+    }
+  }
+}
+
+void CheckRowMapping(const Collection::Ptr &collection,
+                     const std::vector<int> &vector_positions) {
+  size_t live_doc_count = 0;
+  for (int id = 0; id < kRowMappingDocCount; ++id) {
+    if (vector_positions[id] < 0) {
+      continue;
+    }
+    ++live_doc_count;
+    auto expected = MakeRowMappingDoc(id, vector_positions[id]);
+    auto vector = expected.get<std::vector<float>>("embedding").value();
+    SearchQuery query;
+    query.topk_ = 1;
+    query.include_vector_ = true;
+    query.target_.field_name_ = "embedding";
+    query.target_.set_vector(
+        std::string(reinterpret_cast<const char *>(vector.data()),
+                    vector.size() * sizeof(float)));
+    query.target_.query_params_ =
+        std::make_shared<HnswQueryParams>(128, 0.0f, true);
+    auto result = collection->query(query);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    ASSERT_EQ(result->size(), 1u);
+    ASSERT_EQ(*result->front(), expected);
+  }
+  auto stats = collection->stats();
+  ASSERT_TRUE(stats.has_value()) << stats.error().message();
+  ASSERT_EQ(stats->doc_count, live_doc_count);
+}
+
+}  // namespace
+
+TEST_F(CollectionTest, Feature_Optimize_Delete_RowMapping) {
+  auto func = [&](bool enable_mmap, QuantizeType quantize_type) {
+    FileHelper::RemoveDirectory(col_path);
+    auto index_params = std::make_shared<HnswIndexParams>(
+        MetricType::COSINE, 16, 200, quantize_type);
+    auto schema = MakeRowMappingSchema(index_params);
+    auto result = Collection::CreateAndOpen(
+        col_path, *schema, CollectionOptions{false, enable_mmap});
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto collection = std::move(result.value());
+
+    InsertRowMappingDocs(collection, quantize_type == QuantizeType::FP16);
+    std::vector<int> vector_positions(kRowMappingDocCount);
+    std::iota(vector_positions.begin(), vector_positions.end(), 0);
+    for (int id : {0, 4, 9}) {
+      vector_positions[id] = -1;
+    }
+    auto deleted = collection->delete_(
+        {TestHelper::MakePK(0), TestHelper::MakePK(4), TestHelper::MakePK(9)});
+    ASSERT_TRUE(deleted.has_value()) << deleted.error().message();
+
+    ASSERT_TRUE(collection->optimize(OptimizeOptions{1}).ok());
+    CheckRowMapping(collection, vector_positions);
+
+    collection.reset();
+    result = Collection::Open(col_path, CollectionOptions{true, enable_mmap});
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    CheckRowMapping(result.value(), vector_positions);
+  };
+
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, QuantizeType::UNDEFINED);
+    func(enable_mmap, QuantizeType::FP16);
+  }
+}
+
+TEST_F(CollectionTest, Feature_Optimize_Upsert_RowMapping) {
+  auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
+    auto index_params =
+        std::make_shared<HnswIndexParams>(MetricType::COSINE, 16, 200);
+    auto schema = MakeRowMappingSchema(index_params);
+    auto result = Collection::CreateAndOpen(
+        col_path, *schema, CollectionOptions{false, enable_mmap});
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto collection = std::move(result.value());
+
+    InsertRowMappingDocs(collection);
+    std::vector<int> vector_positions(kRowMappingDocCount);
+    std::iota(vector_positions.begin(), vector_positions.end(), 0);
+    std::vector<Doc> replacements;
+    for (int id : {0, 4, 9}) {
+      vector_positions[id] =
+          kRowMappingDocCount + static_cast<int>(replacements.size());
+      replacements.push_back(MakeRowMappingDoc(id, vector_positions[id]));
+    }
+    auto upserted = collection->upsert(replacements);
+    ASSERT_TRUE(upserted.has_value()) << upserted.error().message();
+
+    ASSERT_TRUE(collection->optimize(OptimizeOptions{1}).ok());
+    CheckRowMapping(collection, vector_positions);
+
+    collection.reset();
+    result = Collection::Open(col_path, CollectionOptions{true, enable_mmap});
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    CheckRowMapping(result.value(), vector_positions);
+  };
+
+  func(true);
+  func(false);
+}
+
+TEST_F(CollectionTest, Feature_CreateIndex_Delete_RowMapping) {
+  auto func = [&](bool enable_mmap, QuantizeType quantize_type) {
+    FileHelper::RemoveDirectory(col_path);
+    auto flat_params = std::make_shared<FlatIndexParams>(
+        quantize_type == QuantizeType::FP16 ? MetricType::IP
+                                            : MetricType::COSINE);
+    auto schema = MakeRowMappingSchema(flat_params);
+    auto result = Collection::CreateAndOpen(
+        col_path, *schema, CollectionOptions{false, enable_mmap});
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto collection = std::move(result.value());
+
+    InsertRowMappingDocs(collection);
+    std::vector<int> vector_positions(kRowMappingDocCount);
+    std::iota(vector_positions.begin(), vector_positions.end(), 0);
+    for (int id : {0, 4, 9}) {
+      vector_positions[id] = -1;
+    }
+    auto deleted = collection->delete_(
+        {TestHelper::MakePK(0), TestHelper::MakePK(4), TestHelper::MakePK(9)});
+    ASSERT_TRUE(deleted.has_value()) << deleted.error().message();
+
+    auto index_params = std::make_shared<HnswIndexParams>(
+        MetricType::COSINE, 16, 200, quantize_type);
+    ASSERT_TRUE(
+        collection
+            ->create_index("embedding", index_params, CreateIndexOptions{1})
+            .ok());
+    CheckRowMapping(collection, vector_positions);
+
+    collection.reset();
+    result = Collection::Open(col_path, CollectionOptions{true, enable_mmap});
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    CheckRowMapping(result.value(), vector_positions);
+  };
+
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, QuantizeType::UNDEFINED);
+    func(enable_mmap, QuantizeType::FP16);
+  }
 }
 
 TEST_F(CollectionTest, Feature_Optimize_IndexOperation) {

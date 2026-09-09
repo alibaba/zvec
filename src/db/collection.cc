@@ -19,7 +19,6 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <shared_mutex>
 #include <string>
 #include <unordered_set>
@@ -941,13 +940,11 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
     return Status::OK();
   }
 
-  // Phase 2: lock-free compact. Readers and writers proceed freely.
+  // Phase 2: lock-free optimize. Readers and writers proceed freely.
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,
                          delete_store_clone->make_filter());
-
-  // execute segment compact task
   auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
@@ -1090,50 +1087,48 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
   std::vector<SegmentTask::Ptr> tasks;
   if (segments.empty()) return tasks;
 
-  bool rebuild = false;
-  size_t current_doc_count = 0;
-  size_t current_actual_doc_count = 0;
+  size_t current_physical_doc_count = 0;
+  size_t current_live_doc_count = 0;
   for (auto &segment : segments) {
-    current_doc_count += segment->doc_count();
-    current_actual_doc_count += segment->doc_count(filter);
+    current_physical_doc_count += segment->doc_count();
+    current_live_doc_count += segment->doc_count(filter);
   }
-  if (current_actual_doc_count <
-      current_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD)) {
-    // if delete ratio is large enough, rebuild
-    rebuild = true;
-  }
+  const bool purge_deleted_docs =
+      current_live_doc_count <
+      current_physical_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD);
 
   auto max_doc_count_per_segment = schema->max_doc_count_per_segment();
 
   std::vector<Segment::Ptr> current_group;
-  current_doc_count = 0;
-  current_actual_doc_count = 0;
+  current_physical_doc_count = 0;
+  current_live_doc_count = 0;
 
   for (const auto &seg : segments) {
-    uint64_t doc_count = seg->doc_count();
-    uint64_t actual_doc_count = seg->doc_count(filter);
+    const auto seg_physical_doc_count = seg->doc_count();
+    const auto seg_live_doc_count = seg->doc_count(filter);
 
     if (!current_group.empty()) {
       SegmentTask::Ptr task;
       bool skip_task{false};
-      if (rebuild) {
-        if (current_actual_doc_count + actual_doc_count >
+      if (purge_deleted_docs) {
+        if (current_live_doc_count + seg_live_doc_count >
             max_doc_count_per_segment) {
-          // only create SegmentCompactTask when rebuild=true
+          // Compaction physically removes deleted rows.
           task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
                           allocate_segment_id_for_tmp_segment(), filter,
                           !options_.enable_mmap_, concurrency});
         }
       } else {
-        if (current_doc_count + doc_count > max_doc_count_per_segment) {
-          // check current_group size
+        if (current_physical_doc_count + seg_physical_doc_count >
+            max_doc_count_per_segment) {
           if (current_group.size() == 1) {
             task =
                 SegmentTask::CreateCreateVectorIndexTask(CreateVectorIndexTask{
                     current_group[0], "", nullptr, concurrency});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
+            // Merge segments while preserving deleted rows.
             task = SegmentTask::CreateCompactTask(
                 CompactTask{path_, schema, current_group,
                             allocate_segment_id_for_tmp_segment(), nullptr,
@@ -1144,8 +1139,8 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
 
       if (task) {
         current_group.clear();
-        current_doc_count = 0;
-        current_actual_doc_count = 0;
+        current_physical_doc_count = 0;
+        current_live_doc_count = 0;
         if (!skip_task) {
           tasks.push_back(task);
         }
@@ -1153,19 +1148,20 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
     }
 
     current_group.push_back(seg);
-    current_doc_count += doc_count;
-    current_actual_doc_count += actual_doc_count;
+    current_physical_doc_count += seg_physical_doc_count;
+    current_live_doc_count += seg_live_doc_count;
   }
 
   if (current_group.size() > 0) {
     SegmentTask::Ptr task;
-    if (current_group.size() == 1 && !rebuild) {
+    if (current_group.size() == 1 && !purge_deleted_docs) {
       task = SegmentTask::CreateCreateVectorIndexTask(
           CreateVectorIndexTask{current_group[0], "", nullptr, concurrency});
     } else {
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
-          rebuild ? filter : nullptr, !options_.enable_mmap_, concurrency});
+          purge_deleted_docs ? filter : nullptr, !options_.enable_mmap_,
+          concurrency});
     }
     tasks.push_back(task);
   }
