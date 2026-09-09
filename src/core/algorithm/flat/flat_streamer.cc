@@ -385,9 +385,12 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 
   for (size_t q = 0; q < count; ++q) {
     auto *heap = bf_context->result_heap();
+    // Candidate searches are already bounded by p_keys. Let the metric choose
+    // its row batches without introducing storage-sized splits here.
+    const size_t batch_size = std::max(size_t{1}, p_keys[q].size());
     int ret =
         entity_->search_by_p_keys(query, p_keys[q], bf_context->filter(), heap,
-                                  bf_context->search_scratch(), BATCH_SIZE);
+                                  bf_context->search_scratch(), batch_size);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Failed to refine Flat candidates for %s",
                 IndexError::What(ret));

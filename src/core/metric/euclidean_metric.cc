@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cstdint>
+#include <ailego/internal/cpu_features.h>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math_batch/distance_batch.h>
 #include <zvec/core/framework/index_error.h>
@@ -523,6 +524,7 @@ class SquaredEuclideanMetric : public IndexMetric {
       return IndexError_Unsupported;
     }
     data_type_ = dt;
+    dimension_ = meta.dimension();
     params_ = index_params;
 
     return 0;
@@ -614,10 +616,32 @@ class SquaredEuclideanMetric : public IndexMetric {
   MatrixBatchDistance batch_distance(void) const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16: {
-        return turbo::get_distance_kernels(turbo::MetricType::kSquaredEuclidean,
-                                           turbo::DataType::kFp16,
-                                           turbo::QuantizeType::kRaw)
-            .batch;
+        auto turbo_batch =
+            turbo::get_distance_kernels(turbo::MetricType::kSquaredEuclidean,
+                                        turbo::DataType::kFp16,
+                                        turbo::QuantizeType::kRaw)
+                .batch;
+        const auto &flags = ailego::internal::CpuFeatures::static_flags_;
+        if (dimension_ < 512 || !turbo_batch || !flags.AVX2 || !flags.F16C ||
+            flags.AVX512_FP16) {
+          return turbo_batch;
+        }
+        // Keep the long-vector twelve-row optimization on AVX2/AVX512 hosts
+        // such as Ice Lake. Its ARM and AVX512-FP16 paths can use FP16
+        // arithmetic, so those hosts must keep the FP32-accumulating kernel.
+        return [turbo_batch](const void **vectors, const void *query,
+                             size_t count, size_t dimension, float *distances,
+                             const void **extra_values) {
+          if (count == 12) {
+            auto batch = reinterpret_cast<MatrixBatchDistanceHandle>(
+                ailego::BaseDistance<ailego::SquaredEuclideanDistanceMatrix,
+                                     ailego::Float16, 12, 2>::ComputeBatch);
+            batch(vectors, query, count, dimension, distances, extra_values);
+          } else {
+            turbo_batch(vectors, query, count, dimension, distances,
+                        extra_values);
+          }
+        };
       }
 
       case IndexMeta::DataType::DT_FP32:
@@ -659,6 +683,7 @@ class SquaredEuclideanMetric : public IndexMetric {
 
  private:
   IndexMeta::DataType data_type_{IndexMeta::DataType::DT_FP32};
+  uint32_t dimension_{0};
   ailego::Params params_{};
 };
 
