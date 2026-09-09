@@ -33,6 +33,7 @@
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "algorithm/vamana/vamana_context.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
@@ -60,7 +61,50 @@ class TestableIVFIndex : public IVFIndex {
   }
 };
 
+class TestableVamanaIndex : public VamanaIndex {
+ public:
+  using VamanaIndex::_get_coarse_search_topk;
+  using VamanaIndex::Init;
+
+ protected:
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          zvec::core::IndexContext::Pointer &context) override {
+    const int ret =
+        VamanaIndex::_prepare_for_search(query, search_param, context);
+    if (ret == 0) {
+      // Exercise the graph path even with a small deterministic test index.
+      auto *vamana = dynamic_cast<zvec::core::VamanaContext *>(context.get());
+      if (vamana) vamana->set_bruteforce_threshold(0);
+    }
+    return ret;
+  }
+};
+
 }  // namespace
+
+TEST(IndexInterface, VamanaRefineCandidateCountUsesScaleNotEf) {
+  TestableVamanaIndex index;
+  for (uint32_t ef : {1U, 10U, 100U, 200U}) {
+    SCOPED_TRACE(ef);
+    for (const auto &item : std::vector<std::pair<float, int>>{{0.0f, 10},
+                                                               {1.0f, 10},
+                                                               {1.2f, 12},
+                                                               {1.29f, 12},
+                                                               {2.0f, 20},
+                                                               {4.0f, 40}}) {
+      SCOPED_TRACE(item.first);
+      auto refiner = std::make_shared<RefinerParam>();
+      refiner->scale_factor_ = item.first;
+      auto query_param = VamanaQueryParamBuilder()
+                             .with_topk(10)
+                             .with_ef_search(ef)
+                             .with_refiner_param(refiner)
+                             .build();
+      EXPECT_EQ(item.second, index._get_coarse_search_topk(query_param));
+    }
+  }
+}
 
 TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
   TestableIVFIndex index;
@@ -350,8 +394,7 @@ TEST(IndexInterface, General) {
            .with_ef_search(50)
            .build());
 
-  // Vamana with topk > ef_search to exercise _get_coarse_search_topk branch
-  // that picks max(topk, ef_search).
+  // Vamana with topk > ef_search must still retain enough candidates.
   func(VamanaIndexParamBuilder()
            .with_metric_type(MetricType::kInnerProduct)
            .with_data_type(DataType::DT_FP32)
@@ -1382,6 +1425,117 @@ TEST(IndexInterface, Fp16CosineRefinementMatchesFp16Storage) {
 
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_name);
+}
+
+TEST(IndexInterface, VamanaTwoPassNativeRefineMatchesExplicitCandidateSearch) {
+  constexpr uint32_t kCount = 96;
+  constexpr uint32_t kTopk = 10;
+  for (auto type : {DataType::DT_FP16, DataType::DT_UINT8}) {
+    const uint32_t dimension = type == DataType::DT_FP16 ? 960 : 128;
+    SCOPED_TRACE(dimension);
+    const std::string fine_path = "vamana_native_refine_flat.index";
+    const std::string coarse_path = "vamana_native_refine_graph.index";
+    zvec::test_util::RemoveTestFiles(fine_path);
+    zvec::test_util::RemoveTestFiles(coarse_path);
+    auto fine_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_storage_data_type(type)
+                          .with_dimension(dimension)
+                          .with_use_contiguous_memory(true)
+                          .build();
+    auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+    ASSERT_TRUE(fine);
+    ASSERT_EQ(
+        0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<std::vector<float>> vectors(kCount,
+                                            std::vector<float>(dimension));
+    for (uint32_t id = 0; id < kCount; ++id) {
+      for (uint32_t d = 0; d < dimension; ++d) {
+        vectors[id][d] = float((id * 37 + d * 13) % 251) + 0.37f;
+      }
+      ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[id].data()}}, id));
+    }
+    ASSERT_EQ(0, fine->close());
+    fine = IndexFactory::CreateAndInitIndex(*fine_param);
+    ASSERT_EQ(
+        0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, false}));
+    auto coarse_param =
+        VamanaIndexParamBuilder()
+            .with_metric_type(MetricType::kL2sq)
+            .with_data_type(DataType::DT_FP32)
+            .with_dimension(dimension)
+            .with_quantizer_param(QuantizerParam(QuantizerType::kInt8))
+            .with_max_degree(16)
+            .with_search_list_size(kCount)
+            .with_two_pass_build(true)
+            .with_use_contiguous_memory(true)
+            .build();
+    auto coarse = std::make_shared<TestableVamanaIndex>();
+    ASSERT_EQ(0, coarse->Init(*coarse_param));
+    ASSERT_EQ(0, coarse->open(coarse_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    // Build from the native refine index: its reformer must restore FP32
+    // before record quantization, including for a physically FP16 source.
+    ASSERT_EQ(0, coarse->merge({fine}, IndexFilter()));
+    ASSERT_EQ(0, coarse->close());
+    coarse = std::make_shared<TestableVamanaIndex>();
+    ASSERT_EQ(0, coarse->Init(*coarse_param));
+    ASSERT_EQ(0, coarse->open(coarse_path,
+                              {StorageOptions::StorageType::kMMAP, false}));
+    auto context = coarse->index_searcher()->create_context();
+    auto *vamana_context =
+        dynamic_cast<zvec::core::VamanaContext *>(context.get());
+    ASSERT_NE(nullptr, vamana_context);
+    EXPECT_NE(nullptr,
+              dynamic_cast<const zvec::core::VamanaContiguousStreamerEntity *>(
+                  &vamana_context->get_entity()));
+
+    const VectorData query{DenseVector{vectors[17].data()}};
+    for (float scale : {1.2f, 4.0f, 0.0f, 1.2f}) {
+      SCOPED_TRACE(scale);
+      const uint32_t candidate_count =
+          static_cast<uint32_t>(std::floor(kTopk * (scale == 0 ? 1 : scale)));
+      auto candidate_param = VamanaQueryParamBuilder()
+                                 .with_topk(candidate_count)
+                                 .with_ef_search(kCount)
+                                 .build();
+      SearchResult candidates;
+      ASSERT_EQ(0, coarse->search(query, candidate_param, &candidates));
+      ASSERT_EQ(candidate_count, candidates.doc_list_.size());
+      auto keys = std::make_shared<std::vector<uint64_t>>();
+      for (const auto &doc : candidates.doc_list_) keys->push_back(doc.key());
+      auto explicit_param = FlatQueryParamBuilder()
+                                .with_topk(kTopk)
+                                .with_fetch_vector(true)
+                                .build();
+      explicit_param->bf_pks = keys;
+      SearchResult expected;
+      ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+      auto refiner = std::make_shared<RefinerParam>();
+      refiner->scale_factor_ = scale;
+      refiner->reference_index = fine;
+      auto refine_param = VamanaQueryParamBuilder()
+                              .with_topk(kTopk)
+                              .with_ef_search(kCount)
+                              .with_fetch_vector(true)
+                              .with_refiner_param(refiner)
+                              .build();
+      SearchResult actual;
+      ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+      ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+      for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+        EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+        EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                        actual.doc_list_[i].score());
+      }
+      EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
+    }
+    ASSERT_EQ(0, coarse->close());
+    ASSERT_EQ(0, fine->close());
+    zvec::test_util::RemoveTestFiles(fine_path);
+    zvec::test_util::RemoveTestFiles(coarse_path);
+  }
 }
 
 TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
