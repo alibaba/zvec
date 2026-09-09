@@ -29,7 +29,7 @@
 
 #include <cstdint>
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
 // ---------------------------------------------------------------------------
 // Syscall numbers

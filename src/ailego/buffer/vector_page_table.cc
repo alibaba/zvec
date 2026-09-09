@@ -25,7 +25,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <ailego/io/io_backend_def.h>
 #include <ailego/io/iouring_loader.h>
 #endif
@@ -100,7 +100,7 @@ VecBufferPool::~VecBufferPool() {
     ailego_free(writeback_staging_);
     writeback_staging_ = nullptr;
   }
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   writeback_io_uring_.reset();
 #endif
   MemoryLimitPool::get_instance().release_metadata(writable_metadata_bytes);
@@ -995,7 +995,7 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   }
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   // Select the process-wide backend; thread-local contexts are created lazily.
   io_backend_type_ = direct_io_enabled_ ? IOBackend::Instance().available()
                                         : IOBackendType::kPread;
@@ -1019,7 +1019,7 @@ size_t VecBufferPool::metadata_bytes_for_page_count(size_t page_count,
   const size_t staging_bytes =
       writable ? kBlockingAioBatchSize * kVectorPageSize : 0;
   size_t io_staging_bytes = 0;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   if (writable &&
       IOBackend::Instance().available() == IOBackendType::kIoUring) {
     io_staging_bytes = kBlockingAioBatchSize * kVectorPageSize;
@@ -1085,7 +1085,7 @@ int VecBufferPool::init() {
   const size_t staging_charge =
       writable_ ? kBlockingAioBatchSize * kVectorPageSize : 0;
   size_t io_staging_charge = 0;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   std::unique_ptr<IoUringRing> writeback_io_uring;
   if (writable_ && io_backend_type_ == IOBackendType::kIoUring) {
     // Keep the estimator and actual reservation stable even if creating this
@@ -1165,7 +1165,7 @@ int VecBufferPool::init() {
   writeback_staging_ = writeback_staging;
   writeback_staging_size_ = staging_charge;
   writeback_io_staging_charge_ = io_staging_charge;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   writeback_io_uring_ = std::move(writeback_io_uring);
 #endif
   LOG_DEBUG("entry num: %zu, file_size: %zu", page_table_.entry_num(),
@@ -1330,7 +1330,7 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
   std::sort(page_ids.begin(), page_ids.end());
   page_ids.erase(std::unique(page_ids.begin(), page_ids.end()), page_ids.end());
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   if (writeback_io_uring_ && writeback_io_uring_->is_valid()) {
     bool all_ok = true;
     size_t pos = 0;
@@ -2458,7 +2458,7 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
     return;
   }
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   if (aio_enabled_) {
     prefetch_pages_aio(first_page, page_count, priority);
     return;
@@ -2567,7 +2567,7 @@ void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len,
                        last_page - first_page + 1, priority);
 }
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 namespace {
 template <unsigned QueueDepth>
 struct ThreadLocalIoUringContext {
@@ -2681,7 +2681,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
   if (count == 0) return true;
   if (page_ids == nullptr || priority > kHighPriority) return false;
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   if (!aio_enabled_) return false;
   bool use_io_uring = io_backend_type_ == IOBackendType::kIoUring &&
                       tl_blocking_io_uring.ensure();

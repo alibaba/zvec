@@ -41,7 +41,7 @@ namespace ailego {
 
 extern const size_t kVectorPageSize;
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 class IoUringRing;
 #endif
 
@@ -734,7 +734,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
 
   bool aio_enabled() const {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     // Backend contexts are created lazily per calling thread.
     return aio_enabled_;
 #else
@@ -743,7 +743,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
 
   IOBackendType io_backend_type() const {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     return io_backend_type_;
 #else
     return IOBackendType::kPread;
@@ -806,7 +806,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   std::atomic<uint64_t> writeback_pending_{0};
   std::atomic<uint64_t> writeback_peak_pending_{0};
   std::atomic<int> writeback_error_{0};
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   IOBackendType io_backend_type_{IOBackendType::kPread};
   bool aio_enabled_{false};
 #endif
@@ -826,7 +826,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   char *writeback_staging_{nullptr};
   size_t writeback_staging_size_{0};
   size_t writeback_io_staging_charge_{0};
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
   std::unique_ptr<IoUringRing> writeback_io_uring_{};
 #endif
   std::mutex writeback_mutex_{};

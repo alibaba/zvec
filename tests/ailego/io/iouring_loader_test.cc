@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
 #include <unistd.h>
 #include <algorithm>
@@ -123,4 +123,4 @@ TEST(IoUringLoaderTest, WritesScatteredBatch) {
 }  // namespace ailego
 }  // namespace zvec
 
-#endif  // __linux__
+#endif  // (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
