@@ -649,9 +649,12 @@ TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
 }
 
 TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
-  constexpr size_t kCapacityPages = 4;
   constexpr size_t kFilePages = 64;
   constexpr size_t kThreadCount = 8;
+  // Keep enough headroom that all writer threads cannot pin every cache slot
+  // at once. The file is still much larger than the pool, so the test retains
+  // sustained writeback pressure without depending on scheduler fairness.
+  constexpr size_t kCapacityPages = kThreadCount * 2;
   InitVecPool(kCapacityPages, kFilePages, /*writable=*/true);
   // BufferStorage creates a small metadata-only file and grows it as segments
   // are appended. Exercise that path instead of opening a pre-sized file.
