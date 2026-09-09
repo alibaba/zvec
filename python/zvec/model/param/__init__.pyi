@@ -893,8 +893,11 @@ class VamanaQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool): Whether to use refiner. Default is False.
-        prefetch_offset (int): Graph prefetch offset (PO). Default is 8.
-        prefetch_lines (int): Cache lines to prefetch per vector (PL). Default is 0 (auto).
+        prefetch_offset (int): Pool-phase vector-prefetch prefix size (PO).
+            The shared default 8 is resolved using a nominal 6 KiB budget
+            for this phase only; this is not a global prefetch limit.
+        prefetch_lines (int): Cache lines to prefetch per vector (PL). The
+            shared default value 0 makes Vamana use at most two lines.
 
     Examples:
         >>> params = VamanaQueryParam(ef_search=200)
@@ -920,10 +923,13 @@ class VamanaQueryParam(QueryParam):
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner. Default is False.
             extra_params (dict, optional): Additional search parameters. Supported keys:
-                - ``prefetch_offset`` (int): Graph prefetch offset (PO).
-                  ``0`` disables prefetching. Default is ``8``.
+                - ``prefetch_offset`` (int): Pool-phase vector-prefetch prefix (PO).
+                  The default ``8`` is resolved after loading the index from the
+                  stored-vector schema, graph degree, effective line count, and
+                  a nominal 6 KiB budget for this phase only. ``0`` disables this
+                  prefix, not local-descent, graph-row, or kernel prefetching.
                 - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
-                  ``0`` (default) means auto-derive from vector size.
+                  The default ``0`` makes Vamana use at most two lines.
         """
 
     def __repr__(self) -> str: ...
@@ -934,11 +940,11 @@ class VamanaQueryParam(QueryParam):
 
     @property
     def prefetch_offset(self) -> int:
-        """int: Graph prefetch offset used by the Vamana fast path."""
+        """Requested pool-phase prefetch prefix; the default is resolved by Vamana."""
 
     @property
     def prefetch_lines(self) -> int:
-        """int: Override of prefetch cache lines per vector (0=auto)."""
+        """Requested cache-line count; zero selects Vamana's default."""
 
 class FtsIndexParam(IndexParam):
     """
