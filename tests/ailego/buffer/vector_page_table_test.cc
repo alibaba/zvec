@@ -1513,8 +1513,13 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
   // promotion counter are the durable policy outcomes under test.
 }
 
+// Keep one resident page below the background-reclaim high watermark so these
+// tests can advance the CLOCK/ghost policy deterministically by hand.
+constexpr size_t kManualEvictionCapacityPages = 2;
+
 TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/kManualEvictionCapacityPages,
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1548,7 +1553,8 @@ TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
 }
 
 TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/kManualEvictionCapacityPages,
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1579,7 +1585,8 @@ TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
 }
 
 TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/kManualEvictionCapacityPages,
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1620,7 +1627,8 @@ TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
 }
 
 TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/kManualEvictionCapacityPages,
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
