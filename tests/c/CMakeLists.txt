@@ -18,7 +18,7 @@ file(GLOB_RECURSE ALL_TEST_SRCS *_test.c)
 
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
-  cc_gtest(
+  cc_test(
       NAME ${CC_TARGET}
       STRICT
       LIBS zvec_c_api
