@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <memory>
+#include <vector>
 #include <gmock/gmock-matchers.h>
 #include <gtest/gtest.h>
 #include "db/sqlengine/sqlengine_impl.h"
@@ -438,6 +440,97 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilterNum1024) {
   auto vector_cond = new_query_info->vector_cond_info();
   EXPECT_EQ(1, vector_cond->batch());
   EXPECT_EQ("face_feature", vector_cond->vector_field_name());
+}
+
+
+namespace {
+
+// QueryAnalyzer accepts at most 4096 filter relations. Q_GT is deliberately
+// used because equality terms may be folded into a Q_IN expression.
+constexpr int kDeepOrCount = 4096;
+constexpr size_t kMaxBalancedLogicDepth = 12;
+
+struct DeepOrTreeStats {
+  bool valid = true;
+  size_t logic_count = 0;
+  size_t relation_count = 0;
+  size_t max_logic_depth = 0;
+};
+
+DeepOrTreeStats CheckDeepOrTree(const QueryNode::Ptr &root) {
+  DeepOrTreeStats stats;
+  if (!root) {
+    stats.valid = false;
+    return stats;
+  }
+
+  struct PendingNode {
+    QueryNode::Ptr node;
+    size_t logic_depth;
+  };
+
+  std::vector<PendingNode> stack{{root, 0}};
+  while (!stack.empty()) {
+    PendingNode pending = std::move(stack.back());
+    stack.pop_back();
+
+    if (pending.node->type() == QueryNode::QueryNodeType::LOGIC_EXPR) {
+      if (pending.node->op() != QueryNodeOp::Q_OR || !pending.node->left() ||
+          !pending.node->right()) {
+        stats.valid = false;
+        return stats;
+      }
+      const size_t logic_depth = pending.logic_depth + 1;
+      stats.max_logic_depth = std::max(stats.max_logic_depth, logic_depth);
+      ++stats.logic_count;
+      stack.push_back({pending.node->right(), logic_depth});
+      stack.push_back({pending.node->left(), logic_depth});
+      continue;
+    }
+
+    if (pending.node->type() != QueryNode::QueryNodeType::REL_EXPR ||
+        pending.node->op() != QueryNodeOp::Q_GT) {
+      stats.valid = false;
+      return stats;
+    }
+    ++stats.relation_count;
+  }
+
+  return stats;
+}
+
+}  // namespace
+
+TEST_F(QueryInfoTest, QueryRequestWithNonFoldableBalancedOr4096) {
+  SearchQuery query;
+  query.output_fields_ = {"*"};
+  query.topk_ = 10;
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+
+  std::string filter;
+  filter.reserve(kDeepOrCount * 18);
+  for (int i = 0; i < kDeepOrCount; ++i) {
+    if (i != 0) {
+      filter += " or ";
+    }
+    filter += "name>" + std::to_string(i);
+  }
+  query.filter_ = std::move(filter);
+
+  auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
+  auto ret = engine->build_query_info(schema, query, nullptr);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  ASSERT_TRUE(ret.value()->filter_cond());
+
+  auto root =
+      std::dynamic_pointer_cast<QueryNode>(ret.value()->filter_cond()->right());
+  auto stats = CheckDeepOrTree(root);
+  EXPECT_TRUE(stats.valid);
+  EXPECT_EQ(kDeepOrCount - 1, stats.logic_count);
+  EXPECT_EQ(kDeepOrCount, stats.relation_count);
+  EXPECT_LE(stats.max_logic_depth, kMaxBalancedLogicDepth);
 }
 
 
