@@ -13,7 +13,9 @@
 // limitations under the License.
 #pragma once
 
+#include <utility>
 #include <zvec/core/framework/index_context.h>
+#include <zvec/core/interface/constants.h>
 #include "utility/block_heap.h"
 #include "utility/linear_pool.h"
 #include "utility/visit_filter.h"
@@ -77,7 +79,25 @@ class VamanaContext : public IndexContext {
     return std::string(buf, size);
   }
 
+  // Merge partial PO/PL updates into the requested values, retaining automatic
+  // defaults even after they have been resolved against the current entity.
+  // Once prepared, unchanged requests reuse the cached effective values.
   int update(const ailego::Params &params) override;
+
+  // Streaming contexts are also used for construction. Resolve query defaults
+  // only when preparing a search (or explicitly updating query parameters).
+  inline void prepare_query_prefetch() {
+    if (!query_prefetch_ready_) {
+      update_query_prefetch();
+    }
+  }
+
+  // Resolve the shared query defaults and explicit prefetch overrides against
+  // the stored graph schema. Returned values are concrete, so the hot search
+  // loop does not need default/manual branches.
+  static std::pair<uint32_t, uint32_t> resolve_query_prefetch(
+      size_t vector_data_size, uint32_t max_degree, uint32_t requested_offset,
+      uint32_t requested_lines);
 
   int init(ContextType type);
 
@@ -164,6 +184,22 @@ class VamanaContext : public IndexContext {
     return batch_indices_buf_;
   }
 
+  // Reusable scratch for the mmap/contiguous query fast path. Keeping these
+  // buffers in the context avoids allocating three (or four for metrics with
+  // extra values) max-degree arrays for every query.
+  inline std::vector<node_id_t> &search_neighbor_ids_buf() {
+    return search_neighbor_ids_buf_;
+  }
+  inline std::vector<float> &search_dists_buf() {
+    return search_dists_buf_;
+  }
+  inline std::vector<const void *> &search_vecs_buf() {
+    return search_vecs_buf_;
+  }
+  inline std::vector<const void *> &search_extra_values_buf() {
+    return search_extra_values_buf_;
+  }
+
   //! Build-time distance offset cached from the metric. Used by RobustPrune
   //! to shift the internal distance to a non-negative range before computing
   //! the ratio-based occlude_factor. Zero for metrics whose internal distance
@@ -183,7 +219,10 @@ class VamanaContext : public IndexContext {
     return ef_;
   }
   inline void set_po(uint32_t v) {
-    po_ = v;
+    if (v != requested_po_) {
+      requested_po_ = po_ = v;
+      query_prefetch_ready_ = false;
+    }
   }
 
   inline uint32_t po() const {
@@ -191,7 +230,10 @@ class VamanaContext : public IndexContext {
   }
 
   inline void set_pl(uint32_t v) {
-    pl_ = v;
+    if (v != requested_pl_) {
+      requested_pl_ = pl_ = v;
+      query_prefetch_ready_ = false;
+    }
   }
 
   inline uint32_t pl() const {
@@ -288,6 +330,7 @@ class VamanaContext : public IndexContext {
 
  private:
   void fill_random_to_topk_full(void);
+  void update_query_prefetch();
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {
     if (cur_doc > kMaxReserveDocCnt) return kMaxReserveDocCnt;
@@ -316,8 +359,12 @@ class VamanaContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t ef_{VamanaEntity::kDefaultEf};
-  uint32_t po_{8};
-  uint32_t pl_{0};
+  uint32_t requested_po_{core_interface::kDefaultPrefetchOffset};
+  uint32_t requested_pl_{core_interface::kDefaultPrefetchLines};
+  // Active values keep the existing build defaults until query preparation.
+  uint32_t po_{requested_po_};
+  uint32_t pl_{requested_pl_};
+  bool query_prefetch_ready_{false};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};
@@ -340,6 +387,10 @@ class VamanaContext : public IndexContext {
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
+  std::vector<node_id_t> search_neighbor_ids_buf_;
+  std::vector<float> search_dists_buf_;
+  std::vector<const void *> search_vecs_buf_;
+  std::vector<const void *> search_extra_values_buf_;
 
   //! Cached build-time distance offset (see build_distance_offset()).
   float build_distance_offset_{0.0f};

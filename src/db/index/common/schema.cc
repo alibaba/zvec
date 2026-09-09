@@ -218,6 +218,8 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
+        // DiskAnn also uses the portable synchronous pread backend on 64-bit
+        // Android and iOS.
         // The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
         // single source of truth for platform eligibility — it is also used by
@@ -227,12 +229,13 @@ Status FieldSchema::validate() const {
         //
         // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
         // synchronous pread() if neither async backend is available. On macOS,
-        // DiskAnn uses synchronous pread(); Windows uses overlapped I/O.
+        // Android and iOS, DiskAnn uses synchronous pread(); Windows uses
+        // overlapped I/O.
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/ARM64), macOS (ARM64), and Windows "
-            "(x86_64).");
+            "Linux (x86_64/ARM64), macOS (ARM64), 64-bit Android/iOS, and "
+            "Windows (x86_64).");
 #endif
       }
 

@@ -335,6 +335,20 @@ class TestVamanaQueryParamSurface:
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
 
+    def test_zero_prefetch_values_are_preserved(self):
+        q = VamanaQueryParam(extra_params={"prefetch_offset": 0, "prefetch_lines": 0})
+        assert q.prefetch_offset == 0
+        assert q.prefetch_lines == 0
+
+    def test_prefetch_fields_can_override_defaults_independently(self):
+        offset_only = VamanaQueryParam(extra_params={"prefetch_offset": 96})
+        assert offset_only.prefetch_offset == 96
+        assert offset_only.prefetch_lines == 0
+
+        lines_only = VamanaQueryParam(extra_params={"prefetch_lines": 1})
+        assert lines_only.prefetch_offset == 8
+        assert lines_only.prefetch_lines == 1
+
     def test_repr_contains_key_fields(self):
         text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
         assert "VAMANA" in text
@@ -369,6 +383,12 @@ class TestVamanaQueryParamSurface:
         assert restored.is_using_refiner is True
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
+
+    def test_default_prefetch_pickle_roundtrip(self):
+        restored = pickle.loads(pickle.dumps(VamanaQueryParam(ef_search=96)))
+        assert restored.ef_search == 96
+        assert restored.prefetch_offset == 8
+        assert restored.prefetch_lines == 0
 
 
 class TestVamanaPublicNamespace:

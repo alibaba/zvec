@@ -50,7 +50,7 @@ static void log_diskann_io_backend(ailego::IOBackendType type) {
 #if (defined(__linux) || defined(__linux__) || defined(__APPLE__) || \
      defined(__MACH__) || defined(_WIN32) || defined(_WIN64))
   std::call_once(g_io_backend_log_once, [type]() {
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
     if (type == ailego::IOBackendType::kPread) {
       LOG_WARN(
           "DiskAnn: no async I/O backend available: io_uring is unavailable "
@@ -75,7 +75,7 @@ static void log_diskann_io_backend(ailego::IOBackendType type) {
 #endif
 }
 
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
 typedef struct io_event io_event_t;
 typedef struct iocb iocb_t;
 
@@ -239,7 +239,7 @@ int setup_io_ctx(IOContext &ctx) {
 #if defined(_WIN32) || defined(_WIN64)
   log_diskann_io_backend(ctx->type);
   return 0;
-#elif defined(__linux) || defined(__linux__)
+#elif defined(__linux__) && !defined(__ANDROID__)
   if (selected == ailego::IOBackendType::kPread) {
     log_diskann_io_backend(ctx->type);
     return 0;
@@ -280,7 +280,7 @@ int destroy_io_ctx(IOContext &ctx) {
 
 #if defined(_WIN32) || defined(_WIN64)
   close_windows_io_handles(ctx);
-#elif defined(__linux) || defined(__linux__)
+#elif defined(__linux__) && !defined(__ANDROID__)
   if (ctx->type == ailego::IOBackendType::kIoUring) {
     ctx->ring.teardown();
   } else if (ctx->type == ailego::IOBackendType::kLibAio &&
@@ -338,7 +338,7 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
   return 0;
 }
 
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
 // io_getevents() should only fail permanently for an invalid context or
 // invalid arguments. If that happens after submission, io_destroy() is the
 // only safe way to quiesce the context before synchronous I/O touches the same
@@ -492,7 +492,7 @@ int execute_io_libaio(io_context_t &ctx, int fd,
 
 int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
   // A missing asynchronous context falls back to synchronous pread.
   if (ctx == nullptr) {
     return execute_io_pread(fd, read_reqs);
@@ -553,7 +553,7 @@ static int duplicate_file_descriptor(int source_fd) {
 #endif
 }
 
-#if defined(__linux__) || defined(__linux)
+#if defined(__linux__) && !defined(__ANDROID__)
 static int reopen_file_descriptor_with_direct_io(int source_fd) {
   // dup()/F_DUPFD_CLOEXEC shares one open-file description with source_fd, so
   // changing O_DIRECT through F_SETFL would also change the caller's buffered
@@ -645,13 +645,13 @@ static void configure_macos_reader(int file_desc, const std::string &fname) {
 void LinuxAlignedFileReader::open(const std::string &fname) {
   int flags = O_RDONLY;
 
-#if defined(__linux__) || defined(__linux)
+#if defined(__linux__) && !defined(__ANDROID__)
   flags |= O_DIRECT | O_LARGEFILE;
 #endif
 
   this->file_desc = ::open(fname.c_str(), flags);
 
-#if defined(__linux__) || defined(__linux)
+#if defined(__linux__) && !defined(__ANDROID__)
   // O_DIRECT may not be supported on all filesystems (e.g. tmpfs, overlay).
   // Fall back to regular buffered I/O when it fails.
   if (this->file_desc == -1) {
@@ -687,7 +687,7 @@ int LinuxAlignedFileReader::open_from_handle(const std::string &fname,
 
   int duplicate_fd = -1;
   bool has_independent_file_description = false;
-#if defined(__linux__) || defined(__linux)
+#if defined(__linux__) && !defined(__ANDROID__)
   duplicate_fd = reopen_file_descriptor_with_direct_io(source_fd);
   if (duplicate_fd < 0) {
     const int direct_errno = errno;
@@ -762,7 +762,7 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   return ret;
 }
 
-#if (defined(__linux) || defined(__linux__))
+#if defined(__linux__) && !defined(__ANDROID__)
 int LinuxAlignedFileReader::submit(PendingBatch &batch,
                                    std::vector<AlignedRead> &read_reqs,
                                    IOContext &ctx) {

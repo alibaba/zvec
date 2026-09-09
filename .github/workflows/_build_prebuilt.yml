@@ -119,7 +119,7 @@ jobs:
       # at /opt/python/cp3*/bin (which has pip) — see the install step below.
       - name: Set up Python
         if: runner.os != 'Linux'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -386,7 +386,7 @@ jobs:
           submodules: recursive
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -497,7 +497,7 @@ jobs:
           submodules: recursive
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: 'pip'
