@@ -223,12 +223,12 @@ class CollectionImpl : public Collection {
     return tmp_segment_id_allocator_.fetch_add(1);
   }
 
-  std::vector<SegmentTask::Ptr> build_optimize_tasks(
+  std::vector<SegmentTask::Ptr> build_compact_task(
       const CollectionSchema::Ptr &schema,
       const std::vector<Segment::Ptr> &segments, int concurrency,
       const IndexFilter::Ptr filter);
 
-  Status execute_optimize_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
+  Status execute_compact_task(std::vector<SegmentTask::Ptr> &tasks) const;
 
   std::vector<SegmentTask::Ptr> build_create_vector_index_task(
       const std::vector<Segment::Ptr> &segments, const std::string &column,
@@ -943,9 +943,9 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   // Phase 2: lock-free optimize. Readers and writers proceed freely.
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
-      build_optimize_tasks(schema_, persist_segments, options.concurrency_,
-                           delete_store_clone->make_filter());
-  auto s = execute_optimize_tasks(tasks);
+      build_compact_task(schema_, persist_segments, options.concurrency_,
+                         delete_store_clone->make_filter());
+  auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
   // End of phase 2 (still lock-free): move built tmp segments to their
@@ -1080,7 +1080,7 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   return Status::OK();
 }
 
-std::vector<SegmentTask::Ptr> CollectionImpl::build_optimize_tasks(
+std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
     const CollectionSchema::Ptr &schema,
     const std::vector<Segment::Ptr> &segments, int concurrency,
     const IndexFilter::Ptr filter) {
@@ -1169,7 +1169,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_optimize_tasks(
   return tasks;
 }
 
-Status CollectionImpl::execute_optimize_tasks(
+Status CollectionImpl::execute_compact_task(
     std::vector<SegmentTask::Ptr> &tasks) const {
   Status s;
   for (auto &task : tasks) {
