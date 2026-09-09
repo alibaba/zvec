@@ -775,16 +775,19 @@ int Index::_dense_search(const VectorData &vector_data,
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   auto vector = dense_vector.data;
+  std::string transformed_vector;
   // Check if need to transform feature
   core::IndexQueryMeta new_meta = input_vector_meta_;
   if (reformer_ != nullptr) {
-    auto *new_vector = context->mutable_features();
-    if (reformer_->transform(dense_vector.data, input_vector_meta_, new_vector,
-                             &new_meta) != 0) {
+    if (reformer_->transform(dense_vector.data, input_vector_meta_,
+                             &transformed_vector, &new_meta) != 0) {
       LOG_ERROR("Failed to transform vector");
       return core::IndexError_Runtime;
     }
-    vector = new_vector->data();
+    // A streamer may replace an incompatible pooled context before searching.
+    // Keep the transformed query independent from that context so its data
+    // remains valid for the complete search call.
+    vector = transformed_vector.data();
   }
   if (search_param->bf_pks != nullptr) {
     // should we eliminate the copy of bf_pks?

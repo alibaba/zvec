@@ -725,12 +725,12 @@ zvec_doc_t *zvec_test_create_doc_null(uint64_t doc_id,
         break;
     }
 
-
     if (err != ZVEC_OK) {
       // Free field names array before returning
       if (field_names) {
-        for (size_t i = 0; i < field_count; i++) {
-          free((char *)field_names[i]);
+        for (size_t cleanup_index = 0; cleanup_index < field_count;
+             cleanup_index++) {
+          free((char *)field_names[cleanup_index]);
         }
         free(field_names);
       }

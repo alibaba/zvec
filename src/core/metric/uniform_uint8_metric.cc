@@ -43,13 +43,26 @@ void UniformUint8QueryPreprocess(void *query, size_t encoded_dimension) {
   // Match the existing record-quantizer contract: transform() emits the
   // canonical shifted layout, and graph contexts preprocess their private
   // query copy exactly once before using the query-oriented distance kernels.
-  uint64_t sum = 0;
   uint64_t sum_squared = 0;
+  if (original_dimension <= MAX_DIMENSION) {
+    // Keep the canonical-query contract consistent with the VNNI path: reuse
+    // the exact uint32 norm, including unaligned tails and values > INT32_MAX.
+    uint32_t stored_sum_squared = 0;
+    std::memcpy(&stored_sum_squared, raw_query + original_dimension,
+                sizeof(stored_sum_squared));
+    sum_squared = stored_sum_squared;
+  } else {
+    // Oversized externally supplied queries can have a truncated norm.
+    for (size_t i = 0; i < original_dimension; ++i) {
+      const uint64_t value = raw_query[i] ^ uint8_t { 0x80 };
+      sum_squared += value * value;
+    }
+  }
+
+  uint64_t sum = 0;
   for (size_t i = 0; i < original_dimension; ++i) {
     raw_query[i] ^= uint8_t{0x80};
-    const uint64_t value = raw_query[i];
-    sum += value;
-    sum_squared += value * value;
+    sum += raw_query[i];
   }
 
   const int64_t correction =

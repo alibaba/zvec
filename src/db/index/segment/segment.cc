@@ -179,7 +179,7 @@ class SegmentImpl : public Segment,
 
   const IndexFilter::Ptr get_filter() override;
 
-  Status create_all_vector_index(
+  Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
@@ -1463,7 +1463,7 @@ const IndexFilter::Ptr SegmentImpl::get_filter() {
   return delete_store_->empty() ? nullptr : filter_;
 }
 
-Status SegmentImpl::create_all_vector_index(
+Status SegmentImpl::create_all_vector_indexes(
     int concurrency, SegmentMeta::Ptr *segment_meta,
     std::unordered_map<std::string, VectorColumnIndexer::Ptr> *vector_indexers,
     std::unordered_map<std::string, VectorColumnIndexer::Ptr>
@@ -1508,7 +1508,8 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   } else {
     merge_options.write_concurrency = concurrency;
   }
-  s = vector_indexer->Merge(to_merge_indexers, filter_, merge_options);
+  // Keep tombstoned vectors: forward rows are unchanged.
+  s = vector_indexer->Merge(to_merge_indexers, nullptr, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
   s = vector_indexer->Flush();
   CHECK_RETURN_STATUS_EXPECTED(s);

@@ -81,7 +81,7 @@ class Segment {
 
   virtual Status drop_column(const std::string &column_name) = 0;
 
-  virtual Status create_all_vector_index(
+  virtual Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,

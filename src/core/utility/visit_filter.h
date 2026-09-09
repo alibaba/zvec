@@ -19,6 +19,7 @@
 #include <limits>
 #include <random>
 #include <tuple>
+#include <utility>
 #include <vector>
 #include <ailego/container/bloom_filter.h>
 #include <ailego/utility/bitset_helper.h>
@@ -355,9 +356,41 @@ class VisitByteMap {
   }
 
 
-// visit list will be called with high frequency,
-// so using switch instead of std::function or virtual class
-// funtion point, lambda, virtual class all cannot be inlined
+class VisitFilter;
+
+// Invoke fn(view) once with a concrete, non-owning VisitFilterView. Returns
+// false without invoking fn if the filter is uninitialized or has an unknown
+// mode. Use the mutable view only within the callback, and do not reset/destroy
+// its owner there. Legacy per-operation VisitFilter accessors remain available.
+template <typename Fn>
+[[nodiscard]] bool dispatch_visit_filter(VisitFilter &visit_filter, Fn &&fn);
+
+// A pointer-sized adapter for statically dispatched hot loops. Copying a view
+// shares the existing context; it does not allocate or own filter storage.
+template <typename Impl>
+class VisitFilterView {
+ public:
+  ailego_force_inline bool visited(id_t idx) const {
+    return Impl::visited(ctx_, idx);
+  }
+
+  ailego_force_inline void set_visited(id_t idx) const {
+    Impl::set_visited(ctx_, idx);
+  }
+
+  ailego_force_inline void clear() const {
+    Impl::clear(ctx_);
+  }
+
+ private:
+  template <typename Fn>
+  friend bool dispatch_visit_filter(VisitFilter &visit_filter, Fn &&fn);
+
+  explicit VisitFilterView(typename Impl::Context *ctx) : ctx_(ctx) {}
+
+  typename Impl::Context *ctx_;
+};
+
 class VisitFilter {
  public:
   enum Mode {
@@ -417,12 +450,38 @@ class VisitFilter {
 
 
  private:
+  template <typename Fn>
+  friend bool dispatch_visit_filter(VisitFilter &visit_filter, Fn &&fn);
+
   VisitFilter(const VisitFilter &) = delete;
   VisitFilter &operator=(const VisitFilter &) = delete;
 
   int mode_{0U};  // custom data for each method
   void *ctx_{nullptr};
 };
+
+template <typename Fn>
+bool dispatch_visit_filter(VisitFilter &visit_filter, Fn &&fn) {
+  if (visit_filter.ctx_ == nullptr) {
+    return false;
+  }
+  switch (visit_filter.mode_) {
+    case VisitBloomFilter::mode:
+      std::forward<Fn>(fn)(VisitFilterView<VisitBloomFilter>(
+          static_cast<VisitBloomFilter::Context *>(visit_filter.ctx_)));
+      return true;
+    case VisitBitMap::mode:
+      std::forward<Fn>(fn)(VisitFilterView<VisitBitMap>(
+          static_cast<VisitBitMap::Context *>(visit_filter.ctx_)));
+      return true;
+    case VisitByteMap::mode:
+      std::forward<Fn>(fn)(VisitFilterView<VisitByteMap>(
+          static_cast<VisitByteMap::Context *>(visit_filter.ctx_)));
+      return true;
+    default:
+      return false;
+  }
+}
 
 }  // namespace core
 }  // namespace zvec

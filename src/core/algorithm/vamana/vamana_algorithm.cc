@@ -59,7 +59,10 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   }
   ctx->reset_query(query_vec);
 
-  greedy_search(entry_point, ctx, /*use_pool=*/false);
+  int ret = greedy_search(entry_point, ctx, /*use_pool=*/false);
+  if (ailego_unlikely(ret != 0)) {
+    return ret;
+  }
 
   auto &topk_heap = ctx->topk_heap();
 
@@ -136,9 +139,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
   uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
   topk_heap.limit(ef_search);
 
-  greedy_search(entry_point, ctx, /*use_pool=*/true);
-
-  return 0;
+  return greedy_search(entry_point, ctx, /*use_pool=*/true);
 }
 
 // ============================================================================
@@ -148,49 +149,193 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 //
 //   fast_greedy_search:       mmap/contiguous with direct vector pointers.
 //                             Uses batch_dist on a pointer array.
-//   slow_greedy_search:       BufferPool-backed storage: must fetch MemBlock
-//                             wrappers via get_vector_typed to pin pages.
+//   dual_heap_greedy_search:  Construction, filtered queries and BufferPool.
+//                             Uses get_vector_typed with MemBlock wrappers.
 //
-// Both accept either BlockHeap or LinearPool as `HeapType` because the
-// two expose the same reset(n, ef, block_size) / push_block(dists, ids, n)
-// surface (LinearPool adapts via push_block and ignores the block_size hint).
+// The fast path accepts either BlockHeap or LinearPool as `HeapType`.
+// Both expose reset(capacity, block_size) / push_block(dists, ids, n);
+// LinearPool adapts via push_block and ignores the block_size hint.
 // ============================================================================
+
+// Prefetch all cache lines covering a packed contiguous graph row.
+ailego_force_inline void prefetch_graph_row(
+    const VamanaContiguousStreamerEntity &entity, node_id_t node) {
+  constexpr uintptr_t kCacheLineMask = ~uintptr_t{63};
+  const char *data = entity.graph_prefetch_data(node);
+  if (ailego_unlikely(data == nullptr)) return;
+  const uintptr_t begin = reinterpret_cast<uintptr_t>(data) & kCacheLineMask;
+  const uintptr_t end =
+      reinterpret_cast<uintptr_t>(data) + entity.graph_prefetch_size();
+  const size_t lines = (end - begin + 63) / 64;
+  ailego_prefetch_lines(reinterpret_cast<const void *>(begin), lines);
+}
 
 // mmap/contiguous variant: resolve vector bodies and optional extra-values
 // pointers through the entity's layout-specific accessors.
-template <typename EntityType, typename HeapType>
+template <bool HasExtraValues, typename EntityType, typename HeapType,
+          typename Visit>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
-                        VisitFilter &visit, VamanaDistCalculator &dc,
+                        VamanaContext *ctx, VamanaDistCalculator &dc,
                         uint32_t topk, uint32_t ef, node_id_t entry_point,
-                        uint32_t prefetch_lines, uint32_t prefetch_offset) {
+                        uint32_t prefetch_lines, uint32_t prefetch_offset,
+                        Visit visit) {
+  static constexpr bool kPrefetchGraph =
+      std::is_same_v<EntityType, VamanaContiguousStreamerEntity>;
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
   visit.clear();
 
-  dist_t ep_dist = dc.batch_dist(entry_point);
-  visit.set_visited(entry_point);
-  pool.push_block(&ep_dist, &entry_point, 1);
-
   uint32_t buf_capacity = max_deg;
-  std::vector<node_id_t> neighbor_ids(buf_capacity);
-  std::vector<float> dists(buf_capacity);
-  std::vector<const void *> neighbor_vecs(buf_capacity);
-  const bool has_extra_values = entity.extra_values_size() != 0;
-  std::vector<const void *> extra_values(has_extra_values ? buf_capacity : 0);
+  auto &neighbor_ids = ctx->search_neighbor_ids_buf();
+  auto &dists = ctx->search_dists_buf();
+  auto &neighbor_vecs = ctx->search_vecs_buf();
+  neighbor_ids.resize(buf_capacity);
+  dists.resize(buf_capacity);
+  neighbor_vecs.resize(buf_capacity);
+  auto &extra_values = ctx->search_extra_values_buf();
+  if constexpr (HasExtraValues) {
+    extra_values.resize(buf_capacity);
+  }
 
+  const auto insert_candidates = [&](uint32_t count) {
+    if constexpr (std::is_same_v<HeapType, LinearPool<float>>) {
+      for (uint32_t i = 0; i < count; ++i) {
+        if constexpr (kPrefetchGraph) {
+          bool rewound = false;
+          if (pool.insert_with_rewind(static_cast<int>(neighbor_ids[i]),
+                                      dists[i], &rewound) &&
+              rewound) {
+            prefetch_graph_row(entity, neighbor_ids[i]);
+          }
+        } else {
+          pool.insert(static_cast<int>(neighbor_ids[i]), dists[i]);
+        }
+      }
+    } else {
+      pool.push_block(dists.data(), neighbor_ids.data(),
+                      static_cast<int32_t>(count));
+    }
+  };
+
+  const auto compute_neighbor_row = [&](const auto &neighbors) {
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+      if constexpr (HasExtraValues) {
+        extra_values.resize(buf_capacity);
+      }
+    }
+
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      const node_id_t node = neighbors[i];
+      const void *vec_ptr = entity.get_vector_ptr(node);
+      ailego_prefetch_lines(vec_ptr, prefetch_lines);
+      neighbor_ids[i] = node;
+      neighbor_vecs[i] = vec_ptr;
+      if constexpr (HasExtraValues) {
+        extra_values[i] = entity.get_extra_values_ptr(node, vec_ptr);
+      }
+    }
+    if (neighbors.size() == 0) return;
+
+    dc.batch_dist(neighbor_vecs.data(), neighbors.size(), dists.data(),
+                  HasExtraValues ? extra_values.data() : nullptr);
+  };
+
+  // Step 1: Descend one best neighbor at a time to a local optimum, caching
+  // the last row's distances. Do not mark descent nodes visited: the pool
+  // phase must still be able to explore their other neighbors.
+  node_id_t start = entry_point;
+  dist_t start_dist = dc.batch_dist(start);
+  if (ailego_unlikely(dc.error())) {
+    return;
+  }
+
+  node_id_t cached_row = kInvalidNodeId;
+  for (uint32_t depth = 0; depth < 100; ++depth) {
+    const node_id_t before = start;
+    cached_row = before;
+    if constexpr (kPrefetchGraph) {
+      prefetch_graph_row(entity, before);
+    }
+    const auto neighbors = entity.get_neighbors_typed(before);
+    compute_neighbor_row(neighbors);
+    if (ailego_unlikely(dc.error())) {
+      return;
+    }
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      if (dists[i] < start_dist) {
+        start = neighbor_ids[i];
+        start_dist = dists[i];
+      }
+    }
+    if (start == before) break;
+  }
+
+  // Step 2: Seed the pool with the landing row, then the landing node.
+  // Preserve this insertion order and visited deduplication: ties and
+  // capacity pruning depend on them.
+  const auto start_neighbors = entity.get_neighbors_typed(start);
+  // The depth limit can leave the cached row at the preceding node.
+  if (cached_row != start) {
+    compute_neighbor_row(start_neighbors);
+    if (ailego_unlikely(dc.error())) {
+      return;
+    }
+  }
+
+  uint32_t initial_count = 0;
+  for (uint32_t i = 0; i < start_neighbors.size(); ++i) {
+    const node_id_t node = start_neighbors[i];
+    if (visit.visited(node)) continue;
+    visit.set_visited(node);
+    neighbor_ids[initial_count] = node;
+    dists[initial_count] = dists[i];
+    ++initial_count;
+  }
+  if (initial_count != 0) {
+    insert_candidates(initial_count);
+  }
+
+  if (!visit.visited(start)) {
+    visit.set_visited(start);
+    neighbor_ids[0] = start;
+    dists[0] = start_dist;
+    insert_candidates(1);
+  }
+
+  // Step 3: Expand the bounded greedy pool, collecting unvisited neighbors.
   while (pool.has_next()) {
-    auto current_node = pool.pop();
+    node_id_t current_node;
+    if constexpr (kPrefetchGraph) {
+      node_id_t next = kInvalidNodeId;
+      current_node = static_cast<node_id_t>(pool.pop_with_next(&next));
+      prefetch_graph_row(entity, current_node);
+      if (next != kInvalidNodeId) {
+        prefetch_graph_row(entity, next);
+      }
+    } else {
+      current_node = static_cast<node_id_t>(pool.pop());
+    }
 
     const auto neighbors = entity.get_neighbors_typed(current_node);
-    ailego_prefetch(neighbors.data);
+    if constexpr (kPrefetchGraph) {
+      if (ailego_unlikely(!entity.is_contiguous())) {
+        ailego_prefetch(neighbors.data);
+      }
+    } else {
+      ailego_prefetch(neighbors.data);
+    }
 
     if (neighbors.size() > buf_capacity) {
       buf_capacity = neighbors.size();
       neighbor_ids.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
-      if (has_extra_values) {
+      if constexpr (HasExtraValues) {
         extra_values.resize(buf_capacity);
       }
     }
@@ -205,13 +350,10 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
       if (visit.visited(node)) continue;
       visit.set_visited(node);
       const void *vec_ptr = entity.get_vector_ptr(node);
-      const char *p = reinterpret_cast<const char *>(vec_ptr);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(p + cl * 64);
-      }
+      ailego_prefetch_lines(vec_ptr, prefetch_lines);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
-      if (has_extra_values) {
+      if constexpr (HasExtraValues) {
         extra_values[unvisited_count] =
             entity.get_extra_values_ptr(node, vec_ptr);
       }
@@ -224,7 +366,7 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
       const void *vec_ptr = entity.get_vector_ptr(node);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
-      if (has_extra_values) {
+      if constexpr (HasExtraValues) {
         extra_values[unvisited_count] =
             entity.get_extra_values_ptr(node, vec_ptr);
       }
@@ -233,9 +375,11 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
 
     if (unvisited_count == 0) continue;
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
-                  has_extra_values ? extra_values.data() : nullptr);
-    pool.push_block(dists.data(), neighbor_ids.data(),
-                    static_cast<int32_t>(unvisited_count));
+                  HasExtraValues ? extra_values.data() : nullptr);
+    if (ailego_unlikely(dc.error())) {
+      return;
+    }
+    insert_candidates(unvisited_count);
   }
 }
 
@@ -250,8 +394,11 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                              VamanaDistCalculator &dc, node_id_t entry_point,
                              FilterFn &&filter) {
   const uint32_t prefetch_offset = ctx->po();
-  const uint32_t prefetch_lines =
-      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+  const uint32_t vector_body_lines =
+      static_cast<uint32_t>((entity.vector_data_size() + 63) / 64);
+  const uint32_t prefetch_lines = ctx->pl() > 0
+                                      ? std::min(ctx->pl(), vector_body_lines)
+                                      : vector_body_lines;
 
   uint32_t buf_capacity = entity.max_degree();
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -361,26 +508,27 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 }
 
 // ============================================================================
-// greedy_search: Beam search from entry_point.
+// greedy_search: Dispatch to the query pool or fallback dual-heap search.
 //
-// Maintains a candidate min-heap (ordered by distance) and a visited set.
-// At each step, pops the closest unvisited candidate, expands its neighbors,
-// and adds unvisited neighbors to both the candidate heap and the topk heap.
-// Stops when the closest candidate is farther than the worst in topk, or
-// when the scan limit is reached.
+// Unfiltered mmap/contiguous queries use fast_greedy_search. Construction,
+// filtered queries and BufferPool use dual_heap_greedy_search, which enforces
+// the scan limit. Both paths accumulate results in ctx->topk_heap().
 // ============================================================================
 template <typename EntityType>
-void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
-                                                VamanaContext *ctx,
-                                                bool use_pool) const {
+int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
+                                               VamanaContext *ctx,
+                                               bool use_pool) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   VamanaDistCalculator &dc = ctx->dist_calculator();
 
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  const uint32_t prefetch_lines =
-      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+  const uint32_t vector_body_lines =
+      static_cast<uint32_t>((entity.vector_data_size() + 63) / 64);
+  const uint32_t prefetch_lines = ctx->pl() > 0
+                                      ? std::min(ctx->pl(), vector_body_lines)
+                                      : vector_body_lines;
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
@@ -411,18 +559,30 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
       auto &topk_heap = ctx->topk_heap();
 
-      auto &visit = ctx->visit_filter();
-
-      if (avx2_ok) {
-        auto &bpool = ctx->block_pool();
-        fast_greedy_search(entity, bpool, visit, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines, ctx->po());
-        copy_pool_to_topk(bpool, topk_heap);
-      } else {
-        auto &lpool = ctx->pool();
-        fast_greedy_search(entity, lpool, visit, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines, ctx->po());
-        copy_pool_to_topk(lpool, topk_heap);
+      const bool dispatched =
+          dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
+            const auto run_with_pool = [&](auto &pool) {
+              if (entity.extra_values_size() != 0) {
+                fast_greedy_search<true>(entity, pool, ctx, dc, topk_v, ef_v,
+                                         entry_point, prefetch_lines, ctx->po(),
+                                         visit);
+              } else {
+                fast_greedy_search<false>(entity, pool, ctx, dc, topk_v, ef_v,
+                                          entry_point, prefetch_lines,
+                                          ctx->po(), visit);
+              }
+              copy_pool_to_topk(pool, topk_heap);
+            };
+            if (avx2_ok) {
+              run_with_pool(ctx->block_pool());
+            } else {
+              run_with_pool(ctx->pool());
+            }
+          });
+      if (ailego_unlikely(!dispatched)) {
+        LOG_ERROR("Failed to dispatch Vamana visit filter, mode %d",
+                  ctx->visit_filter().get_mode());
+        return IndexError_Runtime;
       }
     } else {
       // BufferPool entities: fallback to dual-heap path.
@@ -431,6 +591,7 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                                         entry_point, filter);
     }
   }
+  return 0;
 }
 
 template <typename EntityType>
@@ -463,7 +624,10 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   ctx->dist_calculator().clear_compare_cnt();
   ctx->reset_query(query_vec);
 
-  greedy_search(entry_point, ctx, /*use_pool=*/false);
+  int ret = greedy_search(entry_point, ctx, /*use_pool=*/false);
+  if (ailego_unlikely(ret != 0)) {
+    return ret;
+  }
 
   const TopkHeap &search_candidates = ctx->topk_heap();
   const Neighbors current_neighbors = entity_.get_neighbors(id);
