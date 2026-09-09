@@ -280,7 +280,7 @@ TEST(Fp16Quantizer, General) {
 }
 
 TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
-  constexpr size_t kDimension = 17;
+  static constexpr size_t kDimension = 17;
   auto make_vector = [](size_t id) {
     std::array<float, kDimension> vector{};
     for (size_t d = 0; d < kDimension; ++d) {
