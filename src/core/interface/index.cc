@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
@@ -27,6 +28,61 @@ namespace {
 bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
   return search_param->group_by_param && search_param->group_by_param->group_by;
 }
+
+// Lease rather than borrow the single per-type context slot: coarse and fine
+// searches (or a search nested in a filter) may use the same index type. Take
+// the prepared context out of the slot for the duration of the call, and leave
+// an idle context there for nested callers. Preserve bindings installed by
+// wrappers such as search_with_source, as well as reusable candidate storage.
+class SearchContextLease {
+ public:
+  struct State {
+    core::IndexContext::Pointer context;
+    std::vector<uint64_t> candidates;
+    // A runner may replace its context when switching index layouts. Keep
+    // the transformed query alive independently and reuse its allocation.
+    std::string query_storage;
+  };
+
+  SearchContextLease(IndexType type, bool sparse,
+                     core::IndexContext::Pointer &available)
+      : available_(&available) {
+    static thread_local std::array<
+        Pool, (magic_enum::enum_count<IndexType>() - 1) * 2>
+        pools;
+    const size_t slot =
+        (magic_enum::enum_integer(type) - 1) * 2 + static_cast<size_t>(sparse);
+    pool_ = &pools[slot];
+    if (pool_->empty()) {
+      state_ = std::make_unique<State>();
+    } else {
+      state_ = std::move(pool_->back());
+      pool_->pop_back();
+    }
+    state_->context.swap(*available_);
+  }
+
+  ~SearchContextLease() {
+    if (state_->context) {
+      state_->context->reset();
+      state_->context->reset_filter();
+      state_->context->reset_threshold();
+    }
+    state_->candidates.clear();
+    state_->context.swap(*available_);
+    pool_->push_back(std::move(state_));
+  }
+
+  State &state() {
+    return *state_;
+  }
+
+ private:
+  using Pool = std::vector<std::unique_ptr<State>>;
+  core::IndexContext::Pointer *available_;
+  Pool *pool_;
+  std::unique_ptr<State> state_;
+};
 
 }  // namespace
 
@@ -566,7 +622,8 @@ int Index::search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  auto &context = acquire_context();
+  SearchContextLease lease(param_.index_type, is_sparse_, acquire_context());
+  auto &context = lease.state().context;
   if (!context) {
     LOG_ERROR("Failed to acquire context");
     return core::IndexError_Runtime;
@@ -575,59 +632,49 @@ int Index::search(const VectorData &vector_data,
   int prepare_ret = _prepare_for_search(vector_data, search_param, context);
   if (prepare_ret != 0) {
     LOG_ERROR("Failed to prepare for search");
-    context->reset();
     return prepare_ret;
   }
 
   if (is_sparse_) {
-    int ret = _sparse_search(vector_data, search_param, result, context);
-    context->reset();
-    return ret;
+    return _sparse_search(vector_data, search_param, result, context);
   }
 
   // dense supports refiner, but sparse doesn't
   int ret = 0;
   if (search_param->refiner_param == nullptr) {
-    ret = _dense_search(vector_data, search_param, result, context);
-    context->reset();
+    ret = _dense_search(vector_data, search_param, result, context,
+                        &lease.state().query_storage);
   } else {
     auto &reference_index = search_param->refiner_param->reference_index;
     if (reference_index == nullptr) {
       LOG_ERROR("Reference index is not set");
-      context->reset();
       return core::IndexError_Runtime;
     }
     // TODO: tackle query_param's type info loss to loosen the constraint
     if (reference_index->param_.index_type != IndexType::kFlat) {
       LOG_ERROR("Reference index is not flat");
-      context->reset();
       return core::IndexError_Runtime;
     }
 
     context->set_topk(_get_coarse_search_topk(search_param));
     context->set_fetch_vector(false);  // no need to fetch vector
-    if (_dense_search(vector_data, search_param, result, context) != 0) {
+    const void *query = nullptr;
+    core::IndexQueryMeta query_meta;
+    ret = _prepare_dense_query(vector_data, &lease.state().query_storage,
+                               &query, &query_meta);
+    if (ret != 0) return ret;
+    // Refine replaces the coarse scores; only candidate membership and order
+    // cross this boundary, not document/vector materialization or
+    // normalization.
+    auto &keys = lease.state().candidates;
+    if (_execute_dense_search(query, query_meta, search_param, context,
+                              &keys) != 0) {
       LOG_ERROR("Failed to search");
-      context->reset();
       return core::IndexError_Runtime;
     }
-
-    auto &base_result = context->result();
-    std::vector<uint64_t> keys(base_result.size());
-    for (size_t i = 0; i < base_result.size(); ++i) {
-      keys[i] = base_result[i].key();
-    }
-
-    auto flat_search_param = std::make_shared<FlatQueryParam>();
-    flat_search_param->topk = search_param->topk;
-    flat_search_param->fetch_vector = search_param->fetch_vector;
-    flat_search_param->filter = search_param->filter;
-    flat_search_param->bf_pks =
-        std::make_shared<std::vector<uint64_t>>(std::move(keys));
-
     result->reverted_vector_list_.clear();
-    ret = reference_index->search(vector_data, flat_search_param, result);
-    context->reset();
+    ret = reference_index->_refine_dense_candidates(vector_data, search_param,
+                                                    keys, result);
   }
   return ret;
 }
@@ -768,32 +815,51 @@ int Index::_sparse_add(const VectorData &vector_data, const uint32_t doc_id,
 int Index::_dense_search(const VectorData &vector_data,
                          const BaseIndexQueryParam::Pointer &search_param,
                          SearchResult *result,
-                         core::IndexContext::Pointer &context) {
+                         core::IndexContext::Pointer &context,
+                         std::string *query_storage) {
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  int ret =
+      _prepare_dense_query(vector_data, query_storage, &query, &query_meta);
+  if (ret != 0) return ret;
+  ret = _execute_dense_search(query, query_meta, search_param, context);
+  if (ret != 0) return ret;
+  return _collect_dense_result(vector_data, query_meta, search_param, result,
+                               context);
+}
+
+int Index::_prepare_dense_query(const VectorData &vector_data,
+                                std::string *query_storage,
+                                const void **prepared_query,
+                                core::IndexQueryMeta *prepared_meta) {
   if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
-  auto vector = dense_vector.data;
-  std::string transformed_vector;
+  *prepared_query = dense_vector.data;
   // Check if need to transform feature
-  core::IndexQueryMeta new_meta = input_vector_meta_;
+  *prepared_meta = input_vector_meta_;
   if (reformer_ != nullptr) {
     if (reformer_->transform(dense_vector.data, input_vector_meta_,
-                             &transformed_vector, &new_meta) != 0) {
+                             query_storage, prepared_meta) != 0) {
       LOG_ERROR("Failed to transform vector");
       return core::IndexError_Runtime;
     }
-    // A streamer may replace an incompatible pooled context before searching.
-    // Keep the transformed query independent from that context so its data
-    // remains valid for the complete search call.
-    vector = transformed_vector.data();
+    *prepared_query = query_storage->data();
   }
+  return 0;
+}
+
+int Index::_execute_dense_search(
+    const void *vector, const core::IndexQueryMeta &new_meta,
+    const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context,
+    std::vector<uint64_t> *candidate_keys) {
+  if (candidate_keys) candidate_keys->clear();
   if (search_param->bf_pks != nullptr) {
-    // should we eliminate the copy of bf_pks?
-    if (streamer_->search_bf_by_p_keys_impl(
-            vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
-            new_meta, 1, context) != 0) {
+    if (streamer_->search_bf_by_p_keys_impl(vector, *search_param->bf_pks,
+                                            new_meta, context) != 0) {
       LOG_ERROR("Failed to search_bf_by_p_keys_impl vector");
       return core::IndexError_Runtime;
     }
@@ -802,12 +868,68 @@ int Index::_dense_search(const VectorData &vector_data,
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
+  } else if (candidate_keys) {
+    return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
+                                             context);
   } else {
     if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
   }
+
+  if (candidate_keys) {
+    const auto &documents = context->result();
+    candidate_keys->reserve(documents.size());
+    for (const auto &document : documents) {
+      candidate_keys->push_back(document.key());
+    }
+  }
+  return 0;
+}
+
+int Index::_refine_dense_candidates(
+    const VectorData &vector_data,
+    const BaseIndexQueryParam::Pointer &search_param,
+    const std::vector<uint64_t> &keys, SearchResult *result) {
+  if (!is_open_ || is_sparse_) {
+    LOG_ERROR("Reference index must be open and dense");
+    return core::IndexError_Runtime;
+  }
+  if (!is_trained_ && this->train() != 0) {
+    LOG_ERROR("Failed to train reference index");
+    return core::IndexError_Runtime;
+  }
+
+  SearchContextLease lease(param_.index_type, is_sparse_, acquire_context());
+  auto &context = lease.state().context;
+  if (!context) return core::IndexError_Runtime;
+  context->set_topk(search_param->topk);
+  context->set_fetch_vector(search_param->fetch_vector);
+  if (search_param->filter && search_param->filter->is_valid()) {
+    context->set_filter(std::move(*search_param->filter));
+  }
+  // The radius belongs to the coarse score space, not the refine metric.
+  context->reset_threshold();
+  _set_group_by_on_context(search_param, context);
+
+  // Transform the original query with the reference index's own reformer.
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  int ret = _prepare_dense_query(vector_data, &lease.state().query_storage,
+                                 &query, &query_meta);
+  if (ret != 0) return ret;
+  ret = streamer_->search_bf_by_p_keys_impl(query, keys, query_meta, context);
+  if (ret != 0) return ret;
+  return _collect_dense_result(vector_data, query_meta, search_param, result,
+                               context);
+}
+
+int Index::_collect_dense_result(
+    const VectorData &vector_data, const core::IndexQueryMeta &new_meta,
+    const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+    core::IndexContext::Pointer &context) {
+  const auto &dense_vector = std::get<DenseVector>(vector_data.vector);
 
   // Retrieve group_by results if applicable
   bool has_group_by =
@@ -820,7 +942,14 @@ int Index::_dense_search(const VectorData &vector_data,
     }
     result->group_doc_list_ = std::move(*group_result);
   } else {
-    result->doc_list_ = std::move(context->result());
+    // Transfer the final documents instead of copying a const result(). The
+    // context receives the caller's previous buffer for reuse on later calls.
+    auto *documents = context->mutable_result(0);
+    if (documents) {
+      result->doc_list_.swap(*documents);
+    } else {
+      result->doc_list_ = context->result();
+    }
   }
 
   if (metric_->support_normalize()) {

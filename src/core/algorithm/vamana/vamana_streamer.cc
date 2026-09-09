@@ -671,6 +671,20 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
   return 0;
 }
 
+int VamanaStreamer::search_candidates_impl(const void *query,
+                                           const IndexQueryMeta &qmeta,
+                                           std::vector<uint64_t> &keys,
+                                           Context::Pointer &context) const {
+  keys.clear();
+  auto *ctx = dynamic_cast<VamanaContext *>(context.get());
+  if (!ctx) return IndexError_Cast;
+  ctx->set_candidate_output(&keys);
+  AILEGO_DEFER([&]() { ctx->set_candidate_output(nullptr); });
+  const int ret = search_impl(query, qmeta, 1, context);
+  if (ret != 0) keys.clear();
+  return ret;
+}
+
 int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                 Context::Pointer &context) const {
   return search_impl(query, qmeta, 1, context);

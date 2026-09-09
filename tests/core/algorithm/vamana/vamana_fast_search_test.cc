@@ -102,12 +102,12 @@ class VamanaFastSearchTest : public testing::Test {
         });
   }
 
-  void Search(float value, uint32_t capacity) {
+  void Search(float value, uint32_t capacity, uint32_t topk = 0) {
     ASSERT_TRUE(context_);
     evaluated_.clear();
     context_->clear();
     context_->set_ef(capacity);
-    context_->set_topk(capacity);
+    context_->set_topk(topk ? topk : capacity);
     std::array<float, kDimension> query{};
     query[0] = value;
     context_->reset_query(query.data());
@@ -146,6 +146,34 @@ TEST_F(VamanaFastSearchTest, LocalOptimumReusesRowThenPoolFindsBetterPoint) {
   const std::vector<std::pair<uint64_t, float>> results = {
       {3, 1}, {1, 4}, {2, 9}, {0, 100}};
   EXPECT_EQ(results, Results());
+}
+
+TEST_F(VamanaFastSearchTest, CandidateOutputPreservesCutoffAndSearchTrace) {
+  CreateGraph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});
+  for (float query : {0.0f, 2.5f, 0.0f}) {
+    SCOPED_TRACE(query);
+    // 2.5 gives equal distances, including at a candidate cutoff.
+    for (uint32_t topk : {1U, 2U, 4U}) {
+      SCOPED_TRACE(topk);
+      Search(query, 4, topk);
+      const auto expected = Results();
+      const auto trace = evaluated_;
+      std::vector<uint64_t> keys;
+      context_->set_candidate_output(&keys);
+      Search(query, 4, topk);
+      EXPECT_TRUE(context_->result().empty());
+      ASSERT_EQ(expected.size(), keys.size());
+      for (size_t i = 0; i < keys.size(); ++i) {
+        EXPECT_EQ(expected[i].first, keys[i]);
+      }
+      EXPECT_EQ(trace, evaluated_);
+      // Unique distances export directly; ties use the original heap order.
+      EXPECT_EQ(query == 0.0f, context_->topk_heap().empty());
+      context_->set_candidate_output(nullptr);
+      Search(query, 4, topk);
+      EXPECT_EQ(expected, Results());
+    }
+  }
 }
 
 TEST_F(VamanaFastSearchTest, HundredStepCapRecomputesLandingRow) {

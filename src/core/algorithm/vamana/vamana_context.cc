@@ -197,6 +197,7 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
 }
 
 void VamanaContext::topk_to_result(uint32_t idx) {
+  if (pool_candidates_ready_) return;
   if (force_padding_topk_ && !topk_heap_.full() &&
       topk_heap_.size() < entity_->doc_cnt()) {
     this->fill_random_to_topk_full();
@@ -216,7 +217,9 @@ void VamanaContext::topk_to_result(uint32_t idx) {
       break;
     }
     node_id_t id = topk_heap_[i].first;
-    if (fetch_vector_) {
+    if (candidate_keys_) {
+      candidate_keys_->push_back(entity_->get_key(id));
+    } else if (fetch_vector_) {
       results_[idx].emplace_back(entity_->get_key(id), score, id,
                                  entity_->get_vector(id));
     } else {
