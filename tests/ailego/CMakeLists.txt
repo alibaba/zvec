@@ -17,6 +17,11 @@ endif()
 
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
+  # io_uring is only enabled on desktop Linux.  Do not create an empty test
+  # binary on Android: mobile CI intentionally rejects zero-test suites.
+  if(ANDROID AND CC_TARGET STREQUAL "iouring_loader_test")
+    continue()
+  endif()
   set(CC_TEST_LIBS zvec_ailego)
   if(CC_TARGET STREQUAL "cross_dso_buffer_pool_test")
     if(WIN32 OR IOS OR ANDROID)
