@@ -194,9 +194,14 @@ TEST(UniformUint8Metric, QueryBatchMatchesScalarAcrossKernelBoundaries) {
   }
 }
 
-TEST(UniformUint8Metric, QueryBatchConsumesSeparateExtraValues) {
-  constexpr size_t kVectorCount = 5;
-  constexpr size_t kDimension = 129;
+class UniformUint8SeparateExtraValuesTest
+    : public testing::TestWithParam<size_t> {};
+
+TEST_P(UniformUint8SeparateExtraValuesTest,
+       QueryBatchConsumesSeparateExtraValues) {
+  // Exercise multiple batches, look-ahead prefetches, and the single-vector tail.
+  constexpr size_t kVectorCount = 11;
+  const size_t kDimension = GetParam();
   std::vector<uint8_t> query_codes(kDimension);
   std::vector<std::vector<uint8_t>> record_codes(
       kVectorCount, std::vector<uint8_t>(kDimension));
@@ -245,23 +250,70 @@ TEST(UniformUint8Metric, QueryBatchConsumesSeparateExtraValues) {
   }
 }
 
+INSTANTIATE_TEST_SUITE_P(KernelLayouts, UniformUint8SeparateExtraValuesTest,
+                        testing::Values(size_t{128}, size_t{129}, size_t{960}));
+
 TEST(UniformUint8Metric, QueryPreprocessConvertsCanonicalLayout) {
-  constexpr size_t kDimension = MAX_DIMENSION;
-  const std::vector<uint8_t> query_codes(kDimension, uint8_t{255});
-  auto query = EncodeQuery(query_codes);
+  const size_t dimensions[] = {1, 63, 64, 65, 127, 128, 129, 960,
+                               MAX_DIMENSION};
+  for (size_t dimension : dimensions) {
+    auto metric = CreateMetric(dimension);
+    ASSERT_TRUE(metric);
+    const auto preprocess = metric->get_query_preprocess_func();
+    ASSERT_TRUE(preprocess);
 
-  auto metric = CreateMetric(kDimension);
-  ASSERT_TRUE(metric);
-  const auto preprocess = metric->get_query_preprocess_func();
-  ASSERT_TRUE(preprocess);
-
-  preprocess(query.data(), query.size());
-  const auto *raw_query = reinterpret_cast<const uint8_t *>(query.data());
-  for (size_t i = 0; i < kDimension; ++i) {
-    ASSERT_EQ(query_codes[i], raw_query[i]) << "dimension offset=" << i;
+    for (size_t pattern = 0; pattern < 4; ++pattern) {
+      SCOPED_TRACE(testing::Message() << "dimension=" << dimension
+                                     << ", pattern=" << pattern);
+      const uint8_t constant_codes[] = {0, 128, 255};
+      std::vector<uint8_t> query_codes(dimension);
+      int64_t expected_correction = 0;
+      for (size_t i = 0; i < dimension; ++i) {
+        const uint8_t code = pattern < 3
+                                 ? constant_codes[pattern]
+                                 : static_cast<uint8_t>((i * 131 + 17) & 0xff);
+        query_codes[i] = code;
+        expected_correction +=
+            static_cast<int64_t>(code) * (static_cast<int>(code) - 256);
+      }
+      auto query = EncodeQuery(query_codes);
+      preprocess(query.data(), query.size());
+      const auto *raw_query = reinterpret_cast<const uint8_t *>(query.data());
+      EXPECT_TRUE(std::equal(query_codes.begin(), query_codes.end(), raw_query));
+      EXPECT_EQ(expected_correction, ReadQueryCorrection(query, dimension));
+    }
   }
-  EXPECT_EQ(-static_cast<int64_t>(kDimension) * 255,
-            ReadQueryCorrection(query, kDimension));
+}
+
+TEST(UniformUint8Metric, QueryPreprocessPreservesOversizedFallback) {
+  // Cover truncated uint32 norms and corrections that no longer fit int32.
+  const size_t dimensions[] = {MAX_DIMENSION + 1, MAX_DIMENSION + 4096, 131073};
+  for (size_t dimension : dimensions) {
+    auto metric = CreateMetric(dimension);
+    ASSERT_TRUE(metric);
+    const auto preprocess = metric->get_query_preprocess_func();
+    ASSERT_TRUE(preprocess);
+
+    for (const uint8_t code : {uint8_t{128}, uint8_t{255}}) {
+      SCOPED_TRACE(testing::Message() << "dimension=" << dimension
+                                     << ", code=" << static_cast<int>(code));
+      const std::vector<uint8_t> query_codes(dimension, code);
+      auto query = EncodeQuery(query_codes);
+      const uint32_t original_tail = ReadTail(query, dimension);
+      const int64_t correction =
+          static_cast<int64_t>(dimension) * code * (static_cast<int>(code) - 256);
+
+      preprocess(query.data(), query.size());
+      const auto *raw_query = reinterpret_cast<const uint8_t *>(query.data());
+      EXPECT_TRUE(std::equal(query_codes.begin(), query_codes.end(), raw_query));
+      if (correction < (std::numeric_limits<int32_t>::min)() ||
+          correction > (std::numeric_limits<int32_t>::max)()) {
+        EXPECT_EQ(original_tail, ReadTail(query, dimension));
+      } else {
+        EXPECT_EQ(correction, ReadQueryCorrection(query, dimension));
+      }
+    }
+  }
 }
 
 TEST(UniformUint8Metric, TurboBatchCallWritesEveryDistanceWhenAvailable) {

@@ -29,7 +29,7 @@
 //
 // Batch kernel design (hot path for graph search):
 //   - four records per block with independent accumulators
-//   - software prefetch of future records, including the metadata tail
+//   - software prefetch of future vector bodies; norms come from extra_values
 //   - SIMD horizontal reduction and final score calculation for four records
 
 #include "avx512_vnni/uniform_uint8/squared_euclidean.h"
@@ -242,6 +242,54 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i accumulator0,
                        _mm256_extracti128_si256(totals, 1));
 }
 
+// SIFT hot path for split contiguous storage. The query's two cache lines stay
+// resident across the whole batch call, while four candidate streams are
+// loaded independently. Vamana already prefetched both candidate cache lines.
+static ailego_force_inline void uniform_sq_l2_uint8_batch4_128(
+    const void *const *vectors, __m512i query0, __m512i query1,
+    int32_t correction, const void *const *extra_values, float *distances) {
+  const auto *vector0 = reinterpret_cast<const __m512i *>(vectors[0]);
+  const auto *vector1 = reinterpret_cast<const __m512i *>(vectors[1]);
+  const auto *vector2 = reinterpret_cast<const __m512i *>(vectors[2]);
+  const auto *vector3 = reinterpret_cast<const __m512i *>(vectors[3]);
+
+  const __m512i record00 = _mm512_loadu_si512(vector0);
+  const __m512i record10 = _mm512_loadu_si512(vector1);
+  const __m512i record20 = _mm512_loadu_si512(vector2);
+  const __m512i record30 = _mm512_loadu_si512(vector3);
+
+  __m512i accumulator0 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record00);
+  __m512i accumulator1 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record10);
+  __m512i accumulator2 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record20);
+  __m512i accumulator3 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record30);
+
+  const __m512i record01 = _mm512_loadu_si512(vector0 + 1);
+  const __m512i record11 = _mm512_loadu_si512(vector1 + 1);
+  const __m512i record21 = _mm512_loadu_si512(vector2 + 1);
+  const __m512i record31 = _mm512_loadu_si512(vector3 + 1);
+
+  accumulator0 = _mm512_dpbusd_epi32(accumulator0, query1, record01);
+  accumulator1 = _mm512_dpbusd_epi32(accumulator1, query1, record11);
+  accumulator2 = _mm512_dpbusd_epi32(accumulator2, query1, record21);
+  accumulator3 = _mm512_dpbusd_epi32(accumulator3, query1, record31);
+
+  const __m128i dot_products = reduce_add_4x16_epi32(
+      accumulator0, accumulator1, accumulator2, accumulator3);
+  alignas(16) const uint32_t tails[4] = {
+      load_extra_value(extra_values[0]), load_extra_value(extra_values[1]),
+      load_extra_value(extra_values[2]), load_extra_value(extra_values[3])};
+  const __m128i sum_squared =
+      _mm_load_si128(reinterpret_cast<const __m128i *>(tails));
+  const __m128i squared_distances =
+      _mm_add_epi32(_mm_sub_epi32(sum_squared, _mm_slli_epi32(dot_products, 1)),
+                    _mm_set1_epi32(correction));
+  _mm_storeu_ps(distances, uint32_to_float(squared_distances));
+}
+
 static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     const void *const *vectors, const uint8_t *raw_query, size_t orig_dim,
     int32_t correction, const void *const *extra_values,
@@ -280,16 +328,6 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     accumulator1 = _mm512_dpbusd_epi32(accumulator1, query, record1);
     accumulator2 = _mm512_dpbusd_epi32(accumulator2, query, record2);
     accumulator3 = _mm512_dpbusd_epi32(accumulator3, query, record3);
-  }
-
-  // The main loop only covers full cache lines, so prefetch the metadata tail
-  // of each future record explicitly.
-  for (size_t i = 0; i < 4; ++i) {
-    if (prefetch_vectors[i]) {
-      _mm_prefetch(
-          reinterpret_cast<const char *>(prefetch_vectors[i]) + orig_dim,
-          _MM_HINT_T0);
-    }
   }
 
   __m128i dot_products = reduce_add_4x16_epi32(accumulator0, accumulator1,
@@ -378,8 +416,24 @@ static void uniform_squared_euclidean_uint8_batch_distance_impl(
   const int32_t correction = query_correction(query, orig_dim);
 
   constexpr size_t kBatchSize = 4;
-  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
   size_t i = 0;
+
+  if (orig_dim == 128) {
+    const auto *query_vectors = reinterpret_cast<const __m512i *>(raw_query);
+    const __m512i query0 = _mm512_loadu_si512(query_vectors);
+    const __m512i query1 = _mm512_loadu_si512(query_vectors + 1);
+    for (; i + kBatchSize <= n; i += kBatchSize) {
+      uniform_sq_l2_uint8_batch4_128(vectors + i, query0, query1, correction,
+                                     extra_values + i, distances + i);
+    }
+    for (; i < n; ++i) {
+      uniform_sq_l2_uint8_single(vectors[i], raw_query, orig_dim, correction,
+                                 extra_values[i], distances + i);
+    }
+    return;
+  }
+
+  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
   const void *prefetch_vectors[kBatchSize];
   for (; i + kBatchSize <= n; i += kBatchSize) {
     for (size_t j = 0; j < kBatchSize; ++j) {
@@ -407,6 +461,9 @@ static void uniform_squared_euclidean_uint8_batch_distance_impl(
 void uniform_squared_euclidean_uint8_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const *extra_values) {
+  if (n == 0) {
+    return;
+  }
   ailego_assert_with(extra_values != nullptr,
                      "UniformUint8 batch distance requires extra values");
   uniform_squared_euclidean_uint8_batch_distance_impl(vectors, query, n, dim,
@@ -422,48 +479,46 @@ void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {
   auto *raw_query = reinterpret_cast<uint8_t *>(query);
   // Match the existing record-quantizer contract: this converts one private
   // canonical query copy exactly once before the query batch kernel uses it.
-  uint64_t sum = 0;
   uint64_t sum_squared = 0;
+  if (orig_dim <= kMaxIdentityDimension) {
+    // Quantization already computed the exact unsigned norm. The tail may be
+    // unaligned, and valid norms can exceed INT32_MAX.
+    uint32_t stored_sum_squared = 0;
+    std::memcpy(&stored_sum_squared, raw_query + orig_dim,
+                sizeof(stored_sum_squared));
+    sum_squared = stored_sum_squared;
+  } else {
+    // Oversized direct calls may carry a truncated uint32 norm. Recompute it
+    // before converting the body, preserving the existing fallback behavior.
+    for (size_t i = 0; i < orig_dim; ++i) {
+      const uint64_t value = raw_query[i] ^ uint8_t { 0x80 };
+      sum_squared += value * value;
+    }
+  }
+
+  uint64_t sum = 0;
   size_t d = 0;
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
   const __m512i sign_bit = _mm512_set1_epi8(static_cast<char>(0x80));
   const __m512i zero = _mm512_setzero_si512();
   __m512i sums = _mm512_setzero_si512();
-  __m512i squared_sums = _mm512_setzero_si512();
-  size_t iterations_since_flush = 0;
-  constexpr size_t kSquaredSumFlushIterations = 4096;
   for (; d + 64 <= orig_dim; d += 64) {
     const __m512i stored = _mm512_loadu_si512(raw_query + d);
     const __m512i values = _mm512_xor_si512(stored, sign_bit);
     _mm512_storeu_si512(raw_query + d, values);
     sums = _mm512_add_epi64(sums, _mm512_sad_epu8(values, zero));
-    const __m512i low_values =
-        _mm512_cvtepu8_epi16(_mm512_castsi512_si256(values));
-    const __m512i high_values =
-        _mm512_cvtepu8_epi16(_mm512_extracti64x4_epi64(values, 1));
-    squared_sums = _mm512_dpwssd_epi32(squared_sums, low_values, low_values);
-    squared_sums = _mm512_dpwssd_epi32(squared_sums, high_values, high_values);
-    if (++iterations_since_flush == kSquaredSumFlushIterations) {
-      sum_squared +=
-          static_cast<uint64_t>(reduce_add_epi32_to_int64(squared_sums));
-      squared_sums = _mm512_setzero_si512();
-      iterations_since_flush = 0;
-    }
   }
   alignas(64) uint64_t lanes[8];
   _mm512_store_si512(reinterpret_cast<__m512i *>(lanes), sums);
   for (uint64_t lane : lanes) {
     sum += lane;
   }
-  sum_squared += static_cast<uint64_t>(reduce_add_epi32_to_int64(squared_sums));
 #endif
 
   for (; d < orig_dim; ++d) {
     raw_query[d] ^= uint8_t{0x80};
-    const uint64_t value = raw_query[d];
-    sum += value;
-    sum_squared += value * value;
+    sum += raw_query[d];
   }
 
   const int64_t correction =

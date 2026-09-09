@@ -27,13 +27,13 @@
 
 #include <atomic>
 #include <mutex>
-#include <ailego/io/libaio_loader.h>
 #include <zvec/ailego/io/io_backend.h>
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 #include <unistd.h>                 // ::syscall(), ::close() — POSIX only
 #include <cstring>                  // std::memset
 #include <ailego/io/iouring_def.h>  // io_uring_params, __NR_io_uring_setup
+#include <ailego/io/libaio_loader.h>
 #endif
 
 namespace zvec {
@@ -54,8 +54,9 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   return "unknown";
 }
 
-// Returns a human-readable description for the given backend type. On Linux,
-// the kPread description includes guidance for enabling io_uring or libaio.
+// Returns a human-readable description for the given backend type. On Linux
+// (excluding Android), kPread includes guidance for enabling io_uring or
+// libaio.
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kIoUring:
@@ -64,7 +65,7 @@ inline const char *IOBackendDescription(IOBackendType type) {
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
     case IOBackendType::kPread:
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
       return "No async I/O backend available: io_uring is unavailable and "
              "libaio could not be loaded. Enable io_uring or install libaio "
              "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu "
@@ -92,14 +93,15 @@ class IOBackend {
     return instance;
   }
 
-  // Returns the active backend, probing on the first call. Linux prefers
-  // io_uring, then libaio, then pread; macOS ARM64 uses pread.
+  // Returns the active backend, probing on the first call. Linux (excluding
+  // Android) prefers io_uring, then libaio, then pread. Android and Apple
+  // platforms always use pread without probing asynchronous backends.
   IOBackendType available() {
     std::call_once(probe_once_, [this]() {
       IOBackendType selected = IOBackendType::kPread;
 #if defined(_WIN32) || defined(_WIN64)
       selected = IOBackendType::kWindowsOverlapped;
-#elif defined(__linux) || defined(__linux__)
+#elif (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
       if (io_uring_supported()) {
         selected = IOBackendType::kIoUring;
       } else if (LibAioLoader::Instance().load() &&
@@ -142,7 +144,7 @@ class IOBackend {
  private:
   IOBackend() = default;
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
   // Probe io_uring availability with a minimal ring setup using only raw
   // syscalls — no dependency on liburing.  A successful setup alone is NOT
   // sufficient: io_uring_setup() exists since Linux 5.1, but the read path

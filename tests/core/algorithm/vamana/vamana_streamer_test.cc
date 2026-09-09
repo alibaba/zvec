@@ -14,6 +14,7 @@
 #include "vamana_streamer.h"
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "vamana_context.h"
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -29,6 +30,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/interface/constants.h>
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -69,6 +71,271 @@ class VamanaStreamerTest : public testing::Test {
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
 };
+
+TEST(VamanaQueryPrefetchTest, ResolvesSharedDefaultsFromStoredVectorSchema) {
+  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+
+  // SIFT: uniform_uint4 stores 64 B; uniform_uint7/uint8 store 128 B;
+  // int8_record stores 128 B plus its 20-B record metadata.
+  EXPECT_EQ(std::make_pair(64U, 1U), VamanaContext::resolve_query_prefetch(
+                                         64, 64, default_offset,
+                                         default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         128, 64, default_offset,
+                                         default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         148, 64, default_offset,
+                                         default_lines));
+
+  // GIST: the corresponding stored graph bodies are 480 B, 960 B, and
+  // 980 B. A separate fp16 refine payload is intentionally excluded.
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         480, 64, default_offset,
+                                         default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         960, 64, default_offset,
+                                         default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         980, 80, default_offset,
+                                         default_lines));
+}
+
+TEST(VamanaQueryPrefetchTest, ManualFieldsOverrideDefaultsIndependently) {
+  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+
+  EXPECT_EQ(std::make_pair(48U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, 48, default_lines));
+  EXPECT_EQ(std::make_pair(64U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, default_offset, 1));
+  EXPECT_EQ(std::make_pair(64U, 4U),
+            VamanaContext::resolve_query_prefetch(1920, 80, 64, 4));
+  EXPECT_EQ(std::make_pair(0U, 2U),
+            VamanaContext::resolve_query_prefetch(980, 64, 0, 0));
+  EXPECT_EQ(std::make_pair(0U, 0U), VamanaContext::resolve_query_prefetch(
+                                         0, 64, default_offset,
+                                         default_lines));
+}
+
+class VamanaPrefetchContextTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    // A 960-B graph body with 64 neighbors has default query PO/PL = 48/2.
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, 240);
+    metric_ = IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_TRUE(metric_);
+    ASSERT_EQ(0, metric_->init(meta, ailego::Params()));
+    entity_ = CreateEntity(960, 64);
+    context_ =
+        std::make_unique<VamanaContext>(meta.dimension(), metric_, entity_);
+    ASSERT_EQ(0, context_->init(VamanaContext::kStreamerContext));
+  }
+
+  VamanaEntity::Pointer CreateEntity(size_t vector_size, uint32_t max_degree) {
+    auto entity = std::make_shared<VamanaContiguousStreamerEntity>(stats_);
+    entity->set_vector_size(vector_size);
+    entity->set_max_degree(max_degree);
+    return entity;
+  }
+
+  void ExpectPrefetch(uint32_t offset, uint32_t lines) const {
+    EXPECT_EQ(offset, context_->po());
+    EXPECT_EQ(lines, context_->pl());
+  }
+
+  IndexStreamer::Stats stats_;
+  IndexMetric::Pointer metric_;
+  VamanaEntity::Pointer entity_;
+  VamanaContext::Pointer context_;
+};
+
+TEST_F(VamanaPrefetchContextTest, UnchangedRequestsReuseResolvedValues) {
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  params.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  // Matching the initial requested values must still resolve a fresh context.
+  ASSERT_EQ(0, context_->update(params));
+  ExpectPrefetch(48, 2);
+
+  // Change only the fixture's metadata, without publishing an entity refresh.
+  // An unnecessary resolve would now produce 96/1 instead of the cached 48/2.
+  // This observes the shortcut without adding counters to production code.
+  entity_->set_vector_size(64);
+  entity_->set_max_degree(96);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_->update(params));
+    ExpectPrefetch(48, 2);
+  }
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(48, 2);
+  ailego::Params ef;
+  ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
+  ASSERT_EQ(0, context_->update(ef));
+  EXPECT_EQ(123U, context_->ef());
+  EXPECT_EQ(123U, context_->topk_heap().limit());
+  ExpectPrefetch(48, 2);
+
+  // A notified entity change must resolve even when requests are unchanged.
+  ASSERT_EQ(
+      0, context_->update_context(VamanaContext::kStreamerContext,
+                                  IndexMeta(IndexMeta::DataType::DT_FP32, 16),
+                                  metric_, entity_, 1));
+  ExpectPrefetch(96, 1);
+}
+
+TEST_F(VamanaPrefetchContextTest, UnchangedSettersKeepResolvedValues) {
+  context_->prepare_query_prefetch();
+  entity_->set_vector_size(64);
+  entity_->set_max_degree(96);
+  context_->set_po(core_interface::kDefaultPrefetchOffset);
+  context_->set_pl(core_interface::kDefaultPrefetchLines);
+  // Same requests must neither overwrite effective values nor invalidate them.
+  ExpectPrefetch(48, 2);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, DirtyValuesResolveEvenForUnchangedRequests) {
+  context_->prepare_query_prefetch();
+  context_->set_pl(4);
+  // The setter has already updated requested PL; update still needs to resolve
+  // the dependent automatic PO because the cached pair is no longer ready.
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(params));
+  ExpectPrefetch(24, 4);
+}
+
+TEST_F(VamanaPrefetchContextTest,
+       ManualOffsetEqualToResolvedAutoIsANewRequest) {
+  context_->prepare_query_prefetch();
+  ailego::Params offset;
+  offset.set(PARAM_VAMANA_STREAMER_PO, 48U);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(48, 2);
+
+  ailego::Params lines;
+  lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(48, 4);  // Manual PO stays 48 rather than becoming auto PO=24.
+  offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(24, 4);
+}
+
+TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveAutomaticOffset) {
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(48, 2);
+
+  ailego::Params lines;
+  lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(24, 4);
+
+  ailego::Params ef;
+  ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
+  ASSERT_EQ(0, context_->update(ef));
+  EXPECT_EQ(123U, context_->ef());
+  ExpectPrefetch(24, 4);
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(24, 4);
+
+  lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(48, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveManualFields) {
+  ailego::Params offset;
+  offset.set(PARAM_VAMANA_STREAMER_PO, 12U);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(12, 2);
+
+  ailego::Params lines;
+  lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(12, 4);
+
+  offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(24, 4);
+  lines.set(PARAM_VAMANA_STREAMER_PL, 1U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(64, 1);
+
+  offset.set(PARAM_VAMANA_STREAMER_PO, 0U);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(0, 1);
+  lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(0, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, ResolvesOnlyWhenPreparingAQuery) {
+  // Streamer initialization is shared with add_node and two-pass construction.
+  ExpectPrefetch(8, 0);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+  context_->clear();
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+
+  VamanaContext search_context(240, metric_, CreateEntity(960, 64));
+  ASSERT_EQ(0, search_context.init(VamanaContext::kSearcherContext));
+  EXPECT_EQ(48U, search_context.po());
+  EXPECT_EQ(2U, search_context.pl());
+}
+
+TEST_F(VamanaPrefetchContextTest, SettersInvalidateResolvedValues) {
+  context_->prepare_query_prefetch();
+  context_->set_pl(4);
+  EXPECT_EQ(4U, context_->pl());
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(24, 4);
+
+  context_->set_po(12);
+  EXPECT_EQ(12U, context_->po());
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(12, 4);
+
+  context_->set_po(core_interface::kDefaultPrefetchOffset);
+  context_->set_pl(core_interface::kDefaultPrefetchLines);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, EntityRefreshResolvesOriginalRequests) {
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+  ASSERT_EQ(0, context_->update_context(
+                   VamanaContext::kStreamerContext,
+                   IndexMeta(IndexMeta::DataType::DT_FP32, 16), metric_,
+                   CreateEntity(64, 96), 1));
+  ExpectPrefetch(96, 1);
+
+  // Preserve explicit requests too, not their schema-clamped effective values.
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_PO, 128U);
+  params.set(PARAM_VAMANA_STREAMER_PL, 16U);
+  ASSERT_EQ(0, context_->update(params));
+  ExpectPrefetch(96, 1);
+  ASSERT_EQ(0, context_->update_context(
+                   VamanaContext::kStreamerContext,
+                   IndexMeta(IndexMeta::DataType::DT_FP32, 1024), metric_,
+                   CreateEntity(4096, 128), 2));
+  ExpectPrefetch(128, 16);
+}
+
+TEST_F(VamanaPrefetchContextTest, EntityRefreshKeepsBuildDefaultsUnresolved) {
+  ASSERT_EQ(0, context_->update_context(
+                   VamanaContext::kStreamerContext,
+                   IndexMeta(IndexMeta::DataType::DT_FP32, 16), metric_,
+                   CreateEntity(64, 96), 1));
+  ExpectPrefetch(8, 0);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(96, 1);
+}
 
 std::string VamanaStreamerTest::dir_("vamana_streamer_test_dir/");
 shared_ptr<IndexMeta> VamanaStreamerTest::index_meta_ptr_;
@@ -521,6 +788,10 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
     ASSERT_EQ(0, builder->open(storage));
     auto context = builder->create_context();
     ASSERT_TRUE(context);
+    auto *build_context = dynamic_cast<VamanaContext *>(context.get());
+    ASSERT_NE(nullptr, build_context);
+    EXPECT_EQ(8U, build_context->po());
+    EXPECT_EQ(0U, build_context->pl());
     IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
     for (size_t i = 0; i < kCount; ++i) {
       const auto record = EncodeUniformUint8Record(kOriginalDimension,
@@ -528,6 +799,8 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
       ASSERT_EQ(0, builder->add_impl(kKeyBase + i, record.data(), query_meta,
                                      context));
     }
+    EXPECT_EQ(8U, build_context->po());
+    EXPECT_EQ(0U, build_context->pl());
     ASSERT_EQ(0, builder->flush(0));
     ASSERT_EQ(0, builder->close());
   }
@@ -546,6 +819,11 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
     graph_context->set_topk(1);
     ASSERT_EQ(0,
               searcher->search_impl(query.data(), query_meta, graph_context));
+    auto *query_context = dynamic_cast<VamanaContext *>(graph_context.get());
+    ASSERT_NE(nullptr, query_context);
+    // No update() call: first graph search must still resolve query defaults.
+    EXPECT_EQ(32U, query_context->po());
+    EXPECT_EQ(2U, query_context->pl());
     ASSERT_EQ(1U, graph_context->result().size());
     EXPECT_EQ(expected_key, graph_context->result()[0].key());
     EXPECT_FLOAT_EQ(0.0f, graph_context->result()[0].score());
@@ -559,6 +837,11 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
         [expected_key](uint64_t key) { return key != expected_key; });
     ASSERT_EQ(
         0, searcher->search_impl(query.data(), query_meta, filtered_context));
+    auto *filtered_query_context =
+        dynamic_cast<VamanaContext *>(filtered_context.get());
+    ASSERT_NE(nullptr, filtered_query_context);
+    EXPECT_EQ(32U, filtered_query_context->po());
+    EXPECT_EQ(2U, filtered_query_context->pl());
     ASSERT_EQ(1U, filtered_context->result().size());
     EXPECT_EQ(expected_key, filtered_context->result()[0].key());
     EXPECT_FLOAT_EQ(0.0f, filtered_context->result()[0].score());

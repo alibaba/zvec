@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace core {
@@ -28,9 +29,8 @@ namespace core {
 //
 // Derived from pyglass' BlockHeap (https://github.com/zilliztech/pyglass,
 // MIT License; see the NOTICE file and linear_pool.h for the full attribution).
-// The graph prefetch is intentionally omitted: the call-site is expected to
-// issue the neighbor-array prefetch itself (Vamana's greedy_search already
-// does so).
+// Graph prefetch remains a call-site policy. Callers that need to overlap the
+// current and next neighbor-row fetches can explicitly use pop_with_next().
 //
 // AVX2 requirement
 // ----------------
@@ -72,7 +72,25 @@ struct BlockHeap {
 
   // Pop the closest unpopped candidate id (without the check bit).
   // Caller must ensure has_next() is true.
-  uint32_t pop();
+  // Keep cursor advancement visible to the search loop without requiring LTO.
+  ailego_force_inline uint32_t pop() {
+    size_t ret_idx = cur_;
+    set_checked(data_[cur_].first);
+    while (cur_ < data_.size() && is_checked(data_[cur_].first)) {
+      ++cur_;
+    }
+    return get_id(data_[ret_idx].first);
+  }
+
+  // Pop the closest unpopped candidate and expose the next unexpanded id.
+  // `next_id` is UINT32_MAX when no candidate remains.
+  ailego_force_inline uint32_t pop_with_next(uint32_t *next_id) {
+    const uint32_t id = pop();
+    if (next_id != nullptr) {
+      *next_id = cur_ < data_.size() ? get_id(data_[cur_].first) : UINT32_MAX;
+    }
+    return id;
+  }
 
   // Retained candidate count.
   int32_t size() const {
