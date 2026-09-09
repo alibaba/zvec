@@ -65,12 +65,32 @@ int ReadPersistedHnswIndexMeta(const std::string &file_path,
 const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
                                       const HNSWIndexParam &hnsw_param) {
   // Turbo quantizers currently consume FP32 inputs and own dense, in-index
-  // vector storage. Keep the legacy pipeline for layouts outside that
-  // contract, including sparse and external-vector HNSW.
-  if (hnsw_param.is_sparse || hnsw_param.use_external_vector ||
-      hnsw_param.data_type != DataType::DT_FP32 ||
+  // vector storage. External-vector HNSW is also supported: its source stays
+  // in the FP32 input layout and the streamer quantizes source vectors only
+  // for distance calculation.
+  if (hnsw_param.is_sparse || hnsw_param.data_type != DataType::DT_FP32 ||
       hnsw_param.metric_type == MetricType::kMIPSL2sq) {
     return nullptr;
+  }
+
+  // An original-vector provider is a separate build space. Turbo can keep
+  // that path in FP32 as long as the provider exposes plain FP32 vectors and
+  // uses a metric supported by Fp32Quantizer. Other provider layouts retain
+  // the legacy metric pipeline.
+  if (hnsw_param.provider) {
+    const auto &provider_meta = hnsw_param.provider_meta;
+    const auto &provider_metric = provider_meta.metric_name();
+    const bool supported_provider_metric =
+        provider_metric.empty() || provider_metric == "SquaredEuclidean" ||
+        provider_metric == "Cosine" || provider_metric == "InnerProduct";
+    if (provider_meta.data_type() != core::IndexMeta::DT_FP32 ||
+        provider_meta.dimension() !=
+            static_cast<uint32_t>(hnsw_param.dimension) ||
+        provider_meta.element_size() !=
+            static_cast<size_t>(hnsw_param.dimension) * sizeof(float) ||
+        !supported_provider_metric) {
+      return nullptr;
+    }
   }
 
   // Rotation is still implemented by the legacy integer converters.
@@ -214,6 +234,10 @@ int HNSWIndex::add_with_source(const VectorData &vector_data,
   }
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
     ctx->set_vector_source(&src);
+    if (std::holds_alternative<DenseVector>(vector_data.vector)) {
+      ctx->set_external_build_query(
+          std::get<DenseVector>(vector_data.vector).data);
+    }
   }
   return Index::add(vector_data, doc_id);
 }

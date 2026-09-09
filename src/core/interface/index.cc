@@ -879,7 +879,9 @@ int Index::_dense_search(const VectorData &vector_data,
     }
   }
   if (turbo_quantizer_) {
-    if (context->fetch_vector()) {
+    // External HNSW vectors are already in the caller's input layout. They
+    // are not stored quantizer codes and therefore must not be dequantized.
+    if (context->fetch_vector() && !param_.use_external_vector) {
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;

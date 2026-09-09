@@ -211,6 +211,7 @@ int HnswStreamer::cleanup(void) {
   provider_.reset();
   provider_meta_.clear();
   provider_metric_.reset();
+  provider_quantizer_.reset();
   if (entity_) {
     entity_->cleanup();
   }
@@ -345,27 +346,54 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
 
   if (quantizer_) {
     auto quantizer = quantizer_;
-    add_distance_ = [quantizer](const void *lhs, const void *rhs, size_t,
-                                float *out) {
-      *out = quantizer->calc_distance_dp_dp(lhs, rhs);
-    };
-    add_batch_distance_ = [quantizer](const void **vectors, const void *query,
-                                      size_t count, size_t, float *out,
-                                      const void **) {
-      for (size_t i = 0; i < count; ++i) {
-        out[i] = quantizer->calc_distance_dp_dp(vectors[i], query);
-      }
-    };
-    search_distance_ = [quantizer](const void *vector, const void *query,
-                                   size_t, float *out) {
-      *out = quantizer->calc_distance_dp_query(vector, query);
-    };
-    search_batch_distance_ = [quantizer](const void **vectors,
-                                         const void *query, size_t count,
-                                         size_t, float *out, const void **) {
-      quantizer->calc_distance_dp_query_batch(vectors, static_cast<int>(count),
-                                              query, out);
-    };
+    if (use_external_vector_) {
+      // External sources expose vectors in the quantizer input layout while
+      // add/search queries have already been quantized by the interface.
+      // Graph construction also performs node-to-node comparisons, so its
+      // distance path keeps both sides in the input layout.
+      add_distance_ = [quantizer](const void *lhs, const void *rhs, size_t,
+                                  float *out) {
+        *out = quantizer->calc_distance_input_input(lhs, rhs);
+      };
+      add_batch_distance_ = [quantizer](const void **vectors, const void *query,
+                                        size_t count, size_t, float *out,
+                                        const void **) {
+        quantizer->calc_distance_input_input_batch(
+            vectors, static_cast<int>(count), query, out);
+      };
+      search_distance_ = [quantizer](const void *vector, const void *query,
+                                     size_t, float *out) {
+        *out = quantizer->calc_distance_input_query(vector, query);
+      };
+      search_batch_distance_ = [quantizer](const void **vectors,
+                                           const void *query, size_t count,
+                                           size_t, float *out, const void **) {
+        quantizer->calc_distance_input_query_batch(
+            vectors, static_cast<int>(count), query, out);
+      };
+    } else {
+      add_distance_ = [quantizer](const void *lhs, const void *rhs, size_t,
+                                  float *out) {
+        *out = quantizer->calc_distance_dp_dp(lhs, rhs);
+      };
+      add_batch_distance_ = [quantizer](const void **vectors, const void *query,
+                                        size_t count, size_t, float *out,
+                                        const void **) {
+        for (size_t i = 0; i < count; ++i) {
+          out[i] = quantizer->calc_distance_dp_dp(vectors[i], query);
+        }
+      };
+      search_distance_ = [quantizer](const void *vector, const void *query,
+                                     size_t, float *out) {
+        *out = quantizer->calc_distance_dp_query(vector, query);
+      };
+      search_batch_distance_ = [quantizer](const void **vectors,
+                                           const void *query, size_t count,
+                                           size_t, float *out, const void **) {
+        quantizer->calc_distance_dp_query_batch(
+            vectors, static_cast<int>(count), query, out);
+      };
+    }
   } else {
     metric_ = IndexFactory::CreateMetric(meta_.metric_name());
     if (!metric_) {
@@ -415,45 +443,92 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     }
   }
 
-  //! Create a dedicated build metric when the provider meta differs from
-  //! the index meta in layout or metric, so build distances run in the
-  //! original vector space
+  //! Create a dedicated build distance path for original-vector providers.
+  //! Plain FP32 providers use Turbo in their original vector space. Check
+  //! the layout here as core callers can bypass the interface's selection;
+  //! other providers keep their dtype-compatible legacy build metric.
   provider_metric_.reset();
+  provider_quantizer_.reset();
   if (provider_) {
-    const bool layout_differs =
-        provider_meta_.data_type() != meta_.data_type() ||
-        provider_meta_.dimension() != meta_.dimension() ||
-        provider_meta_.element_size() != meta_.element_size();
     const bool use_index_metric = provider_meta_.metric_name().empty();
-    if (layout_differs || !use_index_metric) {
-      const std::string &metric_name =
-          use_index_metric ? meta_.metric_name() : provider_meta_.metric_name();
-      const ailego::Params &metric_params =
-          use_index_metric ? meta_.metric_params()
-                           : provider_meta_.metric_params();
-      provider_metric_ = IndexFactory::CreateMetric(metric_name);
-      if (!provider_metric_) {
-        LOG_ERROR("Failed to create provider metric %s", metric_name.c_str());
+    const std::string &provider_metric_name =
+        use_index_metric ? meta_.metric_name() : provider_meta_.metric_name();
+    const bool use_turbo_provider =
+        quantizer_ && provider_meta_.data_type() == IndexMeta::DT_FP32 &&
+        provider_meta_.unit_size() == sizeof(float) &&
+        provider_meta_.extra_meta_size() == 0 &&
+        provider_meta_.element_size() ==
+            static_cast<size_t>(provider_meta_.dimension()) * sizeof(float) &&
+        (provider_metric_name == "SquaredEuclidean" ||
+         provider_metric_name == "Cosine" ||
+         provider_metric_name == "InnerProduct");
+    if (use_turbo_provider) {
+      IndexMeta provider_quantizer_meta = provider_meta_;
+      if (use_index_metric) {
+        provider_quantizer_meta.set_metric(meta_.metric_name(), 0,
+                                           meta_.metric_params());
+      }
+      provider_quantizer_ = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      if (!provider_quantizer_) {
+        LOG_ERROR("Failed to create provider Fp32Quantizer");
         return IndexError_NoExist;
       }
-      ret = provider_metric_->init(provider_meta_, metric_params);
+      ret =
+          provider_quantizer_->init(provider_quantizer_meta, ailego::Params{});
       if (ret != 0) {
-        LOG_ERROR("Failed to init provider metric, ret=%d", ret);
+        LOG_ERROR("Failed to init provider Fp32Quantizer, ret=%d", ret);
         return ret;
       }
-      if (!provider_metric_->distance() ||
-          !provider_metric_->batch_distance()) {
-        LOG_ERROR("Invalid provider metric distance");
-        return IndexError_InvalidArgument;
+      auto provider_quantizer = provider_quantizer_;
+      add_distance_ = [provider_quantizer](const void *lhs, const void *rhs,
+                                           size_t, float *out) {
+        *out = provider_quantizer->calc_distance_input_input(lhs, rhs);
+      };
+      add_batch_distance_ = [provider_quantizer](const void **vectors,
+                                                 const void *query,
+                                                 size_t count, size_t,
+                                                 float *out, const void **) {
+        provider_quantizer->calc_distance_input_input_batch(
+            vectors, static_cast<int>(count), query, out);
+      };
+    } else {
+      const bool layout_differs =
+          provider_meta_.data_type() != meta_.data_type() ||
+          provider_meta_.dimension() != meta_.dimension() ||
+          provider_meta_.element_size() != meta_.element_size();
+      // Turbo search leaves metric_ empty. Always create a separate metric
+      // when this provider cannot use Turbo, even if its layout matches.
+      if (quantizer_ || layout_differs || !use_index_metric) {
+        const std::string &metric_name = use_index_metric
+                                             ? meta_.metric_name()
+                                             : provider_meta_.metric_name();
+        const ailego::Params &metric_params =
+            use_index_metric ? meta_.metric_params()
+                             : provider_meta_.metric_params();
+        provider_metric_ = IndexFactory::CreateMetric(metric_name);
+        if (!provider_metric_) {
+          LOG_ERROR("Failed to create provider metric %s", metric_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = provider_metric_->init(provider_meta_, metric_params);
+        if (ret != 0) {
+          LOG_ERROR("Failed to init provider metric, ret=%d", ret);
+          return ret;
+        }
+        if (!provider_metric_->distance() ||
+            !provider_metric_->batch_distance()) {
+          LOG_ERROR("Invalid provider metric distance");
+          return IndexError_InvalidArgument;
+        }
+        add_distance_ = provider_metric_->distance();
+        add_batch_distance_ = provider_metric_->batch_distance();
       }
-      add_distance_ = provider_metric_->distance();
-      add_batch_distance_ = provider_metric_->batch_distance();
     }
-    // The quantizer path leaves metric_ empty, so there is no metric layout
-    // to validate against in that case
+    // Turbo input vectors have no framework-managed extra values. The legacy
+    // path keeps validating its metric-specific provider layout.
     const IndexMetric *add_metric =
         provider_metric_ ? provider_metric_.get() : metric_.get();
-    if (add_metric) {
+    if (!provider_quantizer_ && add_metric) {
       const size_t provider_vector_size = provider_meta_.element_size();
       const size_t provider_extra_values_size =
           add_metric->extra_values_size_per_vector();
@@ -698,6 +773,13 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
       return ret;
     }
     ctx->reset_query_raw(original_query_block.data(), provider_meta_);
+  } else if (ailego_unlikely(use_external_vector_ && quantizer_)) {
+    if (ailego_unlikely(ctx->external_build_query() == nullptr)) {
+      LOG_ERROR("External build query is not set");
+      (*stats_.mutable_discarded_count())++;
+      return IndexError_InvalidArgument;
+    }
+    ctx->reset_query_raw(ctx->external_build_query(), meta_);
   } else {
     ctx->reset_query(query, meta_);
   }
@@ -792,6 +874,13 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
       return ret;
     }
     ctx->reset_query_raw(original_query_block.data(), provider_meta_);
+  } else if (ailego_unlikely(use_external_vector_ && quantizer_)) {
+    if (ailego_unlikely(ctx->external_build_query() == nullptr)) {
+      LOG_ERROR("External build query is not set");
+      (*stats_.mutable_discarded_count())++;
+      return IndexError_InvalidArgument;
+    }
+    ctx->reset_query_raw(ctx->external_build_query(), meta_);
   } else {
     ctx->reset_query(query, meta_);
   }

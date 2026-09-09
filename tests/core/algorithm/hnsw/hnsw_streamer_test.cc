@@ -4586,6 +4586,100 @@ TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
   EXPECT_GT(topk1RecallB, 0.90f);
 }
 
+TEST_F(HnswStreamerTest, TestTurboSearchWithFp16ProviderBuildFallback) {
+  constexpr size_t kProviderDim = 8;
+  constexpr size_t kCount = 64;
+  IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kProviderDim);
+  raw_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kProviderDim);
+
+  for (bool explicit_metric : {false, true}) {
+    for (bool explicit_id : {false, true}) {
+      SCOPED_TRACE(testing::Message() << "explicit_metric=" << explicit_metric
+                                      << ", explicit_id=" << explicit_id);
+      auto provider =
+          make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP16>>(
+              kProviderDim);
+      std::vector<std::vector<float>> vectors(kCount,
+                                              std::vector<float>(kProviderDim));
+      for (size_t i = 0; i < kCount; ++i) {
+        NumericalVector<uint16_t> original(kProviderDim);
+        for (size_t j = 0; j < kProviderDim; ++j) {
+          vectors[i][j] = i * 0.25f + j * 0.03125f;
+          original[j] = ailego::FloatHelper::ToFP16(vectors[i][j]);
+        }
+        ASSERT_TRUE(provider->emplace(i, std::move(original)));
+      }
+      IndexMeta provider_meta(IndexMeta::DataType::DT_FP16, kProviderDim);
+      if (explicit_metric) {
+        provider_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+      }
+
+      auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      ASSERT_NE(nullptr, quantizer);
+      ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
+      auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+      ASSERT_NE(nullptr, streamer);
+      auto hnsw_streamer = std::dynamic_pointer_cast<HnswStreamer>(streamer);
+      ASSERT_NE(nullptr, hnsw_streamer);
+      ASSERT_EQ(0, streamer->set_provider(provider, provider_meta));
+      ailego::Params params;
+      params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+      params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100U);
+      params.set(PARAM_HNSW_STREAMER_EF, 100U);
+      params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+      ASSERT_EQ(0, streamer->init(raw_meta, params, quantizer));
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->init(ailego::Params()));
+      const std::string path = dir_ + "turbo_fp16_provider_" +
+                               std::to_string(explicit_metric) + "_" +
+                               std::to_string(explicit_id) + ".index";
+      ASSERT_EQ(0, storage->open(path, true));
+      ASSERT_EQ(0, streamer->open(storage));
+      EXPECT_TRUE(hnsw_streamer->uses_turbo_distance());
+      ASSERT_FALSE(hnsw_streamer->uses_turbo_build_distance());
+
+      auto context = streamer->create_context();
+      ASSERT_NE(nullptr, context);
+      auto *ctx = dynamic_cast<HnswContext *>(context.get());
+      ASSERT_NE(nullptr, ctx);
+      for (size_t i = 0; i < kCount; ++i) {
+        ASSERT_EQ(0, explicit_id
+                         ? streamer->add_with_id_impl(i, vectors[i].data(),
+                                                      query_meta, context)
+                         : streamer->add_impl(i, vectors[i].data(), query_meta,
+                                              context));
+      }
+
+      // The active build calculator must interpret provider records as FP16,
+      // even though the search quantizer consumes FP32 records.
+      EXPECT_FLOAT_EQ(0.5f,
+                      ctx->dist_calculator().dist(uint32_t{0}, uint32_t{1}));
+      ctx->reset_query_raw(provider->get_vector(3), provider_meta);
+      const void *candidates[] = {provider->get_vector(0),
+                                  provider->get_vector(1),
+                                  provider->get_vector(2)};
+      float distances[3];
+      ctx->dist_calculator().batch_dist(candidates, 3, distances, nullptr);
+      EXPECT_FLOAT_EQ(4.5f, distances[0]);
+      EXPECT_FLOAT_EQ(2.0f, distances[1]);
+      EXPECT_FLOAT_EQ(0.5f, distances[2]);
+
+      context->set_topk(1);
+      for (size_t probe : {size_t{0}, size_t{31}, kCount - 1}) {
+        ASSERT_EQ(0, streamer->search_impl(vectors[probe].data(), query_meta,
+                                           context));
+        ASSERT_EQ(1U, context->result().size());
+        EXPECT_EQ(probe, context->result()[0].key());
+        EXPECT_FLOAT_EQ(0.0f, context->result()[0].score());
+      }
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, storage->close());
+    }
+  }
+}
+
 TEST_F(HnswStreamerTest, TestTurboInt8QuantizerDistance) {
   constexpr size_t kTurboDim = 35;
   constexpr size_t kCount = 128;

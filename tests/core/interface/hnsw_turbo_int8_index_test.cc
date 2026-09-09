@@ -15,16 +15,20 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <random>
 #include <string>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/hnsw/hnsw_streamer.h"
 #include "tests/test_util.h"
 
 using namespace zvec::core_interface;
@@ -34,11 +38,30 @@ namespace {
 constexpr uint32_t kDimension = 36;
 constexpr size_t kVectorCount = 200;
 constexpr uint32_t kTopK = 10;
+constexpr size_t kGraphVectorCount =
+    zvec::core::HnswEntity::kDefaultBruteForceThreshold + 1;
+constexpr uint32_t kGraphQueryIds[] = {37, 101, kGraphVectorCount - 1};
 
-std::vector<std::vector<float>> RandomVectors() {
+using SearchRowList = std::vector<std::pair<uint32_t, float>>;
+
+class TestExternalVectorSource final : public zvec::core::VectorSource {
+ public:
+  explicit TestExternalVectorSource(
+      const std::vector<std::vector<float>> *vectors)
+      : vectors_(vectors) {}
+
+  const void *get_vector(uint32_t node_id) const override {
+    return (*vectors_)[node_id].data();
+  }
+
+ private:
+  const std::vector<std::vector<float>> *vectors_;
+};
+
+std::vector<std::vector<float>> RandomVectors(size_t count = kVectorCount) {
   std::mt19937 gen(2026);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-  std::vector<std::vector<float>> vectors(kVectorCount,
+  std::vector<std::vector<float>> vectors(count,
                                           std::vector<float>(kDimension));
   for (auto &vector : vectors) {
     float norm = 0.0f;
@@ -79,9 +102,22 @@ HNSWIndexParam::Pointer MakeDefaultParam(MetricType metric) {
       .build();
 }
 
-std::vector<std::pair<uint32_t, float>> SearchRows(
-    Index *index, const std::vector<float> &query, bool linear,
-    bool fetch_vector = false) {
+const char *MetricName(MetricType metric) {
+  switch (metric) {
+    case MetricType::kL2sq:
+      return "SquaredEuclidean";
+    case MetricType::kCosine:
+      return "Cosine";
+    case MetricType::kInnerProduct:
+      return "InnerProduct";
+    default:
+      return "";
+  }
+}
+
+SearchRowList SearchRows(Index *index, const std::vector<float> &query,
+                         bool linear, bool fetch_vector = false,
+                         const zvec::core::VectorSource *source = nullptr) {
   auto query_param = HNSWQueryParamBuilder()
                          .with_topk(kTopK)
                          .with_ef_search(100)
@@ -90,15 +126,61 @@ std::vector<std::pair<uint32_t, float>> SearchRows(
                          .build();
   VectorData query_data{DenseVector{query.data()}};
   SearchResult result;
-  EXPECT_EQ(0, index->search(query_data, query_param, &result));
-  std::vector<std::pair<uint32_t, float>> rows;
+  EXPECT_EQ(0, source == nullptr
+                   ? index->search(query_data, query_param, &result)
+                   : index->search_with_source(query_data, query_param, *source,
+                                               &result));
+  SearchRowList rows;
   for (const auto &doc : result.doc_list_) {
     rows.emplace_back(doc.key(), doc.score());
   }
   if (fetch_vector) {
-    EXPECT_EQ(rows.size(), result.reverted_vector_list_.size());
+    if (source == nullptr) {
+      EXPECT_EQ(rows.size(), result.reverted_vector_list_.size());
+    } else {
+      EXPECT_TRUE(result.reverted_vector_list_.empty());
+      for (const auto &doc : result.doc_list_) {
+        const auto *fetched = static_cast<const float *>(doc.vector());
+        EXPECT_NE(nullptr, fetched);
+        if (fetched == nullptr) {
+          continue;
+        }
+        const auto *original =
+            static_cast<const float *>(source->get_vector(doc.key()));
+        for (uint32_t d = 0; d < kDimension; ++d) {
+          EXPECT_FLOAT_EQ(original[d], fetched[d]);
+        }
+      }
+    }
   }
   return rows;
+}
+
+void CheckGraphSearchEnabled(Index *index) {
+  auto context = index->index_searcher()->create_context();
+  auto *hnsw_context = dynamic_cast<zvec::core::HnswContext *>(context.get());
+  ASSERT_NE(nullptr, hnsw_context);
+  // The public interface inherits this threshold. A small data set would
+  // silently run brute force even with is_linear=false.
+  ASSERT_GT(index->get_doc_count(), hnsw_context->get_bruteforce_threshold());
+}
+
+void CheckGraphRecall(const SearchRowList &linear_rows,
+                      const SearchRowList &graph_rows) {
+  ASSERT_EQ(kTopK, linear_rows.size());
+  ASSERT_EQ(kTopK, graph_rows.size());
+  size_t matches = 0;
+  for (const auto &graph_row : graph_rows) {
+    const auto match = std::find_if(
+        linear_rows.begin(), linear_rows.end(),
+        [key = graph_row.first](const auto &row) { return row.first == key; });
+    if (match != linear_rows.end()) {
+      ++matches;
+      EXPECT_FLOAT_EQ(match->second, graph_row.second);
+    }
+  }
+  EXPECT_GE(matches, 9U) << "Graph search must recover at least 90% of the "
+                            "linear top-10 using the same Turbo distances";
 }
 
 void AddVectors(Index *index, const std::vector<std::vector<float>> &vectors) {
@@ -151,6 +233,154 @@ void CheckTurboAddSearchReopen(MetricType metric, QuantizerType quantizer,
   for (size_t i = 0; i < linear_rows.size(); ++i) {
     EXPECT_EQ(linear_rows[i].first, reopened_rows[i].first);
     EXPECT_FLOAT_EQ(linear_rows[i].second, reopened_rows[i].second);
+  }
+  ASSERT_EQ(0, reopened->close());
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+void CheckExternalTurboAddSearchReopen(MetricType metric,
+                                       QuantizerType quantizer,
+                                       const char *quantizer_name,
+                                       const std::string &path) {
+  zvec::test_util::RemoveTestFiles(path);
+  auto vectors = RandomVectors(kGraphVectorCount);
+  if (metric == MetricType::kCosine) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      const float scale = static_cast<float>(i % 7 + 1);
+      for (float &value : vectors[i]) {
+        value *= scale;
+      }
+    }
+  }
+  TestExternalVectorSource source(&vectors);
+  auto param = MakeParam(metric, quantizer);
+  param->use_external_vector = true;
+
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(quantizer_name, index->index_searcher()->meta().quantizer_name());
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  auto streamer = std::dynamic_pointer_cast<zvec::core::HnswStreamer>(
+      index->index_searcher());
+  ASSERT_NE(nullptr, streamer);
+  EXPECT_TRUE(streamer->uses_turbo_distance());
+  EXPECT_TRUE(streamer->uses_turbo_build_distance());
+
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    VectorData vector_data{DenseVector{vectors[i].data()}};
+    ASSERT_EQ(0, index->add_with_source(vector_data, static_cast<uint32_t>(i),
+                                        source));
+  }
+
+  CheckGraphSearchEnabled(index.get());
+  std::vector<SearchRowList> linear_results;
+  std::vector<SearchRowList> graph_results;
+  for (uint32_t query_id : kGraphQueryIds) {
+    SCOPED_TRACE(query_id);
+    auto linear_rows =
+        SearchRows(index.get(), vectors[query_id], true, true, &source);
+    auto graph_rows =
+        SearchRows(index.get(), vectors[query_id], false, true, &source);
+    CheckGraphRecall(linear_rows, graph_rows);
+    ASSERT_FALSE(graph_rows.empty());
+    EXPECT_EQ(query_id, graph_rows.front().first);
+    linear_results.push_back(std::move(linear_rows));
+    graph_results.push_back(std::move(graph_rows));
+  }
+
+  ASSERT_EQ(0, index->close());
+
+  auto reopened = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, reopened);
+  ASSERT_EQ(0,
+            reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  CheckGraphSearchEnabled(reopened.get());
+  for (size_t i = 0; i < std::size(kGraphQueryIds); ++i) {
+    SCOPED_TRACE(kGraphQueryIds[i]);
+    auto linear_rows = SearchRows(reopened.get(), vectors[kGraphQueryIds[i]],
+                                  true, true, &source);
+    auto graph_rows = SearchRows(reopened.get(), vectors[kGraphQueryIds[i]],
+                                 false, true, &source);
+    EXPECT_EQ(linear_results[i], linear_rows);
+    EXPECT_EQ(graph_results[i], graph_rows);
+    CheckGraphRecall(linear_rows, graph_rows);
+  }
+  ASSERT_EQ(0, reopened->close());
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+void CheckOriginalProviderUsesTurbo(MetricType metric,
+                                    const std::string &path) {
+  zvec::test_util::RemoveTestFiles(path);
+  auto vectors = RandomVectors(kGraphVectorCount);
+  if (metric == MetricType::kCosine) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      const float scale = static_cast<float>(i % 7 + 1);
+      for (float &value : vectors[i]) {
+        value *= scale;
+      }
+    }
+  }
+
+  auto provider = std::make_shared<zvec::core::MultiPassIndexProvider<
+      zvec::core::IndexMeta::DataType::DT_FP32>>(kDimension);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    zvec::ailego::NumericalVector<float> vector(kDimension);
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vector[d] = vectors[i][d];
+    }
+    ASSERT_TRUE(provider->emplace(i, vector));
+  }
+  zvec::core::IndexMeta provider_meta(zvec::core::IndexMeta::DT_FP32,
+                                      kDimension);
+  provider_meta.set_metric(MetricName(metric), 0, zvec::ailego::Params{});
+
+  auto param = MakeParam(metric, QuantizerType::kInt8);
+  param->provider = provider;
+  param->provider_meta = provider_meta;
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ("Int8Quantizer", index->index_searcher()->meta().quantizer_name());
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  auto streamer = std::dynamic_pointer_cast<zvec::core::HnswStreamer>(
+      index->index_searcher());
+  ASSERT_NE(nullptr, streamer);
+  EXPECT_TRUE(streamer->uses_turbo_distance());
+  EXPECT_TRUE(streamer->uses_turbo_build_distance());
+
+  AddVectors(index.get(), vectors);
+  CheckGraphSearchEnabled(index.get());
+  std::vector<SearchRowList> linear_results;
+  std::vector<SearchRowList> graph_results;
+  for (uint32_t query_id : kGraphQueryIds) {
+    SCOPED_TRACE(query_id);
+    auto linear_rows = SearchRows(index.get(), vectors[query_id], true);
+    auto graph_rows = SearchRows(index.get(), vectors[query_id], false);
+    CheckGraphRecall(linear_rows, graph_rows);
+    ASSERT_FALSE(graph_rows.empty());
+    EXPECT_EQ(query_id, graph_rows.front().first);
+    linear_results.push_back(std::move(linear_rows));
+    graph_results.push_back(std::move(graph_rows));
+  }
+
+  ASSERT_EQ(0, index->close());
+
+  auto reopened = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, reopened);
+  ASSERT_EQ(0,
+            reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  EXPECT_EQ("Int8Quantizer",
+            reopened->index_searcher()->meta().quantizer_name());
+  CheckGraphSearchEnabled(reopened.get());
+  for (size_t i = 0; i < std::size(kGraphQueryIds); ++i) {
+    SCOPED_TRACE(kGraphQueryIds[i]);
+    auto linear_rows =
+        SearchRows(reopened.get(), vectors[kGraphQueryIds[i]], true);
+    auto graph_rows =
+        SearchRows(reopened.get(), vectors[kGraphQueryIds[i]], false);
+    EXPECT_EQ(linear_results[i], linear_rows);
+    EXPECT_EQ(graph_results[i], graph_rows);
+    CheckGraphRecall(linear_rows, graph_rows);
   }
   ASSERT_EQ(0, reopened->close());
   zvec::test_util::RemoveTestFiles(path);
@@ -334,6 +564,39 @@ TEST(HnswTurboQuantizerIndex, AdditionalTurboQuantizersAddSearchReopenFetch) {
                             "Int4Quantizer", 2e-1f, "hnsw_turbo_int4_l2.index");
 }
 
+TEST(HnswTurboQuantizerIndex, ExternalVectorsUseTurboForAllQuantizers) {
+  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kNone,
+                                    "Fp32Quantizer",
+                                    "hnsw_turbo_external_fp32.index");
+  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kFP16,
+                                    "Fp16Quantizer",
+                                    "hnsw_turbo_external_fp16.index");
+  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kInt8,
+                                    "Int8Quantizer",
+                                    "hnsw_turbo_external_int8.index");
+  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kInt4,
+                                    "Int4Quantizer",
+                                    "hnsw_turbo_external_int4.index");
+}
+
+TEST(HnswTurboQuantizerIndex, ExternalVectorsUseTurboForAllMetrics) {
+  CheckExternalTurboAddSearchReopen(MetricType::kCosine, QuantizerType::kNone,
+                                    "Fp32Quantizer",
+                                    "hnsw_turbo_external_cosine.index");
+  CheckExternalTurboAddSearchReopen(MetricType::kInnerProduct,
+                                    QuantizerType::kNone, "Fp32Quantizer",
+                                    "hnsw_turbo_external_ip.index");
+}
+
+TEST(HnswTurboQuantizerIndex, OriginalProviderBuildUsesTurbo) {
+  CheckOriginalProviderUsesTurbo(MetricType::kL2sq,
+                                 "hnsw_turbo_provider_l2.index");
+  CheckOriginalProviderUsesTurbo(MetricType::kCosine,
+                                 "hnsw_turbo_provider_cosine.index");
+  CheckOriginalProviderUsesTurbo(MetricType::kInnerProduct,
+                                 "hnsw_turbo_provider_ip.index");
+}
+
 TEST(HnswTurboQuantizerIndex, UnsupportedCombinationsUseLegacyPipeline) {
   auto rotated = IndexFactory::CreateAndInitIndex(
       *MakeParam(MetricType::kCosine, QuantizerType::kInt8, true));
@@ -435,3 +698,154 @@ TEST(HnswTurboQuantizerIndex, LegacyFp32LayoutReopenFallsBack) {
   ASSERT_EQ(0, index->close());
   zvec::test_util::RemoveTestFiles(path);
 }
+
+namespace zvec {
+namespace core {
+namespace {
+
+constexpr size_t kDimension = 8;
+constexpr size_t kCount = 16;
+
+class ExternalVectorSource final : public VectorSource {
+ public:
+  ExternalVectorSource() : vectors(kCount, std::vector<float>(kDimension)) {
+    for (size_t i = 0; i < kCount; ++i) {
+      for (size_t j = 0; j < kDimension; ++j) {
+        vectors[i][j] = i * 0.125f + j * 0.03125f;
+      }
+    }
+  }
+
+  const void *get_vector(uint32_t node_id) const override {
+    return vectors[node_id].data();
+  }
+
+  std::vector<std::vector<float>> vectors;
+};
+
+class HnswExternalCoreCompatibilityTest : public testing::TestWithParam<bool> {
+ protected:
+  void SetUp() override {
+    zvec::test_util::RemoveTestPath(directory_);
+  }
+
+  void TearDown() override {
+    if (streamer_) {
+      streamer_->close();
+    }
+    if (storage_) {
+      storage_->close();
+    }
+    zvec::test_util::RemoveTestPath(directory_);
+  }
+
+  void Open(bool turbo) {
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+    if (turbo) {
+      quantizer_ = IndexFactory::CreateQuantizer("Int8Quantizer");
+      ASSERT_NE(nullptr, quantizer_);
+      ASSERT_EQ(0, quantizer_->init(meta, ailego::Params()));
+      meta = quantizer_->meta();
+    }
+    ailego::Params params;
+    params.set(PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR, true);
+    params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+    params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100U);
+    params.set(PARAM_HNSW_STREAMER_EF, 100U);
+    params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    streamer_ = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer_);
+    ASSERT_EQ(0, turbo ? streamer_->init(meta, params, quantizer_)
+                       : streamer_->init(meta, params));
+    storage_ = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage_);
+    ASSERT_EQ(0, storage_->init(ailego::Params()));
+    ASSERT_EQ(0, storage_->open(directory_ + "external.index", true));
+    ASSERT_EQ(0, streamer_->open(storage_));
+    context_ = streamer_->create_context();
+    ASSERT_NE(nullptr, context_);
+    ctx_ = dynamic_cast<HnswContext *>(context_.get());
+    ASSERT_NE(nullptr, ctx_);
+    ctx_->set_vector_source(&source_);
+  }
+
+  int Add(uint32_t id, const void *query, const IndexQueryMeta &meta) {
+    return GetParam() ? streamer_->add_with_id_impl(id, query, meta, context_)
+                      : streamer_->add_impl(id, query, meta, context_);
+  }
+
+  void CheckNodeCount(size_t expected) const {
+    // Context entities retain their creation-time header. A fresh provider
+    // snapshots the streamer's current entity, including any orphan nodes.
+    auto provider = streamer_->create_provider();
+    ASSERT_NE(nullptr, provider);
+    ASSERT_EQ(expected, provider->count());
+  }
+
+  const std::string directory_ = "hnsw_streamer_turbo_compat_test_dir/";
+  IndexStreamer::Pointer streamer_;
+  IndexStorage::Pointer storage_;
+  IndexStreamer::Context::Pointer context_;
+  HnswContext *ctx_ = nullptr;
+  turbo::Quantizer::Pointer quantizer_;
+  ExternalVectorSource source_;
+};
+
+TEST_P(HnswExternalCoreCompatibilityTest,
+       LegacyBuildAcceptsQueryWithoutExternalBuildField) {
+  ASSERT_NO_FATAL_FAILURE(Open(false));
+  IndexQueryMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+  for (uint32_t i = 0; i < kCount; ++i) {
+    ASSERT_EQ(nullptr, ctx_->external_build_query());
+    ASSERT_EQ(0, Add(i, source_.get_vector(i), meta));
+  }
+  ASSERT_NO_FATAL_FAILURE(CheckNodeCount(kCount));
+  EXPECT_EQ(kCount, streamer_->stats().added_count());
+
+  context_->set_topk(1);
+  for (uint32_t probe : {0U, 7U, 15U}) {
+    ASSERT_EQ(
+        0, streamer_->search_impl(source_.get_vector(probe), meta, context_));
+    ASSERT_EQ(1U, context_->result().size());
+    EXPECT_EQ(probe, context_->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, context_->result()[0].score());
+  }
+}
+
+TEST_P(HnswExternalCoreCompatibilityTest,
+       TurboRejectsMissingRawQueryBeforeMutatingNodes) {
+  ASSERT_NO_FATAL_FAILURE(Open(true));
+  IndexQueryMeta raw_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  IndexQueryMeta encoded_meta;
+  std::vector<std::string> codes(kCount);
+  for (uint32_t i = 0; i < kCount; ++i) {
+    ASSERT_EQ(0, quantizer_->quantize(source_.get_vector(i), raw_meta,
+                                      &codes[i], &encoded_meta));
+    ctx_->set_external_build_query(nullptr);
+    ASSERT_EQ(IndexError_InvalidArgument,
+              Add(i, codes[i].data(), encoded_meta));
+    ASSERT_NO_FATAL_FAILURE(CheckNodeCount(i));
+    EXPECT_EQ(i, streamer_->stats().added_count());
+    ctx_->set_external_build_query(source_.get_vector(i));
+    ASSERT_EQ(0, Add(i, codes[i].data(), encoded_meta));
+    ASSERT_NO_FATAL_FAILURE(CheckNodeCount(i + 1));
+  }
+  EXPECT_EQ(kCount, streamer_->stats().added_count());
+  EXPECT_EQ(kCount, streamer_->stats().discarded_count());
+
+  context_->set_topk(1);
+  for (uint32_t probe : {0U, 7U, 15U}) {
+    ASSERT_EQ(
+        0, streamer_->search_impl(codes[probe].data(), encoded_meta, context_));
+    ASSERT_EQ(1U, context_->result().size());
+    EXPECT_EQ(probe, context_->result()[0].key());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(AddApis, HnswExternalCoreCompatibilityTest,
+                         testing::Bool());
+
+}  // namespace
+}  // namespace core
+}  // namespace zvec
