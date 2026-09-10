@@ -47,11 +47,14 @@ BaseIndexParam::Pointer GraphIndexParam(bool vamana, bool contiguous) {
       .build();
 }
 
-using GraphSearchHeapTest =
-    testing::TestWithParam<std::tuple<bool, bool, bool>>;
+using GraphSearchHeapTest = testing::TestWithParam<
+    std::tuple<bool, bool, bool, core::VisitFilter::Mode>>;
 
 TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
-  const auto [vamana, contiguous, ties] = GetParam();
+  const bool vamana = std::get<0>(GetParam());
+  const bool contiguous = std::get<1>(GetParam());
+  const bool ties = std::get<2>(GetParam());
+  const auto visit_mode = std::get<3>(GetParam());
   constexpr uint32_t kCount = 64;
   const std::string path = "graph_search_heap.index";
   test_util::RemoveTestFiles(path);
@@ -102,14 +105,23 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
   const std::vector<std::vector<uint64_t>> p_keys{{0, 7, 17, 31, 63}};
   auto configure = [&](core::IndexContext::Pointer &ctx, uint32_t topk,
                        int mode, bool fetch_vector) {
+    core::VisitFilter *visit = nullptr;
     if (auto *v = dynamic_cast<core::VamanaContext *>(ctx.get())) {
       v->set_ef(kCount);
       v->set_force_padding_topk(mode == 3);
+      v->set_filter_mode(visit_mode);
+      visit = &v->visit_filter();
     } else {
       auto *h = dynamic_cast<core::HnswContext *>(ctx.get());
       ASSERT_NE(nullptr, h);
       h->set_ef(kCount);
       h->set_force_padding_topk(mode == 3);
+      h->set_filter_mode(visit_mode);
+      visit = &h->visit_filter();
+    }
+    if (visit->get_mode() != visit_mode) {
+      visit->destroy();
+      ASSERT_EQ(0, visit->init(visit_mode, kCount, kCount, 0.001f));
     }
     ctx->set_topk(topk);
     ctx->set_fetch_vector(fetch_vector);
@@ -149,9 +161,21 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
           }
           return streamer->search_impl(vector.data(), meta, 1, ctx);
         };
-        ASSERT_EQ(0, search(fresh));
+        // Bloom hashes are randomized per context. Compare repeated searches
+        // on the same storage so false positives do not make the test flaky.
+        auto &reference =
+            visit_mode == core::VisitFilter::BloomFilter ? context : fresh;
+        ASSERT_EQ(0, search(reference));
+        const auto expected = reference->result();
+        const auto expected_scans =
+            vamana ? static_cast<core::VamanaContext *>(reference.get())
+                         ->get_scan_num()
+                   : static_cast<core::HnswContext *>(reference.get())
+                         ->get_scan_num();
         ASSERT_EQ(0, search(context));
-        compare(fresh->result(), context->result());
+        compare(expected, context->result());
+        EXPECT_EQ(expected_scans,
+                  vctx ? vctx->get_scan_num() : hctx->get_scan_num());
         auto &heap = vctx ? vctx->search_heap() : hctx->search_heap();
         heap.dispatch([&](const auto &buffer) {
           const bool uses_topk =
@@ -177,15 +201,34 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     ASSERT_EQ(0, streamer->search_impl(batch.data(), meta, 2, context));
     for (size_t q = 0; q < 2; ++q) compare(expected[q], context->result(q));
   }
+
+  // Invalid dispatch must fail both pool and filtered search, without leaving
+  // results from the previous query. Restore valid storage before teardown.
+  configure(context, 12, 0, false);
+  auto &visit = vctx ? vctx->visit_filter() : hctx->visit_filter();
+  visit.destroy();
+  ASSERT_EQ(0, visit.init(core::VisitFilter::Default, kCount, kCount, 0.001f));
+  for (bool filtered : {false, true}) {
+    if (filtered) context->set_filter([](uint64_t) { return false; });
+    EXPECT_EQ(core::IndexError_Runtime,
+              streamer->search_impl(vector.data(), meta, 1, context));
+    EXPECT_TRUE(context->result().empty());
+    auto &heap = vctx ? vctx->search_heap() : hctx->search_heap();
+    heap.dispatch([](const auto &buffer) { EXPECT_EQ(0U, buffer.size()); });
+  }
+  ASSERT_EQ(0, visit.init(visit_mode, kCount, kCount, 0.001f));
   context.reset();
   streamer.reset();
   ASSERT_EQ(0, index->close());
   test_util::RemoveTestFiles(path);
 }
 
-INSTANTIATE_TEST_SUITE_P(Backends, GraphSearchHeapTest,
-                         testing::Combine(testing::Bool(), testing::Bool(),
-                                          testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(
+    Backends, GraphSearchHeapTest,
+    testing::Combine(testing::Bool(), testing::Bool(), testing::Bool(),
+                     testing::Values(core::VisitFilter::BitMap,
+                                     core::VisitFilter::ByteMap,
+                                     core::VisitFilter::BloomFilter)));
 
 }  // namespace
 }  // namespace zvec::core_interface

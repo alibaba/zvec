@@ -238,14 +238,23 @@ TEST_F(VamanaFastSearchTest, ExactVisitModesPreserveResultsAndSearchTrace) {
   CreateGraph({10, 2, 3, 1}, {{1, 1, 2}, {0, 2, 2, 1}, {3, 3}, {1, 1}});
   for (float query : {0.0f, 12.0f}) {
     for (uint32_t capacity : {1U, 4U}) {
-      MakeContext(VisitFilter::ByteMap);
-      Search(query, capacity);
-      const auto expected = Results();
-      const auto expected_trace = evaluated_;
-      MakeContext(VisitFilter::BitMap);
-      Search(query, capacity);
-      EXPECT_EQ(expected, Results());
-      EXPECT_EQ(expected_trace, evaluated_);
+      for (bool filtered : {false, true}) {
+        auto configure = [&]() {
+          if (filtered) {
+            context_->set_filter([](uint64_t key) { return key == 1; });
+          }
+        };
+        MakeContext(VisitFilter::ByteMap);
+        configure();
+        Search(query, capacity);
+        const auto expected = Results();
+        const auto expected_trace = evaluated_;
+        MakeContext(VisitFilter::BitMap);
+        configure();
+        Search(query, capacity);
+        EXPECT_EQ(expected, Results());
+        EXPECT_EQ(expected_trace, evaluated_);
+      }
     }
   }
 }

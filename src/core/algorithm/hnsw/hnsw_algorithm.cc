@@ -48,8 +48,12 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
 
   for (; cur_level >= 0; --cur_level) {
-    search_neighbors(cur_level, &entry_point, &dist, ctx->level_topk(cur_level),
-                     ctx);
+    int ret = search_neighbors(cur_level, &entry_point, &dist,
+                               ctx->level_topk(cur_level), ctx);
+    if (ailego_unlikely(ret != 0)) {
+      if (level > cur_max_level) mutex_.unlock();
+      return ret;
+    }
   }
 
   // add neighbors from down level to top level, to avoid upper level visible
@@ -86,8 +90,9 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
+  int ret = 0;
   auto run_with_heap = [&](auto &heap) {
-    search_neighbors(0, &entry_point, &dist, heap, ctx);
+    ret = search_neighbors(0, &entry_point, &dist, heap, ctx);
   };
   if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
     if (!ctx->filter().is_valid()) {
@@ -100,6 +105,8 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   } else {
     run_with_heap(ctx->search_heap().select<TopkHeap>());
   }
+
+  if (ailego_unlikely(ret != 0)) return ret;
 
   if (ctx->group_by_search()) {
     ctx->search_heap().with_topk(
@@ -221,11 +228,11 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 // ============================================================================
 
 // mmap/contiguous variant: resolve vectors via get_vector_ptr and use
-// LinearPool or BlockHeap for visited tracking + top-k maintenance.
-// HeapType must expose reset/set_visited/check_visited/push_block/has_next/pop.
-template <typename EntityType, typename HeapType>
+// LinearPool or BlockHeap for top-k maintenance, with a concrete visit view.
+// HeapType must expose reset/push_block/has_next/pop.
+template <typename EntityType, typename HeapType, typename Visit>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
-                           VisitFilter &visit, HnswDistCalculator &dc,
+                           Visit visit, HnswDistCalculator &dc,
                            HnswContext *ctx, uint32_t topk, uint32_t ef,
                            node_id_t entry_point, dist_t entry_dist,
                            uint32_t prefetch_lines, uint32_t prefetch_offset) {
@@ -314,11 +321,13 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
 // arbitrary levels, filters, and MemoryBlock types (BufferPool/Mmap).
 // Also updates entry_point/dist for next-level continuation.
 // ============================================================================
-template <typename EntityType, typename MemBlockType, typename FilterFn>
+template <typename EntityType, typename MemBlockType, typename Visit,
+          typename FilterFn>
 void dual_heap_search_neighbors(const EntityType &entity, level_t level,
                                 node_id_t *entry_point, dist_t *dist,
                                 TopkHeap &topk, HnswContext *ctx,
-                                HnswDistCalculator &dc, FilterFn &&filter) {
+                                HnswDistCalculator &dc, Visit visit,
+                                FilterFn &&filter) {
   const uint32_t prefetch_offset = ctx->po();
   const uint32_t prefetch_lines =
       ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
@@ -339,7 +348,6 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     provider_vec_blocks.reserve(buf_capacity);
   }
 
-  VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
 
   candidates.clear();
@@ -463,38 +471,53 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 // ============================================================================
 template <typename EntityType>
 template <typename Heap>
-void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
-                                                 node_id_t *entry_point,
-                                                 dist_t *dist, Heap &heap,
-                                                 HnswContext *ctx) const {
+int HnswAlgorithm<EntityType>::search_neighbors(level_t level,
+                                                node_id_t *entry_point,
+                                                dist_t *dist, Heap &heap,
+                                                HnswContext *ctx) const {
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+  const auto &index_filter = ctx->filter();
+  const bool dispatched =
+      dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
+        auto no_filter = [](node_id_t) { return false; };
+        if constexpr (std::is_same_v<Heap, TopkHeap>) {
+          if (index_filter.is_valid()) {
+            auto filter = [&](node_id_t id) {
+              return index_filter(entity.get_key_typed(id));
+            };
+            search_neighbors_impl(level, entry_point, dist, heap, visit, filter,
+                                  ctx);
+            return;
+          }
+        }
+        search_neighbors_impl(level, entry_point, dist, heap, visit, no_filter,
+                              ctx);
+      });
+  if (ailego_unlikely(!dispatched)) {
+    LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
+              ctx->visit_filter().get_mode());
+    return IndexError_Runtime;
+  }
+  return 0;
+}
+
+template <typename EntityType>
+template <typename Heap, typename Visit, typename Filter>
+void HnswAlgorithm<EntityType>::search_neighbors_impl(
+    level_t level, node_id_t *entry_point, dist_t *dist, Heap &heap,
+    Visit visit, Filter &&filter, HnswContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
-
   if constexpr (std::is_same_v<Heap, TopkHeap>) {
-    // Dual-heap path: add_node, filtered search, or upper-level scan.
-    auto run_with_filter = [&](auto &&filter) {
-      dual_heap_search_neighbors<EntityType, MemBlockType>(
-          entity, level, entry_point, dist, heap, ctx, dc,
-          std::forward<decltype(filter)>(filter));
-    };
-
-    if (ctx->filter().is_valid()) {
-      auto filter = [&](node_id_t id) {
-        return ctx->filter()(entity.get_key_typed(id));
-      };
-      run_with_filter(filter);
-    } else {
-      auto filter = [](node_id_t) { return false; };
-      run_with_filter(filter);
-    }
+    dual_heap_search_neighbors<EntityType, MemBlockType>(
+        entity, level, entry_point, dist, heap, ctx, dc, visit,
+        std::forward<Filter>(filter));
   } else {
     static_assert(std::is_same_v<MemBlockType, MmapMemoryBlock>);
     const uint32_t prefetch_lines =
         ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
-    const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
-    const uint32_t ef_v = ctx->ef();
-    auto &visit = ctx->visit_filter();
-    fast_search_neighbors(entity, heap, visit, dc, ctx, topk_v, ef_v,
+    const uint32_t topk = static_cast<uint32_t>(ctx->topk());
+    fast_search_neighbors(entity, heap, visit, dc, ctx, topk, ctx->ef(),
                           *entry_point, *dist, prefetch_lines, ctx->po());
   }
 }

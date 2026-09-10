@@ -119,8 +119,14 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! and BufferPool fallback.
   //! Note: entry_point and dist will be updated to current level nearest node.
   template <typename Heap>
-  void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        Heap &heap, HnswContext *ctx) const;
+  int search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
+                       Heap &heap, HnswContext *ctx) const;
+
+  // Concrete search dependencies; no per-node container/filter dispatch.
+  template <typename Heap, typename Visit, typename Filter>
+  void search_neighbors_impl(level_t level, node_id_t *entry_point,
+                             dist_t *dist, Heap &heap, Visit visit,
+                             Filter &&filter, HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
