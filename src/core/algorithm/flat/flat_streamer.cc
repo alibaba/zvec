@@ -360,7 +360,23 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
 
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
+    const void *query, const std::vector<uint64_t> &p_keys,
+    const IndexQueryMeta &qmeta, Context::Pointer &context) const {
+  return search_by_p_keys(query, &p_keys, qmeta, 1, context);
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+    const IndexQueryMeta &qmeta, uint32_t count,
+    Context::Pointer &context) const {
+  if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
+  return search_by_p_keys(query, p_keys.data(), qmeta, count, context);
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::search_by_p_keys(
+    const void *query, const std::vector<uint64_t> *p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
@@ -378,23 +394,27 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
   }
 
   if (bf_context->group_by_search()) {
-    return group_by_search_p_keys_impl(query, p_keys, qmeta, count, context);
+    return group_by_search_p_keys(query, p_keys, qmeta, count, context);
   }
 
   bf_context->reset_results(count);
 
   for (size_t q = 0; q < count; ++q) {
     auto *heap = bf_context->result_heap();
+    heap->clear();
+    // Candidate searches are already bounded by p_keys. Let the metric choose
+    // its row batches without introducing storage-sized splits here.
+    const size_t batch_size = std::max(size_t{1}, p_keys[q].size());
     int ret =
         entity_->search_by_p_keys(query, p_keys[q], bf_context->filter(), heap,
-                                  bf_context->search_scratch(), BATCH_SIZE);
+                                  bf_context->search_scratch(), batch_size);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Failed to refine Flat candidates for %s",
                 IndexError::What(ret));
       return ret;
     }
     heap->sort();
-    bf_context->topk_to_result(q);
+    bf_context->take_topk_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
   return 0;
@@ -450,6 +470,15 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+    const IndexQueryMeta &qmeta, uint32_t count,
+    Context::Pointer &context) const {
+  if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
+  return group_by_search_p_keys(query, p_keys.data(), qmeta, count, context);
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys(
+    const void *query, const std::vector<uint64_t> *p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
   FlatStreamerContext<BATCH_SIZE> *bf_context =

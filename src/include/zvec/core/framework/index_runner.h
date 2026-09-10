@@ -498,6 +498,24 @@ class IndexRunner : public IndexModule {
                           Context::Pointer & /*context*/) const {
     return IndexError_NotImplemented;
   }
+
+  //! Search one ungrouped dense query, preserving search_impl's primary keys
+  //! and result order (including topk, filters and threshold). The caller owns
+  //! the reusable output buffer, which is cleared on entry. Only keys are
+  //! required; context document/vector results are unspecified. Algorithms may
+  //! override this to export their retained pool without materializing scores.
+  virtual int search_candidates_impl(const void *query,
+                                     const IndexQueryMeta &qmeta,
+                                     std::vector<uint64_t> &keys,
+                                     Context::Pointer &context) const {
+    keys.clear();
+    const int ret = search_impl(query, qmeta, 1, context);
+    if (ret != 0) return ret;
+    const auto &result = context->result();
+    keys.reserve(result.size());
+    for (const auto &document : result) keys.push_back(document.key());
+    return 0;
+  }
   //! Similarity search
   virtual int search_impl(const void * /*query*/,
                           const IndexQueryMeta & /*qmeta*/, uint32_t /*count*/,
@@ -572,6 +590,18 @@ class IndexRunner : public IndexModule {
                              const IndexQueryMeta & /*qmeta*/,
                              Context::Pointer & /*context*/) const {
     return IndexError_NotImplemented;
+  }
+
+  //! Single-query brute force search over borrowed primary keys.
+  //! Implementations must finish consuming p_keys before returning; the caller
+  //! retains ownership.
+  virtual int search_bf_by_p_keys_impl(const void *query,
+                                       const std::vector<uint64_t> &p_keys,
+                                       const IndexQueryMeta &qmeta,
+                                       Context::Pointer &context) const {
+    // Compatibility path for runners without a single-query implementation.
+    return search_bf_by_p_keys_impl(
+        query, std::vector<std::vector<uint64_t>>{p_keys}, qmeta, 1, context);
   }
 
   //! Similarity brute force search by primary keys

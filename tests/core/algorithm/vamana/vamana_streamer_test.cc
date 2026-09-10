@@ -397,6 +397,79 @@ TEST_F(VamanaStreamerTest, TestAddVector) {
   streamer.reset();
 }
 
+TEST_F(VamanaStreamerTest, CandidateKeysMatchDocumentsAcrossSearchPaths) {
+  auto streamer = CreateVamanaStreamer();
+  ASSERT_TRUE(streamer);
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "candidate_output.index", true));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto context = streamer->create_context();
+  auto *vamana = dynamic_cast<VamanaContext *>(context.get());
+  ASSERT_NE(nullptr, vamana);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDim);
+  std::array<float, kDim> query{};
+  for (uint64_t id = 0; id < 16; ++id) {
+    // Tied vectors and primary keys distinct from internal node IDs.
+    query.fill(float(id / 2));
+    ASSERT_EQ(0,
+              streamer->add_impl(100 + id * 3, query.data(), qmeta, context));
+  }
+
+  for (uint32_t bf_threshold : {0U, 100U}) {
+    for (bool filtered : {false, true}) {
+      for (bool padding : {false, true}) {
+        SCOPED_TRACE(bf_threshold);
+        SCOPED_TRACE(filtered);
+        SCOPED_TRACE(padding);
+        vamana->set_bruteforce_threshold(bf_threshold);
+        vamana->set_force_padding_topk(padding);
+        context->set_topk(padding ? 20 : 5);
+        context->set_fetch_vector(true);
+        if (filtered) {
+          context->set_filter([](uint64_t key) { return key == 106; });
+        } else {
+          context->reset_filter();
+        }
+        for (float threshold : {0.01f, 200.0f}) {
+          context->set_threshold(threshold);
+          query.fill(2.25f);
+          ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, 1, context));
+          std::vector<uint64_t> expected;
+          for (const auto &doc : context->result())
+            expected.push_back(doc.key());
+          std::vector<uint64_t> keys{999};
+          ASSERT_EQ(0, streamer->search_candidates_impl(query.data(), qmeta,
+                                                        keys, context));
+          EXPECT_EQ(expected, keys);
+          EXPECT_TRUE(context->result().empty());
+          // The candidate destination must not leak into ordinary queries.
+          ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, 1, context));
+          ASSERT_EQ(expected.size(), context->result().size());
+          for (size_t i = 0; i < expected.size(); ++i) {
+            EXPECT_EQ(expected[i], context->result()[i].key());
+            EXPECT_NE(nullptr, context->result()[i].vector());
+          }
+          EXPECT_EQ(expected, keys);
+        }
+      }
+    }
+  }
+  std::vector<uint64_t> keys{999};
+  const IndexQueryMeta wrong_meta(IndexMeta::DT_FP32, kDim + 1);
+  EXPECT_NE(0, streamer->search_candidates_impl(query.data(), wrong_meta, keys,
+                                                context));
+  EXPECT_TRUE(keys.empty());
+  context->reset_filter();
+  context->reset_threshold();
+  ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, 1, context));
+  EXPECT_FALSE(context->result().empty());
+  EXPECT_TRUE(keys.empty());
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
 TEST_F(VamanaStreamerTest, TestLinearSearch) {
   auto streamer = CreateVamanaStreamer();
   ASSERT_NE(nullptr, streamer);
