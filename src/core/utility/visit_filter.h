@@ -463,7 +463,7 @@ class VisitFilter {
            float negativeProbability) {
     destroy();
     mode_ = mode;
-    int ret = IndexError_InvalidArgument;
+    int ret = 0;
     switch (mode_) {
       case BloomFilter:
         ret = VisitBloomFilter::init(
@@ -481,7 +481,10 @@ class VisitFilter {
                                  std::make_tuple(negativeProbability));
         break;
       default:
-        break;
+        // Preserve the existing contract for an unsupported mode: context
+        // construction succeeds with no implementation, and the search-time
+        // dispatcher reports the unsupported mode explicitly.
+        return 0;
     }
     if (ret != 0) {
       ctx_ = nullptr;
