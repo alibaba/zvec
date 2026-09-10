@@ -258,7 +258,8 @@ TEST_F(VamanaFastSearchTest, InvalidVisitFilterFailsSearchExplicitly) {
   std::array<float, kDimension> query{};
   context_->reset_query(query.data());
   EXPECT_EQ(IndexError_Runtime, algorithm_->search(context_.get()));
-  EXPECT_EQ(0U, context_->topk_heap().size());
+  context_->search_heap().dispatch(
+      [](const auto &heap) { EXPECT_EQ(0U, heap.size()); });
   EXPECT_TRUE(evaluated_.empty());
 }
 

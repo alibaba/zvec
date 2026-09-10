@@ -67,7 +67,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   int add_node(node_id_t id, level_t level, HnswContext *ctx) override;
 
   //! do knn search in graph
-  //! return 0 on success, or errCode in failure. results saved in ctx
+  //! return 0 on success, or errCode in failure. The active result heap/pool
+  //! is recorded in ctx for later collection.
   int search(HnswContext *ctx) const override;
 
   //! Initiate HnswAlgorithm
@@ -117,8 +118,9 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! (CandidateHeap + TopkHeap) for add_node, filtered search, upper levels,
   //! and BufferPool fallback.
   //! Note: entry_point and dist will be updated to current level nearest node.
+  template <typename Heap>
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx, bool use_pool) const;
+                        Heap &heap, HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,

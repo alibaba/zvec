@@ -46,8 +46,9 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
 
   // Step 1: GreedySearch to find candidate neighbors
   uint32_t search_list_size = entity_.search_list_size();
-  ctx->topk_heap().clear();
-  ctx->topk_heap().limit(search_list_size);
+  auto &build_heap = ctx->search_heap().select<TopkHeap>();
+  build_heap.clear();
+  build_heap.limit(search_list_size);
   ctx->dist_calculator().clear_compare_cnt();
 
   // Set query to the new node's vector. Use reset_query (same as search path)
@@ -122,6 +123,7 @@ int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {
 // ============================================================================
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
+  ctx->search_heap().clear();
   spin_lock_.lock();
   auto entry_point = entity_.entry_point();
   spin_lock_.unlock();
@@ -130,14 +132,11 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
     return 0;
   }
 
-  auto &topk_heap = ctx->topk_heap();
-  topk_heap.clear();
-
   // Use ef (query-time parameter) instead of entity.search_list_size()
   // (build-time L parameter). search_list_size controls construction;
   // ef controls search quality and is user-configurable at query time.
   uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
-  topk_heap.limit(ef_search);
+  ctx->search_heap().limit(ef_search);
 
   return greedy_search(entry_point, ctx, /*use_pool=*/true);
 }
@@ -512,7 +511,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 //
 // Unfiltered mmap/contiguous queries use fast_greedy_search. Construction,
 // filtered queries and BufferPool use dual_heap_greedy_search, which enforces
-// the scan limit. Both paths accumulate results in ctx->topk_heap().
+// the scan limit. Retain the query's active heap/pool for result collection.
 // ============================================================================
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
@@ -531,6 +530,7 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                       : vector_body_lines;
 
   if (!use_pool || index_filter.is_valid()) {
+    ctx->search_heap().select<TopkHeap>();
     // Fallback path used by add_node (use_pool=false) and filtered search.
     // Dispatched to dual_heap_greedy_search (plain batch_dist).
     auto run_with_filter = [&](auto &&filter) {
@@ -557,7 +557,6 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       const uint32_t ef_v = ctx->ef();
       const bool avx2_ok =
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-      auto &topk_heap = ctx->topk_heap();
 
       const bool dispatched =
           dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
@@ -571,13 +570,8 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                           entry_point, prefetch_lines,
                                           ctx->po(), visit);
               }
-              copy_pool_to_topk(pool, topk_heap);
             };
-            if (avx2_ok) {
-              run_with_pool(ctx->block_pool());
-            } else {
-              run_with_pool(ctx->pool());
-            }
+            ctx->search_heap().dispatch_pool(avx2_ok, run_with_pool);
           });
       if (ailego_unlikely(!dispatched)) {
         LOG_ERROR("Failed to dispatch Vamana visit filter, mode %d",
@@ -586,6 +580,7 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       }
     } else {
       // BufferPool entities: fallback to dual-heap path.
+      ctx->search_heap().select<TopkHeap>();
       auto filter = [](node_id_t) { return false; };
       dual_heap_greedy_search<EntityType, MemBlockType>(entity, ctx, dc,
                                                         entry_point, filter);
@@ -619,8 +614,9 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   }
 
   ctx->clear();
-  ctx->topk_heap().clear();
-  ctx->topk_heap().limit(entity_.search_list_size());
+  auto &build_heap = ctx->search_heap().select<TopkHeap>();
+  build_heap.clear();
+  build_heap.limit(entity_.search_list_size());
   ctx->dist_calculator().clear_compare_cnt();
   ctx->reset_query(query_vec);
 

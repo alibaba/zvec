@@ -14,8 +14,7 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
-#include "utility/block_heap.h"
-#include "utility/linear_pool.h"
+#include "utility/search_heap.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_dist_calculator.h"
@@ -51,7 +50,7 @@ class HnswContext : public IndexContext {
   //! Set topk of search result
   void set_topk(uint32_t val) override {
     topk_ = group_by_search() ? group_topk_ * group_num_ : val;
-    topk_heap_.limit(std::max(topk_, ef_));
+    search_heap_.limit(std::max(topk_, ef_));
   }
 
   //! Retrieve search result
@@ -171,37 +170,44 @@ class HnswContext : public IndexContext {
   }
 
   inline void recal_topk_dist() {
-    TopkHeap heap(topk_heap_);
-    topk_heap_.clear();
+    auto &topk = search_heap_.materialize_topk();
+    TopkHeap heap(topk);
+    topk.clear();
 
     for (size_t i = 0; i < heap.size(); ++i) {
       node_id_t id = heap[i].first;
       dist_t dist = dc_.dist(id);
-      topk_heap_.emplace(id, dist);
+      topk.emplace(id, dist);
     }
   }
 
   inline void topk_to_single_result(uint32_t idx) {
-    if (force_padding_topk_ && !topk_heap_.full() &&
-        topk_heap_.size() < entity_->doc_cnt()) {
-      this->fill_random_to_topk_full();
+    search_heap_.with_topk(
+        [&](TopkHeap &heap) { collect_topk_result(heap, idx); });
+  }
+
+ private:
+  inline void collect_topk_result(TopkHeap &heap, uint32_t idx) {
+    if (force_padding_topk_ && !heap.full() &&
+        heap.size() < entity_->doc_cnt()) {
+      this->fill_random_to_topk_full(heap);
     }
-    if (ailego_unlikely(topk_heap_.size() == 0)) {
+    if (ailego_unlikely(heap.size() == 0)) {
       return;
     }
 
     ailego_assert_with(idx < results_.size(), "invalid idx");
-    int size = std::min(topk_, static_cast<uint32_t>(topk_heap_.size()));
-    topk_heap_.sort();
+    int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
+    heap.sort();
     results_[idx].clear();
 
     for (int i = 0; i < size; ++i) {
-      auto score = topk_heap_[i].second;
+      auto score = heap[i].second;
       if (score > this->threshold()) {
         break;
       }
 
-      node_id_t id = topk_heap_[i].first;
+      node_id_t id = heap[i].first;
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
@@ -214,6 +220,7 @@ class HnswContext : public IndexContext {
     return;
   }
 
+ public:
   //! Construct result from topk heap, result will be normalized
   inline void topk_to_group_result(uint32_t idx) {
     ailego_assert_with(idx < group_results_.size(), "invalid idx");
@@ -328,20 +335,15 @@ class HnswContext : public IndexContext {
   }
 
   inline TopkHeap &topk_heap() {
-    return topk_heap_;
+    return search_heap_.topk();
   }
 
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
 
-  inline LinearPool<dist_t> &pool() {
-    return pool_;
-  }
-
-  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
-  inline BlockHeap &block_pool() {
-    return block_pool_;
+  inline SearchHeap &search_heap() {
+    return search_heap_;
   }
 
   inline VisitFilter &visit_filter() {
@@ -506,6 +508,7 @@ class HnswContext : public IndexContext {
   }
 
   inline void clear() {
+    search_heap_.clear();
     dc_.clear();
     if (ailego_unlikely(this->debugging())) {
       stats_get_neighbors_cnt_ = 0u;
@@ -592,7 +595,7 @@ class HnswContext : public IndexContext {
 
  private:
   // Filling random nodes if topk not full
-  void fill_random_to_topk_full(void);
+  void fill_random_to_topk_full(TopkHeap &heap);
 
   constexpr static uint32_t kTriggerReserveCnt = 4096UL;
   constexpr static uint32_t kMinReserveDocCnt = 4096UL;
@@ -624,7 +627,7 @@ class HnswContext : public IndexContext {
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};
-  TopkHeap topk_heap_{};
+  SearchHeap search_heap_{};
   TopkHeap update_heap_{};
   std::vector<TopkHeap> level_topks_{};
   CandidateHeap candidates_{};
@@ -641,9 +644,6 @@ class HnswContext : public IndexContext {
   uint32_t stats_get_vector_cnt_{0u};
   uint32_t stats_visit_dup_cnt_{0u};
   std::string preprocess_buffer_;
-
-  LinearPool<dist_t> pool_;
-  BlockHeap block_pool_;
 };
 
 }  // namespace core

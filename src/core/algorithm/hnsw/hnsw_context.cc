@@ -148,7 +148,7 @@ int HnswContext::update(const ailego::Params &params) {
     case kSearcherContext:
       if (params.has(PARAM_HNSW_SEARCHER_EF)) {
         params.get(PARAM_HNSW_SEARCHER_EF, &ef_);
-        topk_heap_.limit(std::max(topk_, ef_));
+        search_heap_.limit(std::max(topk_, ef_));
       }
 
       if (params.has(PARAM_HNSW_SEARCHER_PO)) {
@@ -176,7 +176,7 @@ int HnswContext::update(const ailego::Params &params) {
     case kStreamerContext:
       if (params.has(PARAM_HNSW_STREAMER_EF)) {
         params.get(PARAM_HNSW_STREAMER_EF, &ef_);
-        topk_heap_.limit(std::max(topk_, ef_));
+        search_heap_.limit(std::max(topk_, ef_));
       }
       params.get(PARAM_HNSW_STREAMER_EF, &ef_);
       params.get(PARAM_HNSW_STREAMER_PO, &po_);
@@ -238,7 +238,7 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
       }
 
       candidates_.limit(max_scan_num_);
-      topk_heap_.limit(std::max(topk_, ef_));
+      search_heap_.limit(std::max(topk_, ef_));
       break;
 
     case kStreamerContext:
@@ -252,7 +252,7 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
 
       update_heap_.limit(entity->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
-      topk_heap_.limit(std::max(topk_, ef_));
+      search_heap_.limit(std::max(topk_, ef_));
       break;
 
     default:
@@ -272,7 +272,7 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
   return 0;
 }
 
-void HnswContext::fill_random_to_topk_full(void) {
+void HnswContext::fill_random_to_topk_full(TopkHeap &heap) {
   static std::mt19937 mt(
       std::chrono::system_clock::now().time_since_epoch().count());
   std::uniform_int_distribution<node_id_t> dt(0, entity_->doc_cnt() - 1);
@@ -285,7 +285,7 @@ void HnswContext::fill_random_to_topk_full(void) {
     };
   }
 
-  if (topk_heap_.limit() < entity_->doc_cnt() / 2) {
+  if (heap.limit() < entity_->doc_cnt() / 2) {
     gen = [&](void) { return dt(mt); };
   } else {
     // If topk limit is big value, gen sequential id from an random initial
@@ -296,11 +296,11 @@ void HnswContext::fill_random_to_topk_full(void) {
     };
   }
 
-  for (size_t i = 0; !topk_heap_.full() && i < entity_->doc_cnt(); ++i) {
+  for (size_t i = 0; !heap.full() && i < entity_->doc_cnt(); ++i) {
     const auto id = gen();
     if (!visit_filter_.visited(id) && !myfilter(id)) {
       visit_filter_.set_visited(id);
-      topk_heap_.emplace(id, dc_.dist(id));
+      heap.emplace(id, dc_.dist(id));
     }
   }
   return;
