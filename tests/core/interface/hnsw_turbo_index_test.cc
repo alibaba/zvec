@@ -18,6 +18,7 @@
 #include <iterator>
 #include <random>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -43,6 +44,42 @@ constexpr size_t kGraphVectorCount =
 constexpr uint32_t kGraphQueryIds[] = {37, 101, kGraphVectorCount - 1};
 
 using SearchRowList = std::vector<std::pair<uint32_t, float>>;
+
+struct TurboQuantizerCase {
+  QuantizerType type;
+  const char *name;
+  float fetch_tolerance;
+  float score_tolerance;
+  const char *test_name;
+};
+
+struct TurboMetricCase {
+  MetricType type;
+  const char *test_name;
+};
+
+constexpr TurboQuantizerCase kTurboQuantizers[] = {
+    {QuantizerType::kNone, "Fp32Quantizer", 1e-6f, 1e-6f, "Fp32"},
+    {QuantizerType::kFP16, "Fp16Quantizer", 1e-3f, 1e-3f, "Fp16"},
+    {QuantizerType::kInt8, "Int8Quantizer", 1e-2f, 1e-2f, "Int8"},
+    {QuantizerType::kInt4, "Int4Quantizer", 2e-1f, 5e-2f, "Int4"},
+};
+constexpr TurboMetricCase kTurboMetrics[] = {
+    {MetricType::kL2sq, "L2"},
+    {MetricType::kCosine, "Cosine"},
+    {MetricType::kInnerProduct, "InnerProduct"},
+};
+
+class HnswTurboIndexTest
+    : public testing::TestWithParam<
+          std::tuple<TurboQuantizerCase, TurboMetricCase>> {
+ protected:
+  std::string IndexPath(const char *suffix) const {
+    const auto &[quantizer, metric] = GetParam();
+    return std::string("hnsw_turbo_") + quantizer.test_name + "_" +
+           metric.test_name + "_" + suffix + ".index";
+  }
+};
 
 class TestExternalVectorSource final : public zvec::core::VectorSource {
  public:
@@ -77,9 +114,8 @@ std::vector<std::vector<float>> RandomVectors(size_t count = kVectorCount) {
   return vectors;
 }
 
-HNSWIndexParam::Pointer MakeParam(
-    MetricType metric, QuantizerType quantizer = QuantizerType::kInt8,
-    bool enable_rotate = false) {
+HNSWIndexParam::Pointer MakeParam(MetricType metric, QuantizerType quantizer,
+                                  bool enable_rotate = false) {
   return HNSWIndexParamBuilder()
       .with_metric_type(metric)
       .with_data_type(DataType::DT_FP32)
@@ -194,23 +230,34 @@ void CheckTurboAddSearchReopen(MetricType metric, QuantizerType quantizer,
                                const char *quantizer_name,
                                float fetch_tolerance, const std::string &path) {
   zvec::test_util::RemoveTestFiles(path);
-  auto vectors = RandomVectors();
+  auto vectors = RandomVectors(kGraphVectorCount);
   auto param = MakeParam(metric, quantizer);
 
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(quantizer_name, index->index_searcher()->meta().quantizer_name());
   ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  auto streamer = std::dynamic_pointer_cast<zvec::core::HnswStreamer>(
+      index->index_searcher());
+  ASSERT_NE(nullptr, streamer);
+  EXPECT_TRUE(streamer->uses_turbo_distance());
+  EXPECT_TRUE(streamer->uses_turbo_build_distance());
   AddVectors(index.get(), vectors);
   ASSERT_EQ(0, index->train());
 
-  auto linear_rows = SearchRows(index.get(), vectors[37], true, true);
-  ASSERT_EQ(kTopK, linear_rows.size());
-  EXPECT_EQ(37U, linear_rows[0].first);
-
-  auto ann_rows = SearchRows(index.get(), vectors[101], false);
-  ASSERT_EQ(kTopK, ann_rows.size());
-  EXPECT_EQ(101U, ann_rows[0].first);
+  CheckGraphSearchEnabled(index.get());
+  std::vector<SearchRowList> linear_results;
+  std::vector<SearchRowList> graph_results;
+  for (uint32_t query_id : kGraphQueryIds) {
+    SCOPED_TRACE(query_id);
+    auto linear_rows = SearchRows(index.get(), vectors[query_id], true, true);
+    auto graph_rows = SearchRows(index.get(), vectors[query_id], false, true);
+    CheckGraphRecall(linear_rows, graph_rows);
+    ASSERT_FALSE(graph_rows.empty());
+    EXPECT_EQ(query_id, graph_rows.front().first);
+    linear_results.push_back(std::move(linear_rows));
+    graph_results.push_back(std::move(graph_rows));
+  }
 
   VectorDataBuffer fetched;
   ASSERT_EQ(0, index->fetch(37, &fetched));
@@ -228,11 +275,16 @@ void CheckTurboAddSearchReopen(MetricType metric, QuantizerType quantizer,
             reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
   EXPECT_EQ(quantizer_name,
             reopened->index_searcher()->meta().quantizer_name());
-  auto reopened_rows = SearchRows(reopened.get(), vectors[37], true);
-  ASSERT_EQ(linear_rows.size(), reopened_rows.size());
-  for (size_t i = 0; i < linear_rows.size(); ++i) {
-    EXPECT_EQ(linear_rows[i].first, reopened_rows[i].first);
-    EXPECT_FLOAT_EQ(linear_rows[i].second, reopened_rows[i].second);
+  CheckGraphSearchEnabled(reopened.get());
+  for (size_t i = 0; i < std::size(kGraphQueryIds); ++i) {
+    SCOPED_TRACE(kGraphQueryIds[i]);
+    auto linear_rows =
+        SearchRows(reopened.get(), vectors[kGraphQueryIds[i]], true, true);
+    auto graph_rows =
+        SearchRows(reopened.get(), vectors[kGraphQueryIds[i]], false, true);
+    EXPECT_EQ(linear_results[i], linear_rows);
+    EXPECT_EQ(graph_results[i], graph_rows);
+    CheckGraphRecall(linear_rows, graph_rows);
   }
   ASSERT_EQ(0, reopened->close());
   zvec::test_util::RemoveTestFiles(path);
@@ -309,7 +361,8 @@ void CheckExternalTurboAddSearchReopen(MetricType metric,
   zvec::test_util::RemoveTestFiles(path);
 }
 
-void CheckOriginalProviderUsesTurbo(MetricType metric,
+void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
+                                    const char *quantizer_name,
                                     const std::string &path) {
   zvec::test_util::RemoveTestFiles(path);
   auto vectors = RandomVectors(kGraphVectorCount);
@@ -335,12 +388,12 @@ void CheckOriginalProviderUsesTurbo(MetricType metric,
                                       kDimension);
   provider_meta.set_metric(MetricName(metric), 0, zvec::ailego::Params{});
 
-  auto param = MakeParam(metric, QuantizerType::kInt8);
+  auto param = MakeParam(metric, quantizer);
   param->provider = provider;
   param->provider_meta = provider_meta;
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
-  ASSERT_EQ("Int8Quantizer", index->index_searcher()->meta().quantizer_name());
+  ASSERT_EQ(quantizer_name, index->index_searcher()->meta().quantizer_name());
   ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
   auto streamer = std::dynamic_pointer_cast<zvec::core::HnswStreamer>(
       index->index_searcher());
@@ -369,7 +422,7 @@ void CheckOriginalProviderUsesTurbo(MetricType metric,
   ASSERT_NE(nullptr, reopened);
   ASSERT_EQ(0,
             reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
-  EXPECT_EQ("Int8Quantizer",
+  EXPECT_EQ(quantizer_name,
             reopened->index_searcher()->meta().quantizer_name());
   CheckGraphSearchEnabled(reopened.get());
   for (size_t i = 0; i < std::size(kGraphQueryIds); ++i) {
@@ -476,17 +529,6 @@ void BuildLegacyInt8Hnsw(const std::string &path, MetricType metric,
 
 }  // namespace
 
-TEST(HnswTurboQuantizerIndex, Int8CosineAddSearchReopenFetch) {
-  CheckTurboAddSearchReopen(MetricType::kCosine, QuantizerType::kInt8,
-                            "Int8Quantizer", 1e-2f,
-                            "hnsw_turbo_int8_cosine.index");
-}
-
-TEST(HnswTurboQuantizerIndex, L2AddSearchReopenFetch) {
-  CheckTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kInt8,
-                            "Int8Quantizer", 1e-2f, "hnsw_turbo_int8_l2.index");
-}
-
 TEST(HnswTurboQuantizerIndex, DefaultUsesFp32TurboQuantizer) {
   for (MetricType metric :
        {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
@@ -533,68 +575,76 @@ TEST(HnswTurboQuantizerIndex, InnerProductScoreAndRadiusUseCallerSpace) {
   zvec::test_util::RemoveTestFiles(path);
 }
 
-TEST(HnswTurboQuantizerIndex, SupportedQuantizersUseTurboForAllMetrics) {
-  const std::vector<std::pair<QuantizerType, const char *>> quantizers{
-      {QuantizerType::kNone, "Fp32Quantizer"},
-      {QuantizerType::kFP16, "Fp16Quantizer"},
-      {QuantizerType::kInt8, "Int8Quantizer"},
-      {QuantizerType::kInt4, "Int4Quantizer"},
-  };
-  for (const auto &[quantizer, quantizer_name] : quantizers) {
-    for (MetricType metric :
-         {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
-      auto index =
-          IndexFactory::CreateAndInitIndex(*MakeParam(metric, quantizer));
-      ASSERT_NE(nullptr, index);
-      EXPECT_EQ(quantizer_name,
-                index->index_searcher()->meta().quantizer_name());
-    }
+TEST_P(HnswTurboIndexTest, SelectsTurboQuantizer) {
+  const auto &[quantizer, metric] = GetParam();
+  auto index =
+      IndexFactory::CreateAndInitIndex(*MakeParam(metric.type, quantizer.type));
+  ASSERT_NE(nullptr, index);
+  EXPECT_EQ(quantizer.name, index->index_searcher()->meta().quantizer_name());
+}
+
+TEST_P(HnswTurboIndexTest, KnownScoresAndRadiusUseCallerSpace) {
+  const auto &[quantizer, metric] = GetParam();
+  const std::string path = IndexPath("scores");
+  zvec::test_util::RemoveTestFiles(path);
+  auto index =
+      IndexFactory::CreateAndInitIndex(*MakeParam(metric.type, quantizer.type));
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+
+  // Non-unit vectors distinguish cosine normalization from inner product.
+  std::vector<std::vector<float>> vectors(3, std::vector<float>(kDimension));
+  vectors[0][0] = 1.0f;
+  vectors[1][0] = 0.75f;
+  vectors[1][1] = 0.25f;
+  vectors[2][0] = 0.25f;
+  vectors[2][1] = 0.75f;
+  AddVectors(index.get(), vectors);
+
+  auto query_param = HNSWQueryParamBuilder()
+                         .with_topk(3)
+                         .with_is_linear(true)
+                         .with_radius(0.5f)
+                         .build();
+  SearchResult result;
+  ASSERT_EQ(0, index->search(VectorData{DenseVector{vectors[0].data()}},
+                             query_param, &result));
+  ASSERT_EQ(2U, result.doc_list_.size());
+  EXPECT_EQ(0U, result.doc_list_[0].key());
+  EXPECT_EQ(1U, result.doc_list_[1].key());
+  float expected_first = 0.0f;
+  float expected_second = 0.125f;
+  if (metric.type == MetricType::kCosine) {
+    expected_second = 1.0f - 0.75f / std::sqrt(0.625f);
+  } else if (metric.type == MetricType::kInnerProduct) {
+    expected_first = 1.0f;
+    expected_second = 0.75f;
   }
+  EXPECT_NEAR(expected_first, result.doc_list_[0].score(),
+              quantizer.score_tolerance);
+  EXPECT_NEAR(expected_second, result.doc_list_[1].score(),
+              quantizer.score_tolerance);
+
+  ASSERT_EQ(0, index->close());
+  zvec::test_util::RemoveTestFiles(path);
 }
 
-TEST(HnswTurboQuantizerIndex, AdditionalTurboQuantizersAddSearchReopenFetch) {
-  CheckTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kNone,
-                            "Fp32Quantizer", 1e-6f, "hnsw_turbo_fp32_l2.index");
-  CheckTurboAddSearchReopen(MetricType::kCosine, QuantizerType::kFP16,
-                            "Fp16Quantizer", 1e-3f,
-                            "hnsw_turbo_fp16_cosine.index");
-  CheckTurboAddSearchReopen(MetricType::kInnerProduct, QuantizerType::kInt8,
-                            "Int8Quantizer", 1e-2f, "hnsw_turbo_int8_ip.index");
-  CheckTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kInt4,
-                            "Int4Quantizer", 2e-1f, "hnsw_turbo_int4_l2.index");
+TEST_P(HnswTurboIndexTest, AddSearchReopenFetch) {
+  const auto &[quantizer, metric] = GetParam();
+  CheckTurboAddSearchReopen(metric.type, quantizer.type, quantizer.name,
+                            quantizer.fetch_tolerance, IndexPath("stored"));
 }
 
-TEST(HnswTurboQuantizerIndex, ExternalVectorsUseTurboForAllQuantizers) {
-  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kNone,
-                                    "Fp32Quantizer",
-                                    "hnsw_turbo_external_fp32.index");
-  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kFP16,
-                                    "Fp16Quantizer",
-                                    "hnsw_turbo_external_fp16.index");
-  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kInt8,
-                                    "Int8Quantizer",
-                                    "hnsw_turbo_external_int8.index");
-  CheckExternalTurboAddSearchReopen(MetricType::kL2sq, QuantizerType::kInt4,
-                                    "Int4Quantizer",
-                                    "hnsw_turbo_external_int4.index");
+TEST_P(HnswTurboIndexTest, ExternalVectorsUseTurbo) {
+  const auto &[quantizer, metric] = GetParam();
+  CheckExternalTurboAddSearchReopen(metric.type, quantizer.type, quantizer.name,
+                                    IndexPath("external"));
 }
 
-TEST(HnswTurboQuantizerIndex, ExternalVectorsUseTurboForAllMetrics) {
-  CheckExternalTurboAddSearchReopen(MetricType::kCosine, QuantizerType::kNone,
-                                    "Fp32Quantizer",
-                                    "hnsw_turbo_external_cosine.index");
-  CheckExternalTurboAddSearchReopen(MetricType::kInnerProduct,
-                                    QuantizerType::kNone, "Fp32Quantizer",
-                                    "hnsw_turbo_external_ip.index");
-}
-
-TEST(HnswTurboQuantizerIndex, OriginalProviderBuildUsesTurbo) {
-  CheckOriginalProviderUsesTurbo(MetricType::kL2sq,
-                                 "hnsw_turbo_provider_l2.index");
-  CheckOriginalProviderUsesTurbo(MetricType::kCosine,
-                                 "hnsw_turbo_provider_cosine.index");
-  CheckOriginalProviderUsesTurbo(MetricType::kInnerProduct,
-                                 "hnsw_turbo_provider_ip.index");
+TEST_P(HnswTurboIndexTest, OriginalProviderBuildUsesTurbo) {
+  const auto &[quantizer, metric] = GetParam();
+  CheckOriginalProviderUsesTurbo(metric.type, quantizer.type, quantizer.name,
+                                 IndexPath("provider"));
 }
 
 TEST(HnswTurboQuantizerIndex, UnsupportedCombinationsUseLegacyPipeline) {
@@ -609,13 +659,14 @@ TEST(HnswTurboQuantizerIndex, UnsupportedCombinationsUseLegacyPipeline) {
   EXPECT_TRUE(mips->index_searcher()->meta().quantizer_name().empty());
 }
 
-TEST(HnswTurboQuantizerIndex, MergePreservesTurboLayout) {
-  const std::string source_path{"hnsw_turbo_int8_merge_source.index"};
-  const std::string target_path{"hnsw_turbo_int8_merge_target.index"};
+TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
+  const auto &[quantizer, metric] = GetParam();
+  const std::string source_path = IndexPath("merge_source");
+  const std::string target_path = IndexPath("merge_target");
   zvec::test_util::RemoveTestFiles(source_path);
   zvec::test_util::RemoveTestFiles(target_path);
   auto vectors = RandomVectors();
-  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kInt8);
+  auto param = MakeParam(metric.type, quantizer.type);
 
   auto source = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, source);
@@ -629,7 +680,7 @@ TEST(HnswTurboQuantizerIndex, MergePreservesTurboLayout) {
       0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
   ASSERT_EQ(0, target->merge({source}, IndexFilter()));
   EXPECT_EQ(kVectorCount, target->get_doc_count());
-  EXPECT_EQ("Int8Quantizer", target->index_searcher()->meta().quantizer_name());
+  EXPECT_EQ(quantizer.name, target->index_searcher()->meta().quantizer_name());
 
   auto rows = SearchRows(target.get(), vectors[73], true);
   ASSERT_EQ(kTopK, rows.size());
@@ -640,6 +691,15 @@ TEST(HnswTurboQuantizerIndex, MergePreservesTurboLayout) {
   zvec::test_util::RemoveTestFiles(source_path);
   zvec::test_util::RemoveTestFiles(target_path);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    QuantizersAndMetrics, HnswTurboIndexTest,
+    testing::Combine(testing::ValuesIn(kTurboQuantizers),
+                     testing::ValuesIn(kTurboMetrics)),
+    [](const testing::TestParamInfo<HnswTurboIndexTest::ParamType> &info) {
+      return std::string(std::get<0>(info.param).test_name) + "_" +
+             std::get<1>(info.param).test_name;
+    });
 
 TEST(HnswTurboQuantizerIndex, LegacyLayoutReopenFallsBack) {
   const std::string path{"hnsw_int8_legacy_layout.index"};
