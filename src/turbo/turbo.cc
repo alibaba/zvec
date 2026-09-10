@@ -186,7 +186,7 @@ struct KernelSet {
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
     // --- raw physical storage (AVX512/NEON, then scalar fallback) ---
-    // Raw FP16 squared Euclidean uses FP32 arithmetic, even on FP16-capable CPUs.
+    // Raw FP16 squared Euclidean always uses FP32 arithmetic.
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
