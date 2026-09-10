@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <chrono>
+#include <type_traits>
 #include <vector>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/parallel/lock.h>
@@ -113,23 +114,23 @@ class HnswAlgorithm : public HnswAlgorithmBase {
 
   //! Given a node id and level, search the nearest neighbors in graph.
   //! Dispatches to fast_search_neighbors (pool-based, direct pointer) for
-  //! mmap/contiguous level-0 unfiltered search, or dual_heap_search_neighbors
-  //! (CandidateHeap + TopkHeap) for add_node, filtered search, upper levels,
-  //! and BufferPool fallback.
+  //! mmap/contiguous level-0 unfiltered search, a page-pinned equivalent for
+  //! BufferStorage, or dual_heap_search_neighbors (CandidateHeap + TopkHeap)
+  //! for add_node, filtered search and upper levels.
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
                         TopkHeap &topk, HnswContext *ctx, bool use_pool) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
-                        TopkHeap &topk_heap);
+                        TopkHeap &topk_heap, HnswContext *ctx);
 
   //! Checking linkId could be id's new neighbor, and add as neighbor if true
   //! @dc         distance calculator
   //! @updateHeap temporary heap in updating neighbors
   void reverse_update_neighbors(HnswDistCalculator &dc, node_id_t id,
                                 level_t level, node_id_t link_id, dist_t dist,
-                                TopkHeap &update_heap);
+                                TopkHeap &update_heap, HnswContext *ctx);
 
   //! expand neighbors until group nums are reached
   void expand_neighbors_by_group(TopkHeap &topk, HnswContext *ctx) const;
@@ -139,7 +140,12 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   HnswAlgorithm &operator=(const HnswAlgorithm &) = delete;
 
  private:
-  static constexpr uint32_t kLockCnt{1U << 8};
+  // A full reverse-neighbor update performs diversity pruning while holding
+  // the node stripe.  BufferStorage uses more stripes so unrelated high-M
+  // updates do not serialize; leave every other backend's scheduling intact.
+  static constexpr uint32_t kLockCnt{
+      std::is_same_v<EntityType, HnswBufferPoolStreamerEntity> ? 1U << 12
+                                                               : 1U << 8};
   static constexpr uint32_t kLockMask{kLockCnt - 1U};
 
   EntityType &entity_;

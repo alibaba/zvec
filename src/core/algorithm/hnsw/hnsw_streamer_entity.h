@@ -67,6 +67,9 @@ class HnswStreamerEntity : public HnswEntity {
   int get_vector(const node_id_t id,
                  IndexStorage::MemoryBlock &block) const override;
 
+  int get_vector_borrowed(const node_id_t id,
+                          IndexStorage::MemoryBlock &block) const override;
+
   int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override;
@@ -224,7 +227,7 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   inline size_t max_degree(level_t level) const {
-    return level == 0 ? neighbor_size_ : upper_neighbor_size_;
+    return neighbor_cnt(level);
   }
 
 
@@ -533,6 +536,9 @@ class HnswStreamerEntity : public HnswEntity {
   //! Init node chunk and neighbor chunks
   int init_chunks(const Chunk::Pointer &header_chunk);
 
+  //! Preload the small, universally hot search root for BufferStorage.
+  void protect_search_hotset();
+
   int flush_header(void) {
     if (!broker_->dirty()) {
       // do not need to flush
@@ -679,22 +685,12 @@ HnswStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
   }
   ailego_assert_with(offset < chunk->data_size(), "invalid chunk offset");
   IndexStorage::MemoryBlock mem_block;
-  size_t ret = chunk->read(offset, mem_block, nbr_size);
+  size_t ret = chunk->read_borrowed(offset, mem_block, nbr_size);
   if (ailego_unlikely(ret != nbr_size)) {
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<BufferPoolMemoryBlock>();
   }
-  BufferPoolMemoryBlock block;
-  if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-    block = BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
-    mem_block.data_ = nullptr;
-    mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-  } else {
-    block = BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                  mem_block.buffer_block_id_, mem_block.data_);
-    mem_block.buffer_pool_handle_ = nullptr;
-  }
-  return NeighborsT<BufferPoolMemoryBlock>(std::move(block));
+  return NeighborsT<BufferPoolMemoryBlock>(std::move(mem_block));
 }
 
 //! MmapMemoryBlock specialization for batch get_vector
@@ -727,33 +723,59 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
     const node_id_t *ids, uint32_t count,
     std::vector<BufferPoolMemoryBlock> &vec_blocks) const {
   vec_blocks.resize(count);
+  if (count == 0) {
+    return 0;
+  }
+
+  const auto first_loc = get_vector_chunk_loc(ids[0]);
+  ailego_assert_with(first_loc.first < node_chunks_.size(),
+                     "invalid chunk idx");
+  ailego_assert_with(
+      first_loc.second < node_chunks_[first_loc.first]->data_size(),
+      "invalid chunk offset");
+  if (!node_chunks_[first_loc.first]->prefer_borrowed_batch_for(
+          vector_size())) {
+    const size_t read_size = vector_size();
+    for (auto i = 0U; i < count; ++i) {
+      auto loc = get_vector_chunk_loc(ids[i]);
+      ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+      ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                         "invalid chunk offset");
+      IndexStorage::MemoryBlock mem_block;
+      const size_t ret = node_chunks_[loc.first]->read_borrowed_immutable(
+          loc.second, mem_block, read_size);
+      if (ailego_unlikely(ret != read_size)) {
+        LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
+                  loc.second, read_size, ret);
+        return IndexError_ReadData;
+      }
+      vec_blocks[i] = std::move(mem_block);
+    }
+    return 0;
+  }
+
+  // Reuse request storage on each query thread. HNSW node ids span many
+  // storage chunks, so the batch deliberately crosses Segment boundaries;
+  // BufferStorage can then deduplicate all page misses in one AIO submission.
+  static thread_local std::vector<IndexStorage::Segment::BorrowedRead>
+      batch_reads;
+  batch_reads.clear();
+  batch_reads.reserve(count);
+  const size_t read_size = vector_size();
   for (auto i = 0U; i < count; ++i) {
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
-    size_t read_size = vector_size();
-    IndexStorage::MemoryBlock mem_block;
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, mem_block, read_size);
-    if (ailego_unlikely(ret != read_size)) {
-      LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
-                loc.second, read_size, ret);
-      return IndexError_ReadData;
-    }
-    vec_blocks[i] = [&]() {
-      if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-        BufferPoolMemoryBlock b =
-            BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
-        mem_block.data_ = nullptr;
-        mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-        return b;
-      }
-      BufferPoolMemoryBlock b(mem_block.buffer_pool_handle_,
-                              mem_block.buffer_block_id_, mem_block.data_);
-      mem_block.buffer_pool_handle_ = nullptr;
-      return b;
-    }();
+    batch_reads.emplace_back(node_chunks_[loc.first].get(), loc.second,
+                             read_size, &vec_blocks[i]);
+  }
+  if (ailego_unlikely(
+          !batch_reads.front().segment->read_borrowed_batch_immutable(
+              batch_reads.data(), batch_reads.size()))) {
+    LOG_ERROR("Batch read vectors failed, count=%u, read size=%zu", count,
+              read_size);
+    return IndexError_ReadData;
   }
   return 0;
 }
@@ -790,8 +812,8 @@ inline key_t HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                      "invalid chunk offset");
   IndexStorage::MemoryBlock key_block;
-  size_t ret =
-      node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
+  size_t ret = node_chunks_[loc.first]->read_borrowed(loc.second, key_block,
+                                                      sizeof(key_t));
   if (ailego_unlikely(ret != sizeof(key_t))) {
     LOG_ERROR("Read key failed, ret=%zu", ret);
     return kInvalidKey;
@@ -930,6 +952,11 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     return HnswStorageMode::kBufferPool;
   }
 
+  //! Keep the concrete entity type in per-query clones. HnswAlgorithm is
+  //! specialized on this type and statically dispatches the BufferStorage
+  //! accessors below.
+  const HnswEntity::Pointer clone() const override;
+
   inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     return HnswStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(level,
                                                                           id);
@@ -941,6 +968,10 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     return HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
         ids, count, vec_blocks);
   }
+
+  int get_vector_for_prune(
+      const node_id_t *ids, uint32_t count,
+      std::vector<IndexStorage::MemoryBlock> &vec_blocks) const;
 
   inline key_t get_key_typed(node_id_t id) const {
     return HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(id);
@@ -1175,6 +1206,14 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
     }
     block.reset(const_cast<void *>(vec_src_->get_vector(id)));
     return 0;
+  }
+
+  //! Borrowed reads must also use the external source. Inheriting the mmap
+  //! implementation would interpret the graph node prefix as vector data
+  //! because external-vector entities intentionally have vector_size()==0.
+  int get_vector_borrowed(const node_id_t id,
+                          IndexStorage::MemoryBlock &block) const override {
+    return get_vector(id, block);
   }
 
   int get_vector(

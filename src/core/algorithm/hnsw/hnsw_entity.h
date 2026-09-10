@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <string.h>
+#include <cstring>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/logger/logger.h>
@@ -78,11 +78,11 @@ struct HNSWHeader {
   }
 
   HNSWHeader(const HNSWHeader &header) {
-    memcpy(static_cast<void *>(this), &header, sizeof(header));
+    std::memcpy(static_cast<void *>(this), &header, sizeof(header));
   }
 
   HNSWHeader &operator=(const HNSWHeader &header) {
-    memcpy(static_cast<void *>(this), &header, sizeof(header));
+    std::memcpy(static_cast<void *>(this), &header, sizeof(header));
     return *this;
   }
 
@@ -95,7 +95,7 @@ struct HNSWHeader {
 
   //! Clear all fields to init value
   void inline clear() {
-    memset(static_cast<void *>(this), 0, sizeof(HNSWHeader));
+    std::memset(static_cast<void *>(this), 0, sizeof(HNSWHeader));
     hnsw.entry_point = kInvalidNodeId;
     graph.size = sizeof(GraphHeader);
     hnsw.size = sizeof(HnswHeader);
@@ -194,107 +194,7 @@ struct MmapMemoryBlock {
   void *data_{nullptr};
 };
 
-//! Lightweight MemoryBlock for buffer pool mode: release on destruction
-struct BufferPoolMemoryBlock {
-  BufferPoolMemoryBlock() = default;
-
-  BufferPoolMemoryBlock(ailego::VecBufferPoolHandle *handle, size_t block_id,
-                        void *data)
-      : buffer_pool_handle_(handle), buffer_block_id_(block_id), data_(data) {}
-
-  static BufferPoolMemoryBlock MakeOwned(void *owned_data) {
-    BufferPoolMemoryBlock b;
-    b.owns_buffer_ = true;
-    b.data_ = owned_data;
-    return b;
-  }
-
-  BufferPoolMemoryBlock(const BufferPoolMemoryBlock &rhs)
-      : buffer_pool_handle_(rhs.buffer_pool_handle_),
-        buffer_block_id_(rhs.buffer_block_id_),
-        data_(rhs.data_) {
-    if (rhs.owns_buffer_) {
-      owns_buffer_ = false;
-      buffer_pool_handle_ = nullptr;
-    } else if (buffer_pool_handle_) {
-      buffer_pool_handle_->acquire_one(buffer_block_id_);
-    }
-  }
-
-  BufferPoolMemoryBlock &operator=(const BufferPoolMemoryBlock &rhs) {
-    if (this != &rhs) {
-      release();
-      buffer_pool_handle_ = rhs.buffer_pool_handle_;
-      buffer_block_id_ = rhs.buffer_block_id_;
-      data_ = rhs.data_;
-      if (rhs.owns_buffer_) {
-        owns_buffer_ = false;
-        buffer_pool_handle_ = nullptr;
-      } else if (buffer_pool_handle_) {
-        buffer_pool_handle_->acquire_one(buffer_block_id_);
-      }
-    }
-    return *this;
-  }
-
-  BufferPoolMemoryBlock(BufferPoolMemoryBlock &&rhs) noexcept
-      : buffer_pool_handle_(rhs.buffer_pool_handle_),
-        buffer_block_id_(rhs.buffer_block_id_),
-        owns_buffer_(rhs.owns_buffer_),
-        data_(rhs.data_) {
-    rhs.buffer_pool_handle_ = nullptr;
-    rhs.owns_buffer_ = false;
-    rhs.data_ = nullptr;
-  }
-
-  BufferPoolMemoryBlock &operator=(BufferPoolMemoryBlock &&rhs) noexcept {
-    if (this != &rhs) {
-      release();
-      buffer_pool_handle_ = rhs.buffer_pool_handle_;
-      buffer_block_id_ = rhs.buffer_block_id_;
-      owns_buffer_ = rhs.owns_buffer_;
-      data_ = rhs.data_;
-      rhs.buffer_pool_handle_ = nullptr;
-      rhs.owns_buffer_ = false;
-      rhs.data_ = nullptr;
-    }
-    return *this;
-  }
-
-  ~BufferPoolMemoryBlock() {
-    release();
-  }
-
-  const void *data() const {
-    return data_;
-  }
-
-  void reset(ailego::VecBufferPoolHandle *handle, size_t block_id, void *data) {
-    release();
-    buffer_pool_handle_ = handle;
-    buffer_block_id_ = block_id;
-    data_ = data;
-  }
-
- private:
-  void release() {
-    if (owns_buffer_) {
-      if (data_) {
-        ailego_free(data_);
-      }
-      owns_buffer_ = false;
-    } else if (buffer_pool_handle_) {
-      buffer_pool_handle_->release_one(buffer_block_id_);
-      buffer_pool_handle_ = nullptr;
-    }
-    data_ = nullptr;
-  }
-
-  ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
-  size_t buffer_block_id_{0};
-  bool owns_buffer_{false};
-  void *data_{nullptr};
-};
+using BufferPoolMemoryBlock = IndexStorage::MemoryBlock;
 
 //! Typed Neighbors: holds a typed MemoryBlock to avoid runtime branching
 template <typename MemBlockType>
@@ -627,6 +527,17 @@ class HnswEntity {
   virtual int dump(const IndexDumper::Pointer & /*dumper*/) {
     LOG_ERROR("Dump not implemented");
     return IndexError_NotImplemented;
+  }
+
+  //! Fetch a vector for an operation bounded by this entity's lifetime.
+  //!
+  //! Storage-backed implementations may omit shared ownership from the
+  //! returned block because the caller guarantees that the entity remains
+  //! alive until the block is destroyed. Kept at the end of the vtable so
+  //! existing method slots remain stable.
+  virtual int get_vector_borrowed(const node_id_t id,
+                                  IndexStorage::MemoryBlock &block) const {
+    return get_vector(id, block);
   }
 
   static int CalcAndAddPadding(const IndexDumper::Pointer &dumper,

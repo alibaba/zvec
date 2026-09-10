@@ -17,7 +17,6 @@
 #include <iostream>
 #include <memory>
 #include <ailego/pattern/defer.h>
-#include <turbo/quantizer/quantized_holder.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -529,12 +528,9 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
                          uint32_t thread_count, RetrievalMode retrieval_mode,
                          const IndexStorage::Pointer &storage = nullptr) {
   int ret;
-  ailego::ThreadPool pool(thread_count, false);
-  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
-  int errcode = 0;
+  std::atomic<int> errcode{0};
   std::mutex mutex;
-  std::atomic_bool error{false};
   std::condition_variable cond{};
 
   auto meta = streamer->meta();
@@ -562,8 +558,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
   }
 
   IndexQueryMeta qmeta(holder->data_type(), holder->dimension());
-  const size_t keep_docs = holder->count();
-  const size_t end_cursor = holder->end_cursor();
+  uint32_t keep_docs = holder->count() - holder->start_cursor();
 
   std::function<int(uint64_t, const void *, const IndexQueryMeta &,
                     IndexContext::Pointer &)>
@@ -581,6 +576,12 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     };
   }
 
+  // Declare the pool after every object captured by worker tasks. Destruction
+  // is reversed, so an early return joins active workers before their captured
+  // state is destroyed.
+  ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
+
   auto do_build = [&](size_t idx) {
     AILEGO_DEFER([&]() {
       std::lock_guard<std::mutex> latch(mutex);
@@ -588,49 +589,57 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     });
     auto ctx = streamer->create_context();
     if (!ctx) {
-      if (!error.exchange(true)) {
+      int expected = 0;
+      if (errcode.compare_exchange_strong(expected, IndexError_NoMemory)) {
         LOG_ERROR("Failed to create streamer context");
-        errcode = IndexError_NoMemory;
       }
       return;
     }
     std::string ovec;
     IndexQueryMeta ometa;
-    for (uint32_t id = idx; id < end_cursor && !stop_now; id += thread_count) {
+    for (uint32_t id = idx; id < holder->count() && !stop_now &&
+                            errcode.load(std::memory_order_acquire) == 0;
+         id += thread_count) {
       uint64_t key = holder->get_key(id);
+      int task_ret = 0;
       if (retrieval_mode == RM_DENSE) {
         if (reformer) {
-          ret = reformer->convert(holder->get_vector_by_index(id), qmeta, &ovec,
-                                  &ometa);
-          if (ret != 0) {
-            LOG_ERROR("Failed to convert vector for %s", IndexError::What(ret));
-            errcode = ret;
+          task_ret = reformer->convert(holder->get_vector_by_index(id), qmeta,
+                                       &ovec, &ometa);
+          if (task_ret != 0) {
+            int expected = 0;
+            if (errcode.compare_exchange_strong(expected, task_ret)) {
+              LOG_ERROR("Failed to convert vector for %s",
+                        IndexError::What(task_ret));
+            }
             return;
           }
-          ret = add_to_streamer(key, ovec.data(), ometa, ctx);
+          task_ret = add_to_streamer(key, ovec.data(), ometa, ctx);
         } else {
-          ret =
+          task_ret =
               add_to_streamer(key, holder->get_vector_by_index(id), qmeta, ctx);
         }
       } else {
-        LOG_ERROR("Retrieval mode not supported");
-        errcode = IndexError_Unsupported;
+        int expected = 0;
+        if (errcode.compare_exchange_strong(expected, IndexError_Unsupported)) {
+          LOG_ERROR("Retrieval mode not supported");
+        }
         return;
       }
 
-      if (ailego_unlikely(ret != 0)) {
-        if (!error.exchange(true)) {
+      if (ailego_unlikely(task_ret != 0)) {
+        int expected = 0;
+        if (errcode.compare_exchange_strong(expected, task_ret)) {
           LOG_ERROR("streamer add_impl failed");
-          errcode = ret;
         }
         return;
       }
       if (id >= keep_docs) {
-        ret = streamer->remove_impl(holder->get_key(id - keep_docs), ctx);
-        if (ailego_unlikely(ret != 0)) {
-          if (!error.exchange(true)) {
+        task_ret = streamer->remove_impl(holder->get_key(id - keep_docs), ctx);
+        if (ailego_unlikely(task_ret != 0)) {
+          int expected = 0;
+          if (errcode.compare_exchange_strong(expected, task_ret)) {
             LOG_ERROR("streamer remove_impl failed");
-            errcode = ret;
           }
           return;
         }
@@ -648,16 +657,16 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
     std::unique_lock<std::mutex> lk(mutex);
     cond.wait_until(
         lk, std::chrono::system_clock::now() + std::chrono::seconds(15));
-    if (error.load(std::memory_order_acquire)) {
+    if (errcode.load(std::memory_order_acquire) != 0) {
       LOG_ERROR("Failed to build index while waiting finish");
-      return errcode;
+      return errcode.load(std::memory_order_relaxed);
     }
     LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
-             finished.load() * 100.0f / end_cursor);
+             finished.load() * 100.0f / holder->count());
   }
-  if (error.load(std::memory_order_acquire)) {
+  if (errcode.load(std::memory_order_acquire) != 0) {
     LOG_ERROR("Failed to build index while waiting finish");
-    return errcode;
+    return errcode.load(std::memory_order_relaxed);
   }
   pool.wait_finish();
 
@@ -721,9 +730,7 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
 
   LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
             retrieval_mode == 1 ? "Dense" : "Sparse");
-  do_build_by_streamer(streamer, thread_count, retrieval_mode, storage);
-
-  return 0;
+  return do_build_by_streamer(streamer, thread_count, retrieval_mode, storage);
 }
 
 IndexSparseHolder::Pointer convert_sparse_holder(
@@ -811,6 +818,48 @@ IndexHolder::Pointer convert_holder(const std::string &name,
   return converter->result();
 }
 
+// Holder for turbo-quantized datapoints.  The rows are allocated with the
+// full encoded size in units (raw data + record tail), but the reported
+// dimension stays the raw dimension: turbo quantization does not inflate the
+// dim, the tail is accounted by extra_meta_size in the meta, so the holder
+// must match the meta on dimension() and element_size().
+template <IndexMeta::DataType DT>
+struct QuantizedIndexHolder : public MultiPassIndexHolder<DT> {
+  QuantizedIndexHolder(size_t alloc_dim, size_t raw_dim)
+      : MultiPassIndexHolder<DT>(alloc_dim), raw_dim_(raw_dim) {}
+
+  //! Retrieve dimension
+  size_t dimension(void) const override {
+    return raw_dim_;
+  }
+
+ private:
+  size_t raw_dim_{0};
+};
+
+// Quantize every vector of the holder with a turbo quantizer.  The output
+// holder stores the quantized datapoints; index_meta is updated to the
+// quantized layout.  Symmetric to convert_holder for IndexConverter.
+template <IndexMeta::DataType DT, typename T>
+IndexHolder::Pointer fill_quantized_holder(
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer,
+    const IndexHolder::Pointer &in_holder, uint32_t alloc_dim,
+    uint32_t raw_dim) {
+  auto out_holder =
+      std::make_shared<QuantizedIndexHolder<DT>>(alloc_dim, raw_dim);
+  auto iter = in_holder->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Failed to create iterator for quantize");
+    return IndexHolder::Pointer();
+  }
+  ailego::NumericalVector<T> vec(alloc_dim);
+  for (; iter->is_valid(); iter->next()) {
+    quantizer->quantize_data(iter->data(), &vec[0]);
+    out_holder->emplace(iter->key(), vec);
+  }
+  return out_holder;
+}
+
 IndexHolder::Pointer quantize_holder(
     const std::string &name, const ailego::Params &params,
     VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
@@ -843,7 +892,8 @@ IndexHolder::Pointer quantize_holder(
   }
 
   // The output meta keeps the raw dimension; the record tail (e.g. scale,
-  // Cosine norm) is accounted by extra_meta_size.
+  // Cosine norm) is accounted by extra_meta_size.  The typed holder is
+  // allocated with the full encoded size in units.
   IndexMeta out_meta = quantizer->meta();
   size_t code_bytes = quantizer->quantized_datapoint_vector_length();
   uint32_t unit = out_meta.unit_size();
@@ -853,6 +903,7 @@ IndexHolder::Pointer quantize_holder(
               code_bytes, out_meta.element_size());
     return IndexHolder::Pointer();
   }
+  uint32_t alloc_dim = static_cast<uint32_t>(code_bytes / unit);
 
   if (!quantizer->require_train()) {
     out_meta.set_quantizer(name, 0, params);
@@ -863,9 +914,29 @@ IndexHolder::Pointer quantize_holder(
         name.c_str());
   }
 
-  IndexHolder::Pointer result =
-      std::make_shared<zvec::turbo::QuantizedIndexHolder>(cast_holder,
-                                                          quantizer);
+  IndexHolder::Pointer result;
+  switch (out_meta.data_type()) {
+    case IndexMeta::DataType::DT_FP32:
+      result = fill_quantized_holder<IndexMeta::DataType::DT_FP32, float>(
+          quantizer, cast_holder, alloc_dim, out_meta.dimension());
+      break;
+    case IndexMeta::DataType::DT_FP16:
+      result =
+          fill_quantized_holder<IndexMeta::DataType::DT_FP16, ailego::Float16>(
+              quantizer, cast_holder, alloc_dim, out_meta.dimension());
+      break;
+    case IndexMeta::DataType::DT_INT8:
+      result = fill_quantized_holder<IndexMeta::DataType::DT_INT8, int8_t>(
+          quantizer, cast_holder, alloc_dim, out_meta.dimension());
+      break;
+    default:
+      LOG_ERROR("Unsupported quantized data type %d",
+                static_cast<int>(out_meta.data_type()));
+      return IndexHolder::Pointer();
+  }
+  if (!result) {
+    return IndexHolder::Pointer();
+  }
 
   if (out_quantizer) {
     *out_quantizer = quantizer;
@@ -1141,8 +1212,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   }
   if (config_common["KeepDocs"] && config_common["KeepDocs"].as<uint32_t>()) {
     auto keep_docs = config_common["KeepDocs"].as<uint32_t>();
-    if (keep_docs < build_holder->end_cursor()) {
-      build_holder->set_start_cursor(build_holder->end_cursor() - keep_docs);
+    if (keep_docs < build_holder->count()) {
+      build_holder->set_start_cursor(build_holder->count() - keep_docs);
     }
   }
 

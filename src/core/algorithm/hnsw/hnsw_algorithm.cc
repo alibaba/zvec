@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_algorithm.h"
-#include <type_traits>
 
 namespace zvec {
 namespace core {
@@ -183,12 +182,12 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 
   HnswDistCalculator &dc = ctx->dist_calculator();
 
-  update_neighbors(dc, id, level, topk_heap);
+  update_neighbors(dc, id, level, topk_heap, ctx);
 
   // reverse update neighbors
   for (size_t i = 0; i < topk_heap.size(); ++i) {
     reverse_update_neighbors(dc, topk_heap[i].first, level, id,
-                             topk_heap[i].second, ctx->update_heap());
+                             topk_heap[i].second, ctx->update_heap(), ctx);
   }
 
   return;
@@ -200,11 +199,13 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 // Two specialized inner loops, dispatched from search_neighbors():
 //
 //   fast_search_neighbors:       mmap/contiguous with direct vector pointers.
-//                                Uses BlockHeap (AVX2) or LinearPool (scalar)
-//                                for visited tracking and top-k maintenance.
+//   fast_search_neighbors_buffer: BufferStorage with page-backed MemoryBlocks.
+//                                Both use BlockHeap (AVX2) or LinearPool
+//                                (scalar) for visited tracking and top-k
+//                                maintenance.
 //   dual_heap_search_neighbors:  CandidateHeap + TopkHeap + VisitFilter.
 //                                Used for add_node (use_pool=false), filtered
-//                                search, upper levels, and BufferPool fallback.
+//                                search and upper levels for every backend.
 // ============================================================================
 
 // mmap/contiguous variant: resolve vectors via get_vector_ptr and use
@@ -289,6 +290,90 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
                   has_extra_values ? neighbor_extra_values.data() : nullptr);
 
+    pool.push_block(dists.data(), neighbor_ids.data(),
+                    static_cast<int32_t>(unvisited_count));
+  }
+}
+
+// BufferStorage variant of the level-0 fast path.  It intentionally keeps the
+// MemoryBlocks alive through batch_dist(): a buffer-pool page may be evicted as
+// soon as its last block is released.  Apart from vector resolution, this is
+// the same graph traversal used by mmap, so selecting BufferStorage does not
+// silently switch HNSW to the slower dual-heap algorithm.
+template <typename EntityType, typename HeapType>
+void fast_search_neighbors_buffer(const EntityType &entity, HeapType &pool,
+                                  VisitFilter &visit, HnswDistCalculator &dc,
+                                  HnswContext *ctx, uint32_t topk, uint32_t ef,
+                                  node_id_t entry_point, dist_t entry_dist,
+                                  uint32_t prefetch_lines,
+                                  uint32_t prefetch_offset) {
+  using MemBlockType = typename EntityType::MemoryBlock;
+
+  const uint32_t max_deg = entity.max_degree(0);
+  const uint32_t cap = std::max(topk, ef);
+  pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
+  visit.clear();
+
+  visit.set_visited(entry_point);
+  pool.push_block(&entry_dist, &entry_point, 1);
+
+  uint32_t buf_capacity = max_deg;
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+  std::vector<MemBlockType> neighbor_vec_blocks;
+  neighbor_vec_blocks.reserve(buf_capacity);
+  const bool has_extra_values = ctx->has_extra_values();
+  std::vector<const void *> neighbor_extra_values(
+      has_extra_values ? buf_capacity : 0);
+
+  while (pool.has_next()) {
+    const auto current_node = pool.pop();
+    const auto neighbors = entity.get_neighbors_typed(0, current_node);
+    ailego_prefetch(neighbors.data);
+
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+      neighbor_vec_blocks.reserve(buf_capacity);
+      if (has_extra_values) {
+        neighbor_extra_values.resize(buf_capacity);
+      }
+    }
+
+    uint32_t unvisited_count = 0;
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      const node_id_t node = neighbors[i];
+      if (visit.visited(node)) continue;
+      visit.set_visited(node);
+      neighbor_ids[unvisited_count++] = node;
+    }
+    if (unvisited_count == 0) continue;
+
+    neighbor_vec_blocks.clear();
+    if (ailego_unlikely(entity.get_vector_typed(neighbor_ids.data(),
+                                                unvisited_count,
+                                                neighbor_vec_blocks) != 0)) {
+      break;
+    }
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      if (has_extra_values) {
+        neighbor_extra_values[i] = ctx->get_extra_values(neighbor_vecs[i]);
+      }
+    }
+    const uint32_t po = std::min(prefetch_offset, unvisited_count);
+    for (uint32_t i = 0; i < po; ++i) {
+      const char *p = static_cast<const char *>(neighbor_vecs[i]);
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        ailego_prefetch(p + cl * 64);
+      }
+    }
+
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
+                  has_extra_values ? neighbor_extra_values.data() : nullptr);
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
   }
@@ -447,8 +532,8 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 //
 // - add_node / filtered / upper levels  →  dual_heap_search_neighbors
 // - level-0 unfiltered search:
-//     MmapMemoryBlock  →  fast_search_neighbors (BlockHeap/LinearPool)
-//     BufferPool       →  dual_heap_search_neighbors (fallback)
+//     MmapMemoryBlock  →  fast_search_neighbors (direct pointers)
+//     BufferPool       →  fast_search_neighbors_buffer (pinned pages)
 // ============================================================================
 template <typename EntityType>
 void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
@@ -503,10 +588,27 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
         copy_pool_to_topk(lpool, topk);
       }
     } else {
-      // BufferPool entities: fallback to dual-heap path.
-      auto filter = [](node_id_t) { return false; };
-      dual_heap_search_neighbors<EntityType, MemBlockType>(
-          entity, level, entry_point, dist, topk, ctx, dc, filter);
+      const uint32_t prefetch_lines =
+          ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+      const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
+      const uint32_t ef_v = ctx->ef();
+      const bool avx2_ok =
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+      auto &visit = ctx->visit_filter();
+
+      if (avx2_ok) {
+        auto &bpool = ctx->block_pool();
+        fast_search_neighbors_buffer(entity, bpool, visit, dc, ctx, topk_v,
+                                     ef_v, *entry_point, *dist, prefetch_lines,
+                                     ctx->po());
+        copy_pool_to_topk(bpool, topk);
+      } else {
+        auto &lpool = ctx->pool();
+        fast_search_neighbors_buffer(entity, lpool, visit, dc, ctx, topk_v,
+                                     ef_v, *entry_point, *dist, prefetch_lines,
+                                     ctx->po());
+        copy_pool_to_topk(lpool, topk);
+      }
     }
   }
 }
@@ -641,7 +743,8 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 template <typename EntityType>
 void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
                                                  node_id_t id, level_t level,
-                                                 TopkHeap &topk_heap) {
+                                                 TopkHeap &topk_heap,
+                                                 HnswContext *ctx) {
   topk_heap.sort();
 
   uint32_t max_neighbor_cnt = entity_.neighbor_cnt(level);
@@ -653,24 +756,72 @@ void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
   }
 
   uint32_t cur_size = 0;
-  for (size_t i = 0; i < topk_heap.size(); ++i) {
-    node_id_t cur_node = topk_heap[i].first;
-    dist_t cur_node_dist = topk_heap[i].second;
-    bool good = true;
-    for (uint32_t j = 0; j < cur_size; ++j) {
-      dist_t tmp_dist = dc.dist(cur_node, topk_heap[j].first);
-      if (tmp_dist <= cur_node_dist) {
-        good = false;
-        break;
+  if constexpr (std::is_same_v<EntityType, HnswBufferPoolStreamerEntity>) {
+    const auto &read_entity =
+        static_cast<const EntityType &>(ctx->get_entity());
+    auto &prune_ids = ctx->prune_ids();
+    auto &prune_blocks = ctx->prune_blocks();
+    auto &selected_indices = ctx->prune_selected_indices();
+
+    prune_ids.clear();
+    prune_ids.reserve(topk_heap.size());
+    for (const auto &candidate : topk_heap) {
+      prune_ids.emplace_back(candidate.first);
+    }
+    prune_blocks.clear();
+    if (ailego_unlikely(read_entity.get_vector_for_prune(prune_ids.data(),
+                                                         prune_ids.size(),
+                                                         prune_blocks) != 0)) {
+      dc.set_error();
+      return;
+    }
+    selected_indices.clear();
+    selected_indices.reserve(max_neighbor_cnt);
+
+    for (size_t i = 0; i < topk_heap.size(); ++i) {
+      node_id_t cur_node = topk_heap[i].first;
+      dist_t cur_node_dist = topk_heap[i].second;
+      bool good = true;
+      for (const size_t selected : selected_indices) {
+        const dist_t pair_distance =
+            dc.dist(prune_blocks[i].data(), prune_blocks[selected].data());
+        if (pair_distance <= cur_node_dist) {
+          good = false;
+          break;
+        }
+      }
+
+      if (good) {
+        topk_heap.mutable_at(cur_size).first = cur_node;
+        topk_heap.mutable_at(cur_size).second = cur_node_dist;
+        selected_indices.emplace_back(i);
+        cur_size++;
+        if (cur_size >= max_neighbor_cnt) {
+          break;
+        }
       }
     }
+    prune_blocks.clear();
+  } else {
+    for (size_t i = 0; i < topk_heap.size(); ++i) {
+      node_id_t cur_node = topk_heap[i].first;
+      dist_t cur_node_dist = topk_heap[i].second;
+      bool good = true;
+      for (uint32_t j = 0; j < cur_size; ++j) {
+        dist_t tmp_dist = dc.dist(cur_node, topk_heap[j].first);
+        if (tmp_dist <= cur_node_dist) {
+          good = false;
+          break;
+        }
+      }
 
-    if (good) {
-      topk_heap.mutable_at(cur_size).first = cur_node;
-      topk_heap.mutable_at(cur_size).second = cur_node_dist;
-      cur_size++;
-      if (cur_size >= max_neighbor_cnt) {
-        break;
+      if (good) {
+        topk_heap.mutable_at(cur_size).first = cur_node;
+        topk_heap.mutable_at(cur_size).second = cur_node_dist;
+        cur_size++;
+        if (cur_size >= max_neighbor_cnt) {
+          break;
+        }
       }
     }
   }
@@ -705,60 +856,132 @@ void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
 template <typename EntityType>
 void HnswAlgorithm<EntityType>::reverse_update_neighbors(
     HnswDistCalculator &dc, node_id_t id, level_t level, node_id_t link_id,
-    dist_t dist, TopkHeap &update_heap) {
+    dist_t dist, TopkHeap &update_heap, HnswContext *ctx) {
   const size_t max_neighbor_cnt = entity_.neighbor_cnt(level);
 
-  uint32_t lock_idx = id & kLockMask;
-  lock_pool_[lock_idx].lock();
+  const uint32_t lock_idx = id & kLockMask;
+  std::unique_lock<std::mutex> node_lock(lock_pool_[lock_idx]);
   const Neighbors neighbors = entity_.get_neighbors(level, id);
-  size_t size = neighbors.size();
+  const size_t size = neighbors.size();
   ailego_assert_with(size <= max_neighbor_cnt, "invalid neighbor size");
   if (size < max_neighbor_cnt) {
     entity_.add_neighbor(level, id, size, link_id);
-    lock_pool_[lock_idx].unlock();
     return;
   }
 
-  update_heap.emplace(link_id, dist);
+  if constexpr (std::is_same_v<EntityType, HnswBufferPoolStreamerEntity>) {
+    const auto &read_entity =
+        static_cast<const EntityType &>(ctx->get_entity());
+    // A wide level-0 list can require O(M^2) pairwise comparisons.  Resolving
+    // each pair through HnswDistCalculator::dist(node_id, node_id) repeatedly
+    // pins and releases the same BufferStorage pages and dominates high-M
+    // construction.  Resolve the center and every candidate once, keep those
+    // blocks alive for the prune, and preserve the existing scalar pruning
+    // order exactly.
+    auto &candidate_ids = ctx->prune_ids();
+    auto &candidate_blocks = ctx->prune_blocks();
 
-  for (size_t i = 0; i < size; ++i) {
-    node_id_t node = neighbors[i];
-    dist_t cur_dist = dc.dist(id, node);
-    update_heap.emplace(node, cur_dist);
-  }
+    candidate_ids.clear();
+    candidate_ids.reserve(size + 2);
+    candidate_ids.emplace_back(id);
+    candidate_ids.emplace_back(link_id);
+    for (size_t i = 0; i < size; ++i) {
+      candidate_ids.emplace_back(neighbors[i]);
+    }
 
-  //! TODO: optimize prune
-  //! prune edges
-  update_heap.sort();
-  size_t cur_size = 0;
-  for (size_t i = 0; i < update_heap.size(); ++i) {
-    node_id_t cur_node = update_heap[i].first;
-    dist_t cur_node_dist = update_heap[i].second;
-    bool good = true;
-    for (size_t j = 0; j < cur_size; ++j) {
-      dist_t tmp_dist = dc.dist(cur_node, update_heap[j].first);
-      if (tmp_dist <= cur_node_dist) {
-        good = false;
-        break;
+    candidate_blocks.clear();
+    if (ailego_unlikely(read_entity.get_vector_for_prune(
+                            candidate_ids.data(), candidate_ids.size(),
+                            candidate_blocks) != 0)) {
+      dc.set_error();
+      return;
+    }
+
+    update_heap.clear();
+    // Use block indices until pruning is complete.  This keeps sorted heap
+    // entries directly associated with their pinned vectors without a hash
+    // map.
+    update_heap.emplace(1, dist);
+    for (size_t i = 0; i < size; ++i) {
+      const dist_t candidate_distance =
+          dc.dist(candidate_blocks[0].data(), candidate_blocks[i + 2].data());
+      update_heap.emplace(static_cast<node_id_t>(i + 2), candidate_distance);
+    }
+    update_heap.sort();
+
+    size_t selected_count = 0;
+    for (size_t i = 0; i < update_heap.size(); ++i) {
+      const node_id_t candidate_block_index = update_heap[i].first;
+      const dist_t candidate_distance = update_heap[i].second;
+      bool good = true;
+      if (selected_count != 0) {
+        for (size_t j = 0; j < selected_count; ++j) {
+          const dist_t pair_distance =
+              dc.dist(candidate_blocks[candidate_block_index].data(),
+                      candidate_blocks[update_heap[j].first].data());
+          if (pair_distance <= candidate_distance) {
+            good = false;
+            break;
+          }
+        }
+      }
+
+      if (good) {
+        update_heap.mutable_at(selected_count) = {candidate_block_index,
+                                                  candidate_distance};
+        ++selected_count;
+        if (selected_count >= max_neighbor_cnt) {
+          break;
+        }
       }
     }
 
-    if (good) {
-      update_heap.mutable_at(cur_size).first = cur_node;
-      update_heap.mutable_at(cur_size).second = cur_node_dist;
-      cur_size++;
-      if (cur_size >= max_neighbor_cnt) {
-        break;
+    update_heap.truncate(selected_count);
+    for (auto &selected : update_heap.mutable_container()) {
+      selected.first = candidate_ids[selected.first];
+    }
+    entity_.update_neighbors(level, id, update_heap.container());
+
+    node_lock.unlock();
+    update_heap.clear();
+    // Release BufferStorage pins before this worker consumes its next node.
+    candidate_blocks.clear();
+  } else {
+    update_heap.emplace(link_id, dist);
+    for (size_t i = 0; i < size; ++i) {
+      node_id_t node = neighbors[i];
+      dist_t cur_dist = dc.dist(id, node);
+      update_heap.emplace(node, cur_dist);
+    }
+
+    update_heap.sort();
+    size_t cur_size = 0;
+    for (size_t i = 0; i < update_heap.size(); ++i) {
+      node_id_t cur_node = update_heap[i].first;
+      dist_t cur_node_dist = update_heap[i].second;
+      bool good = true;
+      for (size_t j = 0; j < cur_size; ++j) {
+        dist_t tmp_dist = dc.dist(cur_node, update_heap[j].first);
+        if (tmp_dist <= cur_node_dist) {
+          good = false;
+          break;
+        }
+      }
+
+      if (good) {
+        update_heap.mutable_at(cur_size).first = cur_node;
+        update_heap.mutable_at(cur_size).second = cur_node_dist;
+        cur_size++;
+        if (cur_size >= max_neighbor_cnt) {
+          break;
+        }
       }
     }
+
+    update_heap.truncate(cur_size);
+    entity_.update_neighbors(level, id, update_heap.container());
+    update_heap.clear();
   }
-
-  update_heap.truncate(cur_size);
-  entity_.update_neighbors(level, id, update_heap.container());
-
-  lock_pool_[lock_idx].unlock();
-
-  update_heap.clear();
 
   return;
 }
