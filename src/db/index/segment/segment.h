@@ -65,6 +65,14 @@ class Segment {
 
   virtual SegmentMeta::Ptr meta() const = 0;
 
+  // Doc-id bounds for routing, read under the shared segment lock. Concurrent
+  // callers must use this instead of min/max_doc_id() off meta(), which
+  // Insert/flush() mutate.
+  virtual void doc_id_range(uint64_t *min_id, uint64_t *max_id) const = 0;
+
+  // Like doc_id_range(): total doc count read under the segment lock.
+  virtual uint64_t doc_count_snapshot() const = 0;
+
   // Count documents visible to an optional global-doc-ID filter.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
@@ -201,6 +209,11 @@ class Segment {
   virtual Status flush() = 0;
 
   virtual Status dump() = 0;
+
+  // Drops the writing forward block under the exclusive segment lock. Callers
+  // must use this instead of meta()->remove_writing_forward_block(): readers
+  // copy that block out of the meta, so an unlocked reset can free it mid-copy.
+  virtual void remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
 };

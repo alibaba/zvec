@@ -11,13 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <vector>
 #include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/turbo/turbo.h"
 
@@ -152,6 +155,137 @@ TEST(SquaredEuclideanMetric, RawFp16) {
   metric->batch_distance()(large_rows, zero_query.data(), 1, kDimension, batch,
                            nullptr);
   EXPECT_FLOAT_EQ(720000.0F, batch[0]);
+}
+
+namespace {
+
+void CheckRawFp16RefineBatches(turbo::CpuArchType arch,
+                               bool use_metric = false) {
+  const auto kernels = turbo::get_distance_kernels(
+      turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
+      turbo::QuantizeType::kRaw, arch);
+  if (!kernels.batch) {
+    GTEST_SKIP() << "Requested FP16 ISA is not available on this host";
+  }
+  constexpr size_t kCount = 65;
+  constexpr float kGuard = -12345.0f;
+  float untouched = kGuard;
+  kernels.batch(nullptr, nullptr, 0, 960, &untouched, nullptr);
+  EXPECT_EQ(kGuard, untouched);
+
+  for (size_t dimension :
+       {0, 1, 15, 16, 17, 31, 32, 33, 128, 511, 512, 513, 960, 961, 1024}) {
+    SCOPED_TRACE(dimension);
+    IndexMetric::MatrixBatchDistance batch = kernels.batch;
+    if (use_metric) {
+      auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+      ASSERT_TRUE(metric);
+      ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP16, dimension),
+                                ailego::Params()));
+      batch = metric->batch_distance();
+      ASSERT_TRUE(batch);
+    }
+    // Offset by one half to exercise unaligned rows as well as SIMD tails.
+    std::vector<uint16_t> query(dimension + 1);
+    std::vector<std::vector<uint16_t>> vectors(
+        kCount, std::vector<uint16_t>(dimension + 1));
+    std::vector<const void *> rows(kCount);
+    std::vector<double> expected(kCount, 0.0);
+    for (size_t d = 0; d < dimension; ++d) {
+      query[d + 1] = ailego::FloatHelper::ToFP16(
+          (static_cast<int>((d * 29) % 2047) - 1023) * 0.013f);
+    }
+    for (size_t row = 0; row < kCount; ++row) {
+      rows[row] = vectors[row].data() + 1;
+      for (size_t d = 0; d < dimension; ++d) {
+        vectors[row][d + 1] = ailego::FloatHelper::ToFP16(
+            (static_cast<int>((row * 37 + d * 19) % 2047) - 1023) * 0.013f);
+        const double delta =
+            static_cast<double>(ailego::FloatHelper::ToFP32(query[d + 1])) -
+            ailego::FloatHelper::ToFP32(vectors[row][d + 1]);
+        expected[row] += delta * delta;
+      }
+    }
+    // Covers both sides of 4/8/10/12/20/32 and every 3/2/1-row remainder.
+    for (size_t count = 0; count <= kCount; ++count) {
+      SCOPED_TRACE(count);
+      std::vector<float> actual(count + 2, kGuard);
+      batch(rows.data(), query.data() + 1, count, dimension, actual.data() + 1,
+            nullptr);
+      EXPECT_EQ(kGuard, actual.front());
+      EXPECT_EQ(kGuard, actual.back());
+      for (size_t row = 0; row < count; ++row) {
+        SCOPED_TRACE(row);
+        EXPECT_NEAR(expected[row], actual[row + 1],
+                    1e-5 * std::max(1.0, expected[row]));
+      }
+      if (use_metric) {
+        // The metric must use turbo for every batch size, including exactly
+        // twelve long rows, without falling back to an ailego matrix kernel.
+        std::vector<float> expected_batch(count);
+        kernels.batch(rows.data(), query.data() + 1, count, dimension,
+                      expected_batch.data(), nullptr);
+        for (size_t row = 0; row < count; ++row) {
+          EXPECT_FLOAT_EQ(expected_batch[row], actual[row + 1]);
+        }
+      }
+    }
+  }
+}
+
+}  // namespace
+
+TEST(SquaredEuclideanMetric, RawFp16RefineBatchesScalar) {
+  CheckRawFp16RefineBatches(turbo::CpuArchType::kScalar);
+}
+
+TEST(SquaredEuclideanMetric, RawFp16RefineBatchesAvx512) {
+  CheckRawFp16RefineBatches(turbo::CpuArchType::kAVX512);
+}
+
+TEST(SquaredEuclideanMetric, RawFp16RefineBatchesAuto) {
+  // Automatic selection must retain FP32 arithmetic on AVX512-FP16 hosts.
+  CheckRawFp16RefineBatches(turbo::CpuArchType::kAuto);
+}
+
+TEST(SquaredEuclideanMetric, RawFp16MetricBatchDispatch) {
+  CheckRawFp16RefineBatches(turbo::CpuArchType::kAuto, true);
+}
+
+TEST(SquaredEuclideanMetric, RawFp16KeepsFp32Arithmetic) {
+  // All inputs are exactly representable in FP16. Squaring 256 or summing
+  // enough squares of 64 overflows FP16, but must remain finite in FP32.
+  for (size_t dimension : {32, 128, 512, 960, 1024}) {
+    SCOPED_TRACE(dimension);
+    auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_TRUE(metric);
+    ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP16, dimension),
+                              ailego::Params()));
+    const auto distance = metric->distance();
+    const auto batch = metric->batch_distance();
+    ASSERT_TRUE(distance);
+    ASSERT_TRUE(batch);
+    const std::vector<uint16_t> query(dimension, 0);
+    for (float value : {64.0F, 256.0F}) {
+      SCOPED_TRACE(value);
+      const std::vector<uint16_t> vector(dimension,
+                                         ailego::FloatHelper::ToFP16(value));
+      const float expected = dimension * value * value;
+      float actual = 0.0F;
+      distance(vector.data(), query.data(), dimension, &actual);
+      EXPECT_FLOAT_EQ(expected, actual);
+      for (size_t count : {1, 11, 12, 13, 65}) {
+        SCOPED_TRACE(count);
+        std::vector<const void *> rows(count, vector.data());
+        std::vector<float> distances(count, 0.0F);
+        batch(rows.data(), query.data(), count, dimension, distances.data(),
+              nullptr);
+        for (float result : distances) {
+          EXPECT_FLOAT_EQ(expected, result);
+        }
+      }
+    }
+  }
 }
 
 TEST(SquaredEuclideanMetric, RawUint8ConversionSaturates) {

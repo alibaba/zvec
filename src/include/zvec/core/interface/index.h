@@ -179,6 +179,23 @@ class ZVEC_CORE_API Index {
   int _dense_search(const VectorData &query,
                     const BaseIndexQueryParam::Pointer &search_param,
                     SearchResult *result, core::IndexContext::Pointer &context);
+  int _prepare_dense_query(const VectorData &query, std::string *query_storage,
+                           const void **prepared_query,
+                           core::IndexQueryMeta *prepared_meta);
+  int _execute_dense_search(const void *query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            core::IndexContext::Pointer &context,
+                            std::vector<uint64_t> *candidate_keys = nullptr);
+  int _collect_dense_result(const VectorData &query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context);
+  int _refine_dense_candidates(const VectorData &query,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               const std::vector<std::vector<uint64_t>> &keys,
+                               SearchResult *result);
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) = 0;
