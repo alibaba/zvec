@@ -65,10 +65,8 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
     return ret;
   }
 
-  auto &topk_heap = ctx->topk_heap();
-
   // Step 2: RobustPrune to select diverse neighbors
-  robust_prune(id, topk_heap, entity_.alpha(), entity_.max_degree(), ctx);
+  robust_prune(id, build_heap, entity_.alpha(), entity_.max_degree(), ctx);
   // Copy result before reverse updates (which also call robust_prune)
   auto pruned_neighbors = ctx->prune_result();
 
@@ -410,7 +408,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
-  auto &topk_heap = ctx->topk_heap();
+  auto &topk_heap = ctx->search_heap().topk();
   candidates.clear();
   visit.clear();
 
@@ -625,7 +623,7 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
     return ret;
   }
 
-  const TopkHeap &search_candidates = ctx->topk_heap();
+  const TopkHeap &search_candidates = build_heap;
   const Neighbors current_neighbors = entity_.get_neighbors(id);
 
   // Unlike add_node(), the node being refined is already visible in the

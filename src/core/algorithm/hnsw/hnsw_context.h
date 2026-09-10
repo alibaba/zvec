@@ -334,10 +334,6 @@ class HnswContext : public IndexContext {
         vector, vector == nullptr ? nullptr : get_extra_values(vector));
   }
 
-  inline TopkHeap &topk_heap() {
-    return search_heap_.topk();
-  }
-
   inline TopkHeap &update_heap() {
     return update_heap_;
   }

@@ -149,10 +149,10 @@ jobs:
           df -h /
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . \
-            --target shared_api_test c_api_test \
+            --target shared_api_test c_api_test search_heap_test graph_search_heap_test \
             --parallel "$NPROC"
           ctest --output-on-failure \
-            -R '^(shared_api_test|c_api_test)$' \
+            -R '^(shared_api_test|c_api_test|search_heap_test|graph_search_heap_test)$' \
             --parallel 1
         shell: bash
 

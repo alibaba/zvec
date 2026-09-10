@@ -139,9 +139,6 @@ class VamanaContext : public IndexContext {
       const IndexMetric::MatrixBatchDistance &batch_distance) {
     dc_.update_distance(distance, batch_distance);
   }
-  inline TopkHeap &topk_heap() {
-    return search_heap_.topk();
-  }
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
