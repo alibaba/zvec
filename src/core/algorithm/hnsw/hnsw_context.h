@@ -170,6 +170,22 @@ class HnswContext : public IndexContext {
     }
   }
 
+  // The output buffer belongs to one search_candidates_impl call.
+  void set_candidate_output(std::vector<uint64_t> *keys) {
+    candidate_keys_ = keys;
+    pool_candidates_ready_ = false;
+  }
+
+  template <typename Pool, typename Entity>
+  bool copy_pool_candidates(const Pool &pool, const Entity &entity) {
+    if (!candidate_keys_ || force_padding_topk_ || group_by_search()) {
+      return false;
+    }
+    pool_candidates_ready_ = copy_pool_to_keys(
+        pool, entity, topk_, this->threshold(), *candidate_keys_);
+    return pool_candidates_ready_;
+  }
+
   inline void recal_topk_dist() {
     TopkHeap heap(topk_heap_);
     topk_heap_.clear();
@@ -182,6 +198,7 @@ class HnswContext : public IndexContext {
   }
 
   inline void topk_to_single_result(uint32_t idx) {
+    if (pool_candidates_ready_) return;
     if (force_padding_topk_ && !topk_heap_.full() &&
         topk_heap_.size() < entity_->doc_cnt()) {
       this->fill_random_to_topk_full();
@@ -202,7 +219,9 @@ class HnswContext : public IndexContext {
       }
 
       node_id_t id = topk_heap_[i].first;
-      if (fetch_vector_) {
+      if (candidate_keys_) {
+        candidate_keys_->push_back(entity_->get_key(id));
+      } else if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
         results_[idx].emplace_back(entity_->get_key(id), score, id, block);
@@ -506,6 +525,7 @@ class HnswContext : public IndexContext {
   }
 
   inline void clear() {
+    pool_candidates_ready_ = false;
     dc_.clear();
     if (ailego_unlikely(this->debugging())) {
       stats_get_neighbors_cnt_ = 0u;
@@ -609,6 +629,8 @@ class HnswContext : public IndexContext {
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};
+  std::vector<uint64_t> *candidate_keys_{nullptr};
+  bool pool_candidates_ready_{false};
   uint32_t max_scan_num_{0};
   uint32_t max_scan_limit_{0};
   uint32_t min_scan_limit_{0};

@@ -684,6 +684,21 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return search_impl(query, qmeta, 1, context);
 }
 
+int VamanaStreamer::search_candidates_impl(const void *query,
+                                           const IndexQueryMeta &qmeta,
+                                           std::vector<uint64_t> &keys,
+                                           Context::Pointer &context) const {
+  keys.clear();
+  auto *ctx = dynamic_cast<VamanaContext *>(context.get());
+  if (!ctx) return IndexError_Cast;
+  ctx->set_candidate_output(&keys);
+  // A user filter can throw; never leave its caller-owned output attached.
+  AILEGO_DEFER([&]() { ctx->set_candidate_output(nullptr); });
+  const int ret = search_impl(query, qmeta, 1, context);
+  if (ret != 0) keys.clear();
+  return ret;
+}
+
 int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                 uint32_t count,
                                 Context::Pointer &context) const {

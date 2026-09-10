@@ -512,7 +512,8 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 //
 // Unfiltered mmap/contiguous queries use fast_greedy_search. Construction,
 // filtered queries and BufferPool use dual_heap_greedy_search, which enforces
-// the scan limit. Both paths accumulate results in ctx->topk_heap().
+// the scan limit. Candidate-only searches can export an ordered pool directly;
+// other searches accumulate results in ctx->topk_heap().
 // ============================================================================
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
@@ -571,7 +572,9 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                           entry_point, prefetch_lines,
                                           ctx->po(), visit);
               }
-              copy_pool_to_topk(pool, topk_heap);
+              if (!ctx->copy_pool_candidates(pool, entity)) {
+                copy_pool_to_topk(pool, topk_heap);
+              }
             };
             if (avx2_ok) {
               run_with_pool(ctx->block_pool());

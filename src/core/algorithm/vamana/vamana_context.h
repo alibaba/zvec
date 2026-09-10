@@ -119,6 +119,20 @@ class VamanaContext : public IndexContext {
 
   void topk_to_result(uint32_t idx);
 
+  // The output buffer belongs to one search_candidates_impl call.
+  void set_candidate_output(std::vector<uint64_t> *keys) {
+    candidate_keys_ = keys;
+    pool_candidates_ready_ = false;
+  }
+
+  template <typename Pool, typename Entity>
+  bool copy_pool_candidates(const Pool &pool, const Entity &entity) {
+    if (!candidate_keys_ || force_padding_topk_) return false;
+    pool_candidates_ready_ = copy_pool_to_keys(
+        pool, entity, topk_, this->threshold(), *candidate_keys_);
+    return pool_candidates_ready_;
+  }
+
   inline void reset_query(const void *query) {
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
         query_preprocess_func != nullptr) {
@@ -318,6 +332,7 @@ class VamanaContext : public IndexContext {
   }
 
   inline void clear() {
+    pool_candidates_ready_ = false;
     dc_.clear();
     for (auto &it : results_) {
       it.clear();
@@ -355,6 +370,8 @@ class VamanaContext : public IndexContext {
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};
+  std::vector<uint64_t> *candidate_keys_{nullptr};
+  bool pool_candidates_ready_{false};
   uint32_t max_scan_num_{0};
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};

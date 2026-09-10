@@ -495,12 +495,16 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
         auto &bpool = ctx->block_pool();
         fast_search_neighbors(entity, bpool, visit, dc, ctx, topk_v, ef_v,
                               *entry_point, *dist, prefetch_lines, ctx->po());
-        copy_pool_to_topk(bpool, topk);
+        if (!ctx->copy_pool_candidates(bpool, entity)) {
+          copy_pool_to_topk(bpool, topk);
+        }
       } else {
         auto &lpool = ctx->pool();
         fast_search_neighbors(entity, lpool, visit, dc, ctx, topk_v, ef_v,
                               *entry_point, *dist, prefetch_lines, ctx->po());
-        copy_pool_to_topk(lpool, topk);
+        if (!ctx->copy_pool_candidates(lpool, entity)) {
+          copy_pool_to_topk(lpool, topk);
+        }
       }
     } else {
       // BufferPool entities: fallback to dual-heap path.

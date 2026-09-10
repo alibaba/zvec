@@ -19,6 +19,7 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <stdexcept>
 #include <unordered_map>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
@@ -32,6 +33,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
@@ -1588,6 +1590,314 @@ TEST(IndexInterface, HnswNativeRefineMatchesExplicitCandidates) {
   }
   ASSERT_EQ(0, coarse->close());
   zvec::test_util::RemoveTestFiles(coarse_path);
+}
+
+namespace {
+
+BaseIndexParam::Pointer GraphRefineIndexParam(bool vamana, bool contiguous) {
+  if (vamana) {
+    return VamanaIndexParamBuilder()
+        .with_metric_type(MetricType::kL2sq)
+        .with_data_type(DataType::DT_FP32)
+        .with_dimension(16)
+        .with_max_degree(16)
+        .with_search_list_size(64)
+        .with_max_occlusion_size(64)
+        .with_two_pass_build(true)
+        .with_use_contiguous_memory(contiguous)
+        .build();
+  }
+  return HNSWIndexParamBuilder()
+      .with_metric_type(MetricType::kL2sq)
+      .with_data_type(DataType::DT_FP32)
+      .with_dimension(16)
+      .with_m(16)
+      .with_ef_construction(64)
+      .with_use_contiguous_memory(contiguous)
+      .build();
+}
+
+BaseIndexQueryParam::Pointer GraphRefineQueryParam(bool vamana, uint32_t topk,
+                                                   uint32_t ef) {
+  if (vamana) {
+    return VamanaQueryParamBuilder().with_topk(topk).with_ef_search(ef).build();
+  }
+  return HNSWQueryParamBuilder().with_topk(topk).with_ef_search(ef).build();
+}
+
+}  // namespace
+
+TEST(IndexInterface, GraphCandidateOutputMatchesSearchAndReusesContext) {
+  constexpr uint32_t kCount = 64;
+  const std::string path = "graph_candidate_output.index";
+  for (bool vamana : {true, false}) {
+    for (bool contiguous : {false, true}) {
+      for (bool ties : {false, true}) {
+        SCOPED_TRACE(vamana);
+        SCOPED_TRACE(contiguous);
+        SCOPED_TRACE(ties);
+        zvec::test_util::RemoveTestFiles(path);
+        auto index = IndexFactory::CreateAndInitIndex(
+            *GraphRefineIndexParam(vamana, contiguous));
+        ASSERT_TRUE(index);
+        ASSERT_EQ(
+            0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+        std::vector<float> vector(16, 0.0f);
+        for (uint32_t id = 0; id < kCount; ++id) {
+          vector[0] = float(ties ? id % 8 : id);
+          ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, id));
+        }
+        if (vamana) {
+          auto *streamer = dynamic_cast<zvec::core::VamanaStreamer *>(
+              index->index_searcher().get());
+          ASSERT_NE(nullptr, streamer);
+          ASSERT_EQ(0, streamer->finalize_build());
+        }
+        ASSERT_EQ(0, index->flush());
+        ASSERT_EQ(0, index->close());
+        index = IndexFactory::CreateAndInitIndex(
+            *GraphRefineIndexParam(vamana, contiguous));
+        ASSERT_TRUE(index);
+        ASSERT_EQ(
+            0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+        auto streamer = index->index_searcher();
+        auto context = streamer->create_context();
+        auto *vctx = dynamic_cast<zvec::core::VamanaContext *>(context.get());
+        auto *hctx = dynamic_cast<zvec::core::HnswContext *>(context.get());
+        ASSERT_TRUE(vamana ? vctx != nullptr : hctx != nullptr);
+        if (contiguous) {
+          if (vctx) {
+            const auto *entity = dynamic_cast<
+                const zvec::core::VamanaContiguousStreamerEntity *>(
+                &vctx->get_entity());
+            ASSERT_NE(nullptr, entity);
+            ASSERT_TRUE(entity->is_contiguous());
+          } else {
+            const auto *entity =
+                dynamic_cast<const zvec::core::HnswContiguousStreamerEntity *>(
+                    &hctx->get_entity());
+            ASSERT_NE(nullptr, entity);
+            ASSERT_TRUE(entity->is_contiguous());
+          }
+        }
+        vector[0] = 0.25f;
+        const zvec::core::IndexQueryMeta meta(zvec::core::IndexMeta::DT_FP32,
+                                              16);
+        for (uint32_t topk : {0U, 1U, 12U, 32U, 80U}) {
+          for (int mode : {0, 1, 2, 3, 4, 0}) {
+            for (bool fetch_vector : {false, true}) {
+              SCOPED_TRACE(topk);
+              SCOPED_TRACE(mode);
+              SCOPED_TRACE(fetch_vector);
+              if (vctx) {
+                vctx->set_ef(kCount);
+                vctx->set_force_padding_topk(mode == 3);
+              } else {
+                hctx->set_ef(kCount);
+                hctx->set_force_padding_topk(mode == 3);
+              }
+              context->set_topk(topk);
+              context->set_fetch_vector(fetch_vector);
+              context->set_bruteforce_threshold(mode == 4 ? kCount : 0);
+              context->reset_filter();
+              context->reset_threshold();
+              if (mode == 1 || mode == 3) {
+                context->set_filter([](uint64_t key) { return key >= 32; });
+              }
+              if (mode == 2) context->set_threshold(16.0f);
+              ASSERT_EQ(0,
+                        streamer->search_impl(vector.data(), meta, 1, context));
+              std::vector<uint64_t> expected;
+              for (const auto &doc : context->result())
+                expected.push_back(doc.key());
+              const auto scans =
+                  vctx ? vctx->get_scan_num() : hctx->get_scan_num();
+              std::vector<uint64_t> keys{999};
+              ASSERT_EQ(0, streamer->search_candidates_impl(vector.data(), meta,
+                                                            keys, context));
+              EXPECT_EQ(expected, keys);
+              EXPECT_TRUE(context->result().empty());
+              EXPECT_EQ(scans,
+                        vctx ? vctx->get_scan_num() : hctx->get_scan_num());
+              if (!ties && (mode == 0 || mode == 2)) {
+                EXPECT_TRUE(vctx ? vctx->topk_heap().empty()
+                                 : hctx->topk_heap().empty());
+              }
+              // Candidate mode must not escape the call or retain the buffer.
+              ASSERT_EQ(0,
+                        streamer->search_impl(vector.data(), meta, 1, context));
+              ASSERT_EQ(expected.size(), context->result().size());
+              for (size_t i = 0; i < expected.size(); ++i) {
+                EXPECT_EQ(expected[i], context->result()[i].key());
+              }
+              EXPECT_EQ(expected, keys);
+            }
+          }
+        }
+        std::vector<uint64_t> keys{999};
+        const zvec::core::IndexQueryMeta invalid_meta(
+            zvec::core::IndexMeta::DT_FP32, 17);
+        EXPECT_NE(0, streamer->search_candidates_impl(
+                         vector.data(), invalid_meta, keys, context));
+        EXPECT_TRUE(keys.empty());
+        ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, 1, context));
+        EXPECT_FALSE(context->result().empty());
+        EXPECT_TRUE(keys.empty());
+        zvec::core::IndexContext::Pointer invalid_context;
+        keys.push_back(999);
+        EXPECT_NE(0, streamer->search_candidates_impl(vector.data(), meta, keys,
+                                                      invalid_context));
+        EXPECT_TRUE(keys.empty());
+        context->set_filter([](uint64_t) -> bool {
+          throw std::runtime_error("test filter failure");
+        });
+        EXPECT_THROW(streamer->search_candidates_impl(vector.data(), meta, keys,
+                                                      context),
+                     std::runtime_error);
+        context->reset_filter();
+        keys.clear();
+        ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, 1, context));
+        EXPECT_FALSE(context->result().empty());
+        EXPECT_TRUE(keys.empty());
+        if (hctx) {
+          hctx->set_group_params(1, 1);
+          EXPECT_EQ(int(zvec::core::IndexError_Unsupported),
+                    streamer->search_candidates_impl(vector.data(), meta, keys,
+                                                     context));
+          EXPECT_TRUE(keys.empty());
+          hctx->set_group_params(0, 0);
+        }
+        ASSERT_EQ(0, index->close());
+        zvec::test_util::RemoveTestFiles(path);
+      }
+    }
+  }
+}
+
+TEST(IndexInterface, GraphRefineScaleFactorControlsCandidateCount) {
+  constexpr uint32_t kCount = 64;
+  constexpr uint32_t kTopk = 5;
+  const std::string coarse_path = "graph_refine_scale_coarse.index";
+  const std::string fine_path = "graph_refine_scale_fine.index";
+  for (bool vamana : {true, false}) {
+    SCOPED_TRACE(vamana);
+    zvec::test_util::RemoveTestFiles(coarse_path);
+    auto coarse_index_param = GraphRefineIndexParam(vamana, true);
+    coarse_index_param->quantizer_param =
+        std::make_shared<QuantizerParam>(QuantizerType::kInt8);
+    auto coarse = IndexFactory::CreateAndInitIndex(*coarse_index_param);
+    ASSERT_TRUE(coarse);
+    ASSERT_EQ(0, coarse->open(coarse_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<float> vector(16, 0.0f);
+    for (uint32_t id = 0; id < kCount; ++id) {
+      vector[0] = float(id);
+      ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vector.data()}}, id));
+    }
+    if (vamana) {
+      auto *streamer = dynamic_cast<zvec::core::VamanaStreamer *>(
+          coarse->index_searcher().get());
+      ASSERT_NE(nullptr, streamer);
+      ASSERT_EQ(0, streamer->finalize_build());
+    }
+    ASSERT_EQ(0, coarse->flush());
+    ASSERT_EQ(0, coarse->close());
+    coarse = IndexFactory::CreateAndInitIndex(*coarse_index_param);
+    ASSERT_TRUE(coarse);
+    ASSERT_EQ(0, coarse->open(coarse_path,
+                              {StorageOptions::StorageType::kMMAP, false}));
+    for (auto type : {DataType::DT_FP16, DataType::DT_UINT8}) {
+      SCOPED_TRACE(static_cast<int>(type));
+      zvec::test_util::RemoveTestFiles(fine_path);
+      auto fine_param = FlatIndexParamBuilder()
+                            .with_metric_type(MetricType::kL2sq)
+                            .with_data_type(DataType::DT_FP32)
+                            .with_storage_data_type(type)
+                            .with_dimension(16)
+                            .with_use_contiguous_memory(true)
+                            .build();
+      auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+      ASSERT_TRUE(fine);
+      ASSERT_EQ(
+          0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+      // Reverse the fine ranking so refining too many or too few candidates
+      // changes the winning key. This verifies behavior, not just the formula.
+      for (uint32_t id = 0; id < kCount; ++id) {
+        vector[0] = float(kCount - id);
+        ASSERT_EQ(0, fine->add(VectorData{DenseVector{vector.data()}}, id));
+      }
+      ASSERT_EQ(0, fine->flush());
+      ASSERT_EQ(0, fine->close());
+      fine = IndexFactory::CreateAndInitIndex(*fine_param);
+      ASSERT_TRUE(fine);
+      ASSERT_EQ(0, fine->open(fine_path,
+                              {StorageOptions::StorageType::kMMAP, false}));
+      vector[0] = 0.25f;
+      const VectorData query{DenseVector{vector.data()}};
+      auto refiner = std::make_shared<RefinerParam>();
+      refiner->reference_index = fine;
+      for (uint32_t ef : {16U, 64U}) {
+        for (float scale :
+             {0.0f, 1.0f, 2.0f, 2.5f, 3.2f, 8.0f, 20.0f, 0.5f, 0.1f, 2.0f}) {
+          SCOPED_TRACE(ef);
+          SCOPED_TRACE(scale);
+          refiner->scale_factor_ = scale;
+          const uint32_t count = static_cast<uint32_t>(
+              std::floor(kTopk * (scale == 0 ? 1.0f : scale)));
+          auto coarse_param = GraphRefineQueryParam(vamana, count, ef);
+          SearchResult candidates;
+          ASSERT_EQ(0, coarse->search(query, coarse_param, &candidates));
+          ASSERT_EQ(std::min(count, kCount), candidates.doc_list_.size());
+          auto explicit_param = FlatQueryParamBuilder()
+                                    .with_topk(kTopk)
+                                    .with_fetch_vector(true)
+                                    .build();
+          explicit_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+          for (const auto &doc : candidates.doc_list_)
+            explicit_param->bf_pks->push_back(doc.key());
+          SearchResult expected;
+          ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+          auto param = GraphRefineQueryParam(vamana, kTopk, ef);
+          param->refiner_param = refiner;
+          param->fetch_vector = true;
+          SearchResult actual;
+          ASSERT_EQ(0, coarse->search(query, param, &actual));
+          ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+          for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+            EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+            EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                            actual.doc_list_[i].score());
+          }
+          EXPECT_EQ(expected.reverted_vector_list_,
+                    actual.reverted_vector_list_);
+          if (!actual.doc_list_.empty()) {
+            EXPECT_EQ(std::min(count, kCount) - 1, actual.doc_list_[0].key());
+          }
+        }
+      }
+      auto param = GraphRefineQueryParam(vamana, kTopk, 64);
+      param->refiner_param = refiner;
+      SearchResult result;
+      for (float invalid :
+           {-1.0f, (std::numeric_limits<float>::infinity)(),
+            std::numeric_limits<float>::quiet_NaN(),
+            (std::numeric_limits<float>::max)(),
+            static_cast<float>((std::numeric_limits<int>::max)())}) {
+        SCOPED_TRACE(invalid);
+        refiner->scale_factor_ = invalid;
+        EXPECT_EQ(int(zvec::core::IndexError_InvalidArgument),
+                  coarse->search(query, param, &result));
+        refiner->scale_factor_ = 2.0f;
+        ASSERT_EQ(0, coarse->search(query, param, &result));
+        ASSERT_EQ(kTopk, result.doc_list_.size());
+        EXPECT_EQ(9U, result.doc_list_[0].key());
+      }
+      ASSERT_EQ(0, fine->close());
+      zvec::test_util::RemoveTestFiles(fine_path);
+    }
+    ASSERT_EQ(0, coarse->close());
+    zvec::test_util::RemoveTestFiles(coarse_path);
+  }
 }
 
 TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {

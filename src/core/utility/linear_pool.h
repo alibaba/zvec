@@ -262,5 +262,25 @@ void copy_pool_to_topk(const PoolType &pool, TopkType &topk) {
   }
 }
 
+// Export an ordered pool without rebuilding a heap or materializing documents.
+// Equal distances must retain the ordinary heap's ordering and cutoff, so let
+// the caller use that path for ties, without repeating the graph search.
+template <typename PoolType, typename EntityType>
+inline bool copy_pool_to_keys(const PoolType &pool, const EntityType &entity,
+                              uint32_t topk, float threshold,
+                              std::vector<uint64_t> &keys) {
+  const int32_t size = static_cast<int32_t>(pool.size());
+  for (int32_t i = 1; i < size; ++i) {
+    if (!(pool.dist(i - 1) < pool.dist(i))) return false;
+  }
+  const uint32_t count = std::min(topk, static_cast<uint32_t>(size));
+  keys.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (pool.dist(i) > threshold) break;
+    keys.push_back(entity.get_key(pool.id(i)));
+  }
+  return true;
+}
+
 }  // namespace core
 }  // namespace zvec
