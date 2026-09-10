@@ -104,11 +104,12 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
-  // Dispatch only the visit filter. search_neighbors selects the query heap;
-  // construction supplies its independent per-level heap.
+  // Dispatch the already initialized heap and visit filter to concrete types.
+  // Construction supplies its independent per-level TopkHeap directly.
   template <typename HeapStorage>
-  int dispatch_search(level_t level, node_id_t *entry_point, dist_t *dist,
-                      HeapStorage &target_heap, HnswContext *ctx) const;
+  int dispatch_search_neighbors(level_t level, node_id_t *entry_point,
+                                dist_t *dist, HeapStorage &target_heap,
+                                HnswContext *ctx) const;
 
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
@@ -118,12 +119,11 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
                      HnswContext *ctx);
 
-  // Resolve filtering and initialize the required heap before entering the
-  // fast or dual-heap kernel. A query SearchHeap need not be preselected.
-  template <typename HeapStorage, typename Visit>
+  // Accept only concrete heap/visit types. Resolve the result filter and call
+  // the fast or dual-heap kernel without selecting or resetting heap storage.
+  template <typename Heap, typename Visit>
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        HeapStorage &target_heap, Visit visit,
-                        HnswContext *ctx) const;
+                        Heap &heap, Visit visit, HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,

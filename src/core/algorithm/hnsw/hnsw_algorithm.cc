@@ -48,8 +48,10 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
 
   for (; cur_level >= 0; --cur_level) {
-    int ret = dispatch_search(cur_level, &entry_point, &dist,
-                              ctx->level_topk(cur_level), ctx);
+    auto &heap = ctx->level_topk(cur_level);
+    heap.clear();
+    int ret =
+        dispatch_search_neighbors(cur_level, &entry_point, &dist, heap, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (level > cur_max_level) mutex_.unlock();
       return ret;
@@ -75,9 +77,6 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 
 template <typename EntityType>
 int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
-  // Clear stale results even if an empty graph or invalid visit filter prevents
-  // search_neighbors from running. The heap type is selected there, not here.
-  ctx->search_heap().clear();
   spin_lock_.lock();
   auto maxLevel = entity_.cur_max_level();
   auto entry_point = entity_.entry_point();
@@ -92,7 +91,20 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
-  int ret = dispatch_search(0, &entry_point, &dist, ctx->search_heap(), ctx);
+  auto &heap = ctx->search_heap();
+  const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
+  if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+    if (!ctx->filter().is_valid()) {
+      const bool avx2_ok =
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+      heap.reset_pool(avx2_ok, capacity, entity_.max_degree(0));
+    } else {
+      heap.reset<TopkHeap>(capacity);
+    }
+  } else {
+    heap.reset<TopkHeap>(capacity);
+  }
+  int ret = dispatch_search_neighbors(0, &entry_point, &dist, heap, ctx);
   if (ailego_unlikely(ret != 0)) return ret;
 
   if (ctx->group_by_search()) {
@@ -105,14 +117,26 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 
 template <typename EntityType>
 template <typename HeapStorage>
-int HnswAlgorithm<EntityType>::dispatch_search(level_t level,
-                                               node_id_t *entry_point,
-                                               dist_t *dist,
-                                               HeapStorage &target_heap,
-                                               HnswContext *ctx) const {
+int HnswAlgorithm<EntityType>::dispatch_search_neighbors(
+    level_t level, node_id_t *entry_point, dist_t *dist,
+    HeapStorage &target_heap, HnswContext *ctx) const {
   const bool dispatched =
       dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
-        search_neighbors(level, entry_point, dist, target_heap, visit, ctx);
+        auto run_with_heap = [&](auto &heap) {
+          search_neighbors(level, entry_point, dist, heap, visit, ctx);
+        };
+        if constexpr (std::is_same_v<HeapStorage, SearchHeap>) {
+          if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+            target_heap.dispatch(run_with_heap);
+          } else {
+            // BufferPool/external entities only support the prepared TopkHeap.
+            run_with_heap(target_heap.topk());
+          }
+        } else {
+          // Construction already supplies a concrete per-level TopkHeap.
+          static_assert(std::is_same_v<HeapStorage, TopkHeap>);
+          run_with_heap(target_heap);
+        }
       });
   if (ailego_unlikely(!dispatched)) {
     LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
@@ -466,65 +490,43 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 }
 
 // ============================================================================
-// search_neighbors: Select and initialize the heap at the kernel boundary.
-// Construction, filtered search, upper levels and BufferPool use dual heaps;
-// unfiltered mmap/contiguous level-0 queries use BlockHeap or LinearPool.
+// search_neighbors: Execute with the concrete heap selected by the caller.
+// TopkHeap uses the dual-heap kernel; BlockHeap/LinearPool use the fast kernel.
 // ============================================================================
 template <typename EntityType>
-template <typename HeapStorage, typename Visit>
-void HnswAlgorithm<EntityType>::search_neighbors(
-    level_t level, node_id_t *entry_point, dist_t *dist,
-    HeapStorage &target_heap, Visit visit, HnswContext *ctx) const {
+template <typename Heap, typename Visit>
+void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
+                                                 node_id_t *entry_point,
+                                                 dist_t *dist, Heap &heap,
+                                                 Visit visit,
+                                                 HnswContext *ctx) const {
+  static_assert(std::is_same_v<Heap, TopkHeap> ||
+                std::is_same_v<Heap, LinearPool<float>> ||
+                std::is_same_v<Heap, BlockHeap>);
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
-  const auto &index_filter = ctx->filter();
-  const bool has_filter = index_filter.is_valid();
-  constexpr bool kCanUsePool = std::is_same_v<HeapStorage, SearchHeap> &&
-                               std::is_same_v<MemBlockType, MmapMemoryBlock>;
   visit.clear();
   ctx->candidates().clear();
 
-  if (!kCanUsePool || has_filter || level != 0) {
-    TopkHeap *topk = nullptr;
-    if constexpr (std::is_same_v<HeapStorage, SearchHeap>) {
-      topk = &target_heap.template reset<TopkHeap>(
-          std::max(ctx->topk(), ctx->ef()));
-    } else {
-      // Keep the construction capacity and independent result for each level.
-      static_assert(std::is_same_v<HeapStorage, TopkHeap>);
-      target_heap.clear();
-      topk = &target_heap;
-    }
-    if (has_filter) {
+  if constexpr (std::is_same_v<Heap, TopkHeap>) {
+    const auto &index_filter = ctx->filter();
+    if (index_filter.is_valid()) {
       auto filter = [&](node_id_t id) {
         return index_filter(entity.get_key_typed(id));
       };
       dual_heap_search_neighbors<EntityType, MemBlockType>(
-          entity, level, entry_point, dist, *topk, ctx, dc, visit, filter);
+          entity, level, entry_point, dist, heap, ctx, dc, visit, filter);
     } else {
       dual_heap_search_neighbors<EntityType, MemBlockType>(
-          entity, level, entry_point, dist, *topk, ctx, dc, visit,
+          entity, level, entry_point, dist, heap, ctx, dc, visit,
           [](node_id_t) { return false; });
     }
   } else {
-    if constexpr (kCanUsePool) {
-      const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
-      const uint32_t prefetch_lines =
-          ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
-      const bool avx2_ok =
-          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-      if (avx2_ok) {
-        auto &pool = target_heap.template reset<BlockHeap>(
-            capacity, entity.max_degree(0));
-        fast_search_neighbors(entity, pool, visit, dc, ctx, *entry_point, *dist,
-                              prefetch_lines, ctx->po());
-      } else {
-        auto &pool = target_heap.template reset<LinearPool<float>>(
-            capacity, entity.max_degree(0));
-        fast_search_neighbors(entity, pool, visit, dc, ctx, *entry_point, *dist,
-                              prefetch_lines, ctx->po());
-      }
-    }
+    static_assert(std::is_same_v<MemBlockType, MmapMemoryBlock>);
+    const uint32_t prefetch_lines =
+        ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+    fast_search_neighbors(entity, heap, visit, dc, ctx, *entry_point, *dist,
+                          prefetch_lines, ctx->po());
   }
 }
 
