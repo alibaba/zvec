@@ -179,16 +179,13 @@ struct KernelSet {
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
-    // --- raw physical storage (AVX512-FP16/AVX512, then scalar fallback) ---
+    // --- raw physical storage (AVX512, then scalar fallback) ---
+    // FP16 storage uses FP32 arithmetic, including on AVX512-FP16 hosts.
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
      avx512_vnni::squared_euclidean_uint8_batch_distance, nullptr,
      kCpuFeatureAvx512Bw},
-    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512FP16,
-     MetricType::kSquaredEuclidean,
-     avx512_fp16::squared_euclidean_fp16_distance,
-     avx512_fp16::squared_euclidean_fp16_batch_distance, nullptr},
     {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_fp16_distance,
