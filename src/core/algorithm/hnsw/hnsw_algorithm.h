@@ -126,8 +126,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
                         Heap &heap, Visit visit, HnswContext *ctx) const;
 
-  // Filtered search always uses the dual heap. The existing filter consumes
-  // primary keys; the kernel maps node IDs only on this path.
+  // Filtered search always uses the dual heap. This path maps node IDs to
+  // primary keys for the existing exclusion filter.
   template <typename Visit>
   void search_neighbors_with_filter(level_t level, node_id_t *entry_point,
                                     dist_t *dist, TopkHeap &heap, Visit visit,
