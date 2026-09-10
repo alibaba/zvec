@@ -108,7 +108,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   // select the heap, so dispatch does not resolve that policy again.
   bool prepare_search(HnswContext *ctx) const;
 
-  // Resolve all concrete types once, then enter search_neighbors.
+  // Resolve concrete types and enter the unfiltered or filtered search.
   int dispatch_search(node_id_t entry_point, dist_t dist, bool has_filter,
                       HnswContext *ctx) const;
 
@@ -120,12 +120,19 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
                      HnswContext *ctx);
 
-  // All dependencies have concrete types; only compile-time kernel selection
-  // remains. Construction may call this repeatedly with different levels.
-  template <typename Heap, typename Visit, typename Filter>
+  // Unfiltered search with concrete heap/visit types. Construction may call
+  // this repeatedly with different levels.
+  template <typename Heap, typename Visit>
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        Heap &heap, Visit visit, Filter &&filter,
-                        HnswContext *ctx) const;
+                        Heap &heap, Visit visit, HnswContext *ctx) const;
+
+  // Filtered search always uses the dual heap. The existing filter consumes
+  // primary keys; the kernel maps node IDs only on this path.
+  template <typename Visit>
+  void search_neighbors_with_filter(level_t level, node_id_t *entry_point,
+                                    dist_t *dist, TopkHeap &heap, Visit visit,
+                                    const IndexFilter &filter,
+                                    HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
