@@ -47,35 +47,18 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
-  const auto &index_filter = ctx->filter();
-  const bool dispatched =
-      dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
-        // All construction levels use TopkHeap and the same visit/filter
-        // policy. Resolve filtering once, outside the level loop.
-        if (index_filter.is_valid()) {
-          for (; cur_level >= 0; --cur_level) {
-            auto &heap = ctx->level_topk(cur_level);
-            heap.clear();
-            visit.clear();
-            ctx->candidates().clear();
-            search_neighbors_with_filter(cur_level, &entry_point, &dist, heap,
-                                         visit, index_filter, ctx);
-          }
-        } else {
-          for (; cur_level >= 0; --cur_level) {
-            auto &heap = ctx->level_topk(cur_level);
-            heap.clear();
-            visit.clear();
-            ctx->candidates().clear();
-            search_neighbors(cur_level, &entry_point, &dist, heap, visit, ctx);
-          }
-        }
-      });
-  if (ailego_unlikely(!dispatched)) {
-    if (level > cur_max_level) mutex_.unlock();
-    LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
-              ctx->visit_filter().get_mode());
-    return IndexError_Runtime;
+  const bool has_filter = ctx->filter().is_valid();
+  for (; cur_level >= 0; --cur_level) {
+    auto &heap = ctx->level_topk(cur_level);
+    heap.clear();
+    ctx->visit_filter().clear();
+    ctx->candidates().clear();
+    int ret =
+        dispatch_search(cur_level, &entry_point, &dist, heap, has_filter, ctx);
+    if (ailego_unlikely(ret != 0)) {
+      if (level > cur_max_level) mutex_.unlock();
+      return ret;
+    }
   }
 
   // add neighbors from down level to top level, to avoid upper level visible
@@ -132,7 +115,8 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
-  int ret = dispatch_search(entry_point, dist, has_filter, ctx);
+  int ret = dispatch_search(0, &entry_point, &dist, ctx->search_heap(),
+                            has_filter, ctx);
   if (ailego_unlikely(ret != 0)) return ret;
 
   if (ctx->group_by_search()) {
@@ -144,9 +128,10 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 }
 
 template <typename EntityType>
-int HnswAlgorithm<EntityType>::dispatch_search(node_id_t entry_point,
-                                               dist_t dist, bool has_filter,
-                                               HnswContext *ctx) const {
+template <typename HeapStorage>
+int HnswAlgorithm<EntityType>::dispatch_search(
+    level_t level, node_id_t *entry_point, dist_t *dist,
+    HeapStorage &target_heap, bool has_filter, HnswContext *ctx) const {
   const auto &index_filter = ctx->filter();
   const bool dispatched =
       dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
@@ -154,18 +139,23 @@ int HnswAlgorithm<EntityType>::dispatch_search(node_id_t entry_point,
           using Heap = std::decay_t<decltype(heap)>;
           if constexpr (std::is_same_v<Heap, TopkHeap>) {
             if (has_filter) {
-              search_neighbors_with_filter(0, &entry_point, &dist, heap, visit,
-                                           index_filter, ctx);
+              search_neighbors_with_filter(level, entry_point, dist, heap,
+                                           visit, index_filter, ctx);
               return;
             }
           }
-          search_neighbors(0, &entry_point, &dist, heap, visit, ctx);
+          search_neighbors(level, entry_point, dist, heap, visit, ctx);
         };
-        if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-          ctx->search_heap().dispatch(run_with_heap);
+        if constexpr (std::is_same_v<HeapStorage, SearchHeap>) {
+          if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+            target_heap.dispatch(run_with_heap);
+          } else {
+            // BufferPool/external entities only support the dual-heap path.
+            run_with_heap(target_heap.topk());
+          }
         } else {
-          // BufferPool/external entities only support the dual-heap path.
-          run_with_heap(ctx->search_heap().topk());
+          // Construction supplies the concrete heap for this level.
+          run_with_heap(target_heap);
         }
       });
   if (ailego_unlikely(!dispatched)) {

@@ -108,8 +108,11 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   // select the heap, so dispatch does not resolve that policy again.
   bool prepare_search(HnswContext *ctx) const;
 
-  // Resolve concrete types and enter the unfiltered or filtered search.
-  int dispatch_search(node_id_t entry_point, dist_t dist, bool has_filter,
+  // Dispatch a prepared query SearchHeap or a concrete construction heap.
+  // Preserve entry_point/dist updates for continuation at the next level.
+  template <typename HeapStorage>
+  int dispatch_search(level_t level, node_id_t *entry_point, dist_t *dist,
+                      HeapStorage &target_heap, bool has_filter,
                       HnswContext *ctx) const;
 
   //! Select in upper layer to get entry point for next layer search
