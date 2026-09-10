@@ -41,10 +41,10 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   const void *batch_query = query;
   if (const auto &preprocess = batch_query_preprocess();
       preprocess != nullptr) {
-    const size_t query_size = meta().dimension();
+    const size_t query_size = meta().element_size();
     query_buffer.resize(query_size);
     std::memcpy(query_buffer.data(), query, query_size);
-    preprocess(query_buffer.data(), query_size);
+    preprocess(query_buffer.data(), meta().dimension());
     batch_query = query_buffer.data();
   }
   vector_ptrs.clear();

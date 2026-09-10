@@ -32,6 +32,7 @@
 #include <zvec/ailego/encoding/json/mod_json.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "algorithm/flat/flat_streamer_context.h"
 #include "algorithm/flat/flat_utility.h"
 #include "tests/test_util.h"
 
@@ -45,6 +46,75 @@ using namespace zvec::ailego;
 using namespace std;
 
 constexpr size_t static dim = 16;
+
+namespace zvec {
+namespace {
+
+// Exercise the generic Flat contract with multi-byte query preprocessing and
+// with a metric that supplies only a pair-distance function.
+template <bool HasBatch>
+class FlatQueryCopyTestMetric : public IndexMetric {
+ public:
+  int init(const IndexMeta &meta, const Params &params) override {
+    metric_ = IndexFactory::CreateMetric("SquaredEuclidean");
+    return metric_->init(meta, params);
+  }
+  int cleanup(void) override {
+    return metric_->cleanup();
+  }
+  bool is_matched(const IndexMeta &meta) const override {
+    return metric_->is_matched(meta);
+  }
+  bool is_matched(const IndexMeta &meta,
+                  const IndexQueryMeta &query_meta) const override {
+    return metric_->is_matched(meta, query_meta);
+  }
+  MatrixDistance distance(void) const override {
+    return metric_->distance();
+  }
+  MatrixDistance distance_matrix(size_t m, size_t n) const override {
+    return metric_->distance_matrix(m, n);
+  }
+  const Params &params(void) const override {
+    return metric_->params();
+  }
+  Pointer query_metric(void) const override {
+    return nullptr;
+  }
+  MatrixBatchDistance batch_distance(void) const override {
+    if constexpr (!HasBatch) return nullptr;
+    return [](const void **rows, const void *query, size_t count,
+              size_t dimension, float *distances, const void **) {
+      const auto *prepared_query = static_cast<const float *>(query);
+      for (size_t i = 0; i < count; ++i) {
+        const auto *row = static_cast<const float *>(rows[i]);
+        double sum = 0;
+        for (size_t d = 0; d < dimension; ++d) {
+          const double delta = row[d] - prepared_query[d] * 0.5;
+          sum += delta * delta;
+        }
+        distances[i] = static_cast<float>(sum);
+      }
+    };
+  }
+  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
+    return [](void *query, size_t dimension) {
+      auto *values = static_cast<float *>(query);
+      for (size_t d = 0; d < dimension; ++d) values[d] *= 2.0f;
+    };
+  }
+
+ private:
+  Pointer metric_;
+};
+
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(FlatPreprocessedQueryTest,
+                                    FlatQueryCopyTestMetric<true>);
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(FlatScalarOnlyTest,
+                                    FlatQueryCopyTestMetric<false>);
+
+}  // namespace
+}  // namespace zvec
 
 std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
   std::string record(dimension + sizeof(uint32_t), '\0');
@@ -118,6 +188,225 @@ TEST_F(FlatStreamerTest, TestAddVector) {
 
   streamer->flush(0UL);
   streamer.reset();
+}
+
+TEST_F(FlatStreamerTest,
+       CandidateResultTransfersHeapBufferWithoutChangingOrder) {
+  IndexMeta meta(IndexMeta::DT_FP32, 4);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_TRUE(streamer);
+  ASSERT_EQ(0, streamer->init(meta, Params()));
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "candidate_result_buffer.index", true));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto context = streamer->create_context();
+  auto *flat = dynamic_cast<FlatStreamerContext<32> *>(context.get());
+  ASSERT_NE(nullptr, flat);
+  for (uint32_t topk : {0U, 1U, 3U, 4U}) {
+    for (float threshold : {1.0f, 100.0f}) {
+      SCOPED_TRACE(topk);
+      SCOPED_TRACE(threshold);
+      flat->set_topk(topk);
+      flat->set_threshold(threshold);
+      auto fill_heap = [&]() {
+        flat->reset_results(1);
+        auto *heap = flat->result_heap();
+        heap->emplace(100, 3.0f);
+        heap->emplace(103, 1.0f);
+        heap->emplace(101, 1.0f);
+        heap->emplace(102, 2.0f);
+      };
+      fill_heap();
+      flat->topk_to_result(0);
+      const auto expected = flat->result();
+      fill_heap();
+      const auto *buffer = flat->result_heap()->container().data();
+      flat->take_topk_result(0);
+      EXPECT_EQ(buffer, flat->result().data());
+      EXPECT_TRUE(flat->result_heap()->empty());
+      ASSERT_EQ(expected.size(), flat->result().size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].key(), flat->result()[i].key());
+        EXPECT_FLOAT_EQ(expected[i].score(), flat->result()[i].score());
+        EXPECT_EQ(expected[i].index(), flat->result()[i].index());
+        EXPECT_EQ(nullptr, flat->result()[i].vector());
+      }
+    }
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(FlatStreamerTest, CandidateSearchKeepsMetricBatchAndReusesScratch) {
+  constexpr uint32_t kCount = 65;
+  const std::pair<IndexMeta::DataType, std::string> cases[] = {
+      {IndexMeta::DT_FP16, "SquaredEuclidean"},
+      {IndexMeta::DT_UINT8, "SquaredEuclidean"},
+      {IndexMeta::DT_FP32, "SquaredEuclidean"},
+      {IndexMeta::DT_INT8, "SquaredEuclidean"},
+      {IndexMeta::DT_INT8, "UniformUint7"},
+      {IndexMeta::DT_FP32, "Euclidean"},
+      {IndexMeta::DT_FP32, "InnerProduct"},
+      {IndexMeta::DT_FP32, "FlatPreprocessedQueryTest"},
+      {IndexMeta::DT_FP32, "FlatScalarOnlyTest"}};
+  for (const auto &[type, metric_name] : cases) {
+    for (uint32_t dimension : {128U, 960U}) {
+      SCOPED_TRACE(type);
+      SCOPED_TRACE(metric_name);
+      SCOPED_TRACE(dimension);
+      IndexMeta meta(type, dimension);
+      Params metric_params;
+      if (metric_name == "UniformUint7") {
+        metric_params.set("proxima.uniform_uint7.metric.origin_metric_name",
+                          std::string("SquaredEuclidean"));
+      }
+      meta.set_metric(metric_name, 0, metric_params);
+      IndexQueryMeta qmeta(type, dimension);
+      const std::string path = dir_ + "candidate_" + metric_name + "_" +
+                               std::to_string(type) + "_" +
+                               std::to_string(dimension);
+      Params params;
+      params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_TRUE(storage);
+      ASSERT_EQ(0, storage->init(Params()));
+      ASSERT_EQ(0, storage->open(path, true));
+      auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+      ASSERT_TRUE(streamer);
+      ASSERT_EQ(0, streamer->init(meta, params));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto context = streamer->create_context();
+      for (uint32_t id = 0; id < kCount; ++id) {
+        std::vector<uint16_t> fp16(dimension, FloatHelper::ToFP16(float(id)));
+        std::vector<uint8_t> uint8(dimension, static_cast<uint8_t>(id));
+        std::vector<float> fp32(dimension, float(id));
+        const void *vector = uint8.data();
+        if (type == IndexMeta::DT_FP16) vector = fp16.data();
+        if (type == IndexMeta::DT_FP32) vector = fp32.data();
+        ASSERT_EQ(0, streamer->add_with_id_impl(id, vector, qmeta, context));
+      }
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, streamer->open(storage));
+      auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+      ASSERT_NE(nullptr, flat);
+      const auto *entity =
+          dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+      ASSERT_NE(nullptr, entity);
+      ASSERT_TRUE(entity->is_contiguous());
+      context = streamer->create_context();
+      context->set_topk(kCount);
+      auto *flat_context =
+          dynamic_cast<FlatStreamerContext<32> *>(context.get());
+      ASSERT_NE(nullptr, flat_context);
+      const bool inner_product = metric_name == "InnerProduct";
+      const bool query_copy_test = metric_name == "FlatPreprocessedQueryTest" ||
+                                   metric_name == "FlatScalarOnlyTest";
+      // Zero bytes also encode zero for the FP16 and integer cases.
+      const float query_value =
+          inner_product ? 1.0f : (query_copy_test ? 0.25f : 0.0f);
+      const std::vector<float> query(dimension, query_value);
+      for (bool filtered : {false, true}) {
+        SCOPED_TRACE(filtered);
+        context->set_filter(
+            [filtered](uint64_t key) { return filtered && key == 7; });
+        for (uint32_t count : {0,  1,  2,  3,  4,  7,  8,  9,  10, 11, 12, 13,
+                               16, 19, 20, 21, 31, 32, 33, 40, 65, 12, 0}) {
+          SCOPED_TRACE(count);
+          std::vector<std::vector<uint64_t>> keys(1);
+          // Descending candidates exercise ordering as well as batch tails.
+          for (uint32_t id = count; id > 0; --id) keys[0].push_back(id - 1);
+          keys[0].push_back(999);  // Missing keys must not enter the batch.
+          ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                          qmeta, 1, context));
+          const auto batch_result = context->result();
+          ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                          qmeta, context));
+          ASSERT_EQ(batch_result.size(), context->result().size());
+          for (size_t i = 0; i < batch_result.size(); ++i) {
+            EXPECT_EQ(batch_result[i].key(), context->result()[i].key());
+            EXPECT_FLOAT_EQ(batch_result[i].score(),
+                            context->result()[i].score());
+          }
+          EXPECT_EQ(std::vector<float>(dimension, query_value), query);
+          if (query_copy_test) {
+            EXPECT_EQ(qmeta.element_size(),
+                      flat_context->search_scratch()->query_buffer.size());
+          }
+          const size_t valid_count = count - (filtered && count > 7 ? 1 : 0);
+          ASSERT_EQ(valid_count, context->result().size());
+          if (valid_count) {
+            // A 40/65-row refine must reach the kernel as one candidate set,
+            // not be split into 32-row storage batches and a final remainder.
+            EXPECT_EQ(valid_count,
+                      flat_context->search_scratch()->distances.size());
+          }
+          size_t pos = 0;
+          for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t id = inner_product ? count - i - 1 : i;
+            if (filtered && id == 7) continue;
+            EXPECT_EQ(id, context->result()[pos].key());
+            float expected = float(dimension * id * id);
+            if (metric_name == "Euclidean") expected = std::sqrt(expected);
+            if (inner_product) expected = -float(dimension * id);
+            if (query_copy_test) {
+              const float delta = float(id) - query_value;
+              expected = float(dimension) * delta * delta;
+            }
+            EXPECT_FLOAT_EQ(expected, context->result()[pos].score());
+            ++pos;
+          }
+        }
+      }
+
+      // Batched queries must not retain the previous query's heap entries.
+      const std::vector<std::vector<uint64_t>> batch_keys{{0, 1}, {3, 4}};
+      std::vector<IndexDocumentList> expected_batch;
+      for (const auto &key_set : batch_keys) {
+        ASSERT_EQ(0,
+                  streamer->search_bf_by_p_keys_impl(
+                      query.data(), std::vector<std::vector<uint64_t>>{key_set},
+                      qmeta, context));
+        expected_batch.push_back(context->result());
+      }
+      std::string batch_query(reinterpret_cast<const char *>(query.data()),
+                              qmeta.element_size());
+      batch_query += batch_query;
+      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
+                       batch_query.data(), batch_keys, qmeta, 2, context));
+      for (size_t q = 0; q < batch_keys.size(); ++q) {
+        ASSERT_EQ(expected_batch[q].size(), context->result(q).size());
+        for (size_t i = 0; i < expected_batch[q].size(); ++i) {
+          EXPECT_EQ(expected_batch[q][i].key(), context->result(q)[i].key());
+          EXPECT_FLOAT_EQ(expected_batch[q][i].score(),
+                          context->result(q)[i].score());
+        }
+      }
+
+      // The entity's explicit batch limit remains independent of the
+      // streamer's whole-candidate policy; full scans also remain bounded.
+      std::vector<uint64_t> keys;
+      for (uint64_t id = 0; id < 13; ++id) keys.push_back(id);
+      FlatSearchScratch scratch;
+      IndexDocumentHeap heap(kCount);
+      ASSERT_EQ(0, entity->search_by_p_keys(query.data(), keys, IndexFilter(),
+                                            &heap, &scratch, 5));
+      EXPECT_EQ(keys.size(), heap.size());
+      EXPECT_EQ(3U, scratch.distances.size());
+      uint32_t scan_count = 0;
+      IndexContext::Stats stats;
+      heap.clear();
+      ASSERT_EQ(0, entity->search(query.data(), IndexFilter(), &scan_count,
+                                  &heap, &stats, &scratch, 32));
+      EXPECT_EQ(kCount, scan_count);
+      EXPECT_EQ(kCount, heap.size());
+      EXPECT_EQ(1U, scratch.distances.size());
+      ASSERT_EQ(0, streamer->close());
+    }
+  }
 }
 
 TEST_F(FlatStreamerTest, TestContiguousCandidateSearchAndInsertFallback) {
@@ -253,7 +542,7 @@ TEST_F(FlatStreamerTest, TestContiguousCandidateSearchAndInsertFallback) {
 TEST_F(FlatStreamerTest, TestContiguousUniformUint8ExtraValues) {
   constexpr size_t kOriginalDimension = 128;
   constexpr size_t kEncodedDimension = kOriginalDimension + sizeof(uint32_t);
-  constexpr size_t kCount = 64;
+  constexpr size_t kCount = 65;
   const std::string path = dir_ + "Test/ContiguousUniformUint8";
 
   Params metric_params;
@@ -312,6 +601,52 @@ TEST_F(FlatStreamerTest, TestContiguousUniformUint8ExtraValues) {
   ASSERT_EQ(1U, context->result().size());
   EXPECT_EQ(kProbe, context->result()[0].key());
   EXPECT_FLOAT_EQ(0.0F, context->result()[0].score());
+
+  // Whole-candidate batching must preserve the metric's query preprocessing
+  // and per-row norm pointers, not only work for native FP16/UINT8 rows.
+  auto metric = IndexFactory::CreateMetric("UniformUint8");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(meta, metric_params));
+  const auto pair_distance = metric->distance();
+  ASSERT_TRUE(pair_distance);
+  auto *flat_context = dynamic_cast<FlatStreamerContext<32> *>(context.get());
+  ASSERT_NE(nullptr, flat_context);
+  context->set_topk(kCount);
+  const auto original_query = query;
+  for (bool filtered : {false, true}) {
+    context->set_filter(
+        [filtered](uint64_t key) { return filtered && key == 7; });
+    for (uint32_t count : {0, 1, 2, 3, 4, 11, 12, 13, 31, 32, 33, 40, 65}) {
+      SCOPED_TRACE(filtered);
+      SCOPED_TRACE(count);
+      std::vector<std::vector<uint64_t>> keys(1);
+      IndexDocumentHeap expected(kCount);
+      for (uint32_t id = count; id > 0; --id) {
+        const uint64_t key = id - 1;
+        keys[0].push_back(key);
+        if (filtered && key == 7) continue;
+        const auto record = EncodeUniformUint8Record(kOriginalDimension, key);
+        float distance = 0;
+        pair_distance(record.data(), query.data(), kEncodedDimension,
+                      &distance);
+        expected.emplace(key, distance);
+      }
+      keys[0].push_back(999);
+      expected.sort();
+      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                      query_meta, 1, context));
+      EXPECT_EQ(original_query, query);
+      ASSERT_EQ(expected.size(), context->result().size());
+      if (!expected.empty()) {
+        EXPECT_EQ(expected.size(),
+                  flat_context->search_scratch()->distances.size());
+      }
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].key(), context->result()[i].key());
+        EXPECT_FLOAT_EQ(expected[i].score(), context->result()[i].score());
+      }
+    }
+  }
 
   ASSERT_EQ(0, streamer->close());
   ASSERT_EQ(0, storage->close());

@@ -178,6 +178,7 @@ struct KernelSet {
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
     // --- raw physical storage (AVX512, then scalar fallback) ---
+    // FP16 storage uses FP32 arithmetic, including on AVX512-FP16 hosts.
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,

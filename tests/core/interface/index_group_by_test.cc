@@ -685,6 +685,9 @@ TEST(DiskAnnInterfaceTest, PropagatesCommonQueryOptions) {
   auto radius_query = std::make_shared<DiskAnnQueryParam>();
   radius_query->topk = kNumDocs;
   radius_query->list_size = kSearchTopk;
+  // Radius propagation is the behavior under test. Use exact search so the
+  // assertion does not also depend on approximate DiskANN recall.
+  radius_query->is_linear = true;
   radius_query->radius = 1.0f;
 
   SearchResult radius_result;

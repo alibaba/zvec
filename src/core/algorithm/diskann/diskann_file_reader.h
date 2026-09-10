@@ -68,7 +68,7 @@ struct IoBackend {
   ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
 #if defined(__linux__) && !defined(__ANDROID__)
-  IoUringRing ring{};
+  ailego::IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
 #elif defined(_WIN32) || defined(_WIN64)
   std::array<OVERLAPPED, MAX_IO_DEPTH> reqs{};
@@ -91,6 +91,9 @@ int destroy_io_ctx(IOContext &ctx);
 // backend on first call. Android and iOS always use synchronous pread.
 void log_diskann_io_backend();
 
+#if defined(__linux__) && !defined(__ANDROID__)
+using AlignedRead = ailego::IoUringRead;
+#else
 struct AlignedRead {
   uint64_t offset;
   uint64_t len;
@@ -108,6 +111,7 @@ struct AlignedRead {
 #endif
   }
 };
+#endif
 
 struct PendingBatch {
 #if defined(__linux__) && !defined(__ANDROID__)

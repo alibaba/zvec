@@ -128,6 +128,10 @@ class SegmentImpl : public Segment,
 
   SegmentID id() const override;
 
+  void doc_id_range(uint64_t *min_id, uint64_t *max_id) const override;
+
+  uint64_t doc_count_snapshot() const override;
+
   SegmentMeta::Ptr meta() const override;
 
   uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) override;
@@ -239,6 +243,8 @@ class SegmentImpl : public Segment,
 
   Status dump() override;
 
+  void remove_writing_forward_block() override;
+
   Status flush() override;
 
   Status destroy() override;
@@ -337,6 +343,12 @@ class SegmentImpl : public Segment,
       const std::shared_ptr<arrow::ChunkedArray> &data,
       InvertedColumnIndexer::Ptr *column_indexer);
 
+  // Require seg_mtx_; the public fetch() overloads take it before entering, so
+  // a nested fetch never locks it twice.
+  TablePtr fetch_unsafe(const std::vector<std::string> &columns,
+                        const std::vector<int> &segment_doc_ids) const;
+  ExecBatchPtr fetch_exec_unsafe(const std::vector<std::string> &columns,
+                                 int segment_doc_id) const;
   TablePtr fetch_normal(const std::vector<std::string> &columns,
                         const std::shared_ptr<arrow::Schema> &result_schema,
                         const std::vector<int> &segment_doc_ids) const;
@@ -415,11 +427,11 @@ class SegmentImpl : public Segment,
 
   bool sealed_{false};
 
-  mutable std::mutex seg_mtx_;
-
-  // Serializes block publication with fetch/indexer snapshot readers.
-  // When both locks are needed, acquire seg_mtx_ before seg_col_mtx_.
-  mutable std::shared_mutex seg_col_mtx_;
+  // Single lock for all mutable segment state: doc_ids_, the forward stores,
+  // the indexer maps, the column set and the block metadata. Write paths take
+  // it exclusive, read accessors shared. Public entries lock; the *_unsafe
+  // helpers and the memory-component rebuild assume the caller holds it.
+  mutable std::shared_mutex seg_mtx_;
 
   bool need_destroyed_{false};
 
@@ -566,6 +578,9 @@ Status SegmentImpl::Create(const SegmentOptions &options, uint64_t min_doc_id) {
 }
 
 Status SegmentImpl::close() {
+  // Exclusive: flush() below rewrites the stores readers read; destroy()
+  // reaches here without the lock.
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
   flush();
   if (invert_indexers_) {
     invert_indexers_.reset();
@@ -611,6 +626,17 @@ SegmentID SegmentImpl::id() const {
 
 SegmentMeta::Ptr SegmentImpl::meta() const {
   return segment_meta_;
+}
+
+void SegmentImpl::doc_id_range(uint64_t *min_id, uint64_t *max_id) const {
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  *min_id = segment_meta_->min_doc_id();
+  *max_id = segment_meta_->max_doc_id();
+}
+
+uint64_t SegmentImpl::doc_count_snapshot() const {
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  return segment_meta_->doc_count();
 }
 
 uint64_t SegmentImpl::doc_count(const IndexFilter::Ptr filter) {
@@ -902,14 +928,9 @@ Status SegmentImpl::internal_insert(Doc &doc) {
     return s;
   }
 
-  {
-    // Combined indexers and scalar readers copy this metadata under the
-    // column lock. Publish the row only after its scalar/vector writes finish.
-    std::unique_lock<std::shared_mutex> col_lock(seg_col_mtx_);
-    auto &mem_block = segment_meta_->writing_forward_block().value();
-    mem_block.max_doc_id_ = g_doc_id;
-    mem_block.doc_count_ = mem_block.doc_count_ + 1;
-  }
+  auto &mem_block = segment_meta_->writing_forward_block().value();
+  mem_block.max_doc_id_ = g_doc_id;
+  mem_block.doc_count_ = mem_block.doc_count_ + 1;
 
   doc_ids_.push_back(g_doc_id);
 
@@ -1029,7 +1050,8 @@ Doc::Ptr SegmentImpl::Fetch(
     uint64_t g_doc_id,
     const std::optional<std::vector<std::string>> &output_fields,
     bool include_vector) {
-  std::lock_guard lock(seg_mtx_);
+  // Shared so concurrent Fetch calls do not serialize.
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
 
   if (g_doc_id > segment_meta_->max_doc_id()) {
     LOG_ERROR("g_doc_id[%zu] not exist in segment[%d] ", (size_t)g_doc_id,
@@ -1093,7 +1115,7 @@ Doc::Ptr SegmentImpl::Fetch(
   auto result_schema = std::make_shared<arrow::Schema>(fields);
 
   // fetch forward columns
-  auto exec_batch = fetch(forward_columns, segment_doc_id);
+  auto exec_batch = fetch_exec_unsafe(forward_columns, segment_doc_id);
   if (!exec_batch) {
     LOG_ERROR("Fetch failed, doc_id: %zu", (size_t)g_doc_id);
     return nullptr;
@@ -1269,9 +1291,6 @@ Doc::Ptr SegmentImpl::Fetch(
   if (!include_vector) {
     return doc;
   }
-  // Segment switching can dump a block without seg_mtx_. Keep the block
-  // offsets and indexer lookup in the same snapshot as the flush handoff.
-  std::shared_lock<std::shared_mutex> col_lock(seg_col_mtx_);
   for (const auto &field : collection_schema_->vector_fields()) {
     int block_idx = find_persist_block_id(BlockType::VECTOR_INDEX,
                                           segment_doc_id, field->name());
@@ -1352,9 +1371,8 @@ Doc::Ptr SegmentImpl::Fetch(
 
 CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
     const std::string &field_name) const {
-  // Copy indexers and their block metadata together; flush/init can run
-  // concurrently with query planning.
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
+  // Shared: finish_memory_components() migrates entries between these maps.
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
   std::vector<VectorColumnIndexer::Ptr> indexers;
   auto iter = vector_indexers_.find(field_name);
   if (iter != vector_indexers_.end()) {
@@ -1379,7 +1397,7 @@ CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
 
 CombinedVectorColumnIndexer::Ptr SegmentImpl::get_quant_combined_vector_indexer(
     const std::string &field_name) const {
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
   std::vector<VectorColumnIndexer::Ptr> indexers;
   auto iter = quant_vector_indexers_.find(field_name);
   if (iter != quant_vector_indexers_.end()) {
@@ -1432,7 +1450,9 @@ VectorColumnIndexer::Ptr SegmentImpl::get_memory_quant_vector_indexer(
 
 std::vector<VectorColumnIndexer::Ptr> SegmentImpl::get_vector_indexer(
     const std::string &field_name) const {
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
+  // Shared: finish_memory_components() appends the flushed memory indexer to
+  // this map.
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
   auto iter = vector_indexers_.find(field_name);
   if (iter != vector_indexers_.end()) {
     return iter->second;
@@ -1442,7 +1462,7 @@ std::vector<VectorColumnIndexer::Ptr> SegmentImpl::get_vector_indexer(
 
 std::vector<VectorColumnIndexer::Ptr> SegmentImpl::get_quant_vector_indexer(
     const std::string &field_name) const {
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
   std::vector<VectorColumnIndexer::Ptr> col_indexers;
   auto iter = quant_vector_indexers_.find(field_name);
   if (iter != quant_vector_indexers_.end()) {
@@ -2066,6 +2086,11 @@ Status SegmentImpl::reload_scalar_index(
 }
 
 Status SegmentImpl::dump() {
+  // Exclusive: flush() below resets memory_store_ and rewrites persist_stores_,
+  // the block metadata and the indexer maps. Lock order matches Insert (the
+  // caller already holds the collection's exclusive write_mtx_).
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+
   if (sealed_) {
     return Status::NotSupported("Segment has been dumped.");
   }
@@ -2085,7 +2110,17 @@ Status SegmentImpl::dump() {
   return Status::OK();
 }
 
+void SegmentImpl::remove_writing_forward_block() {
+  // Exclusive: dump() has already released seg_mtx_ by the time the collection
+  // seals the switched-out segment.
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  segment_meta_->remove_writing_forward_block();
+}
+
 Status SegmentImpl::flush() {
+  // Requires seg_mtx_ (Insert's buffer-full path, dump, close) or the
+  // collection's exclusive schema lock (CollectionImpl::flush): finish_/
+  // init_memory_components() below do not lock.
   CHECK_SEGMENT_READONLY_RETURN_STATUS;
 
   if (wal_file_ == nullptr || !wal_file_->has_record()) {
@@ -2158,9 +2193,6 @@ Status SegmentImpl::flush() {
 
   if (memory_store_) {
     // update segment meta with memory components
-    // Readers must see either the memory block or its persisted replacement,
-    // including the new empty writing-block metadata.
-    std::unique_lock<std::shared_mutex> col_lock(seg_col_mtx_);
     s = finish_memory_components();
     CHECK_RETURN_STATUS(s);
 
@@ -2381,7 +2413,6 @@ TablePtr SegmentImpl::fetch_normal(
   std::map<int, std::map<std::string, std::vector<std::pair<int, int>>>>
       block_request_map;
 
-  // The multi-row fetch caller holds seg_col_mtx_ for this entire snapshot.
   const auto &block_offsets = get_persist_block_offsets(BlockType::SCALAR);
   const auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
 
@@ -2571,7 +2602,13 @@ TablePtr SegmentImpl::fetch_normal(
 
 TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
                             const std::vector<int> &segment_doc_ids) const {
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  return fetch_unsafe(columns, segment_doc_ids);
+}
+
+TablePtr SegmentImpl::fetch_unsafe(
+    const std::vector<std::string> &columns,
+    const std::vector<int> &segment_doc_ids) const {
   if (!validate(columns)) {
     return nullptr;
   }
@@ -2630,12 +2667,16 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
                                 int segment_doc_id) const {
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  return fetch_exec_unsafe(columns, segment_doc_id);
+}
+
+ExecBatchPtr SegmentImpl::fetch_exec_unsafe(
+    const std::vector<std::string> &columns, int segment_doc_id) const {
   if (columns.empty()) {
     LOG_ERROR("Empty columns");
     return nullptr;
   }
-
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
 
   const auto &block_offsets = get_persist_block_offsets(BlockType::SCALAR);
   const auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
@@ -2692,10 +2733,7 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
       }
     }
   } else {
-    // The multi-row fallback takes seg_col_mtx_ itself. A shared
-    // mutex is not recursive, even when both acquisitions are shared.
-    lock.unlock();
-    auto table = fetch(columns, std::vector<int>{segment_doc_id});
+    auto table = fetch_unsafe(columns, std::vector<int>{segment_doc_id});
     if (table) {
       std::vector<arrow::Datum> datums;
       for (const auto &col : table->columns()) {
@@ -2722,7 +2760,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
     return nullptr;
   }
 
-  std::shared_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
 
   const std::vector<BlockMeta> &scalar_blocks =
       get_persist_block_metas(BlockType::SCALAR);
@@ -3173,7 +3211,7 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
     invert_indexers_->flush();
   }
 
-  std::unique_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::unique_lock<std::shared_mutex> lock(seg_mtx_);
   // create and append persist scalar indexer
   for (auto &block : new_blocks) {
     auto forward_path = FileHelper::MakeForwardBlockPath(
@@ -3343,7 +3381,7 @@ Status SegmentImpl::alter_column(const std::string &column_name,
     }
   }
 
-  std::unique_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::unique_lock<std::shared_mutex> lock(seg_mtx_);
   // update old block, remove column
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
@@ -3438,7 +3476,7 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
         "Add column is not supported for segment with memory store");
   }
 
-  std::unique_lock<std::shared_mutex> lock(seg_col_mtx_);
+  std::unique_lock<std::shared_mutex> lock(seg_mtx_);
   // update old block, remove column
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
@@ -4083,7 +4121,8 @@ VectorColumnIndexer::Ptr SegmentImpl::create_vector_indexer(
 }
 
 Status SegmentImpl::init_memory_components() {
-  std::unique_lock<std::shared_mutex> col_lock(seg_col_mtx_);
+  // Caller holds seg_mtx_ exclusively (Insert paths, recover).
+
   // Roll back any partially-created components on failure so a failed init
   // leaves memory_store_ null (the caller's `if (!memory_store_)` retry guard
   // depends on it) and never gets flushed on close.
@@ -4215,7 +4254,7 @@ Status SegmentImpl::recover() {
   LOG_INFO("WAL recovery started: path[%s], segment[%d]", wal_file_path.c_str(),
            id());
 
-  std::lock_guard<std::mutex> lock(seg_mtx_);
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
   while (true) {
     std::string buf = recover_wal_file->next();
@@ -4351,8 +4390,9 @@ Status SegmentImpl::append_wal(const Doc &doc) {
 }
 
 Status SegmentImpl::finish_memory_components() {
-  // flush() holds seg_col_mtx_ exclusively through this transfer and the
-  // installation of the next writing block.
+  // Caller holds seg_mtx_ exclusively, or the collection's exclusive schema
+  // lock (via CollectionImpl::flush()).
+
   auto block = segment_meta_->writing_forward_block().value();
 
   // close for loading persist block
@@ -4443,7 +4483,8 @@ BlockID SegmentImpl::allocate_block_id() {
 }
 
 Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t segment_doc_id) const {
-  std::lock_guard lock(seg_mtx_);
+  // Read-only lookup into doc_ids_.
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
   if (segment_doc_id >= doc_ids_.size()) {
     return tl::make_unexpected(
         Status::InvalidArgument("segment_doc_id out of range"));
