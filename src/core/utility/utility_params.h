@@ -60,6 +60,18 @@ static const std::string MMAPFILE_READ_STORAGE_HEADER_OFFSET =
 static const std::string MMAPFILE_READ_STORAGE_FOOTER_OFFSET =
     "proxima.mmap_file.container.footer_offset";
 
+//! BufferReadStorage (read-only storage backed by VecBufferPool)
+static const std::string BUFFER_READ_STORAGE_CHECKSUM_VALIDATION =
+    "proxima.buffer.read_storage.checksum_validation";
+static const std::string BUFFER_READ_STORAGE_HEADER_OFFSET =
+    "proxima.buffer.read_storage.header_offset";
+static const std::string BUFFER_READ_STORAGE_FOOTER_OFFSET =
+    "proxima.buffer.read_storage.footer_offset";
+static const std::string BUFFER_READ_STORAGE_WARMUP_MODE =
+    "proxima.buffer.read_storage.warmup_mode";
+static const std::string BUFFER_READ_STORAGE_WARMUP_NONE = "none";
+static const std::string BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL = "sequential";
+
 //! MMapFileStorage
 static const std::string MMAPFILE_STORAGE_MEMORY_LOCKED =
     "proxima.mmap_file.storage.memory_locked";

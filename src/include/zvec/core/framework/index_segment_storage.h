@@ -49,6 +49,17 @@ class IndexSegmentStorage : public IndexStorage {
           data_crc_(segment.data_crc()),
           parent_(parent->clone()) {}
 
+    //! Constructor (for clone)
+    Segment(const IndexStorage::Segment::Pointer &cloned_parent,
+            size_t data_offset, size_t data_size, size_t padding_size,
+            uint32_t data_crc)
+        : data_offset_(data_offset),
+          data_size_(data_size),
+          padding_size_(padding_size),
+          region_size_(data_size + padding_size),
+          data_crc_(data_crc),
+          parent_(cloned_parent) {}
+
     //! Destructor
     ~Segment(void) override {}
 
@@ -114,9 +125,11 @@ class IndexSegmentStorage : public IndexStorage {
       return;
     }
 
-    //! Clone the segment
+    //! Clone the segment (each clone gets an independent parent buffer
+    //! for thread safety — concurrent reads require separate buffers).
     IndexStorage::Segment::Pointer clone(void) override {
-      return shared_from_this();
+      return std::make_shared<Segment>(parent_->clone(), data_offset_,
+                                       data_size_, padding_size_, data_crc_);
     }
 
    private:

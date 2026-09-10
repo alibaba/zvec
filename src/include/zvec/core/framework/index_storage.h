@@ -15,7 +15,9 @@
 #pragma once
 
 #include <cstring>
+#include <memory>
 #include <new>
+#include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/io/file.h>
@@ -40,7 +42,7 @@ class IndexStorage : public IndexModule {
       MBT_HEAP_SCRATCH = 3,
     };
 
-    MemoryBlock() {}
+    MemoryBlock() = default;
     MemoryBlock(ailego::VecBufferPoolHandle *buffer_pool_handle,
                 size_t block_id, void *data)
         : type_(MemoryBlockType::MBT_BUFFERPOOL) {
@@ -48,19 +50,33 @@ class IndexStorage : public IndexModule {
       buffer_block_id_ = block_id;
       data_ = data;
     }
+    MemoryBlock(
+        const std::shared_ptr<ailego::VecBufferPoolHandle> &buffer_pool_handle,
+        size_t block_id, void *data)
+        : type_(MemoryBlockType::MBT_BUFFERPOOL),
+          data_(data),
+          buffer_pool_handle_owner_(buffer_pool_handle),
+          buffer_pool_handle_(buffer_pool_handle.get()),
+          buffer_block_id_(block_id) {}
     MemoryBlock(void *data) : type_(MemoryBlockType::MBT_MMAP), data_(data) {}
 
-    //! Build an HEAP_SCRATCH MemoryBlock that owns `owned` (allocated via
-    //! ailego_malloc / ailego_aligned_malloc).  `size` is the byte length of
-    //! the buffer and is required so that copy construction / copy
-    //! assignment can deep-copy the buffer instead of aliasing it (a shallow
-    //! copy would result in use-after-free once the original block is
-    //! destructed and frees the buffer).
+    //! Build an owned heap block; size enables safe deep copies.
     static MemoryBlock MakeOwned(void *owned, size_t size) {
       MemoryBlock mb;
       mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
       mb.data_ = owned;
       mb.scratch_size_ = size;
+      return mb;
+    }
+
+    //! Build a non-owning view over caller-managed memory (e.g. a query-level
+    //! scratch arena). The block frees and pins nothing on destruction, so the
+    //! backing buffer must outlive every copy of this block. Uses the MMAP
+    //! representation whose destructor is a no-op.
+    static MemoryBlock MakeBorrowedView(void *data) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_MMAP;
+      mb.data_ = data;
       return mb;
     }
 
@@ -70,13 +86,17 @@ class IndexStorage : public IndexModule {
           this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_, rhs.data_);
+          if (rhs.buffer_pool_handle_owner_) {
+            this->reset(rhs.buffer_pool_handle_owner_, rhs.buffer_block_id_,
+                        rhs.data_);
+          } else {
+            this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
+                        rhs.data_);
+          }
           buffer_pool_handle_->acquire_one(buffer_block_id_);
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
-          // Deep copy: each owner must hold its own buffer, otherwise the
-          // first destructor frees the buffer and leaves the surviving
-          // copies dangling.
+          // Heap blocks do not share ownership.
           deep_copy_from(rhs);
           break;
         default:
@@ -84,15 +104,19 @@ class IndexStorage : public IndexModule {
       }
     }
 
-    MemoryBlock(MemoryBlock &&rhs) {
+    MemoryBlock(MemoryBlock &&rhs) noexcept {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
-          this->reset(std::move(rhs.data_));
+          this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          this->reset(std::move(rhs.buffer_pool_handle_),
-                      std::move(rhs.buffer_block_id_), std::move(rhs.data_));
+          type_ = MemoryBlockType::MBT_BUFFERPOOL;
+          data_ = rhs.data_;
+          buffer_pool_handle_owner_ = std::move(rhs.buffer_pool_handle_owner_);
+          buffer_pool_handle_ = rhs.buffer_pool_handle_;
+          buffer_block_id_ = rhs.buffer_block_id_;
           rhs.buffer_pool_handle_ = nullptr;
+          rhs.data_ = nullptr;
           rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
@@ -115,8 +139,13 @@ class IndexStorage : public IndexModule {
             this->reset(rhs.data_);
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
-            this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
-                        rhs.data_);
+            if (rhs.buffer_pool_handle_owner_) {
+              this->reset(rhs.buffer_pool_handle_owner_, rhs.buffer_block_id_,
+                          rhs.data_);
+            } else {
+              this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
+                          rhs.data_);
+            }
             buffer_pool_handle_->acquire_one(buffer_block_id_);
             break;
           case MemoryBlockType::MBT_HEAP_SCRATCH:
@@ -131,16 +160,22 @@ class IndexStorage : public IndexModule {
       return *this;
     }
 
-    MemoryBlock &operator=(MemoryBlock &&rhs) {
+    MemoryBlock &operator=(MemoryBlock &&rhs) noexcept {
       if (this != &rhs) {
         switch (rhs.type_) {
           case MemoryBlockType::MBT_MMAP:
-            this->reset(std::move(rhs.data_));
+            this->reset(rhs.data_);
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
-            this->reset(std::move(rhs.buffer_pool_handle_),
-                        std::move(rhs.buffer_block_id_), std::move(rhs.data_));
+            release_current();
+            type_ = MemoryBlockType::MBT_BUFFERPOOL;
+            data_ = rhs.data_;
+            buffer_pool_handle_owner_ =
+                std::move(rhs.buffer_pool_handle_owner_);
+            buffer_pool_handle_ = rhs.buffer_pool_handle_;
+            buffer_block_id_ = rhs.buffer_block_id_;
             rhs.buffer_pool_handle_ = nullptr;
+            rhs.data_ = nullptr;
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
           case MemoryBlockType::MBT_HEAP_SCRATCH:
@@ -183,23 +218,37 @@ class IndexStorage : public IndexModule {
       return data_;
     }
 
+    void reset() {
+      release_current();
+    }
+
     void reset(ailego::VecBufferPoolHandle *buffer_pool_handle, size_t block_id,
                void *data) {
-      if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_pool_handle_->release_one(buffer_block_id_);
-      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
-        release_owned();
-      }
+      release_current();
       type_ = MemoryBlockType::MBT_BUFFERPOOL;
       buffer_pool_handle_ = buffer_pool_handle;
       buffer_block_id_ = block_id;
       data_ = data;
     }
 
+    void reset(
+        const std::shared_ptr<ailego::VecBufferPoolHandle> &buffer_pool_handle,
+        size_t block_id, void *data) {
+      release_current();
+      type_ = MemoryBlockType::MBT_BUFFERPOOL;
+      buffer_pool_handle_owner_ = buffer_pool_handle;
+      buffer_pool_handle_ = buffer_pool_handle.get();
+      buffer_block_id_ = block_id;
+      data_ = data;
+    }
+
     void reset(void *data) {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_pool_handle_->release_one(buffer_block_id_);
+        if (buffer_pool_handle_) {
+          buffer_pool_handle_->release_one(buffer_block_id_);
+        }
         buffer_pool_handle_ = nullptr;
+        buffer_pool_handle_owner_.reset();
       } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
         release_owned();
       }
@@ -209,11 +258,10 @@ class IndexStorage : public IndexModule {
 
     MemoryBlockType type_{MBT_UNKNOWN};
     void *data_{nullptr};
+    std::shared_ptr<ailego::VecBufferPoolHandle> buffer_pool_handle_owner_{};
     mutable ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
     size_t buffer_block_id_{0};
-    //! Byte size of the heap-scratch buffer pointed to by `data_`; only used
-    //! when type_ == MBT_HEAP_SCRATCH.  Required for safe deep-copy on
-    //! copy-construction / copy-assignment of HEAP_SCRATCH blocks.
+    //! Byte size used to copy heap scratch blocks.
     size_t scratch_size_{0};
 
    private:
@@ -225,10 +273,7 @@ class IndexStorage : public IndexModule {
       scratch_size_ = 0;
     }
 
-    //! Drop whatever the current MemoryBlock holds, regardless of type, so
-    //! that the slot is ready to receive new ownership.  Mirrors what the
-    //! destructor would do (minus zeroing data_) but leaves the type alone
-    //! for the caller to overwrite immediately afterwards.
+    //! Release the current representation and reset the block.
     void release_current() {
       switch (type_) {
         case MemoryBlockType::MBT_BUFFERPOOL:
@@ -236,6 +281,7 @@ class IndexStorage : public IndexModule {
             buffer_pool_handle_->release_one(buffer_block_id_);
             buffer_pool_handle_ = nullptr;
           }
+          buffer_pool_handle_owner_.reset();
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
           release_owned();
@@ -244,21 +290,19 @@ class IndexStorage : public IndexModule {
           break;
       }
       data_ = nullptr;
+      scratch_size_ = 0;
       type_ = MemoryBlockType::MBT_UNKNOWN;
     }
 
-    //! Allocate a fresh buffer of the same size as `rhs.scratch_size_`,
-    //! memcpy `rhs.data_` into it, and become the new owner.  Used by the
-    //! HEAP_SCRATCH copy ctor / copy assignment so the original and the
-    //! copy each free their own buffer independently.
+    //! Deep-copy heap scratch ownership.
     void deep_copy_from(const MemoryBlock &rhs) {
       type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
       scratch_size_ = rhs.scratch_size_;
       if (scratch_size_ > 0 && rhs.data_) {
         data_ = ailego_malloc(scratch_size_);
-        if (!data_) {
-          type_ = MemoryBlockType::MBT_UNKNOWN;
+        if (data_ == nullptr) {
           scratch_size_ = 0;
+          type_ = MemoryBlockType::MBT_UNKNOWN;
           throw std::bad_alloc();
         }
         std::memcpy(data_, rhs.data_, scratch_size_);
@@ -276,6 +320,9 @@ class IndexStorage : public IndexModule {
     SegmentData(size_t off, size_t len)
         : offset(off), length(len), data(nullptr) {}
 
+    SegmentData(size_t off, size_t len, const void *ptr)
+        : offset(off), length(len), data(ptr) {}
+
     //! Members
     size_t offset;
     size_t length;
@@ -287,6 +334,77 @@ class IndexStorage : public IndexModule {
   struct Segment {
     //! Index Storage Pointer
     typedef std::shared_ptr<Segment> Pointer;
+
+    //! Cache admission/eviction hint. Backends without an evictable cache
+    //! ignore it; page-backed storage maps it to its eviction queues.
+    enum class CachePriority : uint8_t {
+      kLow = 0,
+      kNormal = 1,
+      kHigh = 2,
+    };
+
+    //! One contiguous portion of a scatter read.
+    struct ReadSpan {
+      const uint8_t *data{nullptr};
+      size_t size{0};
+    };
+
+    //! A bounded-lifetime scatter read. Page-backed implementations may
+    //! return independently pinned spans; contiguous backends use fallback.
+    struct ScatterBlock {
+      ScatterBlock() = default;
+      ScatterBlock(const ScatterBlock &) = delete;
+      ScatterBlock &operator=(const ScatterBlock &) = delete;
+      ScatterBlock(ScatterBlock &&) = default;
+      ScatterBlock &operator=(ScatterBlock &&) = default;
+
+      std::vector<ReadSpan> spans{};
+      std::shared_ptr<void> lease{};
+      MemoryBlock fallback{};
+      size_t size{0};
+
+      void reset() {
+        spans.clear();
+        lease.reset();
+        fallback.reset();
+        size = 0;
+      }
+
+      void reset_contiguous(MemoryBlock block, size_t length) {
+        reset();
+        fallback = std::move(block);
+        size = length;
+        if (length != 0) {
+          spans.push_back(
+              {static_cast<const uint8_t *>(fallback.data()), length});
+        }
+      }
+
+      void reset_scattered(std::vector<ReadSpan> read_spans,
+                           std::shared_ptr<void> read_lease, size_t length) {
+        reset();
+        spans = std::move(read_spans);
+        lease = std::move(read_lease);
+        size = length;
+      }
+    };
+
+    //! One bounded-lifetime read in a batch. Requests may reference different
+    //! segments owned by the same storage so backends can merge their page
+    //! misses into one I/O submission.
+    struct BorrowedRead {
+      BorrowedRead(Segment *segment_arg, size_t offset_arg, size_t length_arg,
+                   MemoryBlock *block_arg)
+          : segment(segment_arg),
+            offset(offset_arg),
+            length(length_arg),
+            block(block_arg) {}
+
+      Segment *segment;
+      size_t offset;
+      size_t length;
+      MemoryBlock *block;
+    };
 
     //! Destructor
     virtual ~Segment(void) {}
@@ -316,6 +434,62 @@ class IndexStorage : public IndexModule {
 
     virtual size_t read(size_t offset, MemoryBlock &data, size_t len) = 0;
 
+    //! Read bytes that the caller guarantees will never be modified after
+    //! publication. Page-backed writable storage may safely return a pinned
+    //! direct view instead of copying the range for snapshot isolation.
+    virtual size_t read_immutable(size_t offset, MemoryBlock &data,
+                                  size_t len) {
+      return read(offset, data, len);
+    }
+
+    //! Borrowed read; release the block before this Segment. The default keeps
+    //! the owning read behavior.
+    virtual size_t read_borrowed(size_t offset, MemoryBlock &data, size_t len) {
+      return read(offset, data, len);
+    }
+
+    //! Borrowed-handle variant of read_immutable().
+    virtual size_t read_borrowed_immutable(size_t offset, MemoryBlock &data,
+                                           size_t len) {
+      return read_immutable(offset, data, len);
+    }
+
+    //! Whether batching is currently preferable to scalar borrowed reads.
+    virtual bool prefer_borrowed_batch() const {
+      return false;
+    }
+
+    //! Batch borrowed reads. The default preserves compatibility by issuing
+    //! scalar reads; page-backed implementations may override this to batch
+    //! misses while keeping each returned MemoryBlock pinned independently.
+    virtual bool read_borrowed_batch(BorrowedRead *reads, size_t count) {
+      if (count == 0) {
+        return true;
+      }
+      if (reads == nullptr) {
+        return false;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        if (reads[i].segment == nullptr || reads[i].block == nullptr) {
+          return false;
+        }
+      }
+      for (size_t i = 0; i < count; ++i) {
+        reads[i].block->reset();
+      }
+      for (size_t i = 0; i < count; ++i) {
+        BorrowedRead &request = reads[i];
+        if (request.segment->read_borrowed(request.offset, *request.block,
+                                           request.length) != request.length) {
+          for (size_t j = 0; j < count; ++j) {
+            reads[j].block->reset();
+          }
+          return false;
+        }
+      }
+      return true;
+    }
+
     virtual bool read(SegmentData *, size_t) {
       return false;
     }
@@ -332,13 +506,96 @@ class IndexStorage : public IndexModule {
     //! Clone the segment
     virtual Pointer clone(void) = 0;
 
-    //! Retrieve the stable base data pointer if the storage backend supports
-    //! it (e.g. mmap-backed storage). Returns nullptr for backends with
-    //! mutable/evictable buffers (e.g. BufferStorage). When non-null the
-    //! caller may compute element addresses as base_data() + offset directly,
-    //! avoiding the full pointer chain through chunk->read().
+    //! Return a stable base address, or nullptr for evictable storage.
     virtual const uint8_t *base_data(void) const {
       return nullptr;
+    }
+
+    virtual size_t abs_data_offset(void) const {
+      return 0;
+    }
+
+    virtual void prefetch(size_t offset, size_t len,
+                          CachePriority priority = CachePriority::kLow) {
+      (void)offset;
+      (void)len;
+      (void)priority;
+    }
+
+    //! Apply ordered writes to this segment. Kept at the end of the vtable so
+    //! existing method slots remain stable. Backends may share pins/latches;
+    //! the default preserves the scalar write contract.
+    virtual bool write_batch(const SegmentData *writes, size_t count) {
+      if (count == 0) {
+        return true;
+      }
+      if (writes == nullptr) {
+        return false;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        if (writes[i].length == 0) {
+          continue;
+        }
+        if (writes[i].data == nullptr ||
+            write(writes[i].offset, writes[i].data, writes[i].length) !=
+                writes[i].length) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    //! Size-aware batch preference. The default retains the backend's existing
+    //! policy; page-backed writable storage can account for cross-page cost.
+    virtual bool prefer_borrowed_batch_for(size_t value_size) const {
+      (void)value_size;
+      return prefer_borrowed_batch();
+    }
+
+    //! Immutable counterpart of read_borrowed_batch(). Writable page-backed
+    //! storage may safely batch and pin ranges that will never be modified
+    //! after publication.
+    virtual bool read_borrowed_batch_immutable(BorrowedRead *reads,
+                                               size_t count) {
+      if (count == 0) {
+        return true;
+      }
+      if (reads == nullptr) {
+        return false;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        if (reads[i].segment == nullptr || reads[i].block == nullptr) {
+          return false;
+        }
+      }
+      for (size_t i = 0; i < count; ++i) {
+        reads[i].block->reset();
+      }
+      for (size_t i = 0; i < count; ++i) {
+        BorrowedRead &request = reads[i];
+        if (request.segment->read_borrowed_immutable(
+                request.offset, *request.block, request.length) !=
+            request.length) {
+          for (size_t j = 0; j < count; ++j) {
+            reads[j].block->reset();
+          }
+          return false;
+        }
+      }
+      return true;
+    }
+
+    //! Read a logical range as one or more stable spans. The returned pointers
+    //! remain valid until ScatterBlock::reset() or destruction. The default
+    //! preserves compatibility by returning one contiguous MemoryBlock.
+    virtual size_t read_scatter(size_t offset, ScatterBlock &data, size_t len) {
+      data.reset();
+      MemoryBlock block;
+      const size_t read_size = read(offset, block, len);
+      if (read_size != 0) {
+        data.reset_contiguous(std::move(block), read_size);
+      }
+      return read_size;
     }
   };
 
@@ -392,6 +649,11 @@ class IndexStorage : public IndexModule {
   //! Retrieve the memory block type of this storage
   virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
     return MemoryBlock::MBT_MMAP;
+  }
+
+  //! Return the shared page cache when this storage is backed by VecBufferPool.
+  virtual std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const {
+    return nullptr;
   }
 
   //! Test if the storage has unflushed data

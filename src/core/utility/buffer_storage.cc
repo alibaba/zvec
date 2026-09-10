@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <sys/stat.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cinttypes>
 #include <cstring>
-#include <functional>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
-#include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_mapping.h>
@@ -34,16 +34,17 @@ namespace zvec {
 namespace core {
 namespace {
 
-// Cross-compiler helpers for lock-free 64-bit acquire/release access
-// to SegmentMeta::data_size / padding_size.
-//
-// These fields are POD (uint64_t) inside a serialised struct so we cannot
-// change their type to std::atomic<>; std::atomic_ref is C++20 and the
-// project targets C++17.  GCC/Clang have native __atomic_* builtins that
-// emit single ldar/stlr on arm64 and plain mov on x86_64.  MSVC lacks
-// these builtins, so we fall back to volatile load/store paired with a
-// std::atomic_thread_fence, which is correct on all targets MSVC ships
-// (x86_64 / arm64 desktop) and equivalent in cost.
+constexpr size_t kBufferAlignment = 4096UL;
+
+inline bool AlignBufferSize(size_t size, size_t *aligned_size) {
+  if (size > std::numeric_limits<size_t>::max() - (kBufferAlignment - 1)) {
+    return false;
+  }
+  *aligned_size = (size + (kBufferAlignment - 1)) & ~(kBufferAlignment - 1);
+  return true;
+}
+
+// C++17-compatible atomic access to serialized uint64_t fields.
 inline uint64_t bs_load_acquire(const uint64_t *p) {
 #if defined(__GNUC__) || defined(__clang__)
   return __atomic_load_n(p, __ATOMIC_ACQUIRE);
@@ -81,11 +82,8 @@ inline void bs_store_relaxed(uint64_t *p, uint64_t v) {
 
 }  // namespace
 
-// The legacy read(const void**) overload guarantees the returned pointer
-// stays valid until close_index().  Single-page reads pin the page
-// (never released); cross-page reads allocate a temp buffer owned by
-// tmp_buffers_ (freed in close_index()).  Callers wanting bounded
-// lifetime should use the read(MemoryBlock&) overload.
+// Legacy pointer reads stay valid until close_index(); prefer MemoryBlock for
+// bounded ownership.
 
 /*! Buffer Storage
  */
@@ -96,30 +94,28 @@ class BufferStorage : public IndexStorage {
   class WrappedSegment : public IndexStorage::Segment,
                          public std::enable_shared_from_this<Segment> {
    public:
-    //! Index Storage Pointer
-    typedef std::shared_ptr<Segment> Pointer;
-
     //! Constructor.  See segment_info_ for the pointer-stability contract.
     WrappedSegment(BufferStorage *owner, IndexMapping::SegmentInfo *info,
-                   size_t segment_id)
+                   const std::string *segment_id)
         : segment_info_(info),
           owner_(owner),
           segment_id_(segment_id),
           capacity_(static_cast<size_t>(info->segment.meta()->data_size +
                                         info->segment.meta()->padding_size)) {}
     //! Destructor
-    ~WrappedSegment(void) override {}
+    ~WrappedSegment(void) override = default;
 
-    //! Retrieve size of data
-    //!
-    //! data_size / padding_size are mutated lock-free by concurrent
-    //! writers (write/resize) and observed by concurrent readers on the
-    //! lock-free hot path.  Use acquire/release ordering so weakly-ordered
-    //! ARM (e.g. Android arm64) cannot see stale values that would cause
-    //! read() to truncate len to 0.
+    //! Retrieve size of data. Paired acquire/release operations publish
+    //! concurrent write/resize metadata changes to lock-free readers.
     size_t data_size(void) const override {
       return static_cast<size_t>(
           bs_load_acquire(&segment_info_->segment.meta()->data_size));
+    }
+
+    size_t data_offset(void) const override {
+      return segment_info_->segment_header_start_offset +
+             segment_info_->segment_header->content_offset +
+             segment_info_->segment.meta()->data_index;
     }
 
     //! Retrieve crc of data
@@ -139,102 +135,71 @@ class BufferStorage : public IndexStorage {
     }
 
     //! Fetch data from segment (with own buffer)
-    //!
-    //! C1: pool/handle are stable for the lifetime of the index
-    //! (no retire/rebuild), so no lock is needed on the hot path.
     size_t fetch(size_t offset, void *buf, size_t len) const override {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
-        LOG_ERROR("WrappedSegment::fetch: handle is null, file[%s], id[%zu]",
-                  owner_->file_name_.c_str(), segment_id_);
+        LOG_ERROR("WrappedSegment::fetch: handle is null, file[%s], id[%s]",
+                  owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        return 0;
       }
-      size_t abs_offset = segment_info_->segment_header_start_offset +
-                          segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
-      if (!owner_->buffer_pool_handle_->read_range(abs_offset, len,
-                                                   static_cast<char *>(buf))) {
+      const size_t abs_offset = absolute_offset(offset);
+      if (!owner_->read_range(abs_offset, len, static_cast<char *>(buf))) {
         LOG_ERROR(
-            "WrappedSegment::fetch: read_range failed, file[%s], id[%zu], "
+            "WrappedSegment::fetch: read_range failed, file[%s], id[%s], "
             "abs_offset=%zu, len=%zu",
-            owner_->file_name_.c_str(), segment_id_, abs_offset, len);
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
         return 0;
       }
       return len;
     }
 
     //! Read data from segment
-    //! C1: lock-free hot path (pool/handle never change during operation).
     size_t read(size_t offset, const void **data, size_t len) override {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
-        LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%zu]",
-                  owner_->file_name_.c_str(), segment_id_);
+        LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%s]",
+                  owner_->file_name_.c_str(), segment_id_->c_str());
         *data = nullptr;
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        *data = nullptr;
+        return 0;
       }
-      size_t abs_offset = segment_info_->segment_header_start_offset +
-                          segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
+      const size_t abs_offset = absolute_offset(offset);
+      // Without a page cache, retain a copied result for the legacy pointer
+      // lifetime. Cached single-page reads below pin the page until close(),
+      // including for writable pools, instead of retaining one copy per read.
       size_t first_page = abs_offset / ailego::kVectorPageSize;
-      size_t last_page = (len == 0)
-                             ? first_page
-                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
-      if (first_page == last_page) {
+      size_t last_page = (abs_offset + len - 1) / ailego::kVectorPageSize;
+      bool force_bypass = !owner_->cache_enabled_;
+      if (owner_->cache_enabled_ && first_page == last_page) {
         size_t page_id = 0;
         char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
                                                                  len, page_id);
-        if (!raw) {
-          LOG_ERROR(
-              "WrappedSegment::read: single-page acquire failed, file[%s], "
-              "id[%zu], abs_offset=%zu, len=%zu, page=%zu",
-              owner_->file_name_.c_str(), segment_id_, abs_offset, len,
-              first_page);
-          *data = nullptr;
-          return 0;
+        if (raw != nullptr) {
+          *data = raw;
+          // Legacy pointer reads retain their pin until close_index().
+          {
+            std::lock_guard<std::mutex> pin_latch(owner_->pinned_pages_mutex_);
+            owner_->pinned_pages_.push_back(page_id);
+          }
+          return len;
         }
-        *data = raw;
-        // Pin held until close_index() per the never-released contract
-        // of this overload. Record the page so close_index() can release
-        // the pin before tearing down the pool; otherwise the lingering
-        // ref_count would trip ~VecBufferPool's "all blocks released"
-        // assertion.
-        {
-          std::lock_guard<std::mutex> pin_latch(owner_->pinned_pages_mutex_);
-          owner_->pinned_pages_.push_back(page_id);
-        }
-        return len;
+        force_bypass = true;
       }
-      // Cross-page path: see file-level banner.  C11 aligned_alloc requires
-      // size to be a multiple of alignment, and alignment must be a power
-      // of two.  Use a fixed 4096-byte alignment for the dst buffer: 4K is
-      // the minimum page granularity across all supported platforms
-      // (always a divisor of the 16K/64K page sizes used on Apple Silicon
-      // and some Android arm64 configurations) and is sufficient for the
-      // downstream SIMD/DMA-friendly access contract.  Pinning kAlign to
-      // 4096 also avoids over-allocating 16KB per cross-page read on
-      // large-page platforms.
-      static constexpr size_t kAlign = 4096UL;
-      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      // Allocate a 4K-aligned slot from the per-storage arena pool.
-      // This batches page-aligned allocation: under heap fragmentation
-      // (notably Android Bionic scudo), one large posix_memalign per
-      // arena via the secondary (mmap-backed) allocator is far more
-      // reliable than many independent posix_memalign(4K, 4K) calls.
+      // Keep scratch buffers 4K-aligned without over-allocating on platforms
+      // whose native page size is larger.
+      size_t alloc_size = 0;
+      if (ailego_unlikely(!AlignBufferSize(len, &alloc_size))) {
+        *data = nullptr;
+        return 0;
+      }
+      // The arena amortizes aligned allocation and avoids fragmented-heap
+      // failures observed with many small aligned allocations on Android.
       char *tmp = nullptr;
       {
         std::lock_guard<std::mutex> tmp_latch(owner_->tmp_buffers_mutex_);
@@ -243,21 +208,24 @@ class BufferStorage : public IndexStorage {
       if (!tmp) {
         LOG_ERROR(
             "WrappedSegment::read: cross-page alloc failed, file[%s], "
-            "id[%zu], abs_offset=%zu, len=%zu, alloc_size=%zu, align=%zu",
-            owner_->file_name_.c_str(), segment_id_, abs_offset, len,
-            alloc_size, kAlign);
+            "id[%s], abs_offset=%zu, len=%zu, alloc_size=%zu, align=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len,
+            alloc_size, kBufferAlignment);
         *data = nullptr;
         return 0;
       }
-      if (!owner_->buffer_pool_handle_->read_range(abs_offset, len, tmp)) {
+      const bool read_ok = force_bypass
+                               ? owner_->buffer_pool_handle_->read_range_bypass(
+                                     abs_offset, len, tmp)
+                               : owner_->read_range(abs_offset, len, tmp);
+      if (!read_ok) {
         LOG_ERROR(
             "WrappedSegment::read: cross-page read_range failed, file[%s], "
-            "id[%zu], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
-            owner_->file_name_.c_str(), segment_id_, abs_offset, len,
+            "id[%s], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len,
             first_page, last_page);
-        // The arena slot is intentionally not rolled back: rolling back
-        // would require holding the arena lock across read_range, while
-        // the worst-case leak per failed read is one slot (alloc_size).
+        // Avoid holding the arena lock across I/O; a failed read loses one
+        // temporary slot.
         *data = nullptr;
         return 0;
       }
@@ -265,83 +233,510 @@ class BufferStorage : public IndexStorage {
       return len;
     }
 
-    //! C1: lock-free hot path (pool/handle never change during operation).
+    //! Read data into a bounded-lifetime block.
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR(
             "WrappedSegment::read(MemoryBlock&): handle is null, file[%s], "
-            "id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
-      const size_t data_size =
-          bs_load_acquire(&segment_info_->segment.meta()->data_size);
-      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
-        if (offset > data_size) {
-          offset = data_size;
-        }
-        len = data_size - offset;
-      }
-      size_t abs_offset = segment_info_->segment_header_start_offset +
-                          segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
-      size_t first_page = abs_offset / ailego::kVectorPageSize;
-      size_t last_page = (len == 0)
-                             ? first_page
-                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
-      if (first_page == last_page) {
-        size_t page_id = 0;
-        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
-                                                                 len, page_id);
-        if (!raw) {
-          LOG_ERROR("read error (single-page acquire failed).");
-          return 0;
-        }
-        data.reset(owner_->buffer_pool_handle_.get(), page_id, raw);
-        return len;
-      }
-      // C11 aligned_alloc requires the requested size to be a multiple of
-      // the alignment, and alignment must be a power of two.  See the
-      // sibling read(const void**) overload above for the rationale of
-      // pinning kAlign to a fixed 4096 instead of sysconf(_SC_PAGESIZE).
-      static constexpr size_t kAlign = 4096UL;
-      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      char *tmp =
-          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
-      if (!tmp) {
-        LOG_ERROR("read error (alloc cross-page temp buffer failed).");
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
         return 0;
       }
-      if (!owner_->buffer_pool_handle_->read_range(abs_offset, len, tmp)) {
-        ailego_free(tmp);
-        LOG_ERROR("read error (cross-page read_range failed).");
-        return 0;
-      }
-      data = MemoryBlock::MakeOwned(tmp, len);
-      return len;
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/false,
+                               /*immutable=*/false);
     }
 
-    //! Write data into the storage with offset.
-    //!
-    //! Locking: shared shard latch pairs with flush_index()'s exclusive
-    //! all-shards latch -- excludes CRC compute over meta_buf while we
-    //! mutate (data_size, padding_size).  meta_mtx_ additionally
-    //! serialises concurrent writers on the SAME segment so the pair
-    //! stays consistent (sum == capacity_).
+    size_t read_immutable(size_t offset, MemoryBlock &data,
+                          size_t len) override {
+      if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
+        return 0;
+      }
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
+      }
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/false,
+                               /*immutable=*/true);
+    }
+
+    //! Borrowed read: the caller keeps the Segment alive until block release.
+    size_t read_borrowed(size_t offset, MemoryBlock &data,
+                         size_t len) override {
+      if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
+        LOG_ERROR(
+            "WrappedSegment::read_borrowed: handle is null, file[%s], "
+            "id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
+        return 0;
+      }
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
+      }
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/true,
+                               /*immutable=*/false);
+    }
+
+    size_t read_borrowed_immutable(size_t offset, MemoryBlock &data,
+                                   size_t len) override {
+      if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
+        return 0;
+      }
+      len = clamp_length(&offset, len);
+      if (len == 0) {
+        data.reset();
+        return 0;
+      }
+      return read_memory_block(absolute_offset(offset), data, len,
+                               /*borrow_handle=*/true,
+                               /*immutable=*/true);
+    }
+
+    bool prefer_borrowed_batch() const override {
+      return owner_->cache_enabled_ && owner_->buffer_pool_ != nullptr &&
+             !owner_->buffer_pool_->writable() &&
+             owner_->buffer_pool_->has_evicted();
+    }
+
+    bool prefer_borrowed_batch_for(size_t value_size) const override {
+      if (!owner_->cache_enabled_ || owner_->buffer_pool_ == nullptr) {
+        return false;
+      }
+      if (!owner_->buffer_pool_->writable()) {
+        return owner_->buffer_pool_->has_evicted();
+      }
+      // With uniformly distributed records, crossing a page costs roughly
+      // value_size/page_size. Below one eighth, scalar pins are cheaper than
+      // constructing and resolving a batch (notably 512 B on macOS 16 KiB).
+      return value_size >= std::max<size_t>(1, ailego::kVectorPageSize / 8);
+    }
+
+    bool read_borrowed_batch(BorrowedRead *reads, size_t count) override {
+      return read_borrowed_batch_impl(reads, count, /*immutable=*/false);
+    }
+
+    bool read_borrowed_batch_immutable(BorrowedRead *reads,
+                                       size_t count) override {
+      return read_borrowed_batch_impl(reads, count, /*immutable=*/true);
+    }
+
+    bool read_borrowed_batch_impl(BorrowedRead *reads, size_t count,
+                                  bool immutable) {
+      if (count == 0) {
+        return true;
+      }
+      if (reads == nullptr || owner_->buffer_pool_handle_ == nullptr ||
+          owner_->buffer_pool_ == nullptr) {
+        return false;
+      }
+
+      // Mutable reads from writable pools retain snapshot ownership rules.
+      if (!owner_->cache_enabled_ ||
+          (owner_->buffer_pool_->writable() && !immutable)) {
+        return immutable
+                   ? IndexStorage::Segment::read_borrowed_batch_immutable(reads,
+                                                                          count)
+                   : IndexStorage::Segment::read_borrowed_batch(reads, count);
+      }
+
+      // Cross-page vectors need a contiguous copy. A thread-local scratch arena
+      // is reused across calls instead of a per-vector malloc/free: the arena
+      // is safe to recycle because the previous hop's blocks are destroyed
+      // before this call runs (see fast_search_neighbors_buffer). Cross-page
+      // results become non-owning views into the arena.
+      // Cap the per-thread arena: a batch needing more falls back to malloc so
+      // an abnormally wide batch cannot pin unbounded out-of-pool RSS. HNSW
+      // hops need only about max_degree * vector_size (tens of KiB).
+      static constexpr size_t kMaxArenaBytes = 2UL << 20;  // 2 MiB / thread
+      bool batch_arena = false;
+
+      struct BatchState {
+        BorrowedRead *request{nullptr};
+        size_t abs_offset{0};
+        size_t first_page_index{0};
+        size_t page_count{0};
+        bool copy_result{false};
+        char *owned{nullptr};
+      };
+      struct PageUse {
+        size_t unique_index{0};
+        size_t state_index{0};
+        size_t source_offset{0};
+        size_t destination_offset{0};
+        size_t length{0};
+      };
+      struct BatchScratch {
+        std::vector<BatchState> states;
+        std::vector<ailego::block_id_t> page_ids;
+        std::vector<ailego::block_id_t> unique_page_ids;
+        std::vector<char *> pages;
+        std::vector<PageUse> page_uses;
+        std::vector<ailego::block_id_t> admitted_ids;
+        std::vector<size_t> admitted_indices;
+        std::vector<char *> admitted_pages;
+        std::vector<char> arena;  // reused cross-page scratch (arena mode)
+        std::vector<char> bypass_page;
+      };
+      static thread_local BatchScratch scratch;
+
+      scratch.states.clear();
+      scratch.page_ids.clear();
+      scratch.unique_page_ids.clear();
+      scratch.pages.clear();
+      scratch.page_uses.clear();
+      scratch.admitted_ids.clear();
+      scratch.admitted_indices.clear();
+      scratch.admitted_pages.clear();
+      scratch.states.reserve(count);
+      for (size_t i = 0; i < count; ++i) {
+        if (reads[i].block != nullptr) {
+          reads[i].block->reset();
+        }
+      }
+
+      auto cleanup_owned = [&]() {
+        // Arena slices are non-owning; only malloc-mode buffers are freed.
+        for (BatchState &state : scratch.states) {
+          if (!batch_arena && state.owned != nullptr) {
+            ailego_free(state.owned);
+          }
+          state.owned = nullptr;
+        }
+      };
+      auto release_pages = [&]() {
+        for (size_t i = 0; i < scratch.pages.size(); ++i) {
+          if (scratch.pages[i] != nullptr) {
+            owner_->buffer_pool_handle_->release_one(
+                scratch.unique_page_ids[i]);
+            scratch.pages[i] = nullptr;
+          }
+        }
+      };
+      auto fail = [&]() {
+        cleanup_owned();
+        release_pages();
+        for (size_t i = 0; i < count; ++i) {
+          if (reads[i].block != nullptr) {
+            reads[i].block->reset();
+          }
+        }
+        return false;
+      };
+
+      size_t total_pages = 0;
+      for (size_t i = 0; i < count; ++i) {
+        BorrowedRead &request = reads[i];
+        auto *segment = dynamic_cast<WrappedSegment *>(request.segment);
+        if (segment == nullptr || segment->owner_ != owner_ ||
+            request.block == nullptr) {
+          cleanup_owned();
+          return immutable
+                     ? IndexStorage::Segment::read_borrowed_batch_immutable(
+                           reads, count)
+                     : IndexStorage::Segment::read_borrowed_batch(reads, count);
+        }
+
+        const size_t data_size = segment->data_size();
+        if (request.offset > data_size ||
+            request.length > data_size - request.offset) {
+          return fail();
+        }
+
+        BatchState state;
+        state.request = &request;
+        if (request.length == 0) {
+          scratch.states.emplace_back(state);
+          continue;
+        }
+
+        const size_t data_offset = segment->data_offset();
+        if (data_offset > std::numeric_limits<size_t>::max() - request.offset) {
+          return fail();
+        }
+        state.abs_offset = data_offset + request.offset;
+        if (state.abs_offset >
+            std::numeric_limits<size_t>::max() - (request.length - 1)) {
+          return fail();
+        }
+        const size_t first_page = state.abs_offset / ailego::kVectorPageSize;
+        const size_t last_page =
+            (state.abs_offset + request.length - 1) / ailego::kVectorPageSize;
+        state.first_page_index = total_pages;
+        state.page_count = last_page - first_page + 1;
+        if (state.page_count >
+            std::numeric_limits<size_t>::max() - total_pages) {
+          return fail();
+        }
+        total_pages += state.page_count;
+        scratch.states.emplace_back(state);
+        for (size_t page = first_page; page <= last_page; ++page) {
+          scratch.page_ids.emplace_back(page);
+        }
+      }
+
+      // Pin unique pages rather than one pin per vector occurrence. Besides
+      // removing duplicate work, this lets a pressured batch preserve all
+      // resident hits and fall back only for pages that really cannot be
+      // admitted. MemoryLimitPool itself enforces the shared non-page reserve;
+      // checking available bytes here used to turn the entire batch into
+      // per-vector bypass reads as soon as the cache reached that reserve.
+      scratch.unique_page_ids = scratch.page_ids;
+      std::sort(scratch.unique_page_ids.begin(), scratch.unique_page_ids.end());
+      scratch.unique_page_ids.erase(std::unique(scratch.unique_page_ids.begin(),
+                                                scratch.unique_page_ids.end()),
+                                    scratch.unique_page_ids.end());
+      scratch.pages.assign(scratch.unique_page_ids.size(), nullptr);
+
+      // Take resident hits without I/O first, then admit only unique misses
+      // selected by the compact frequency policy. One-off cold pages bypass
+      // the cache, while repeated HNSW graph pages become resident without
+      // continuously replacing useful members of the working set.
+      for (size_t i = 0; i < scratch.unique_page_ids.size(); ++i) {
+        scratch.pages[i] = owner_->buffer_pool_->try_acquire_buffer(
+            scratch.unique_page_ids[i]);
+        if (scratch.pages[i] == nullptr) {
+          // Under pressure, a first-touch HNSW page is usually a one-off
+          // random candidate. Bypass it once; a repeated touch is admitted by
+          // the pool's compact frequency policy. This avoids replacing one
+          // useful resident page for every miss when the working set is much
+          // larger than the budget.
+          if (owner_->buffer_pool_->should_admit_page(
+                  scratch.unique_page_ids[i])) {
+            scratch.admitted_ids.push_back(scratch.unique_page_ids[i]);
+            scratch.admitted_indices.push_back(i);
+          }
+        }
+      }
+
+      // Bound each acquisition so an oversized diagnostic batch cannot hold
+      // the entire cache pinned. Linux retains batched AIO within each chunk;
+      // on macOS, failed capacity resolution stops after one chunk instead of
+      // rescanning the same pinned cache for every remaining page.
+      static constexpr size_t kAdmissionBatchPages = 64;
+      scratch.admitted_pages.resize(scratch.admitted_ids.size(), nullptr);
+      size_t admitted_begin = 0;
+      while (admitted_begin < scratch.admitted_ids.size()) {
+        const size_t admitted_count = std::min(
+            kAdmissionBatchPages, scratch.admitted_ids.size() - admitted_begin);
+        const bool acquired = owner_->buffer_pool_handle_->acquire_pages(
+            scratch.admitted_ids.data() + admitted_begin, admitted_count,
+            scratch.admitted_pages.data() + admitted_begin);
+        if (acquired) {
+          for (size_t j = 0; j < admitted_count; ++j) {
+            scratch.pages[scratch.admitted_indices[admitted_begin + j]] =
+                scratch.admitted_pages[admitted_begin + j];
+          }
+          admitted_begin += admitted_count;
+          continue;
+        }
+
+        // acquire_pages() rolls its pins back on failure, but it may have
+        // populated part of the chunk before capacity ran out. Re-pin those
+        // pages once so that useful work and concurrent single-flight loads
+        // are not discarded, then bypass the remaining cold pages.
+        for (size_t j = 0; j < admitted_count; ++j) {
+          const size_t admitted_index = admitted_begin + j;
+          const size_t unique_index = scratch.admitted_indices[admitted_index];
+          scratch.pages[unique_index] =
+              owner_->buffer_pool_->try_acquire_buffer(
+                  scratch.admitted_ids[admitted_index]);
+        }
+        break;
+      }
+
+      // Close races with other query threads after admission and AIO. This is
+      // a hit-only probe; it never turns a bypass candidate into new I/O.
+      for (size_t i = 0; i < scratch.unique_page_ids.size(); ++i) {
+        if (scratch.pages[i] == nullptr) {
+          scratch.pages[i] = owner_->buffer_pool_->try_acquire_buffer(
+              scratch.unique_page_ids[i]);
+        }
+      }
+
+      auto unique_index_for = [&](ailego::block_id_t page_id) -> size_t {
+        auto it = std::lower_bound(scratch.unique_page_ids.begin(),
+                                   scratch.unique_page_ids.end(), page_id);
+        return static_cast<size_t>(it - scratch.unique_page_ids.begin());
+      };
+
+      // Cross-page values always need a contiguous copy. A single-page value
+      // only needs one when that page is on the bypass side of the hybrid
+      // batch; resident single-page values keep their normal zero-copy pin.
+      for (BatchState &state : scratch.states) {
+        state.copy_result = state.page_count > 1;
+        for (size_t j = 0; j < state.page_count && !state.copy_result; ++j) {
+          const size_t unique_index =
+              unique_index_for(scratch.page_ids[state.first_page_index + j]);
+          state.copy_result = scratch.pages[unique_index] == nullptr;
+        }
+      }
+
+      // Reserve copied values once, then hand out bump slices. This includes
+      // single-page bypass values, so the direct-read page scratch can be
+      // immediately reused for the next unique miss.
+      static constexpr size_t kArenaAlign = 64;
+      size_t total = 0;
+      for (const BatchState &state : scratch.states) {
+        if (!state.copy_result) {
+          continue;
+        }
+        const size_t length = state.request->length;
+        if (length > std::numeric_limits<size_t>::max() - (kArenaAlign - 1)) {
+          return fail();
+        }
+        const size_t aligned = (length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+        if (aligned > kMaxArenaBytes - total) {
+          total = kMaxArenaBytes + 1;
+          break;
+        }
+        total += aligned;
+      }
+      batch_arena = total <= kMaxArenaBytes;
+      if (batch_arena) {
+        if (scratch.arena.size() < total) {
+          scratch.arena.resize(total);
+        }
+        size_t off = 0;
+        for (BatchState &state : scratch.states) {
+          if (!state.copy_result) {
+            continue;
+          }
+          state.owned = scratch.arena.data() + off;
+          off += (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
+        }
+      }
+      if (!batch_arena) {
+        for (BatchState &state : scratch.states) {
+          if (!state.copy_result) {
+            continue;
+          }
+          const size_t length = state.request->length;
+          size_t alloc_size = 0;
+          if (!AlignBufferSize(length, &alloc_size)) {
+            return fail();
+          }
+          state.owned = static_cast<char *>(
+              ailego_aligned_malloc(alloc_size, kBufferAlignment));
+          if (state.owned == nullptr) {
+            return fail();
+          }
+        }
+      }
+
+      // Describe every copied fragment, sort by unique source page, and read
+      // each bypass page exactly once before scattering it to all vectors that
+      // overlap that page.
+      scratch.page_uses.reserve(total_pages);
+      for (size_t state_index = 0; state_index < scratch.states.size();
+           ++state_index) {
+        const BatchState &state = scratch.states[state_index];
+        if (!state.copy_result) {
+          continue;
+        }
+        size_t remaining = state.request->length;
+        size_t destination_offset = 0;
+        size_t source_offset = state.abs_offset % ailego::kVectorPageSize;
+        for (size_t j = 0; j < state.page_count; ++j) {
+          const size_t length =
+              std::min(remaining, ailego::kVectorPageSize - source_offset);
+          scratch.page_uses.push_back(PageUse{
+              unique_index_for(scratch.page_ids[state.first_page_index + j]),
+              state_index, source_offset, destination_offset, length});
+          destination_offset += length;
+          remaining -= length;
+          source_offset = 0;
+        }
+      }
+      std::sort(scratch.page_uses.begin(), scratch.page_uses.end(),
+                [](const PageUse &lhs, const PageUse &rhs) {
+                  return lhs.unique_index < rhs.unique_index;
+                });
+
+      if (scratch.bypass_page.size() < ailego::kVectorPageSize) {
+        scratch.bypass_page.resize(ailego::kVectorPageSize);
+      }
+      size_t use_begin = 0;
+      while (use_begin < scratch.page_uses.size()) {
+        const size_t unique_index = scratch.page_uses[use_begin].unique_index;
+        const char *source = scratch.pages[unique_index];
+        if (source == nullptr) {
+          const size_t page_offset =
+              scratch.unique_page_ids[unique_index] * ailego::kVectorPageSize;
+          const size_t read_length =
+              std::min(ailego::kVectorPageSize,
+                       owner_->buffer_pool_->file_size() - page_offset);
+          if (!owner_->buffer_pool_handle_->read_range_bypass(
+                  page_offset, read_length, scratch.bypass_page.data())) {
+            return fail();
+          }
+          source = scratch.bypass_page.data();
+        }
+        size_t use_end = use_begin;
+        while (use_end < scratch.page_uses.size() &&
+               scratch.page_uses[use_end].unique_index == unique_index) {
+          const PageUse &use = scratch.page_uses[use_end];
+          BatchState &state = scratch.states[use.state_index];
+          std::memcpy(state.owned + use.destination_offset,
+                      source + use.source_offset, use.length);
+          ++use_end;
+        }
+        use_begin = use_end;
+      }
+
+      for (BatchState &state : scratch.states) {
+        if (state.page_count == 0) {
+          state.request->block->reset();
+          continue;
+        }
+        if (!state.copy_result) {
+          const size_t unique_index =
+              unique_index_for(scratch.page_ids[state.first_page_index]);
+          const size_t offset_in_page =
+              state.abs_offset % ailego::kVectorPageSize;
+          owner_->buffer_pool_handle_->acquire_one(
+              scratch.unique_page_ids[unique_index]);
+          state.request->block->reset(
+              owner_->buffer_pool_handle_.get(),
+              scratch.unique_page_ids[unique_index],
+              scratch.pages[unique_index] + offset_in_page);
+          continue;
+        }
+        *state.request->block =
+            batch_arena
+                ? MemoryBlock::MakeBorrowedView(state.owned)
+                : MemoryBlock::MakeOwned(state.owned, state.request->length);
+        state.owned = nullptr;
+      }
+      release_pages();
+      return true;
+    }
+
+    //! Write data into the storage with offset. The shard latch excludes
+    //! flush; meta_mtx_ serializes metadata changes within this segment.
     size_t write(size_t offset, const void *data, size_t len) override {
       std::shared_lock<std::shared_mutex> latch(
           owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_ ||
                           !owner_->buffer_pool_)) {
-        LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%zu]",
-                  owner_->file_name_.c_str(), segment_id_);
+        LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%s]",
+                  owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
       if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::write: storage is marked corrupted, refusing "
-            "write, file[%s], id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "write, file[%s], id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
       // In read-only mode the write is a silent no-op so that callers that
@@ -359,37 +754,95 @@ class BufferStorage : public IndexStorage {
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
                           meta->data_index + offset;
-      // Write the bytes BEFORE publishing the new data_size to readers.
-      // Lock-free readers observe data_size with acquire ordering; the
-      // release-store below establishes happens-before with the page
-      // contents written above.  Publishing data_size first (the previous
-      // ordering) allowed a reader on weakly-ordered ARM to see the new
-      // length but still read stale page contents -- or, in the inverse
-      // direction, see a stale length and truncate len to 0
-      // (root cause of "Read sparse vector failed ... ret=0").
+      // Publish data_size only after the page bytes are visible to readers.
       if (owner_->buffer_pool_handle_->write_range(
               abs_offset, len, static_cast<const char *>(data)) != 0) {
         LOG_ERROR("write() page-cache write_range failed at abs_offset=%zu",
                   abs_offset);
         return 0;
       }
-      {
+      const uint64_t write_end = offset + len;
+      if (write_end > bs_load_acquire(&meta->data_size)) {
         std::lock_guard<std::mutex> meta_latch(meta_mtx_);
         uint64_t cur = bs_load_relaxed(&meta->data_size);
-        if (offset + len > cur) {
-          uint64_t new_size = offset + len;
-          // padding_size is paired with data_size; publish it first
-          // (relaxed) so readers that acquire data_size see a
-          // consistent (data_size + padding_size == capacity_) pair.
-          bs_store_relaxed(&meta->padding_size, capacity_ - new_size);
-          bs_store_release(&meta->data_size, new_size);
+        if (write_end > cur) {
+          // Publish padding before data_size to keep the pair consistent.
+          bs_store_relaxed(&meta->padding_size, capacity_ - write_end);
+          bs_store_release(&meta->data_size, write_end);
         }
       }
-      // Mark dirty unconditionally even when data_size did not grow:
-      // fixed-size in-place rewrites (e.g. chunk_meta_segment) must still
-      // trigger flush_all() before the next append_segment().
+      // Fixed-size rewrites are dirty even when data_size is unchanged.
       owner_->set_as_dirty();
       return len;
+    }
+
+    bool write_batch(const SegmentData *writes, size_t count) override {
+      if (count == 0) {
+        return true;
+      }
+      if (writes == nullptr || count > kMaxCoalescedWrites) {
+        return IndexStorage::Segment::write_batch(writes, count);
+      }
+
+      std::shared_lock<std::shared_mutex> latch(
+          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
+      if (ailego_unlikely(!owner_->buffer_pool_handle_ ||
+                          !owner_->buffer_pool_ ||
+                          owner_->corrupted_.load(std::memory_order_acquire))) {
+        return false;
+      }
+      if (!owner_->buffer_pool_->writable()) {
+        return true;
+      }
+
+      auto meta = segment_info_->segment.meta();
+      const size_t data_base = segment_info_->segment_header_start_offset +
+                               segment_info_->segment_header->content_offset +
+                               meta->data_index;
+      std::array<ailego::VecBufferWriteFragment, kMaxCoalescedWrites>
+          fragments{};
+      size_t page_id = std::numeric_limits<size_t>::max();
+      uint64_t write_end = 0;
+      bool has_data = false;
+      for (size_t i = 0; i < count; ++i) {
+        const auto &write = writes[i];
+        if (ailego_unlikely(write.offset > capacity_ ||
+                            write.length > capacity_ - write.offset ||
+                            (write.length != 0 && write.data == nullptr))) {
+          return false;
+        }
+        if (write.length == 0) {
+          continue;
+        }
+        const size_t abs_offset = data_base + write.offset;
+        fragments[i] = {abs_offset, write.length,
+                        static_cast<const char *>(write.data)};
+        write_end = std::max<uint64_t>(write_end, write.offset + write.length);
+        const size_t write_page = abs_offset / ailego::kVectorPageSize;
+        const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+        if (write.length > ailego::kVectorPageSize - offset_in_page ||
+            (has_data && write_page != page_id)) {
+          latch.unlock();
+          return IndexStorage::Segment::write_batch(writes, count);
+        }
+        page_id = write_page;
+        has_data = true;
+      }
+
+      if (has_data && owner_->buffer_pool_handle_->write_fragments(
+                          fragments.data(), count) != 0) {
+        return false;
+      }
+      if (write_end > bs_load_acquire(&meta->data_size)) {
+        std::lock_guard<std::mutex> meta_latch(meta_mtx_);
+        const uint64_t current = bs_load_relaxed(&meta->data_size);
+        if (write_end > current) {
+          bs_store_relaxed(&meta->padding_size, capacity_ - write_end);
+          bs_store_release(&meta->data_size, write_end);
+        }
+      }
+      owner_->set_as_dirty();
+      return true;
     }
 
     //! Resize size of data.  See write() for the locking contract.
@@ -399,8 +852,8 @@ class BufferStorage : public IndexStorage {
       if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::resize: storage is marked corrupted, refusing "
-            "resize, file[%s], id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "resize, file[%s], id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return 0;
       }
       auto meta = segment_info_->segment.meta();
@@ -412,9 +865,7 @@ class BufferStorage : public IndexStorage {
           if (size > capacity_) {
             size = capacity_;
           }
-          // See write() for the publish ordering rationale: padding first
-          // (relaxed), then release-store data_size so concurrent lock-free
-          // readers observe a consistent pair.
+          // Match write(): padding first, then release-store data_size.
           bs_store_relaxed(&meta->padding_size, capacity_ - size);
           bs_store_release(&meta->data_size, size);
           changed = true;
@@ -433,8 +884,8 @@ class BufferStorage : public IndexStorage {
       if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::update_data_crc: storage is marked corrupted, "
-            "refusing CRC update, file[%s], id[%zu]",
-            owner_->file_name_.c_str(), segment_id_);
+            "refusing CRC update, file[%s], id[%s]",
+            owner_->file_name_.c_str(), segment_id_->c_str());
         return;
       }
       {
@@ -449,19 +900,120 @@ class BufferStorage : public IndexStorage {
       return shared_from_this();
     }
 
-   protected:
-    friend BufferStorage;
-    // Pointer into BufferStorage::segments_ (unordered_map mapped value).
-    // The address is stable across map insertions, so re-parses after
-    // append_segment() are picked up without recreating WrappedSegment.
-    IndexMapping::SegmentInfo *segment_info_{nullptr};
-    // Serialises hot-path writers on the SAME segment so
-    // (data_size, padding_size, data_crc) updates do not interleave.
-    mutable std::mutex meta_mtx_{};
+    //! Preload a read-only range and attach its eviction priority. Writable
+    //! storage deliberately skips this hint: construction has a different
+    //! access pattern and dirty-page lifetime must drive admission there.
+    void prefetch(size_t offset, size_t len,
+                  CachePriority priority = CachePriority::kLow) override {
+      if (!owner_->cache_enabled_ || !owner_->buffer_pool_ ||
+          !owner_->buffer_pool_handle_ || owner_->buffer_pool_->writable()) {
+        return;
+      }
+      const size_t data_size =
+          bs_load_acquire(&segment_info_->segment.meta()->data_size);
+      if (offset >= data_size || len == 0) {
+        return;
+      }
+      len = std::min(len, data_size - offset);
+      const size_t abs_offset = data_offset() + offset;
+      owner_->buffer_pool_handle_->prefetch_range(
+          abs_offset, len, static_cast<uint8_t>(priority));
+    }
 
    private:
+    static constexpr size_t kMaxCoalescedWrites = 8;
+    // Stable unordered_map value address; reparses update this object in place.
+    IndexMapping::SegmentInfo *segment_info_{nullptr};
+    // Serializes metadata writers within this segment.
+    mutable std::mutex meta_mtx_{};
+
+    size_t clamp_length(size_t *offset, size_t len) const {
+      const size_t current_size = data_size();
+      if (ailego_unlikely(*offset > current_size)) {
+        *offset = current_size;
+        return 0;
+      }
+      return std::min(len, current_size - *offset);
+    }
+
+    size_t absolute_offset(size_t offset) const {
+      return data_offset() + offset;
+    }
+
+    size_t read_memory_block(size_t abs_offset, MemoryBlock &data, size_t len,
+                             bool borrow_handle, bool immutable) const {
+      const bool can_pin = owner_->cache_enabled_ &&
+                           (immutable || !owner_->buffer_pool_->writable());
+      bool force_bypass = !owner_->cache_enabled_;
+      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
+      if (can_pin && len <= ailego::kVectorPageSize - offset_in_page) {
+        size_t page_id = 0;
+        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
+                                                                 len, page_id);
+        if (raw != nullptr) {
+          if (borrow_handle) {
+            data.reset(owner_->buffer_pool_handle_.get(), page_id, raw);
+          } else {
+            data.reset(owner_->buffer_pool_handle_, page_id, raw);
+          }
+          return len;
+        }
+        force_bypass = true;
+      }
+
+      // Mutable graph snapshots are typically only a few hundred bytes. They
+      // are copied from cached pages and are never submitted to O_DIRECT, so a
+      // page-aligned allocation only adds allocator and RSS overhead. Keep
+      // alignment for larger/vector snapshots whose distance kernels benefit
+      // from it, but let the allocator's thread cache handle small objects.
+      static constexpr size_t kSmallSnapshotBytes = 512;
+      size_t alloc_size = len;
+      char *tmp = nullptr;
+      if (!immutable && len <= kSmallSnapshotBytes) {
+        tmp = static_cast<char *>(ailego_malloc(len));
+      } else {
+        if (ailego_unlikely(!AlignBufferSize(len, &alloc_size))) {
+          return 0;
+        }
+        tmp = static_cast<char *>(
+            ailego_aligned_malloc(alloc_size, kBufferAlignment));
+      }
+      if (tmp == nullptr) {
+        LOG_ERROR(
+            "WrappedSegment::read: owned buffer allocation failed, file[%s], "
+            "id[%s], abs_offset=%zu, len=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
+        return 0;
+      }
+      bool read_ok =
+          force_bypass ? owner_->buffer_pool_handle_->read_range_bypass(
+                             abs_offset, len, tmp)
+          : immutable ? owner_->buffer_pool_handle_->read_range_immutable(
+                            abs_offset, len, tmp)
+                      : owner_->read_range(abs_offset, len, tmp);
+      if (!read_ok && immutable && !force_bypass) {
+        // A cross-page immutable read can lose a capacity race after choosing
+        // the cache path. The bytes are immutable, so retry directly instead
+        // of failing the HNSW expansion.
+        read_ok = owner_->buffer_pool_handle_->read_range_bypass(abs_offset,
+                                                                 len, tmp);
+      }
+      if (!read_ok) {
+        ailego_free(tmp);
+        LOG_ERROR(
+            "WrappedSegment::read: owned read failed, file[%s], id[%s], "
+            "abs_offset=%zu, len=%zu",
+            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len);
+        return 0;
+      }
+      data = MemoryBlock::MakeOwned(tmp, len);
+      return len;
+    }
+
     BufferStorage *owner_{nullptr};
-    size_t segment_id_{};
+    // Stable alongside segment_info_; unordered_map rehash preserves element
+    // references and pointers.
+    const std::string *segment_id_{nullptr};
     size_t capacity_{};
   };
 
@@ -473,6 +1025,10 @@ class BufferStorage : public IndexStorage {
   //! Retrieve the memory block type of this storage
   MemoryBlock::MemoryBlockType memory_block_type(void) const override {
     return MemoryBlock::MBT_BUFFERPOOL;
+  }
+
+  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const override {
+    return cache_enabled_ ? buffer_pool_ : nullptr;
   }
 
   //! Initialize storage
@@ -506,41 +1062,54 @@ class BufferStorage : public IndexStorage {
       }
     }
 
-    // Open in writable mode when the caller expects to modify the index
-    // (create_if_missing=true implies write intent, same as MMapFileStorage).
+    // create_if_missing also indicates write intent, matching MMapFileStorage.
     buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
         path, /*writable=*/create_if_missing);
-    buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
-        buffer_pool_->get_handle());
+    buffer_pool_handle_ =
+        std::make_shared<ailego::VecBufferPoolHandle>(buffer_pool_);
     int ret = ParseToMapping();
     if (ret != 0) {
       this->close_index();
       return ret;
     }
-    ret = buffer_pool_->init();
-    if (ret != 0) {
+    const size_t file_size = buffer_pool_->file_size();
+    const size_t page_count =
+        file_size == 0 ? 0 : (file_size - 1) / ailego::kVectorPageSize + 1;
+    const size_t metadata_bytes =
+        ailego::VecBufferPool::metadata_bytes_for_page_count(
+            page_count, /*writable=*/create_if_missing);
+    const size_t available =
+        ailego::MemoryLimitPool::get_instance().available();
+    const bool cache_can_fit =
+        metadata_bytes != std::numeric_limits<size_t>::max() &&
+        metadata_bytes <= available &&
+        ailego::kVectorPageSize <= available - metadata_bytes;
+    ret = cache_can_fit ? buffer_pool_->init() : -1;
+    if (ret != 0 && create_if_missing) {
       this->close_index();
-      return ret;
+      return IndexError_NoMemory;
     }
-    LOG_INFO(
-        "BufferStorage opened: file=%s, writable=%d, max_segment_size=%" PRIu64
-        ", segment_count=%zu",
-        file_name_.c_str(), static_cast<int>(create_if_missing),
-        max_segment_size_, segments_.size());
+    cache_enabled_ = ret == 0;
+    if (!cache_enabled_) {
+      LOG_INFO(
+          "Read-only BufferStorage opened in bypass-only mode: file=%s "
+          "available=%zu metadata=%zu page_size=%zu",
+          path.c_str(), available, metadata_bytes, ailego::kVectorPageSize);
+    }
+    LOG_INFO("BufferStorage opened: file=%s, writable=%d, segment_count=%zu",
+             file_name_.c_str(), static_cast<int>(create_if_missing),
+             segments_.size());
     return 0;
   }
 
-  // PRECONDITION (also for ParseFooter/ParseSegment/ParseToMapping):
-  // caller holds either single-threaded open() or AllShardsExclusiveLatch.
-  // Do NOT add an internal lock here -- std::shared_mutex is not reentrant.
+  // Called from single-threaded open or under AllShardsExclusiveLatch.
   int ParseHeader(size_t offset, IndexFormat::MetaHeader *out) {
     constexpr size_t kHeaderSize = sizeof(IndexFormat::MetaHeader);
-    std::unique_ptr<char[]> buffer(new char[kHeaderSize]);
-    if (buffer_pool_handle_->get_meta(offset, kHeaderSize, buffer.get()) != 0) {
+    if (buffer_pool_handle_->get_meta(offset, kHeaderSize,
+                                      reinterpret_cast<char *>(out)) != 0) {
       LOG_ERROR("Get segment header failed.");
       return IndexError_Runtime;
     }
-    memcpy(out, buffer.get(), kHeaderSize);
     if (out->meta_header_size != kHeaderSize) {
       LOG_ERROR("Header meta size is invalid.");
       return IndexError_InvalidLength;
@@ -553,72 +1122,69 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseFooter(size_t offset) {
-    std::unique_ptr<char[]> buffer(new char[sizeof(footer_)]);
-    if (buffer_pool_handle_->get_meta(offset, sizeof(footer_), buffer.get()) !=
-        0) {
+  int ParseFooter(size_t offset, IndexFormat::MetaFooter *footer) {
+    if (buffer_pool_handle_->get_meta(offset, sizeof(*footer),
+                                      reinterpret_cast<char *>(footer)) != 0) {
       LOG_ERROR("Get segment footer failed.");
       return IndexError_Runtime;
     }
-    uint8_t *footer_ptr = reinterpret_cast<uint8_t *>(buffer.get());
-    memcpy(&footer_, footer_ptr, sizeof(footer_));
-    if (offset < (size_t)footer_.segments_meta_size) {
+    if (offset < static_cast<size_t>(footer->segments_meta_size)) {
       LOG_ERROR("Footer meta size is invalid.");
       return IndexError_InvalidLength;
     }
-    if (ailego::Crc32c::Hash(&footer_, sizeof(footer_), footer_.footer_crc) !=
-        footer_.footer_crc) {
+    if (ailego::Crc32c::Hash(footer, sizeof(*footer), footer->footer_crc) !=
+        footer->footer_crc) {
       LOG_ERROR("Footer meta checksum is invalid.");
       return IndexError_InvalidChecksum;
     }
     return 0;
   }
 
-  int ParseSegment(size_t offset, IndexFormat::MetaHeader *chain_header,
-                   uint32_t *out_segment_ids_offset) {
-    std::unique_ptr<char[]> segment_buffer =
-        std::make_unique<char[]>(footer_.segments_meta_size);
-    if (buffer_pool_handle_->get_meta(offset, footer_.segments_meta_size,
+  int ParseSegment(size_t offset, uint64_t header_start_offset,
+                   IndexFormat::MetaHeader *chain_header,
+                   const IndexFormat::MetaFooter &footer,
+                   uint32_t &out_segment_ids_offset,
+                   std::unique_ptr<char[]> &segment_buffer) {
+    segment_buffer = std::make_unique<char[]>(footer.segments_meta_size);
+    if (buffer_pool_handle_->get_meta(offset, footer.segments_meta_size,
                                       segment_buffer.get()) != 0) {
       LOG_ERROR("Get segment meta failed.");
       return IndexError_Runtime;
     }
-    if (ailego::Crc32c::Hash(segment_buffer.get(), footer_.segments_meta_size,
-                             0u) != footer_.segments_meta_crc) {
+    if (ailego::Crc32c::Hash(segment_buffer.get(), footer.segments_meta_size,
+                             0u) != footer.segments_meta_crc) {
       LOG_ERROR("Index segments meta checksum is invalid.");
       return IndexError_InvalidChecksum;
     }
+    if (sizeof(IndexFormat::SegmentMeta) * footer.segment_count >
+        footer.segments_meta_size) {
+      return IndexError_InvalidLength;
+    }
     IndexFormat::SegmentMeta *segment_start =
         reinterpret_cast<IndexFormat::SegmentMeta *>(segment_buffer.get());
-    uint32_t segment_ids_offset = footer_.segments_meta_size;
+    uint32_t segment_ids_offset = footer.segments_meta_size;
     for (IndexFormat::SegmentMeta *iter = segment_start,
-                                  *end = segment_start + footer_.segment_count;
+                                  *end = segment_start + footer.segment_count;
          iter != end; ++iter) {
-      if (iter->segment_id_offset >= footer_.segments_meta_size) {
+      if (iter->segment_id_offset >= footer.segments_meta_size) {
         return IndexError_InvalidValue;
       }
-      if (iter->data_index > footer_.content_size) {
+      if (iter->data_index > footer.content_size) {
         return IndexError_InvalidValue;
       }
-      if (iter->data_index + iter->data_size > footer_.content_size) {
+      if (iter->data_index + iter->data_size > footer.content_size) {
         return IndexError_InvalidLength;
       }
 
       if (iter->segment_id_offset < segment_ids_offset) {
         segment_ids_offset = iter->segment_id_offset;
       }
-      // Use id_hash_.size() (not segments_.size()) for the block_id:
-      // segments_ is intentionally NOT cleared between appends to keep
-      // existing WrappedSegment pointers valid, so it carries stale entries.
-      //
-      // Bound the C-string scan to the segments_meta buffer so a missing
-      // NUL terminator cannot walk past the buffer end (defence against
-      // crafted-CRC inputs; CRC already covers benign bit flips).
+      // Bound ID parsing to the metadata buffer.
       const char *seg_name_start =
           reinterpret_cast<const char *>(segment_start) +
           iter->segment_id_offset;
       const size_t seg_name_max =
-          footer_.segments_meta_size - iter->segment_id_offset;
+          footer.segments_meta_size - iter->segment_id_offset;
       const size_t seg_name_len = ::strnlen(seg_name_start, seg_name_max);
       if (seg_name_len == seg_name_max) {
         LOG_ERROR("ParseSegment: segment_id missing NUL terminator, file[%s]",
@@ -626,36 +1192,21 @@ class BufferStorage : public IndexStorage {
         return IndexError_InvalidValue;
       }
       const std::string seg_name(seg_name_start, seg_name_len);
-      const size_t seg_id = id_hash_.size();
-      id_hash_[seg_name] = seg_id;
-      // In-place update so existing WrappedSegment pointers see the
-      // refreshed meta_ptr_ after re-parse.  chain_header MUST be the
-      // per-chain owning copy (not a shared &header_) -- see
-      // chain_headers_ field comment.
-      segments_[seg_name] =
-          IndexMapping::SegmentInfo{IndexMapping::Segment{iter},
-                                    current_header_start_offset_, chain_header};
-      max_segment_size_ =
-          std::max(max_segment_size_, iter->data_size + iter->padding_size);
-      if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
-          footer_.segments_meta_size) {
-        return IndexError_InvalidLength;
-      }
+      // Update in place so existing WrappedSegment pointers remain valid.
+      segments_[seg_name] = IndexMapping::SegmentInfo{
+          IndexMapping::Segment{iter}, header_start_offset, chain_header};
     }
-    buffer_pool_buffers_.push_back(std::move(segment_buffer));
-    if (out_segment_ids_offset) {
-      *out_segment_ids_offset = segment_ids_offset;
-    }
+    out_segment_ids_offset = segment_ids_offset;
     return 0;
   }
 
   int ParseToMapping() {
+    uint64_t header_start_offset = 0;
     while (true) {
       int ret;
-      // Per-chain owning MetaHeader; see chain_headers_ field comment.
-      chain_headers_.emplace_back(std::make_unique<IndexFormat::MetaHeader>());
-      IndexFormat::MetaHeader *chain_header = chain_headers_.back().get();
-      ret = ParseHeader(current_header_start_offset_, chain_header);
+      auto header = std::make_unique<IndexFormat::MetaHeader>();
+      IndexFormat::MetaHeader *chain_header = header.get();
+      ret = ParseHeader(header_start_offset, chain_header);
       if (ret != 0) {
         LOG_ERROR("Failed to parse header, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -678,18 +1229,19 @@ class BufferStorage : public IndexStorage {
         return IndexError_Unsupported;
       }
       uint64_t footer_offset =
-          chain_header->meta_footer_offset + current_header_start_offset_;
+          chain_header->meta_footer_offset + header_start_offset;
       // Reject uint64 wrap-around and offsets past file_size.
-      if (footer_offset < current_header_start_offset_ ||
+      if (footer_offset < header_start_offset ||
           footer_offset + sizeof(IndexFormat::MetaFooter) >
               buffer_pool_->file_size()) {
         LOG_ERROR("ParseToMapping: invalid footer_offset=%" PRIu64
                   " (header=%" PRIu64 ", file_size=%zu), file[%s]",
-                  footer_offset, current_header_start_offset_,
-                  buffer_pool_->file_size(), file_name_.c_str());
+                  footer_offset, header_start_offset, buffer_pool_->file_size(),
+                  file_name_.c_str());
         return IndexError_InvalidValue;
       }
-      ret = ParseFooter(footer_offset);
+      IndexFormat::MetaFooter footer{};
+      ret = ParseFooter(footer_offset, &footer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse footer, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -697,54 +1249,47 @@ class BufferStorage : public IndexStorage {
       }
 
       // Unpack segment table
-      if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
-          footer_.segments_meta_size) {
-        return IndexError_InvalidLength;
-      }
       const uint64_t segment_start_offset =
-          footer_offset - footer_.segments_meta_size;
-      uint32_t segment_ids_offset = footer_.segments_meta_size;
+          footer_offset - footer.segments_meta_size;
+      uint32_t segment_ids_offset = footer.segments_meta_size;
+      std::unique_ptr<char[]> segment_buffer;
       ret =
-          ParseSegment(segment_start_offset, chain_header, &segment_ids_offset);
+          ParseSegment(segment_start_offset, header_start_offset, chain_header,
+                       footer, segment_ids_offset, segment_buffer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
         return ret;
       }
 
-      // Record per-chain metadata offsets so flush_index() can write
-      // updated segment metas and footers back to the backing file.
-      meta_chains_.push_back({current_header_start_offset_, footer_offset,
-                              segment_start_offset, footer_.segments_meta_size,
-                              segment_ids_offset, footer_});
+      // Own all state referenced by this metadata chain in one object.
+      meta_chains_.push_back({std::move(header), std::move(segment_buffer),
+                              header_start_offset, segment_ids_offset, footer});
 
-      if (footer_.next_meta_header_offset == 0) {
+      if (footer.next_meta_header_offset == 0) {
         break;
       }
-      // Reject self-reference / backward jumps and offsets past file_size:
-      // such a corrupted next_meta_header_offset would otherwise drive the
-      // loop into infinite chain growth -> OOM.
-      const uint64_t next_off = footer_.next_meta_header_offset;
-      if (next_off <= current_header_start_offset_ ||
+      // Reject invalid links before following the metadata chain.
+      const uint64_t next_off = footer.next_meta_header_offset;
+      if (next_off <= header_start_offset ||
           next_off + sizeof(IndexFormat::MetaHeader) >
               buffer_pool_->file_size()) {
         LOG_ERROR("ParseToMapping: invalid next_meta_header_offset=%" PRIu64
                   " (current=%" PRIu64 ", file_size=%zu), file[%s]",
-                  next_off, current_header_start_offset_,
-                  buffer_pool_->file_size(), file_name_.c_str());
+                  next_off, header_start_offset, buffer_pool_->file_size(),
+                  file_name_.c_str());
         return IndexError_InvalidValue;
       }
-      // Bound chain count: 1024 chains @ default 1MB segment_meta_capacity
-      // covers >1GB of metadata, far above realistic load.
+      // Bound corrupted metadata chains.
       constexpr size_t kMaxChains = 1024;
-      if (chain_headers_.size() >= kMaxChains) {
+      if (meta_chains_.size() >= kMaxChains) {
         LOG_ERROR(
             "ParseToMapping: chain count exceeds limit %zu, file[%s] may "
             "be corrupted",
             kMaxChains, file_name_.c_str());
         return IndexError_InvalidLength;
       }
-      current_header_start_offset_ = next_off;
+      header_start_offset = next_off;
     }
     return 0;
   }
@@ -772,7 +1317,7 @@ class BufferStorage : public IndexStorage {
 
   //! Retrieve check point of storage
   uint64_t check_point(void) const override {
-    return footer_.check_point;
+    return meta_chains_.empty() ? 0 : meta_chains_.back().footer.check_point;
   }
 
   //! Retrieve a segment by id
@@ -781,33 +1326,29 @@ class BufferStorage : public IndexStorage {
         mapping_shards_[mapping_shard_id()].mtx);
     auto seg_iter = segments_.find(id);
     if (seg_iter == segments_.end()) {
-      return WrappedSegment::Pointer{};
-    }
-    auto id_iter = id_hash_.find(id);
-    if (id_iter == id_hash_.end()) {
-      return WrappedSegment::Pointer{};
+      return {};
     }
     return std::make_shared<WrappedSegment>(this, &seg_iter->second,
-                                            id_iter->second);
+                                            &seg_iter->first);
   }
 
   //! Test if it a segment exists
   bool has(const std::string &id) const override {
-    return this->has_segment(id);
+    std::shared_lock<std::shared_mutex> latch(
+        mapping_shards_[mapping_shard_id()].mtx);
+    return segments_.find(id) != segments_.end();
   }
 
   //! Retrieve magic number of index
   uint32_t magic(void) const override {
-    if (chain_headers_.empty()) {
+    if (meta_chains_.empty()) {
       return 0u;
     }
-    return chain_headers_.front()->magic;
+    return meta_chains_.front().header->magic;
   }
 
  protected:
-  //! Initialize index version segment (writes content into an IndexMapping).
-  //! Only intended to be called from init_index() while `mapping` is still
-  //! open in create-mode.
+  //! Write the version segment while the new mapping is open.
   int init_version_segment(IndexMapping &mapping) {
     size_t data_size = std::strlen(IndexVersion::Details());
     int error_code = mapping.append(INDEX_VERSION_SEGMENT_NAME, data_size);
@@ -823,16 +1364,13 @@ class BufferStorage : public IndexStorage {
     size_t capacity = static_cast<size_t>(meta->padding_size + meta->data_size);
     memcpy(segment->data(), IndexVersion::Details(), data_size);
     segment->set_dirty();
-    set_as_dirty();
     meta->data_crc = ailego::Crc32c::Hash(segment->data(), data_size, 0);
     meta->data_size = data_size;
     meta->padding_size = capacity - data_size;
     return 0;
   }
 
-  //! Create the initial on-disk index structure and write the mandatory
-  //! version segment.  Uses IndexMapping (the same engine as MMapFileStorage)
-  //! so the produced file is fully compatible with both storage backends.
+  //! Create an index compatible with the mmap storage format.
   int init_index(const std::string &path) {
     IndexMapping mapping;
     int ret = mapping.create(path, segment_meta_capacity_);
@@ -865,20 +1403,14 @@ class BufferStorage : public IndexStorage {
     return index_dirty_.load(std::memory_order_relaxed);
   }
 
-  //! Mark the index as dirty.  HOT PATH: store(true) unconditionally --
-  //! a load-then-store guard could let a stale cached `true` skip the
-  //! store after flush_index() CAS'd dirty=false on another core, losing
-  //! the writer's modification.
+  //! Publish dirty unconditionally to avoid racing a concurrent flush.
   void set_as_dirty(void) {
     index_dirty_.store(true, std::memory_order_relaxed);
   }
 
   //! Refresh meta information (checksum, update time, etc.)
   void refresh_index(uint64_t chkp) {
-    // CAS-loop max: callers may invoke refresh() out of order, and the
-    // persisted check_point must be non-decreasing.  Relaxed ordering is
-    // sufficient because flush_index() takes AllShardsExclusiveLatch which
-    // establishes the necessary happens-before for the disk write.
+    // Checkpoints are monotonic; the flush latch provides synchronization.
     if (chkp != 0) {
       uint64_t cur = pending_check_point_.load(std::memory_order_relaxed);
       while (chkp > cur) {
@@ -898,19 +1430,14 @@ class BufferStorage : public IndexStorage {
     if (!index_dirty_.load(std::memory_order_relaxed)) {
       return 0;
     }
-    // Exclusive all-shards latch excludes the lock-free hot path while we
-    // hash meta_buf and pwrite footer; without it segments_meta_crc would
-    // not match the bytes on disk.
+    // Exclude metadata mutation while hashing and persisting it.
     AllShardsExclusiveLatch latch(mapping_shards_);
     return flush_index_locked();
   }
 
-  //! PRECONDITION: caller holds AllShardsExclusiveLatch.  Used by
-  //! flush_index() (acquires the latch) and close_index() (must flush
-  //! and tear down under one continuous latch hold).
+  //! Requires AllShardsExclusiveLatch.
   int flush_index_locked(void) {
-    // No-op on never-opened / already-closed storage: close_index()
-    // unconditionally calls us during teardown.
+    // close_index() may call this before open or after close.
     if (!buffer_pool_ || !buffer_pool_handle_) {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
@@ -927,23 +1454,17 @@ class BufferStorage : public IndexStorage {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
     }
-    // Claim dirty atomically AT THE START so any concurrent write() that
-    // lands during this flush re-sets dirty=true and is picked up by the
-    // next flush; an unconditional store(false) at the end would silently
-    // swallow it.
+    // Claim the current dirty generation; concurrent writes start the next one.
     bool expected_dirty = true;
     if (!index_dirty_.compare_exchange_strong(expected_dirty, false,
                                               std::memory_order_relaxed)) {
-      // Another thread already claimed; bail out.
+      // Another thread already claimed it.
       return 0;
     }
-    // Snapshot pending_check_point_ AFTER claiming dirty: any newer chkp
-    // stored by a concurrent refresh_index() will be preserved by the
-    // CAS-reset at the end (and refresh_index() will have re-set dirty).
+    // Snapshot after claiming dirty so newer checkpoints survive the final CAS.
     const uint64_t consumed_chkp =
         pending_check_point_.load(std::memory_order_relaxed);
-    // Restore consumed_chkp on failure paths (CAS-loop max, same as
-    // refresh_index()) so a concurrent larger chkp wins.
+    // Restore on failure without overwriting a newer checkpoint.
     auto restore_chkp_on_failure = [this, consumed_chkp]() {
       if (consumed_chkp == 0) return;
       uint64_t cur = pending_check_point_.load(std::memory_order_relaxed);
@@ -961,16 +1482,15 @@ class BufferStorage : public IndexStorage {
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
       return IndexError_WriteData;
     }
-    // Per-chain: recompute segments_meta CRC, refresh footer, pwrite both.
-    for (size_t ci = 0;
-         ci < meta_chains_.size() && ci < buffer_pool_buffers_.size(); ++ci) {
+    // Refresh and persist metadata for each chain.
+    for (size_t ci = 0; ci < meta_chains_.size(); ++ci) {
       MetaChain &mchain = meta_chains_[ci];
-      const char *seg_buf = buffer_pool_buffers_[ci].get();
+      const char *seg_buf = mchain.segment_meta.get();
       mchain.footer.segments_meta_crc =
-          ailego::Crc32c::Hash(seg_buf, mchain.segment_meta_size, 0u);
+          ailego::Crc32c::Hash(seg_buf, mchain.footer.segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&mchain.footer, consumed_chkp);
-      if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset,
-                                          mchain.segment_meta_size,
+      if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset(),
+                                          mchain.footer.segments_meta_size,
                                           seg_buf) != 0) {
         LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
@@ -979,7 +1499,7 @@ class BufferStorage : public IndexStorage {
         return IndexError_WriteData;
       }
       if (buffer_pool_handle_->write_meta(
-              mchain.footer_file_offset, sizeof(mchain.footer),
+              mchain.footer_file_offset(), sizeof(mchain.footer),
               reinterpret_cast<const char *>(&mchain.footer)) != 0) {
         LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
@@ -988,12 +1508,7 @@ class BufferStorage : public IndexStorage {
         return IndexError_WriteData;
       }
     }
-    if (!meta_chains_.empty()) {
-      footer_ = meta_chains_.back().footer;
-    }
-    // CAS-reset pending: only consume the chkp we observed.  A concurrent
-    // larger chkp survives and will be flushed next round (refresh_index()
-    // also re-set dirty).
+    // Consume only the checkpoint observed by this flush.
     uint64_t expected_chkp = consumed_chkp;
     pending_check_point_.compare_exchange_strong(expected_chkp, 0,
                                                  std::memory_order_relaxed);
@@ -1002,16 +1517,12 @@ class BufferStorage : public IndexStorage {
 
   //! Close index storage
   void close_index(void) {
-    // Hold ONE continuous all-shards latch across flush + teardown so no
-    // writer can slip in between (which would dirty meta_buf only to have
-    // the page table reset under it, dropping the modification).
+    // Keep writers excluded across both flush and teardown.
     AllShardsExclusiveLatch latch(mapping_shards_);
     flush_index_locked();
     file_name_.clear();
-    id_hash_.clear();
     segments_.clear();
-    chain_headers_.clear();
-    memset(&footer_, 0, sizeof(footer_));
+    meta_chains_.clear();
     {
       std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
       for (const ArenaBlock &b : tmp_buffers_) {
@@ -1021,11 +1532,7 @@ class BufferStorage : public IndexStorage {
       }
       tmp_buffers_.clear();
     }
-    // Release every page pinned by the single-page read(const void**)
-    // overload (the never-released contract holds the pin until here).
-    // Each pin incremented the page table ref_count, so we must drop the
-    // matching reference before resetting the pool, otherwise
-    // ~VecBufferPool asserts that all blocks were released.
+    // Drop persistent pointer-read pins before destroying the pool.
     {
       std::lock_guard<std::mutex> pin_latch(pinned_pages_mutex_);
       if (buffer_pool_handle_) {
@@ -1037,20 +1544,15 @@ class BufferStorage : public IndexStorage {
     }
     buffer_pool_handle_.reset();
     buffer_pool_.reset();
-    max_segment_size_ = 0;
-    buffer_pool_buffers_.clear();
-    meta_chains_.clear();
-    current_header_start_offset_ = 0;
+    cache_enabled_ = false;
     pending_check_point_.store(0, std::memory_order_relaxed);
     index_dirty_.store(false, std::memory_order_relaxed);
     corrupted_.store(false, std::memory_order_relaxed);
   }
 
-  //! Append a segment into storage.  C1: page table extends in-place;
-  //! latch held only briefly to protect segments_/id_hash_ insertion.
+  //! Append a segment into storage.
   int append_segment(const std::string &id, size_t size) {
-    // Persist any pending data_size/padding/CRC mutations from prior
-    // write()/resize() before we re-hash and rewrite the segment_meta.
+    // Persist pending metadata before re-hashing it.
     this->flush_index();
 
     AllShardsExclusiveLatch latch(mapping_shards_);
@@ -1077,8 +1579,7 @@ class BufferStorage : public IndexStorage {
     if (segments_.find(id) != segments_.end()) {
       return IndexError_Duplicate;
     }
-    if (meta_chains_.empty() || chain_headers_.empty() ||
-        buffer_pool_buffers_.empty()) {
+    if (meta_chains_.empty()) {
       LOG_ERROR("append_segment: invalid state, file[%s]", file_name_.c_str());
       return IndexError_Runtime;
     }
@@ -1087,21 +1588,19 @@ class BufferStorage : public IndexStorage {
     const size_t page_size = ailego::kVectorPageSize;
     const size_t padded_size = (size + page_size - 1) / page_size * page_size;
 
-    // The current last chain owns footer_ (overwritten by ParseFooter).
     size_t id_size = id.length() + 1;
     size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
     MetaChain *chain = &meta_chains_.back();
-    IndexFormat::MetaHeader *header = chain_headers_.back().get();
-    char *meta_buf = buffer_pool_buffers_.back().get();
+    IndexFormat::MetaHeader *header = chain->header.get();
+    char *meta_buf = chain->segment_meta.get();
+    IndexFormat::MetaFooter *footer = &chain->footer;
 
-    // Rollback handle for an in-memory-committed chain split.  Default
-    // no-op; populated only after Step 1 commits, so a Step 2 failure
-    // can fully undo the split (otherwise an orphan empty chain would
-    // remain linked in the file).
-    std::function<void()> rollback_step1 = []() {};
+    const auto footer_before_split = *footer;
+    const uint64_t old_footer_file_offset = chain->footer_file_offset();
+    bool chain_split = false;
 
-    // ---- Step 1: chain split if current chain has no meta capacity left.
-    if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count + need_size >
+    // Step 1: split a full metadata chain.
+    if (sizeof(IndexFormat::SegmentMeta) * footer->segment_count + need_size >
         chain->segment_ids_offset) {
       size_t new_chain_start = buffer_pool_->file_size();
       new_chain_start =
@@ -1114,29 +1613,25 @@ class BufferStorage : public IndexStorage {
           new_meta_total - sizeof(IndexFormat::MetaHeader) -
           sizeof(IndexFormat::MetaFooter));
 
-      // Stage the linked old footer without mutating footer_ yet.
-      const auto saved_footer_before_split = footer_;
-      IndexFormat::MetaFooter linked_footer = footer_;
+      // Stage the linked old footer without mutating the chain yet.
+      IndexFormat::MetaFooter linked_footer = footer_before_split;
       linked_footer.next_meta_header_offset = new_chain_start;
       IndexFormat::UpdateMetaFooter(&linked_footer, 0);
 
       if (buffer_pool_handle_->write_meta(
-              chain->footer_file_offset, sizeof(linked_footer),
+              chain->footer_file_offset(), sizeof(linked_footer),
               reinterpret_cast<const char *>(&linked_footer)) != 0) {
         LOG_ERROR("append_segment: write old footer failed, file[%s]",
                   file_name_.c_str());
         return IndexError_WriteData;
       }
 
-      // Best-effort restore of the old footer if any subsequent write in
-      // this split block fails.  If the restore itself fails, mark the
-      // storage corrupted -- on-disk old footer now points at a partial
-      // new chain region.
-      auto undo_old_footer = [this, chain, &saved_footer_before_split]() {
+      // Restore the old link after a failed split; reject writes if rollback
+      // also fails.
+      auto undo_old_footer = [this, chain, &footer_before_split]() {
         if (buffer_pool_handle_->write_meta(
-                chain->footer_file_offset, sizeof(saved_footer_before_split),
-                reinterpret_cast<const char *>(&saved_footer_before_split)) !=
-            0) {
+                chain->footer_file_offset(), sizeof(footer_before_split),
+                reinterpret_cast<const char *>(&footer_before_split)) != 0) {
           LOG_ERROR(
               "append_segment: rollback write of old footer FAILED, file[%s] "
               "is now in an inconsistent state -- marking storage as "
@@ -1177,8 +1672,6 @@ class BufferStorage : public IndexStorage {
         undo_old_footer();
         return IndexError_WriteData;
       }
-      uint64_t new_segment_meta_file_offset =
-          new_chain_start + sizeof(IndexFormat::MetaHeader);
       uint64_t new_footer_file_offset =
           new_chain_start + new_header->meta_footer_offset;
       if (buffer_pool_handle_->write_meta(
@@ -1188,20 +1681,8 @@ class BufferStorage : public IndexStorage {
         return IndexError_WriteData;
       }
 
-      // Snapshot the OLD chain's pre-commit state for rollback_step1
-      // (captured by value: `chain` is reassigned below).
-      const auto saved_old_chain_footer = chain->footer;
-      const uint64_t saved_old_footer_file_offset = chain->footer_file_offset;
-      const uint64_t saved_current_header_start = current_header_start_offset_;
-
-      // Strong exception guarantee: reserve() FIRST so the three
-      // push_back's cannot throw mid-way and leave
-      // chain_headers_/buffer_pool_buffers_/meta_chains_ at mismatched
-      // sizes (which flush_index_locked() would silently skip while
-      // ParseToMapping() on next open follows the on-disk forward link).
+      // Reserve before committing the split so pointer updates cannot fail.
       try {
-        chain_headers_.reserve(chain_headers_.size() + 1);
-        buffer_pool_buffers_.reserve(buffer_pool_buffers_.size() + 1);
         meta_chains_.reserve(meta_chains_.size() + 1);
       } catch (const std::bad_alloc &) {
         LOG_ERROR(
@@ -1212,76 +1693,54 @@ class BufferStorage : public IndexStorage {
       }
       chain = &meta_chains_.back();
       chain->footer = linked_footer;  // old chain keeps linked footer
-      chain_headers_.push_back(std::move(new_header));
-      buffer_pool_buffers_.push_back(std::move(new_meta_buf));
-      meta_chains_.push_back(MetaChain{
-          new_chain_start, new_footer_file_offset, new_segment_meta_file_offset,
-          new_segments_meta_size, new_segments_meta_size, new_footer});
-      footer_ = new_footer;
-      current_header_start_offset_ = new_chain_start;
+      meta_chains_.push_back(MetaChain{std::move(new_header),
+                                       std::move(new_meta_buf), new_chain_start,
+                                       new_segments_meta_size, new_footer});
 
       chain = &meta_chains_.back();
-      header = chain_headers_.back().get();
-      meta_buf = buffer_pool_buffers_.back().get();
+      header = chain->header.get();
+      meta_buf = chain->segment_meta.get();
+      footer = &chain->footer;
+      chain_split = true;
+    }
 
-      // Install rollback for the committed split.  Captures by value so
-      // later reassignment of chain/header/meta_buf does not corrupt the
-      // closure.
-      rollback_step1 = [this, saved_footer_before_split, saved_old_chain_footer,
-                        saved_old_footer_file_offset,
-                        saved_current_header_start]() {
-        // 1. Drop the forward link on the old footer.  If this fails the
-        //    on-disk old footer still points at the popped new chain
-        //    region -- mark corrupted.
+    auto rollback_chain_split = [&]() {
+      if (chain_split) {
+        // Unlink the new chain before dropping its in-memory state.
         if (buffer_pool_handle_->write_meta(
-                saved_old_footer_file_offset, sizeof(saved_footer_before_split),
-                reinterpret_cast<const char *>(&saved_footer_before_split)) !=
-            0) {
+                old_footer_file_offset, sizeof(footer_before_split),
+                reinterpret_cast<const char *>(&footer_before_split)) != 0) {
           LOG_ERROR(
-              "append_segment: rollback_step1 write of old footer FAILED, "
+              "append_segment: chain-split rollback write of old footer "
+              "FAILED, "
               "file[%s] is now in an inconsistent state -- marking storage "
               "as corrupted; further writes will be rejected.",
               file_name_.c_str());
           corrupted_.store(true, std::memory_order_release);
         }
-        // 2. Pop the freshly-pushed new chain (releases its unique_ptrs).
-        if (!meta_chains_.empty()) meta_chains_.pop_back();
-        if (!chain_headers_.empty()) chain_headers_.pop_back();
-        if (!buffer_pool_buffers_.empty()) buffer_pool_buffers_.pop_back();
-        // 3. Restore the old chain's in-memory footer (forward link cleared).
-        if (!meta_chains_.empty()) {
-          meta_chains_.back().footer = saved_old_chain_footer;
-        }
-        // 4. Restore footer_ + current_header_start_offset_.  The on-disk
-        //    file size is intentionally NOT shrunk: the orphan region is
-        //    unreachable (step 1 cleared the link) and reusable by the
-        //    next split via file_size() realignment.
-        footer_ = saved_footer_before_split;
-        current_header_start_offset_ = saved_current_header_start;
-      };
-    }
+        meta_chains_.pop_back();
+        meta_chains_.back().footer = footer_before_split;
+        // The unreachable file tail is reusable; shrinking is unnecessary.
+      }
+    };
 
-    // ---- Step 2: append SegmentMeta + ID into the (possibly new) last
-    //              chain, then persist meta_buf and footer.
-    uint64_t new_data_index = footer_.content_size;
+    // Step 2: append the segment metadata and persist the last chain.
+    uint64_t new_data_index = footer->content_size;
     uint64_t new_seg_abs_offset =
         chain->header_start_offset + header->content_offset + new_data_index;
     uint64_t new_file_size = new_seg_abs_offset + padded_size;
     if (new_file_size > buffer_pool_->file_size()) {
       if (!buffer_pool_->extend_file(new_file_size)) {
+        rollback_chain_split();
         return IndexError_Runtime;
       }
     }
 
-    // Save mutable state for rollback if a Step 2 disk write fails.  The
-    // meta_buf regions that get overwritten (SegmentMeta entry + ID
-    // string) are also snapshotted so they can be restored exactly,
-    // keeping CRC consistent for a later flush_index().
-    const auto saved_footer = footer_;
-    const auto saved_chain_footer = chain->footer;
+    // Snapshot every overwritten metadata region for rollback.
+    const auto saved_footer = *footer;
     const auto saved_segment_ids_offset = chain->segment_ids_offset;
     const size_t meta_entry_off =
-        sizeof(IndexFormat::SegmentMeta) * footer_.segment_count;
+        sizeof(IndexFormat::SegmentMeta) * footer->segment_count;
     const uint32_t new_ids_off =
         chain->segment_ids_offset - static_cast<uint32_t>(id_size);
     char saved_meta_entry[sizeof(IndexFormat::SegmentMeta)];
@@ -1293,7 +1752,7 @@ class BufferStorage : public IndexStorage {
     chain->segment_ids_offset -= static_cast<uint32_t>(id_size);
     IndexFormat::SegmentMeta *new_seg =
         reinterpret_cast<IndexFormat::SegmentMeta *>(meta_buf) +
-        footer_.segment_count;
+        footer->segment_count;
     new_seg->segment_id_offset = chain->segment_ids_offset;
     new_seg->data_index = new_data_index;
     new_seg->data_size = 0;
@@ -1301,36 +1760,27 @@ class BufferStorage : public IndexStorage {
     new_seg->padding_size = padded_size;
     std::memcpy(meta_buf + chain->segment_ids_offset, id.c_str(), id_size);
 
-    footer_.segment_count += 1;
-    footer_.content_size += padded_size;
-    footer_.total_size += padded_size;
-    footer_.segments_meta_crc =
-        ailego::Crc32c::Hash(meta_buf, chain->segment_meta_size, 0u);
-    IndexFormat::UpdateMetaFooter(&footer_, 0);
-    chain->footer = footer_;  // sync in-memory copy for flush_index
+    footer->segment_count += 1;
+    footer->content_size += padded_size;
+    footer->total_size += padded_size;
+    footer->segments_meta_crc =
+        ailego::Crc32c::Hash(meta_buf, footer->segments_meta_size, 0u);
+    IndexFormat::UpdateMetaFooter(footer, 0);
 
-    // Rollback for Step 2: restore in-memory state AND best-effort
-    // rewrite the OLD segments_meta + footer back to disk.  Without the
-    // disk rewrite, a write_meta(footer) failure (or post-write OOM)
-    // would tell the caller the append failed yet leave on-disk bytes
-    // describing the failed append -- ParseToMapping() on next open
-    // would surface a ghost segment with no entry in segments_/id_hash_.
-    //
-    // If the rewrite itself fails the file is unrepairable from here:
-    // raise corrupted_ so subsequent writers refuse to proceed.
+    // Restore memory and disk together; a failed restore marks the file bad.
     auto rollback_step2 = [&]() {
       std::memcpy(meta_buf + meta_entry_off, saved_meta_entry,
                   sizeof(IndexFormat::SegmentMeta));
       std::memcpy(meta_buf + new_ids_off, saved_id_bytes.get(), id_size);
-      footer_ = saved_footer;
-      chain->footer = saved_chain_footer;
+      *footer = saved_footer;
       chain->segment_ids_offset = saved_segment_ids_offset;
 
-      const int rc_meta = buffer_pool_handle_->write_meta(
-          chain->segment_meta_file_offset, chain->segment_meta_size, meta_buf);
+      const int rc_meta =
+          buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
+                                          footer->segments_meta_size, meta_buf);
       const int rc_footer = buffer_pool_handle_->write_meta(
-          chain->footer_file_offset, sizeof(footer_),
-          reinterpret_cast<const char *>(&footer_));
+          chain->footer_file_offset(), sizeof(*footer),
+          reinterpret_cast<const char *>(footer));
       if (rc_meta != 0 || rc_footer != 0) {
         LOG_ERROR(
             "append_segment: rollback_step2 disk rewrite FAILED "
@@ -1342,108 +1792,83 @@ class BufferStorage : public IndexStorage {
       }
     };
 
-    if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset,
-                                        chain->segment_meta_size,
+    if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
+                                        footer->segments_meta_size,
                                         meta_buf) != 0) {
       LOG_ERROR("append_segment: write segment_meta failed, file[%s]",
                 file_name_.c_str());
       rollback_step2();
-      rollback_step1();
+      rollback_chain_split();
       return IndexError_WriteData;
     }
     if (buffer_pool_handle_->write_meta(
-            chain->footer_file_offset, sizeof(footer_),
-            reinterpret_cast<const char *>(&footer_)) != 0) {
+            chain->footer_file_offset(), sizeof(*footer),
+            reinterpret_cast<const char *>(footer)) != 0) {
       LOG_ERROR("append_segment: write footer failed, file[%s]",
                 file_name_.c_str());
       rollback_step2();
-      rollback_step1();
+      rollback_chain_split();
       return IndexError_WriteData;
     }
 
-    // Strong exception guarantee for the in-memory commit: emplace into
-    // segments_ and id_hash_ as one transactional unit -- if id_hash_
-    // throws after segments_ succeeded, undo segments_ before
-    // propagating.  unordered_map::emplace() leaves existing element
-    // addresses stable, so WrappedSegment instances pointing into
-    // segments_ remain valid.
-    auto seg_ins = segments_.end();
-    bool seg_inserted = false;
+    // Publish the segment only after its metadata is durable.
     try {
       auto ins = segments_.emplace(
           id, IndexMapping::SegmentInfo{IndexMapping::Segment{new_seg},
                                         chain->header_start_offset, header});
       if (!ins.second) {
-        // Cannot happen under the exclusive latch we hold (find() above
-        // checked), but be defensive.
+        // Defensive: the exclusive latch should make this unreachable.
         LOG_ERROR(
             "append_segment: duplicate id appeared after commit, file[%s], "
             "id[%s]",
             file_name_.c_str(), id.c_str());
         rollback_step2();
-        rollback_step1();
+        rollback_chain_split();
         return IndexError_Duplicate;
       }
-      seg_ins = ins.first;
-      seg_inserted = true;
-      const size_t new_id = id_hash_.size();
-      id_hash_.emplace(id, new_id);
     } catch (const std::bad_alloc &) {
       LOG_ERROR(
           "append_segment: in-memory commit OOM, rolling back, file[%s], "
           "id[%s]",
           file_name_.c_str(), id.c_str());
-      if (seg_inserted) {
-        segments_.erase(seg_ins);
-      }
       rollback_step2();
-      rollback_step1();
+      rollback_chain_split();
       return IndexError_Runtime;
     }
-    max_segment_size_ = std::max<uint64_t>(max_segment_size_, padded_size);
-    // C1: extend_file() already extended the page table in-place; no pool
-    // rotation or flush_all needed.
+    // extend_file() already grew the page table in place.
     return 0;
   }
 
-  //! Test if a segment exists
-  bool has_segment(const std::string &id) const {
-    std::shared_lock<std::shared_mutex> latch(
-        mapping_shards_[mapping_shard_id()].mtx);
-    return (segments_.find(id) != segments_.end());
+ private:
+  bool read_range(size_t offset, size_t len, char *out) const {
+    return cache_enabled_
+               ? buffer_pool_handle_->read_range(offset, len, out)
+               : buffer_pool_handle_->read_range_bypass(offset, len, out);
   }
 
- private:
   std::atomic<bool> index_dirty_{false};
   std::atomic<uint64_t> pending_check_point_{0};
-  // Set when an append_segment() rollback fails to restore on-disk state.
-  // Once set, all writers (write/append_segment/flush_index_locked) refuse
-  // to proceed.  Only ever raised; cleared only by close_index().
+  // Raised after an unrecoverable rollback; blocks writes until close.
   std::atomic<bool> corrupted_{false};
 
-  // Sharded reader-writer lock: each reader hashes to its own shard to
-  // avoid cache-line ping-pong on the reader counter; writers lock all
-  // shards.
+  // Readers hash across shards; metadata writers lock every shard.
   static constexpr size_t kMappingMutexShards = 32;
   struct alignas(64) MutexShard {
     std::shared_mutex mtx;
   };
   mutable MutexShard mapping_shards_[kMappingMutexShards]{};
 
-  // Per-(thread, instance) shard selection.  Combining thread::id with
-  // `this` ensures two BufferStorage instances on the same thread map to
-  // different shards (a thread_local-only id collapses them onto one
-  // shard).  boost-style hash_combine disperses skewed thread::id
-  // distributions across the 32 shards.
+  // Mix the thread and instance identities to distribute reader latches.
   size_t mapping_shard_id() const {
-    size_t seed = std::hash<std::thread::id>()(std::this_thread::get_id());
+    static thread_local const size_t thread_seed =
+        std::hash<std::thread::id>()(std::this_thread::get_id());
+    size_t seed = thread_seed;
     size_t inst = std::hash<const void *>()(static_cast<const void *>(this));
-    // boost::hash_combine(seed, inst)
     seed ^= inst + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
     return seed % kMappingMutexShards;
   }
 
-  // RAII guard that locks ALL shards exclusively (for writers).
+  // Exclusive guard for all metadata shards.
   struct AllShardsExclusiveLatch {
     MutexShard *shards_;
     AllShardsExclusiveLatch(MutexShard *shards) : shards_(shards) {
@@ -1457,29 +1882,14 @@ class BufferStorage : public IndexStorage {
         delete;
   };
 
-  // Arena slab for cross-page temp buffers handed out by
-  // WrappedSegment::read(const void**).  The legacy contract requires
-  // every returned pointer to stay valid until close_index(), so slots
-  // are never freed individually -- they are carved out of large
-  // 4K-aligned arenas which are released in bulk.
-  //
-  // Why an arena instead of one posix_memalign(4K, 4K) per read:
-  // Android Bionic scudo's small-class chunk pool is prone to large-
-  // alignment starvation under fragmentation (we observed sporadic
-  // posix_memalign(4096, 4096) returning ENOMEM even with plenty of
-  // free memory).  A single large request (>= kArenaSize) is served
-  // from scudo's secondary allocator (mmap-backed), which is reliable
-  // up to the true OOM boundary.
+  // Aligned arenas retain legacy pointer-read results until close_index().
   struct ArenaBlock {
     char *base{nullptr};
     size_t size{0};  // Total bytes in this arena (4K-aligned).
     size_t used{0};  // Bytes already handed out (4K-aligned).
   };
-  // Caller MUST hold tmp_buffers_mutex_.  alloc_size MUST be a
-  // multiple of 4096.  Returns nullptr only if scudo cannot satisfy a
-  // fresh arena allocation, i.e. effectively true OOM.
+  // Requires tmp_buffers_mutex_; alloc_size must be 4K-aligned.
   char *tmp_arena_alloc_locked(size_t alloc_size) {
-    static constexpr size_t kAlign = 4096UL;
     static constexpr size_t kArenaSize = 1UL << 20;  // 1 MiB
     if (!tmp_buffers_.empty()) {
       ArenaBlock &back = tmp_buffers_.back();
@@ -1490,7 +1900,8 @@ class BufferStorage : public IndexStorage {
       }
     }
     size_t new_size = alloc_size > kArenaSize ? alloc_size : kArenaSize;
-    char *p = static_cast<char *>(ailego_aligned_malloc(new_size, kAlign));
+    char *p =
+        static_cast<char *>(ailego_aligned_malloc(new_size, kBufferAlignment));
     if (!p) {
       return nullptr;
     }
@@ -1500,49 +1911,39 @@ class BufferStorage : public IndexStorage {
   std::vector<ArenaBlock> tmp_buffers_{};
   mutable std::mutex tmp_buffers_mutex_{};
 
-  // Page ids pinned by the single-page read(const void**) overload, which
-  // keeps the pin alive until close_index() (the never-released contract).
-  // Each pin increments the page table ref_count, so close_index() must
-  // release every recorded pin before tearing down the pool; otherwise
-  // ~VecBufferPool fires its "all blocks released" assertion. Duplicates are
-  // allowed: repeated single-page reads of the same page each take a pin and
-  // therefore each need a matching release.
+  // One entry per legacy pointer-read pin; duplicates are intentional.
   std::vector<size_t> pinned_pages_{};
   mutable std::mutex pinned_pages_mutex_{};
 
   // buffer manager
   std::string file_name_;
-  // Per-chain owning copies of MetaHeader.  segments_[name].segment_header
-  // points into one of these; using a single shared header_ would let the
-  // next chain's ParseHeader overwrite earlier-chain content_offset.
-  std::vector<std::unique_ptr<IndexFormat::MetaHeader>> chain_headers_{};
-  IndexFormat::MetaFooter footer_{};
   std::unordered_map<std::string, IndexMapping::SegmentInfo> segments_{};
-  std::unordered_map<std::string, size_t> id_hash_{};
-  uint64_t max_segment_size_{0};
-  std::vector<std::unique_ptr<char[]>> buffer_pool_buffers_{};
 
   ailego::VecBufferPool::Pointer buffer_pool_{nullptr};
+  bool cache_enabled_{false};
   ailego::VecBufferPoolHandle::Pointer buffer_pool_handle_{nullptr};
-  uint64_t current_header_start_offset_{0u};
 
-  // Capacity (in bytes) of the segment metadata section written by
-  // init_index().
+  // Segment metadata capacity written by init_index().
   uint32_t segment_meta_capacity_{4096u};
 
-  // Per-header-chain file offsets used by flush_index() and append_segment().
+  // Per-chain ownership and state used by parsing, flushing, and appending.
   struct MetaChain {
+    // Pointees stay stable across vector moves and are referenced by segments_.
+    std::unique_ptr<IndexFormat::MetaHeader> header;
+    std::unique_ptr<char[]> segment_meta;
     uint64_t header_start_offset;
-    uint64_t footer_file_offset;
-    uint64_t segment_meta_file_offset;
-    uint32_t segment_meta_size;
-    // Lowest segment-ID-string offset within segment_meta; equals
-    // segment_meta_size when empty, decreases by strlen(id)+1 per append.
-    // Used to detect when a chain split is needed.
+    // Lowest ID-string offset; detects metadata exhaustion.
     uint32_t segment_ids_offset;
-    // In-memory copy of this chain's MetaFooter, kept in sync with disk by
-    // flush_index() and append_segment() to avoid a pread per chain.
+    // Authoritative in-memory footer for this chain.
     IndexFormat::MetaFooter footer;
+
+    uint64_t footer_file_offset() const {
+      return header_start_offset + header->meta_footer_offset;
+    }
+
+    uint64_t segment_meta_file_offset() const {
+      return footer_file_offset() - footer.segments_meta_size;
+    }
   };
   std::vector<MetaChain> meta_chains_{};
 };
