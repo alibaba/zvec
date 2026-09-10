@@ -104,8 +104,13 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
-  // Select and reset query state before executing the prepared search.
-  void prepare_search(HnswContext *ctx) const;
+  // Select and reset query state. Return the result-filter decision used to
+  // select the heap, so dispatch does not resolve that policy again.
+  bool prepare_search(HnswContext *ctx) const;
+
+  // Resolve all concrete types once, then enter search_neighbors.
+  int dispatch_search(node_id_t entry_point, dist_t dist, bool has_filter,
+                      HnswContext *ctx) const;
 
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
@@ -115,21 +120,12 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
                      HnswContext *ctx);
 
-  //! Given a node id and level, search the nearest neighbors in graph.
-  //! Dispatches to fast_search_neighbors (pool-based, direct pointer) for
-  //! mmap/contiguous level-0 unfiltered search, or dual_heap_search_neighbors
-  //! (CandidateHeap + TopkHeap) for add_node, filtered search, upper levels,
-  //! and BufferPool fallback.
-  //! Note: entry_point and dist will be updated to current level nearest node.
-  template <typename Heap>
-  int search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                       Heap &heap, HnswContext *ctx) const;
-
-  // Concrete search dependencies; no per-node container/filter dispatch.
+  // All dependencies have concrete types; only compile-time kernel selection
+  // remains. Construction may call this repeatedly with different levels.
   template <typename Heap, typename Visit, typename Filter>
-  void search_neighbors_impl(level_t level, node_id_t *entry_point,
-                             dist_t *dist, Heap &heap, Visit visit,
-                             Filter &&filter, HnswContext *ctx) const;
+  void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
+                        Heap &heap, Visit visit, Filter &&filter,
+                        HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,

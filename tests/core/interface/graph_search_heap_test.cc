@@ -14,6 +14,7 @@
 #include <tuple>
 #include <vector>
 #include <gtest/gtest.h>
+#include "algorithm/hnsw/hnsw_algorithm.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_streamer_entity.h"
 #include "algorithm/vamana/vamana_streamer.h"
@@ -45,6 +46,101 @@ BaseIndexParam::Pointer GraphIndexParam(bool vamana, bool contiguous) {
       .with_ef_construction(64)
       .with_use_contiguous_memory(contiguous)
       .build();
+}
+
+TEST(GraphSearchHeap, HnswConstructionClearsStateAcrossLevels) {
+  const std::string path = "hnsw_search_dispatch.index";
+  const core::IndexMeta meta(core::IndexMeta::DT_FP32, 16);
+  for (auto mode : {core::VisitFilter::BitMap, core::VisitFilter::ByteMap}) {
+    for (bool filtered : {false, true}) {
+      SCOPED_TRACE(mode);
+      SCOPED_TRACE(filtered);
+      test_util::RemoveTestFiles(path);
+      {
+        core::IndexStreamer::Stats stats;
+        auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+        ASSERT_TRUE(storage);
+        ASSERT_EQ(0, storage->init(ailego::Params()));
+        ASSERT_EQ(0, storage->open(path, true));
+        auto entity = std::make_shared<core::HnswMmapStreamerEntity>(stats);
+        entity->set_vector_size(16 * sizeof(float));
+        entity->set_l0_neighbor_cnt(8);
+        entity->set_upper_neighbor_cnt(8);
+        entity->set_prune_cnt(8);
+        entity->set_scaling_factor(2);
+        entity->set_ef_construction(8);
+        ASSERT_EQ(0, entity->init(16));
+        ASSERT_EQ(0, entity->open(storage, 0, false));
+
+        // Seed two connected nodes at every level, then insert a closer node
+        // with a new maximum level. No random level generation is involved.
+        std::vector<float> vector(16, 0.0f);
+        for (core::node_id_t id = 0; id < 3; ++id) {
+          vector[0] = id == 2 ? 9.0f : 10.0f * id;
+          core::node_id_t actual = core::kInvalidNodeId;
+          ASSERT_EQ(0, entity->add_vector(id == 2 ? 3 : 2, id, vector.data(),
+                                          &actual));
+          ASSERT_EQ(id, actual);
+        }
+        for (core::level_t level = 0; level <= 2; ++level) {
+          ASSERT_EQ(0, entity->update_neighbors(level, 0, {{1, 100.0f}}));
+          ASSERT_EQ(0, entity->update_neighbors(level, 1, {{0, 100.0f}}));
+        }
+        entity->update_ep_and_level(0, 2);
+
+        auto metric = core::IndexFactory::CreateMetric("SquaredEuclidean");
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(0, metric->init(meta, ailego::Params()));
+        core::HnswContext context(16, metric, entity);
+        context.set_filter_mode(mode);
+        ASSERT_EQ(0, context.init(core::HnswContext::kStreamerContext));
+        context.set_max_scan_num(10000);
+        core::HnswAlgorithm<core::HnswMmapStreamerEntity> algorithm(*entity);
+        std::vector<uint64_t> filtered_keys;
+        if (filtered) {
+          context.set_filter([&](uint64_t key) {
+            filtered_keys.push_back(key);
+            return key == 0;
+          });
+        }
+
+        // Invalid dispatch must release the new-max-level lock without
+        // publishing graph changes; the same insertion can then be retried.
+        auto &visit = context.visit_filter();
+        visit.destroy();
+        ASSERT_EQ(0, visit.init(core::VisitFilter::Default, 16, 16, 0.001f));
+        context.reset_query(vector.data(), meta);
+        EXPECT_EQ(core::IndexError_Runtime, algorithm.add_node(2, 3, &context));
+        EXPECT_EQ(0U, entity->entry_point());
+        EXPECT_EQ(2, entity->cur_max_level());
+        for (core::level_t level = 0; level <= 3; ++level) {
+          EXPECT_EQ(0U, entity->get_neighbors(level, 2).size());
+        }
+
+        ASSERT_EQ(0, visit.init(mode, 16, 16, 0.001f));
+        context.reset_query(vector.data(), meta);
+        ASSERT_EQ(0, algorithm.add_node(2, 3, &context));
+        EXPECT_EQ(2U, entity->entry_point());
+        EXPECT_EQ(3, entity->cur_max_level());
+        for (core::level_t level = 0; level <= 2; ++level) {
+          const auto neighbors = entity->get_neighbors(level, 2);
+          ASSERT_EQ(filtered ? 1U : 2U, neighbors.size());
+          EXPECT_EQ(1U, neighbors[0]);
+          if (!filtered) EXPECT_EQ(0U, neighbors[1]);
+          EXPECT_TRUE(context.level_topk(level).empty());
+        }
+        EXPECT_EQ(0U, entity->get_neighbors(3, 2).size());
+        if (filtered) {
+          // Entry point 0 is filtered but must still lead to node 1. Each
+          // lower level restarts at 1 and revisits 0 with cleared visit state.
+          EXPECT_EQ((std::vector<uint64_t>{0, 1, 1, 0, 1, 0}), filtered_keys);
+        }
+        ASSERT_EQ(0, entity->close());
+        ASSERT_EQ(0, storage->close());
+      }
+      test_util::RemoveTestFiles(path);
+    }
+  }
 }
 
 using GraphSearchHeapTest = testing::TestWithParam<
