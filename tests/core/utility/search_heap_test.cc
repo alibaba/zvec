@@ -42,6 +42,24 @@ TEST(SearchHeap, DispatchUsesConcreteReferencesAndMoveOnlyCallbacks) {
   EXPECT_EQ(8U, topk.limit());
 }
 
+TEST(SearchHeap, PrepareTopkClearsContentsAndReusesStorage) {
+  SearchHeap heap;
+  auto &topk = heap.reset<TopkHeap>(8);
+  topk.emplace(7, 1.0f);
+  const void *storage = topk.container().data();
+  auto &prepared = heap.reset<TopkHeap>(4);
+  EXPECT_EQ(&topk, &prepared);
+  EXPECT_EQ(storage, prepared.container().data());
+  EXPECT_TRUE(prepared.empty());
+  EXPECT_EQ(4U, prepared.limit());
+  heap.dispatch([&](auto &buffer) {
+    EXPECT_TRUE((std::is_same_v<std::decay_t<decltype(buffer)>, TopkHeap>));
+    EXPECT_EQ(static_cast<void *>(&prepared), static_cast<void *>(&buffer));
+  });
+  heap.reset<TopkHeap>(0);
+  EXPECT_EQ(1U, topk.limit());
+}
+
 class SearchHeapPoolTest : public testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
@@ -55,11 +73,15 @@ class SearchHeapPoolTest : public testing::TestWithParam<bool> {
   }
 
   void Fill(bool ties = false) {
-    heap_.dispatch_pool(GetParam(), [&](auto &pool) {
-      pool.reset(4, 4);
-      const uint32_t ids[] = {30, 10, 20, 40};
-      const float distances[] = {3.0f, 1.0f, ties ? 1.0f : 2.0f, 4.0f};
-      pool.push_block(distances, ids, 4);
+    heap_.reset_pool(GetParam(), 4, 4);
+    heap_.dispatch([&](auto &pool) {
+      if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
+        const uint32_t ids[] = {30, 10, 20, 40};
+        const float distances[] = {3.0f, 1.0f, ties ? 1.0f : 2.0f, 4.0f};
+        pool.push_block(distances, ids, 4);
+      } else {
+        ADD_FAILURE() << "Expected a prepared search pool";
+      }
     });
   }
 
@@ -73,6 +95,38 @@ class SearchHeapPoolTest : public testing::TestWithParam<bool> {
 
   SearchHeap heap_;
 };
+
+TEST_P(SearchHeapPoolTest, PreparationResetsStateBeforeDispatch) {
+  // Exercise Topk -> pool -> same pool -> Topk on a reused owner, without a
+  // separate clear or selection in the execution phase.
+  for (size_t capacity : {4U, 2U, 8U}) {
+    auto &topk = heap_.reset<TopkHeap>(capacity);
+    EXPECT_TRUE(topk.empty());
+    EXPECT_EQ(capacity, topk.limit());
+    topk.emplace(77, 0.5f);
+    for (int query = 0; query < 2; ++query) {
+      heap_.reset_pool(GetParam(), capacity, 4);
+      CheckPool();
+      heap_.dispatch([&](auto &pool) {
+        EXPECT_EQ(0U, pool.size());
+        if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
+          EXPECT_FALSE(pool.has_next());
+          const uint32_t ids[] = {30, 10, 20, 40};
+          const float distances[] = {3.0f, 1.0f, 2.0f, 4.0f};
+          pool.push_block(distances, ids, 4);
+          ASSERT_TRUE(pool.has_next());
+          EXPECT_EQ(10U, pool.pop());
+        }
+      });
+      heap_.with_topk([&](TopkHeap &heap) {
+        EXPECT_EQ(capacity, heap.limit());
+        EXPECT_EQ(std::min(capacity, size_t{4}), heap.size());
+        heap.sort();
+        EXPECT_EQ(10U, heap[0].first);
+      });
+    }
+  }
+}
 
 TEST_P(SearchHeapPoolTest, OutputKeepsPoolAndReusesScratch) {
   Fill();

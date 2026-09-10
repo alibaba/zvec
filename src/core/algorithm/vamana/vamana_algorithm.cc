@@ -46,9 +46,9 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
 
   // Step 1: GreedySearch to find candidate neighbors
   uint32_t search_list_size = entity_.search_list_size();
-  auto &build_heap = ctx->search_heap().select<TopkHeap>();
-  build_heap.clear();
-  build_heap.limit(search_list_size);
+  auto &build_heap = ctx->search_heap().reset<TopkHeap>(search_list_size);
+  ctx->visit_filter().clear();
+  ctx->candidates().clear();
   ctx->dist_calculator().clear_compare_cnt();
 
   // Set query to the new node's vector. Use reset_query (same as search path)
@@ -60,7 +60,7 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   }
   ctx->reset_query(query_vec);
 
-  int ret = greedy_search(entry_point, ctx, /*use_pool=*/false);
+  int ret = greedy_search(entry_point, ctx);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -120,8 +120,25 @@ int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {
 // search: Greedy search for approximate nearest neighbors.
 // ============================================================================
 template <typename EntityType>
+void VamanaAlgorithm<EntityType>::prepare_search(VamanaContext *ctx) const {
+  // Queries use ef, independently of the construction-time search_list_size.
+  const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
+  ctx->visit_filter().clear();
+  ctx->candidates().clear();
+  if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+    if (!ctx->filter().is_valid()) {
+      const bool avx2_ok =
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+      ctx->search_heap().reset_pool(avx2_ok, capacity, entity_.max_degree());
+      return;
+    }
+  }
+  ctx->search_heap().reset<TopkHeap>(capacity);
+}
+
+template <typename EntityType>
 int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
-  ctx->search_heap().clear();
+  prepare_search(ctx);
   spin_lock_.lock();
   auto entry_point = entity_.entry_point();
   spin_lock_.unlock();
@@ -130,13 +147,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
     return 0;
   }
 
-  // Use ef (query-time parameter) instead of entity.search_list_size()
-  // (build-time L parameter). search_list_size controls construction;
-  // ef controls search quality and is user-configurable at query time.
-  uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
-  ctx->search_heap().limit(ef_search);
-
-  return greedy_search(entry_point, ctx, /*use_pool=*/true);
+  return greedy_search(entry_point, ctx);
 }
 
 // ============================================================================
@@ -173,15 +184,11 @@ template <bool HasExtraValues, typename EntityType, typename HeapType,
           typename Visit>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VamanaContext *ctx, VamanaDistCalculator &dc,
-                        uint32_t topk, uint32_t ef, node_id_t entry_point,
-                        uint32_t prefetch_lines, uint32_t prefetch_offset,
-                        Visit visit) {
+                        node_id_t entry_point, uint32_t prefetch_lines,
+                        uint32_t prefetch_offset, Visit visit) {
   static constexpr bool kPrefetchGraph =
       std::is_same_v<EntityType, VamanaContiguousStreamerEntity>;
   const uint32_t max_deg = entity.max_degree();
-  const uint32_t cap = std::max(topk, ef);
-  pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
-  visit.clear();
 
   uint32_t buf_capacity = max_deg;
   auto &neighbor_ids = ctx->search_neighbor_ids_buf();
@@ -409,8 +416,6 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
   std::vector<const void *> extra_values(has_extra_values ? buf_capacity : 0);
 
   CandidateHeap &candidates = ctx->candidates();
-  candidates.clear();
-  visit.clear();
 
   // Initialize with entry point using batch_dist (single-element batch).
   // We must NOT use dc.dist(entry_point) here because dist() calls
@@ -505,7 +510,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 }
 
 // ============================================================================
-// greedy_search: Dispatch to the query pool or fallback dual-heap search.
+// greedy_search: Dispatch the heap prepared by the query or construction path.
 //
 // Unfiltered mmap/contiguous queries use fast_greedy_search. Construction,
 // filtered queries and BufferPool use dual_heap_greedy_search, which enforces
@@ -513,37 +518,34 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 // ============================================================================
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
-                                               VamanaContext *ctx,
-                                               bool use_pool) const {
+                                               VamanaContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
   auto no_filter = [](node_id_t) { return false; };
 
-  const bool dispatched =
-      dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
-        if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-          if (use_pool && !index_filter.is_valid()) {
-            const bool avx2_ok =
-                zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-            ctx->search_heap().dispatch_pool(avx2_ok, [&](auto &heap) {
-              greedy_search_impl(entry_point, ctx, heap, visit, no_filter);
-            });
-            return;
-          }
-        }
-
-        // Construction, filtered queries and BufferPool use a TopkHeap.
-        auto &heap = ctx->search_heap().select<TopkHeap>();
+  bool dispatched = false;
+  auto run_with_heap = [&](auto &heap) {
+    using Heap = std::decay_t<decltype(heap)>;
+    dispatched = dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
+      if constexpr (std::is_same_v<Heap, TopkHeap>) {
         if (index_filter.is_valid()) {
           auto filter = [&](node_id_t id) {
             return index_filter(entity.get_key_typed(id));
           };
           greedy_search_impl(entry_point, ctx, heap, visit, filter);
-        } else {
-          greedy_search_impl(entry_point, ctx, heap, visit, no_filter);
+          return;
         }
-      });
+      }
+      greedy_search_impl(entry_point, ctx, heap, visit, no_filter);
+    });
+  };
+  if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+    ctx->search_heap().dispatch(run_with_heap);
+  } else {
+    // BufferPool/external entities have only the prepared dual-heap path.
+    run_with_heap(ctx->search_heap().topk());
+  }
   if (ailego_unlikely(!dispatched)) {
     LOG_ERROR("Failed to dispatch Vamana visit filter, mode %d",
               ctx->visit_filter().get_mode());
@@ -571,13 +573,12 @@ void VamanaAlgorithm<EntityType>::greedy_search_impl(node_id_t entry_point,
     const uint32_t prefetch_lines = ctx->pl() > 0
                                         ? std::min(ctx->pl(), vector_body_lines)
                                         : vector_body_lines;
-    const uint32_t topk = static_cast<uint32_t>(ctx->topk());
     if (entity.extra_values_size() != 0) {
-      fast_greedy_search<true>(entity, heap, ctx, dc, topk, ctx->ef(),
-                               entry_point, prefetch_lines, ctx->po(), visit);
+      fast_greedy_search<true>(entity, heap, ctx, dc, entry_point,
+                               prefetch_lines, ctx->po(), visit);
     } else {
-      fast_greedy_search<false>(entity, heap, ctx, dc, topk, ctx->ef(),
-                                entry_point, prefetch_lines, ctx->po(), visit);
+      fast_greedy_search<false>(entity, heap, ctx, dc, entry_point,
+                                prefetch_lines, ctx->po(), visit);
     }
   }
 }
@@ -607,13 +608,14 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   }
 
   ctx->clear();
-  auto &build_heap = ctx->search_heap().select<TopkHeap>();
-  build_heap.clear();
-  build_heap.limit(entity_.search_list_size());
+  auto &build_heap =
+      ctx->search_heap().reset<TopkHeap>(entity_.search_list_size());
+  ctx->visit_filter().clear();
+  ctx->candidates().clear();
   ctx->dist_calculator().clear_compare_cnt();
   ctx->reset_query(query_vec);
 
-  int ret = greedy_search(entry_point, ctx, /*use_pool=*/false);
+  int ret = greedy_search(entry_point, ctx);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }

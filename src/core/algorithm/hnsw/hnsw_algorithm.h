@@ -104,6 +104,9 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
+  // Select and reset query state before executing the prepared search.
+  void prepare_search(HnswContext *ctx) const;
+
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
                           HnswContext *ctx) const;

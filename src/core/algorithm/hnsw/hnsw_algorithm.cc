@@ -48,6 +48,9 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
 
   for (; cur_level >= 0; --cur_level) {
+    ctx->level_topk(cur_level).clear();
+    ctx->visit_filter().clear();
+    ctx->candidates().clear();
     int ret = search_neighbors(cur_level, &entry_point, &dist,
                                ctx->level_topk(cur_level), ctx);
     if (ailego_unlikely(ret != 0)) {
@@ -74,8 +77,24 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 }
 
 template <typename EntityType>
+void HnswAlgorithm<EntityType>::prepare_search(HnswContext *ctx) const {
+  const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
+  ctx->visit_filter().clear();
+  ctx->candidates().clear();
+  if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+    if (!ctx->filter().is_valid()) {
+      const bool avx2_ok =
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+      ctx->search_heap().reset_pool(avx2_ok, capacity, entity_.max_degree(0));
+      return;
+    }
+  }
+  ctx->search_heap().reset<TopkHeap>(capacity);
+}
+
+template <typename EntityType>
 int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
-  ctx->search_heap().clear();
+  prepare_search(ctx);
   spin_lock_.lock();
   auto maxLevel = entity_.cur_max_level();
   auto entry_point = entity_.entry_point();
@@ -95,15 +114,10 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     ret = search_neighbors(0, &entry_point, &dist, heap, ctx);
   };
   if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-    if (!ctx->filter().is_valid()) {
-      const bool avx2_ok =
-          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-      ctx->search_heap().dispatch_pool(avx2_ok, run_with_heap);
-    } else {
-      run_with_heap(ctx->search_heap().select<TopkHeap>());
-    }
+    ctx->search_heap().dispatch(run_with_heap);
   } else {
-    run_with_heap(ctx->search_heap().select<TopkHeap>());
+    // BufferPool/external entities have only the prepared dual-heap path.
+    run_with_heap(ctx->search_heap().topk());
   }
 
   if (ailego_unlikely(ret != 0)) return ret;
@@ -233,13 +247,10 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 template <typename EntityType, typename HeapType, typename Visit>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
                            Visit visit, HnswDistCalculator &dc,
-                           HnswContext *ctx, uint32_t topk, uint32_t ef,
-                           node_id_t entry_point, dist_t entry_dist,
-                           uint32_t prefetch_lines, uint32_t prefetch_offset) {
+                           HnswContext *ctx, node_id_t entry_point,
+                           dist_t entry_dist, uint32_t prefetch_lines,
+                           uint32_t prefetch_offset) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
-  const uint32_t cap = std::max(topk, ef);
-  pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
-  visit.clear();
 
   visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);
@@ -350,8 +361,6 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 
   CandidateHeap &candidates = ctx->candidates();
 
-  candidates.clear();
-  visit.clear();
   visit.set_visited(*entry_point);
   if (!filter(*entry_point)) {
     topk.emplace(*entry_point, *dist);
@@ -516,9 +525,8 @@ void HnswAlgorithm<EntityType>::search_neighbors_impl(
     static_assert(std::is_same_v<MemBlockType, MmapMemoryBlock>);
     const uint32_t prefetch_lines =
         ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
-    const uint32_t topk = static_cast<uint32_t>(ctx->topk());
-    fast_search_neighbors(entity, heap, visit, dc, ctx, topk, ctx->ef(),
-                          *entry_point, *dist, prefetch_lines, ctx->po());
+    fast_search_neighbors(entity, heap, visit, dc, ctx, *entry_point, *dist,
+                          prefetch_lines, ctx->po());
   }
 }
 

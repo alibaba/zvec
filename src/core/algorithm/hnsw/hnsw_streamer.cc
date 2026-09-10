@@ -919,7 +919,8 @@ int HnswStreamer::search_bf_impl(
     }
   } else {
     auto &filter = ctx->filter();
-    auto &topk = ctx->search_heap().select<TopkHeap>();
+    auto &topk =
+        ctx->search_heap().reset<TopkHeap>(std::max(ctx->topk(), ctx->ef()));
 
     for (size_t q = 0; q < count; ++q) {
       ctx->reset_query(query, meta_);
@@ -1013,7 +1014,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     }
   } else {
     auto &filter = ctx->filter();
-    auto &topk = ctx->search_heap().select<TopkHeap>();
+    auto &topk =
+        ctx->search_heap().reset<TopkHeap>(std::max(ctx->topk(), ctx->ef()));
 
     for (size_t q = 0; q < count; ++q) {
       ctx->reset_query(query, meta_);

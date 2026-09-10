@@ -48,14 +48,28 @@ class SearchHeap {
     return std::get<TopkHeap>(heap_);
   }
 
-  // Select and dispatch a query pool in one step, without a second type test.
-  // The caller must gate use_block on runtime AVX2 support on x86.
-  template <typename Fn>
-  ailego_force_inline void dispatch_pool(bool use_block, Fn &&fn) {
-    if (use_block) {
-      std::forward<Fn>(fn)(select<BlockHeap>());
+  // Preparation only: select the backend, clear its contents and set capacity.
+  // Selecting the same backend preserves its allocated storage. Execution
+  // dispatches the prepared alternative without making this decision again.
+  template <typename Heap>
+  Heap &reset(size_t capacity, int32_t block_size = 0) {
+    limit_ = (std::max)(capacity, size_t{1});
+    auto &heap = select<Heap>();
+    if constexpr (std::is_same_v<Heap, TopkHeap>) {
+      heap.clear();
+      apply_limit(heap);
     } else {
-      std::forward<Fn>(fn)(select<LinearPool<float>>());
+      heap.reset(static_cast<int32_t>(capacity), block_size);
+    }
+    return heap;
+  }
+
+  // The caller must gate use_block on runtime AVX2 support on x86.
+  void reset_pool(bool use_block, size_t capacity, int32_t block_size) {
+    if (use_block) {
+      reset<BlockHeap>(capacity, block_size);
+    } else {
+      reset<LinearPool<float>>(capacity, block_size);
     }
   }
 
