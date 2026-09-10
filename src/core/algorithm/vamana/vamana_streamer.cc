@@ -689,12 +689,7 @@ int VamanaStreamer::search_candidates_impl(const void *query,
                                            std::vector<uint64_t> &keys,
                                            Context::Pointer &context) const {
   keys.clear();
-  auto *ctx = dynamic_cast<VamanaContext *>(context.get());
-  if (!ctx) return IndexError_Cast;
-  ctx->set_candidate_output(&keys);
-  // A user filter can throw; never leave its caller-owned output attached.
-  AILEGO_DEFER([&]() { ctx->set_candidate_output(nullptr); });
-  const int ret = search_impl(query, qmeta, 1, context);
+  const int ret = search_internal(query, qmeta, 1, context, &keys);
   if (ret != 0) keys.clear();
   return ret;
 }
@@ -702,6 +697,13 @@ int VamanaStreamer::search_candidates_impl(const void *query,
 int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                 uint32_t count,
                                 Context::Pointer &context) const {
+  return search_internal(query, qmeta, count, context, nullptr);
+}
+
+int VamanaStreamer::search_internal(const void *query,
+                                    const IndexQueryMeta &qmeta, uint32_t count,
+                                    Context::Pointer &context,
+                                    std::vector<uint64_t> *keys) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
 
@@ -712,7 +714,7 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
-    return search_bf_impl(query, qmeta, count, context);
+    return search_bf_internal(query, qmeta, count, context, keys);
   }
 
   if (ctx->magic() != magic_) {
@@ -729,12 +731,12 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
-    ret = alg_->search(ctx);
+    ret = alg_->search(ctx, keys);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Vamana search failed");
       return ret;
     }
-    ctx->topk_to_result(q);
+    if (!keys) ctx->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
 
@@ -771,6 +773,14 @@ int VamanaStreamer::search_bf_impl(const void *query,
 int VamanaStreamer::search_bf_impl(const void *query,
                                    const IndexQueryMeta &qmeta, uint32_t count,
                                    Context::Pointer &context) const {
+  return search_bf_internal(query, qmeta, count, context, nullptr);
+}
+
+int VamanaStreamer::search_bf_internal(const void *query,
+                                       const IndexQueryMeta &qmeta,
+                                       uint32_t count,
+                                       Context::Pointer &context,
+                                       std::vector<uint64_t> *keys) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
 
@@ -802,7 +812,7 @@ int VamanaStreamer::search_bf_impl(const void *query,
         topk.emplace(id, dist);
       }
     }
-    ctx->topk_to_result(q);
+    ctx->topk_to_result(q, keys);
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
 

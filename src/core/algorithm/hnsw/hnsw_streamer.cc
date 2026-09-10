@@ -789,10 +789,7 @@ int HnswStreamer::search_candidates_impl(const void *query,
   auto *ctx = dynamic_cast<HnswContext *>(context.get());
   if (!ctx) return IndexError_Cast;
   if (ctx->group_by_search()) return IndexError_Unsupported;
-  ctx->set_candidate_output(&keys);
-  // A user filter can throw; never leave its caller-owned output attached.
-  AILEGO_DEFER([&]() { ctx->set_candidate_output(nullptr); });
-  const int ret = search_impl(query, qmeta, 1, context);
+  const int ret = search_internal(query, qmeta, 1, context, &keys);
   if (ret != 0) keys.clear();
   return ret;
 }
@@ -801,6 +798,13 @@ int HnswStreamer::search_candidates_impl(const void *query,
 int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                               uint32_t count,
                               IndexStreamer::Context::Pointer &context) const {
+  return search_internal(query, qmeta, count, context, nullptr);
+}
+
+int HnswStreamer::search_internal(const void *query,
+                                  const IndexQueryMeta &qmeta, uint32_t count,
+                                  Context::Pointer &context,
+                                  std::vector<uint64_t> *keys) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -812,7 +816,7 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
-    return search_bf_impl(query, qmeta, count, context);
+    return search_bf_internal(query, qmeta, count, context, keys);
   }
 
   if (ctx->magic() != magic_) {
@@ -830,12 +834,12 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query, meta_);
-    ret = alg_->search(ctx);
+    ret = alg_->search(ctx, keys);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
     }
-    ctx->topk_to_result(q);
+    if (!keys) ctx->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
 
@@ -877,6 +881,13 @@ int HnswStreamer::search_bf_impl(
 int HnswStreamer::search_bf_impl(
     const void *query, const IndexQueryMeta &qmeta, uint32_t count,
     IndexStreamer::Context::Pointer &context) const {
+  return search_bf_internal(query, qmeta, count, context, nullptr);
+}
+
+int HnswStreamer::search_bf_internal(const void *query,
+                                     const IndexQueryMeta &qmeta,
+                                     uint32_t count, Context::Pointer &context,
+                                     std::vector<uint64_t> *keys) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -950,7 +961,7 @@ int HnswStreamer::search_bf_impl(
           topk.emplace(id, dist);
         }
       }
-      ctx->topk_to_result(q);
+      ctx->topk_to_result(q, keys);
       query = static_cast<const char *>(query) + qmeta.element_size();
     }
   }

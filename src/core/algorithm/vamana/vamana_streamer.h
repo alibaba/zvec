@@ -116,6 +116,15 @@ class VamanaStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
+  // Shared search body; keys is non-null only for single-query candidate
+  // output.
+  int search_internal(const void *query, const IndexQueryMeta &qmeta,
+                      uint32_t count, Context::Pointer &context,
+                      std::vector<uint64_t> *keys) const;
+  int search_bf_internal(const void *query, const IndexQueryMeta &qmeta,
+                         uint32_t count, Context::Pointer &context,
+                         std::vector<uint64_t> *keys) const;
+
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {
     if (ailego_unlikely(!query)) {

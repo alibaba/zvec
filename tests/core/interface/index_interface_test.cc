@@ -1713,9 +1713,14 @@ TEST(IndexInterface, GraphCandidateOutputMatchesSearchAndReusesContext) {
               const auto scans =
                   vctx ? vctx->get_scan_num() : hctx->get_scan_num();
               std::vector<uint64_t> keys{999};
+              keys.reserve(std::max(kCount, topk));
+              const auto *output_data = keys.data();
+              const auto output_capacity = keys.capacity();
               ASSERT_EQ(0, streamer->search_candidates_impl(vector.data(), meta,
                                                             keys, context));
               EXPECT_EQ(expected, keys);
+              EXPECT_EQ(output_data, keys.data());
+              EXPECT_EQ(output_capacity, keys.capacity());
               EXPECT_TRUE(context->result().empty());
               EXPECT_EQ(scans,
                         vctx ? vctx->get_scan_num() : hctx->get_scan_num());
@@ -1723,13 +1728,18 @@ TEST(IndexInterface, GraphCandidateOutputMatchesSearchAndReusesContext) {
                 EXPECT_TRUE(vctx ? vctx->topk_heap().empty()
                                  : hctx->topk_heap().empty());
               }
-              // Candidate mode must not escape the call or retain the buffer.
+              // Later searches cannot change an earlier call's output.
               ASSERT_EQ(0,
                         streamer->search_impl(vector.data(), meta, 1, context));
               ASSERT_EQ(expected.size(), context->result().size());
               for (size_t i = 0; i < expected.size(); ++i) {
                 EXPECT_EQ(expected[i], context->result()[i].key());
               }
+              EXPECT_EQ(expected, keys);
+              std::vector<uint64_t> other_keys{999};
+              ASSERT_EQ(0, streamer->search_candidates_impl(
+                               vector.data(), meta, other_keys, context));
+              EXPECT_EQ(expected, other_keys);
               EXPECT_EQ(expected, keys);
             }
           }
@@ -1754,11 +1764,20 @@ TEST(IndexInterface, GraphCandidateOutputMatchesSearchAndReusesContext) {
         EXPECT_THROW(streamer->search_candidates_impl(vector.data(), meta, keys,
                                                       context),
                      std::runtime_error);
+        EXPECT_TRUE(keys.empty());
         context->reset_filter();
         keys.clear();
         ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, 1, context));
         EXPECT_FALSE(context->result().empty());
         EXPECT_TRUE(keys.empty());
+        {
+          std::vector<uint64_t> temporary_keys;
+          ASSERT_EQ(0, streamer->search_candidates_impl(
+                           vector.data(), meta, temporary_keys, context));
+          EXPECT_FALSE(temporary_keys.empty());
+        }
+        ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, 1, context));
+        EXPECT_FALSE(context->result().empty());
         if (hctx) {
           hctx->set_group_params(1, 1);
           EXPECT_EQ(int(zvec::core::IndexError_Unsupported),
