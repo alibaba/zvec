@@ -24,6 +24,8 @@ void inner_product_fp16_distance_neon_fp16(const void *a, const void *b,
                                            size_t dim, float *distance);
 
 // Batch version of inner_product_fp16_distance_neon_fp16.
+// Four candidates share each query load/conversion; remaining rows use the
+// single-distance arithmetic. Candidate vectors need not be contiguous.
 void inner_product_fp16_batch_distance_neon_fp16(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const *extra_values);

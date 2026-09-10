@@ -24,7 +24,8 @@ namespace zvec::turbo::neon_fp16 {
 void cosine_fp16_distance_neon_fp16(const void *a, const void *b, size_t dim,
                                     float *distance);
 
-// Batch version of cosine_fp16_distance_neon_fp16.
+// Batch version of cosine_fp16_distance_neon_fp16. Native NEON processes four
+// candidates together, sharing query loads without changing accumulation order.
 void cosine_fp16_batch_distance_neon_fp16(const void *const *vectors,
                                           const void *query, size_t n,
                                           size_t dim, float *distances,

@@ -511,6 +511,128 @@ TEST(Fp16Quantizer, NeonDistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON);
 }
 
+TEST(Fp16Quantizer, NeonBatchMatchesSingleAcrossBoundaries) {
+  const struct {
+    turbo::MetricType type;
+    const char *name;
+  } metrics[] = {
+      {turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean"},
+      {turbo::MetricType::kCosine, "Cosine"},
+      {turbo::MetricType::kInnerProduct, "InnerProduct"},
+  };
+  constexpr size_t kCandidateCount = 17;
+  constexpr float kGuard = 1234567.0f;
+  const size_t dimensions[] = {0,  1,  7,  8,  15, 16,  17, 31,
+                               32, 33, 63, 64, 65, 128, 768};
+  const size_t counts[] = {0, 1, 2, 3, 4, 5, 7, 8, 9, kCandidateCount};
+
+  for (const auto &metric : metrics) {
+    const auto neon = turbo::get_distance_kernels(
+        metric.type, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kNEON);
+    if (!neon.dist) {
+      GTEST_SKIP() << "NEON kernels unavailable on this CPU";
+    }
+    ASSERT_TRUE(neon.batch);
+
+    for (size_t dim : dimensions) {
+      SCOPED_TRACE(testing::Message()
+                   << "metric=" << metric.name << ", dim=" << dim);
+      auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+      ASSERT_TRUE(quantizer);
+      // Dimension zero is a kernel boundary case, not a valid index shape.
+      if (dim != 0) {
+        IndexMeta meta;
+        meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
+        meta.set_metric(metric.name, 0, Params());
+        ASSERT_EQ(0, quantizer->init(meta, Params()));
+      }
+
+      std::mt19937 gen(
+          static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
+      auto random_value = [&gen]() {
+        return (static_cast<int>(gen() % 18001) - 8000) / 2000.0f;
+      };
+      std::vector<float> query(dim);
+      std::generate(query.begin(), query.end(), random_value);
+      // Quantized cosine vectors also contain a stored FP32 norm.
+      const size_t query_words =
+          dim == 0 ? 1
+                   : (quantizer->quantized_query_vector_length() +
+                      sizeof(uint16_t) - 1) /
+                         sizeof(uint16_t);
+      const size_t datapoint_words =
+          dim == 0 ? 1
+                   : (quantizer->quantized_datapoint_vector_length() +
+                      sizeof(uint16_t) - 1) /
+                         sizeof(uint16_t);
+      std::vector<uint16_t> encoded_query(query_words);
+      if (dim != 0) {
+        quantizer->quantize_query(query.data(), encoded_query.data());
+      }
+
+      // Separate allocations, varying offsets and a permutation avoid
+      // accidentally requiring contiguous or SIMD-aligned candidates.
+      std::vector<std::vector<uint16_t>> encoded(
+          kCandidateCount, std::vector<uint16_t>(datapoint_words + 3));
+      std::vector<const void *> candidates(kCandidateCount);
+      for (size_t i = 0; i < kCandidateCount; ++i) {
+        std::vector<float> raw(dim);
+        std::generate(raw.begin(), raw.end(), random_value);
+        if (dim != 0) {
+          quantizer->quantize_data(raw.data(), encoded[i].data() + i % 4);
+        }
+      }
+      for (size_t i = 0; i < kCandidateCount; ++i) {
+        const size_t index = (i * 7) % kCandidateCount;
+        candidates[i] = encoded[index].data() + index % 4;
+      }
+
+      std::vector<float> expected(kCandidateCount);
+      for (size_t i = 0; i < kCandidateCount; ++i) {
+        SCOPED_TRACE(testing::Message() << "candidate=" << i);
+        neon.dist(candidates[i], encoded_query.data(), dim, &expected[i]);
+        if (dim != 0) {
+          EXPECT_EQ(expected[i], quantizer->calc_distance_dp_query(
+                                     candidates[i], encoded_query.data()));
+          EXPECT_EQ(expected[i], quantizer->calc_distance_dp_query_unquantized(
+                                     candidates[i], query.data()));
+        }
+      }
+
+      for (size_t count : counts) {
+        SCOPED_TRACE(testing::Message() << "count=" << count);
+        const char *paths[] = {"kernel", "quantized", "unquantized"};
+        std::array<std::vector<float>, 3> actual;
+        for (auto &scores : actual) {
+          scores.assign(count + 2, kGuard);
+        }
+        neon.batch(candidates.data(), encoded_query.data(), count, dim,
+                   actual[0].data() + 1, nullptr);
+        if (dim != 0) {
+          quantizer->calc_distance_dp_query_batch(
+              candidates.data(), static_cast<int>(count), encoded_query.data(),
+              actual[1].data() + 1);
+          quantizer->calc_distance_dp_query_batch_unquantized(
+              candidates.data(), static_cast<int>(count), query.data(),
+              actual[2].data() + 1);
+        }
+        for (size_t path = 0; path < (dim == 0 ? 1u : actual.size()); ++path) {
+          SCOPED_TRACE(testing::Message() << "path=" << paths[path]);
+          EXPECT_EQ(kGuard, actual[path].front());
+          EXPECT_EQ(kGuard, actual[path].back());
+          for (size_t i = 0; i < count; ++i) {
+            SCOPED_TRACE(testing::Message() << "candidate=" << i);
+            // Fusion must preserve each metric's single-vector arithmetic
+            // and reduction order, including intentionally FP16 cosine.
+            EXPECT_EQ(expected[i], actual[path][i + 1]);
+          }
+        }
+      }
+    }
+  }
+}
+
 // Exercise the dispatch cached by Fp16Quantizer, including query conversion.
 // Compare the stored FP16 values so quantization error is not mistaken for
 // distance-kernel error. Explicit scores can instead check a deliberately
@@ -598,16 +720,20 @@ TEST(Fp16Quantizer, NeonDistancesPreserveFp32Range) {
     const std::vector<float> large(dim, 300.0f);
     {
       SCOPED_TRACE("L2 products and accumulation");
-      check_quantizer_distances(turbo::MetricType::kSquaredEuclidean,
-                                "SquaredEuclidean", zero,
-                                {large, std::vector<float>(dim, 100.0f)}, 1e-3);
+      check_quantizer_distances(
+          turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean", zero,
+          {large, std::vector<float>(dim, 100.0f), zero, large, zero, large,
+           std::vector<float>(dim, 100.0f)},
+          1e-3);
     }
     {
       SCOPED_TRACE("L2 subtraction");
       const std::vector<float> negative_max(dim, -65504.0f);
       check_quantizer_distances(
           turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean",
-          negative_max, {std::vector<float>(dim, 65504.0f), negative_max},
+          negative_max,
+          {std::vector<float>(dim, 65504.0f), negative_max, zero, large,
+           negative_max, zero, std::vector<float>(dim, 65504.0f)},
           1e-3);
     }
     {
@@ -616,9 +742,10 @@ TEST(Fp16Quantizer, NeonDistancesPreserveFp32Range) {
       for (size_t i = 1; i < dim; i += 2) {
         alternating[i] = -300.0f;
       }
-      check_quantizer_distances(turbo::MetricType::kInnerProduct,
-                                "InnerProduct", large, {large, alternating},
-                                1e-3);
+      check_quantizer_distances(
+          turbo::MetricType::kInnerProduct, "InnerProduct", large,
+          {large, alternating, zero, alternating, large, zero, alternating},
+          1e-3);
     }
     {
       // Products must be computed in FP32 too; accumulating rounded FP16
@@ -627,10 +754,14 @@ TEST(Fp16Quantizer, NeonDistancesPreserveFp32Range) {
       const std::vector<float> small(dim, 0.0001f);
       check_quantizer_distances(
           turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean", zero,
-          {small, std::vector<float>(dim, 0.0002f)}, 1e-12);
+          {small, std::vector<float>(dim, 0.0002f), zero, small, zero,
+           std::vector<float>(dim, 0.0002f), small},
+          1e-12);
       check_quantizer_distances(
           turbo::MetricType::kInnerProduct, "InnerProduct", small,
-          {small, std::vector<float>(dim, -0.0001f)}, 1e-12);
+          {small, std::vector<float>(dim, -0.0001f), zero, small,
+           std::vector<float>(dim, -0.0001f), zero, small},
+          1e-12);
     }
   }
 }
@@ -641,8 +772,7 @@ TEST(Fp16Quantizer, NeonCosineRetainsFp16Arithmetic) {
       turbo::MetricType::kCosine, turbo::DataType::kFp16,
       turbo::QuantizeType::kFp16, turbo::CpuArchType::kAuto);
   const auto *target = automatic.dist.target<RawDistance>();
-  if (!target ||
-      *target != turbo::neon_fp16::cosine_fp16_distance_neon_fp16) {
+  if (!target || *target != turbo::neon_fp16::cosine_fp16_distance_neon_fp16) {
     GTEST_SKIP() << "Native NEON FP16 cosine kernel is not selected";
   }
 
@@ -667,8 +797,11 @@ TEST(Fp16Quantizer, NeonCosineRetainsFp16Arithmetic) {
     EXPECT_GT(scalar_self, 1.0e-4f);
 
     check_quantizer_distances(
-        turbo::MetricType::kCosine, "Cosine", query, {query, neighbor}, 0.0,
-        0.0, {0.0f, 2.0f / static_cast<float>(dim)});
+        turbo::MetricType::kCosine, "Cosine", query,
+        {query, neighbor, neighbor, query, neighbor, query, neighbor}, 0.0, 0.0,
+        {0.0f, 2.0f / static_cast<float>(dim), 2.0f / static_cast<float>(dim),
+         0.0f, 2.0f / static_cast<float>(dim), 0.0f,
+         2.0f / static_cast<float>(dim)});
   }
 }
 

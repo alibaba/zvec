@@ -16,6 +16,7 @@
 #include "common/fp16_common.h"
 #if ZVEC_TURBO_FP16_NEON
 #include <arm_neon.h>
+#include "neon_fp16/fp16/fp32_batch.h"
 #else
 #include "scalar/fp16/squared_euclidean.h"
 #endif
@@ -99,7 +100,12 @@ void squared_euclidean_fp16_batch_distance_neon_fp16(
 #if ZVEC_TURBO_FP16_NEON
   (void)extra_values;
   const float16_t *typed_query = reinterpret_cast<const float16_t *>(query);
-  for (size_t i = 0; i < n; ++i) {
+  size_t i = 0;
+  for (; n - i >= 4; i += 4) {
+    detail::fp32_distance_batch4<true>(vectors + i, typed_query, dim,
+                                       distances + i);
+  }
+  for (; i < n; ++i) {
     distances[i] = squared_euclidean_fp16_accum(
         reinterpret_cast<const float16_t *>(vectors[i]), typed_query, dim);
   }

@@ -56,6 +56,58 @@ inline float cosine_fp16_dot(const float16_t *lhs, const float16_t *rhs,
   return total;
 }
 
+// Compute four candidates together so each query load is shared. Keep the
+// four accumulators and reduction order of cosine_fp16_dot for every row:
+// reassociating native FP16 sums would change the approximation.
+inline void cosine_fp16_distance_x4(const void *const *vectors,
+                                    const float16_t *query, size_t dim,
+                                    float *distances) {
+  const float16_t *rows[4] = {reinterpret_cast<const float16_t *>(vectors[0]),
+                              reinterpret_cast<const float16_t *>(vectors[1]),
+                              reinterpret_cast<const float16_t *>(vectors[2]),
+                              reinterpret_cast<const float16_t *>(vectors[3])};
+  float16x8_t sum0[4] = {};
+  float16x8_t sum1[4] = {};
+  float16x8_t sum2[4] = {};
+  float16x8_t sum3[4] = {};
+  size_t i = 0;
+  for (; i + 32 <= dim; i += 32) {
+    const float16x8_t query0 = vld1q_f16(query + i);
+    const float16x8_t query1 = vld1q_f16(query + i + 8);
+    const float16x8_t query2 = vld1q_f16(query + i + 16);
+    const float16x8_t query3 = vld1q_f16(query + i + 24);
+    for (size_t row = 0; row < 4; ++row) {
+      sum0[row] = vfmaq_f16(sum0[row], vld1q_f16(rows[row] + i), query0);
+      sum1[row] = vfmaq_f16(sum1[row], vld1q_f16(rows[row] + i + 8), query1);
+      sum2[row] = vfmaq_f16(sum2[row], vld1q_f16(rows[row] + i + 16), query2);
+      sum3[row] = vfmaq_f16(sum3[row], vld1q_f16(rows[row] + i + 24), query3);
+    }
+  }
+  for (; i + 8 <= dim; i += 8) {
+    const float16x8_t query0 = vld1q_f16(query + i);
+    for (size_t row = 0; row < 4; ++row) {
+      sum0[row] = vfmaq_f16(sum0[row], vld1q_f16(rows[row] + i), query0);
+    }
+  }
+  float totals[4];
+  for (size_t row = 0; row < 4; ++row) {
+    const float16x8_t sum = vaddq_f16(vaddq_f16(sum0[row], sum1[row]),
+                                      vaddq_f16(sum2[row], sum3[row]));
+    const float32x4_t sum_f32 = vaddq_f32(vcvt_f32_f16(vget_low_f16(sum)),
+                                          vcvt_f32_f16(vget_high_f16(sum)));
+    totals[row] = vaddvq_f32(sum_f32);
+  }
+  for (; i < dim; ++i) {
+    const float query_value = static_cast<float>(query[i]);
+    for (size_t row = 0; row < 4; ++row) {
+      totals[row] += static_cast<float>(rows[row][i]) * query_value;
+    }
+  }
+  for (size_t row = 0; row < 4; ++row) {
+    distances[row] = 1.0f - totals[row];
+  }
+}
+
 }  // namespace
 #endif
 
@@ -77,7 +129,11 @@ void cosine_fp16_batch_distance_neon_fp16(const void *const *vectors,
 #if ZVEC_TURBO_FP16_NEON
   (void)extra_values;
   const float16_t *typed_query = reinterpret_cast<const float16_t *>(query);
-  for (size_t i = 0; i < n; ++i) {
+  size_t i = 0;
+  for (; n - i >= 4; i += 4) {
+    cosine_fp16_distance_x4(vectors + i, typed_query, dim, distances + i);
+  }
+  for (; i < n; ++i) {
     distances[i] =
         1.0f - cosine_fp16_dot(reinterpret_cast<const float16_t *>(vectors[i]),
                                typed_query, dim);
