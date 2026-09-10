@@ -624,28 +624,15 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_like(
   } else if (percent_loc == size - 1) {
     return get_bitmap_prefix(term.substr(0, percent_loc));
   } else {
-    std::string prefix = term.substr(0, percent_loc - 1);
+    std::string prefix = term.substr(0, percent_loc);
     std::string suffix = term.substr(percent_loc + 1, size - percent_loc - 1);
-    auto prefix_bitmap = get_bitmap_prefix(prefix);
-    if (!prefix_bitmap.has_value()) {
-      return tl::make_unexpected(
-          Status::InternalError("Get bitmap prefix failed, unescaped:", term));
-    }
-    auto suffix_bitmap = get_bitmap_suffix(suffix);
-    if (!suffix_bitmap.has_value()) {
-      return tl::make_unexpected(
-          Status::InternalError("Get bitmap suffix failed, unescaped:", term));
-    }
-    auto *result = prefix_bitmap.value();
-    roaring_bitmap_and_inplace(result, suffix_bitmap.value());
-    roaring_bitmap_free(suffix_bitmap.value());
-    return result;
+    return get_bitmap_prefix(prefix, suffix);
   }
 }
 
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_prefix(
-    const std::string &term) const {
+    const std::string &term, const std::string &suffix) const {
   auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
   AILEGO_DEFER([&]() { delete iter; });
 
@@ -661,6 +648,14 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_prefix(
     if (!has_prefix(iter->key().data(), iter->key().size(), term.data(),
                     term.size())) {
       break;
+    }
+    // Validate both literals on the same term; LIKE cannot overlap them.
+    if (!suffix.empty() &&
+        (iter->key().size() < term.size() + suffix.size() ||
+         memcmp(iter->key().data() + iter->key().size() - suffix.size(),
+                suffix.data(), suffix.size()) != 0)) {
+      iter->Next();
+      continue;
     }
     s = InvertedIndexCodec::Merge_OR(iter->value().data(), iter->value().size(),
                                      true, bitmap);

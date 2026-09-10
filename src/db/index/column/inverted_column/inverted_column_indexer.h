@@ -337,7 +337,8 @@ class InvertedColumnIndexer {
 
   Result<roaring_bitmap_t *> get_bitmap_like(std::string term) const;
 
-  Result<roaring_bitmap_t *> get_bitmap_prefix(const std::string &term) const;
+  Result<roaring_bitmap_t *> get_bitmap_prefix(
+      const std::string &term, const std::string &suffix = "") const;
 
   Result<roaring_bitmap_t *> get_bitmap_suffix(const std::string &term) const;
 
