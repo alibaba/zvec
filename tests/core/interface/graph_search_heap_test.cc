@@ -415,6 +415,10 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
           compare(expected, context->result());
         } else if (mode == 7) {
           ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, context));
+          if (vctx)
+            vctx->topk_to_result();
+          else
+            hctx->topk_to_result();
           compare(expected, context->result());
         } else {
           ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, context));
@@ -463,20 +467,25 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     }
   }
 
-  // Omitting count is equivalent to count = 1, including result export on a
-  // reused context. The previous query's documents must be replaced.
+  // Single-query BF leaves candidates in the heap without exporting them.
+  // The caller exports explicitly; the batch entry point does this per query.
   configure(context, 12, 7, true);
   ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, 1, context));
   const auto previous = context->result();
   std::vector<float> next_query(16, 0.0f);
   next_query[0] = 63.25f;
   ASSERT_EQ(0, streamer->search_bf_impl(next_query.data(), meta, context));
+  compare(previous, context->result());
   auto &bf_heap = vctx ? vctx->search_heap() : hctx->search_heap();
   bf_heap.dispatch([&](const auto &buffer) {
     EXPECT_TRUE(
         (std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>));
     EXPECT_EQ(kCount, static_cast<uint32_t>(buffer.size()));
   });
+  if (vctx)
+    vctx->topk_to_result();
+  else
+    hctx->topk_to_result();
   const auto exported = context->result();
   ASSERT_EQ(12U, exported.size());
   EXPECT_NE(previous.front().key(), exported.front().key());
@@ -494,12 +503,14 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     for (int mode : {0, 1, 2}) {
       configure(context, topk, mode, true);
       std::vector<core::IndexDocumentList> expected(batch_keys.size());
+      size_t expected_scans = 0;
       for (size_t q = 0; q < batch_keys.size(); ++q) {
         const std::vector<std::vector<uint64_t>> single_keys{batch_keys[q]};
         ASSERT_EQ(
             0, streamer->search_bf_by_p_keys_impl(key_queries.data() + q * 16,
                                                   single_keys, meta, context));
         expected[q] = context->result();
+        expected_scans = vctx ? vctx->get_scan_num() : hctx->get_scan_num();
         ASSERT_EQ(
             0, streamer->search_bf_by_p_keys_impl(
                    key_queries.data() + q * 16, single_keys, meta, 1, context));
@@ -527,6 +538,8 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
                        static_cast<uint32_t>(batch_keys.size()), context));
       for (size_t q = 0; q < batch_keys.size(); ++q)
         compare(expected[q], context->result(q));
+      EXPECT_EQ(expected_scans,
+                vctx ? vctx->get_scan_num() : hctx->get_scan_num());
     }
   }
   EXPECT_EQ(core::IndexError_InvalidArgument,
@@ -553,12 +566,16 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
       return streamer->search_impl(queries, meta, count, context);
     };
     std::vector<core::IndexDocumentList> expected(2);
+    size_t expected_scans = 0;
     for (size_t q = 0; q < 2; ++q) {
       ASSERT_EQ(0, search_batch(batch.data() + q * 16, 1));
       expected[q] = context->result();
+      expected_scans = vctx ? vctx->get_scan_num() : hctx->get_scan_num();
     }
     ASSERT_EQ(0, search_batch(batch.data(), 2));
     for (size_t q = 0; q < 2; ++q) compare(expected[q], context->result(q));
+    EXPECT_EQ(expected_scans,
+              vctx ? vctx->get_scan_num() : hctx->get_scan_num());
   }
 
   // BasicRefiner must still receive documents when its refine runner is a

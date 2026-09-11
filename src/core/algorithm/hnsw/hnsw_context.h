@@ -484,8 +484,7 @@ class HnswContext : public IndexContext {
     return dc_.error();
   }
 
-  // Reset search state without discarding results already exported by a caller.
-  inline void clear_search() {
+  inline void clear() {
     search_heap_.clear();
     dc_.clear();
     if (ailego_unlikely(this->debugging())) {
@@ -493,10 +492,6 @@ class HnswContext : public IndexContext {
       stats_get_vector_cnt_ = 0u;
       stats_visit_dup_cnt_ = 0u;
     }
-  }
-
-  inline void clear() {
-    clear_search();
     // do not clear results_ for the next query will need it
     for (auto &it : results_) {
       it.clear();

@@ -118,11 +118,12 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  //! Search and export results, equivalent to the count = 1 overload.
+  //! Execute one BF query, retaining candidates in the context heap.
+  //! The caller clears the context for the request and exports the results.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
 
-  //! Search and export results for each query.
+  //! Batch caller: execute one query, then export it before the next query.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
@@ -198,11 +199,9 @@ class HnswStreamer : public IndexStreamer {
       Context::Pointer &context) const override;
 
  private:
-  // Scan one query without exporting results. Callers collect documents or
-  // candidate keys before the next scan reuses the context heap.
-  int scan_bf(const void *query, const IndexQueryMeta &qmeta,
-              Context::Pointer &context) const;
-
+  // Scan one query without exporting results. Callers clear the context once
+  // per request, then collect documents or candidate keys before the next scan
+  // reuses the context heap.
   int scan_bf_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
                         const IndexQueryMeta &qmeta,
                         Context::Pointer &context) const;
