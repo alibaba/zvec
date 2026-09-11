@@ -175,6 +175,9 @@ class FlatSearcher : public IndexSearcher {
   }
 
  private:
+  //! Validate turbo query records, preserving legacy metric assertions.
+  int check_query_meta(const IndexQueryMeta &qmeta) const;
+
   //! Members
   const uint64_t *keys_{nullptr};
   std::unordered_map<key_t, node_id_t> key_id_mapping_;

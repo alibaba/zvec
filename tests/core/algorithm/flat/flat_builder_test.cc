@@ -615,6 +615,37 @@ TEST_F(FlatBuilderTest, TestTurboQuantizerDistance) {
       EXPECT_EQ(quantizer->meta().element_size(),
                 searcher->meta().element_size());
       EXPECT_EQ(IndexMeta::MO_ROW, searcher->meta().major_order());
+      for (int mismatch : {0, 1, 2}) {
+        SCOPED_TRACE(mismatch);
+        const bool wrong_dimension = mismatch == 1;
+        const bool asymmetric = mismatch == 2;
+        const char *wrong_name =
+            asymmetric ? "PqInt8Quantizer"
+            : wrong_dimension
+                ? name
+                : (std::string(name) == "Fp32Quantizer" ? "Fp16Quantizer"
+                                                        : "Fp32Quantizer");
+        auto incompatible = IndexFactory::CreateQuantizer(wrong_name);
+        ASSERT_NE(nullptr, incompatible);
+        IndexMeta wrong_meta(IndexMeta::DT_FP32,
+                             dim + (wrong_dimension ? 2 : 0));
+        wrong_meta.set_metric(metric, 0, Params());
+        Params wrong_params;
+        if (asymmetric) wrong_params.set("num_chunk", 2);
+        ASSERT_EQ(0, incompatible->init(wrong_meta, wrong_params));
+        if (asymmetric) {
+          ASSERT_NE(incompatible->quantized_query_vector_length(),
+                    incompatible->quantized_datapoint_vector_length());
+        }
+        auto wrong_searcher = IndexFactory::CreateSearcher("FlatSearcher");
+        auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+        ASSERT_NE(nullptr, wrong_searcher);
+        ASSERT_NE(nullptr, storage);
+        ASSERT_EQ(0, wrong_searcher->init(Params(), incompatible));
+        ASSERT_EQ(0, storage->open(path, false));
+        EXPECT_EQ(asymmetric ? IndexError_Unsupported : IndexError_Mismatch,
+                  wrong_searcher->load(storage, IndexMetric::Pointer()));
+      }
       auto context = searcher->create_context();
       ASSERT_NE(nullptr, context);
       context->set_topk(topk);
@@ -643,6 +674,52 @@ TEST_F(FlatBuilderTest, TestTurboQuantizerDistance) {
               codes[i].data(), query_codes[q].data());
         }
       }
+
+      // Reject malformed metadata before interpreting query bytes. Keep the
+      // full allocation and never enlarge the stride to avoid short buffers.
+      auto check_mismatch = [&](const IndexQueryMeta &bad) {
+        ASSERT_LE(bad.element_size(), query_meta.element_size());
+        EXPECT_EQ(IndexError_Mismatch,
+                  searcher->search_impl(batch_queries.data(), bad, context));
+        EXPECT_EQ(IndexError_Mismatch,
+                  searcher->search_impl(batch_queries.data(), bad, query_count,
+                                        context));
+        EXPECT_EQ(IndexError_Mismatch,
+                  searcher->search_bf_by_p_keys_impl(batch_queries.data(),
+                                                     restricted_keys, bad,
+                                                     query_count, context));
+      };
+      auto bad = query_meta;
+      bad.set_meta_type(IndexMeta::MT_SPARSE);
+      check_mismatch(bad);
+      bad = query_meta;
+      bad.set_data_type(query_meta.data_type() == IndexMeta::DT_FP32
+                            ? IndexMeta::DT_FP16
+                            : IndexMeta::DT_FP32);
+      check_mismatch(bad);  // set_data_type preserves the original stride.
+      bad = query_meta;
+      bad.set_dimension(query_meta.dimension() - 2);
+      check_mismatch(bad);
+      bad.set_extra_meta_size(query_meta.extra_meta_size() +
+                              query_meta.element_size() - bad.element_size());
+      check_mismatch(bad);  // Same byte length must not hide a wrong dimension.
+      // INT4 cannot use a zero unit; dim/2 keeps the packed byte length intact.
+      const uint32_t wrong_unit = query_meta.data_type() == IndexMeta::DT_INT4
+                                      ? query_meta.dimension() / 2
+                                      : query_meta.unit_size() - 1;
+      check_mismatch(IndexQueryMeta(
+          query_meta.meta_type(), query_meta.data_type(), wrong_unit,
+          query_meta.dimension(), query_meta.quantize_type(),
+          query_meta.extra_meta_size()));
+      if (query_meta.extra_meta_size() != 0) {
+        bad = query_meta;
+        bad.set_extra_meta_size(query_meta.extra_meta_size() - 1);
+        check_mismatch(bad);
+      }
+      check_mismatch(IndexQueryMeta(
+          query_meta.meta_type(), query_meta.data_type(),
+          query_meta.unit_size(), query_meta.dimension(),
+          query_meta.quantize_type() + 1, query_meta.extra_meta_size()));
 
       // Filtered scans exercise scalar distances; unfiltered scans use SIMD
       // row batches. Allow equivalent neighbours at a numerical tie boundary.
