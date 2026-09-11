@@ -50,11 +50,15 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   for (; cur_level >= 0; --cur_level) {
     auto &heap = ctx->level_topk(cur_level);
     heap.clear();
-    int ret =
-        dispatch_search_neighbors(cur_level, &entry_point, &dist, heap, ctx);
-    if (ailego_unlikely(ret != 0)) {
+    const bool dispatched =
+        dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
+          search_neighbors(cur_level, &entry_point, &dist, heap, visit, ctx);
+        });
+    if (ailego_unlikely(!dispatched)) {
+      LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
+                ctx->visit_filter().get_mode());
       if (level > cur_max_level) mutex_.unlock();
-      return ret;
+      return IndexError_Runtime;
     }
   }
 
@@ -104,8 +108,19 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   } else {
     heap.reset<TopkHeap>(capacity);
   }
-  int ret = dispatch_search_neighbors(0, &entry_point, &dist, heap, ctx);
-  if (ailego_unlikely(ret != 0)) return ret;
+  const bool dispatched =
+      dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
+        if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+          dispatch_search_neighbors(0, &entry_point, &dist, heap, visit, ctx);
+        } else {
+          search_neighbors(0, &entry_point, &dist, heap.topk(), visit, ctx);
+        }
+      });
+  if (ailego_unlikely(!dispatched)) {
+    LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
+              ctx->visit_filter().get_mode());
+    return IndexError_Runtime;
+  }
 
   if (ctx->group_by_search()) {
     ctx->search_heap().with_topk(
@@ -116,35 +131,13 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 }
 
 template <typename EntityType>
-template <typename HeapStorage>
-int HnswAlgorithm<EntityType>::dispatch_search_neighbors(
+template <typename Visit>
+void HnswAlgorithm<EntityType>::dispatch_search_neighbors(
     level_t level, node_id_t *entry_point, dist_t *dist,
-    HeapStorage &target_heap, HnswContext *ctx) const {
-  const bool dispatched =
-      dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
-        auto run_with_heap = [&](auto &heap) {
-          search_neighbors(level, entry_point, dist, heap, visit, ctx);
-        };
-        if constexpr (std::is_same_v<HeapStorage, SearchHeap>) {
-          if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-            target_heap.dispatch(run_with_heap);
-          } else {
-            // BufferPool/external entities only support the prepared TopkHeap.
-            run_with_heap(target_heap.topk());
-          }
-        } else {
-          // Construction already supplies a concrete per-level TopkHeap.
-          static_assert(std::is_same_v<HeapStorage, TopkHeap>);
-          run_with_heap(target_heap);
-        }
-      });
-  if (ailego_unlikely(!dispatched)) {
-    LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
-              ctx->visit_filter().get_mode());
-    return IndexError_Runtime;
-  }
-
-  return 0;
+    SearchHeap &target_heap, Visit visit, HnswContext *ctx) const {
+  target_heap.dispatch([&](auto &heap) {
+    search_neighbors(level, entry_point, dist, heap, visit, ctx);
+  });
 }
 
 template <typename EntityType>

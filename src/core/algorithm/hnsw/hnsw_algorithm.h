@@ -104,12 +104,12 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
-  // Dispatch the already initialized heap and visit filter to concrete types.
-  // Construction supplies its independent per-level TopkHeap directly.
-  template <typename HeapStorage>
-  int dispatch_search_neighbors(level_t level, node_id_t *entry_point,
-                                dist_t *dist, HeapStorage &target_heap,
-                                HnswContext *ctx) const;
+  // Dispatch an initialized SearchHeap; concrete heaps call search_neighbors
+  // directly. The caller supplies the concrete visit filter view.
+  template <typename Visit>
+  void dispatch_search_neighbors(level_t level, node_id_t *entry_point,
+                                 dist_t *dist, SearchHeap &target_heap,
+                                 Visit visit, HnswContext *ctx) const;
 
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
