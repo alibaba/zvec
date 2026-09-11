@@ -66,6 +66,8 @@ class VamanaStreamer : public IndexStreamer {
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
+  using IndexStreamer::search_bf_by_p_keys_impl;
+
   // Search and export results, equivalent to the count = 1 overload.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
@@ -130,12 +132,12 @@ class VamanaStreamer : public IndexStreamer {
       Context::Pointer &context) const override;
 
  private:
-  // Scan one query without exporting results. Callers clear the context once
-  // per request, then collect documents or candidate keys before the next scan
-  // reuses the context heap.
-  int scan_bf_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
-                        const IndexQueryMeta &qmeta,
-                        Context::Pointer &context) const;
+  // Execute one query over a single key list, retaining candidates in the heap.
+  // Callers clear the context once per request and export each query's results.
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<uint64_t> &p_keys,
+                               const IndexQueryMeta &qmeta,
+                               Context::Pointer &context) const;
 
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {

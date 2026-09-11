@@ -903,7 +903,7 @@ int VamanaStreamer::search_candidates_by_p_keys_impl(
   }
   ctx->clear();
   ctx->resize_results(1);
-  const int ret = scan_bf_by_p_keys(query, p_keys[0], qmeta, context);
+  const int ret = search_bf_by_p_keys_impl(query, p_keys[0], qmeta, context);
   if (ailego_unlikely(ret != 0)) return ret;
   ctx->topk_to_keys(keys);
   if (ailego_unlikely(ctx->error())) {
@@ -940,7 +940,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   ctx->resize_results(count);
 
   for (size_t q = 0; q < count; ++q) {
-    ret = scan_bf_by_p_keys(query, p_keys[q], qmeta, context);
+    ret = search_bf_by_p_keys_impl(query, p_keys[q], qmeta, context);
     if (ailego_unlikely(ret != 0)) return ret;
     ctx->topk_to_result(static_cast<uint32_t>(q));
     query = static_cast<const char *>(query) + qmeta.element_size();
@@ -950,10 +950,9 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   return 0;
 }
 
-int VamanaStreamer::scan_bf_by_p_keys(const void *query,
-                                      const std::vector<uint64_t> &p_keys,
-                                      const IndexQueryMeta &qmeta,
-                                      Context::Pointer &context) const {
+int VamanaStreamer::search_bf_by_p_keys_impl(
+    const void *query, const std::vector<uint64_t> &p_keys,
+    const IndexQueryMeta &qmeta, Context::Pointer &context) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
   auto *ctx = dynamic_cast<VamanaContext *>(context.get());
