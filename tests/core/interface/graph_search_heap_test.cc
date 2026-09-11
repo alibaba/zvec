@@ -474,6 +474,67 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
   ASSERT_EQ(0, streamer->search_bf_impl(next_query.data(), meta, 1, context));
   compare(exported, context->result());
 
+  const std::vector<std::vector<uint64_t>> batch_keys{
+      {31, 32, 33}, {0, 1, 2}, {}, {62, 63, 99999}};
+  std::vector<float> key_queries(16 * batch_keys.size(), 0.0f);
+  key_queries[0] = 0.25f;
+  key_queries[16] = 63.25f;
+  key_queries[32] = 16.25f;
+  key_queries[48] = 14.25f;
+  for (uint32_t topk : {0U, 1U, 12U}) {
+    for (int mode : {0, 1, 2}) {
+      configure(context, topk, mode, true);
+      std::vector<core::IndexDocumentList> expected(batch_keys.size());
+      for (size_t q = 0; q < batch_keys.size(); ++q) {
+        const std::vector<std::vector<uint64_t>> single_keys{batch_keys[q]};
+        const auto previous_result = context->result();
+        ASSERT_EQ(
+            0, streamer->search_bf_by_p_keys_impl(key_queries.data() + q * 16,
+                                                  single_keys, meta, context));
+        // Like full BF, single-query BF by keys must not export documents.
+        compare(previous_result, context->result());
+        if (vctx)
+          vctx->topk_to_result();
+        else
+          hctx->topk_to_result();
+        expected[q] = context->result();
+        if (mode == 0)
+          EXPECT_EQ((std::min)(size_t{topk},
+                               q == 3 ? size_t{2} : batch_keys[q].size()),
+                    expected[q].size());
+        for (const auto &doc : expected[q]) {
+          EXPECT_NE(
+              batch_keys[q].end(),
+              std::find(batch_keys[q].begin(), batch_keys[q].end(), doc.key()));
+        }
+        std::vector<uint64_t> keys{99999};
+        ASSERT_EQ(0, streamer->search_candidates_by_p_keys_impl(
+                         key_queries.data() + q * 16, single_keys, meta, keys,
+                         context));
+        ASSERT_EQ(expected[q].size(), keys.size());
+        for (size_t i = 0; i < keys.size(); ++i)
+          EXPECT_EQ(expected[q][i].key(), keys[i]);
+        EXPECT_TRUE(context->result().empty());
+      }
+      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
+                       key_queries.data(), batch_keys, meta,
+                       static_cast<uint32_t>(batch_keys.size()), context));
+      for (size_t q = 0; q < batch_keys.size(); ++q)
+        compare(expected[q], context->result(q));
+    }
+  }
+  EXPECT_EQ(core::IndexError_InvalidArgument,
+            streamer->search_bf_by_p_keys_impl(key_queries.data(), batch_keys,
+                                               meta, context));
+  EXPECT_EQ(core::IndexError_InvalidArgument,
+            streamer->search_bf_by_p_keys_impl(key_queries.data(), batch_keys,
+                                               meta, 2, context));
+  std::vector<uint64_t> invalid_keys{99999};
+  EXPECT_EQ(core::IndexError_InvalidArgument,
+            streamer->search_candidates_by_p_keys_impl(
+                key_queries.data(), batch_keys, meta, invalid_keys, context));
+  EXPECT_TRUE(invalid_keys.empty());
+
   // A later query must not change an earlier query's materialized documents.
   std::vector<float> batch(32, 0.0f);
   batch[0] = 0.25f;
@@ -595,6 +656,28 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
           EXPECT_EQ(expected[q][group].group_id(), actual[group].group_id());
           compare(expected[q][group].docs(), actual[group].docs());
         }
+      }
+    }
+
+    configure(context, 4, 0, false);
+    std::vector<core::IndexGroupDocumentList> expected(batch_keys.size());
+    for (size_t q = 0; q < batch_keys.size(); ++q) {
+      const std::vector<std::vector<uint64_t>> single_keys{batch_keys[q]};
+      ASSERT_EQ(0,
+                streamer->search_bf_by_p_keys_impl(key_queries.data() + q * 16,
+                                                   single_keys, meta, context));
+      hctx->topk_to_result();
+      expected[q] = context->group_result();
+    }
+    ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
+                     key_queries.data(), batch_keys, meta,
+                     static_cast<uint32_t>(batch_keys.size()), context));
+    for (size_t q = 0; q < batch_keys.size(); ++q) {
+      const auto &actual = context->group_result(q);
+      ASSERT_EQ(expected[q].size(), actual.size());
+      for (size_t group = 0; group < actual.size(); ++group) {
+        EXPECT_EQ(expected[q][group].group_id(), actual[group].group_id());
+        compare(expected[q][group].docs(), actual[group].docs());
       }
     }
   }

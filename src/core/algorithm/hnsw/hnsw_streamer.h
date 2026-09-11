@@ -128,15 +128,13 @@ class HnswStreamer : public IndexStreamer {
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
-  //! Linear search by primary keys
+  //! Search one query's primary keys without exporting the retained candidates.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta,
-                               ContextPointer &context) const override {
-    return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
-  }
+                               ContextPointer &context) const override;
 
-  //! Linear search by primary keys
+  //! Batch caller: search p_keys[q] and export query q before reusing the heap.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta, uint32_t count,
@@ -200,12 +198,6 @@ class HnswStreamer : public IndexStreamer {
       Context::Pointer &context) const override;
 
  private:
-  template <typename Collect>
-  int search_bf_by_p_keys_with_collector(
-      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-      const IndexQueryMeta &qmeta, uint32_t count, Context::Pointer &context,
-      Collect &&collect) const;
-
   template <typename Collect>
   int search_with_collector(const void *query, const IndexQueryMeta &qmeta,
                             uint32_t count, Context::Pointer &context,

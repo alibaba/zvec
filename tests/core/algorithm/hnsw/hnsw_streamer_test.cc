@@ -231,6 +231,7 @@ TEST_F(HnswStreamerTest, TestLinearSearchByKeys) {
     ctx->set_topk(1U);
     ASSERT_EQ(
         0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta, ctx));
+    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result1 = ctx->result();
     ASSERT_EQ(1UL, result1.size());
     ASSERT_EQ(i, result1[0].key());
@@ -241,6 +242,7 @@ TEST_F(HnswStreamerTest, TestLinearSearchByKeys) {
     ctx->set_topk(topk);
     ASSERT_EQ(
         0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta, ctx));
+    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result2 = ctx->result();
     ASSERT_EQ(topk, result2.size());
     ASSERT_EQ(i, result2[0].key());
@@ -255,6 +257,7 @@ TEST_F(HnswStreamerTest, TestLinearSearchByKeys) {
     }
     ASSERT_EQ(
         0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta, ctx));
+    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result = ctx->result();
     ASSERT_EQ(100U, result.size());
     ASSERT_EQ(10, result[0].key());
@@ -274,6 +277,7 @@ TEST_F(HnswStreamerTest, TestLinearSearchByKeys) {
     p_keys[0] = {{cnt + 1, 10, 1, 15, cnt + 2}};
     ASSERT_EQ(
         0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta, ctx));
+    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result = ctx->result();
     ASSERT_EQ(3U, result.size());
     ASSERT_EQ(10, result[0].key());
@@ -292,6 +296,7 @@ TEST_F(HnswStreamerTest, TestLinearSearchByKeys) {
     }
     ASSERT_EQ(
         0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta, ctx));
+    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result = ctx->result();
     ASSERT_EQ(100U, result.size());
     ASSERT_EQ(10, result[0].key());
@@ -1393,6 +1398,7 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
                                                       linearByPkeysCtx));
+      static_cast<HnswContext *>(linearByPkeysCtx.get())->topk_to_result();
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
       auto &r2 = linearCtx->result();
@@ -1491,6 +1497,7 @@ TEST_F(HnswStreamerTest, TestKnnConcurrentAddAndSearch) {
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
                                                       linearByPKeysCtx));
+      static_cast<HnswContext *>(linearByPKeysCtx.get())->topk_to_result();
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
       auto &r2 = linearCtx->result();
@@ -1696,6 +1703,7 @@ TEST_F(HnswStreamerTest, TestFilter) {
   // linear by p_keys
   ASSERT_EQ(0,
             streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta, ctx));
+  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &results3 = ctx->result();
   ASSERT_EQ(10, results3.size());
   ASSERT_EQ(99, results3[0].key());
@@ -3822,6 +3830,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
 
   ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
                                                   linear_pk_ctx));
+  static_cast<HnswContext *>(linear_pk_ctx.get())->topk_to_result();
   auto &linear_by_pkeys_group_result = linear_pk_ctx->group_result();
   ASSERT_EQ(linear_by_pkeys_group_result.size(), group_num);
 

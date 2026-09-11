@@ -1519,6 +1519,7 @@ TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {
   ASSERT_EQ(
       0, streamer->search_bf_by_p_keys_impl(unit_record.data(), primary_keys,
                                             query_meta, primary_key_context));
+  static_cast<VamanaContext *>(primary_key_context.get())->topk_to_result();
   ASSERT_EQ(2UL, primary_key_context->result().size());
   EXPECT_EQ(20UL, primary_key_context->result()[0].key());
   EXPECT_FLOAT_EQ(-2.0f, primary_key_context->result()[0].score());

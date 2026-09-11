@@ -875,29 +875,33 @@ int VamanaStreamer::search_candidates_by_p_keys_impl(
   keys.clear();
   if (!context || p_keys.size() != 1) return IndexError_InvalidArgument;
   if (context->group_by().is_valid()) return IndexError_InvalidArgument;
-  const int ret = search_bf_by_p_keys_with_collector(
-      query, p_keys, qmeta, 1, context,
-      [&](VamanaContext *ctx, uint32_t) { ctx->topk_to_keys(keys); });
-  if (ret != 0) keys.clear();
-  return ret;
+  auto *ctx = dynamic_cast<VamanaContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to VamanaContext failed");
+    return IndexError_Cast;
+  }
+  ctx->resize_results(1);
+  ctx->mutable_result(0)->clear();
+  const int ret = search_bf_by_p_keys_impl(query, p_keys, qmeta, context);
+  if (ailego_unlikely(ret != 0)) return ret;
+  ctx->topk_to_keys(keys);
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
+  return 0;
 }
 
 int VamanaStreamer::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
-  return search_bf_by_p_keys_with_collector(
-      query, p_keys, qmeta, count, context,
-      [](VamanaContext *ctx, uint32_t q) { ctx->topk_to_result(q); });
-}
-
-template <typename Collect>
-int VamanaStreamer::search_bf_by_p_keys_with_collector(
-    const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-    const IndexQueryMeta &qmeta, uint32_t count, Context::Pointer &context,
-    Collect &&collect) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
+  if (ailego_unlikely(p_keys.size() != count)) {
+    LOG_ERROR("The size of p_keys is not equal to count");
+    return IndexError_InvalidArgument;
+  }
 
   VamanaContext *ctx = dynamic_cast<VamanaContext *>(context.get());
   ailego_do_if_false(ctx) {
@@ -914,22 +918,53 @@ int VamanaStreamer::search_bf_by_p_keys_with_collector(
                                        search_batch_distance_);
   ctx->resize_results(count);
 
+  // The single-query interface takes a nested vector. Reuse the input for
+  // count == 1; only a batch needs an adapter for the current key group.
+  std::vector<std::vector<uint64_t>> query_keys;
+  if (count > 1) query_keys.resize(1);
+  for (size_t q = 0; q < count; ++q) {
+    if (count > 1) query_keys[0] = p_keys[q];
+    ret = search_bf_by_p_keys_impl(query, count == 1 ? p_keys : query_keys,
+                                   qmeta, context);
+    if (ailego_unlikely(ret != 0)) return ret;
+    ctx->topk_to_result(static_cast<uint32_t>(q));
+    query = static_cast<const char *>(query) + qmeta.element_size();
+  }
+
+  if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
+  return 0;
+}
+
+int VamanaStreamer::search_bf_by_p_keys_impl(
+    const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+    const IndexQueryMeta &qmeta, Context::Pointer &context) const {
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) return ret;
+  if (ailego_unlikely(p_keys.size() != 1)) {
+    LOG_ERROR("Expected one primary-key group for a single query");
+    return IndexError_InvalidArgument;
+  }
+  auto *ctx = dynamic_cast<VamanaContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to VamanaContext failed");
+    return IndexError_Cast;
+  }
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) return ret;
+  }
+  ctx->clear_search();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
+  ctx->reset_query(query);
   auto &topk =
       ctx->search_heap().reset<TopkHeap>(std::max(ctx->topk(), ctx->ef()));
 
-  for (size_t q = 0; q < count; ++q) {
-    ctx->reset_query(query);
-    topk.clear();
-    for (const auto &keys : p_keys) {
-      for (auto key : keys) {
-        node_id_t id = entity_->get_id(key);
-        if (id == kInvalidNodeId) continue;
-        dist_t dist = ctx->dist_calculator().batch_dist(id);
-        topk.emplace(id, dist);
-      }
-    }
-    collect(ctx, static_cast<uint32_t>(q));
-    query = static_cast<const char *>(query) + qmeta.element_size();
+  for (auto key : p_keys[0]) {
+    node_id_t id = entity_->get_id(key);
+    if (id == kInvalidNodeId) continue;
+    dist_t dist = ctx->dist_calculator().batch_dist(id);
+    topk.emplace(id, dist);
   }
 
   if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
