@@ -234,6 +234,10 @@ struct BlockHeap {
     return static_cast<int32_t>(data_.size());
   }
 
+  int32_t capacity() const {
+    return ef_;
+  }
+
   // Export sorted top-`length` ids (and optionally scores) — data_ is already
   // distance-sorted ascending.
   void to_sorted(uint32_t *ids, float *scores, int32_t length) const {
