@@ -31,6 +31,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
 #include "algorithm/cluster/cluster_params.h"
+#include "algorithm/hnsw/hnsw_entity.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_streamer.h"
@@ -1495,7 +1496,10 @@ TEST(IndexInterface, FlatCandidateHandoffPreservesModesAndContextReuse) {
 
 TEST(IndexInterface, HnswNativeRefineMatchesExplicitCandidates) {
   constexpr uint32_t kDimension = 17;
-  constexpr uint32_t kCount = 64;
+  // Keep the data set just above the streamer's BF fallback threshold so both
+  // the explicit candidate search and the refine handoff exercise HNSW search.
+  constexpr uint32_t kCount =
+      zvec::core::HnswEntity::kDefaultBruteForceThreshold + 1;
   constexpr uint32_t kTopk = 5;
   constexpr uint32_t kCandidates = 20;
   const std::string coarse_path = "hnsw_handoff_coarse.index";
