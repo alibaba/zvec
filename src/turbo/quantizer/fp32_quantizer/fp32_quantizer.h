@@ -103,10 +103,6 @@ class Fp32Quantizer : public Quantizer {
     *score = -(*score);
   }
 
-  void denormalize_score(float *score) const override {
-    *score = -(*score);
-  }
-
   bool support_score_normalization() const override {
     return meta_.metric_name() == "InnerProduct";
   }
