@@ -16,7 +16,6 @@
 #include <stdint.h>
 #include <chrono>
 #include <vector>
-#include <ailego/internal/cpu_features.h>
 #include <ailego/parallel/lock.h>
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"

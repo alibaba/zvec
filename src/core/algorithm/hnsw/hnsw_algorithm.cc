@@ -99,9 +99,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
   if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
     if (!ctx->filter().is_valid()) {
-      const bool avx2_ok =
-          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-      heap.reset_pool(avx2_ok, capacity, entity_.max_degree(0));
+      heap.reset_pool(capacity, entity_.max_degree(0));
     } else {
       heap.reset<TopkHeap>(capacity);
     }

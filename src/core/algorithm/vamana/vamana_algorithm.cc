@@ -14,7 +14,6 @@
 
 #include "vamana_algorithm.h"
 #include <type_traits>
-#include <ailego/internal/cpu_features.h>
 
 namespace zvec {
 namespace core {
@@ -132,9 +131,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
   ctx->candidates().clear();
   if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
     if (!ctx->filter().is_valid()) {
-      const bool avx2_ok =
-          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-      heap.reset_pool(avx2_ok, capacity, entity_.max_degree());
+      heap.reset_pool(capacity, entity_.max_degree());
     } else {
       heap.reset<TopkHeap>(capacity);
     }

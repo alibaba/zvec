@@ -60,6 +60,39 @@ TEST(SearchHeap, PrepareTopkClearsContentsAndReusesStorage) {
   EXPECT_EQ(1U, topk.limit());
 }
 
+TEST(SearchHeap, AutoPoolSelectsCpuBackendAndResetsState) {
+  SearchHeap heap;
+  const bool use_block = ailego::internal::CpuFeatures::static_flags_.AVX2;
+  for (size_t capacity : {4U, 2U, 8U}) {
+    auto &topk = heap.reset<TopkHeap>(capacity);
+    EXPECT_TRUE(topk.empty());
+    topk.emplace(77, 0.5f);
+    for (int query = 0; query < 2; ++query) {
+      heap.reset_pool(capacity, 4);
+      heap.dispatch([&](auto &pool) {
+        using Heap = std::decay_t<decltype(pool)>;
+        EXPECT_EQ(use_block, (std::is_same_v<Heap, BlockHeap>));
+        EXPECT_EQ(!use_block, (std::is_same_v<Heap, LinearPool<float>>));
+        EXPECT_EQ(0U, pool.size());
+        if constexpr (!std::is_same_v<Heap, TopkHeap>) {
+          EXPECT_FALSE(pool.has_next());
+          const uint32_t ids[] = {30, 10, 20, 40};
+          const float distances[] = {3.0f, 1.0f, 2.0f, 4.0f};
+          pool.push_block(distances, ids, 4);
+          ASSERT_TRUE(pool.has_next());
+          EXPECT_EQ(10U, pool.pop());
+        }
+      });
+      heap.with_topk([&](TopkHeap &buffer) {
+        EXPECT_EQ(capacity, buffer.limit());
+        ASSERT_EQ(std::min(capacity, size_t{4}), buffer.size());
+        buffer.sort();
+        EXPECT_EQ(10U, buffer[0].first);
+      });
+    }
+  }
+}
+
 class SearchHeapPoolTest : public testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
@@ -72,8 +105,16 @@ class SearchHeapPoolTest : public testing::TestWithParam<bool> {
     heap_.limit(4);
   }
 
+  void ResetPool(size_t capacity) {
+    if (GetParam()) {
+      heap_.reset<BlockHeap>(capacity, 4);
+    } else {
+      heap_.reset<LinearPool<float>>(capacity, 4);
+    }
+  }
+
   void Fill(bool ties = false) {
-    heap_.reset_pool(GetParam(), 4, 4);
+    ResetPool(4);
     heap_.dispatch([&](auto &pool) {
       if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
         const uint32_t ids[] = {30, 10, 20, 40};
@@ -105,7 +146,7 @@ TEST_P(SearchHeapPoolTest, PreparationResetsStateBeforeDispatch) {
     EXPECT_EQ(capacity, topk.limit());
     topk.emplace(77, 0.5f);
     for (int query = 0; query < 2; ++query) {
-      heap_.reset_pool(GetParam(), capacity, 4);
+      ResetPool(capacity);
       CheckPool();
       heap_.dispatch([&](auto &pool) {
         EXPECT_EQ(0U, pool.size());

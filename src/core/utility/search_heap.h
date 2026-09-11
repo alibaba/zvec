@@ -18,6 +18,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <ailego/internal/cpu_features.h>
 #include <zvec/ailego/container/heap.h>
 #include "block_heap.h"
 #include "linear_pool.h"
@@ -64,9 +65,10 @@ class SearchHeap {
     return heap;
   }
 
-  // The caller must gate use_block on runtime AVX2 support on x86.
-  void reset_pool(bool use_block, size_t capacity, int32_t block_size) {
-    if (use_block) {
+  // The caller chooses the pool strategy; select its backend using the cached
+  // CPU flags. No CPU probing or backend selection occurs in the search loop.
+  ailego_force_inline void reset_pool(size_t capacity, int32_t block_size) {
+    if (ailego::internal::CpuFeatures::static_flags_.AVX2) {
       reset<BlockHeap>(capacity, block_size);
     } else {
       reset<LinearPool<float>>(capacity, block_size);
