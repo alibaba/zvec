@@ -453,15 +453,19 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
   std::vector<float> batch(32, 0.0f);
   batch[0] = 0.25f;
   batch[16] = 63.25f;
-  for (int mode : {0, 4, 0}) {
+  for (int mode : {0, 4, 7, 0}) {
     configure(context, 12, mode, false);
+    auto search_batch = [&](const float *queries, uint32_t count) {
+      if (mode == 7)
+        return streamer->search_bf_impl(queries, meta, count, context);
+      return streamer->search_impl(queries, meta, count, context);
+    };
     std::vector<core::IndexDocumentList> expected(2);
     for (size_t q = 0; q < 2; ++q) {
-      ASSERT_EQ(0,
-                streamer->search_impl(batch.data() + q * 16, meta, 1, context));
+      ASSERT_EQ(0, search_batch(batch.data() + q * 16, 1));
       expected[q] = context->result();
     }
-    ASSERT_EQ(0, streamer->search_impl(batch.data(), meta, 2, context));
+    ASSERT_EQ(0, search_batch(batch.data(), 2));
     for (size_t q = 0; q < 2; ++q) compare(expected[q], context->result(q));
   }
 
@@ -542,6 +546,32 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
               streamer->search_candidates_by_p_keys_impl(vector.data(), p_keys,
                                                          meta, keys, context));
     EXPECT_TRUE(keys.empty());
+
+    // Both explicit and automatic BF must export each query's grouped heaps
+    // before the next query clears them.
+    for (int mode : {4, 7}) {
+      configure(context, 4, mode, false);
+      auto search_batch = [&](const float *queries, uint32_t count) {
+        if (mode == 7)
+          return streamer->search_bf_impl(queries, meta, count, context);
+        return streamer->search_impl(queries, meta, count, context);
+      };
+      std::vector<core::IndexGroupDocumentList> expected(2);
+      for (size_t q = 0; q < 2; ++q) {
+        ASSERT_EQ(0, search_batch(batch.data() + q * 16, 1));
+        expected[q] = context->group_result();
+        ASSERT_EQ(2U, expected[q].size());
+      }
+      ASSERT_EQ(0, search_batch(batch.data(), 2));
+      for (size_t q = 0; q < 2; ++q) {
+        const auto &actual = context->group_result(q);
+        ASSERT_EQ(expected[q].size(), actual.size());
+        for (size_t group = 0; group < actual.size(); ++group) {
+          EXPECT_EQ(expected[q][group].group_id(), actual[group].group_id());
+          compare(expected[q][group].docs(), actual[group].docs());
+        }
+      }
+    }
   }
   context.reset();
   streamer.reset();

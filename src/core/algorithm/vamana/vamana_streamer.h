@@ -57,6 +57,8 @@ class VamanaStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
+  using IndexStreamer::search_bf_impl;
+
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
 
@@ -136,10 +138,9 @@ class VamanaStreamer : public IndexStreamer {
                             uint32_t count, Context::Pointer &context,
                             Collect &&collect) const;
 
-  template <typename Collect>
-  int search_bf_with_collector(const void *query, const IndexQueryMeta &qmeta,
-                               uint32_t count, Context::Pointer &context,
-                               Collect &&collect) const;
+  // Search one query using a prepared context. The caller exports the retained
+  // candidates before reusing the context for the next query.
+  int search_bf_impl(const void *query, VamanaContext *ctx) const;
 
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {

@@ -721,10 +721,8 @@ int VamanaStreamer::search_with_collector(const void *query,
     return IndexError_Cast;
   }
 
-  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
-    return search_bf_with_collector(query, qmeta, count, context,
-                                    std::forward<Collect>(collect));
-  }
+  const bool brute_force =
+      entity_->doc_cnt() <= ctx->get_bruteforce_threshold();
 
   if (ctx->magic() != magic_) {
     ret = update_context(ctx);
@@ -735,15 +733,22 @@ int VamanaStreamer::search_with_collector(const void *query,
   ctx->update_dist_calculator_distance(search_distance_,
                                        search_batch_distance_);
   ctx->resize_results(count);
-  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
-  ctx->prepare_query_prefetch();
+  if (!brute_force) {
+    ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+    ctx->prepare_query_prefetch();
+  }
 
   for (size_t q = 0; q < count; ++q) {
-    ctx->reset_query(query);
-    ret = alg_->search(ctx);
-    if (ailego_unlikely(ret != 0)) {
-      LOG_ERROR("Vamana search failed");
-      return ret;
+    if (brute_force) {
+      ret = search_bf_impl(query, ctx);
+      if (ailego_unlikely(ret != 0)) return ret;
+    } else {
+      ctx->reset_query(query);
+      ret = alg_->search(ctx);
+      if (ailego_unlikely(ret != 0)) {
+        LOG_ERROR("Vamana search failed");
+        return ret;
+      }
     }
     collect(ctx, static_cast<uint32_t>(q));
     query = static_cast<const char *>(query) + qmeta.element_size();
@@ -782,17 +787,6 @@ int VamanaStreamer::search_bf_impl(const void *query,
 int VamanaStreamer::search_bf_impl(const void *query,
                                    const IndexQueryMeta &qmeta, uint32_t count,
                                    Context::Pointer &context) const {
-  return search_bf_with_collector(
-      query, qmeta, count, context,
-      [](VamanaContext *ctx, uint32_t q) { ctx->topk_to_result(q); });
-}
-
-template <typename Collect>
-int VamanaStreamer::search_bf_with_collector(const void *query,
-                                             const IndexQueryMeta &qmeta,
-                                             uint32_t count,
-                                             Context::Pointer &context,
-                                             Collect &&collect) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
 
@@ -811,22 +805,30 @@ int VamanaStreamer::search_bf_with_collector(const void *query,
                                        search_batch_distance_);
   ctx->resize_results(count);
 
+  for (size_t q = 0; q < count; ++q) {
+    ret = search_bf_impl(query, ctx);
+    if (ailego_unlikely(ret != 0)) return ret;
+    ctx->topk_to_result(static_cast<uint32_t>(q));
+    query = static_cast<const char *>(query) + qmeta.element_size();
+  }
+
+  if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
+  return 0;
+}
+
+int VamanaStreamer::search_bf_impl(const void *query,
+                                   VamanaContext *ctx) const {
+  ctx->reset_query(query);
   const auto &filter = static_cast<IndexContext *>(ctx)->filter();
   auto &topk =
       ctx->search_heap().reset<TopkHeap>(std::max(ctx->topk(), ctx->ef()));
 
-  for (size_t q = 0; q < count; ++q) {
-    ctx->reset_query(query);
-    topk.clear();
-    for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
-      if (entity_->get_key(id) == kInvalidKey) continue;
-      if (!filter.is_valid() || !filter(entity_->get_key(id))) {
-        dist_t dist = ctx->dist_calculator().batch_dist(id);
-        topk.emplace(id, dist);
-      }
+  for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
+    if (entity_->get_key(id) == kInvalidKey) continue;
+    if (!filter.is_valid() || !filter(entity_->get_key(id))) {
+      dist_t dist = ctx->dist_calculator().batch_dist(id);
+      topk.emplace(id, dist);
     }
-    collect(ctx, static_cast<uint32_t>(q));
-    query = static_cast<const char *>(query) + qmeta.element_size();
   }
 
   if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
@@ -840,11 +842,30 @@ int VamanaStreamer::search_bf_candidates_impl(const void *query,
   keys.clear();
   if (!context) return IndexError_InvalidArgument;
   if (context->group_by().is_valid()) return IndexError_InvalidArgument;
-  const int ret = search_bf_with_collector(
-      query, qmeta, 1, context,
-      [&](VamanaContext *ctx, uint32_t) { ctx->topk_to_keys(keys); });
-  if (ret != 0) keys.clear();
-  return ret;
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) return ret;
+  auto *ctx = dynamic_cast<VamanaContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to VamanaContext failed");
+    return IndexError_Cast;
+  }
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) return ret;
+  }
+
+  ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
+  ctx->resize_results(1);
+  ret = search_bf_impl(query, ctx);
+  if (ailego_unlikely(ret != 0)) return ret;
+  ctx->topk_to_keys(keys);
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
+  return 0;
 }
 
 int VamanaStreamer::search_candidates_by_p_keys_impl(
