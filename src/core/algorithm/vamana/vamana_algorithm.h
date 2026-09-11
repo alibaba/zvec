@@ -83,18 +83,19 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   int refine_graph(VamanaContext *ctx, float alpha) override;
 
  private:
-  // Select and reset query state before executing the prepared search.
-  void prepare_search(VamanaContext *ctx) const;
+  // Dispatch an initialized SearchHeap; concrete heaps call greedy_search
+  // directly. The caller supplies the concrete visit filter view.
+  template <typename Visit>
+  void dispatch_greedy_search(node_id_t entry_point, VamanaContext *ctx,
+                              SearchHeap &target_heap, Visit visit) const;
 
   // GreedySearch: starting from entry_point, greedily expand the closest
   // unvisited candidate until the search list is exhausted or scan limit
-  // is reached. Dispatch concrete heap, visit and result-filter types before
-  // entering the search implementation.
-  int greedy_search(node_id_t entry_point, VamanaContext *ctx) const;
-
-  template <typename Heap, typename Visit, typename Filter>
-  void greedy_search_impl(node_id_t entry_point, VamanaContext *ctx, Heap &heap,
-                          Visit visit, Filter &&filter) const;
+  // is reached. Accept concrete heap/visit types, resolve the result filter
+  // and call the fast or dual-heap kernel without selecting or resetting heaps.
+  template <typename Heap, typename Visit>
+  void greedy_search(node_id_t entry_point, VamanaContext *ctx, Heap &heap,
+                     Visit visit) const;
 
   // RobustPrune: given a candidate set (topk_heap), select up to max_degree
   // diverse neighbors using alpha-based distance comparison.
