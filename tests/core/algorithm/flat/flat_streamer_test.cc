@@ -1487,43 +1487,85 @@ TEST_F(FlatStreamerTest, TestMaxIndexSize) {
 }
 
 TEST_F(FlatStreamerTest, TestCleanUp) {
-  IndexStreamer::Pointer streamer =
-      IndexFactory::CreateStreamer("FlatStreamer");
-  ASSERT_TRUE(streamer != nullptr);
+  for (bool use_quantizer : {false, true}) {
+    SCOPED_TRACE(use_quantizer);
+    const std::string suffix = use_quantizer ? "turbo" : "legacy";
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
 
-  auto storage1 = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_NE(nullptr, storage1);
-  Params stg_params;
-  ASSERT_EQ(0, storage1->init(stg_params));
-  ASSERT_EQ(0, storage1->open(dir_ + "TessKnnCluenUp1", true));
-  Params params;
-  constexpr size_t static dim1 = 32;
-  IndexMeta meta1(IndexMeta::DataType::DT_FP32, dim1);
-  meta1.set_metric("SquaredEuclidean", 0, Params());
-  NumericalVector<float> vec1(dim1);
-  ASSERT_EQ(0, streamer->init(meta1, params));
-  ASSERT_EQ(0, streamer->open(storage1));
-  IndexQueryMeta qmeta1(IndexMeta::DT_FP32, dim1);
-  auto ctx1 = streamer->create_context();
-  ASSERT_EQ(0, streamer->add_impl(1, vec1.data(), qmeta1, ctx1));
-  ASSERT_EQ(0, streamer->close());
-  ASSERT_EQ(0, streamer->cleanup());
+    auto storage1 = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage1);
+    ASSERT_EQ(0, storage1->init(Params()));
+    ASSERT_EQ(0, storage1->open(dir_ + "cleanup1_" + suffix, true));
+    constexpr size_t dim1 = 32;
+    IndexMeta meta1(IndexMeta::DT_FP32, dim1);
+    meta1.set_metric("SquaredEuclidean", 0, Params());
+    std::vector<float> vec1(dim1, 1.0f);
+    IndexQueryMeta qmeta1(IndexMeta::DT_FP32, dim1);
+    std::string encoded;
+    const void *data1 = vec1.data();
+    std::weak_ptr<zvec::turbo::Quantizer> weak_quantizer;
+    if (use_quantizer) {
+      auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+      ASSERT_NE(nullptr, quantizer);
+      ASSERT_EQ(0, quantizer->init(meta1, Params()));
+      IndexQueryMeta input_meta(IndexMeta::DT_FP32, dim1);
+      ASSERT_EQ(
+          0, quantizer->quantize(vec1.data(), input_meta, &encoded, &qmeta1));
+      data1 = encoded.data();
+      meta1 = quantizer->meta();
+      meta1.set_quantizer("Fp16Quantizer", 0, Params());
+      ASSERT_EQ(0, streamer->init(meta1, Params(), quantizer));
+      weak_quantizer = quantizer;
+    } else {
+      ASSERT_EQ(0, streamer->init(meta1, Params()));
+    }
+    ASSERT_EQ(0, streamer->open(storage1));
+    auto ctx1 = streamer->create_context();
+    ASSERT_NE(nullptr, ctx1);
+    ctx1->set_topk(1);
+    ASSERT_EQ(0, streamer->add_impl(1, data1, qmeta1, ctx1));
 
-  auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_NE(nullptr, storage2);
-  ASSERT_EQ(0, storage2->init(stg_params));
-  ASSERT_EQ(0, storage2->open(dir_ + "TessKnnCluenUp2", true));
-  constexpr size_t static dim2 = 64;
-  IndexMeta meta2(IndexMeta::DataType::DT_FP32, dim2);
-  meta2.set_metric("SquaredEuclidean", 0, Params());
-  NumericalVector<float> vec2(dim2);
-  ASSERT_EQ(0, streamer->init(meta2, params));
-  ASSERT_EQ(0, streamer->open(storage2));
-  IndexQueryMeta qmeta2(IndexMeta::DT_FP32, dim2);
-  auto ctx2 = streamer->create_context();
-  ASSERT_EQ(0, streamer->add_impl(2, vec2.data(), qmeta2, ctx2));
-  ASSERT_EQ(0, streamer->close());
-  ASSERT_EQ(0, streamer->cleanup());
+    // close/open keeps the encoding and the existing records usable.
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, streamer->open(storage1));
+    if (use_quantizer) EXPECT_FALSE(weak_quantizer.expired());
+    ASSERT_EQ(0, streamer->search_impl(data1, qmeta1, ctx1));
+    ASSERT_EQ(1u, ctx1->result().size());
+    EXPECT_EQ(1u, ctx1->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, ctx1->result()[0].score());
+
+    // Cover cleanup both after close and while the streamer is still open.
+    if (!use_quantizer) ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, streamer->cleanup());
+    // The test no longer owns the quantizer; neither the streamer nor its
+    // closed entity should keep it alive after cleanup.
+    EXPECT_TRUE(weak_quantizer.expired());
+
+    auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage2);
+    ASSERT_EQ(0, storage2->init(Params()));
+    ASSERT_EQ(0, storage2->open(dir_ + "cleanup2_" + suffix, true));
+    constexpr size_t dim2 = 64;
+    IndexMeta meta2(IndexMeta::DT_FP32, dim2);
+    meta2.set_metric("SquaredEuclidean", 0, Params());
+    std::vector<float> vec2(dim2, 0.0f), query2(dim2, 0.0f);
+    // The old 32-dimensional quantizer would miss this component entirely.
+    vec2.back() = 4.0f;
+    ASSERT_EQ(0, streamer->init(meta2, Params()));
+    ASSERT_EQ(0, streamer->open(storage2));
+    IndexQueryMeta qmeta2(IndexMeta::DT_FP32, dim2);
+    auto ctx2 = streamer->create_context();
+    ASSERT_NE(nullptr, ctx2);
+    ctx2->set_topk(1);
+    ASSERT_EQ(0, streamer->add_impl(2, vec2.data(), qmeta2, ctx2));
+    ASSERT_EQ(0, streamer->search_impl(query2.data(), qmeta2, ctx2));
+    ASSERT_EQ(1u, ctx2->result().size());
+    EXPECT_EQ(2u, ctx2->result()[0].key());
+    EXPECT_FLOAT_EQ(16.0f, ctx2->result()[0].score());
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, streamer->cleanup());
+  }
 }
 
 TEST_F(FlatStreamerTest, TestBloomFilter) {

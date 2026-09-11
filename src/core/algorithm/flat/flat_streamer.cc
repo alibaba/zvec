@@ -147,6 +147,9 @@ int FlatStreamer<BATCH_SIZE>::cleanup() {
     this->close();
   }
 
+  entity_.reset();
+  quantizer_.reset();
+
   LOG_DEBUG("FlatStreamer cleanup");
   state_ = STATE_INIT;
   return 0;
