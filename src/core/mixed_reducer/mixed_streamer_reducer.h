@@ -26,6 +26,7 @@
 namespace zvec {
 namespace core {
 
+class MergedProviderIndexHolder;
 
 class MixedStreamerReducer : public IndexStreamerReducer {
  public:
@@ -57,19 +58,17 @@ class MixedStreamerReducer : public IndexStreamerReducer {
       const IndexReformer::Pointer reformer) override;
 
  private:
+  int reduce_with_builder(const IndexFilter &filter);
   int read_vec(size_t source_streamer_index,
                const IndexProvider::Pointer &provider,
                const IndexFilter &filter, const uint32_t id_offset,
                uint32_t *next_id);
   void add_vec(int *result);
-  void add_vec_with_builder(int *result);
   int read_sparse_vec(size_t source_streamer_index, const IndexFilter &filter,
                       const uint32_t id_offset, uint32_t *next_id);
   void add_sparse_vec(int *result);
 
-  void PushToDocCache(const IndexQueryMeta &meta, uint32_t doc_id,
-                      std::string &doc);
-  int IndexBuild();
+  int IndexBuild(IndexHolder::Pointer target_holder);
 
   //! Retrieve statistics
   const Stats &stats(void) const override {
@@ -107,9 +106,7 @@ class MixedStreamerReducer : public IndexStreamerReducer {
 
   IndexBuilder::Pointer target_builder_{nullptr};
   IndexConverter::Pointer target_builder_converter_{nullptr};
-  std::mutex mutex_{};
-  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
-  const uint64_t kInvalidKey = std::numeric_limits<uint64_t>::max();
+  std::shared_ptr<MergedProviderIndexHolder> merged_holder_{};
 };
 
 }  // namespace core

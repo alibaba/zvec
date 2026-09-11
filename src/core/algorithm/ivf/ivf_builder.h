@@ -15,6 +15,7 @@
 
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_meta.h>
+#include "utility/ordinal_access_holder.h"
 #include "ivf_centroid_index.h"
 
 namespace zvec {
@@ -224,6 +225,9 @@ class IVFBuilder : public IndexBuilder {
   //! Dump the index to dumper
   int dump_index(const IndexDumper::Pointer &dumper);
 
+  //! Read one original vector; the returned data is consumed before next read.
+  int read_vector(size_t id, uint64_t *key, const void **data);
+
   //! Prepare the quantizer for inverted index
   int prepare_quantizer(IndexThreads *threads);
 
@@ -272,7 +276,7 @@ class IVFBuilder : public IndexBuilder {
 
  private:
   //! Constants
-  static constexpr size_t kThreadPoolQueueSize = 300u;
+  static constexpr size_t kLabelMemoryBudget = 4u * 1024u * 1024u;
   static constexpr size_t kBatchSize = 10u;
   static constexpr size_t kDefaultBlockCount = 32u;
 
@@ -294,6 +298,10 @@ class IVFBuilder : public IndexBuilder {
   IVFCentroidIndex::Pointer centroid_index_{};
   IVFCentroidIndex::Pointer searcher_centroid_index_{};
   RandomAccessIndexHolder::Pointer holder_{};
+  // Keep the immutable source alive through dump, including repeated dumps.
+  // The reader owns only a key map and at most one provider, never all vectors.
+  IndexHolder::Pointer source_holder_{};
+  OrdinalAccessHolder::Reader::Pointer source_reader_{};
   IndexMeta converted_meta_{};
   IndexConverter::Pointer converter_{};
   IndexMeta quantized_meta_{};
