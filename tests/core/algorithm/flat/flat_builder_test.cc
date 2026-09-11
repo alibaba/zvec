@@ -336,21 +336,27 @@ TEST_F(FlatBuilderTest, TestInt8WithColumnMajor) {
   ASSERT_EQ(0, builder->cleanup());
 }
 
-// Holder for turbo-quantized datapoints: rows hold the full encoded size
-// while the reported dimension stays the raw dimension.
-struct QuantizedHolder : public MultiPassIndexHolder<IndexMeta::DT_FP32> {
-  QuantizedHolder(size_t alloc_dim, size_t raw_dim)
-      : MultiPassIndexHolder<IndexMeta::DT_FP32>(alloc_dim),
-        raw_dim_(raw_dim) {}
+// Store complete encoded records, including packed INT4 codes and tails,
+// while reporting the encoding's datatype and logical dimension.
+struct QuantizedHolder : public MultiPassNumericalIndexHolder<uint8_t> {
+  explicit QuantizedHolder(const IndexMeta &meta)
+      : MultiPassNumericalIndexHolder<uint8_t>(meta.element_size()),
+        meta_(meta) {}
 
-  //! Retrieve dimension
   size_t dimension(void) const override {
-    return raw_dim_;
+    return meta_.dimension();
+  }
+
+  IndexMeta::DataType data_type(void) const override {
+    return meta_.data_type();
   }
 
  private:
-  size_t raw_dim_{0};
+  IndexMeta meta_;
 };
+
+static const char *const kTurboQuantizers[] = {
+    "Fp32Quantizer", "Fp16Quantizer", "Int8Quantizer", "Int4Quantizer"};
 
 static std::vector<std::vector<float>> RandomData(size_t count, size_t dim) {
   std::mt19937 gen(2026);
@@ -383,24 +389,24 @@ static void BuildIndex(const IndexMeta &meta, IndexHolder::Pointer holder,
 static void BuildQuantizedIndex(const std::string &metric_name,
                                 const std::vector<std::vector<float>> &data,
                                 size_t dim, const std::string &path,
-                                std::shared_ptr<zvec::turbo::Quantizer> *out) {
+                                std::shared_ptr<zvec::turbo::Quantizer> *out,
+                                const char *quantizer_name = "Fp32Quantizer") {
   IndexMeta raw_meta;
   raw_meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
   raw_meta.set_metric(metric_name, 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  auto quantizer = IndexFactory::CreateQuantizer(quantizer_name);
   ASSERT_NE(nullptr, quantizer);
   ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
 
   IndexMeta meta = quantizer->meta();
   size_t code_bytes = quantizer->quantized_datapoint_vector_length();
   ASSERT_EQ(code_bytes, meta.element_size());
-  uint32_t alloc_dim = static_cast<uint32_t>(code_bytes / meta.unit_size());
-  meta.set_quantizer("Fp32Quantizer", 0, Params());
+  meta.set_quantizer(quantizer_name, 0, Params());
   meta.set_major_order(IndexMeta::MO_ROW);
 
-  auto holder = std::make_shared<QuantizedHolder>(alloc_dim, dim);
-  NumericalVector<float> vec(alloc_dim);
+  auto holder = std::make_shared<QuantizedHolder>(meta);
+  NumericalVector<uint8_t> vec(code_bytes);
   for (size_t i = 0; i < data.size(); ++i) {
     quantizer->quantize_data(data[i].data(), &vec[0]);
     ASSERT_TRUE(holder->emplace(i, vec));
@@ -448,28 +454,47 @@ static void LoadIndex(const std::string &path,
 }
 
 TEST_F(FlatBuilderTest, TestInitWithTurboQuantizer) {
-  IndexMeta raw_meta;
-  raw_meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
-  raw_meta.set_metric("SquaredEuclidean", 0, Params());
+  constexpr size_t dim = 34;  // Even for packed INT4, with a SIMD tail.
+  for (const char *name : kTurboQuantizers) {
+    for (const char *metric : {"SquaredEuclidean", "Cosine"}) {
+      SCOPED_TRACE(testing::Message() << name << "/" << metric);
+      IndexMeta raw_meta(IndexMeta::DT_FP32, dim);
+      raw_meta.set_metric(metric, 0, Params());
+      auto quantizer = IndexFactory::CreateQuantizer(name);
+      ASSERT_NE(nullptr, quantizer);
+      ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+      IndexMeta meta = quantizer->meta();
+      meta.set_quantizer(name, 0, Params());
+      auto builder = IndexFactory::CreateBuilder("FlatBuilder");
+      ASSERT_NE(nullptr, builder);
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
-  ASSERT_NE(nullptr, quantizer);
-  ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+      meta.set_major_order(IndexMeta::MO_COLUMN);
+      EXPECT_EQ(IndexError_Unsupported,
+                builder->init(meta, Params(), quantizer));
+      meta.set_major_order(IndexMeta::MO_ROW);
+      Params column_params;
+      column_params.set(PARAM_FLAT_COLUMN_MAJOR_ORDER, true);
+      EXPECT_EQ(IndexError_Unsupported,
+                builder->init(meta, column_params, quantizer));
+      EXPECT_EQ(0, builder->init(meta, Params(), quantizer));
+      meta.set_major_order(IndexMeta::MO_UNDEFINED);
+      EXPECT_EQ(0, builder->init(meta, Params(), quantizer));
 
-  IndexMeta meta = quantizer->meta();
-  meta.set_quantizer("Fp32Quantizer", 0, Params());
-
-  // Quantizer distance requires the row major layout
-  meta.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(IndexError_Unsupported, builder->init(meta, params, quantizer));
-
-  meta.set_major_order(IndexMeta::MO_ROW);
-  builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  ASSERT_EQ(0, builder->init(meta, params, quantizer));
+      // A null quantizer must still follow legacy metric validation.
+      EXPECT_EQ(0, builder->init(raw_meta, Params(), nullptr));
+      if (std::string(metric) == "Cosine" &&
+          (meta.data_type() == IndexMeta::DT_INT8 ||
+           meta.data_type() == IndexMeta::DT_INT4)) {
+        EXPECT_EQ(IndexError_InvalidArgument, builder->init(meta, Params()));
+        EXPECT_EQ(IndexError_InvalidArgument,
+                  builder->init(meta, Params(), nullptr));
+      }
+      raw_meta.set_metric("UnknownFlatMetric", 0, Params());
+      EXPECT_EQ(IndexError_InvalidArgument, builder->init(raw_meta, Params()));
+      EXPECT_EQ(IndexError_InvalidArgument,
+                builder->init(raw_meta, Params(), nullptr));
+    }
+  }
 }
 
 // Under SquaredEuclidean the FP32 quantizer is an identity transform, so
@@ -559,55 +584,122 @@ TEST_F(FlatBuilderTest, TestTurboQuantizerMatchPlainSearcher) {
   }
 }
 
-// Under Cosine the FP32 quantizer normalizes the datapoints and appends
-// the norm as a record tail; the searcher scores must match the quantizer.
-TEST_F(FlatBuilderTest, TestTurboQuantizerCosineDistance) {
-  const size_t dim = 24;
-  const size_t doc_count = 500;
-  const uint32_t topk = 10;
+// Both record tails and packed codes must survive build/dump/load, and every
+// search entry point must use the supplied quantizer rather than a metric.
+TEST_F(FlatBuilderTest, TestTurboQuantizerDistance) {
+  constexpr size_t dim = 34;
+  constexpr size_t doc_count = 67;  // Two full row batches plus a tail.
+  constexpr uint32_t topk = 7;
+  constexpr uint32_t query_count = 3;
   auto data = RandomData(doc_count, dim);
-
-  std::shared_ptr<zvec::turbo::Quantizer> quantizer;
-  BuildQuantizedIndex("Cosine", data, dim, dir_ + "cosine.index", &quantizer);
-
-  IndexSearcher::Pointer searcher;
-  LoadQuantizedIndex(dir_ + "cosine.index", quantizer, searcher);
-
-  auto context = searcher->create_context();
-  context->set_topk(topk);
-
-  // Quantize the datapoints once for the reference distances
-  size_t code_bytes = quantizer->quantized_datapoint_vector_length();
-  std::vector<std::string> codes(doc_count);
+  auto queries = RandomData(query_count, dim);
+  std::vector<uint64_t> all_keys(doc_count);
+  std::vector<std::vector<uint64_t>> restricted_keys(query_count);
   for (size_t i = 0; i < doc_count; ++i) {
-    codes[i].resize(code_bytes);
-    quantizer->quantize_data(data[i].data(), &codes[i][0]);
+    all_keys[i] = i;
+    restricted_keys[i % query_count].push_back(i);
   }
 
-  auto queries = RandomData(5, dim);
-  for (const auto &query : queries) {
-    IndexQueryMeta raw_qmeta(IndexMeta::DT_FP32, dim);
-    std::string quantized;
-    IndexQueryMeta turbo_qmeta;
-    ASSERT_EQ(0, quantizer->quantize(query.data(), raw_qmeta, &quantized,
-                                     &turbo_qmeta));
-    ASSERT_EQ(0, searcher->search_impl(quantized.data(), turbo_qmeta, context));
+  for (const char *name : kTurboQuantizers) {
+    for (const char *metric : {"SquaredEuclidean", "Cosine"}) {
+      SCOPED_TRACE(testing::Message() << name << "/" << metric);
+      const std::string path = dir_ + name + "_" + metric + ".index";
+      std::shared_ptr<zvec::turbo::Quantizer> quantizer;
+      ASSERT_NO_FATAL_FAILURE(
+          BuildQuantizedIndex(metric, data, dim, path, &quantizer, name));
+      ASSERT_NE(nullptr, quantizer);
+      IndexSearcher::Pointer searcher;
+      ASSERT_NO_FATAL_FAILURE(LoadQuantizedIndex(path, quantizer, searcher));
+      EXPECT_EQ(name, searcher->meta().quantizer_name());
+      EXPECT_EQ(quantizer->meta().data_type(), searcher->meta().data_type());
+      EXPECT_EQ(quantizer->meta().element_size(),
+                searcher->meta().element_size());
+      EXPECT_EQ(IndexMeta::MO_ROW, searcher->meta().major_order());
+      auto context = searcher->create_context();
+      ASSERT_NE(nullptr, context);
+      context->set_topk(topk);
 
-    // Reference topk with the quantizer scalar distance
-    std::vector<std::pair<float, uint64_t>> ref(doc_count);
-    for (size_t i = 0; i < doc_count; ++i) {
-      ref[i] = {
-          quantizer->calc_distance_dp_query(codes[i].data(), quantized.data()),
-          i};
-    }
-    std::partial_sort(ref.begin(), ref.begin() + topk, ref.end());
+      std::vector<std::string> codes(doc_count);
+      for (size_t i = 0; i < doc_count; ++i) {
+        codes[i].resize(quantizer->quantized_datapoint_vector_length());
+        quantizer->quantize_data(data[i].data(), codes[i].data());
+      }
+      std::vector<std::string> query_codes(query_count);
+      std::string batch_queries;
+      IndexQueryMeta query_meta;
+      std::vector<std::vector<float>> scores(query_count,
+                                             std::vector<float>(doc_count));
+      for (size_t q = 0; q < query_count; ++q) {
+        ASSERT_EQ(0,
+                  quantizer->quantize(queries[q].data(),
+                                      IndexQueryMeta(IndexMeta::DT_FP32, dim),
+                                      &query_codes[q], &query_meta));
+        ASSERT_EQ(quantizer->quantized_query_vector_length(),
+                  query_meta.element_size());
+        ASSERT_EQ(query_meta.element_size(), query_codes[q].size());
+        batch_queries.append(query_codes[q]);
+        for (size_t i = 0; i < doc_count; ++i) {
+          scores[q][i] = quantizer->calc_distance_dp_query(
+              codes[i].data(), query_codes[q].data());
+        }
+      }
 
-    auto &actual = context->result();
-    ASSERT_EQ(topk, actual.size());
-    for (size_t i = 0; i < topk; ++i) {
-      EXPECT_EQ(ref[i].second, actual[i].key());
-      EXPECT_NEAR(ref[i].first, actual[i].score(),
-                  1e-4f * std::fabs(ref[i].first) + 1e-5f);
+      // Filtered scans exercise scalar distances; unfiltered scans use SIMD
+      // row batches. Allow equivalent neighbours at a numerical tie boundary.
+      for (bool filtered : {false, true}) {
+        SCOPED_TRACE(filtered);
+        if (filtered) {
+          context->set_filter([](uint64_t key) { return key % 2 == 0; });
+        } else {
+          context->reset_filter();
+        }
+        auto check_result = [&](const IndexDocumentList &actual, size_t q,
+                                const std::vector<uint64_t> &keys) {
+          std::vector<std::pair<float, uint64_t>> expected;
+          std::vector<bool> allowed(doc_count, false), seen(doc_count, false);
+          for (uint64_t key : keys) {
+            if (!filtered || key % 2 != 0) {
+              expected.emplace_back(scores[q][key], key);
+              allowed[key] = true;
+            }
+          }
+          ASSERT_GE(expected.size(), topk);
+          std::partial_sort(expected.begin(), expected.begin() + topk,
+                            expected.end());
+          ASSERT_EQ(topk, actual.size());
+          for (size_t i = 0; i < topk; ++i) {
+            const uint64_t key = actual[i].key();
+            ASSERT_LT(key, doc_count);
+            EXPECT_TRUE(allowed[key]);
+            EXPECT_FALSE(seen[key]);
+            seen[key] = true;
+            // FP16 SIMD kernels may accumulate at half precision.
+            const float relative =
+                std::string(name) == "Fp16Quantizer" ? 5e-3f : 1e-4f;
+            const float tolerance =
+                relative * std::max(1.0f, std::fabs(expected[i].first));
+            EXPECT_NEAR(expected[i].first, scores[q][key], tolerance);
+            EXPECT_NEAR(scores[q][key], actual[i].score(), tolerance);
+          }
+        };
+
+        for (size_t q = 0; q < query_count; ++q) {
+          ASSERT_EQ(0, searcher->search_impl(query_codes[q].data(), query_meta,
+                                             context));
+          check_result(context->result(), q, all_keys);
+        }
+        ASSERT_EQ(0, searcher->search_impl(batch_queries.data(), query_meta,
+                                           query_count, context));
+        for (size_t q = 0; q < query_count; ++q) {
+          check_result(context->result(q), q, all_keys);
+        }
+        ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(
+                         batch_queries.data(), restricted_keys, query_meta,
+                         query_count, context));
+        for (size_t q = 0; q < query_count; ++q) {
+          check_result(context->result(q), q, restricted_keys[q]);
+        }
+      }
     }
   }
 }

@@ -98,6 +98,9 @@ class FlatBuilder : public IndexBuilder {
   int write_row_index(IndexDumper *dumper, std::vector<uint64_t> *keys);
 
  private:
+  int init_impl(const IndexMeta &meta, const ailego::Params &params,
+                bool verify_metric);
+
   IndexMeta meta_{};
   IndexBuilder::Stats stats_{};
   IndexHolder::Pointer holder_{};

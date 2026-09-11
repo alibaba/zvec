@@ -21,6 +21,13 @@ namespace core {
 template <size_t BATCH_SIZE>
 int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
                                   const ailego::Params &params) {
+  return this->init_impl(meta, params, true);
+}
+
+template <size_t BATCH_SIZE>
+int FlatBuilder<BATCH_SIZE>::init_impl(const IndexMeta &meta,
+                                       const ailego::Params &params,
+                                       bool verify_metric) {
   meta_ = meta;
 
   // Set the major order
@@ -64,7 +71,7 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
     }
   }
 
-  if (!VerifyMetric(meta_)) {
+  if (verify_metric && !VerifyMetric(meta_)) {
     LOG_ERROR("Invalid index measure %s.", meta_.metric_name().c_str());
     return IndexError_InvalidArgument;
   }
@@ -94,12 +101,9 @@ int FlatBuilder<BATCH_SIZE>::init(
     return IndexError_Unsupported;
   }
 
-  int error_code = this->init(meta, params);
-  if (error_code != 0) {
-    return error_code;
-  }
-  meta_.set_major_order(IndexMeta::MO_ROW);
-  return 0;
+  IndexMeta row_meta = meta;
+  row_meta.set_major_order(IndexMeta::MO_ROW);
+  return this->init_impl(row_meta, params, false);
 }
 
 template <size_t BATCH_SIZE>

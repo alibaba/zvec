@@ -80,26 +80,6 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     return error_code;
   }
 
-  if (!measure) {
-    error_code = InitializeMetric(meta_, &measure_);
-    if (error_code != 0) {
-      LOG_ERROR("Failed to initialize index measure %s, error=%d, %s",
-                meta_.metric_name().c_str(), error_code,
-                IndexError::What(error_code));
-      return error_code;
-    }
-    if (measure_->query_metric()) {
-      measure_ = measure_->query_metric();
-    }
-  } else {
-    if (!measure->is_matched(meta_)) {
-      LOG_ERROR(
-          "The index measure is unmatched with index meta from container.");
-      return IndexError_Mismatch;
-    }
-    measure_ = std::move(measure);
-  }
-
   column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
 
   if (quantizer_) {
@@ -107,7 +87,27 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
       LOG_ERROR("Quantizer distance does not support column index.");
       return IndexError_Unsupported;
     }
+    measure_.reset();
   } else {
+    if (!measure) {
+      error_code = InitializeMetric(meta_, &measure_);
+      if (error_code != 0) {
+        LOG_ERROR("Failed to initialize index measure %s, error=%d, %s",
+                  meta_.metric_name().c_str(), error_code,
+                  IndexError::What(error_code));
+        return error_code;
+      }
+      if (measure_->query_metric()) {
+        measure_ = measure_->query_metric();
+      }
+    } else {
+      if (!measure->is_matched(meta_)) {
+        LOG_ERROR(
+            "The index measure is unmatched with index meta from container.");
+        return IndexError_Mismatch;
+      }
+      measure_ = std::move(measure);
+    }
     distance_matrix_.initialize(*measure_);
 
     if (column_major_order_) {
@@ -171,7 +171,7 @@ int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
                                           const IndexQueryMeta &qmeta,
                                           Context::Pointer &context) const {
   ailego_assert(query && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  ailego_assert(quantizer_ || measure_->is_matched(meta_, qmeta));
 
   FlatSearcherContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatSearcherContext<BATCH_SIZE> *>(context.get());
@@ -197,7 +197,7 @@ int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
                                           uint32_t count,
                                           Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  ailego_assert(quantizer_ || measure_->is_matched(meta_, qmeta));
 
   FlatSearcherContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatSearcherContext<BATCH_SIZE> *>(context.get());
@@ -224,7 +224,7 @@ int FlatSearcher<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  ailego_assert(quantizer_ || measure_->is_matched(meta_, qmeta));
 
   if (ailego_unlikely(p_keys.size() != count)) {
     LOG_ERROR("The size of p_keys is not equal to count");
