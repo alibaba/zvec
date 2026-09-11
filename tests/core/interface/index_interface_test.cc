@@ -1582,6 +1582,20 @@ TEST(IndexInterface, HnswNativeRefineMatchesExplicitCandidates) {
         }
         EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
       }
+      const VectorData query{DenseVector{vectors[7].data()}};
+      for (float invalid :
+           {-1.0f, (std::numeric_limits<float>::infinity)(),
+            std::numeric_limits<float>::quiet_NaN(),
+            (std::numeric_limits<float>::max)(),
+            static_cast<float>((std::numeric_limits<int>::max)())}) {
+        SCOPED_TRACE(invalid);
+        refiner->scale_factor_ = invalid;
+        EXPECT_EQ(int(zvec::core::IndexError_InvalidArgument),
+                  coarse->search(query, refine_param, &actual));
+      }
+      refiner->scale_factor_ = float(kCandidates) / kTopk;
+      ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+      EXPECT_EQ(kTopk, actual.doc_list_.size());
       ASSERT_EQ(0, fine->close());
       zvec::test_util::RemoveTestFiles(fine_path);
     }

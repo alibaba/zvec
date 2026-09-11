@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
@@ -606,7 +608,12 @@ int Index::search(const VectorData &vector_data,
       return core::IndexError_Runtime;
     }
 
-    context->set_topk(_get_coarse_search_topk(search_param));
+    const int coarse_topk = _get_coarse_search_topk(search_param);
+    if (coarse_topk < 0) {
+      context->reset();
+      return coarse_topk;
+    }
+    context->set_topk(coarse_topk);
     context->set_fetch_vector(false);  // no need to fetch vector
     std::string transformed_vector;
     const void *query = nullptr;
@@ -1187,7 +1194,14 @@ int Index::_get_coarse_search_topk(
   if (scale_factor == 0) {
     scale_factor = 1;
   }
-  return floor(search_param->topk * scale_factor);
+  const float count = std::floor(search_param->topk * scale_factor);
+  if (!std::isfinite(scale_factor) || scale_factor < 0 ||
+      !std::isfinite(count) ||
+      static_cast<double>(count) > (std::numeric_limits<int>::max)()) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
+  return static_cast<int>(count);
 }
 
 // Set or clear group-by state on a pooled context before each search.
