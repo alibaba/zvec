@@ -69,7 +69,9 @@ class VamanaStreamer : public IndexStreamer {
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta,
-                               ContextPointer &context) const override;
+                               ContextPointer &context) const override {
+    return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
+  }
 
   // Search p_keys[q] and export results for each query.
   int search_bf_by_p_keys_impl(const void *query,
@@ -135,11 +137,6 @@ class VamanaStreamer : public IndexStreamer {
   int scan_bf_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
                         const IndexQueryMeta &qmeta,
                         Context::Pointer &context) const;
-
-  template <typename Collect>
-  int search_with_collector(const void *query, const IndexQueryMeta &qmeta,
-                            uint32_t count, Context::Pointer &context,
-                            Collect &&collect) const;
 
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {

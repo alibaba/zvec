@@ -416,6 +416,9 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
         } else if (mode == 7) {
           ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, context));
           compare(expected, context->result());
+        } else {
+          ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, context));
+          compare(expected, context->result());
         }
         for (const auto &doc : context->result()) {
           EXPECT_EQ(fetch_vector, doc.vector() != nullptr);

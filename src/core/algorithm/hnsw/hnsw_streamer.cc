@@ -785,33 +785,6 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                               uint32_t count,
                               IndexStreamer::Context::Pointer &context) const {
-  return search_with_collector(
-      query, qmeta, count, context,
-      [](HnswContext *ctx, uint32_t q) { ctx->topk_to_result(q); });
-}
-
-int HnswStreamer::search_candidates_impl(const void *query,
-                                         const IndexQueryMeta &qmeta,
-                                         std::vector<uint64_t> &keys,
-                                         Context::Pointer &context) const {
-  keys.clear();
-  if (!context) return IndexError_InvalidArgument;
-  if (auto *ctx = dynamic_cast<HnswContext *>(context.get());
-      ctx && ctx->group_by_search())
-    return IndexError_InvalidArgument;
-  const int ret = search_with_collector(
-      query, qmeta, 1, context,
-      [&](HnswContext *ctx, uint32_t) { ctx->topk_to_keys(keys); });
-  if (ret != 0) keys.clear();
-  return ret;
-}
-
-template <typename Collect>
-int HnswStreamer::search_with_collector(const void *query,
-                                        const IndexQueryMeta &qmeta,
-                                        uint32_t count,
-                                        Context::Pointer &context,
-                                        Collect &&collect) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -850,7 +823,7 @@ int HnswStreamer::search_with_collector(const void *query,
         return ret;
       }
     }
-    collect(ctx, static_cast<uint32_t>(q));
+    ctx->topk_to_result(static_cast<uint32_t>(q));
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
 
@@ -858,6 +831,51 @@ int HnswStreamer::search_with_collector(const void *query,
     return IndexError_Runtime;
   }
 
+  return 0;
+}
+
+int HnswStreamer::search_candidates_impl(const void *query,
+                                         const IndexQueryMeta &qmeta,
+                                         std::vector<uint64_t> &keys,
+                                         Context::Pointer &context) const {
+  keys.clear();
+  if (!context) return IndexError_InvalidArgument;
+  auto *ctx = dynamic_cast<HnswContext *>(context.get());
+  if (ctx && ctx->group_by_search()) return IndexError_InvalidArgument;
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) return ret;
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to HnswContext failed");
+    return IndexError_Cast;
+  }
+
+  const bool brute_force =
+      entity_->doc_cnt() <= ctx->get_bruteforce_threshold();
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) return ret;
+  }
+
+  ctx->clear();
+  bind_search_dist_space(ctx);
+  ctx->resize_results(1);
+  if (brute_force) {
+    ret = scan_bf(query, qmeta, context);
+    if (ailego_unlikely(ret != 0)) return ret;
+  } else {
+    ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+    ctx->reset_query(query, meta_);
+    ret = alg_->search(ctx);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Hnsw searcher fast search failed");
+      return ret;
+    }
+  }
+  ctx->topk_to_keys(keys);
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
   return 0;
 }
 
@@ -1044,12 +1062,6 @@ int HnswStreamer::search_candidates_by_p_keys_impl(
     return IndexError_Runtime;
   }
   return 0;
-}
-
-int HnswStreamer::search_bf_by_p_keys_impl(
-    const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-    const IndexQueryMeta &qmeta, Context::Pointer &context) const {
-  return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
 }
 
 int HnswStreamer::search_bf_by_p_keys_impl(
