@@ -816,7 +816,20 @@ int Index::_execute_dense_search(
     const BaseIndexQueryParam::Pointer &search_param,
     core::IndexContext::Pointer &context,
     std::vector<uint64_t> *candidate_keys) {
-  if (candidate_keys) candidate_keys->clear();
+  if (candidate_keys) {
+    candidate_keys->clear();
+    if (search_param->bf_pks != nullptr) {
+      return streamer_->search_candidates_by_p_keys_impl(
+          vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
+          new_meta, *candidate_keys, context);
+    }
+    if (search_param->is_linear) {
+      return streamer_->search_bf_candidates_impl(vector, new_meta,
+                                                  *candidate_keys, context);
+    }
+    return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
+                                             context);
+  }
   if (search_param->bf_pks != nullptr) {
     if (streamer_->search_bf_by_p_keys_impl(
             vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
@@ -829,9 +842,6 @@ int Index::_execute_dense_search(
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
-  } else if (candidate_keys) {
-    return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
-                                             context);
   } else {
     if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
       LOG_ERROR("Failed to search vector");
@@ -839,13 +849,6 @@ int Index::_execute_dense_search(
     }
   }
 
-  if (candidate_keys) {
-    const auto &documents = context->result();
-    candidate_keys->reserve(documents.size());
-    for (const auto &document : documents) {
-      candidate_keys->push_back(document.key());
-    }
-  }
   return 0;
 }
 

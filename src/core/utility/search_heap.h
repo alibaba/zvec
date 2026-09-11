@@ -80,6 +80,12 @@ class SearchHeap {
     if (auto *heap = std::get_if<TopkHeap>(&heap_)) apply_limit(*heap);
   }
 
+  size_t size() const {
+    return std::visit(
+        [](const auto &heap) { return static_cast<size_t>(heap.size()); },
+        heap_);
+  }
+
   // Invalidate the previous query's contents without discarding its capacity.
   void clear() {
     dispatch([&](auto &heap) {
@@ -101,20 +107,44 @@ class SearchHeap {
     std::visit(std::forward<Fn>(fn), heap_);
   }
 
-  // Document output and group-by need the legacy heap ordering. Pool conversion
-  // uses private, reusable scratch and never replaces the active search pool.
+  // Visit retained candidates without changing their order (e.g. group-by).
+  // Returning false stops iteration. IDs never include pool traversal bits.
   template <typename Fn>
-  void with_topk(Fn &&fn) {
-    dispatch([&](auto &heap) { with_topk(heap, std::forward<Fn>(fn)); });
+  void for_each(Fn &&fn) {
+    dispatch([&](const auto &heap) { visit(heap, limit_, fn); });
   }
 
-  // For an explicit operation that changes the search distances themselves,
-  // unlike temporary result export. This intentionally replaces the pool.
-  TopkHeap &materialize_topk() {
-    if (auto *heap = std::get_if<TopkHeap>(&heap_)) return *heap;
-    with_topk([](TopkHeap &) {});
-    heap_.emplace<TopkHeap>(std::move(fallback_));
-    return topk();
+  // Terminal result export: sort TopkHeap in place, or read the pool's existing
+  // ascending order. Reset before inserting into a sorted TopkHeap again.
+  // Pools keep their existing tie order; TopkHeap uses its usual sort.
+  template <typename Fn>
+  void for_each_sorted(size_t count, Fn &&fn) {
+    if (count == 0) return;
+    dispatch([&](auto &heap) {
+      using Heap = std::decay_t<decltype(heap)>;
+      if constexpr (std::is_same_v<Heap, TopkHeap>) heap.sort();
+      visit(heap, (std::min)(count, limit_), fn);
+    });
+  }
+
+  // Concrete-container helpers for optional result padding. These are used
+  // inside one dispatch, not through per-candidate runtime type checks.
+  template <typename Heap>
+  static size_t capacity(const Heap &heap) {
+    if constexpr (std::is_same_v<Heap, TopkHeap>) {
+      return heap.limit();
+    } else {
+      return static_cast<size_t>(heap.capacity());
+    }
+  }
+
+  template <typename Heap>
+  static void emplace(Heap &heap, uint32_t id, float distance) {
+    if constexpr (std::is_same_v<Heap, TopkHeap>) {
+      heap.emplace(id, distance);
+    } else {
+      heap.push_block(&distance, &id, 1);
+    }
   }
 
  private:
@@ -127,21 +157,20 @@ class SearchHeap {
   }
 
   template <typename Heap, typename Fn>
-  void with_topk(Heap &heap, Fn &&fn) {
-    if constexpr (std::is_same_v<Heap, TopkHeap>) {
-      std::forward<Fn>(fn)(heap);
-    } else {
-      fallback_.clear();
-      apply_limit(fallback_);
-      copy_pool_to_topk(heap, fallback_);
-      std::forward<Fn>(fn)(fallback_);
+  static void visit(const Heap &heap, size_t count, Fn &&fn) {
+    count = (std::min)(count, static_cast<size_t>(heap.size()));
+    for (size_t i = 0; i < count; ++i) {
+      if constexpr (std::is_same_v<Heap, TopkHeap>) {
+        if (!fn(heap[i].first, heap[i].second)) break;
+      } else {
+        if (!fn(heap.id(static_cast<int32_t>(i)),
+                heap.dist(static_cast<int32_t>(i))))
+          break;
+      }
     }
   }
 
   std::variant<TopkHeap, LinearPool<float>, BlockHeap> heap_;
-  // Scratch is valid only during with_topk, not an independent
-  // search result. Its vector allocates only when heap fallback is needed.
-  TopkHeap fallback_;
   size_t limit_{std::numeric_limits<size_t>::max()};
 };
 

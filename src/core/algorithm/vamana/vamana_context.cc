@@ -197,51 +197,45 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
 }
 
 void VamanaContext::topk_to_result(uint32_t idx) {
-  search_heap_.with_topk(
-      [&](TopkHeap &heap) { collect_topk_result(heap, idx); });
-}
-
-void VamanaContext::collect_topk_result(TopkHeap &heap, uint32_t idx) {
-  if (force_padding_topk_ && !heap.full() && heap.size() < entity_->doc_cnt()) {
-    this->fill_random_to_topk_full(heap);
-  }
-  if (ailego_unlikely(heap.size() == 0)) {
-    return;
-  }
-
   ailego_assert_with(idx < results_.size(), "invalid idx");
-  int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
-  heap.sort();
   results_[idx].clear();
-
-  for (int i = 0; i < size; ++i) {
-    auto score = heap[i].second;
-    if (score > this->threshold()) {
-      break;
-    }
-    node_id_t id = heap[i].first;
+  collect_search_result([&](node_id_t id, dist_t score) {
     if (fetch_vector_) {
       results_[idx].emplace_back(entity_->get_key(id), score, id,
                                  entity_->get_vector(id));
     } else {
       results_[idx].emplace_back(entity_->get_key(id), score, id);
     }
-  }
+  });
 }
 
-void VamanaContext::fill_random_to_topk_full(TopkHeap &heap) {
-  std::mt19937 rng(42);
-  uint32_t doc_cnt = entity_->doc_cnt();
-  uint32_t max_attempts = doc_cnt * 2;
-  uint32_t attempts = 0;
-  while (!heap.full() && doc_cnt > 0 && attempts < max_attempts) {
-    node_id_t random_id = rng() % doc_cnt;
-    if (entity_->get_key(random_id) != kInvalidKey) {
-      dist_t random_dist = dc_.dist(random_id);
-      heap.emplace(random_id, random_dist);
+void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys) {
+  keys.clear();
+  keys.reserve((std::min)(static_cast<size_t>(topk_), search_heap_.size()));
+  collect_search_result(
+      [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+}
+
+void VamanaContext::fill_random_to_topk_full() {
+  search_heap_.dispatch([&](auto &heap) {
+    const size_t capacity = SearchHeap::capacity(heap);
+    if (static_cast<size_t>(heap.size()) >= capacity ||
+        static_cast<size_t>(heap.size()) >= entity_->doc_cnt())
+      return;
+    std::mt19937 rng(42);
+    uint32_t doc_cnt = entity_->doc_cnt();
+    uint32_t max_attempts = doc_cnt * 2;
+    uint32_t attempts = 0;
+    while (static_cast<size_t>(heap.size()) < capacity && doc_cnt > 0 &&
+           attempts < max_attempts) {
+      node_id_t random_id = rng() % doc_cnt;
+      if (entity_->get_key(random_id) != kInvalidKey) {
+        dist_t random_dist = dc_.dist(random_id);
+        SearchHeap::emplace(heap, random_id, random_dist);
+      }
+      ++attempts;
     }
-    ++attempts;
-  }
+  });
 }
 
 }  // namespace core

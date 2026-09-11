@@ -272,38 +272,45 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
   return 0;
 }
 
-void HnswContext::fill_random_to_topk_full(TopkHeap &heap) {
+void HnswContext::fill_random_to_topk_full() {
   static std::mt19937 mt(
       std::chrono::system_clock::now().time_since_epoch().count());
-  std::uniform_int_distribution<node_id_t> dt(0, entity_->doc_cnt() - 1);
-  std::function<node_id_t()> gen;
-  node_id_t seqid;
-  std::function<bool(node_id_t)> myfilter = [](node_id_t) { return false; };
-  if (this->filter().is_valid()) {
-    myfilter = [&](node_id_t id) {
-      return this->filter()(entity_->get_key(id));
-    };
-  }
-
-  if (heap.limit() < entity_->doc_cnt() / 2) {
-    gen = [&](void) { return dt(mt); };
-  } else {
-    // If topk limit is big value, gen sequential id from an random initial
-    seqid = dt(mt);
-    gen = [&](void) {
-      seqid = seqid == (entity_->doc_cnt() - 1) ? 0 : (seqid + 1);
-      return seqid;
-    };
-  }
-
-  for (size_t i = 0; !heap.full() && i < entity_->doc_cnt(); ++i) {
-    const auto id = gen();
-    if (!visit_filter_.visited(id) && !myfilter(id)) {
-      visit_filter_.set_visited(id);
-      heap.emplace(id, dc_.dist(id));
+  search_heap_.dispatch([&](auto &heap) {
+    const size_t capacity = SearchHeap::capacity(heap);
+    if (static_cast<size_t>(heap.size()) >= capacity ||
+        static_cast<size_t>(heap.size()) >= entity_->doc_cnt())
+      return;
+    std::uniform_int_distribution<node_id_t> dt(0, entity_->doc_cnt() - 1);
+    std::function<node_id_t()> gen;
+    node_id_t seqid;
+    std::function<bool(node_id_t)> myfilter = [](node_id_t) { return false; };
+    if (this->filter().is_valid()) {
+      myfilter = [&](node_id_t id) {
+        return this->filter()(entity_->get_key(id));
+      };
     }
-  }
-  return;
+
+    if (capacity < entity_->doc_cnt() / 2) {
+      gen = [&](void) { return dt(mt); };
+    } else {
+      // If topk limit is big value, gen sequential id from an random initial
+      seqid = dt(mt);
+      gen = [&](void) {
+        seqid = seqid == (entity_->doc_cnt() - 1) ? 0 : (seqid + 1);
+        return seqid;
+      };
+    }
+
+    for (size_t i = 0;
+         static_cast<size_t>(heap.size()) < capacity && i < entity_->doc_cnt();
+         ++i) {
+      const auto id = gen();
+      if (!visit_filter_.visited(id) && !myfilter(id)) {
+        visit_filter_.set_visited(id);
+        SearchHeap::emplace(heap, id, dc_.dist(id));
+      }
+    }
+  });
 }
 
 }  // namespace core

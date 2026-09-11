@@ -121,8 +121,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   }
 
   if (ctx->group_by_search()) {
-    ctx->search_heap().with_topk(
-        [&](TopkHeap &heap) { expand_neighbors_by_group(heap, ctx); });
+    expand_neighbors_by_group(ctx);
   }
 
   return 0;
@@ -523,7 +522,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
 
 template <typename EntityType>
 void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
-    TopkHeap &topk, HnswContext *ctx) const {
+    HnswContext *ctx) const {
   if (!ctx->group_by().is_valid()) {
     return;
   }
@@ -535,10 +534,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 
   // devide into groups
   std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
-  for (uint32_t i = 0; i < topk.size(); ++i) {
-    node_id_t id = topk[i].first;
-    auto score = topk[i].second;
-
+  ctx->search_heap().for_each([&](node_id_t id, dist_t score) {
     std::string group_id = group_by(id);
 
     auto &topk_heap = group_topk_heaps[group_id];
@@ -546,7 +542,8 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
       topk_heap.limit(ctx->group_topk());
     }
     topk_heap.emplace(id, score);
-  }
+    return true;
+  });
 
   // stage 2, expand to reach group num as possible
   if (group_topk_heaps.size() < ctx->group_num()) {
@@ -564,13 +561,11 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
     // refill to get enough groups
     candidates.clear();
     visit.clear();
-    for (uint32_t i = 0; i < topk.size(); ++i) {
-      node_id_t id = topk[i].first;
-      float score = topk[i].second;
-
+    ctx->search_heap().for_each([&](node_id_t id, dist_t score) {
       visit.set_visited(id);
       candidates.emplace(id, score);
-    }
+      return true;
+    });
 
     // do expand
     while (!candidates.empty() && !ctx->reach_scan_limit()) {

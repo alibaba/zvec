@@ -184,7 +184,36 @@ class HnswStreamer : public IndexStreamer {
 
   void print_debug_info() override;
 
+  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                             std::vector<uint64_t> &keys,
+                             Context::Pointer &context) const override;
+
+  int search_bf_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                                std::vector<uint64_t> &keys,
+                                Context::Pointer &context) const override;
+
+  int search_candidates_by_p_keys_impl(
+      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+      const IndexQueryMeta &qmeta, std::vector<uint64_t> &keys,
+      Context::Pointer &context) const override;
+
  private:
+  template <typename Collect>
+  int search_bf_by_p_keys_with_collector(
+      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+      const IndexQueryMeta &qmeta, uint32_t count, Context::Pointer &context,
+      Collect &&collect) const;
+
+  template <typename Collect>
+  int search_with_collector(const void *query, const IndexQueryMeta &qmeta,
+                            uint32_t count, Context::Pointer &context,
+                            Collect &&collect) const;
+
+  template <typename Collect>
+  int search_bf_with_collector(const void *query, const IndexQueryMeta &qmeta,
+                               uint32_t count, Context::Pointer &context,
+                               Collect &&collect) const;
+
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {
     if (ailego_unlikely(!query)) {

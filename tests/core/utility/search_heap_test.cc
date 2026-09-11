@@ -22,6 +22,17 @@ namespace {
 
 using TopkHeap = SearchHeap::TopkHeap;
 
+using Candidates = std::vector<std::pair<uint32_t, float>>;
+
+Candidates Export(SearchHeap &heap, size_t count = 100) {
+  Candidates result;
+  heap.for_each_sorted(count, [&](uint32_t id, float score) {
+    result.emplace_back(id, score);
+    return true;
+  });
+  return result;
+}
+
 TEST(SearchHeap, DispatchUsesConcreteReferencesAndMoveOnlyCallbacks) {
   SearchHeap heap;
   heap.limit(8);
@@ -35,7 +46,7 @@ TEST(SearchHeap, DispatchUsesConcreteReferencesAndMoveOnlyCallbacks) {
     EXPECT_EQ(static_cast<void *>(&topk), static_cast<void *>(&buffer));
   });
   EXPECT_EQ(1, calls);
-  heap.with_topk([&](TopkHeap &buffer) { EXPECT_EQ(&topk, &buffer); });
+  EXPECT_EQ((Candidates{{7, 1.0f}}), Export(heap));
   EXPECT_EQ(&topk, &heap.select<TopkHeap>());
   heap.clear();
   EXPECT_TRUE(topk.empty());
@@ -58,6 +69,22 @@ TEST(SearchHeap, PrepareTopkClearsContentsAndReusesStorage) {
   });
   heap.reset<TopkHeap>(0);
   EXPECT_EQ(1U, topk.limit());
+}
+
+TEST(SearchHeap, TopkExportSortsItsOwnStorageWithoutReplacingIt) {
+  SearchHeap heap;
+  auto &topk = heap.reset<TopkHeap>(4);
+  topk.emplace(30, 3.0f);
+  topk.emplace(10, 1.0f);
+  topk.emplace(20, 2.0f);
+  const void *storage = topk.container().data();
+  EXPECT_EQ((Candidates{{10, 1.0f}, {20, 2.0f}}), Export(heap, 2));
+  EXPECT_EQ(storage, topk.container().data());
+  EXPECT_EQ(&topk, &heap.topk());
+  EXPECT_EQ(3U, heap.size());
+  EXPECT_EQ(10U, topk[0].first);
+  EXPECT_EQ(20U, topk[1].first);
+  EXPECT_EQ(30U, topk[2].first);
 }
 
 TEST(SearchHeap, AutoPoolSelectsCpuBackendAndResetsState) {
@@ -83,12 +110,9 @@ TEST(SearchHeap, AutoPoolSelectsCpuBackendAndResetsState) {
           EXPECT_EQ(10U, pool.pop());
         }
       });
-      heap.with_topk([&](TopkHeap &buffer) {
-        EXPECT_EQ(capacity, buffer.limit());
-        ASSERT_EQ(std::min(capacity, size_t{4}), buffer.size());
-        buffer.sort();
-        EXPECT_EQ(10U, buffer[0].first);
-      });
+      const auto result = Export(heap);
+      ASSERT_EQ(std::min(capacity, size_t{4}), result.size());
+      EXPECT_EQ(10U, result[0].first);
     }
   }
 }
@@ -159,68 +183,58 @@ TEST_P(SearchHeapPoolTest, PreparationResetsStateBeforeDispatch) {
           EXPECT_EQ(10U, pool.pop());
         }
       });
-      heap_.with_topk([&](TopkHeap &heap) {
-        EXPECT_EQ(capacity, heap.limit());
-        EXPECT_EQ(std::min(capacity, size_t{4}), heap.size());
-        heap.sort();
-        EXPECT_EQ(10U, heap[0].first);
-      });
+      const auto result = Export(heap_);
+      ASSERT_EQ(std::min(capacity, size_t{4}), result.size());
+      EXPECT_EQ(10U, result[0].first);
     }
   }
 }
 
-TEST_P(SearchHeapPoolTest, OutputKeepsPoolAndReusesScratch) {
+TEST_P(SearchHeapPoolTest, OutputReadsPoolWithoutChangingObjectOrCursor) {
   Fill();
   const void *pool_address = nullptr;
-  heap_.dispatch([&](auto &pool) { pool_address = &pool; });
-  const void *scratch_data = nullptr;
-  heap_.with_topk([&](TopkHeap &heap) {
-    scratch_data = heap.container().data();
-    // Scratch changes must not affect the active search result.
-    heap.emplace(999, -1.0f);
+  heap_.dispatch([&](auto &pool) {
+    pool_address = &pool;
+    if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
+      EXPECT_EQ(10U, static_cast<uint32_t>(pool.pop()));
+    }
   });
-  heap_.with_topk([&](TopkHeap &heap) {
-    EXPECT_EQ(scratch_data, heap.container().data());
-    heap.sort();
-    ASSERT_EQ(4U, heap.size());
-    EXPECT_EQ(10U, heap[0].first);
-    EXPECT_FLOAT_EQ(1.0f, heap[0].second);
-  });
+  const Candidates expected{{10, 1.0f}, {20, 2.0f}, {30, 3.0f}, {40, 4.0f}};
+  EXPECT_EQ(expected, Export(heap_));
+  EXPECT_EQ(expected, Export(heap_));
   CheckPool();
-  heap_.dispatch([&](auto &pool) { EXPECT_EQ(pool_address, &pool); });
+  heap_.dispatch([&](auto &pool) {
+    EXPECT_EQ(pool_address, &pool);
+    if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
+      EXPECT_EQ(20U, static_cast<uint32_t>(pool.pop()));
+    }
+  });
 
   heap_.clear();
-  heap_.with_topk([](TopkHeap &heap) { EXPECT_TRUE(heap.empty()); });
+  EXPECT_TRUE(Export(heap_).empty());
   Fill();
   CheckPool();
-  heap_.dispatch([&](auto &pool) { EXPECT_EQ(pool_address, &pool); });
-  heap_.with_topk([&](TopkHeap &heap) {
-    EXPECT_EQ(scratch_data, heap.container().data());
-    EXPECT_EQ(4U, heap.size());
-  });
+  EXPECT_EQ(expected, Export(heap_));
 }
 
-TEST_P(SearchHeapPoolTest, OutputKeepsLegacyHeapOrderingAndCapacity) {
+TEST_P(SearchHeapPoolTest, OutputKeepsPoolTieOrderAndHonorsLimits) {
   for (bool ties : {false, true}) {
     Fill(ties);
+    Candidates retained;
+    heap_.dispatch([&](auto &pool) {
+      if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
+        for (int32_t i = 0; i < pool.size(); ++i) {
+          retained.emplace_back(pool.id(i), pool.dist(i));
+        }
+      }
+    });
     for (size_t limit : {1U, 2U, 4U, 8U}) {
-      TopkHeap reference(limit);
-      heap_.dispatch([&](auto &pool) {
-        if constexpr (!std::is_same_v<std::decay_t<decltype(pool)>, TopkHeap>) {
-          copy_pool_to_topk(pool, reference);
-        }
-      });
-      reference.sort();
       heap_.limit(limit);
-      CheckPool();
-      heap_.with_topk([&](TopkHeap &heap) {
-        EXPECT_EQ(limit, heap.limit());
-        heap.sort();
-        ASSERT_EQ(reference.size(), heap.size());
-        for (size_t i = 0; i < heap.size(); ++i) {
-          EXPECT_EQ(reference[i], heap[i]);
-        }
-      });
+      for (size_t count : {0U, 1U, 3U, 8U}) {
+        const size_t n = std::min({count, limit, retained.size()});
+        EXPECT_EQ(Candidates(retained.begin(), retained.begin() + n),
+                  Export(heap_, count));
+      }
       CheckPool();
     }
   }
@@ -228,31 +242,29 @@ TEST_P(SearchHeapPoolTest, OutputKeepsLegacyHeapOrderingAndCapacity) {
 
 TEST_P(SearchHeapPoolTest, ExceptionsAndBackendChangesDoNotLeakResults) {
   Fill();
-  EXPECT_THROW(heap_.with_topk([](TopkHeap &) {
-    throw std::runtime_error("test export failure");
-  }),
-               std::runtime_error);
+  EXPECT_THROW(
+      heap_.for_each_sorted(4,
+                            [](uint32_t, float) -> bool {
+                              throw std::runtime_error("test export failure");
+                            }),
+      std::runtime_error);
   CheckPool();
   heap_.clear();
   auto &topk = heap_.select<TopkHeap>();
   EXPECT_TRUE(topk.empty());
   EXPECT_EQ(4U, topk.limit());
   topk.emplace(77, 0.5f);
-  heap_.with_topk([&](TopkHeap &heap) {
-    EXPECT_EQ(&topk, &heap);
-    ASSERT_EQ(1U, heap.size());
-    EXPECT_EQ(77U, heap[0].first);
-  });
+  EXPECT_EQ((Candidates{{77, 0.5f}}), Export(heap_));
   Fill();
   CheckPool();
-  auto &materialized = heap_.materialize_topk();
-  EXPECT_EQ(4U, materialized.size());
-  materialized.emplace(88, -1.0f);
-  heap_.with_topk([&](TopkHeap &heap) {
-    EXPECT_EQ(&materialized, &heap);
-    heap.sort();
-    EXPECT_EQ(88U, heap[0].first);
+  Candidates result;
+  heap_.for_each_sorted(4, [&](uint32_t id, float score) {
+    if (score > 2.0f) return false;
+    result.emplace_back(id, score);
+    return true;
   });
+  EXPECT_EQ((Candidates{{10, 1.0f}, {20, 2.0f}}), result);
+  CheckPool();
 }
 
 INSTANTIATE_TEST_SUITE_P(Backends, SearchHeapPoolTest, testing::Bool());

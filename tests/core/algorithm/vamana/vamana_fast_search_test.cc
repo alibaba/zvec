@@ -259,6 +259,47 @@ TEST_F(VamanaFastSearchTest, ExactVisitModesPreserveResultsAndSearchTrace) {
   }
 }
 
+TEST_F(VamanaFastSearchTest, PaddingAndKeysUseTheActiveContainer) {
+  CreateGraph({1.0f, 2.0f, 3.0f}, {{}, {}, {}});
+  std::array<float, kDimension> query{};
+  context_->set_topk(3);
+  context_->set_ef(3);
+  context_->set_force_padding_topk(true);
+  for (bool filtered : {false, true, false}) {
+    if (filtered) {
+      context_->set_filter([](uint64_t) { return false; });
+    } else {
+      context_->reset_filter();
+    }
+    for (bool threshold : {false, true, false}) {
+      if (threshold)
+        context_->set_threshold(1.0f);
+      else
+        context_->reset_threshold();
+      context_->clear();
+      context_->reset_query(query.data());
+      ASSERT_EQ(0, algorithm_->search(context_.get()));
+      ASSERT_EQ(1U, context_->search_heap().size());
+      context_->topk_to_result();
+      std::vector<uint64_t> expected;
+      for (const auto &doc : context_->result()) expected.push_back(doc.key());
+      EXPECT_FALSE(expected.empty());
+      EXPECT_EQ(3U, context_->search_heap().size());
+      context_->search_heap().dispatch([&](const auto &heap) {
+        EXPECT_EQ(filtered,
+                  (std::is_same_v<std::decay_t<decltype(heap)>, TopkHeap>));
+      });
+      context_->clear();
+      context_->reset_query(query.data());
+      ASSERT_EQ(0, algorithm_->search(context_.get()));
+      std::vector<uint64_t> keys;
+      context_->topk_to_keys(keys);
+      EXPECT_EQ(expected, keys);
+      EXPECT_TRUE(context_->result().empty());
+    }
+  }
+}
+
 TEST_F(VamanaFastSearchTest, InvalidVisitFilterFailsSearchExplicitly) {
   CreateGraph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});
   MakeContext(VisitFilter::Default);

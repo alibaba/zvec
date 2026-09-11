@@ -169,45 +169,10 @@ class HnswContext : public IndexContext {
     }
   }
 
-  inline void recal_topk_dist() {
-    auto &topk = search_heap_.materialize_topk();
-    TopkHeap heap(topk);
-    topk.clear();
-
-    for (size_t i = 0; i < heap.size(); ++i) {
-      node_id_t id = heap[i].first;
-      dist_t dist = dc_.dist(id);
-      topk.emplace(id, dist);
-    }
-  }
-
   inline void topk_to_single_result(uint32_t idx) {
-    search_heap_.with_topk(
-        [&](TopkHeap &heap) { collect_topk_result(heap, idx); });
-  }
-
- private:
-  inline void collect_topk_result(TopkHeap &heap, uint32_t idx) {
-    if (force_padding_topk_ && !heap.full() &&
-        heap.size() < entity_->doc_cnt()) {
-      this->fill_random_to_topk_full(heap);
-    }
-    if (ailego_unlikely(heap.size() == 0)) {
-      return;
-    }
-
     ailego_assert_with(idx < results_.size(), "invalid idx");
-    int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
-    heap.sort();
     results_[idx].clear();
-
-    for (int i = 0; i < size; ++i) {
-      auto score = heap[i].second;
-      if (score > this->threshold()) {
-        break;
-      }
-
-      node_id_t id = heap[i].first;
+    collect_search_result([&](node_id_t id, dist_t score) {
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
@@ -215,9 +180,25 @@ class HnswContext : public IndexContext {
       } else {
         results_[idx].emplace_back(entity_->get_key(id), score, id);
       }
-    }
+    });
+  }
 
-    return;
+  void topk_to_keys(std::vector<uint64_t> &keys) {
+    keys.clear();
+    keys.reserve((std::min)(static_cast<size_t>(topk_), search_heap_.size()));
+    collect_search_result(
+        [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+  }
+
+ private:
+  template <typename Fn>
+  void collect_search_result(Fn &&fn) {
+    if (force_padding_topk_) fill_random_to_topk_full();
+    search_heap_.for_each_sorted(topk_, [&](node_id_t id, dist_t score) {
+      if (score > this->threshold()) return false;
+      fn(id, score);
+      return true;
+    });
   }
 
  public:
@@ -591,7 +572,7 @@ class HnswContext : public IndexContext {
 
  private:
   // Filling random nodes if topk not full
-  void fill_random_to_topk_full(TopkHeap &heap);
+  void fill_random_to_topk_full();
 
   constexpr static uint32_t kTriggerReserveCnt = 4096UL;
   constexpr static uint32_t kMinReserveDocCnt = 4096UL;

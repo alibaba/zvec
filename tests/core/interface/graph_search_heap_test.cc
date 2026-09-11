@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cmath>
 #include <tuple>
 #include <vector>
 #include <gtest/gtest.h>
@@ -146,6 +147,141 @@ TEST(GraphSearchHeap, HnswConstructionClearsStateAcrossLevels) {
 using GraphSearchHeapTest = testing::TestWithParam<
     std::tuple<bool, bool, bool, core::VisitFilter::Mode>>;
 
+TEST(GraphSearchHeap, RefineHonorsScaleFactorAndSearchModes) {
+  constexpr uint32_t kCount = 64;
+  constexpr uint32_t kTopk = 5;
+  const std::string coarse_path = "graph_refine_coarse.index";
+  const std::string fine_path = "graph_refine_fine.index";
+  for (bool vamana : {false, true}) {
+    for (bool contiguous : {false, true}) {
+      SCOPED_TRACE(vamana);
+      SCOPED_TRACE(contiguous);
+      test_util::RemoveTestFiles(coarse_path);
+      auto coarse = IndexFactory::CreateAndInitIndex(
+          *GraphIndexParam(vamana, contiguous));
+      ASSERT_TRUE(coarse);
+      ASSERT_EQ(0, coarse->open(coarse_path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+      std::vector<float> vector(16, 0.0f);
+      for (uint32_t id = 0; id < kCount; ++id) {
+        vector[0] = float(id);
+        ASSERT_EQ(
+            0, coarse->add(VectorData{DenseVector{vector.data()}}, 1000 + id));
+      }
+      if (vamana) {
+        auto *streamer = dynamic_cast<core::VamanaStreamer *>(
+            coarse->index_searcher().get());
+        ASSERT_NE(nullptr, streamer);
+        ASSERT_EQ(0, streamer->finalize_build());
+      }
+      ASSERT_EQ(0, coarse->flush());
+      ASSERT_EQ(0, coarse->close());
+      coarse = IndexFactory::CreateAndInitIndex(
+          *GraphIndexParam(vamana, contiguous));
+      ASSERT_EQ(0, coarse->open(coarse_path,
+                                {StorageOptions::StorageType::kMMAP, false}));
+
+      for (auto type : {DataType::DT_FP16, DataType::DT_UINT8}) {
+        SCOPED_TRACE(static_cast<int>(type));
+        test_util::RemoveTestFiles(fine_path);
+        auto fine_param = FlatIndexParamBuilder()
+                              .with_metric_type(MetricType::kL2sq)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_storage_data_type(type)
+                              .with_dimension(16)
+                              .with_use_contiguous_memory(contiguous)
+                              .build();
+        auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+        ASSERT_TRUE(fine);
+        ASSERT_EQ(0, fine->open(fine_path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+        for (uint32_t id = 0; id < kCount; ++id) {
+          // Reverse the ranking in the fine index. Exporting the whole ef pool
+          // instead of coarse topk now changes the final nearest neighbors.
+          vector[0] = float(kCount - id);
+          ASSERT_EQ(
+              0, fine->add(VectorData{DenseVector{vector.data()}}, 1000 + id));
+        }
+        vector[0] = 0.0f;
+        const VectorData query{DenseVector{vector.data()}};
+        SearchResult actual;
+        for (float scale : {0.0f, 0.6f, 1.5f, 4.0f, 20.0f, 1.0f}) {
+          const uint32_t budget = static_cast<uint32_t>(
+              std::floor(kTopk * (scale == 0.0f ? 1.0f : scale)));
+          for (int mode : {0, 1, 2, 3, 4, 5, 0}) {
+            SCOPED_TRACE(scale);
+            SCOPED_TRACE(mode);
+            auto make_param = [&](uint32_t topk) {
+              BaseIndexQueryParam::Pointer param;
+              if (vamana) {
+                param = VamanaQueryParamBuilder()
+                            .with_topk(topk)
+                            .with_ef_search(32)
+                            .build();
+              } else {
+                param = HNSWQueryParamBuilder()
+                            .with_topk(topk)
+                            .with_ef_search(32)
+                            .build();
+              }
+              if (mode == 1) param->is_linear = true;
+              if (mode == 2) {
+                param->bf_pks = std::make_shared<std::vector<uint64_t>>(
+                    std::initializer_list<uint64_t>{1047, 1017, 1007, 1001,
+                                                    1000, 99999});
+              }
+              if (mode == 3)
+                param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+              if (mode == 4) {
+                param->filter = std::make_shared<IndexFilter>();
+                param->filter->set([](uint64_t key) { return key >= 1016; });
+              }
+              if (mode == 5) param->radius = 9.0f;
+              return param;
+            };
+            SearchResult candidates;
+            ASSERT_EQ(0,
+                      coarse->search(query, make_param(budget), &candidates));
+            EXPECT_LE(candidates.doc_list_.size(), budget);
+            if (mode == 0 || mode == 1) {
+              ASSERT_EQ(std::min(budget, kCount), candidates.doc_list_.size());
+            }
+            auto explicit_param = FlatQueryParamBuilder()
+                                      .with_topk(kTopk)
+                                      .with_fetch_vector(true)
+                                      .build();
+            explicit_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+            for (const auto &doc : candidates.doc_list_) {
+              explicit_param->bf_pks->push_back(doc.key());
+            }
+            SearchResult expected;
+            ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+            auto refiner = std::make_shared<RefinerParam>();
+            refiner->scale_factor_ = scale;
+            refiner->reference_index = fine;
+            auto param = make_param(kTopk);
+            param->fetch_vector = true;
+            param->refiner_param = refiner;
+            ASSERT_EQ(0, coarse->search(query, param, &actual));
+            ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+            for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+              EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+              EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                              actual.doc_list_[i].score());
+            }
+            EXPECT_EQ(expected.reverted_vector_list_,
+                      actual.reverted_vector_list_);
+          }
+        }
+        ASSERT_EQ(0, fine->close());
+        test_util::RemoveTestFiles(fine_path);
+      }
+      ASSERT_EQ(0, coarse->close());
+      test_util::RemoveTestFiles(coarse_path);
+    }
+  }
+}
+
 TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
   const bool vamana = std::get<0>(GetParam());
   const bool contiguous = std::get<1>(GetParam());
@@ -241,7 +377,7 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
 
   for (uint32_t topk : {0U, 1U, 12U, 32U, 80U}) {
     // End by returning to the pool after empty results and BF-by-keys.
-    for (int mode : {0, 1, 2, 3, 4, 5, 6, 0}) {
+    for (int mode : {0, 1, 2, 3, 4, 5, 6, 7, 0}) {
       for (bool fetch_vector : {false, true}) {
         SCOPED_TRACE(topk);
         SCOPED_TRACE(mode);
@@ -251,6 +387,9 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
         configure(fresh, topk, mode, fetch_vector);
         configure(context, topk, mode, fetch_vector);
         auto search = [&](core::IndexContext::Pointer &ctx) {
+          if (mode == 7) {
+            return streamer->search_bf_impl(vector.data(), meta, 1, ctx);
+          }
           if (mode == 6) {
             return streamer->search_bf_by_p_keys_impl(vector.data(), p_keys,
                                                       meta, 1, ctx);
@@ -278,6 +417,34 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
               std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>;
           EXPECT_EQ(mode != 0 && mode != 2, uses_topk);
         });
+
+        std::vector<uint64_t> keys{99999};
+        int ret;
+        if (mode == 6) {
+          ret = streamer->search_candidates_by_p_keys_impl(
+              vector.data(), p_keys, meta, keys, context);
+        } else if (mode == 7) {
+          ret = streamer->search_bf_candidates_impl(vector.data(), meta, keys,
+                                                    context);
+        } else {
+          ret = streamer->search_candidates_impl(vector.data(), meta, keys,
+                                                 context);
+        }
+        ASSERT_EQ(0, ret);
+        ASSERT_EQ(expected.size(), keys.size());
+        for (size_t i = 0; i < keys.size(); ++i) {
+          EXPECT_EQ(expected[i].key(), keys[i]);
+        }
+        // No document or vector result is materialized, even when requested
+        // on the same reused context immediately before candidate-only search.
+        EXPECT_TRUE(context->result().empty());
+        EXPECT_EQ(expected_scans,
+                  vctx ? vctx->get_scan_num() : hctx->get_scan_num());
+        heap.dispatch([&](const auto &buffer) {
+          const bool uses_topk =
+              std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>;
+          EXPECT_EQ(mode != 0 && mode != 2, uses_topk);
+        });
       }
     }
   }
@@ -298,6 +465,45 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     for (size_t q = 0; q < 2; ++q) compare(expected[q], context->result(q));
   }
 
+  if (hctx && !ties && visit_mode != core::VisitFilter::BloomFilter) {
+    // Exercise real padding without depending on graph connectivity: seed one
+    // candidate and let the context add every other unvisited node in place.
+    for (bool dual_heap : {false, true}) {
+      auto reset_for_padding = [&]() {
+        configure(context, kCount, 0, false);
+        hctx->clear();
+        hctx->set_force_padding_topk(true);
+        hctx->reset_query(vector.data(), streamer->meta());
+        hctx->visit_filter().clear();
+        hctx->visit_filter().set_visited(0);
+        auto &heap = hctx->search_heap();
+        if (dual_heap)
+          heap.reset<core::TopkHeap>(kCount);
+        else
+          heap.reset_pool(kCount, 16);
+        heap.dispatch([&](auto &buffer) {
+          core::SearchHeap::emplace(buffer, 0, 0.0625f);
+        });
+      };
+      reset_for_padding();
+      hctx->topk_to_result();
+      const auto padded = context->result();
+      ASSERT_EQ(kCount, padded.size());
+      reset_for_padding();
+      std::vector<uint64_t> keys;
+      hctx->topk_to_keys(keys);
+      ASSERT_EQ(padded.size(), keys.size());
+      for (size_t i = 0; i < keys.size(); ++i) {
+        EXPECT_EQ(padded[i].key(), keys[i]);
+      }
+      hctx->search_heap().dispatch([&](const auto &buffer) {
+        EXPECT_EQ(
+            dual_heap,
+            (std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>));
+      });
+    }
+  }
+
   // Invalid dispatch must fail both pool and filtered search, without leaving
   // results from the previous query. Restore valid storage before teardown.
   configure(context, 12, 0, false);
@@ -311,8 +517,32 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     EXPECT_TRUE(context->result().empty());
     auto &heap = vctx ? vctx->search_heap() : hctx->search_heap();
     heap.dispatch([](const auto &buffer) { EXPECT_EQ(0U, buffer.size()); });
+    std::vector<uint64_t> keys{99999};
+    EXPECT_EQ(
+        core::IndexError_Runtime,
+        streamer->search_candidates_impl(vector.data(), meta, keys, context));
+    EXPECT_TRUE(keys.empty());
   }
   ASSERT_EQ(0, visit.init(visit_mode, kCount, kCount, 0.001f));
+  if (hctx) {
+    hctx->set_group_params(2, 2);
+    hctx->set_group_by([](uint64_t key) { return std::to_string(key % 2); });
+    std::vector<uint64_t> keys{99999};
+    EXPECT_EQ(
+        core::IndexError_InvalidArgument,
+        streamer->search_candidates_impl(vector.data(), meta, keys, context));
+    EXPECT_TRUE(keys.empty());
+    keys.push_back(99999);
+    EXPECT_EQ(core::IndexError_InvalidArgument,
+              streamer->search_bf_candidates_impl(vector.data(), meta, keys,
+                                                  context));
+    EXPECT_TRUE(keys.empty());
+    keys.push_back(99999);
+    EXPECT_EQ(core::IndexError_InvalidArgument,
+              streamer->search_candidates_by_p_keys_impl(vector.data(), p_keys,
+                                                         meta, keys, context));
+    EXPECT_TRUE(keys.empty());
+  }
   context.reset();
   streamer.reset();
   ASSERT_EQ(0, index->close());

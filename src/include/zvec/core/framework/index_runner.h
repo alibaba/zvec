@@ -516,6 +516,34 @@ class IndexRunner : public IndexModule {
     for (const auto &document : result) keys.push_back(document.key());
     return 0;
   }
+
+  //! Candidate-only counterparts of the explicit brute-force entry points.
+  //! The same single-query output contract as search_candidates_impl applies.
+  virtual int search_bf_candidates_impl(const void *query,
+                                        const IndexQueryMeta &qmeta,
+                                        std::vector<uint64_t> &keys,
+                                        Context::Pointer &context) const {
+    keys.clear();
+    const int ret = search_bf_impl(query, qmeta, 1, context);
+    if (ret != 0) return ret;
+    const auto &result = context->result();
+    keys.reserve(result.size());
+    for (const auto &document : result) keys.push_back(document.key());
+    return 0;
+  }
+
+  virtual int search_candidates_by_p_keys_impl(
+      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+      const IndexQueryMeta &qmeta, std::vector<uint64_t> &keys,
+      Context::Pointer &context) const {
+    keys.clear();
+    const int ret = search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
+    if (ret != 0) return ret;
+    const auto &result = context->result();
+    keys.reserve(result.size());
+    for (const auto &document : result) keys.push_back(document.key());
+    return 0;
+  }
   //! Similarity search
   virtual int search_impl(const void * /*query*/,
                           const IndexQueryMeta & /*qmeta*/, uint32_t /*count*/,

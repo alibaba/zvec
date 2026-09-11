@@ -118,6 +118,8 @@ class VamanaContext : public IndexContext {
 
   void topk_to_result(uint32_t idx);
 
+  void topk_to_keys(std::vector<uint64_t> &keys);
+
   inline void reset_query(const void *query) {
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
         query_preprocess_func != nullptr) {
@@ -321,8 +323,17 @@ class VamanaContext : public IndexContext {
   }
 
  private:
-  void collect_topk_result(TopkHeap &heap, uint32_t idx);
-  void fill_random_to_topk_full(TopkHeap &heap);
+  template <typename Fn>
+  void collect_search_result(Fn &&fn) {
+    if (force_padding_topk_) fill_random_to_topk_full();
+    search_heap_.for_each_sorted(topk_, [&](node_id_t id, dist_t score) {
+      if (score > this->threshold()) return false;
+      fn(id, score);
+      return true;
+    });
+  }
+
+  void fill_random_to_topk_full();
   void update_query_prefetch();
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {
