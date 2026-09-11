@@ -27,6 +27,9 @@
 #ifndef HWCAP_ASIMD
 #define HWCAP_ASIMD (1 << 1)
 #endif
+#ifndef HWCAP_ASIMDHP
+#define HWCAP_ASIMDHP (1 << 10)
+#endif
 #endif
 
 namespace zvec {
@@ -351,6 +354,21 @@ bool CpuFeatures::NEON(void) {
   // the target has it (including MSVC ARM64, which predefines only _M_ARM64).
   // This must agree with Intrinsics()/version.i, which report "Neon" from the
   // same macro.
+  return true;
+#else
+  return false;
+#endif
+}
+
+//! ARM half-precision vector arithmetic (FEAT_FP16) support
+bool CpuFeatures::FP16(void) {
+#if defined(__aarch64__) && defined(__linux__)
+  return !!(getauxval(AT_HWCAP) & HWCAP_ASIMDHP);
+#elif defined(__aarch64__) && defined(__APPLE__)
+  // FEAT_FP16 is present on all Apple Silicon (A11 and later).
+  return true;
+#elif defined(AILEGO_HAVE_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+  // No runtime probe available; trust the compile-time target features.
   return true;
 #else
   return false;

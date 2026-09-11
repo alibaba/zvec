@@ -74,6 +74,9 @@
 #include "neon/record_quantized_int8/inner_product.h"
 #include "neon/record_quantized_int8/squared_euclidean.h"
 #include "neon/rotate/fht/fht.h"
+#include "neon_fp16/fp16/cosine.h"
+#include "neon_fp16/fp16/inner_product.h"
+#include "neon_fp16/fp16/squared_euclidean.h"
 #include "scalar/fp16/cosine.h"
 #include "scalar/fp16/inner_product.h"
 #include "scalar/fp16/squared_euclidean.h"
@@ -146,12 +149,15 @@ constexpr CpuFeatureMask kCpuFeatureNone = 0;
 constexpr CpuFeatureMask kCpuFeatureAvx512Bw = 1U << 0;
 constexpr CpuFeatureMask kCpuFeatureAvx512Dq = 1U << 1;
 constexpr CpuFeatureMask kCpuFeatureF16c = 1U << 2;
+// ARM FEAT_FP16 (half-precision vector arithmetic, armv8.2-a+fp16).
+constexpr CpuFeatureMask kCpuFeatureNeonFp16 = 1U << 3;
 
 bool HasRequiredCpuFeatures(CpuFeatureMask required) {
   const auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
   return ((required & kCpuFeatureAvx512Bw) == 0 || flags.AVX512BW) &&
          ((required & kCpuFeatureAvx512Dq) == 0 || flags.AVX512DQ) &&
-         ((required & kCpuFeatureF16c) == 0 || flags.F16C);
+         ((required & kCpuFeatureF16c) == 0 || flags.F16C) &&
+         ((required & kCpuFeatureNeonFp16) == 0 || flags.FP16);
 }
 
 bool CanUseKernel(CpuArchType requested_arch, CpuArchType kernel_arch,
@@ -177,8 +183,9 @@ struct KernelSet {
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
-    // --- raw physical storage (AVX512, then scalar fallback) ---
-    // FP16 storage uses FP32 arithmetic, including on AVX512-FP16 hosts.
+    // --- raw physical storage (SIMD, then scalar fallback) ---
+    // Raw FP16 distances always use FP32 arithmetic. Cosine receives vectors
+    // normalized by Fp16Quantizer after conversion to physical FP16 storage.
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
@@ -189,6 +196,25 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::squared_euclidean_fp16_distance,
      avx512_vnni::squared_euclidean_fp16_batch_distance, nullptr,
      kCpuFeatureAvx512Dq | kCpuFeatureF16c},
+    // Raw storage widens operands so squaring cannot overflow in FP16.
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean, neon::squared_euclidean_fp16_distance,
+     neon::squared_euclidean_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
+     MetricType::kCosine, avx512::cosine_fp16_distance_avx512,
+     avx512::cosine_fp16_batch_distance_avx512, nullptr, kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX2,
+     MetricType::kCosine, avx2::cosine_fp16_distance_avx2,
+     avx2::cosine_fp16_batch_distance_avx2, nullptr, kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kCosine, sse2::cosine_fp16_distance_sse2,
+     sse2::cosine_fp16_batch_distance_sse2, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kCosine, neon::cosine_fp16_distance,
+     neon::cosine_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kScalar,
+     MetricType::kCosine, scalar::cosine_fp16_distance,
+     scalar::cosine_fp16_batch_distance, nullptr},
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kScalar,
      MetricType::kSquaredEuclidean,
      scalar::squared_euclidean_raw_uint8_distance,
@@ -326,7 +352,7 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint4_distance,
      avx512_vnni::uniform_squared_euclidean_uint4_batch_distance, nullptr},
 
-    // --- fp16 (AVX512, AVX2, NEON, scalar) ---
+    // --- fp16 (AVX512, AVX2, SSE2, NEON-FP16, NEON, scalar) ---
     // NOTE: the AVX512-FP16 kernels under distance/avx512_fp16/ are not
     // registered: they accumulate in FP16, which loses enough precision to
     // reorder close neighbors and can overflow to inf/nan on unnormalized
@@ -362,6 +388,26 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kSSE2,
      MetricType::kInnerProduct, sse2::inner_product_fp16_distance_sse2,
      sse2::inner_product_fp16_batch_distance_sse2, nullptr},
+#if defined(ZVEC_HAVE_ARM_FP16_KERNEL)
+    // FEAT_FP16 kernels: they must precede the plain NEON rows below so that
+    // auto-dispatch prefers them whenever the CPU advertises FP16 support.
+    // Cosine keeps native FP16 accumulation for normalized inputs; L2 and
+    // inner product widen arithmetic to FP32 for unrestricted input ranges.
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean,
+     neon_fp16::squared_euclidean_fp16_distance_neon_fp16,
+     neon_fp16::squared_euclidean_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kCosine, neon_fp16::cosine_fp16_distance_neon_fp16,
+     neon_fp16::cosine_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
+    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kInnerProduct,
+     neon_fp16::inner_product_fp16_distance_neon_fp16,
+     neon_fp16::inner_product_fp16_batch_distance_neon_fp16, nullptr,
+     kCpuFeatureNeonFp16},
+#endif
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_fp16_distance,
      neon::squared_euclidean_fp16_batch_distance, nullptr},

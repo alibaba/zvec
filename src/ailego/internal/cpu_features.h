@@ -185,6 +185,9 @@ class CpuFeatures {
   //! ARM NEON (ASIMD) support
   static bool NEON(void);
 
+  //! ARM half-precision vector arithmetic (FEAT_FP16) support
+  static bool FP16(void);
+
   //! Intrinsics of compiling
   static const char *Intrinsics(void);
 
@@ -367,6 +370,9 @@ class CpuFeatures {
 
     //! ARM NEON (ASIMD) support
     bool NEON = CpuFeatures::NEON();
+
+    //! ARM half-precision vector arithmetic (FEAT_FP16) support
+    bool FP16 = CpuFeatures::FP16();
   };
   static StaticFlags static_flags_;
 };
