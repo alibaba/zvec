@@ -409,6 +409,17 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
                          ->get_scan_num();
         ASSERT_EQ(0, search(context));
         compare(expected, context->result());
+        if (mode == 6) {
+          ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vector.data(), p_keys,
+                                                          meta, context));
+          compare(expected, context->result());
+        } else if (mode == 7) {
+          ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, context));
+          compare(expected, context->result());
+        }
+        for (const auto &doc : context->result()) {
+          EXPECT_EQ(fetch_vector, doc.vector() != nullptr);
+        }
         EXPECT_EQ(expected_scans,
                   vctx ? vctx->get_scan_num() : hctx->get_scan_num());
         auto &heap = vctx ? vctx->search_heap() : hctx->search_heap();
@@ -449,25 +460,20 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     }
   }
 
-  // The original single-query BF interface retains candidates only. It must
-  // not overwrite previously exported documents; export is the caller's job.
+  // Omitting count is equivalent to count = 1, including result export on a
+  // reused context. The previous query's documents must be replaced.
   configure(context, 12, 7, true);
   ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, 1, context));
   const auto previous = context->result();
   std::vector<float> next_query(16, 0.0f);
   next_query[0] = 63.25f;
   ASSERT_EQ(0, streamer->search_bf_impl(next_query.data(), meta, context));
-  compare(previous, context->result());
   auto &bf_heap = vctx ? vctx->search_heap() : hctx->search_heap();
   bf_heap.dispatch([&](const auto &buffer) {
     EXPECT_TRUE(
         (std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>));
     EXPECT_EQ(kCount, static_cast<uint32_t>(buffer.size()));
   });
-  if (vctx)
-    vctx->topk_to_result();
-  else
-    hctx->topk_to_result();
   const auto exported = context->result();
   ASSERT_EQ(12U, exported.size());
   EXPECT_NE(previous.front().key(), exported.front().key());
@@ -487,17 +493,14 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
       std::vector<core::IndexDocumentList> expected(batch_keys.size());
       for (size_t q = 0; q < batch_keys.size(); ++q) {
         const std::vector<std::vector<uint64_t>> single_keys{batch_keys[q]};
-        const auto previous_result = context->result();
         ASSERT_EQ(
             0, streamer->search_bf_by_p_keys_impl(key_queries.data() + q * 16,
                                                   single_keys, meta, context));
-        // Like full BF, single-query BF by keys must not export documents.
-        compare(previous_result, context->result());
-        if (vctx)
-          vctx->topk_to_result();
-        else
-          hctx->topk_to_result();
         expected[q] = context->result();
+        ASSERT_EQ(
+            0, streamer->search_bf_by_p_keys_impl(
+                   key_queries.data() + q * 16, single_keys, meta, 1, context));
+        compare(expected[q], context->result());
         if (mode == 0)
           EXPECT_EQ((std::min)(size_t{topk},
                                q == 3 ? size_t{2} : batch_keys[q].size()),
@@ -553,6 +556,53 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     }
     ASSERT_EQ(0, search_batch(batch.data(), 2));
     for (size_t q = 0; q < 2; ++q) compare(expected[q], context->result(q));
+  }
+
+  // BasicRefiner must still receive documents when its refine runner is a
+  // graph streamer and it calls the original no-count keyed BF overload.
+  {
+    auto refiner = core::IndexFactory::CreateRefiner("BasicRefiner");
+    ASSERT_TRUE(refiner);
+    ASSERT_EQ(0, refiner->init(streamer, streamer, ailego::Params()));
+    auto base_context = streamer->create_context();
+    auto refine_context = streamer->create_context();
+    auto reference_context = streamer->create_context();
+    ASSERT_TRUE(base_context);
+    ASSERT_TRUE(refine_context);
+    ASSERT_TRUE(reference_context);
+    configure(base_context, 3, 4, false);
+    configure(refine_context, 3, 7, false);
+    configure(reference_context, 3, 7, false);
+    auto refiner_context = refiner->create_context();
+    ASSERT_TRUE(refiner_context);
+    auto *rctx =
+        dynamic_cast<core::IndexRefiner::Context *>(refiner_context.get());
+    ASSERT_NE(nullptr, rctx);
+    ASSERT_EQ(0, rctx->set_contexts(std::move(base_context),
+                                    std::move(refine_context)));
+    refiner_context->set_topk(3);
+    for (uint32_t count : {1U, 2U, 1U}) {
+      if (count == 1) {
+        ASSERT_EQ(0, refiner->search_impl(batch.data(), meta, batch.data(),
+                                          meta, refiner_context));
+      } else {
+        ASSERT_EQ(0, refiner->search_impl(batch.data(), meta, batch.data(),
+                                          meta, count, refiner_context));
+      }
+      for (uint32_t q = 0; q < count; ++q) {
+        ASSERT_EQ(0, streamer->search_bf_impl(batch.data() + q * 16, meta, 1,
+                                              reference_context));
+        const auto &expected = reference_context->result();
+        const auto &actual = refiner_context->result(q);
+        ASSERT_EQ(3U, actual.size());
+        ASSERT_EQ(expected.size(), actual.size());
+        for (size_t i = 0; i < actual.size(); ++i) {
+          EXPECT_FLOAT_EQ(expected[i].score(), actual[i].score());
+          if (!ties) EXPECT_EQ(expected[i].key(), actual[i].key());
+        }
+      }
+    }
+    ASSERT_EQ(0, refiner->cleanup());
   }
 
   if (hctx && !ties && visit_mode != core::VisitFilter::BloomFilter) {
@@ -666,7 +716,6 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
       ASSERT_EQ(0,
                 streamer->search_bf_by_p_keys_impl(key_queries.data() + q * 16,
                                                    single_keys, meta, context));
-      hctx->topk_to_result();
       expected[q] = context->group_result();
     }
     ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(

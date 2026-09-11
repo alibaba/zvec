@@ -176,8 +176,8 @@ class BasicRefiner : public IndexRefiner {
       keys_array.push_back(std::move(keys));
 
       refine_ctx->set_topk(topk);
-      ret = refine_runner_->search_bf_by_p_keys_impl(
-          refine_query, keys_array, refine_qmeta, 1, refine_ctx);
+      ret = refine_runner_->search_bf_by_p_keys_impl(refine_query, keys_array,
+                                                     refine_qmeta, refine_ctx);
       if (ret != 0) {
         LOG_ERROR("Error in searching vector from refine index");
 
@@ -228,8 +228,8 @@ class BasicRefiner : public IndexRefiner {
       auto results = base_ctx->result();
       std::vector<std::vector<uint64_t>> keys;
 
-      ret = refine_runner_->search_bf_by_p_keys_impl(
-          refine_query, keys, refine_qmeta, 1, refine_ctx);
+      ret = refine_runner_->search_bf_by_p_keys_impl(refine_query, keys,
+                                                     refine_qmeta, refine_ctx);
       if (ret != 0) {
         LOG_ERROR("Error in searching vector from refine index");
 

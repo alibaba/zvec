@@ -118,23 +118,21 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  //! Search one query without exporting results. Candidates remain in the
-  //! context heap; the caller must export them before starting another search.
+  //! Search and export results, equivalent to the count = 1 overload.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
 
-  //! Batch caller: search and export each query before reusing the context
-  //! heap.
+  //! Search and export results for each query.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
-  //! Search one query's primary keys without exporting the retained candidates.
+  //! Search and export results, equivalent to the count = 1 overload.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta,
                                ContextPointer &context) const override;
 
-  //! Batch caller: search p_keys[q] and export query q before reusing the heap.
+  //! Search p_keys[q] and export results for each query.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta, uint32_t count,
@@ -198,6 +196,15 @@ class HnswStreamer : public IndexStreamer {
       Context::Pointer &context) const override;
 
  private:
+  // Scan one query without exporting results. Callers collect documents or
+  // candidate keys before the next scan reuses the context heap.
+  int scan_bf(const void *query, const IndexQueryMeta &qmeta,
+              Context::Pointer &context) const;
+
+  int scan_bf_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
+                        const IndexQueryMeta &qmeta,
+                        Context::Pointer &context) const;
+
   template <typename Collect>
   int search_with_collector(const void *query, const IndexQueryMeta &qmeta,
                             uint32_t count, Context::Pointer &context,

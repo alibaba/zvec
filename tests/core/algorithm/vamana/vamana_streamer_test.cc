@@ -427,7 +427,6 @@ TEST_F(VamanaStreamerTest, TestLinearSearch) {
     }
     ctx->set_topk(1U);
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
-    static_cast<VamanaContext *>(ctx.get())->topk_to_result();
     auto &result1 = ctx->result();
     ASSERT_EQ(1UL, result1.size());
     ASSERT_EQ(i, result1[0].key());
@@ -437,7 +436,6 @@ TEST_F(VamanaStreamerTest, TestLinearSearch) {
     }
     ctx->set_topk(topk);
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
-    static_cast<VamanaContext *>(ctx.get())->topk_to_result();
     auto &result2 = ctx->result();
     ASSERT_EQ(topk, result2.size());
     ASSERT_EQ(i, result2[0].key());
@@ -482,7 +480,6 @@ TEST_F(VamanaStreamerTest, TestKnnSearch) {
     }
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<VamanaContext *>(linearCtx.get())->topk_to_result();
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
@@ -654,7 +651,6 @@ TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
       ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-      static_cast<VamanaContext *>(linearCtx.get())->topk_to_result();
       auto &knnResult = knnCtx->result();
       ASSERT_EQ(topk, knnResult.size());
       auto &linearResult = linearCtx->result();
@@ -733,7 +729,6 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
     }
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<VamanaContext *>(linearCtx.get())->topk_to_result();
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
     auto &linearResult = linearCtx->result();
@@ -935,7 +930,6 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
     brute_force_context->set_topk(1);
     ASSERT_EQ(0, searcher->search_bf_impl(query.data(), query_meta,
                                           brute_force_context));
-    static_cast<VamanaContext *>(brute_force_context.get())->topk_to_result();
     ASSERT_EQ(1U, brute_force_context->result().size());
     EXPECT_EQ(expected_key, brute_force_context->result()[0].key());
     EXPECT_FLOAT_EQ(0.0f, brute_force_context->result()[0].score());
@@ -1045,7 +1039,6 @@ TEST_F(VamanaStreamerTest, TestContiguousKeepsInt8RecordTailInline) {
     brute_force_context->set_topk(1);
     ASSERT_EQ(0, searcher->search_bf_impl(query.data(), query_meta,
                                           brute_force_context));
-    static_cast<VamanaContext *>(brute_force_context.get())->topk_to_result();
     ASSERT_EQ(1U, brute_force_context->result().size());
     EXPECT_EQ(kKeyBase + probe, brute_force_context->result()[0].key());
     EXPECT_NEAR(0.0f, brute_force_context->result()[0].score(), 1e-4f);
@@ -1191,7 +1184,6 @@ TEST_F(VamanaStreamerTest, TestContiguousMultiThreadSearch) {
       }
       ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
       ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
-      static_cast<VamanaContext *>(linearCtx.get())->topk_to_result();
       auto &knnResult = knnCtx->result();
       ASSERT_EQ(topk, knnResult.size());
       auto &linearResult = linearCtx->result();
@@ -1293,7 +1285,6 @@ TEST_F(VamanaStreamerTest, TestAddAndSearch) {
       vec[j] = static_cast<float>(base);
     }
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, searchCtx));
-    static_cast<VamanaContext *>(searchCtx.get())->topk_to_result();
     auto &result = searchCtx->result();
     ASSERT_EQ(topk, result.size());
     ASSERT_EQ(base, result[0].key());
@@ -1494,7 +1485,6 @@ TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {
   context->set_topk(2);
   ASSERT_EQ(0,
             streamer->search_bf_impl(unit_record.data(), query_meta, context));
-  static_cast<VamanaContext *>(context.get())->topk_to_result();
   ASSERT_EQ(2UL, context->result().size());
   EXPECT_EQ(20UL, context->result()[0].key());
   EXPECT_FLOAT_EQ(-2.0f, context->result()[0].score());
@@ -1519,7 +1509,6 @@ TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {
   ASSERT_EQ(
       0, streamer->search_bf_by_p_keys_impl(unit_record.data(), primary_keys,
                                             query_meta, primary_key_context));
-  static_cast<VamanaContext *>(primary_key_context.get())->topk_to_result();
   ASSERT_EQ(2UL, primary_key_context->result().size());
   EXPECT_EQ(20UL, primary_key_context->result()[0].key());
   EXPECT_FLOAT_EQ(-2.0f, primary_key_context->result()[0].score());
@@ -1619,7 +1608,6 @@ TEST_F(VamanaStreamerTest, TestInt8WithRotate) {
   ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knnCtx));
   ASSERT_EQ(0,
             streamer2->search_bf_impl(new_query.data(), new_qmeta, linearCtx));
-  static_cast<VamanaContext *>(linearCtx.get())->topk_to_result();
 
   EXPECT_EQ(kTopk, knnCtx->result().size());
   EXPECT_EQ(kTopk, linearCtx->result().size());
