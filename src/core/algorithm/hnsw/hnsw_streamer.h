@@ -118,16 +118,13 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  //! Execute one BF query, retaining candidates in the context heap.
-  //! The caller clears the context for the request and exports the results.
+  //! Search and export results, equivalent to the count = 1 overload.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
 
-  //! Batch caller: execute one query, then export it before the next query.
+  //! Search and export results for each query.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
-
-  using IndexStreamer::search_bf_by_p_keys_impl;
 
   //! Search and export results, equivalent to the count = 1 overload.
   int search_bf_by_p_keys_impl(const void *query,
@@ -201,12 +198,13 @@ class HnswStreamer : public IndexStreamer {
       Context::Pointer &context) const override;
 
  private:
-  // Execute one query over a single key list, retaining candidates in the heap.
-  // Callers clear the context once per request and export each query's results.
-  int search_bf_by_p_keys_impl(const void *query,
-                               const std::vector<uint64_t> &p_keys,
-                               const IndexQueryMeta &qmeta,
-                               Context::Pointer &context) const;
+  // Execute one BF query using a prepared context. Results remain in the heap
+  // for the caller to export as documents or candidate keys.
+  int execute_bf_search(const void *query, HnswContext *context) const;
+
+  int execute_bf_search_by_p_keys(const void *query,
+                                  const std::vector<uint64_t> &p_keys,
+                                  HnswContext *context) const;
 
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {

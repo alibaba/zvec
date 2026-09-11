@@ -415,10 +415,6 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
           compare(expected, context->result());
         } else if (mode == 7) {
           ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, context));
-          if (vctx)
-            vctx->topk_to_result();
-          else
-            hctx->topk_to_result();
           compare(expected, context->result());
         } else {
           ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, context));
@@ -467,25 +463,20 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     }
   }
 
-  // Single-query BF leaves candidates in the heap without exporting them.
-  // The caller exports explicitly; the batch entry point does this per query.
+  // Omitting count is equivalent to count = 1, including result export on a
+  // reused context. The previous query's documents must be replaced.
   configure(context, 12, 7, true);
   ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, 1, context));
   const auto previous = context->result();
   std::vector<float> next_query(16, 0.0f);
   next_query[0] = 63.25f;
   ASSERT_EQ(0, streamer->search_bf_impl(next_query.data(), meta, context));
-  compare(previous, context->result());
   auto &bf_heap = vctx ? vctx->search_heap() : hctx->search_heap();
   bf_heap.dispatch([&](const auto &buffer) {
     EXPECT_TRUE(
         (std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>));
     EXPECT_EQ(kCount, static_cast<uint32_t>(buffer.size()));
   });
-  if (vctx)
-    vctx->topk_to_result();
-  else
-    hctx->topk_to_result();
   const auto exported = context->result();
   ASSERT_EQ(12U, exported.size());
   EXPECT_NE(previous.front().key(), exported.front().key());

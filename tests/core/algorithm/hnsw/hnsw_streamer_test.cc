@@ -152,7 +152,6 @@ TEST_F(HnswStreamerTest, TestLinearSearch) {
     }
     ctx->set_topk(1U);
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
-    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result1 = ctx->result();
     ASSERT_EQ(1UL, result1.size());
     ASSERT_EQ(i, result1[0].key());
@@ -162,7 +161,6 @@ TEST_F(HnswStreamerTest, TestLinearSearch) {
     }
     ctx->set_topk(topk);
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
-    static_cast<HnswContext *>(ctx.get())->topk_to_result();
     auto &result2 = ctx->result();
     ASSERT_EQ(topk, result2.size());
     ASSERT_EQ(i, result2[0].key());
@@ -175,7 +173,6 @@ TEST_F(HnswStreamerTest, TestLinearSearch) {
     vec[j] = 10.1f;
   }
   ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
-  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &result = ctx->result();
   ASSERT_EQ(100U, result.size());
   ASSERT_EQ(10, result[0].key());
@@ -352,7 +349,6 @@ TEST_F(HnswStreamerTest, TestKnnSearch) {
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
     knnTotalTime += t2 - t1;
     linearTotalTime += t3 - t2;
@@ -444,7 +440,6 @@ TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
     }
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
@@ -540,7 +535,6 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderWithMismatchedMeta) {
     }
     ASSERT_EQ(0, streamer->search_impl(fp16_vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(fp16_vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
@@ -626,7 +620,6 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderWithDifferentMetric) {
     }
     ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
@@ -712,7 +705,6 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderAddWithId) {
     }
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
@@ -803,7 +795,6 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderMissingKey) {
     vec[j] = missing_key;
   }
   ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-  static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
   auto &linearResult = linearCtx->result();
   ASSERT_EQ(topk, linearResult.size());
   for (size_t k = 0; k < topk; ++k) {
@@ -886,7 +877,6 @@ TEST_F(HnswStreamerTest, TestAddAndSearch) {
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
     knnTotalTime += t2 - t1;
     linearTotalTime += t3 - t2;
@@ -969,7 +959,6 @@ TEST_F(HnswStreamerTest, TestUniformUint8BatchExtraValues) {
   EXPECT_FLOAT_EQ(0.0F, context->result()[0].score());
 
   ASSERT_EQ(0, streamer->search_bf_impl(query.data(), query_meta, context));
-  static_cast<HnswContext *>(context.get())->topk_to_result();
   ASSERT_EQ(1U, context->result().size());
   EXPECT_EQ(kProbe, context->result()[0].key());
   EXPECT_FLOAT_EQ(0.0F, context->result()[0].score());
@@ -1030,7 +1019,6 @@ TEST_F(HnswStreamerTest, TestKnnSearchRandomData) {
     }
     auto t1 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     auto t3 = ailego::Realtime::MicroSeconds();
@@ -1389,7 +1377,6 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
       ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-      static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
                                                       linearByPkeysCtx));
@@ -1487,7 +1474,6 @@ TEST_F(HnswStreamerTest, TestKnnConcurrentAddAndSearch) {
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
       ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-      static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
                                                       linearByPKeysCtx));
@@ -1686,7 +1672,6 @@ TEST_F(HnswStreamerTest, TestFilter) {
 
   // linear
   ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
-  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &results2 = ctx->result();
   ASSERT_EQ(10, results2.size());
   ASSERT_EQ(99, results2[0].key());
@@ -2566,7 +2551,6 @@ TEST_F(HnswStreamerTest, TestBruteForceSetupInContext) {
     auto t2 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
 
     // auto t3 = ailego::Realtime::MicroSeconds();
 
@@ -2701,7 +2685,6 @@ TEST_F(HnswStreamerTest, TestKnnSearchCosine) {
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
               streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
     knnTotalTime += t2 - t1;
     linearTotalTime += t3 - t2;
@@ -2808,7 +2791,6 @@ TEST_F(HnswStreamerTest, TestFetchVector) {
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
     knnTotalTime += t2 - t1;
     linearTotalTime += t3 - t2;
@@ -2933,7 +2915,6 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosine) {
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
               streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
 
     knnTotalTime += t2 - t1;
@@ -3074,7 +3055,6 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
               streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
 
     knnTotalTime += t2 - t1;
@@ -3214,7 +3194,6 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
               streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
 
     knnTotalTime += t2 - t1;
@@ -3349,7 +3328,6 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt8Converter) {
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
               streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
 
     knnTotalTime += t2 - t1;
@@ -3483,7 +3461,6 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt4Converter) {
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
               streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
 
     knnTotalTime += t2 - t1;
@@ -4053,7 +4030,6 @@ TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto t3 = ailego::Realtime::MicroSeconds();
     knnTotalTime += t2 - t1;
     linearTotalTime += t3 - t2;
@@ -4174,7 +4150,6 @@ TEST_F(HnswStreamerTest, TestContiguousMemorySearch) {
     }
     ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
-    static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
     auto &linearResult = linearCtx->result();
@@ -4296,7 +4271,6 @@ TEST_F(HnswStreamerTest, TestContiguousMultiThreadSearch) {
       }
       ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
       ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
-      static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
       auto &knnResult = knnCtx->result();
       ASSERT_EQ(topk, knnResult.size());
       auto &linearResult = linearCtx->result();
@@ -4416,7 +4390,6 @@ TEST_F(HnswStreamerTest, TestInt8WithRotate) {
   ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knnCtx));
   ASSERT_EQ(0,
             streamer2->search_bf_impl(new_query.data(), new_qmeta, linearCtx));
-  static_cast<HnswContext *>(linearCtx.get())->topk_to_result();
 
   EXPECT_EQ(kTopk, knnCtx->result().size());
   EXPECT_EQ(kTopk, linearCtx->result().size());
