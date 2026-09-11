@@ -170,6 +170,27 @@ class HnswContext : public IndexContext {
     }
   }
 
+  inline void topk_to_keys(std::vector<uint64_t> &keys) {
+    keys.clear();
+    if (force_padding_topk_ && !topk_heap_.full() &&
+        topk_heap_.size() < entity_->doc_cnt()) {
+      this->fill_random_to_topk_full();
+    }
+    if (ailego_unlikely(topk_heap_.size() == 0)) {
+      return;
+    }
+
+    const int size = std::min(topk_, static_cast<uint32_t>(topk_heap_.size()));
+    topk_heap_.sort();
+    keys.reserve(size);
+    for (int i = 0; i < size; ++i) {
+      if (topk_heap_[i].second > this->threshold()) {
+        break;
+      }
+      keys.push_back(entity_->get_key(topk_heap_[i].first));
+    }
+  }
+
   inline void recal_topk_dist() {
     TopkHeap heap(topk_heap_);
     topk_heap_.clear();

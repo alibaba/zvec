@@ -225,6 +225,27 @@ void VamanaContext::topk_to_result(uint32_t idx) {
   }
 }
 
+void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys) {
+  keys.clear();
+  if (force_padding_topk_ && !topk_heap_.full() &&
+      topk_heap_.size() < entity_->doc_cnt()) {
+    this->fill_random_to_topk_full();
+  }
+  if (ailego_unlikely(topk_heap_.size() == 0)) {
+    return;
+  }
+
+  const int size = std::min(topk_, static_cast<uint32_t>(topk_heap_.size()));
+  topk_heap_.sort();
+  keys.reserve(size);
+  for (int i = 0; i < size; ++i) {
+    if (topk_heap_[i].second > this->threshold()) {
+      break;
+    }
+    keys.push_back(entity_->get_key(topk_heap_[i].first));
+  }
+}
+
 void VamanaContext::fill_random_to_topk_full() {
   std::mt19937 rng(42);
   uint32_t doc_cnt = entity_->doc_cnt();
