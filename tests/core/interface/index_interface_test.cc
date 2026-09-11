@@ -34,6 +34,7 @@
 #include "algorithm/hnsw/hnsw_entity.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "algorithm/vamana/vamana_entity.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
@@ -1606,6 +1607,110 @@ TEST(IndexInterface, HnswNativeRefineMatchesExplicitCandidates) {
   }
   ASSERT_EQ(0, coarse->close());
   zvec::test_util::RemoveTestFiles(coarse_path);
+}
+
+TEST(IndexInterface, VamanaNativeRefineMatchesExplicitCandidates) {
+  constexpr uint32_t kDimension = 17;
+  // Keep the data set just above the streamer's BF fallback threshold so both
+  // candidate searches exercise the contiguous Vamana graph path.
+  constexpr uint32_t kCount =
+      zvec::core::VamanaEntity::kDefaultBruteForceThreshold + 1;
+  constexpr uint32_t kTopk = 5;
+  constexpr uint32_t kCandidates = 20;
+  constexpr uint32_t kEfSearch = 64;
+  const std::string coarse_path = "vamana_handoff_coarse.index";
+  const std::string fine_path = "vamana_handoff_fine.index";
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+
+  auto coarse_param =
+      VamanaIndexParamBuilder()
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kInt8))
+          .with_max_degree(16)
+          .with_search_list_size(32)
+          .with_alpha(1.2f)
+          .with_use_contiguous_memory(true)
+          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_TRUE(coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<std::vector<float>> vectors(kCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t id = 0; id < kCount; ++id) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[id][d] = float((id * 37 + d * 13) % 251) + 0.37f;
+    }
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[id].data()}}, id));
+  }
+  ASSERT_EQ(0, coarse->train());
+
+  auto fine_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_use_contiguous_memory(true)
+                        .build();
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_TRUE(fine);
+  ASSERT_EQ(0,
+            fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t id = 0; id < kCount; ++id) {
+    ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[id].data()}}, id));
+  }
+
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->scale_factor_ = float(kCandidates) / kTopk;
+  refiner->reference_index = fine;
+  auto refine_param = VamanaQueryParamBuilder()
+                          .with_topk(kTopk)
+                          .with_ef_search(kEfSearch)
+                          .with_fetch_vector(true)
+                          .with_refiner_param(refiner)
+                          .build();
+  auto candidate_param = VamanaQueryParamBuilder()
+                             .with_topk(kCandidates)
+                             .with_ef_search(kEfSearch)
+                             .build();
+
+  for (uint32_t query_id : {7U, 23U, 7U}) {
+    SCOPED_TRACE(query_id);
+    const VectorData query{DenseVector{vectors[query_id].data()}};
+    SearchResult candidates;
+    ASSERT_EQ(0, coarse->search(query, candidate_param, &candidates));
+    ASSERT_EQ(kCandidates, candidates.doc_list_.size());
+
+    auto explicit_param = FlatQueryParamBuilder()
+                              .with_topk(kTopk)
+                              .with_fetch_vector(true)
+                              .build();
+    explicit_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+    for (const auto &doc : candidates.doc_list_) {
+      explicit_param->bf_pks->push_back(doc.key());
+    }
+
+    SearchResult expected;
+    SearchResult actual;
+    ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+    ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+    ASSERT_EQ(kTopk, actual.doc_list_.size());
+    ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+    for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+      EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                      actual.doc_list_[i].score());
+    }
+    EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
+  }
+
+  ASSERT_EQ(0, coarse->close());
+  ASSERT_EQ(0, fine->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
 }
 
 TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {

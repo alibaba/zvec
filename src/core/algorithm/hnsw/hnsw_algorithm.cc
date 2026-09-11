@@ -89,7 +89,8 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
     if (!ctx->filter().is_valid()) {
       ctx->search_heap().reset_pool(capacity, entity_.max_degree(0));
-      dispatch_search_neighbors(entry_point, dist, ctx);
+      const int ret = dispatch_search_neighbors(entry_point, dist, ctx);
+      if (ailego_unlikely(ret != 0)) return ret;
     } else {
       auto &topk = ctx->search_heap().reset<TopkHeap>(capacity);
       search_neighbors(0, &entry_point, &dist, topk, ctx);
@@ -205,24 +206,24 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 }
 
 // ============================================================================
-// search_neighbors helper templates
+// Search helper templates
 //
-// Two specialized inner loops, dispatched from search_neighbors():
+// The query boundary selects one of two specialized inner loops:
 //
 //   fast_search_neighbors:       mmap/contiguous with direct vector pointers.
 //                                Uses BlockHeap (AVX2) or LinearPool (scalar)
-//                                for visited tracking and top-k maintenance.
+//                                plus a concrete VisitFilterView.
 //   dual_heap_search_neighbors:  CandidateHeap + TopkHeap + VisitFilter.
-//                                Used for add_node (use_pool=false), filtered
-//                                search, upper levels, and BufferPool fallback.
+//                                Used for add_node, filtered search, upper
+//                                levels, and BufferPool fallback.
 // ============================================================================
 
 // mmap/contiguous variant: resolve vectors via get_vector_ptr and use
-// LinearPool or BlockHeap for visited tracking + top-k maintenance.
-// HeapType must expose reset/set_visited/check_visited/push_block/has_next/pop.
-template <typename EntityType, typename HeapType>
+// LinearPool or BlockHeap for top-k maintenance, with a concrete visit view.
+// HeapType must expose push_block/has_next/pop; callers reset it before search.
+template <typename EntityType, typename HeapType, typename Visit>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
-                           VisitFilter &visit, HnswDistCalculator &dc,
+                           Visit visit, HnswDistCalculator &dc,
                            HnswContext *ctx, node_id_t entry_point,
                            dist_t entry_dist, uint32_t prefetch_lines,
                            uint32_t prefetch_offset) {
@@ -478,23 +479,31 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::dispatch_search_neighbors(
+int HnswAlgorithm<EntityType>::dispatch_search_neighbors(
     node_id_t entry_point, dist_t entry_dist, HnswContext *ctx) const {
   if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
     const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
     const uint32_t prefetch_lines =
         ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
-    auto &visit = ctx->visit_filter();
-    visit.clear();
-    ctx->search_heap().dispatch([&](auto &pool) {
-      using Heap = std::decay_t<decltype(pool)>;
-      if constexpr (!std::is_same_v<Heap, TopkHeap>) {
-        fast_search_neighbors(entity, pool, visit, ctx->dist_calculator(), ctx,
-                              entry_point, entry_dist, prefetch_lines,
-                              ctx->po());
-      }
-    });
+    const bool dispatched =
+        dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
+          visit.clear();
+          ctx->search_heap().dispatch([&](auto &pool) {
+            using Heap = std::decay_t<decltype(pool)>;
+            if constexpr (!std::is_same_v<Heap, TopkHeap>) {
+              fast_search_neighbors(entity, pool, visit, ctx->dist_calculator(),
+                                    ctx, entry_point, entry_dist,
+                                    prefetch_lines, ctx->po());
+            }
+          });
+        });
+    if (ailego_unlikely(!dispatched)) {
+      LOG_ERROR("Failed to dispatch HNSW visit filter, mode %d",
+                ctx->visit_filter().get_mode());
+      return IndexError_Runtime;
+    }
   }
+  return 0;
 }
 
 template <typename EntityType>

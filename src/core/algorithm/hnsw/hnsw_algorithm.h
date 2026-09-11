@@ -110,15 +110,13 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
                      HnswContext *ctx);
 
-  //! Dispatch the prepared level-0 pool to the concrete search kernel.
-  void dispatch_search_neighbors(node_id_t entry_point, dist_t entry_dist,
-                                 HnswContext *ctx) const;
+  //! Dispatch the prepared level-0 pool and visit-filter view to the concrete
+  //! mmap/contiguous search kernel.
+  int dispatch_search_neighbors(node_id_t entry_point, dist_t entry_dist,
+                                HnswContext *ctx) const;
 
-  //! Given a node id and level, search the nearest neighbors in graph.
-  //! Dispatches to fast_search_neighbors (pool-based, direct pointer) for
-  //! mmap/contiguous level-0 unfiltered search, or dual_heap_search_neighbors
-  //! (CandidateHeap + TopkHeap) for add_node, filtered search, upper levels,
-  //! and BufferPool fallback.
+  //! Search with the fallback CandidateHeap + TopkHeap implementation used by
+  //! add_node, filtered queries, upper levels, and BufferPool entities.
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
                         TopkHeap &topk, HnswContext *ctx) const;
