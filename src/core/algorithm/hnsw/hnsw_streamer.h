@@ -118,13 +118,13 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  using IndexStreamer::search_bf_impl;
-
-  //! Similarity brute force search
+  //! Search one query without exporting results. Candidates remain in the
+  //! context heap; the caller must export them before starting another search.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
 
-  //! Similarity brute force search
+  //! Batch caller: search and export each query before reusing the context
+  //! heap.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
@@ -210,10 +210,6 @@ class HnswStreamer : public IndexStreamer {
   int search_with_collector(const void *query, const IndexQueryMeta &qmeta,
                             uint32_t count, Context::Pointer &context,
                             Collect &&collect) const;
-
-  // Search one query using a prepared context. The caller exports the retained
-  // candidates before reusing the context for the next query.
-  int search_bf_impl(const void *query, HnswContext *ctx) const;
 
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {

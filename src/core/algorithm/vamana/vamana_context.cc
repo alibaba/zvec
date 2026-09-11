@@ -197,7 +197,7 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
 }
 
 void VamanaContext::topk_to_result(uint32_t idx) {
-  ailego_assert_with(idx < results_.size(), "invalid idx");
+  if (results_.size() <= idx) results_.resize(idx + 1);
   results_[idx].clear();
   collect_search_result([&](node_id_t id, dist_t score) {
     if (fetch_vector_) {

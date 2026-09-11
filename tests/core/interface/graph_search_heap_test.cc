@@ -449,6 +449,31 @@ TEST_P(GraphSearchHeapTest, ReuseAcrossGraphFilteredAndBruteForceSearch) {
     }
   }
 
+  // The original single-query BF interface retains candidates only. It must
+  // not overwrite previously exported documents; export is the caller's job.
+  configure(context, 12, 7, true);
+  ASSERT_EQ(0, streamer->search_bf_impl(vector.data(), meta, 1, context));
+  const auto previous = context->result();
+  std::vector<float> next_query(16, 0.0f);
+  next_query[0] = 63.25f;
+  ASSERT_EQ(0, streamer->search_bf_impl(next_query.data(), meta, context));
+  compare(previous, context->result());
+  auto &bf_heap = vctx ? vctx->search_heap() : hctx->search_heap();
+  bf_heap.dispatch([&](const auto &buffer) {
+    EXPECT_TRUE(
+        (std::is_same_v<std::decay_t<decltype(buffer)>, core::TopkHeap>));
+    EXPECT_EQ(kCount, static_cast<uint32_t>(buffer.size()));
+  });
+  if (vctx)
+    vctx->topk_to_result();
+  else
+    hctx->topk_to_result();
+  const auto exported = context->result();
+  ASSERT_EQ(12U, exported.size());
+  EXPECT_NE(previous.front().key(), exported.front().key());
+  ASSERT_EQ(0, streamer->search_bf_impl(next_query.data(), meta, 1, context));
+  compare(exported, context->result());
+
   // A later query must not change an earlier query's materialized documents.
   std::vector<float> batch(32, 0.0f);
   batch[0] = 0.25f;

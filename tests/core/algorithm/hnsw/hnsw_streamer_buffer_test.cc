@@ -8,6 +8,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
+#include "hnsw_context.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -125,6 +126,7 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
     vec[j] = 10.1f;
   }
   ASSERT_EQ(0, read_streamer->search_bf_impl(vec.data(), qmeta, ctx));
+  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &result = ctx->result();
   ASSERT_EQ(100U, result.size());
   ASSERT_EQ(10, result[0].key());
@@ -249,6 +251,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
     vec[j] = 10.1f;
   }
   ASSERT_EQ(0, read_streamer->search_bf_impl(vec.data(), qmeta, ctx));
+  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &result = ctx->result();
   ASSERT_EQ(100U, result.size());
   ASSERT_EQ(10, result[0].key());
@@ -334,7 +337,8 @@ TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
+  ASSERT_EQ(0,
+            read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
@@ -373,6 +377,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
     vec[j] = 10.1f;
   }
   ASSERT_EQ(0, read_streamer->search_bf_impl(vec.data(), qmeta, ctx));
+  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &result = ctx->result();
   ASSERT_EQ(100U, result.size());
   ASSERT_EQ(10, result[0].key());
@@ -497,6 +502,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchMMap) {
     vec[j] = 10.1f;
   }
   ASSERT_EQ(0, read_streamer->search_bf_impl(vec.data(), qmeta, ctx));
+  static_cast<HnswContext *>(ctx.get())->topk_to_result();
   auto &result = ctx->result();
   ASSERT_EQ(100U, result.size());
   ASSERT_EQ(10, result[0].key());

@@ -170,7 +170,7 @@ class HnswContext : public IndexContext {
   }
 
   inline void topk_to_single_result(uint32_t idx) {
-    ailego_assert_with(idx < results_.size(), "invalid idx");
+    if (results_.size() <= idx) results_.resize(idx + 1);
     results_[idx].clear();
     collect_search_result([&](node_id_t id, dist_t score) {
       if (fetch_vector_) {
@@ -204,7 +204,7 @@ class HnswContext : public IndexContext {
  public:
   //! Construct result from topk heap, result will be normalized
   inline void topk_to_group_result(uint32_t idx) {
-    ailego_assert_with(idx < group_results_.size(), "invalid idx");
+    if (group_results_.size() <= idx) group_results_.resize(idx + 1);
 
     group_results_[idx].clear();
 
@@ -484,7 +484,8 @@ class HnswContext : public IndexContext {
     return dc_.error();
   }
 
-  inline void clear() {
+  // Reset search state without discarding results already exported by a caller.
+  inline void clear_search() {
     search_heap_.clear();
     dc_.clear();
     if (ailego_unlikely(this->debugging())) {
@@ -492,6 +493,10 @@ class HnswContext : public IndexContext {
       stats_get_vector_cnt_ = 0u;
       stats_visit_dup_cnt_ = 0u;
     }
+  }
+
+  inline void clear() {
+    clear_search();
     // do not clear results_ for the next query will need it
     for (auto &it : results_) {
       it.clear();

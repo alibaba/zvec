@@ -310,9 +310,14 @@ class VamanaContext : public IndexContext {
     return dc_.error();
   }
 
-  inline void clear() {
+  // Reset search state without discarding results already exported by a caller.
+  inline void clear_search() {
     search_heap_.clear();
     dc_.clear();
+  }
+
+  inline void clear() {
+    clear_search();
     for (auto &it : results_) {
       it.clear();
     }
