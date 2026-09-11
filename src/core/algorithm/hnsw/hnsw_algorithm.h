@@ -16,7 +16,6 @@
 #include <stdint.h>
 #include <chrono>
 #include <vector>
-#include <ailego/internal/cpu_features.h>
 #include <ailego/parallel/lock.h>
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
@@ -111,6 +110,10 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
                      HnswContext *ctx);
 
+  //! Dispatch the prepared level-0 pool to the concrete search kernel.
+  void dispatch_search_neighbors(node_id_t entry_point, dist_t entry_dist,
+                                 HnswContext *ctx) const;
+
   //! Given a node id and level, search the nearest neighbors in graph.
   //! Dispatches to fast_search_neighbors (pool-based, direct pointer) for
   //! mmap/contiguous level-0 unfiltered search, or dual_heap_search_neighbors
@@ -118,7 +121,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! and BufferPool fallback.
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx, bool use_pool) const;
+                        TopkHeap &topk, HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
@@ -132,7 +135,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
                                 TopkHeap &update_heap);
 
   //! expand neighbors until group nums are reached
-  void expand_neighbors_by_group(TopkHeap &topk, HnswContext *ctx) const;
+  void expand_neighbors_by_group(HnswContext *ctx) const;
 
  private:
   HnswAlgorithm(const HnswAlgorithm &) = delete;

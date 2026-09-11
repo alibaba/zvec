@@ -172,7 +172,7 @@ TEST_F(VamanaPrefetchContextTest, UnchangedRequestsReuseResolvedValues) {
   ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
   ASSERT_EQ(0, context_->update(ef));
   EXPECT_EQ(123U, context_->ef());
-  EXPECT_EQ(123U, context_->topk_heap().limit());
+  EXPECT_EQ(123U, context_->search_heap().topk().limit());
   ExpectPrefetch(48, 2);
 
   // A notified entity change must resolve even when requests are unchanged.
