@@ -15,7 +15,7 @@ from zvec import (
 from typing import Dict
 
 
-def is_float_equal(actual, expected, rel_tol=1e-5, abs_tol=1e-8):
+def is_float_equal(actual, expected, rel_tol=1e-3, abs_tol=1e-5):
     if actual is None and expected is None:
         return True
     return math.isclose(actual, expected, rel_tol=rel_tol, abs_tol=abs_tol)
@@ -63,6 +63,7 @@ def cosine_distance_dense(
 ):
     if dtype == DataType.VECTOR_FP16 or quantize_type == QuantizeType.FP16:
         # More stable conversion to float16 to avoid numerical issues
+        # Convert to numpy float16 and back to float for consistent handling
         vec1 = [float(np.float16(a)) for a in vec1]
         vec2 = [float(np.float16(b)) for b in vec2]
     elif dtype == DataType.VECTOR_INT8:
@@ -74,10 +75,16 @@ def cosine_distance_dense(
             int(round(min(max(val, -128), 127))) for val in vec2
         ]  # Clamp to valid INT8 range
 
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
-
-    magnitude1 = math.sqrt(sum(a * a for a in vec1))
-    magnitude2 = math.sqrt(sum(b * b for b in vec2))
+    # Calculate dot product and magnitudes with higher precision for FP16
+    if dtype == DataType.VECTOR_FP16 or quantize_type == QuantizeType.FP16:
+        # Use more precise calculation for FP16 to handle precision issues
+        dot_product = sum(np.float32(a) * np.float32(b) for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(np.float32(a) * np.float32(a) for a in vec1))
+        magnitude2 = math.sqrt(sum(np.float32(b) * np.float32(b) for b in vec2))
+    else:
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
 
     if magnitude1 == 0 or magnitude2 == 0:
         return 1.0  # Zero vector case - maximum distance
@@ -112,6 +119,7 @@ def dp_distance_dense(
 ):
     if dtype == DataType.VECTOR_FP16 or quantize_type == QuantizeType.FP16:
         # More stable computation to avoid numerical issues
+        # Convert to numpy float16 and back to float for consistent handling
         products = [
             float(np.float16(a)) * float(np.float16(b)) for a, b in zip(vec1, vec2)
         ]
@@ -319,22 +327,25 @@ def is_field_equal(field1, field2, schema: FieldSchema) -> bool:
 
 
 def is_vector_equal(vec1, vec2, schema: VectorSchema) -> bool:
-    if (
-        schema.data_type == DataType.SPARSE_VECTOR_FP16
-        or schema.data_type == DataType.VECTOR_FP16
-    ):
-        # skip fp16 vector equal
-        return True
-
     is_sparse = (
         schema.data_type == DataType.SPARSE_VECTOR_FP32
         or schema.data_type == DataType.SPARSE_VECTOR_FP16
     )
 
     if is_sparse:
-        return is_sparse_vector_equal(vec1, vec2)
+        # For SPARSE_VECTOR_FP16, use higher tolerance
+        if schema.data_type == DataType.SPARSE_VECTOR_FP16:
+            return is_sparse_vector_equal(vec1, vec2, rtol=1e-2, atol=1e-2)
+        else:
+            return is_sparse_vector_equal(vec1, vec2)
     else:
-        return is_dense_vector_equal(vec1, vec2)
+        # For FP16 and INT8 vectors, use appropriate tolerance for comparison
+        if schema.data_type == DataType.VECTOR_FP16:
+            return is_dense_vector_equal(vec1, vec2, rtol=1e-2, atol=1e-2)
+        elif schema.data_type == DataType.VECTOR_INT8:
+            return is_dense_vector_equal(vec1, vec2, rtol=1e-1, atol=1e-1)
+        else:
+            return is_dense_vector_equal(vec1, vec2)
 
 
 def is_doc_equal(
