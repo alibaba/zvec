@@ -96,7 +96,7 @@ Result<QueryInfo::Ptr> QueryAnalyzer::analyze(const CollectionSchema &schema,
   if (query_info->search_cond() != nullptr) {
     // rewrite query by  rule
     SimpleRewriter rewriter;
-    rewriter.rewrite(query_info.get());
+    rewriter.rewrite(query_info.get(), schema);
 
     SearchCondCheckWalker search_cond_check_walker(schema);
     search_cond_check_walker.traverse_cond_node(query_info->search_cond());

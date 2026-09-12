@@ -21,6 +21,14 @@
 
 namespace zvec::sqlengine {
 
+size_t count_op(const QueryNode::Ptr &node, QueryNodeOp op) {
+  if (node == nullptr) {
+    return 0;
+  }
+  size_t count = node->op() == op ? 1 : 0;
+  return count + count_op(node->left(), op) + count_op(node->right(), op);
+}
+
 class SimpleRewriterTest : public testing::Test {
  public:
   // Sets up the test fixture.
@@ -46,6 +54,11 @@ class SimpleRewriterTest : public testing::Test {
     column_gender->set_name("gender");
     column_gender->set_data_type(DataType::UINT32);
     param.add_field(column_gender);
+
+    auto column_score = std::make_shared<FieldSchema>();
+    column_score->set_name("score");
+    column_score->set_data_type(DataType::DOUBLE);
+    param.add_field(column_score);
 
     auto column3 = std::make_shared<FieldSchema>();
     column3->set_name("category");
@@ -187,7 +200,7 @@ class SimpleRewriterTest : public testing::Test {
   // Tears down the test fixture.
   static void TearDownTestSuite() {}
 
-  QueryInfo::Ptr parse(const std::string &filter) {
+  Result<QueryInfo::Ptr> parse_result(const std::string &filter) {
     SearchQuery query;
     query.output_fields_ = {"*"};
     query.topk_ = 11;
@@ -195,13 +208,15 @@ class SimpleRewriterTest : public testing::Test {
     query.filter_ = filter;
 
     auto engine = std::make_shared<SQLEngineImpl>(profiler_);
-    auto ret = engine->build_query_info(schema, query, nullptr);
+    return engine->build_query_info(schema, query, nullptr);
+  }
 
+  QueryInfo::Ptr parse(const std::string &filter) {
+    auto ret = parse_result(filter);
     // ASSERT_TRUE(ret.has_value());
     QueryInfo::Ptr new_query_info = ret.value();
     return new_query_info;
   }
-
 
  protected:
   Profiler::Ptr profiler_{new Profiler};
@@ -283,7 +298,9 @@ TEST_F(EqOrRewriteTest, SimpleManyEqOrParas) {
 TEST_F(EqOrRewriteTest, SimpleNeOr) {
   auto info = parse("age != 10 or age != 20 ");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (10, 20)(FORWARD)");
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age!=10(FORWARD)(OR_A)) or (age!=20(FORWARD)(OR_A))");
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 0u);
 }
 
 TEST_F(EqOrRewriteTest, SimpleManyNeOr) {
@@ -293,10 +310,8 @@ TEST_F(EqOrRewriteTest, SimpleManyNeOr) {
       "!= 10 or age != 11 or age != 12 or age != 13 or age != 14 or age != 15 "
       "or age != 16 or age != 17 or age != 18 or age != 19 or age != 20");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(),
-            "age in NOT (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, "
-            "16, 17, 18, "
-            "19, 20)(FORWARD)");
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_NE), 20u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 0u);
 }
 
 TEST_F(EqOrRewriteTest, EqAndNe) {
@@ -304,9 +319,108 @@ TEST_F(EqOrRewriteTest, EqAndNe) {
       "age != 10 or age != 20 or age = 30 or "
       "age = 40");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(),
-            "(age in NOT (10, 20)(FORWARD)(OR_A)) or (age in (30, "
-            "40)(FORWARD)(OR_A))");
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_NE), 2u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 1u);
+}
+
+TEST_F(EqOrRewriteTest, EqOrInUnion) {
+  auto info = parse("age = 2 or age in (2, 3)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in (2, 3)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, InOrInUnion) {
+  auto info = parse("age in (1, 2) or age in (2, 3)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in (1, 2, 3)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, NeAndNotInUnion) {
+  auto info = parse("age != 1 and age not in (2, 3) and age != 2");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (1, 2, 3)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, InAndInIsNotRewritten) {
+  auto info = parse("age in (1, 2, 2, 3) and age in (2, 3, 4)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 2u);
+}
+
+TEST_F(EqOrRewriteTest, EqAndInIsNotRewritten) {
+  auto info = parse("age = 2 and age in (2, 3)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 1u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 1u);
+}
+
+TEST_F(EqOrRewriteTest, DisjointInPredicatesAreNotFolded) {
+  auto info = parse("age in (1, 2) and age in (3, 4)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_FALSE(info->is_filter_unsatisfiable());
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 2u);
+}
+
+TEST_F(EqOrRewriteTest, DisjointInPredicatesWithSiblingAreNotFolded) {
+  auto info = parse("age in (1, 2) and age in (3, 4) and gender = 1");
+  ASSERT_NE(info, nullptr);
+  EXPECT_FALSE(info->is_filter_unsatisfiable());
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 2u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 1u);
+}
+
+TEST_F(EqOrRewriteTest, ConflictingEqualitiesWithSiblingAreNotFolded) {
+  auto info = parse("age = 1 and age = 2 and state = 1");
+  ASSERT_NE(info, nullptr);
+  EXPECT_FALSE(info->is_filter_unsatisfiable());
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 3u);
+}
+
+TEST_F(EqOrRewriteTest, ContradictionDoesNotHideInvalidSibling) {
+  auto result =
+      parse_result("age in (1) and age in (2) and gender in (1, 1.5)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(EqOrRewriteTest, UnionDoesNotCanonicalizeNumericLiterals) {
+  auto info = parse("score = 1 or score in (1.0, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "score in (1, 1.0, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, UnionDoesNotCanonicalizeSignedZero) {
+  auto info = parse("score = -0.0 or score in (0.0, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "score in (-0.0, 0.0, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, UnionDoesNotHideDifferentLiteralTypes) {
+  auto result = parse_result("age = 1 or age in ('1', 2)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(EqOrRewriteTest, InvalidValueIsRejectedWithoutIntersection) {
+  auto result = parse_result("age in (1, 1.5) and age in (1)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(EqOrRewriteTest, InListIsNotDeduplicated) {
+  auto info = parse("age in (1, 2, 1, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in (1, 2, 1, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, NotInListIsNotDeduplicated) {
+  auto info = parse("age not in (1, 2, 1, 2)");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (1, 2, 1, 2)(FORWARD)");
+}
+
+TEST_F(EqOrRewriteTest, BoolEqOrIsNotRewrittenToIn) {
+  auto info = parse("is_type1 = true or is_type1 = false");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_EQ), 2u);
+  EXPECT_EQ(count_op(info->filter_cond(), QueryNodeOp::Q_IN), 0u);
 }
 
 TEST_F(EqOrRewriteTest, PreEqOr) {
