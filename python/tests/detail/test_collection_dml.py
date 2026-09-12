@@ -1062,12 +1062,33 @@ class TestCollectionUpsert:
 class TestCollectionDelete:
     @pytest.mark.parametrize("doc_num", [1, 5, Maximum])
     def test_delete_batch(self, full_collection: Collection, doc_num):
-        multiple_docs = [
+        multiple_docs_insert = [
             generate_doc(i, full_collection.schema) for i in range(doc_num)
         ]
-        batchdoc_and_check(full_collection, multiple_docs, doc_num, operator="insert")
+        batchdoc_and_check(
+            full_collection, multiple_docs_insert, doc_num, operator="insert"
+        )
 
-        doc_ids = [doc.id for doc in multiple_docs]
+        multiple_docs_update = [
+            generate_update_doc(i, full_collection.schema) for i in range(doc_num)
+        ]
+        batchdoc_and_check(
+            full_collection, multiple_docs_update, doc_num, operator="update"
+        )
+        if doc_num < Maximum:
+            doc_num_upsert = doc_num + 1
+        else:
+            doc_num_upsert = doc_num
+
+        multiple_docs_upsert = [
+            generate_update_doc(i, full_collection.schema)
+            for i in range(doc_num_upsert)
+        ]
+        batchdoc_and_check(
+            full_collection, multiple_docs_upsert, doc_num, operator="upsert"
+        )
+
+        doc_ids = [doc.id for doc in multiple_docs_upsert]
         result = full_collection.delete(doc_ids)
         assert len(result) == len(doc_ids)
         for item in result:
