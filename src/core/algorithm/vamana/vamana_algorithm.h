@@ -38,8 +38,9 @@ class VamanaAlgorithmBase {
   // The node's vector must already be stored in the entity.
   virtual int add_node(node_id_t id, VamanaContext *ctx) = 0;
 
-  // Greedy search: find approximate nearest neighbors.
-  virtual int search(VamanaContext *ctx) const = 0;
+  // Greedy search: optionally export candidate keys to this call's output.
+  virtual int search(VamanaContext *ctx,
+                     std::vector<uint64_t> *keys = nullptr) const = 0;
 
   // Revisit every node after the initial alpha=1.0 graph pass.
   virtual int refine_graph(VamanaContext *ctx, float alpha) = 0;
@@ -76,8 +77,10 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // Insert node `id` into the graph. Its vector must already be in the entity.
   int add_node(node_id_t id, VamanaContext *ctx) override;
 
-  // Greedy search from entry point. Results are stored in ctx->topk_heap().
-  int search(VamanaContext *ctx) const override;
+  // Greedy search from entry point. Export keys when requested; otherwise
+  // results are stored in ctx->topk_heap().
+  int search(VamanaContext *ctx,
+             std::vector<uint64_t> *keys = nullptr) const override;
 
   // Full-graph second construction pass.
   int refine_graph(VamanaContext *ctx, float alpha) override;
@@ -85,9 +88,9 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
  private:
   // GreedySearch: starting from entry_point, greedily expand the closest
   // unvisited candidate until the search list is exhausted or scan limit
-  // is reached. Results accumulate in topk_heap.
-  int greedy_search(node_id_t entry_point, VamanaContext *ctx,
-                    bool use_pool) const;
+  // is reached. Export keys when requested, otherwise accumulate in topk_heap.
+  int greedy_search(node_id_t entry_point, VamanaContext *ctx, bool use_pool,
+                    std::vector<uint64_t> *keys = nullptr) const;
 
   // RobustPrune: given a candidate set (topk_heap), select up to max_degree
   // diverse neighbors using alpha-based distance comparison.

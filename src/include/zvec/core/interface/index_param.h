@@ -200,6 +200,12 @@ struct PreprocessorParam {
 struct RefinerParam {
   using Pointer = std::shared_ptr<RefinerParam>;
 
+  // Coarse candidate target: floor(topk * scale_factor_), with 0 meaning 1.
+  // Vamana/HNSW use max(candidate target, ef_search) as the search capacity,
+  // but return only the candidate target for refinement. The actual count may
+  // be smaller due to filtering, radius, or unavailable vectors. Negative,
+  // non-finite, or overflowing counts are rejected. HNSW RaBitQ retains its
+  // ef_search-based candidate policy.
   float scale_factor_{0};
   std::shared_ptr<Index> reference_index = nullptr;
 };

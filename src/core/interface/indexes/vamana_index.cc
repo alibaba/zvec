@@ -132,11 +132,4 @@ int VamanaIndex::_prepare_for_search(
   return 0;
 }
 
-int VamanaIndex::_get_coarse_search_topk(
-    const BaseIndexQueryParam::Pointer &search_param) {
-  const auto &vamana_search_param =
-      std::dynamic_pointer_cast<VamanaQueryParam>(search_param);
-  return std::max(search_param->topk, vamana_search_param->ef_search);
-}
-
 }  // namespace zvec::core_interface

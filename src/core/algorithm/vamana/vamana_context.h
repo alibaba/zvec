@@ -117,7 +117,14 @@ class VamanaContext : public IndexContext {
     topk_to_result(0);
   }
 
-  void topk_to_result(uint32_t idx);
+  void topk_to_result(uint32_t idx, std::vector<uint64_t> *keys = nullptr);
+
+  template <typename Pool, typename Entity>
+  bool copy_pool_candidates(const Pool &pool, const Entity &entity,
+                            std::vector<uint64_t> &keys) const {
+    if (force_padding_topk_) return false;
+    return copy_pool_to_keys(pool, entity, topk_, this->threshold(), keys);
+  }
 
   inline void reset_query(const void *query) {
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();

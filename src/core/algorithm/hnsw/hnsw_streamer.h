@@ -118,6 +118,10 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
+  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                             std::vector<uint64_t> &keys,
+                             Context::Pointer &context) const override;
+
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
@@ -185,6 +189,15 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
+  // Shared search body; keys is non-null only for single-query candidate
+  // output.
+  int search_internal(const void *query, const IndexQueryMeta &qmeta,
+                      uint32_t count, Context::Pointer &context,
+                      std::vector<uint64_t> *keys) const;
+  int search_bf_internal(const void *query, const IndexQueryMeta &qmeta,
+                         uint32_t count, Context::Pointer &context,
+                         std::vector<uint64_t> *keys) const;
+
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {
     if (ailego_unlikely(!query)) {

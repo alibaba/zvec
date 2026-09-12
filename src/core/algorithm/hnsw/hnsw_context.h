@@ -162,12 +162,22 @@ class HnswContext : public IndexContext {
   }
 
   //! Construct result from topk heap, result will be normalized
-  inline void topk_to_result(uint32_t idx) {
+  inline void topk_to_result(uint32_t idx,
+                             std::vector<uint64_t> *keys = nullptr) {
     if (group_by_search()) {
       topk_to_group_result(idx);
     } else {
-      topk_to_single_result(idx);
+      topk_to_single_result(idx, keys);
     }
+  }
+
+  template <typename Pool, typename Entity>
+  bool copy_pool_candidates(const Pool &pool, const Entity &entity,
+                            std::vector<uint64_t> &keys) {
+    if (force_padding_topk_ || group_by_search()) {
+      return false;
+    }
+    return copy_pool_to_keys(pool, entity, topk_, this->threshold(), keys);
   }
 
   inline void recal_topk_dist() {
@@ -181,7 +191,8 @@ class HnswContext : public IndexContext {
     }
   }
 
-  inline void topk_to_single_result(uint32_t idx) {
+  inline void topk_to_single_result(uint32_t idx,
+                                    std::vector<uint64_t> *keys = nullptr) {
     if (force_padding_topk_ && !topk_heap_.full() &&
         topk_heap_.size() < entity_->doc_cnt()) {
       this->fill_random_to_topk_full();
@@ -194,6 +205,7 @@ class HnswContext : public IndexContext {
     int size = std::min(topk_, static_cast<uint32_t>(topk_heap_.size()));
     topk_heap_.sort();
     results_[idx].clear();
+    if (keys) keys->reserve(size);
 
     for (int i = 0; i < size; ++i) {
       auto score = topk_heap_[i].second;
@@ -202,7 +214,9 @@ class HnswContext : public IndexContext {
       }
 
       node_id_t id = topk_heap_[i].first;
-      if (fetch_vector_) {
+      if (keys) {
+        keys->push_back(entity_->get_key(id));
+      } else if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
         results_[idx].emplace_back(entity_->get_key(id), score, id, block);

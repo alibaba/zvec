@@ -35,7 +35,8 @@ class HnswAlgorithmBase {
 
   virtual int cleanup() = 0;
   virtual int add_node(node_id_t id, level_t level, HnswContext *ctx) = 0;
-  virtual int search(HnswContext *ctx) const = 0;
+  virtual int search(HnswContext *ctx,
+                     std::vector<uint64_t> *keys = nullptr) const = 0;
   virtual int init() = 0;
   virtual uint32_t get_random_level() const = 0;
 };
@@ -67,8 +68,10 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   int add_node(node_id_t id, level_t level, HnswContext *ctx) override;
 
   //! do knn search in graph
-  //! return 0 on success, or errCode in failure. results saved in ctx
-  int search(HnswContext *ctx) const override;
+  //! return 0 on success, or errCode in failure. Export keys when requested;
+  //! otherwise results are saved in ctx.
+  int search(HnswContext *ctx,
+             std::vector<uint64_t> *keys = nullptr) const override;
 
   //! Initiate HnswAlgorithm
   int init() override {
@@ -118,7 +121,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! and BufferPool fallback.
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx, bool use_pool) const;
+                        TopkHeap &topk, HnswContext *ctx, bool use_pool,
+                        std::vector<uint64_t> *keys = nullptr) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,

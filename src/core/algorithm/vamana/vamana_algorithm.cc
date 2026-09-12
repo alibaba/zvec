@@ -121,7 +121,8 @@ int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {
 // search: Greedy search for approximate nearest neighbors.
 // ============================================================================
 template <typename EntityType>
-int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
+int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx,
+                                        std::vector<uint64_t> *keys) const {
   spin_lock_.lock();
   auto entry_point = entity_.entry_point();
   spin_lock_.unlock();
@@ -139,7 +140,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
   uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
   topk_heap.limit(ef_search);
 
-  return greedy_search(entry_point, ctx, /*use_pool=*/true);
+  return greedy_search(entry_point, ctx, /*use_pool=*/true, keys);
 }
 
 // ============================================================================
@@ -512,12 +513,13 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 //
 // Unfiltered mmap/contiguous queries use fast_greedy_search. Construction,
 // filtered queries and BufferPool use dual_heap_greedy_search, which enforces
-// the scan limit. Both paths accumulate results in ctx->topk_heap().
+// the scan limit. Candidate-only searches can export an ordered pool directly;
+// other searches accumulate results in ctx->topk_heap().
 // ============================================================================
 template <typename EntityType>
-int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
-                                               VamanaContext *ctx,
-                                               bool use_pool) const {
+int VamanaAlgorithm<EntityType>::greedy_search(
+    node_id_t entry_point, VamanaContext *ctx, bool use_pool,
+    std::vector<uint64_t> *keys) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   VamanaDistCalculator &dc = ctx->dist_calculator();
 
@@ -530,6 +532,7 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                       ? std::min(ctx->pl(), vector_body_lines)
                                       : vector_body_lines;
 
+  bool pool_candidates_ready = false;
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
     // Dispatched to dual_heap_greedy_search (plain batch_dist).
@@ -571,7 +574,11 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                           entry_point, prefetch_lines,
                                           ctx->po(), visit);
               }
-              copy_pool_to_topk(pool, topk_heap);
+              pool_candidates_ready =
+                  keys && ctx->copy_pool_candidates(pool, entity, *keys);
+              if (!pool_candidates_ready) {
+                copy_pool_to_topk(pool, topk_heap);
+              }
             };
             if (avx2_ok) {
               run_with_pool(ctx->block_pool());
@@ -591,6 +598,7 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                                         entry_point, filter);
     }
   }
+  if (keys && !pool_candidates_ready) ctx->topk_to_result(0, keys);
   return 0;
 }
 

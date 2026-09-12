@@ -70,7 +70,8 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 }
 
 template <typename EntityType>
-int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
+int HnswAlgorithm<EntityType>::search(HnswContext *ctx,
+                                      std::vector<uint64_t> *keys) const {
   spin_lock_.lock();
   auto maxLevel = entity_.cur_max_level();
   auto entry_point = entity_.entry_point();
@@ -87,7 +88,8 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx, /*use_pool=*/true);
+  search_neighbors(0, &entry_point, &dist, topk_heap, ctx, /*use_pool=*/true,
+                   keys);
 
   if (ctx->group_by_search()) {
     expand_neighbors_by_group(topk_heap, ctx);
@@ -451,11 +453,9 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 //     BufferPool       →  dual_heap_search_neighbors (fallback)
 // ============================================================================
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
-                                                 node_id_t *entry_point,
-                                                 dist_t *dist, TopkHeap &topk,
-                                                 HnswContext *ctx,
-                                                 bool use_pool) const {
+void HnswAlgorithm<EntityType>::search_neighbors(
+    level_t level, node_id_t *entry_point, dist_t *dist, TopkHeap &topk,
+    HnswContext *ctx, bool use_pool, std::vector<uint64_t> *keys) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
@@ -495,11 +495,13 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
         auto &bpool = ctx->block_pool();
         fast_search_neighbors(entity, bpool, visit, dc, ctx, topk_v, ef_v,
                               *entry_point, *dist, prefetch_lines, ctx->po());
+        if (keys && ctx->copy_pool_candidates(bpool, entity, *keys)) return;
         copy_pool_to_topk(bpool, topk);
       } else {
         auto &lpool = ctx->pool();
         fast_search_neighbors(entity, lpool, visit, dc, ctx, topk_v, ef_v,
                               *entry_point, *dist, prefetch_lines, ctx->po());
+        if (keys && ctx->copy_pool_candidates(lpool, entity, *keys)) return;
         copy_pool_to_topk(lpool, topk);
       }
     } else {
@@ -509,6 +511,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
           entity, level, entry_point, dist, topk, ctx, dc, filter);
     }
   }
+  if (keys) ctx->topk_to_result(0, keys);
 }
 
 template <typename EntityType>
