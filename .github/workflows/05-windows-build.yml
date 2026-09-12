@@ -102,6 +102,12 @@ jobs:
         run: sccache --show-stats
         shell: powershell
 
+      - name: Verify Turbo distance ISA dispatch
+        run: |
+          cd "$env:GITHUB_WORKSPACE\build"
+          cmake --build . --target unittest.turbo_distance_dispatch_test --config Release --parallel $env:NPROC
+        shell: powershell
+
       - name: Run C++ Tests
         run: |
           cd "$env:GITHUB_WORKSPACE\build"

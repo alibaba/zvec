@@ -514,6 +514,14 @@ const ConvertKernel *FindConvertKernel(DataType target_data_type) {
 
 }  // namespace
 
+CpuArchType get_distance_kernel_arch(MetricType metric_type, DataType data_type,
+                                     QuantizeType quantize_type,
+                                     CpuArchType cpu_arch_type) {
+  const KernelSet *k =
+      FindKernel(metric_type, data_type, quantize_type, cpu_arch_type);
+  return k ? k->arch : CpuArchType::kAuto;
+}
+
 DistanceKernels get_distance_kernels(MetricType metric_type, DataType data_type,
                                      QuantizeType quantize_type,
                                      CpuArchType cpu_arch_type) {
