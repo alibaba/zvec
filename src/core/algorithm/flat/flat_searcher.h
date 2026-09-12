@@ -50,6 +50,7 @@ class FlatSearcher : public IndexSearcher {
     container_ = nullptr;
     measure_ = nullptr;
     features_segment_ = nullptr;
+    keys_block_.reset();
     keys_ = nullptr;
     key_id_mapping_.clear();
     return 0;
@@ -162,6 +163,7 @@ class FlatSearcher : public IndexSearcher {
 
  private:
   //! Members
+  IndexStorage::MemoryBlock keys_block_{};
   const uint64_t *keys_{nullptr};
   std::unordered_map<key_t, node_id_t> key_id_mapping_;
   uint32_t magic_{IndexContext::GenerateMagic()};

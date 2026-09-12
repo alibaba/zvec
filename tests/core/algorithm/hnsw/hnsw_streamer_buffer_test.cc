@@ -3,7 +3,9 @@
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
+#include <algorithm/hnsw/hnsw_entity.h>
 #include <algorithm/hnsw/hnsw_params.h>
+#include <algorithm/hnsw/hnsw_streamer_entity.h>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -44,6 +46,20 @@ void HnswStreamerTest::SetUp(void) {
 
 void HnswStreamerTest::TearDown(void) {
   zvec::test_util::RemoveTestPath(dir_);
+}
+
+TEST_F(HnswStreamerTest, MaxDegreeIsNeighborCountNotSerializedBytes) {
+  IndexStreamer::Stats stats;
+  HnswBufferPoolStreamerEntity entity(stats);
+  entity.set_l0_neighbor_cnt(192);
+  entity.set_upper_neighbor_cnt(96);
+
+  EXPECT_EQ(192U, entity.max_degree(0));
+  EXPECT_EQ(96U, entity.max_degree(1));
+  EXPECT_EQ(sizeof(NeighborsHeader) + 192U * sizeof(node_id_t),
+            entity.neighbors_size());
+  EXPECT_EQ(sizeof(NeighborsHeader) + 96U * sizeof(node_id_t),
+            entity.upper_neighbors_size());
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
@@ -88,8 +104,83 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
   ASSERT_EQ(0, read_storage->init(stg_params));
   ASSERT_EQ(0, read_storage->open(dir_ + "Test/HnswSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
+
+  auto pool = read_storage->vec_buffer_pool();
+  ASSERT_TRUE(pool);
+  const size_t page_size = kVectorPageSize;
+
+  // The complete upper graph is a small, universal search hotset and should
+  // be resident at high priority immediately after open.
+  auto upper_chunk = read_storage->get("HnswT4S0");
+  ASSERT_TRUE(upper_chunk);
+  ASSERT_GT(upper_chunk->data_size(), 0U);
+  const size_t upper_first = upper_chunk->data_offset() / page_size;
+  const size_t upper_last =
+      (upper_chunk->data_offset() + upper_chunk->data_size() - 1) / page_size;
+  for (size_t page = upper_first; page <= upper_last; ++page) {
+    EXPECT_TRUE(pool->is_page_resident(page));
+    EXPECT_EQ(VecBufferPool::kHighPriority,
+              pool->page_table_.eviction_priority(page));
+  }
+
+  // The entry node record (vector + key + L0 adjacency) is also shared by
+  // every query and must retain high priority.
+  auto header_chunk = read_storage->get("HnswT1S0");
+  ASSERT_TRUE(header_chunk);
+  HNSWHeader hnsw_header;
+  ASSERT_EQ(sizeof(hnsw_header),
+            header_chunk->fetch(0, &hnsw_header, sizeof(hnsw_header)));
+  ASSERT_NE(kInvalidNodeId, hnsw_header.entry_point());
+  auto first_node_chunk = read_storage->get("HnswT3S0");
+  ASSERT_TRUE(first_node_chunk);
+  ASSERT_GT(hnsw_header.graph.node_size, 0U);
+  const size_t nodes_per_chunk =
+      first_node_chunk->data_size() / hnsw_header.graph.node_size;
+  ASSERT_GT(nodes_per_chunk, 0U);
+  const size_t entry_chunk_id = hnsw_header.entry_point() / nodes_per_chunk;
+  const size_t entry_local_id = hnsw_header.entry_point() % nodes_per_chunk;
+  auto entry_chunk =
+      read_storage->get("HnswT3S" + std::to_string(entry_chunk_id));
+  ASSERT_TRUE(entry_chunk);
+  const size_t entry_offset =
+      entry_local_id * static_cast<size_t>(hnsw_header.graph.node_size);
+  const size_t entry_first =
+      (entry_chunk->data_offset() + entry_offset) / page_size;
+  const size_t entry_last = (entry_chunk->data_offset() + entry_offset +
+                             hnsw_header.graph.node_size - 1) /
+                            page_size;
+  for (size_t page = entry_first; page <= entry_last; ++page) {
+    EXPECT_TRUE(pool->is_page_resident(page));
+    EXPECT_EQ(VecBufferPool::kHighPriority,
+              pool->page_table_.eviction_priority(page));
+  }
+
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
+
+  // Query execution must not repeat range-prefetch priority scans after the
+  // one-time open protection above. With no eviction pressure, the number of
+  // normal-priority pages therefore remains unchanged.
+  size_t normal_before = 0;
+  for (size_t page = 0; page < pool->page_table_.entry_num(); ++page) {
+    normal_before += pool->is_page_resident(page) &&
+                     pool->page_table_.eviction_priority(page) ==
+                         VecBufferPool::kNormalPriority;
+  }
+  NumericalVector<float> hotset_query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    hotset_query[j] = cnt / 2;
+  }
+  ctx->set_topk(topk);
+  ASSERT_EQ(0, read_streamer->search_impl(hotset_query.data(), qmeta, ctx));
+  size_t normal_after = 0;
+  for (size_t page = 0; page < pool->page_table_.entry_num(); ++page) {
+    normal_after += pool->is_page_resident(page) &&
+                    pool->page_table_.eviction_priority(page) ==
+                        VecBufferPool::kNormalPriority;
+  }
+  EXPECT_EQ(normal_after, normal_before);
+
   for (size_t i = 0; i < cnt; i += 1) {
     NumericalVector<float> vec(dim);
     for (size_t j = 0; j < dim; ++j) {
@@ -294,6 +385,80 @@ TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
   cout << "Elapsed time: " << elapsed_time.milli_seconds() << " ms" << endl;
 }
 
+TEST_F(HnswStreamerTest, TestWideMConcurrentBuildBuffer) {
+  MemoryLimitPool::get_instance().init(512UL * 1024UL * 1024UL);
+  auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(nullptr, streamer);
+
+  Params params;
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 96U);
+  params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 96U);
+  params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 128U);
+  params.set(PARAM_HNSW_STREAMER_MAX_INDEX_SIZE, 128UL * 1024UL * 1024UL);
+  params.set(PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE, true);
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  Params storage_params;
+  ASSERT_EQ(0, storage->init(storage_params));
+  ASSERT_EQ(0, storage->open(dir_ + "Test/WideMConcurrentBuildBuffer", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  constexpr size_t kThreadCount = 8;
+  constexpr size_t kVectorsPerThread = 1000;
+  auto add_vectors = [&streamer](size_t first, size_t vector_count) {
+    auto context = streamer->create_context();
+    IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dim);
+    NumericalVector<float> vector(dim);
+    size_t added = 0;
+    for (size_t i = 0; i < vector_count; ++i) {
+      const size_t key = first + i;
+      for (size_t j = 0; j < dim; ++j) {
+        const uint32_t bits =
+            static_cast<uint32_t>(key * 2654435761ULL + j * 2246822519ULL);
+        vector[j] = static_cast<float>(bits) / 4294967295.0f;
+      }
+      added += streamer->add_impl(key, vector.data(), query_meta, context) == 0;
+    }
+    return added;
+  };
+
+  std::vector<std::future<size_t>> workers;
+  for (size_t thread = 0; thread < kThreadCount; ++thread) {
+    workers.emplace_back(std::async(std::launch::async, add_vectors,
+                                    thread * kVectorsPerThread,
+                                    kVectorsPerThread));
+  }
+  for (auto &worker : workers) {
+    EXPECT_EQ(kVectorsPerThread, worker.get());
+  }
+
+  auto provider = streamer->create_provider();
+  ASSERT_NE(nullptr, provider);
+  EXPECT_EQ(kThreadCount * kVectorsPerThread, provider->count());
+
+  auto search_context = streamer->create_context();
+  search_context->set_topk(1);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dim);
+  NumericalVector<float> query(dim);
+  for (size_t key = 0; key < kThreadCount * kVectorsPerThread; key += 157) {
+    for (size_t j = 0; j < dim; ++j) {
+      const uint32_t bits =
+          static_cast<uint32_t>(key * 2654435761ULL + j * 2246822519ULL);
+      query[j] = static_cast<float>(bits) / 4294967295.0f;
+    }
+    ASSERT_EQ(0,
+              streamer->search_impl(query.data(), query_meta, search_context));
+    const auto &result = search_context->result();
+    ASSERT_EQ(1U, result.size());
+    EXPECT_EQ(key, result[0].key());
+  }
+
+  ASSERT_EQ(0, streamer->flush(0));
+  ASSERT_EQ(0, streamer->close());
+}
+
 TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
   MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
   IndexStreamer::Pointer write_streamer =
@@ -334,7 +499,8 @@ TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
+  ASSERT_EQ(0,
+            read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
