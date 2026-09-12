@@ -36,6 +36,10 @@
 #include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
 
+namespace zvec::turbo {
+class Quantizer;
+}  // namespace zvec::turbo
+
 namespace zvec::core_interface {
 
 class ZVEC_CORE_API IndexFactory;
@@ -241,7 +245,10 @@ class ZVEC_CORE_API Index {
   core::IndexStreamer::Pointer streamer_{};
   core::IndexReformer::Pointer reformer_{};
   core::IndexConverter::Pointer converter_{};  // for build()
-  core::IndexMetric::Pointer metric_{};        // to do normalization
+  core::IndexMetric::Pointer metric_{};        // legacy distance/score path
+  // Quantizes records and queries and computes distances through turbo SIMD
+  // kernels. When set, converter_/reformer_/metric_ stay null.
+  std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
   size_t context_index_;
   core::IndexStorage::Pointer storage_{};
@@ -311,6 +318,11 @@ class ZVEC_CORE_API HNSWIndex : public Index {
  public:
   HNSWIndex() = default;
 
+  //! Open the index, falling back to the legacy converter/metric pipeline when
+  //! the persisted HNSW layout predates the turbo quantizer attachment.
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
+
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
   //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
@@ -328,6 +340,9 @@ class ZVEC_CORE_API HNSWIndex : public Index {
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
+  int CreateAndInitConverterReformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
+
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
@@ -335,6 +350,8 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
+  int FallbackToLegacyPipeline(void);
+
   HNSWIndexParam param_{};
 };
 

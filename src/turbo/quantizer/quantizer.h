@@ -127,6 +127,32 @@ class Quantizer {
   //! Distance between two quantized datapoints
   virtual float calc_distance_dp_dp(const void *dp1, const void *dp2) const = 0;
 
+  //! Distance between an input datapoint and an already-quantized query.
+  //!
+  //! This is used by indexes whose vectors live outside the index in the
+  //! quantizer's input layout.  The default implementation quantizes the
+  //! datapoint before dispatching to the quantized distance kernel.
+  virtual float calc_distance_input_query(const void *dp,
+                                          const void *query) const;
+
+  //! Batched input-datapoint to quantized-query distance.
+  virtual void calc_distance_input_query_batch(const void *const *dp_list,
+                                               int dp_num, const void *query,
+                                               float *dist_list) const;
+
+  //! Distance between two vectors in the quantizer's input layout.
+  //!
+  //! The default implementation quantizes both sides, which keeps graph
+  //! construction in the quantizer pipeline even when an original-vector
+  //! provider supplies the build vectors.
+  virtual float calc_distance_input_input(const void *dp1,
+                                          const void *dp2) const;
+
+  //! Batched input-datapoint to input-query distance.
+  virtual void calc_distance_input_input_batch(const void *const *dp_list,
+                                               int dp_num, const void *query,
+                                               float *dist_list) const;
+
   //! Quantize a query vector for search
   virtual int quantize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
                        std::string * /*out*/,
@@ -143,6 +169,17 @@ class Quantizer {
   virtual DistanceImpl distance(const void * /*query*/,
                                 const IndexQueryMeta & /*qmeta*/) const {
     return DistanceImpl{};
+  }
+
+  //! Convert an internal distance to the caller-facing score space.
+  virtual void normalize_score(float * /*score*/) const {}
+
+  //! Convert a caller-facing score threshold to internal distance space.
+  virtual void denormalize_score(float * /*score*/) const {}
+
+  //! Whether score-space conversion is required for this quantizer.
+  virtual bool support_score_normalization() const {
+    return false;
   }
 
   //! Serialize quantizer parameters

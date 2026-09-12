@@ -90,6 +90,20 @@ class Fp32Quantizer : public Quantizer {
 
   float calc_distance_dp_dp(const void *dp1, const void *dp2) const override;
 
+  float calc_distance_input_query(const void *dp,
+                                  const void *query) const override;
+
+  void calc_distance_input_query_batch(const void *const *dp_list, int dp_num,
+                                       const void *query,
+                                       float *dist_list) const override;
+
+  float calc_distance_input_input(const void *dp1,
+                                  const void *dp2) const override;
+
+  void calc_distance_input_input_batch(const void *const *dp_list, int dp_num,
+                                       const void *query,
+                                       float *dist_list) const override;
+
   int quantize(const void *query, const core::IndexQueryMeta &qmeta,
                std::string *out, core::IndexQueryMeta *ometa) const override;
 
@@ -98,6 +112,18 @@ class Fp32Quantizer : public Quantizer {
 
   DistanceImpl distance(const void *query,
                         const core::IndexQueryMeta &qmeta) const override;
+
+  void normalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  void denormalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  bool support_score_normalization() const override {
+    return meta_.metric_name() == "InnerProduct";
+  }
 
  private:
   //! Byte length of a quantized vector (raw fp32 data + extra meta).

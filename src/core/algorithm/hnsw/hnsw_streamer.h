@@ -88,9 +88,25 @@ class HnswStreamer : public IndexStreamer {
     return entity_->storage_mode();
   }
 
+  //! Whether the active search distance path is backed by a turbo quantizer.
+  bool uses_turbo_distance() const {
+    return quantizer_ != nullptr;
+  }
+
+  //! Whether graph construction is backed by a turbo quantizer. Compatible
+  //! FP32 providers use a dedicated quantizer; other providers use a metric.
+  bool uses_turbo_build_distance() const {
+    return quantizer_ != nullptr &&
+           (provider_ == nullptr || provider_quantizer_ != nullptr);
+  }
+
  protected:
   //! Initialize Streamer
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
+
+  //! Initialize Streamer with a turbo quantizer for distance computation
+  int init(const IndexMeta &imeta, const ailego::Params &params,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
 
   //! Cleanup Streamer
   int cleanup(void) override;
@@ -254,6 +270,7 @@ class HnswStreamer : public IndexStreamer {
 
   IndexMetric::MatrixBatchDistance add_batch_distance_{};
   IndexMetric::MatrixBatchDistance search_batch_distance_{};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
 
   Stats stats_{};
   std::mutex mutex_{};
@@ -261,7 +278,8 @@ class HnswStreamer : public IndexStreamer {
   // provider of the original vectors used to build graph
   IndexProvider::Pointer provider_{};
   IndexMeta provider_meta_{};
-  IndexMetric::Pointer provider_metric_{};
+  IndexMetric::Pointer provider_metric_{};  // legacy provider distance path
+  std::shared_ptr<zvec::turbo::Quantizer> provider_quantizer_{};
 
   size_t max_index_size_{0UL};
   size_t chunk_size_{HnswEntity::kDefaultChunkSize};

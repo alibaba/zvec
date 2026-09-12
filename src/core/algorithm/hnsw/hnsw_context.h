@@ -143,6 +143,18 @@ class HnswContext : public IndexContext {
     return vector_source_;
   }
 
+  //! Keep the unquantized input vector for external-vector graph
+  //! construction. The streamer receives a quantized datapoint from the
+  //! interface, but build-time node-to-node comparisons must stay in the
+  //! external source's input layout.
+  inline void set_external_build_query(const void *query) {
+    external_build_query_ = query;
+  }
+
+  inline const void *external_build_query() const {
+    return external_build_query_;
+  }
+
   inline void reset_query_raw(const void *query, const IndexMeta &meta) {
     dc_.set_dim(meta.dimension());
     dc_.reset_query(query);
@@ -284,8 +296,9 @@ class HnswContext : public IndexContext {
   //! distance computation
   inline void reset_query(const void *query, const IndexMeta &meta) {
     dc_.set_dim(meta.dimension());
-    if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
-        query_preprocess_func != nullptr) {
+    auto query_preprocess_func =
+        index_metric_ ? index_metric_->get_query_preprocess_func() : nullptr;
+    if (query_preprocess_func != nullptr) {
       size_t dim = meta.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);
@@ -433,6 +446,7 @@ class HnswContext : public IndexContext {
     set_group_params(0, 0);
     reset_group_by();
     set_vector_source(nullptr);
+    set_external_build_query(nullptr);
     dc_.set_provider(nullptr);
   }
 
@@ -604,6 +618,7 @@ class HnswContext : public IndexContext {
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
   const VectorSource *vector_source_{nullptr};
+  const void *external_build_query_{nullptr};
   size_t vector_data_size_{0};
   size_t extra_values_size_{0};
 

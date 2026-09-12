@@ -47,10 +47,15 @@ struct VectorItem {
   // TODO: drop support for hybrid vectors
   std::string sparse_buffer_{};
   uint32_t sparse_unit_size_{0};
+  // True when vec_ contains an original-format vector that still needs to be
+  // converted or turbo-quantized for the target streamer.
+  bool needs_convert_{false};
 
   VectorItem() = default;
   VectorItem(key_t pkey, std::vector<uint8_t> vec)
       : pkey_(pkey), vec_(std::move(vec)) {}
+  VectorItem(key_t pkey, std::vector<uint8_t> vec, bool needs_convert)
+      : pkey_(pkey), vec_(std::move(vec)), needs_convert_{needs_convert} {}
   // TODO: drop support for hybrid vectors
   VectorItem(key_t pkey, std::vector<uint8_t> vec, std::string sparse_buffer,
              uint32_t sparse_unit_size)
