@@ -16,8 +16,7 @@
 #include <utility>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/interface/constants.h>
-#include "utility/block_heap.h"
-#include "utility/linear_pool.h"
+#include "utility/search_heap.h"
 #include "utility/visit_filter.h"
 #include "vamana_dist_calculator.h"
 #include "vamana_entity.h"
@@ -46,7 +45,7 @@ class VamanaContext : public IndexContext {
 
   void set_topk(uint32_t val) override {
     topk_ = val;
-    topk_heap_.limit(std::max(val, ef_));
+    search_heap_.limit(std::max(val, ef_));
   }
 
   const IndexDocumentList &result(void) const override {
@@ -119,6 +118,8 @@ class VamanaContext : public IndexContext {
 
   void topk_to_result(uint32_t idx);
 
+  void topk_to_keys(std::vector<uint64_t> &keys);
+
   inline void reset_query(const void *query) {
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
         query_preprocess_func != nullptr) {
@@ -140,19 +141,11 @@ class VamanaContext : public IndexContext {
       const IndexMetric::MatrixBatchDistance &batch_distance) {
     dc_.update_distance(distance, batch_distance);
   }
-  inline TopkHeap &topk_heap() {
-    return topk_heap_;
-  }
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
-  inline LinearPool<dist_t> &pool() {
-    return pool_;
-  }
-  // Block-insert pool used by the AVX2-gated greedy_search fast path.
-  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
-  inline BlockHeap &block_pool() {
-    return block_pool_;
+  inline SearchHeap &search_heap() {
+    return search_heap_;
   }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
@@ -318,6 +311,7 @@ class VamanaContext : public IndexContext {
   }
 
   inline void clear() {
+    search_heap_.clear();
     dc_.clear();
     for (auto &it : results_) {
       it.clear();
@@ -329,7 +323,17 @@ class VamanaContext : public IndexContext {
   }
 
  private:
-  void fill_random_to_topk_full(void);
+  template <typename Fn>
+  void collect_search_result(Fn &&fn) {
+    if (force_padding_topk_) fill_random_to_topk_full();
+    search_heap_.for_each_sorted(topk_, [&](node_id_t id, dist_t score) {
+      if (score > this->threshold()) return false;
+      fn(id, score);
+      return true;
+    });
+  }
+
+  void fill_random_to_topk_full();
   void update_query_prefetch();
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {
@@ -370,7 +374,7 @@ class VamanaContext : public IndexContext {
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};
-  TopkHeap topk_heap_{};
+  SearchHeap search_heap_{};
   TopkHeap update_heap_{};
   CandidateHeap candidates_{};
   VisitFilter visit_filter_{};
@@ -397,9 +401,6 @@ class VamanaContext : public IndexContext {
 
   VisitFilter::Mode filter_mode_{VisitFilter::BitMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
-
-  LinearPool<dist_t> pool_;
-  BlockHeap block_pool_;
 };
 
 }  // namespace core

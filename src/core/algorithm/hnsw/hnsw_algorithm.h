@@ -16,7 +16,6 @@
 #include <stdint.h>
 #include <chrono>
 #include <vector>
-#include <ailego/internal/cpu_features.h>
 #include <ailego/parallel/lock.h>
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
@@ -67,7 +66,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   int add_node(node_id_t id, level_t level, HnswContext *ctx) override;
 
   //! do knn search in graph
-  //! return 0 on success, or errCode in failure. results saved in ctx
+  //! return 0 on success, or errCode in failure. The active result heap/pool
+  //! is recorded in ctx for later collection.
   int search(HnswContext *ctx) const override;
 
   //! Initiate HnswAlgorithm
@@ -103,6 +103,13 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
+  // Dispatch an initialized SearchHeap; concrete heaps call search_neighbors
+  // directly. The caller supplies the concrete visit filter view.
+  template <typename Visit>
+  void dispatch_search_neighbors(level_t level, node_id_t *entry_point,
+                                 dist_t *dist, SearchHeap &target_heap,
+                                 Visit visit, HnswContext *ctx) const;
+
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
                           HnswContext *ctx) const;
@@ -111,14 +118,11 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
                      HnswContext *ctx);
 
-  //! Given a node id and level, search the nearest neighbors in graph.
-  //! Dispatches to fast_search_neighbors (pool-based, direct pointer) for
-  //! mmap/contiguous level-0 unfiltered search, or dual_heap_search_neighbors
-  //! (CandidateHeap + TopkHeap) for add_node, filtered search, upper levels,
-  //! and BufferPool fallback.
-  //! Note: entry_point and dist will be updated to current level nearest node.
+  // Accept only concrete heap/visit types. Resolve the result filter and call
+  // the fast or dual-heap kernel without selecting or resetting heap storage.
+  template <typename Heap, typename Visit>
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx, bool use_pool) const;
+                        Heap &heap, Visit visit, HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
@@ -132,7 +136,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
                                 TopkHeap &update_heap);
 
   //! expand neighbors until group nums are reached
-  void expand_neighbors_by_group(TopkHeap &topk, HnswContext *ctx) const;
+  void expand_neighbors_by_group(HnswContext *ctx) const;
 
  public:
   HnswAlgorithm(const HnswAlgorithm &) = delete;

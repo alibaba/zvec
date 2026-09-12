@@ -57,12 +57,15 @@ class VamanaStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
+  // Search and export results, equivalent to the count = 1 overload.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
 
+  // Search and export results for each query.
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
+  // Search and export results, equivalent to the count = 1 overload.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta,
@@ -70,6 +73,7 @@ class VamanaStreamer : public IndexStreamer {
     return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
   }
 
+  // Search p_keys[q] and export results for each query.
   int search_bf_by_p_keys_impl(const void *query,
                                const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta, uint32_t count,
@@ -111,7 +115,28 @@ class VamanaStreamer : public IndexStreamer {
 
   void print_debug_info() override;
 
+  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                             std::vector<uint64_t> &keys,
+                             Context::Pointer &context) const override;
+
+  int search_bf_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                                std::vector<uint64_t> &keys,
+                                Context::Pointer &context) const override;
+
+  int search_candidates_by_p_keys_impl(
+      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+      const IndexQueryMeta &qmeta, std::vector<uint64_t> &keys,
+      Context::Pointer &context) const override;
+
  private:
+  // Execute one BF query using a prepared context. Results remain in the heap
+  // for the caller to export as documents or candidate keys.
+  int execute_bf_search(const void *query, VamanaContext *context) const;
+
+  int execute_bf_search_by_p_keys(const void *query,
+                                  const std::vector<uint64_t> &p_keys,
+                                  VamanaContext *context) const;
+
   inline int check_params(const void *query,
                           const IndexQueryMeta &qmeta) const {
     if (ailego_unlikely(!query)) {

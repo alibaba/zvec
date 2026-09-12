@@ -64,7 +64,7 @@ int VamanaContext::init(ContextType type) {
 
   type_ = type;
   results_.resize(1);
-  topk_heap_.limit(std::max(topk_, ef_));
+  search_heap_.limit(std::max(topk_, ef_));
   update_heap_.limit(entity_->max_degree());
 
   switch (type) {
@@ -136,7 +136,7 @@ int VamanaContext::update(const ailego::Params &params) {
   uint32_t ef = ef_;
   params.get(PARAM_VAMANA_STREAMER_EF, &ef);
   ef_ = ef;
-  topk_heap_.limit(std::max(topk_, ef_));
+  search_heap_.limit(std::max(topk_, ef_));
   uint32_t requested_po = requested_po_;
   uint32_t requested_pl = requested_pl_;
   params.get(PARAM_VAMANA_STREAMER_PO, &requested_po);
@@ -197,47 +197,45 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
 }
 
 void VamanaContext::topk_to_result(uint32_t idx) {
-  if (force_padding_topk_ && !topk_heap_.full() &&
-      topk_heap_.size() < entity_->doc_cnt()) {
-    this->fill_random_to_topk_full();
-  }
-  if (ailego_unlikely(topk_heap_.size() == 0)) {
-    return;
-  }
-
-  ailego_assert_with(idx < results_.size(), "invalid idx");
-  int size = std::min(topk_, static_cast<uint32_t>(topk_heap_.size()));
-  topk_heap_.sort();
+  if (results_.size() <= idx) results_.resize(idx + 1);
   results_[idx].clear();
-
-  for (int i = 0; i < size; ++i) {
-    auto score = topk_heap_[i].second;
-    if (score > this->threshold()) {
-      break;
-    }
-    node_id_t id = topk_heap_[i].first;
+  collect_search_result([&](node_id_t id, dist_t score) {
     if (fetch_vector_) {
       results_[idx].emplace_back(entity_->get_key(id), score, id,
                                  entity_->get_vector(id));
     } else {
       results_[idx].emplace_back(entity_->get_key(id), score, id);
     }
-  }
+  });
+}
+
+void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys) {
+  keys.clear();
+  keys.reserve((std::min)(static_cast<size_t>(topk_), search_heap_.size()));
+  collect_search_result(
+      [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
 }
 
 void VamanaContext::fill_random_to_topk_full() {
-  std::mt19937 rng(42);
-  uint32_t doc_cnt = entity_->doc_cnt();
-  uint32_t max_attempts = doc_cnt * 2;
-  uint32_t attempts = 0;
-  while (!topk_heap_.full() && doc_cnt > 0 && attempts < max_attempts) {
-    node_id_t random_id = rng() % doc_cnt;
-    if (entity_->get_key(random_id) != kInvalidKey) {
-      dist_t random_dist = dc_.dist(random_id);
-      topk_heap_.emplace(random_id, random_dist);
+  search_heap_.dispatch([&](auto &heap) {
+    const size_t capacity = SearchHeap::capacity(heap);
+    if (static_cast<size_t>(heap.size()) >= capacity ||
+        static_cast<size_t>(heap.size()) >= entity_->doc_cnt())
+      return;
+    std::mt19937 rng(42);
+    uint32_t doc_cnt = entity_->doc_cnt();
+    uint32_t max_attempts = doc_cnt * 2;
+    uint32_t attempts = 0;
+    while (static_cast<size_t>(heap.size()) < capacity && doc_cnt > 0 &&
+           attempts < max_attempts) {
+      node_id_t random_id = rng() % doc_cnt;
+      if (entity_->get_key(random_id) != kInvalidKey) {
+        dist_t random_dist = dc_.dist(random_id);
+        SearchHeap::emplace(heap, random_id, random_dist);
+      }
+      ++attempts;
     }
-    ++attempts;
-  }
+  });
 }
 
 }  // namespace core
