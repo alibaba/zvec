@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <memory>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "flat_streamer_entity.h"
@@ -38,6 +39,10 @@ class FlatStreamer : public IndexStreamer {
  public:
   //! Initialize Streamer
   int init(const IndexMeta &, const ailego::Params &) override;
+
+  //! Initialize Streamer with a turbo quantizer
+  int init(const IndexMeta &, const ailego::Params &,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
 
   //! Cleanup Streamer
   int cleanup(void) override;
@@ -126,6 +131,11 @@ class FlatStreamer : public IndexStreamer {
     return *entity_;
   }
 
+  //! Retrieve the turbo quantizer
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer(void) const {
+    return quantizer_;
+  }
+
   const void *get_vector(uint64_t key) const override {
     return this->get_vector_by_key(key);
   }
@@ -184,6 +194,7 @@ class FlatStreamer : public IndexStreamer {
   bool use_key_info_map_{true};
   uint32_t read_block_size_{0};
   bool use_contiguous_memory_{false};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::unique_ptr<FlatStreamerEntity> entity_{};
 };
 

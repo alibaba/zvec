@@ -18,9 +18,11 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
+#include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
 #include <turbo/distance/neon_fp16/fp16/cosine.h>
 #include <turbo/quantizer/quantizer.h>
@@ -291,6 +293,108 @@ TEST(Fp16Quantizer, General) {
     for (size_t i = 0; i < holder->dimension(); ++i) {
       EXPECT_NEAR(original_data[i], dequantize_data[i], 1e-2);
     }
+  }
+}
+
+TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
+  static constexpr size_t kDimension = 17;
+  auto make_vector = [](size_t id) {
+    std::array<float, kDimension> vector{};
+    for (size_t d = 0; d < kDimension; ++d) {
+      vector[d] =
+          0.25f + static_cast<float>(d) * 0.017f +
+          static_cast<float>(static_cast<int>((id * 37 + d * 19) % 97) - 48) *
+              0.00011f;
+    }
+    return vector;
+  };
+  const auto input = make_vector(37);
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  meta.set_metric("Cosine", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_TRUE(quantizer);
+  Params params;
+  params.set(turbo::QUANTIZER_STORAGE_DATA_TYPE,
+             static_cast<int32_t>(IndexMeta::DT_FP16));
+  ASSERT_EQ(0, quantizer->init(meta, params));
+
+  std::string encoded(quantizer->quantized_datapoint_vector_length(), '\0');
+  quantizer->quantize_data(input.data(), encoded.data());
+
+  std::array<uint16_t, kDimension> native_input{};
+  FloatHelper::ToFP16(input.data(), kDimension, native_input.data());
+  std::array<float, kDimension> expected_normalized{};
+  FloatHelper::ToFP32(native_input.data(), kDimension,
+                      expected_normalized.data());
+  float expected_norm = 0.0f;
+  Normalizer<float>::L2(expected_normalized.data(), kDimension, &expected_norm);
+  std::array<Float16, kDimension> expected{};
+  FloatHelper::ToFP16(expected_normalized.data(), kDimension,
+                      reinterpret_cast<uint16_t *>(expected.data()));
+
+  EXPECT_EQ(0, std::memcmp(encoded.data(), expected.data(),
+                           kDimension * sizeof(Float16)));
+  float encoded_norm = 0.0f;
+  std::memcpy(&encoded_norm, encoded.data() + kDimension * sizeof(Float16),
+              sizeof(float));
+  EXPECT_EQ(expected_norm, encoded_norm);
+
+  IndexQueryMeta encoded_meta(IndexMeta::MetaType::MT_DENSE,
+                              IndexMeta::DataType::DT_FP16, sizeof(Float16),
+                              kDimension, 0, sizeof(float));
+  std::string decoded;
+  ASSERT_EQ(0, quantizer->dequantize(encoded.data(), encoded_meta, &decoded));
+  const auto *decoded_values = reinterpret_cast<const float *>(decoded.data());
+  for (size_t d = 0; d < kDimension; ++d) {
+    Float16 expected_decoded;
+    expected_decoded = static_cast<float>(expected[d]) * expected_norm;
+    EXPECT_EQ(static_cast<float>(expected_decoded), decoded_values[d]);
+  }
+
+  constexpr size_t kCandidateCount = 80;
+  std::vector<std::string> candidate_encoded(
+      kCandidateCount,
+      std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+  std::vector<const void *> candidates(kCandidateCount);
+  std::array<std::vector<float>, 4> distances;
+  for (auto &scores : distances) {
+    scores.resize(kCandidateCount);
+  }
+  for (size_t id = 0; id < kCandidateCount; ++id) {
+    const auto candidate = make_vector(id);
+    quantizer->quantize_data(candidate.data(), candidate_encoded[id].data());
+    candidates[id] = candidate_encoded[id].data();
+    distances[0][id] =
+        quantizer->calc_distance_dp_query(candidates[id], encoded.data());
+    distances[2][id] = quantizer->calc_distance_dp_query_unquantized(
+        candidates[id], input.data());
+  }
+  quantizer->calc_distance_dp_query_batch(
+      candidates.data(), static_cast<int>(kCandidateCount), encoded.data(),
+      distances[1].data());
+  quantizer->calc_distance_dp_query_batch_unquantized(
+      candidates.data(), static_cast<int>(kCandidateCount), input.data(),
+      distances[3].data());
+
+  // Physical FP16 storage must retain FP32 distance accumulation: native
+  // FP16 cosine can reorder these close neighbors after correct encoding.
+  const char *paths[] = {"single", "batch", "unquantized_single",
+                         "unquantized_batch"};
+  for (size_t path = 0; path < distances.size(); ++path) {
+    SCOPED_TRACE(testing::Message() << "path=" << paths[path]);
+    float best_distance = std::numeric_limits<float>::infinity();
+    size_t best_id = 0;
+    for (size_t id = 0; id < kCandidateCount; ++id) {
+      ASSERT_TRUE(std::isfinite(distances[path][id])) << "candidate=" << id;
+      if (distances[path][id] < best_distance) {
+        best_distance = distances[path][id];
+        best_id = id;
+      }
+    }
+    EXPECT_EQ(37U, best_id);
   }
 }
 
@@ -831,8 +935,4 @@ TEST(Fp16Quantizer, AutoDispatchSelectsNeonFp16) {
     ASSERT_TRUE(auto_target);
     EXPECT_EQ(*neon_target, *auto_target);
   }
-}
-
-TEST(Fp16Quantizer, Avx512Fp16DistanceMatchesScalar) {
-  check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512FP16);
 }

@@ -21,6 +21,13 @@ namespace core {
 template <size_t BATCH_SIZE>
 int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
                                   const ailego::Params &params) {
+  return this->init_impl(meta, params, true);
+}
+
+template <size_t BATCH_SIZE>
+int FlatBuilder<BATCH_SIZE>::init_impl(const IndexMeta &meta,
+                                       const ailego::Params &params,
+                                       bool verify_metric) {
   meta_ = meta;
 
   // Set the major order
@@ -64,7 +71,7 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
     }
   }
 
-  if (!VerifyMetric(meta_)) {
+  if (verify_metric && !VerifyMetric(meta_)) {
     LOG_ERROR("Invalid index measure %s.", meta_.metric_name().c_str());
     return IndexError_InvalidArgument;
   }
@@ -75,6 +82,28 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
   meta_.set_searcher("FlatSearcher" + tag, 0, searcher_params);
   meta_.set_builder("FlatBuilder" + tag, 0, params);
   return 0;
+}
+
+template <size_t BATCH_SIZE>
+int FlatBuilder<BATCH_SIZE>::init(
+    const IndexMeta &meta, const ailego::Params &params,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+  if (!quantizer) {
+    return this->init(meta, params);
+  }
+
+  // The flat builder computes no distances while building; the quantizer
+  // only requires the row major layout.
+  bool column_major_order = false;
+  params.get(PARAM_FLAT_COLUMN_MAJOR_ORDER, &column_major_order);
+  if (column_major_order || meta.major_order() == IndexMeta::MO_COLUMN) {
+    LOG_ERROR("Quantizer distance does not support column index.");
+    return IndexError_Unsupported;
+  }
+
+  IndexMeta row_meta = meta;
+  row_meta.set_major_order(IndexMeta::MO_ROW);
+  return this->init_impl(row_meta, params, false);
 }
 
 template <size_t BATCH_SIZE>

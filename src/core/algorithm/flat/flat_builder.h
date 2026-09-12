@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <memory>
 #include <numeric>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_helper.h>
@@ -31,6 +32,10 @@ class FlatBuilder : public IndexBuilder {
 
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;
+
+  //! Initialize the builder with a turbo quantizer
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
 
   //! Cleanup the builder
   int cleanup(void) override {
@@ -93,6 +98,9 @@ class FlatBuilder : public IndexBuilder {
   int write_row_index(IndexDumper *dumper, std::vector<uint64_t> *keys);
 
  private:
+  int init_impl(const IndexMeta &meta, const ailego::Params &params,
+                bool verify_metric);
+
   IndexMeta meta_{};
   IndexBuilder::Stats stats_{};
   IndexHolder::Pointer holder_{};

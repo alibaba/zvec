@@ -28,6 +28,37 @@ namespace turbo {
 
 using namespace zvec::core;
 
+//! Optional physical storage precision, encoded as an integer
+//! IndexMeta::DataType. Round input values to this precision before metric
+//! preprocessing, and round reconstructed values back to it. This is
+//! independent of the input buffer type and the quantizer's output codes.
+//! DT_UNDEFINED keeps ordinary quantization.
+inline constexpr char QUANTIZER_STORAGE_DATA_TYPE[] =
+    "quantizer.storage_data_type";
+
+//! Read storage precision; an absent option preserves the original encoding.
+inline bool GetQuantizerStorageDataType(const ailego::Params &params,
+                                        IndexMeta::DataType *data_type) {
+  *data_type = IndexMeta::DT_UNDEFINED;
+  if (params.has(QUANTIZER_STORAGE_DATA_TYPE)) {
+    int64_t type = 0;
+    if (!params.get(QUANTIZER_STORAGE_DATA_TYPE, &type) ||
+        type < IndexMeta::DT_UNDEFINED || type > IndexMeta::DT_UINT8) {
+      return false;
+    }
+    *data_type = static_cast<IndexMeta::DataType>(type);
+  }
+  return true;
+}
+
+inline bool QuantizerStorageDataTypeMatches(const IndexMeta &lhs,
+                                            const IndexMeta &rhs) {
+  IndexMeta::DataType lhs_type, rhs_type;
+  return GetQuantizerStorageDataType(lhs.quantizer_params(), &lhs_type) &&
+         GetQuantizerStorageDataType(rhs.quantizer_params(), &rhs_type) &&
+         lhs_type == rhs_type;
+}
+
 //! Self-describing, fixed-size header that prefixes every serialized quantizer.
 //! The type-specific payload (scalar params, codebook, rotation matrix, ...)
 //! follows immediately after this header.
@@ -143,6 +174,15 @@ class Quantizer {
   virtual DistanceImpl distance(const void * /*query*/,
                                 const IndexQueryMeta & /*qmeta*/) const {
     return DistanceImpl{};
+  }
+
+  //! Convert an internal distance into the caller-facing score in place
+  //! (e.g. the InnerProduct kernels rank by the negated dot product).
+  virtual void normalize_score(float * /*score*/) const {}
+
+  //! Whether internal distances differ from caller-facing scores.
+  virtual bool support_score_normalization() const {
+    return false;
   }
 
   //! Serialize quantizer parameters

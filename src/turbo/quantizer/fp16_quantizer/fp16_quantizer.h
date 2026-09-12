@@ -99,6 +99,14 @@ class Fp16Quantizer : public Quantizer {
   DistanceImpl distance(const void *query,
                         const core::IndexQueryMeta &qmeta) const override;
 
+  void normalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  bool support_score_normalization() const override {
+    return meta_.metric_name() == "InnerProduct";
+  }
+
  private:
   //! Byte length of a quantized vector (fp16 data + extra meta).
   size_t quantized_length() const {
@@ -110,10 +118,16 @@ class Fp16Quantizer : public Quantizer {
   //! quantized_length() bytes.
   void quantize_one(const void *input, void *output) const;
 
+  //! Normalize a cosine vector and encode it as FP16. Raw Flat storage first
+  //! rounds the input to FP16, then widens those values for stable FP32
+  //! normalization; explicit FP16 quantization normalizes the input directly.
+  float quantize_cosine(const float *input, size_t dim, uint16_t *output) const;
+
   static constexpr uint32_t EXTRA_META_SIZE_COSINE = 4;
 
   IndexMeta meta_{};
   uint32_t original_dim_{0};
+  IndexMeta::DataType storage_data_type_{IndexMeta::DT_UNDEFINED};
 
   //! Cached distance dispatch (bound in init()).
   DistanceFunc dp_query_func_{};

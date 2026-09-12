@@ -80,38 +80,67 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     return error_code;
   }
 
-  if (!measure) {
-    error_code = InitializeMetric(meta_, &measure_);
-    if (error_code != 0) {
-      LOG_ERROR("Failed to initialize index measure %s, error=%d, %s",
-                meta_.metric_name().c_str(), error_code,
-                IndexError::What(error_code));
-      return error_code;
+  column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
+
+  if (quantizer_) {
+    if (column_major_order_) {
+      LOG_ERROR("Quantizer distance does not support column index.");
+      return IndexError_Unsupported;
     }
-    if (measure_->query_metric()) {
-      measure_ = measure_->query_metric();
+    // Flat's turbo row path uses the same record layout for data and queries,
+    // not asymmetric lookup-table or packed-block query formats.
+    if (quantizer_->quantized_query_vector_length() !=
+        quantizer_->quantized_datapoint_vector_length()) {
+      LOG_ERROR("Quantizer query layout does not support flat row index.");
+      return IndexError_Unsupported;
     }
-  } else {
-    if (!measure->is_matched(meta_)) {
-      LOG_ERROR(
-          "The index measure is unmatched with index meta from container.");
+    const auto &quantizer_meta = quantizer_->meta();
+    if (meta_.meta_type() != IndexMeta::MT_DENSE ||
+        meta_.meta_type() != quantizer_meta.meta_type() ||
+        meta_.data_type() != quantizer_meta.data_type() ||
+        meta_.dimension() != quantizer_meta.dimension() ||
+        meta_.unit_size() != quantizer_meta.unit_size() ||
+        meta_.extra_meta_size() != quantizer_meta.extra_meta_size() ||
+        meta_.element_size() != quantizer_meta.element_size() ||
+        meta_.element_size() !=
+            quantizer_->quantized_datapoint_vector_length() ||
+        meta_.metric_name() != quantizer_meta.metric_name()) {
+      LOG_ERROR("The quantizer is unmatched with index meta from container.");
       return IndexError_Mismatch;
     }
-    measure_ = std::move(measure);
-  }
-
-  column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
-  distance_matrix_.initialize(*measure_);
-
-  if (column_major_order_) {
-    if (!distance_matrix_.is_valid()) {
-      LOG_ERROR("Lack of distance functions to support column index.");
-      return IndexError_Unsupported;
-    }
+    measure_.reset();
   } else {
-    if (!distance_matrix_.is_valid(1, 1)) {
-      LOG_ERROR("Lack of distance functions to support row index.");
-      return IndexError_Unsupported;
+    if (!measure) {
+      error_code = InitializeMetric(meta_, &measure_);
+      if (error_code != 0) {
+        LOG_ERROR("Failed to initialize index measure %s, error=%d, %s",
+                  meta_.metric_name().c_str(), error_code,
+                  IndexError::What(error_code));
+        return error_code;
+      }
+      if (measure_->query_metric()) {
+        measure_ = measure_->query_metric();
+      }
+    } else {
+      if (!measure->is_matched(meta_)) {
+        LOG_ERROR(
+            "The index measure is unmatched with index meta from container.");
+        return IndexError_Mismatch;
+      }
+      measure_ = std::move(measure);
+    }
+    distance_matrix_.initialize(*measure_);
+
+    if (column_major_order_) {
+      if (!distance_matrix_.is_valid()) {
+        LOG_ERROR("Lack of distance functions to support column index.");
+        return IndexError_Unsupported;
+      }
+    } else {
+      if (!distance_matrix_.is_valid(1, 1)) {
+        LOG_ERROR("Lack of distance functions to support row index.");
+        return IndexError_Unsupported;
+      }
     }
   }
 
@@ -159,11 +188,35 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
 }
 
 template <size_t BATCH_SIZE>
+int FlatSearcher<BATCH_SIZE>::check_query_meta(
+    const IndexQueryMeta &qmeta) const {
+  if (quantizer_) {
+    const auto &quantizer_meta = quantizer_->meta();
+    if (qmeta.meta_type() != quantizer_meta.meta_type() ||
+        qmeta.data_type() != quantizer_meta.data_type() ||
+        qmeta.dimension() != quantizer_meta.dimension() ||
+        qmeta.unit_size() != quantizer_meta.unit_size() ||
+        qmeta.quantize_type() != static_cast<uint32_t>(quantizer_->type()) ||
+        qmeta.extra_meta_size() != quantizer_meta.extra_meta_size() ||
+        qmeta.element_size() != quantizer_->quantized_query_vector_length()) {
+      LOG_ERROR("The query meta is unmatched with the quantizer.");
+      return IndexError_Mismatch;
+    }
+  } else {
+    ailego_assert(measure_->is_matched(meta_, qmeta));
+  }
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
 int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
                                           const IndexQueryMeta &qmeta,
                                           Context::Pointer &context) const {
   ailego_assert(query && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  int error_code = this->check_query_meta(qmeta);
+  if (error_code != 0) {
+    return error_code;
+  }
 
   FlatSearcherContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatSearcherContext<BATCH_SIZE> *>(context.get());
@@ -189,7 +242,10 @@ int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
                                           uint32_t count,
                                           Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  int error_code = this->check_query_meta(qmeta);
+  if (error_code != 0) {
+    return error_code;
+  }
 
   FlatSearcherContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatSearcherContext<BATCH_SIZE> *>(context.get());
@@ -216,7 +272,10 @@ int FlatSearcher<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
   ailego_assert(query && count && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  int error_code = this->check_query_meta(qmeta);
+  if (error_code != 0) {
+    return error_code;
+  }
 
   if (ailego_unlikely(p_keys.size() != count)) {
     LOG_ERROR("The size of p_keys is not equal to count");
