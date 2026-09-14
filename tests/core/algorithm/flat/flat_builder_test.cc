@@ -777,6 +777,40 @@ TEST_F(FlatBuilderTest, TestTurboQuantizerDistance) {
           check_result(context->result(q), q, restricted_keys[q]);
         }
       }
+
+      // Drop caller/context references so unload must release the last owner.
+      context.reset();
+      std::weak_ptr<zvec::turbo::Quantizer> weak_quantizer = quantizer;
+      quantizer.reset();
+      EXPECT_FALSE(weak_quantizer.expired());
+      ASSERT_EQ(0, searcher->unload());
+      EXPECT_TRUE(weak_quantizer.expired());
+
+      // Reuse the searcher with a newly initialized quantizer after unload.
+      quantizer = IndexFactory::CreateQuantizer(name);
+      ASSERT_NE(nullptr, quantizer);
+      IndexMeta raw_meta(IndexMeta::DT_FP32, dim);
+      raw_meta.set_metric(metric, 0, Params());
+      ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+      ASSERT_EQ(0, searcher->init(Params(), quantizer));
+      auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->open(path, false));
+      ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+      context = searcher->create_context();
+      ASSERT_NE(nullptr, context);
+      context->set_topk(topk);
+      ASSERT_EQ(
+          0, searcher->search_impl(query_codes[0].data(), query_meta, context));
+      EXPECT_EQ(topk, context->result().size());
+
+      context.reset();
+      weak_quantizer = quantizer;
+      quantizer.reset();
+      EXPECT_FALSE(weak_quantizer.expired());
+      ASSERT_EQ(0, searcher->cleanup());
+      EXPECT_TRUE(weak_quantizer.expired());
+      ASSERT_EQ(0, searcher->cleanup());
     }
   }
 }

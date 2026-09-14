@@ -58,6 +58,7 @@ class FlatSearcher : public IndexSearcher {
   int unload(void) override {
     container_ = nullptr;
     measure_ = nullptr;
+    quantizer_.reset();
     features_segment_ = nullptr;
     keys_ = nullptr;
     key_id_mapping_.clear();
