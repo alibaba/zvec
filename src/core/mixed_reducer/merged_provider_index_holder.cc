@@ -193,6 +193,10 @@ class MergedProviderIndexHolder::OrdinalReader final
  public:
   explicit OrdinalReader(MergedProviderIndexHolder *owner) : owner_(owner) {}
 
+  ~OrdinalReader() override {
+    reset();
+  }
+
   int init() {
     // Build only a key map, on demand. Other builders pay neither this pass
     // nor these eight bytes per kept vector. Filter decisions are never rerun.
@@ -230,10 +234,15 @@ class MergedProviderIndexHolder::OrdinalReader final
   }
 
   int read(size_t ordinal, uint64_t *key, const void **data) override {
+    // The previous vector is only valid until this call, including failed
+    // reads. Release its page pin or owned scratch before requesting another.
+    block_ = {};
+    if (data) {
+      *data = nullptr;
+    }
     if (!key || !data) {
       return IndexError_InvalidArgument;
     }
-    *data = nullptr;
     if (ordinal >= keys_.size()) {
       return IndexError_OutOfRange;
     }
@@ -256,7 +265,20 @@ class MergedProviderIndexHolder::OrdinalReader final
       }
       source_index_ = source_index;
     }
-    *data = provider_->get_vector(keys_[ordinal]);
+    const int ret = provider_->get_vector(keys_[ordinal], block_);
+    if (ret == IndexError_NotImplemented) {
+      // Preserve compatibility with providers that only expose raw pointers.
+      block_ = {};
+      *data = provider_->get_vector(keys_[ordinal]);
+    } else if (ret != 0) {
+      return fail(ret);
+    } else {
+      if (block_.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH &&
+          block_.scratch_size_ < owner_->element_size()) {
+        return fail(IndexError_Mismatch);
+      }
+      *data = block_.data();
+    }
     if (!*data) {
       return fail(IndexError_Runtime);
     }
@@ -265,11 +287,14 @@ class MergedProviderIndexHolder::OrdinalReader final
   }
 
   void reset() override {
+    // MemoryBlock can reference a handle owned by the provider.
+    block_ = {};
     provider_.reset();
   }
 
  private:
   int fail(int status) {
+    block_ = {};
     owner_->set_status(status);
     return status;
   }
@@ -278,6 +303,7 @@ class MergedProviderIndexHolder::OrdinalReader final
   std::vector<uint64_t> keys_{};
   std::vector<size_t> source_ends_{};
   IndexProvider::Pointer provider_{};
+  IndexStorage::MemoryBlock block_{};
   size_t source_index_{0};
 };
 

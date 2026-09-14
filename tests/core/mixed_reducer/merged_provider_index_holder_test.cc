@@ -15,6 +15,7 @@
 #include "mixed_reducer/merged_provider_index_holder.h"
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -93,6 +94,11 @@ class CountingProvider final : public IndexProvider {
     return delegate_->get_vector(key);
   }
 
+  int get_vector(uint64_t key,
+                 IndexStorage::MemoryBlock &block) const override {
+    return delegate_->get_vector(key, block);
+  }
+
   const std::string &owner_class(void) const override {
     return delegate_->owner_class();
   }
@@ -100,6 +106,117 @@ class CountingProvider final : public IndexProvider {
  private:
   IndexProvider::Pointer delegate_{};
   std::shared_ptr<ProviderLifetimeStats> stats_{};
+};
+
+enum class BlockReply {
+  kOwned,
+  kBorrowed,
+  kUnsupported,
+  kError,
+  kNull,
+  kShort
+};
+
+struct BlockReadStats {
+  BlockReply reply{BlockReply::kOwned};
+  size_t block_reads{0};
+  size_t pointer_reads{0};
+  size_t released_providers{0};
+  const IndexStorage::MemoryBlock *block{nullptr};
+};
+
+class BlockReadProvider final : public IndexProvider {
+ public:
+  BlockReadProvider(IndexProvider::Pointer delegate,
+                    std::shared_ptr<BlockReadStats> stats,
+                    const std::shared_ptr<ailego::VecBufferPool> &pool)
+      : delegate_(std::move(delegate)), stats_(std::move(stats)) {
+    if (pool) {
+      handle_ = std::make_unique<ailego::VecBufferPoolHandle>(pool);
+    }
+  }
+
+  ~BlockReadProvider() override {
+    if (last_block_) {
+      // The reader must release blocks while their provider is still alive.
+      EXPECT_EQ(nullptr, last_block_->data());
+      ++stats_->released_providers;
+      stats_->block = nullptr;
+    }
+  }
+
+  size_t count() const override {
+    return delegate_->count();
+  }
+  size_t dimension() const override {
+    return delegate_->dimension();
+  }
+  IndexMeta::DataType data_type() const override {
+    return delegate_->data_type();
+  }
+  size_t element_size() const override {
+    return delegate_->element_size();
+  }
+  IndexHolder::Iterator::Pointer create_iterator() override {
+    return delegate_->create_iterator();
+  }
+  const std::string &owner_class() const override {
+    return delegate_->owner_class();
+  }
+
+  const void *get_vector(uint64_t key) const override {
+    ++stats_->pointer_reads;
+    return delegate_->get_vector(key);
+  }
+
+  int get_vector(uint64_t key,
+                 IndexStorage::MemoryBlock &block) const override {
+    ++stats_->block_reads;
+    // Even repeated reads from this provider cannot retain the previous pin
+    // or scratch allocation while the next vector is fetched.
+    EXPECT_EQ(nullptr, block.data());
+    last_block_ = &block;
+    stats_->block = &block;
+    if (handle_) {
+      size_t page_id = 0;
+      char *data = handle_->get_single_page(key * ailego::kVectorPageSize,
+                                            element_size(), page_id);
+      if (!data) {
+        return IndexError_ReadData;
+      }
+      block.reset(handle_.get(), page_id, data);
+      return 0;
+    }
+    if (stats_->reply == BlockReply::kNull) {
+      return 0;
+    }
+    if (stats_->reply == BlockReply::kBorrowed) {
+      return delegate_->get_vector(key, block);
+    }
+    const void *data = delegate_->get_vector(key);
+    if (!data) {
+      return IndexError_NoExist;
+    }
+    const size_t bytes =
+        element_size() - (stats_->reply == BlockReply::kShort ? 1 : 0);
+    void *copy = ailego_malloc(bytes);
+    if (!copy) {
+      return IndexError_NoMemory;
+    }
+    std::memcpy(copy, data, bytes);
+    block = IndexStorage::MemoryBlock::MakeOwned(copy, bytes);
+    // Deliberately populate the output on errors to check that it is dropped.
+    if (stats_->reply == BlockReply::kUnsupported) {
+      return IndexError_NotImplemented;
+    }
+    return stats_->reply == BlockReply::kError ? IndexError_ReadData : 0;
+  }
+
+ private:
+  IndexProvider::Pointer delegate_;
+  std::shared_ptr<BlockReadStats> stats_;
+  std::unique_ptr<ailego::VecBufferPoolHandle> handle_;
+  mutable IndexStorage::MemoryBlock *last_block_{nullptr};
 };
 
 class TestStreamer final : public IndexStreamer {
@@ -165,6 +282,19 @@ IndexStreamer::Pointer MakeStreamer(
 IndexStreamer::Pointer MakeStreamer(
     const std::vector<std::pair<uint64_t, float>> &docs) {
   return MakeStreamer(docs, std::make_shared<ProviderLifetimeStats>());
+}
+
+IndexStreamer::Pointer MakeBlockStreamer(
+    const std::vector<std::pair<uint64_t, float>> &docs,
+    const std::shared_ptr<BlockReadStats> &stats,
+    const std::shared_ptr<ProviderLifetimeStats> &lifetime,
+    const std::shared_ptr<ailego::VecBufferPool> &pool = {}) {
+  return std::make_shared<TestStreamer>(
+      [docs, stats, pool](size_t) {
+        return std::make_shared<BlockReadProvider>(MakeProvider(docs), stats,
+                                                   pool);
+      },
+      lifetime);
 }
 
 MergedProviderIndexHolder::Source MakeSource(
@@ -523,6 +653,199 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsReuseFilterAndOneProvider) {
   EXPECT_EQ(1u, lifetime->peak_live_count);
   EXPECT_EQ(5u, filter_calls);
   EXPECT_EQ(0, holder.status());
+}
+
+TEST(MergedProviderIndexHolderTest, OrdinalReadsReleaseBlocksBeforeNextRead) {
+  for (auto reply : {BlockReply::kOwned, BlockReply::kBorrowed}) {
+    SCOPED_TRACE(static_cast<int>(reply));
+    auto stats = std::make_shared<BlockReadStats>();
+    stats->reply = reply;
+    auto lifetime = std::make_shared<ProviderLifetimeStats>();
+    MergedProviderIndexHolder holder(
+        IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+        {MakeSource(
+             MakeBlockStreamer({{7, 10.0F}, {9, 11.0F}}, stats, lifetime)),
+         MakeSource(MakeBlockStreamer({{19, 12.0F}}, stats, lifetime))});
+    ASSERT_EQ(0, holder.init(IndexFilter()));
+    OrdinalAccessHolder::Reader::Pointer reader;
+    ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+    for (size_t ordinal : {0u, 0u, 1u, 2u, 0u}) {
+      uint64_t key = 99;
+      const void *data = nullptr;
+      ASSERT_EQ(0, reader->read(ordinal, &key, &data));
+      EXPECT_EQ(ordinal, key);
+      ASSERT_NE(nullptr, data);
+      EXPECT_FLOAT_EQ(10.0F + ordinal, static_cast<const float *>(data)[0]);
+      EXPECT_EQ(1u, lifetime->live_count);
+    }
+    EXPECT_EQ(5u, stats->block_reads);
+    EXPECT_EQ(0u, stats->pointer_reads);
+    EXPECT_EQ(2u, stats->released_providers);
+    reader->reset();
+    EXPECT_EQ(3u, stats->released_providers);
+    EXPECT_EQ(0u, lifetime->live_count);
+    uint64_t key = 0;
+    const void *data = nullptr;
+    ASSERT_EQ(0, reader->read(0, &key, &data));
+    reader.reset();
+    EXPECT_EQ(4u, stats->released_providers);
+    EXPECT_EQ(0u, lifetime->live_count);
+    EXPECT_EQ(1u, lifetime->peak_live_count);
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
+  struct RestorePoolBudget {
+    ~RestorePoolBudget() {
+      EXPECT_EQ(0, ailego::MemoryLimitPool::get_instance().init(capacity));
+    }
+    const size_t capacity{ailego::MemoryLimitPool::get_instance().capacity()};
+  } restore_budget;
+  struct BackingFile {
+    ~BackingFile() {
+      ailego::File::Delete(path);
+    }
+    const std::string path{"merged_provider_ordinal_read_test.bin"};
+  } backing;
+  constexpr size_t kPageCount = 2;
+  ASSERT_EQ(
+      0, ailego::MemoryLimitPool::get_instance().init(
+             kPageCount * ailego::kVectorPageSize +
+             ailego::VecBufferPool::metadata_bytes_for_page_count(kPageCount)));
+  {
+    ailego::File file;
+    ASSERT_TRUE(
+        file.create(backing.path, kPageCount * ailego::kVectorPageSize));
+    for (size_t page = 0; page < kPageCount; ++page) {
+      const float vector[]{10.0F + page, 10.5F + page};
+      ASSERT_EQ(sizeof(vector), file.write(page * ailego::kVectorPageSize,
+                                           vector, sizeof(vector)));
+    }
+  }
+  auto pool = std::make_shared<ailego::VecBufferPool>(backing.path);
+  ASSERT_EQ(0, pool->init());
+  auto stats = std::make_shared<BlockReadStats>();
+  auto lifetime = std::make_shared<ProviderLifetimeStats>();
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {MakeSource(
+          MakeBlockStreamer({{0, 10.0F}, {1, 11.0F}}, stats, lifetime, pool))});
+  ASSERT_EQ(0, holder.init(IndexFilter()));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+  uint64_t key = 99;
+  const void *data = nullptr;
+  for (size_t ordinal : {0u, 1u, 1u, 0u}) {
+    ASSERT_EQ(0, reader->read(ordinal, &key, &data));
+    EXPECT_EQ(ordinal, key);
+    ASSERT_NE(nullptr, data);
+    EXPECT_FLOAT_EQ(10.0F + ordinal, static_cast<const float *>(data)[0]);
+    EXPECT_FALSE(pool->page_table_.is_released(ordinal));
+    EXPECT_TRUE(pool->page_table_.is_released(1 - ordinal));
+  }
+  reader->reset();
+  EXPECT_TRUE(pool->page_table_.is_released(0));
+  EXPECT_TRUE(pool->page_table_.is_released(1));
+  ASSERT_EQ(0, reader->read(1, &key, &data));
+  reader.reset();
+  EXPECT_TRUE(pool->page_table_.is_released(1));
+  EXPECT_EQ(0u, stats->pointer_reads);
+  EXPECT_EQ(0u, lifetime->live_count);
+}
+
+TEST(MergedProviderIndexHolderTest, OrdinalReadErrorsDoNotKeepPreviousBlock) {
+  for (const auto &failure :
+       {std::make_pair(BlockReply::kError, IndexError_ReadData),
+        std::make_pair(BlockReply::kNull, IndexError_Runtime),
+        std::make_pair(BlockReply::kShort, IndexError_Mismatch)}) {
+    SCOPED_TRACE(static_cast<int>(failure.first));
+    auto stats = std::make_shared<BlockReadStats>();
+    auto lifetime = std::make_shared<ProviderLifetimeStats>();
+    MergedProviderIndexHolder holder(
+        IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+        {MakeSource(MakeBlockStreamer({{7, 10.0F}}, stats, lifetime))});
+    ASSERT_EQ(0, holder.init(IndexFilter()));
+    OrdinalAccessHolder::Reader::Pointer reader;
+    ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+    uint64_t key = 99;
+    const void *data = nullptr;
+    ASSERT_EQ(0, reader->read(0, &key, &data));
+    ASSERT_NE(nullptr, data);
+    stats->reply = failure.first;
+    key = 99;
+    EXPECT_EQ(failure.second, reader->read(0, &key, &data));
+    EXPECT_EQ(nullptr, data);
+    EXPECT_EQ(99u, key);
+    EXPECT_EQ(failure.second, holder.status());
+    ASSERT_NE(nullptr, stats->block);
+    EXPECT_EQ(nullptr, stats->block->data());
+    EXPECT_EQ(failure.second, reader->read(0, &key, &data));
+    EXPECT_EQ(2u, stats->block_reads);
+    EXPECT_EQ(0u, stats->pointer_reads);
+    reader.reset();
+    EXPECT_EQ(1u, stats->released_providers);
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, OrdinalReaderFallsBackOnlyWhenUnsupported) {
+  auto stats = std::make_shared<BlockReadStats>();
+  stats->reply = BlockReply::kUnsupported;
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {MakeSource(MakeBlockStreamer(
+          {{7, 10.0F}}, stats, std::make_shared<ProviderLifetimeStats>()))});
+  ASSERT_EQ(0, holder.init(IndexFilter()));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+  uint64_t key = 99;
+  const void *data = nullptr;
+  ASSERT_EQ(0, reader->read(0, &key, &data));
+  EXPECT_EQ(0u, key);
+  ASSERT_NE(nullptr, data);
+  EXPECT_FLOAT_EQ(10.0F, static_cast<const float *>(data)[0]);
+  EXPECT_EQ(1u, stats->block_reads);
+  EXPECT_EQ(1u, stats->pointer_reads);
+  EXPECT_EQ(0, holder.status());
+  ASSERT_NE(nullptr, stats->block);
+  EXPECT_EQ(nullptr, stats->block->data());
+  reader.reset();
+  EXPECT_EQ(1u, stats->released_providers);
+}
+
+TEST(MergedProviderIndexHolderTest, InvalidOrdinalReadsReleaseActiveBlock) {
+  auto stats = std::make_shared<BlockReadStats>();
+  std::atomic<bool> stop{false};
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {MakeSource(MakeBlockStreamer(
+          {{7, 10.0F}}, stats, std::make_shared<ProviderLifetimeStats>()))});
+  ASSERT_EQ(0, holder.init(IndexFilter(), &stop));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+  uint64_t key = 99;
+  const void *data = nullptr;
+  for (int failure = 0; failure < 4; ++failure) {
+    ASSERT_EQ(0, reader->read(0, &key, &data));
+    ASSERT_NE(nullptr, data);
+    if (failure == 0) {
+      EXPECT_EQ(IndexError_OutOfRange, reader->read(1, &key, &data));
+    } else if (failure == 1) {
+      EXPECT_EQ(IndexError_InvalidArgument, reader->read(0, nullptr, &data));
+    } else if (failure == 2) {
+      EXPECT_EQ(IndexError_InvalidArgument, reader->read(0, &key, nullptr));
+    } else {
+      stop = true;
+      EXPECT_EQ(IndexError_Canceled, reader->read(0, &key, &data));
+    }
+    if (failure != 2) {
+      EXPECT_EQ(nullptr, data);
+    }
+    ASSERT_NE(nullptr, stats->block);
+    EXPECT_EQ(nullptr, stats->block->data());
+  }
+  EXPECT_EQ(4u, stats->block_reads);
+  EXPECT_EQ(0u, stats->pointer_reads);
+  EXPECT_EQ(IndexError_Canceled, holder.status());
 }
 
 TEST(MergedProviderIndexHolderTest, OrdinalReadsRejectChangedOrMissingSource) {
