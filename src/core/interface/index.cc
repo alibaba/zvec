@@ -1195,7 +1195,7 @@ int Index::_get_coarse_search_topk(
     scale_factor = 1;
   }
   const float count = std::floor(search_param->topk * scale_factor);
-  if (!std::isfinite(scale_factor) || scale_factor < 0 ||
+  if (!std::isfinite(scale_factor) || scale_factor < 1.0f ||
       !std::isfinite(count) ||
       static_cast<double>(count) > (std::numeric_limits<int>::max)()) {
     LOG_ERROR("Invalid refine scale factor or candidate count");
