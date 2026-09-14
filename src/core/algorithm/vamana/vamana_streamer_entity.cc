@@ -909,7 +909,8 @@ void VamanaStreamerEntity::set_neighbor_dist(node_id_t id, uint32_t idx,
 // data_type uses IndexMeta::DataType values: DT_FP16=1, DT_FP32=2, DT_INT8=4.
 // ============================================================================
 node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
-                                                 uint32_t data_type) {
+                                                 uint32_t data_type,
+                                                 bool packed_uint4) {
   uint32_t n = doc_cnt();
   if (n == 0) return kInvalidNodeId;
   if (dimension == 0) return kInvalidNodeId;
@@ -922,6 +923,13 @@ node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
   if (data_type != DT_FP32 && data_type != DT_INT8 && data_type != DT_FP16) {
     LOG_WARN("calculate_medoid: unsupported data_type=%u, skip", data_type);
     return entry_point();
+  }
+
+  if (packed_uint4 && (data_type != DT_INT8 ||
+                       dimension / 2U + dimension % 2U > vector_size())) {
+    LOG_ERROR("Invalid packed uint4 medoid layout: dim=%u type=%u bytes=%zu",
+              dimension, data_type, vector_size());
+    return kInvalidNodeId;
   }
 
   // Step 1: Compute centroid (mean) of all vectors in float space.
@@ -940,9 +948,19 @@ node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
         break;
       }
       case DT_INT8: {
-        const int8_t *iv = static_cast<const int8_t *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d)
-          centroid[d] += static_cast<float>(iv[d]);
+        if (packed_uint4) {
+          const auto *packed = static_cast<const uint8_t *>(vec);
+          for (uint32_t d = 0; d < dimension; ++d) {
+            const uint8_t byte = packed[d >> 1U];
+            const uint8_t code =
+                (d & 1U) == 0 ? byte & 0x0fU : (byte >> 4U) & 0x0fU;
+            centroid[d] += static_cast<float>(code);
+          }
+        } else {
+          const int8_t *iv = static_cast<const int8_t *>(vec);
+          for (uint32_t d = 0; d < dimension; ++d)
+            centroid[d] += static_cast<float>(iv[d]);
+        }
         break;
       }
       case DT_FP16: {
@@ -986,10 +1004,21 @@ node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
         break;
       }
       case DT_INT8: {
-        const int8_t *iv = static_cast<const int8_t *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d) {
-          float diff = static_cast<float>(iv[d]) - centroid[d];
-          dist += diff * diff;
+        if (packed_uint4) {
+          const auto *packed = static_cast<const uint8_t *>(vec);
+          for (uint32_t d = 0; d < dimension; ++d) {
+            const uint8_t byte = packed[d >> 1U];
+            const uint8_t code =
+                (d & 1U) == 0 ? byte & 0x0fU : (byte >> 4U) & 0x0fU;
+            const float diff = static_cast<float>(code) - centroid[d];
+            dist += diff * diff;
+          }
+        } else {
+          const int8_t *iv = static_cast<const int8_t *>(vec);
+          for (uint32_t d = 0; d < dimension; ++d) {
+            float diff = static_cast<float>(iv[d]) - centroid[d];
+            dist += diff * diff;
+          }
         }
         break;
       }

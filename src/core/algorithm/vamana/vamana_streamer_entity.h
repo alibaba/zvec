@@ -69,7 +69,8 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   // Calculate medoid: find the data point closest to the centroid
   // of all vectors (DiskANN standard entry point selection).
-  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) override;
+  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type,
+                             bool packed_uint4 = false) override;
 
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;

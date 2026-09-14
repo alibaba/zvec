@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "vamana_streamer.h"
 #include <iostream>
+#include <limits>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "vamana_algorithm.h"
@@ -391,6 +392,7 @@ void VamanaStreamer::update_entry_point_to_medoid() {
   // At dump time, data_type and dimension are fully known from meta_.
   if (entity_->doc_cnt() > 0) {
     uint32_t medoid_dim = meta_.dimension();
+    const bool packed_uint4 = meta_.metric_name() == "UniformUint4";
     // UniformUint8 appends a squared norm to the encoded coordinates. It is
     // distance metadata, not another four dimensions of the centroid.
     constexpr uint32_t kUniformUint8TailBytes = sizeof(uint32_t);
@@ -398,8 +400,17 @@ void VamanaStreamer::update_entry_point_to_medoid() {
         medoid_dim > kUniformUint8TailBytes) {
       medoid_dim -= kUniformUint8TailBytes;
     }
+    if (packed_uint4) {
+      if (medoid_dim > (std::numeric_limits<uint32_t>::max)() / 2U) {
+        LOG_ERROR("UniformUint4 medoid dimension overflow: %u", medoid_dim);
+        return;
+      }
+      // Each stored byte holds two coordinates. Zero-padded coordinates
+      // contribute zero to both the centroid and its squared distances.
+      medoid_dim *= 2U;
+    }
     node_id_t medoid = entity_->calculate_medoid(
-        medoid_dim, static_cast<uint32_t>(meta_.data_type()));
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()), packed_uint4);
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
