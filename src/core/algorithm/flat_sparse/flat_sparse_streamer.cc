@@ -161,7 +161,7 @@ FlatSparseStreamer::ContextPointer FlatSparseStreamer::create_context() const {
 }
 
 IndexStreamer::SparseProvider::Pointer
-FlatSparseStreamer::create_sparse_provider(void) const {
+FlatSparseStreamer::create_sparse_provider() const {
   if (state_ != STATE_OPENED) {
     LOG_ERROR("Failed to create provider, open streamer first!");
     return SparseProvider::Pointer();

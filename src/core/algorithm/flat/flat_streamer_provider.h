@@ -37,27 +37,27 @@ class FlatStreamerProvider : public IndexProvider {
   }
 
   //! Create a new iterator
-  IndexProvider::Iterator::Pointer create_iterator(void) override {
+  IndexProvider::Iterator::Pointer create_iterator() override {
     return owner_->entity().creater_iterator();
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const override {
+  size_t count() const override {
     return total_vector_count_;
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return owner_->meta().dimension();
   }
 
   //! Retrieve type of vector
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return owner_->meta().data_type();
   }
 
   //! Retrieve vector size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return owner_->meta().element_size();
   }
 
@@ -72,7 +72,7 @@ class FlatStreamerProvider : public IndexProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_->name();
   }
 

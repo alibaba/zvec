@@ -25,32 +25,32 @@ namespace ailego {
  */
 struct ZVEC_AILEGO_API Monotime {
   //! Retrieve monotonic time in nanoseconds
-  static uint64_t NanoSeconds(void);
+  static uint64_t NanoSeconds();
 
   //! Retrieve monotonic time in microseconds
-  static uint64_t MicroSeconds(void);
+  static uint64_t MicroSeconds();
 
   //! Retrieve monotonic time in milliseconds
-  static uint64_t MilliSeconds(void);
+  static uint64_t MilliSeconds();
 
   //! Retrieve monotonic time in seconds
-  static uint64_t Seconds(void);
+  static uint64_t Seconds();
 };
 
 /*! Realtime
  */
 struct ZVEC_AILEGO_API Realtime {
   //! Retrieve system time in nanoseconds
-  static uint64_t NanoSeconds(void);
+  static uint64_t NanoSeconds();
 
   //! Retrieve system time in microseconds
-  static uint64_t MicroSeconds(void);
+  static uint64_t MicroSeconds();
 
   //! Retrieve system time in milliseconds
-  static uint64_t MilliSeconds(void);
+  static uint64_t MilliSeconds();
 
   //! Retrieve system time in seconds
-  static uint64_t Seconds(void);
+  static uint64_t Seconds();
 
   //! Retrieve a timestamp as a specific local time format
   static size_t Localtime(uint64_t stamp, const char *format, char *buf,
@@ -77,14 +77,14 @@ struct ZVEC_AILEGO_API Realtime {
   }
 
   //! Retrieve local time in string
-  static std::string Localtime(void) {
+  static std::string Localtime() {
     char str[32];
     Localtime(str, sizeof(str));
     return std::string(str);
   }
 
   //! Retrieve GMT time in string
-  static std::string Gmtime(void) {
+  static std::string Gmtime() {
     char str[32];
     Gmtime(str, sizeof(str));
     return std::string(str);
@@ -119,16 +119,16 @@ struct ZVEC_AILEGO_API Realtime {
  */
 struct ZVEC_AILEGO_API CPUtime {
   //! Retrieve CPU time in nanoseconds
-  static uint64_t NanoSeconds(void);
+  static uint64_t NanoSeconds();
 
   //! Retrieve CPU time in microseconds
-  static uint64_t MicroSeconds(void);
+  static uint64_t MicroSeconds();
 
   //! Retrieve CPU time in milliseconds
-  static uint64_t MilliSeconds(void);
+  static uint64_t MilliSeconds();
 
   //! Retrieve CPU time in seconds
-  static uint64_t Seconds(void);
+  static uint64_t Seconds();
 };
 
 /*! Elapsed Time
@@ -136,30 +136,30 @@ struct ZVEC_AILEGO_API CPUtime {
 class ZVEC_AILEGO_API ElapsedTime {
  public:
   //! Constructor
-  ElapsedTime(void) : stamp_(Monotime::NanoSeconds()) {}
+  ElapsedTime() : stamp_(Monotime::NanoSeconds()) {}
 
   //! Retrieve the elapsed time in nanoseconds
-  uint64_t nano_seconds(void) const {
+  uint64_t nano_seconds() const {
     return (Monotime::NanoSeconds() - stamp_);
   }
 
   //! Retrieve the elapsed time in milliseconds
-  uint64_t micro_seconds(void) const {
+  uint64_t micro_seconds() const {
     return (this->nano_seconds() / 1000u);
   }
 
   //! Retrieve the elapsed time in milliseconds
-  uint64_t milli_seconds(void) const {
+  uint64_t milli_seconds() const {
     return (this->nano_seconds() / 1000000u);
   }
 
   //! Retrieve the elapsed time in seconds
-  uint64_t seconds(void) const {
+  uint64_t seconds() const {
     return (this->nano_seconds() / 1000000000u);
   }
 
   //! Update time stamp
-  void reset(void) {
+  void reset() {
     stamp_ = Monotime::NanoSeconds();
   }
 
@@ -172,30 +172,30 @@ class ZVEC_AILEGO_API ElapsedTime {
 class ZVEC_AILEGO_API ElapsedCPUTime {
  public:
   //! Constructor
-  ElapsedCPUTime(void) : stamp_(CPUtime::NanoSeconds()) {}
+  ElapsedCPUTime() : stamp_(CPUtime::NanoSeconds()) {}
 
   //! Retrieve the elapsed time in nanoseconds
-  uint64_t nano_seconds(void) const {
+  uint64_t nano_seconds() const {
     return (CPUtime::NanoSeconds() - stamp_);
   }
 
   //! Retrieve the elapsed time in milliseconds
-  uint64_t micro_seconds(void) const {
+  uint64_t micro_seconds() const {
     return (this->nano_seconds() / 1000u);
   }
 
   //! Retrieve the elapsed time in milliseconds
-  uint64_t milli_seconds(void) const {
+  uint64_t milli_seconds() const {
     return (this->nano_seconds() / 1000000u);
   }
 
   //! Retrieve the elapsed time in seconds
-  uint64_t seconds(void) const {
+  uint64_t seconds() const {
     return (this->nano_seconds() / 1000000000u);
   }
 
   //! Update time stamp
-  void reset(void) {
+  void reset() {
     stamp_ = CPUtime::NanoSeconds();
   }
 

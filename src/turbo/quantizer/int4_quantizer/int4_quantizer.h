@@ -45,7 +45,7 @@ class Int4Quantizer : public Quantizer {
  public:
   int init(const core::IndexMeta &meta, const ailego::Params &params) override;
 
-  const core::IndexMeta &meta(void) const override {
+  const core::IndexMeta &meta() const override {
     return meta_;
   }
 

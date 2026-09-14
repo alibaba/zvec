@@ -270,7 +270,7 @@ class IndexStorage : public IndexModule {
 
   struct SegmentData {
     //! Constructor
-    SegmentData(void) : offset(0u), length(0u), data(nullptr) {}
+    SegmentData() : offset(0u), length(0u), data(nullptr) {}
 
     //! Constructor
     SegmentData(size_t off, size_t len)
@@ -289,24 +289,24 @@ class IndexStorage : public IndexModule {
     typedef std::shared_ptr<Segment> Pointer;
 
     //! Destructor
-    virtual ~Segment(void) = default;
+    virtual ~Segment() = default;
 
     //! Retrieve size of data
-    virtual size_t data_size(void) const = 0;
+    virtual size_t data_size() const = 0;
 
     //! Retrieve offset of data
-    virtual size_t data_offset(void) const {
+    virtual size_t data_offset() const {
       return 0;
     }
 
     //! Retrieve crc of data
-    virtual uint32_t data_crc(void) const = 0;
+    virtual uint32_t data_crc() const = 0;
 
     //! Retrieve size of padding
-    virtual size_t padding_size(void) const = 0;
+    virtual size_t padding_size() const = 0;
 
     //! Retrieve capacity of segment
-    virtual size_t capacity(void) const = 0;
+    virtual size_t capacity() const = 0;
 
     //! Fetch data from segment (with own buffer)
     virtual size_t fetch(size_t offset, void *buf, size_t len) const = 0;
@@ -330,35 +330,35 @@ class IndexStorage : public IndexModule {
     virtual void update_data_crc(uint32_t crc) = 0;
 
     //! Clone the segment
-    virtual Pointer clone(void) = 0;
+    virtual Pointer clone() = 0;
 
     //! Retrieve the stable base data pointer if the storage backend supports
     //! it (e.g. mmap-backed storage). Returns nullptr for backends with
     //! mutable/evictable buffers (e.g. BufferStorage). When non-null the
     //! caller may compute element addresses as base_data() + offset directly,
     //! avoiding the full pointer chain through chunk->read().
-    virtual const uint8_t *base_data(void) const {
+    virtual const uint8_t *base_data() const {
       return nullptr;
     }
   };
 
   //! Destructor
-  ~IndexStorage(void) override = default;
+  ~IndexStorage() override = default;
 
   //! Initialize storage
   virtual int init(const ailego::Params &params) = 0;
 
   //! Cleanup storage
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Open storage
   virtual int open(const std::string &path, bool create_if_missing) = 0;
 
   //! Flush storage
-  virtual int flush(void) = 0;
+  virtual int flush() = 0;
 
   //! Close storage
-  virtual int close(void) = 0;
+  virtual int close() = 0;
 
   //! Append a segment into storage
   virtual int append(const std::string &id, size_t size) = 0;
@@ -367,12 +367,12 @@ class IndexStorage : public IndexModule {
   virtual void refresh(uint64_t check_point) = 0;
 
   //! Retrieve check point of storage
-  virtual uint64_t check_point(void) const = 0;
+  virtual uint64_t check_point() const = 0;
 
   //! Retrieve a segment by id
   virtual Segment::Pointer get(const std::string &id, int level = -1) = 0;
 
-  virtual std::map<std::string, Segment::Pointer> get_all(void) const {
+  virtual std::map<std::string, Segment::Pointer> get_all() const {
     // LOG_ERROR("get_all() Not Implemented");
     std::map<std::string, Segment::Pointer> result;
     return result;
@@ -382,29 +382,29 @@ class IndexStorage : public IndexModule {
   virtual bool has(const std::string &id) const = 0;
 
   //! Retrieve magic number of index
-  virtual uint32_t magic(void) const = 0;
+  virtual uint32_t magic() const = 0;
 
   //! huge page
-  virtual bool isHugePage(void) const {
+  virtual bool isHugePage() const {
     return false;
   }
 
   //! Retrieve the memory block type of this storage
-  virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
+  virtual MemoryBlock::MemoryBlockType memory_block_type() const {
     return MemoryBlock::MBT_MMAP;
   }
 
   //! Test if the storage has unflushed data
-  virtual bool is_dirty(void) const {
+  virtual bool is_dirty() const {
     return false;
   }
 
   //! Retrieve file ptr if has
-  virtual std::shared_ptr<ailego::File> file(void) const {
+  virtual std::shared_ptr<ailego::File> file() const {
     return nullptr;
   }
 
-  virtual std::string file_path(void) const {
+  virtual std::string file_path() const {
     return "";
   }
 };

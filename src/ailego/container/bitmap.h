@@ -30,7 +30,7 @@ class FixedBitset {
   enum { MAX_SIZE = N };
 
   //! Constructor
-  FixedBitset(void) {
+  FixedBitset() {
     memset(array_, 0, sizeof(array_));
   }
 
@@ -40,7 +40,7 @@ class FixedBitset {
   }
 
   //! Destructor
-  ~FixedBitset(void) = default;
+  ~FixedBitset() = default;
 
   //! Assignment
   FixedBitset &operator=(const FixedBitset &rhs) {
@@ -49,22 +49,22 @@ class FixedBitset {
   }
 
   //! Retrieve data pointer
-  uint32_t *data(void) {
+  uint32_t *data() {
     return reinterpret_cast<uint32_t *>(array_);
   }
 
   //! Retrieve data pointer
-  const uint32_t *data(void) const {
+  const uint32_t *data() const {
     return reinterpret_cast<const uint32_t *>(array_);
   }
 
   //! Retrieve count of bits in set
-  constexpr size_t size(void) const {
+  constexpr size_t size() const {
     return MAX_SIZE;
   }
 
   // ！Clear the bitset
-  void clear(void) {
+  void clear() {
     memset(array_, 0, sizeof(array_));
   }
 
@@ -116,27 +116,27 @@ class FixedBitset {
   }
 
   //! Perform binary NOT
-  void bitwise_not(void) {
+  void bitwise_not() {
     BitsetHelper::BitwiseNot(array_, ((N + 0x1f) >> 5));
   }
 
   //! Check if all bits are set to true
-  bool test_all(void) const {
+  bool test_all() const {
     return BitsetHelper::TestAll(array_, ((N + 0x1f) >> 5));
   }
 
   //! Check if any bits are set to true
-  bool test_any(void) const {
+  bool test_any() const {
     return BitsetHelper::TestAny(array_, ((N + 0x1f) >> 5));
   }
 
   //! Check if none of the bits are set to true
-  bool test_none(void) const {
+  bool test_none() const {
     return BitsetHelper::TestNone(array_, ((N + 0x1f) >> 5));
   }
 
   //! Compute the cardinality of a bitset
-  size_t cardinality(void) const {
+  size_t cardinality() const {
     return BitsetHelper::Cardinality(array_, ((N + 0x1f) >> 5));
   }
 
@@ -222,7 +222,7 @@ class FixedBitset<0> {
   enum { MAX_SIZE = 0 };
 
   //! Retrieve max size of bitset
-  constexpr size_t size(void) const {
+  constexpr size_t size() const {
     return MAX_SIZE;
   }
 };
@@ -232,7 +232,7 @@ class FixedBitset<0> {
 class Bitset {
  public:
   //! Constructor
-  Bitset(void) : array_() {}
+  Bitset() : array_() {}
 
   //! Constructor
   Bitset(size_t bits) : array_((bits + 0x1f) >> 5) {}
@@ -244,7 +244,7 @@ class Bitset {
   Bitset(Bitset &&rhs) : array_(std::move(rhs.array_)) {}
 
   //! Destructor
-  ~Bitset(void) = default;
+  ~Bitset() = default;
 
   //! Assignment
   Bitset &operator=(const Bitset &rhs) = default;
@@ -256,17 +256,17 @@ class Bitset {
   }
 
   //! Retrieve data pointer
-  uint32_t *data(void) {
+  uint32_t *data() {
     return array_.data();
   }
 
   //! Retrieve data pointer
-  const uint32_t *data(void) const {
+  const uint32_t *data() const {
     return array_.data();
   }
 
   //! Retrieve count of bits in set
-  size_t size(void) const {
+  size_t size() const {
     return (array_.size() << 5);
   }
 
@@ -276,7 +276,7 @@ class Bitset {
   }
 
   // ！Clear the bitset
-  void clear(void) {
+  void clear() {
     array_.clear();
   }
 
@@ -332,27 +332,27 @@ class Bitset {
   }
 
   //! Perform binary NOT
-  void bitwise_not(void) {
+  void bitwise_not() {
     BitsetHelper::BitwiseNot(array_.data(), array_.size());
   }
 
   //! Check if all bits are set to true
-  bool test_all(void) const {
+  bool test_all() const {
     return BitsetHelper::TestAll(array_.data(), array_.size());
   }
 
   //! Check if any bits are set to true
-  bool test_any(void) const {
+  bool test_any() const {
     return BitsetHelper::TestAny(array_.data(), array_.size());
   }
 
   //! Check if none of the bits are set to true
-  bool test_none(void) const {
+  bool test_none() const {
     return BitsetHelper::TestNone(array_.data(), array_.size());
   }
 
   //! Compute the cardinality of a bitset
-  size_t cardinality(void) const {
+  size_t cardinality() const {
     return BitsetHelper::Cardinality(array_.data(), array_.size());
   }
 
@@ -401,7 +401,7 @@ class Bitmap {
   typedef FixedBitset<65536u> Bucket;
 
   //! Constructor
-  Bitmap(void) : array_() {}
+  Bitmap() : array_() {}
 
   //! Constructor
   Bitmap(const Bitmap &rhs) {
@@ -409,7 +409,7 @@ class Bitmap {
   }
 
   //! Destructor
-  ~Bitmap(void) {
+  ~Bitmap() {
     this->clear();
   }
 
@@ -420,15 +420,15 @@ class Bitmap {
   }
 
   //! Retrieve bucket size of bitmap
-  size_t bucket_size(void) const {
+  size_t bucket_size() const {
     return array_.size();
   }
 
   // ！Clear the bitmap
-  void clear(void);
+  void clear();
 
   //! Remove the none buckets
-  void shrink_to_fit(void);
+  void shrink_to_fit();
 
   //! Test a bit in bitmap
   bool test(size_t num) const;
@@ -455,19 +455,19 @@ class Bitmap {
   void bitwise_xor(const Bitmap &rhs);
 
   //! Perform binary NOT (It will expand the whole map)
-  void bitwise_not(void);
+  void bitwise_not();
 
   //! Check if all bits are set to true
-  bool test_all(void) const;
+  bool test_all() const;
 
   //! Check if any bits are set to true
-  bool test_any(void) const;
+  bool test_any() const;
 
   //! Check if none of the bits are set to true
-  bool test_none(void) const;
+  bool test_none() const;
 
   //! Compute the cardinality of a bitmap
-  size_t cardinality(void) const;
+  size_t cardinality() const;
 
   //! Extract the bitmap to an array
   void extract(size_t base, std::vector<size_t> *out) const;

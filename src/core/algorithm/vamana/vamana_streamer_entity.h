@@ -295,7 +295,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   int init_chunks(const Chunk::Pointer &header_chunk);
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       return 0;
     }

@@ -43,9 +43,9 @@ class RabitqReformer : public IndexReformer {
   RabitqReformer &operator=(const RabitqReformer &) = delete;
 
   int init(const ailego::Params &params) override;
-  int cleanup(void) override;
+  int cleanup() override;
   int load(IndexStorage::Pointer storage) override;
-  int unload(void) override;
+  int unload() override;
 
   // transform() is not implemented for RabitqReformer; use transform_to_entity.
   int transform(const void *query, const IndexQueryMeta &qmeta,

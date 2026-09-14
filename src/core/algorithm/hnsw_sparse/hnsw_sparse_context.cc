@@ -256,7 +256,7 @@ int HnswSparseContext::update_context(ContextType type,
   return 0;
 }
 
-void HnswSparseContext::fill_random_to_topk_full(void) {
+void HnswSparseContext::fill_random_to_topk_full() {
   static std::mt19937 mt(
       std::chrono::system_clock::now().time_since_epoch().count());
   std::uniform_int_distribution<node_id_t> dt(0, entity_->doc_cnt() - 1);
@@ -270,11 +270,11 @@ void HnswSparseContext::fill_random_to_topk_full(void) {
   }
 
   if (topk_heap_.limit() < entity_->doc_cnt() / 2) {
-    gen = [&](void) { return dt(mt); };
+    gen = [&]() { return dt(mt); };
   } else {
     // If topk limit is big value, gen sequential id from an random initial
     seqid = dt(mt);
-    gen = [&](void) {
+    gen = [&]() {
       seqid = seqid == (entity_->doc_cnt() - 1) ? 0 : (seqid + 1);
       return seqid;
     };

@@ -79,14 +79,14 @@ class UniformUint4Reformer : public IndexReformer {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     initialized_ = false;
     return 0;
   }
   int load(IndexStorage::Pointer) override {
     return 0;
   }
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

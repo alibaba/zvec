@@ -108,7 +108,7 @@ class IvfRabitqContext : public IndexContext {
     return fetch_vector_;
   }
 
-  void reset(void) override {
+  void reset() override {
     reset_filter();
     reset_threshold();
     reset_group_by();
@@ -123,7 +123,7 @@ class IvfRabitqContext : public IndexContext {
   }
 
   //! Retrieve search result (first query)
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -140,7 +140,7 @@ class IvfRabitqContext : public IndexContext {
     return &results_[idx];
   }
 
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_result(0);
   }
 
@@ -152,7 +152,7 @@ class IvfRabitqContext : public IndexContext {
     return group_state_->results[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return mutable_group_result(0);
   }
 

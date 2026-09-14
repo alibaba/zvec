@@ -105,7 +105,7 @@ TEST(ThreadPool, BindingRespectsCallerAffinityMask) {
 #endif
 
 struct A {
-  A(void) : pool(std::make_shared<ThreadPool>()) {}
+  A() : pool(std::make_shared<ThreadPool>()) {}
 
   int ThreadMain(int32_t &thread_index, uint32_t &num) {
     std::stringstream buf;
@@ -122,7 +122,7 @@ struct A {
 };
 
 struct B {
-  B(void)
+  B()
       : pool(std::make_shared<ThreadPool>(
             std::max(std::thread::hardware_concurrency(), 1u), true)) {}
 

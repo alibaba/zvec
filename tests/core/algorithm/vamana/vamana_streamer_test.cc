@@ -62,8 +62,8 @@ std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
 
 class VamanaStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   IndexStreamer::Pointer CreateVamanaStreamer(
       const ailego::Params &extra_params = ailego::Params());
@@ -339,7 +339,7 @@ TEST_F(VamanaPrefetchContextTest, EntityRefreshKeepsBuildDefaultsUnresolved) {
 std::string VamanaStreamerTest::dir_("vamana_streamer_test_dir/");
 shared_ptr<IndexMeta> VamanaStreamerTest::index_meta_ptr_;
 
-void VamanaStreamerTest::SetUp(void) {
+void VamanaStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, kDim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, ailego::Params());
@@ -347,7 +347,7 @@ void VamanaStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void VamanaStreamerTest::TearDown(void) {
+void VamanaStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

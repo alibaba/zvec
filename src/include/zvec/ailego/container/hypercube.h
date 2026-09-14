@@ -26,7 +26,7 @@ namespace ailego {
 class Hypercube {
  public:
   //! Constructor
-  Hypercube(void) = default;
+  Hypercube() = default;
 
   //! Constructor
   Hypercube(const Hypercube &rhs) = default;
@@ -37,7 +37,7 @@ class Hypercube {
   }
 
   //! Destructor
-  ~Hypercube(void) = default;
+  ~Hypercube() = default;
 
   //! Assignment
   Hypercube &operator=(const Hypercube &rhs) = default;
@@ -64,7 +64,7 @@ class Hypercube {
   }
 
   //! Test if the hyper cube is empty
-  bool empty(void) const {
+  bool empty() const {
     return cubes_.empty();
   }
 
@@ -139,7 +139,7 @@ class Hypercube {
   }
 
   //! Clear the map
-  void clear(void) {
+  void clear() {
     cubes_.clear();
   }
 
@@ -248,12 +248,12 @@ class Hypercube {
   }
 
   //! Retrieve the cubes
-  const std::map<std::string, Cube> &cubes(void) const {
+  const std::map<std::string, Cube> &cubes() const {
     return cubes_;
   }
 
   //! Retrieve the cubes
-  std::map<std::string, Cube> *mutable_cubes(void) {
+  std::map<std::string, Cube> *mutable_cubes() {
     return &cubes_;
   }
 

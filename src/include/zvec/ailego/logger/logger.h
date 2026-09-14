@@ -109,13 +109,13 @@ struct ZVEC_AILEGO_API Logger {
   }
 
   //! Destructor
-  virtual ~Logger(void) = default;
+  virtual ~Logger() = default;
 
   //! Initialize Logger
   virtual int init(const Params &params) = 0;
 
   //! Cleanup Logger
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Log Message
   virtual void log(int level, const char *file, int line, const char *format,
@@ -144,7 +144,7 @@ class ZVEC_AILEGO_API LoggerBroker {
   }
 
   //! Unregister Logger
-  static void Unregister(void) {
+  static void Unregister() {
     LoggerInstance() = nullptr;
   }
 
@@ -171,7 +171,7 @@ class ZVEC_AILEGO_API LoggerBroker {
   }
 
   //! Disable them
-  LoggerBroker(void) = delete;
+  LoggerBroker() = delete;
   LoggerBroker(const LoggerBroker &) = delete;
   LoggerBroker(LoggerBroker &&) = delete;
 

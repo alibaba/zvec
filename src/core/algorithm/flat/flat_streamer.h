@@ -29,8 +29,8 @@ class FlatStreamer : public IndexStreamer {
  public:
   using ContextPointer = IndexStreamer::Context::UPointer;
 
-  FlatStreamer(void);
-  ~FlatStreamer(void) override;
+  FlatStreamer();
+  ~FlatStreamer() override;
 
   FlatStreamer(const FlatStreamer &streamer) = delete;
   FlatStreamer &operator=(const FlatStreamer &streamer) = delete;
@@ -40,13 +40,13 @@ class FlatStreamer : public IndexStreamer {
   int init(const IndexMeta &, const ailego::Params &) override;
 
   //! Cleanup Streamer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Create a context
-  IndexStreamer::Context::UPointer create_context(void) const override;
+  IndexStreamer::Context::UPointer create_context() const override;
 
   //! Create a new iterator
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   //! Add a vector into index
   int add_impl(uint64_t pkey, const void *query, const IndexQueryMeta &qmeta,
@@ -104,7 +104,7 @@ class FlatStreamer : public IndexStreamer {
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
-  int close(void) override;
+  int close() override;
 
   //! flush file
   int flush(uint64_t checkpoint) override;
@@ -113,16 +113,16 @@ class FlatStreamer : public IndexStreamer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
-  const FlatStreamerEntity &entity(void) const {
+  const FlatStreamerEntity &entity() const {
     return *entity_;
   }
 
@@ -152,12 +152,12 @@ class FlatStreamer : public IndexStreamer {
     return get_vector_by_key(id, block);
   }
 
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return magic_;
   }
 
   //! Retrieve block size of data read
-  uint32_t read_block_size(void) const {
+  uint32_t read_block_size() const {
     return read_block_size_;
   }
 

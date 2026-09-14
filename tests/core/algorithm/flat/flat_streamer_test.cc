@@ -56,7 +56,7 @@ class FlatQueryCopyTestMetric : public IndexMetric {
     metric_ = IndexFactory::CreateMetric("SquaredEuclidean");
     return metric_->init(meta, params);
   }
-  int cleanup(void) override {
+  int cleanup() override {
     return metric_->cleanup();
   }
   bool is_matched(const IndexMeta &meta) const override {
@@ -66,19 +66,19 @@ class FlatQueryCopyTestMetric : public IndexMetric {
                   const IndexQueryMeta &query_meta) const override {
     return metric_->is_matched(meta, query_meta);
   }
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     return metric_->distance();
   }
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     return metric_->distance_matrix(m, n);
   }
-  const Params &params(void) const override {
+  const Params &params() const override {
     return metric_->params();
   }
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     if constexpr (!HasBatch) return nullptr;
     return [](const void **rows, const void *query, size_t count,
               size_t dimension, float *distances, const void **) {
@@ -128,8 +128,8 @@ std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
 
 class FlatStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 
@@ -140,7 +140,7 @@ class FlatStreamerTest : public testing::Test {
 std::string FlatStreamerTest::dir_("flat_streamer_test_dir/");
 std::shared_ptr<IndexMeta> FlatStreamerTest::index_meta_ptr_;
 
-void FlatStreamerTest::SetUp(void) {
+void FlatStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (std::nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
@@ -148,7 +148,7 @@ void FlatStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void FlatStreamerTest::TearDown(void) {
+void FlatStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

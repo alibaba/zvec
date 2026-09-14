@@ -144,7 +144,7 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params,
   return 0;
 }
 
-int DiskAnnBuilder::cleanup(void) {
+int DiskAnnBuilder::cleanup() {
   holder_.reset();
   algo_.reset();
   quantizer_.reset();

@@ -172,177 +172,177 @@ class IndexRunner : public IndexModule {
     }
 
     //! Retrieve revision id
-    size_t revision_id(void) const {
+    size_t revision_id() const {
       return revision_id_;
     }
 
     //! Retrieve count of documents trained
-    size_t trained_count(void) const {
+    size_t trained_count() const {
       return trained_count_;
     }
 
     //! Retrieve count of documents built
-    size_t built_count(void) const {
+    size_t built_count() const {
       return built_count_;
     }
 
     //! Retrieve count of documents dumped
-    size_t dumped_count(void) const {
+    size_t dumped_count() const {
       return dumped_count_;
     }
 
     //! Retrieve count of documents loaded
-    size_t loaded_count(void) const {
+    size_t loaded_count() const {
       return loaded_count_;
     }
 
     //! Retrieve count of documents added
-    size_t added_count(void) const {
+    size_t added_count() const {
       return added_count_;
     }
 
     //! Retrieve count of documents discarded
-    size_t discarded_count(void) const {
+    size_t discarded_count() const {
       return discarded_count_;
     }
 
     //! Retrieve count of documents updated
-    size_t updated_count(void) const {
+    size_t updated_count() const {
       return updated_count_;
     }
 
     //! Retrieve count of documents deleted
-    size_t deleted_count(void) const {
+    size_t deleted_count() const {
       return deleted_count_;
     }
 
     //! Retrieve size of index
-    size_t index_size(void) const {
+    size_t index_size() const {
       return index_size_;
     }
 
     //! Retrieve size of index dumped
-    size_t dumped_size(void) const {
+    size_t dumped_size() const {
       return dumped_size_;
     }
 
     //! Retrieve check point of index
-    uint64_t check_point(void) const {
+    uint64_t check_point() const {
       return check_point_;
     }
 
     //! Retrieve create time of index
-    uint64_t create_time(void) const {
+    uint64_t create_time() const {
       return create_time_;
     }
 
     //! Retrieve update time of index
-    uint64_t update_time(void) const {
+    uint64_t update_time() const {
       return update_time_;
     }
 
     //! Retrieve loaded cost time of index
-    uint64_t loaded_costtime(void) const {
+    uint64_t loaded_costtime() const {
       return loaded_costtime_;
     }
 
     //! Retrieve trained cost time of index
-    uint64_t trained_costtime(void) const {
+    uint64_t trained_costtime() const {
       return trained_costtime_;
     }
 
     //! Retrieve built cost time of index
-    uint64_t built_costtime(void) const {
+    uint64_t built_costtime() const {
       return built_costtime_;
     }
 
     //! Retrieve dumped cost time of index
-    uint64_t dumped_costtime(void) const {
+    uint64_t dumped_costtime() const {
       return dumped_costtime_;
     }
 
     //! Retrieve count of documents loaded (mutable)
-    std::atomic<size_t> *mutable_trained_count(void) {
+    std::atomic<size_t> *mutable_trained_count() {
       return &loaded_count_;
     }
 
     //! Retrieve count of documents built (mutable)
-    std::atomic<size_t> *mutable_built_count(void) {
+    std::atomic<size_t> *mutable_built_count() {
       return &built_count_;
     }
 
     //! Retrieve count of documents dumped (mutable)
-    std::atomic<size_t> *mutable_dumped_count(void) {
+    std::atomic<size_t> *mutable_dumped_count() {
       return &dumped_count_;
     }
 
     //! Retrieve count of documents loaded (mutable)
-    std::atomic<size_t> *mutable_loaded_count(void) {
+    std::atomic<size_t> *mutable_loaded_count() {
       return &loaded_count_;
     }
 
     //! Retrieve count of documents added (mutable)
-    std::atomic<size_t> *mutable_added_count(void) {
+    std::atomic<size_t> *mutable_added_count() {
       return &added_count_;
     }
 
     //! Retrieve count of documents discarded (mutable)
-    std::atomic<size_t> *mutable_discarded_count(void) {
+    std::atomic<size_t> *mutable_discarded_count() {
       return &discarded_count_;
     }
 
     //! Retrieve count of documents updated (mutable)
-    std::atomic<size_t> *mutable_updated_count(void) {
+    std::atomic<size_t> *mutable_updated_count() {
       return &updated_count_;
     }
 
     //! Retrieve count of documents deleted (mutable)
-    std::atomic<size_t> *mutable_deleted_count(void) {
+    std::atomic<size_t> *mutable_deleted_count() {
       return &deleted_count_;
     }
 
     //! Retrieve size of index (mutable)
-    std::atomic<size_t> *mutable_index_size(void) {
+    std::atomic<size_t> *mutable_index_size() {
       return &index_size_;
     }
 
     //! Retrieve size of index dumped (mutable)
-    std::atomic<size_t> *mutable_dumped_size(void) {
+    std::atomic<size_t> *mutable_dumped_size() {
       return &dumped_size_;
     }
 
     //! Retrieve check point of index (mutable)
-    std::atomic<uint64_t> *mutable_check_point(void) {
+    std::atomic<uint64_t> *mutable_check_point() {
       return &check_point_;
     }
 
     //! Retrieve create time of index (mutable)
-    std::atomic<uint64_t> *mutable_create_time(void) {
+    std::atomic<uint64_t> *mutable_create_time() {
       return &create_time_;
     }
 
     //! Retrieve update time of index (mutable)
-    std::atomic<uint64_t> *mutable_update_time(void) {
+    std::atomic<uint64_t> *mutable_update_time() {
       return &update_time_;
     }
 
     //! Retrieve loaded time of index (mutable)
-    std::atomic<uint64_t> *mutable_loaded_costtime(void) {
+    std::atomic<uint64_t> *mutable_loaded_costtime() {
       return &loaded_costtime_;
     }
 
     //! Retrieve trained costtime of index (mutable)
-    std::atomic<uint64_t> *mutable_trained_costtime(void) {
+    std::atomic<uint64_t> *mutable_trained_costtime() {
       return &trained_costtime_;
     }
 
     //! Retrieve built costtime of index (mutable)
-    std::atomic<uint64_t> *mutable_built_costtime(void) {
+    std::atomic<uint64_t> *mutable_built_costtime() {
       return &built_costtime_;
     }
 
     //! Retrieve dump costtime of index (mutable)
-    std::atomic<uint64_t> *mutable_dumped_costtime(void) {
+    std::atomic<uint64_t> *mutable_dumped_costtime() {
       return &dumped_costtime_;
     }
 
@@ -404,7 +404,7 @@ class IndexRunner : public IndexModule {
   ~IndexRunner() override = default;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const = 0;
+  virtual const Stats &stats() const = 0;
 
   //! Cleanup Searcher
   virtual int cleanup() = 0;
@@ -418,17 +418,17 @@ class IndexRunner : public IndexModule {
   virtual void print_debug_info() {};
 
   //! Create a searcher context
-  virtual Context::Pointer create_context(void) const {
+  virtual Context::Pointer create_context() const {
     return Context::Pointer();
   }
 
   //! Create a searcher provider
-  virtual Provider::Pointer create_provider(void) const {
+  virtual Provider::Pointer create_provider() const {
     return Provider::Pointer();
   }
 
   //! Create a searcher sparse provider
-  virtual SparseProvider::Pointer create_sparse_provider(void) const {
+  virtual SparseProvider::Pointer create_sparse_provider() const {
     return SparseProvider::Pointer();
   }
 

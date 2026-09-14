@@ -39,41 +39,41 @@ struct IndexHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    virtual ~Iterator(void) = default;
+    virtual ~Iterator() = default;
 
     //! Retrieve pointer of data
-    virtual const void *data(void) const = 0;
+    virtual const void *data() const = 0;
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const = 0;
+    virtual bool is_valid() const = 0;
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const = 0;
+    virtual uint64_t key() const = 0;
 
     //! Next iterator
-    virtual void next(void) = 0;
+    virtual void next() = 0;
   };
 
   //! Destructor
-  virtual ~IndexHolder(void) = default;
+  virtual ~IndexHolder() = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const = 0;
+  virtual size_t dimension() const = 0;
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const = 0;
+  virtual IndexMeta::DataType data_type() const = 0;
 
   //! Retrieve element size in bytes
-  virtual size_t element_size(void) const = 0;
+  virtual size_t element_size() const = 0;
 
   //! Retrieve if it can multi-pass
-  virtual bool multipass(void) const = 0;
+  virtual bool multipass() const = 0;
 
   //! Create a new iterator
-  virtual Iterator::Pointer create_iterator(void) = 0;
+  virtual Iterator::Pointer create_iterator() = 0;
 
   //! Test if matchs the meta
   bool is_matched(const IndexMeta &meta) const {
@@ -96,16 +96,16 @@ struct IndexHybridHolder : public IndexHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override = 0;
+    const void *data() const override = 0;
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override = 0;
+    bool is_valid() const override = 0;
 
     //! Retrieve primary key
-    uint64_t key(void) const override = 0;
+    uint64_t key() const override = 0;
 
     //! Retrieve sparse count
     virtual uint32_t sparse_count() const = 0;
@@ -117,17 +117,17 @@ struct IndexHybridHolder : public IndexHolder {
     virtual const void *sparse_data() const = 0;
 
     //! Next iterator
-    void next(void) override = 0;
+    void next() override = 0;
   };
 
   //! Destructor
-  ~IndexHybridHolder(void) override = default;
+  ~IndexHybridHolder() override = default;
 
   //! Retrieve sparse count summing up over all the docs
-  virtual size_t total_sparse_count(void) const = 0;
+  virtual size_t total_sparse_count() const = 0;
 
   //! Create a new hybrid iterator
-  virtual Iterator::Pointer create_hybrid_iterator(void) = 0;
+  virtual Iterator::Pointer create_hybrid_iterator() = 0;
 };
 
 /*! Index Sparse Holder
@@ -143,13 +143,13 @@ struct IndexSparseHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    virtual ~Iterator(void) = default;
+    virtual ~Iterator() = default;
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const = 0;
+    virtual bool is_valid() const = 0;
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const = 0;
+    virtual uint64_t key() const = 0;
 
     //! Retrieve sparse count
     virtual uint32_t sparse_count() const = 0;
@@ -161,23 +161,23 @@ struct IndexSparseHolder {
     virtual const void *sparse_data() const = 0;
 
     //! Next iterator
-    virtual void next(void) = 0;
+    virtual void next() = 0;
   };
 
   //! Destructor
-  virtual ~IndexSparseHolder(void) = default;
+  virtual ~IndexSparseHolder() = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const = 0;
+  virtual IndexMeta::DataType data_type() const = 0;
 
   //! Retrieve if it can multi-pass
-  virtual bool multipass(void) const = 0;
+  virtual bool multipass() const = 0;
 
   //! Create a new iterator
-  virtual Iterator::Pointer create_iterator(void) = 0;
+  virtual Iterator::Pointer create_iterator() = 0;
 
   //! Test if matchs the meta
   bool is_matched(const IndexMeta &meta) const {
@@ -185,7 +185,7 @@ struct IndexSparseHolder {
   }
 
   //! Retrieve sparse count summing up over all the docs for reserving space
-  virtual size_t total_sparse_count(void) const = 0;
+  virtual size_t total_sparse_count() const = 0;
 };
 
 /*! One-Pass Numerical Index Holder
@@ -206,25 +206,25 @@ class OnePassNumericalIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       holder_->features_.erase(features_iter_++);
     }
 
@@ -238,32 +238,32 @@ class OnePassNumericalIndexHolder : public IndexHolder {
   OnePassNumericalIndexHolder(size_t dim) : dimension_(dim) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return dimension_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return dimension_ * sizeof(T);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return false;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new OnePassNumericalIndexHolder::Iterator(this));
   }
@@ -288,7 +288,7 @@ class OnePassNumericalIndexHolder : public IndexHolder {
 
  public:
   //! Disable them
-  OnePassNumericalIndexHolder(void) = delete;
+  OnePassNumericalIndexHolder() = delete;
 
  private:
   //! Members
@@ -314,25 +314,25 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++features_iter_;
     }
 
@@ -346,32 +346,32 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
   MultiPassNumericalIndexHolder(size_t dim) : dimension_(dim) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return dimension_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return dimension_ * sizeof(T);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new MultiPassNumericalIndexHolder::Iterator(this));
   }
@@ -414,7 +414,7 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
 
  public:
   //! Disable them
-  MultiPassNumericalIndexHolder(void) = delete;
+  MultiPassNumericalIndexHolder() = delete;
 
  private:
 };
@@ -437,25 +437,25 @@ class OnePassBinaryIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       holder_->features_.erase(features_iter_++);
     }
 
@@ -469,32 +469,32 @@ class OnePassBinaryIndexHolder : public IndexHolder {
   OnePassBinaryIndexHolder(size_t dim) : dimension_(dim) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return dimension_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return (dimension_ + (sizeof(T) << 3) - 1) / (sizeof(T) << 3) * sizeof(T);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return false;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new OnePassBinaryIndexHolder::Iterator(this));
   }
@@ -519,7 +519,7 @@ class OnePassBinaryIndexHolder : public IndexHolder {
 
  public:
   //! Disable them
-  OnePassBinaryIndexHolder(void) = delete;
+  OnePassBinaryIndexHolder() = delete;
 
  private:
   //! Members
@@ -545,25 +545,25 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++features_iter_;
     }
 
@@ -577,32 +577,32 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
   MultiPassBinaryIndexHolder(size_t dim) : dimension_(dim) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return dimension_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return (dimension_ + (sizeof(T) << 3) - 1) / (sizeof(T) << 3) * sizeof(T);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new MultiPassBinaryIndexHolder::Iterator(this));
   }
@@ -645,7 +645,7 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
 
  public:
   //! Disable them
-  MultiPassBinaryIndexHolder(void) = delete;
+  MultiPassBinaryIndexHolder() = delete;
 
  private:
 };
@@ -668,25 +668,25 @@ class OnePassIndexHybridHolderBase : public IndexHybridHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       holder_->features_.erase(features_iter_++);
     }
 
@@ -715,44 +715,44 @@ class OnePassIndexHybridHolderBase : public IndexHybridHolder {
   OnePassIndexHybridHolderBase(size_t dim) : dimension_(dim) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return dimension_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return dimension_ * sizeof(T);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return false;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new OnePassIndexHybridHolderBase::Iterator(this));
   }
 
   //! Create a new hybrid iterator
-  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(void) override {
+  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator() override {
     return IndexHybridHolder::Iterator::Pointer(
         new OnePassIndexHybridHolderBase::Iterator(this));
   }
 
   //! Retrieve sparse count summing up over all the docs
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return total_sparse_count_;
     ;
   }
@@ -783,7 +783,7 @@ class OnePassIndexHybridHolderBase : public IndexHybridHolder {
 
  public:
   //! Disable them
-  OnePassIndexHybridHolderBase(void) = delete;
+  OnePassIndexHybridHolderBase() = delete;
 
  private:
   //! Members
@@ -810,25 +810,25 @@ class MultiPassIndexHybridHolderBase : public IndexHybridHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++features_iter_;
     }
 
@@ -857,44 +857,44 @@ class MultiPassIndexHybridHolderBase : public IndexHybridHolder {
   MultiPassIndexHybridHolderBase(size_t dim) : dimension_(dim) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return dimension_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return dimension_ * sizeof(T);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new MultiPassIndexHybridHolderBase::Iterator(this));
   }
 
   //! Create a new hybrid iterator
-  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(void) override {
+  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator() override {
     return IndexHybridHolder::Iterator::Pointer(
         new MultiPassIndexHybridHolderBase::Iterator(this));
   }
 
   //! Retrieve sparse count summing up over all the docs
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return 0;
   }
 
@@ -930,7 +930,7 @@ class MultiPassIndexHybridHolderBase : public IndexHybridHolder {
 
  public:
   //! Disable them
-  MultiPassIndexHybridHolderBase(void) = delete;
+  MultiPassIndexHybridHolderBase() = delete;
 
  private:
   //! Members
@@ -957,20 +957,20 @@ class OnePassIndexSparseHolderBase : public IndexSparseHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       holder_->features_.erase(features_iter_++);
     }
 
@@ -999,28 +999,28 @@ class OnePassIndexSparseHolderBase : public IndexSparseHolder {
   OnePassIndexSparseHolderBase() = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return false;
   }
 
   //! Create a new iterator
-  IndexSparseHolder::Iterator::Pointer create_iterator(void) override {
+  IndexSparseHolder::Iterator::Pointer create_iterator() override {
     return IndexSparseHolder::Iterator::Pointer(
         new OnePassIndexSparseHolderBase::Iterator(this));
   }
 
   //! Retrieve sparse count summing up over all the docs
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return total_sparse_count_;
     ;
   }
@@ -1067,20 +1067,20 @@ class MultiPassIndexSparseHolderBase : public IndexSparseHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return (features_iter_ != holder_->features_.end());
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return features_iter_->first;
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++features_iter_;
     }
 
@@ -1109,28 +1109,28 @@ class MultiPassIndexSparseHolderBase : public IndexSparseHolder {
   MultiPassIndexSparseHolderBase() = default;
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_.size();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UNDEFINED;
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
   //! Create a new iterator
-  IndexSparseHolder::Iterator::Pointer create_iterator(void) override {
+  IndexSparseHolder::Iterator::Pointer create_iterator() override {
     return IndexSparseHolder::Iterator::Pointer(
         new MultiPassIndexSparseHolderBase::Iterator(this));
   }
 
   //! Retrieve sparse count summing up over all the docs
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return 0;
   }
 
@@ -1177,7 +1177,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_BINARY32>
   using OnePassBinaryIndexHolder::OnePassBinaryIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_BINARY32;
   }
 };
@@ -1191,7 +1191,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_BINARY64>
   using OnePassBinaryIndexHolder::OnePassBinaryIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_BINARY64;
   }
 };
@@ -1205,7 +1205,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_FP16>
   using OnePassNumericalIndexHolder::OnePassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -1219,7 +1219,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_FP32>
   using OnePassNumericalIndexHolder::OnePassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -1233,7 +1233,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_FP64>
   using OnePassNumericalIndexHolder::OnePassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -1247,7 +1247,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_INT8>
   using OnePassNumericalIndexHolder::OnePassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -1261,7 +1261,7 @@ struct OnePassIndexHolder<IndexMeta::DataType::DT_INT16>
   using OnePassNumericalIndexHolder::OnePassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -1280,7 +1280,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_BINARY32>
   using MultiPassBinaryIndexHolder::MultiPassBinaryIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_BINARY32;
   }
 };
@@ -1294,7 +1294,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_BINARY64>
   using MultiPassBinaryIndexHolder::MultiPassBinaryIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_BINARY64;
   }
 };
@@ -1308,7 +1308,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>
   using MultiPassNumericalIndexHolder::MultiPassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -1322,7 +1322,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>
   using MultiPassNumericalIndexHolder::MultiPassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -1336,7 +1336,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_FP64>
   using MultiPassNumericalIndexHolder::MultiPassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -1350,7 +1350,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_INT8>
   using MultiPassNumericalIndexHolder::MultiPassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -1364,7 +1364,7 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_INT16>
   using MultiPassNumericalIndexHolder::MultiPassNumericalIndexHolder;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -1383,7 +1383,7 @@ struct OnePassIndexHybridHolder<IndexMeta::DataType::DT_FP16>
   using OnePassIndexHybridHolderBase::OnePassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -1397,7 +1397,7 @@ struct OnePassIndexHybridHolder<IndexMeta::DataType::DT_FP32>
   using OnePassIndexHybridHolderBase::OnePassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -1411,7 +1411,7 @@ struct OnePassIndexHybridHolder<IndexMeta::DataType::DT_FP64>
   using OnePassIndexHybridHolderBase::OnePassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -1425,7 +1425,7 @@ struct OnePassIndexHybridHolder<IndexMeta::DataType::DT_INT8>
   using OnePassIndexHybridHolderBase::OnePassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -1439,7 +1439,7 @@ struct OnePassIndexHybridHolder<IndexMeta::DataType::DT_INT16>
   using OnePassIndexHybridHolderBase::OnePassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -1458,7 +1458,7 @@ struct MultiPassIndexHybridHolder<IndexMeta::DataType::DT_FP16>
   using MultiPassIndexHybridHolderBase::MultiPassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -1472,7 +1472,7 @@ struct MultiPassIndexHybridHolder<IndexMeta::DataType::DT_FP32>
   using MultiPassIndexHybridHolderBase::MultiPassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -1486,7 +1486,7 @@ struct MultiPassIndexHybridHolder<IndexMeta::DataType::DT_FP64>
   using MultiPassIndexHybridHolderBase::MultiPassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -1500,7 +1500,7 @@ struct MultiPassIndexHybridHolder<IndexMeta::DataType::DT_INT8>
   using MultiPassIndexHybridHolderBase::MultiPassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -1514,7 +1514,7 @@ struct MultiPassIndexHybridHolder<IndexMeta::DataType::DT_INT16>
   using MultiPassIndexHybridHolderBase::MultiPassIndexHybridHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -1533,7 +1533,7 @@ struct OnePassIndexSparseHolder<IndexMeta::DataType::DT_FP16>
   using OnePassIndexSparseHolderBase::OnePassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -1547,7 +1547,7 @@ struct OnePassIndexSparseHolder<IndexMeta::DataType::DT_FP32>
   using OnePassIndexSparseHolderBase::OnePassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -1561,7 +1561,7 @@ struct OnePassIndexSparseHolder<IndexMeta::DataType::DT_FP64>
   using OnePassIndexSparseHolderBase::OnePassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -1575,7 +1575,7 @@ struct OnePassIndexSparseHolder<IndexMeta::DataType::DT_INT8>
   using OnePassIndexSparseHolderBase::OnePassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -1589,7 +1589,7 @@ struct OnePassIndexSparseHolder<IndexMeta::DataType::DT_INT16>
   using OnePassIndexSparseHolderBase::OnePassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -1608,7 +1608,7 @@ struct MultiPassIndexSparseHolder<IndexMeta::DataType::DT_FP16>
   using MultiPassIndexSparseHolderBase::MultiPassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 };
@@ -1622,7 +1622,7 @@ struct MultiPassIndexSparseHolder<IndexMeta::DataType::DT_FP32>
   using MultiPassIndexSparseHolderBase::MultiPassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 };
@@ -1636,7 +1636,7 @@ struct MultiPassIndexSparseHolder<IndexMeta::DataType::DT_FP64>
   using MultiPassIndexSparseHolderBase::MultiPassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP64;
   }
 };
@@ -1650,7 +1650,7 @@ struct MultiPassIndexSparseHolder<IndexMeta::DataType::DT_INT8>
   using MultiPassIndexSparseHolderBase::MultiPassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT8;
   }
 };
@@ -1664,7 +1664,7 @@ struct MultiPassIndexSparseHolder<IndexMeta::DataType::DT_INT16>
   using MultiPassIndexSparseHolderBase::MultiPassIndexSparseHolderBase;
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_INT16;
   }
 };
@@ -1687,25 +1687,25 @@ class RandomAccessIndexHolder : public IndexHolder {
     Iterator(RandomAccessIndexHolder *owner) : holder_(owner) {}
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return holder_->element(id_);
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return id_ < holder_->count();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return holder_->key(id_);
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++id_;
     }
 
@@ -1720,32 +1720,32 @@ class RandomAccessIndexHolder : public IndexHolder {
       : features_(std::make_shared<CompactIndexFeatures>(meta)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return features_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return features_->dimension();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return features_->data_type();
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return features_->element_size();
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new RandomAccessIndexHolder::Iterator(this));
   }
@@ -1774,7 +1774,7 @@ class RandomAccessIndexHolder : public IndexHolder {
 
  public:
   //! Disable them
-  RandomAccessIndexHolder(void) = delete;
+  RandomAccessIndexHolder() = delete;
 
  private:
   //! Members

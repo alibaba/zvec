@@ -181,7 +181,7 @@ struct Neighbors {
     data = hd->neighbors;
   }
 
-  size_t size(void) const {
+  size_t size() const {
     return cnt;
   }
 
@@ -433,7 +433,7 @@ class HnswSparseEntity {
 
  public:
   //! Cleanup the entity
-  virtual int cleanup(void) {
+  virtual int cleanup() {
     header_.clear();
     return 0;
   }

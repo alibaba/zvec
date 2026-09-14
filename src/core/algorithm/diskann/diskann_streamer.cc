@@ -495,7 +495,7 @@ int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
   return 0;
 }
 
-IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider(void) const {
+IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider() const {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Load the index first before creating a provider");
     return nullptr;

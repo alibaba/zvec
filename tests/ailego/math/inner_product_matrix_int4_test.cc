@@ -28,7 +28,7 @@
 using namespace zvec;
 using namespace zvec::ailego;
 
-static inline const char *IntelIntrinsics(void) {
+static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
@@ -69,7 +69,7 @@ TEST(DistanceMatrix, InnerProduct_General) {
 }
 
 template <size_t M, size_t N>
-void TestInnerProductMatrix(void) {
+void TestInnerProductMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -115,7 +115,7 @@ void TestInnerProductMatrix(void) {
 }
 
 template <size_t M, size_t N>
-void TestMinusInnerProductMatrix(void) {
+void TestMinusInnerProductMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -457,7 +457,7 @@ TEST(DistanceMatrix, MinusInnerProduct_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void InnerProductBenchmark(void) {
+void InnerProductBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;

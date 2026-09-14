@@ -125,7 +125,7 @@ int SparseChunkBroker::open(IndexStorage::Pointer stg, size_t max_index_size,
   return load_storage(chunk_size);
 }
 
-int SparseChunkBroker::close(void) {
+int SparseChunkBroker::close() {
   flush(0UL);
 
   stg_.reset();

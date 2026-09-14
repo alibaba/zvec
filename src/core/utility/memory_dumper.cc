@@ -26,10 +26,10 @@ namespace core {
 struct MemoryDumper : public IndexDumper {
  public:
   //! Constructor
-  MemoryDumper(void) = default;
+  MemoryDumper() = default;
 
   //! Destructor
-  ~MemoryDumper(void) override = default;
+  ~MemoryDumper() override = default;
 
   //! Initialize dumper
   int init(const ailego::Params &) override {
@@ -37,7 +37,7 @@ struct MemoryDumper : public IndexDumper {
   }
 
   //! Cleanup dumper
-  int cleanup(void) override {
+  int cleanup() override {
     stab_.clear();
     packer_.reset();
     rope_ = nullptr;
@@ -67,7 +67,7 @@ struct MemoryDumper : public IndexDumper {
   }
 
   //! Close memory block
-  int close(void) override {
+  int close() override {
     auto write_data = [this](const void *buf, size_t size) {
       return (*this->rope_)[0].append(buf, size);
     };
@@ -99,7 +99,7 @@ struct MemoryDumper : public IndexDumper {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return packer_.magic();
   }
 

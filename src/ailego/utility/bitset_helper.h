@@ -26,7 +26,7 @@ namespace ailego {
 class BitsetHelper {
  public:
   //! Constructor
-  BitsetHelper(void) = default;
+  BitsetHelper() = default;
 
   //! Constructor
   BitsetHelper(void *buf, size_t len)
@@ -40,13 +40,13 @@ class BitsetHelper {
   }
 
   //! Umount the buffer
-  void umount(void) {
+  void umount() {
     array_ = nullptr;
     size_ = 0u;
   }
 
   // ！Clear the bitset
-  void clear(void) {
+  void clear() {
     memset(array_, 0, sizeof(uint32_t) * size_);
   }
 
@@ -100,16 +100,16 @@ class BitsetHelper {
   }
 
   //! Check if all bits are set to true
-  bool test_all(void) const;
+  bool test_all() const;
 
   //! Check if any bits are set to true
-  bool test_any(void) const;
+  bool test_any() const;
 
   //! Check if none of the bits are set to true
-  bool test_none(void) const;
+  bool test_none() const;
 
   //! Compute the cardinality of a bitset
-  size_t cardinality(void) const;
+  size_t cardinality() const;
 
   //! Calculate the size of buffer if it contains N bits
   static size_t BufferSize(size_t N) {

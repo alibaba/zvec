@@ -28,7 +28,7 @@ using namespace zvec::core;
 using namespace zvec::ailego;
 using namespace std;
 
-static inline size_t RandomDimension(void) {
+static inline size_t RandomDimension() {
   std::mt19937 gen((std::random_device())());
   return (std::uniform_int_distribution<size_t>(1, 129))(gen);
 }
@@ -36,8 +36,8 @@ static inline size_t RandomDimension(void) {
 static size_t DIMENSION = RandomDimension();
 class FlatBuilderTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
  public:
   static std::string dir_;
@@ -47,14 +47,14 @@ class FlatBuilderTest : public testing::Test {
 std::string FlatBuilderTest ::dir_("flat_builder_test/");
 IndexMeta FlatBuilderTest::meta_;
 
-void FlatBuilderTest::SetUp(void) {
+void FlatBuilderTest::SetUp() {
   meta_.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta_.set_metric("SquaredEuclidean", 0, Params());
   meta_.set_major_order(IndexMeta::MO_COLUMN);
 }
 
 //! self-check column-major and row-major search.
-void FlatBuilderTest::TearDown(void) {
+void FlatBuilderTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

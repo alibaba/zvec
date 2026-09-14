@@ -82,62 +82,62 @@ class IndexReducerBase : public IndexModule {
     }
 
     //! Retrieve count of documents loaded
-    size_t loaded_count(void) const {
+    size_t loaded_count() const {
       return loaded_count_;
     }
 
     //! Retrieve count of documents dumped
-    size_t dumped_count(void) const {
+    size_t dumped_count() const {
       return dumped_count_;
     }
 
     //! Retrieve count of documents filtered
-    size_t filtered_count(void) const {
+    size_t filtered_count() const {
       return filtered_count_;
     }
 
     //! Retrieve count of documents duplicated
-    size_t duplicated_count(void) const {
+    size_t duplicated_count() const {
       return duplicated_count_;
     }
 
     //! Retrieve time cost of documents reduced
-    uint64_t reduced_costtime(void) const {
+    uint64_t reduced_costtime() const {
       return reduced_costtime_;
     }
 
     //! Retrieve time cost of documents dumped
-    uint64_t dumped_costtime(void) const {
+    uint64_t dumped_costtime() const {
       return dumped_costtime_;
     }
 
     //! Retrieve count of documents loaded (mutable)
-    std::atomic<size_t> *mutable_loaded_count(void) {
+    std::atomic<size_t> *mutable_loaded_count() {
       return &loaded_count_;
     }
 
     //! Retrieve count of documents dumped (mutable)
-    std::atomic<size_t> *mutable_dumped_count(void) {
+    std::atomic<size_t> *mutable_dumped_count() {
       return &dumped_count_;
     }
 
     //! Retrieve count of documents filtered (mutable)
-    std::atomic<size_t> *mutable_filtered_count(void) {
+    std::atomic<size_t> *mutable_filtered_count() {
       return &filtered_count_;
     }
 
     //! Retrieve count of documents duplicated (mutable)
-    std::atomic<size_t> *mutable_duplicated_count(void) {
+    std::atomic<size_t> *mutable_duplicated_count() {
       return &duplicated_count_;
     }
 
     //! Retrieve time cost of documents reduced (mutable)
-    std::atomic<uint64_t> *mutable_reduced_costtime(void) {
+    std::atomic<uint64_t> *mutable_reduced_costtime() {
       return &reduced_costtime_;
     }
 
     //! Retrieve time cost of documents dumped (mutable)
-    std::atomic<uint64_t> *mutable_dumped_costtime(void) {
+    std::atomic<uint64_t> *mutable_dumped_costtime() {
       return &dumped_costtime_;
     }
 
@@ -152,13 +152,13 @@ class IndexReducerBase : public IndexModule {
   };
 
   //! Destructor
-  ~IndexReducerBase(void) override = default;
+  ~IndexReducerBase() override = default;
 
   //! Initialize Reducer
   virtual int init(const ailego::Params &params) = 0;
 
   //! Cleanup Reducer
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Reduce operator (with filter)
   virtual int reduce(const IndexFilter &filter) = 0;
@@ -167,7 +167,7 @@ class IndexReducerBase : public IndexModule {
   virtual int dump(const IndexDumper::Pointer &dumper) = 0;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const = 0;
+  virtual const Stats &stats() const = 0;
 
   //! Set thread pool
   void set_thread_pool(ailego::ThreadPool *pool) {
@@ -192,7 +192,7 @@ class IndexReducer : public IndexReducerBase {
   typedef std::shared_ptr<IndexReducer> Pointer;
 
   //! Destructor
-  ~IndexReducer(void) override = default;
+  ~IndexReducer() override = default;
 };
 
 /*! Index Sparse Reducer
@@ -203,7 +203,7 @@ class IndexSparseReducer : public IndexReducerBase {
   typedef std::shared_ptr<IndexSparseReducer> Pointer;
 
   //! Destructor
-  ~IndexSparseReducer(void) override = default;
+  ~IndexSparseReducer() override = default;
 };
 
 /*! Index Streamer Reducer
@@ -223,7 +223,7 @@ class IndexStreamerReducer : public IndexReducerBase {
       IndexStreamer::Pointer streamer,
       const IndexReformer::Pointer reformer) = 0;
 
-  ~IndexStreamerReducer(void) override = default;
+  ~IndexStreamerReducer() override = default;
 };
 }  // namespace core
 }  // namespace zvec

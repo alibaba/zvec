@@ -28,10 +28,10 @@ namespace core {
  */
 struct VectorMean {
   //! Destructor
-  virtual ~VectorMean(void) = default;
+  virtual ~VectorMean() = default;
 
   //! Reset accumulator
-  virtual void reset(void) = 0;
+  virtual void reset() = 0;
 
   //! Plus a vector
   virtual bool plus(const void *vec, size_t len) = 0;
@@ -46,17 +46,17 @@ struct VectorMean {
   virtual bool merge(const VectorMean &rhs) = 0;
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve the dimension of vectors
-  virtual size_t dimension(void) const = 0;
+  virtual size_t dimension() const = 0;
 };
 
 /*! Vector Mean Array
  */
 struct VectorMeanArray {
   //! Destructor
-  virtual ~VectorMeanArray(void) = default;
+  virtual ~VectorMeanArray() = default;
 
   //! Operator []
   VectorMean &operator[](size_t i) {
@@ -72,7 +72,7 @@ struct VectorMeanArray {
   virtual void resize(size_t cnt) = 0;
 
   //! Clear accumulators
-  virtual void clear(void) = 0;
+  virtual void clear() = 0;
 
   //! Retrieve an accumulator
   virtual VectorMean &at(size_t i) = 0;
@@ -81,10 +81,10 @@ struct VectorMeanArray {
   virtual const VectorMean &at(size_t i) const = 0;
 
   //! Retrieve the count of accumulators
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve the dimension of accumulators
-  virtual size_t dimension(void) const = 0;
+  virtual size_t dimension() const = 0;
 };
 
 /*! General Vector Mean Array
@@ -126,7 +126,7 @@ class GeneralVectorMeanArray : public VectorMeanArray {
   }
 
   //! Clear accumulators
-  virtual void clear(void) {
+  virtual void clear() {
     array_.clear();
   }
 
@@ -141,17 +141,17 @@ class GeneralVectorMeanArray : public VectorMeanArray {
   }
 
   //! Retrieve the count of accumulators
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return array_.size();
   }
 
   //! Retrieve the dimension of accumulators
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return dimension_;
   }
 
   //! Disable them
-  GeneralVectorMeanArray(void) = delete;
+  GeneralVectorMeanArray() = delete;
 
  private:
   //! Members
@@ -167,7 +167,7 @@ template <typename T,
 class NumericalVectorMean : public VectorMean {
  public:
   //! Constructor
-  NumericalVectorMean(void) : count_(0), accums_() {}
+  NumericalVectorMean() : count_(0), accums_() {}
 
   //! Constructor
   NumericalVectorMean(const NumericalVectorMean &rhs)
@@ -196,7 +196,7 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  virtual void reset() {
     this->reset(accums_.size());
   }
 
@@ -254,12 +254,12 @@ class NumericalVectorMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return accums_.size();
   }
 
@@ -292,7 +292,7 @@ template <typename T,
 class NumericalVectorHarmonicMean : public VectorMean {
  public:
   //! Constructor
-  NumericalVectorHarmonicMean(void) : count_(0), accums_() {}
+  NumericalVectorHarmonicMean() : count_(0), accums_() {}
 
   //! Constructor
   NumericalVectorHarmonicMean(const NumericalVectorHarmonicMean &rhs)
@@ -321,7 +321,7 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  virtual void reset() {
     this->reset(accums_.size());
   }
 
@@ -379,12 +379,12 @@ class NumericalVectorHarmonicMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return accums_.size();
   }
 
@@ -417,7 +417,7 @@ template <typename T,
 class NumericalVectorGeometricMean : public VectorMean {
  public:
   //! Constructor
-  NumericalVectorGeometricMean(void) : count_(0), accums_() {}
+  NumericalVectorGeometricMean() : count_(0), accums_() {}
 
   //! Constructor
   NumericalVectorGeometricMean(const NumericalVectorGeometricMean &rhs)
@@ -446,7 +446,7 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  virtual void reset() {
     this->reset(accums_.size());
   }
 
@@ -505,12 +505,12 @@ class NumericalVectorGeometricMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return accums_.size();
   }
 
@@ -540,7 +540,7 @@ class NumericalVectorGeometricMean : public VectorMean {
 class BinaryVectorMean : public VectorMean {
  public:
   //! Constructor
-  BinaryVectorMean(void) : count_(0), accums_() {}
+  BinaryVectorMean() : count_(0), accums_() {}
 
   //! Constructor
   BinaryVectorMean(const BinaryVectorMean &rhs)
@@ -574,7 +574,7 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  virtual void reset() {
     this->reset(accums_.size());
   }
 
@@ -645,12 +645,12 @@ class BinaryVectorMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return accums_.size();
   }
 
@@ -667,7 +667,7 @@ template <typename T,
 class NibbleVectorMean : public VectorMean {
  public:
   //! Constructor
-  NibbleVectorMean(void) : count_(0), accums_() {}
+  NibbleVectorMean() : count_(0), accums_() {}
 
   //! Constructor
   NibbleVectorMean(const NibbleVectorMean &rhs)
@@ -701,7 +701,7 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Reset accumulator
-  virtual void reset(void) {
+  virtual void reset() {
     this->reset(accums_.size());
   }
 
@@ -772,12 +772,12 @@ class NibbleVectorMean : public VectorMean {
   }
 
   //! Retrieve the count of vectors
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return count_;
   }
 
   //! Retrieve dimension of accumulator
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return accums_.size();
   }
 

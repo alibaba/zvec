@@ -57,20 +57,20 @@ class IvfRabitqStreamer : public IndexStreamer {
   int unload() override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Create a search context
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
   //! Create a new iterator
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   //! Similarity search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,

@@ -77,7 +77,7 @@ void stop(int signo) {
   }
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: local_builder CONFIG.yaml [plugin file path]" << endl;
 }
 

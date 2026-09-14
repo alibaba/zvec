@@ -157,7 +157,7 @@ class CosineMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -176,7 +176,7 @@ class CosineMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixDistanceHandle>(
@@ -199,7 +199,7 @@ class CosineMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP32:
         return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
@@ -215,12 +215,12 @@ class CosineMetric : public IndexMetric {
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 
