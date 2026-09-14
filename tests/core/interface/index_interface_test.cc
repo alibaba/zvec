@@ -62,7 +62,48 @@ class TestableIVFIndex : public IVFIndex {
   }
 };
 
+class TestableHNSWIndex : public HNSWIndex {
+ public:
+  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+    return _get_coarse_search_topk(param);
+  }
+};
+
+class TestableVamanaIndex : public VamanaIndex {
+ public:
+  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+    return _get_coarse_search_topk(param);
+  }
+};
+
 }  // namespace
+
+TEST(IndexInterface, GraphRefineKeepsLegacyDefaultCandidateCount) {
+  constexpr uint32_t kTopk = 10;
+  constexpr uint32_t kHnswEf = 100;
+  constexpr uint32_t kVamanaEf = 64;
+  auto refiner = std::make_shared<RefinerParam>();
+
+  auto hnsw_param = HNSWQueryParamBuilder()
+                        .with_topk(kTopk)
+                        .with_ef_search(kHnswEf)
+                        .with_refiner_param(refiner)
+                        .build();
+  auto vamana_param = VamanaQueryParamBuilder()
+                          .with_topk(kTopk)
+                          .with_ef_search(kVamanaEf)
+                          .with_refiner_param(refiner)
+                          .build();
+  TestableHNSWIndex hnsw;
+  TestableVamanaIndex vamana;
+
+  EXPECT_EQ(kHnswEf, hnsw.GetCoarseSearchTopk(hnsw_param));
+  EXPECT_EQ(kVamanaEf, vamana.GetCoarseSearchTopk(vamana_param));
+
+  refiner->scale_factor_ = 2.0f;
+  EXPECT_EQ(kTopk * 2, hnsw.GetCoarseSearchTopk(hnsw_param));
+  EXPECT_EQ(kTopk * 2, vamana.GetCoarseSearchTopk(vamana_param));
+}
 
 TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
   TestableIVFIndex index;
