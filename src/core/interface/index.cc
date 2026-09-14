@@ -1191,12 +1191,19 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
 int Index::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
   float scale_factor = search_param->refiner_param->scale_factor_;
+  if (!std::isfinite(scale_factor) || scale_factor < 0) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
   if (scale_factor == 0) {
+    scale_factor = 1;
+  } else if (scale_factor < 1.0f) {
+    LOG_WARN("Refine scale factor %f is less than 1, using 1 instead",
+             scale_factor);
     scale_factor = 1;
   }
   const float count = std::floor(search_param->topk * scale_factor);
-  if (!std::isfinite(scale_factor) || scale_factor < 1.0f ||
-      !std::isfinite(count) ||
+  if (!std::isfinite(count) ||
       static_cast<double>(count) > (std::numeric_limits<int>::max)()) {
     LOG_ERROR("Invalid refine scale factor or candidate count");
     return core::IndexError_InvalidArgument;
