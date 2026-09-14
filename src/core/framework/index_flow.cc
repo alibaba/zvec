@@ -311,7 +311,7 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (query_quantizer_) {
+  if (query_quantizer_ && !searcher_->owns_query_quantization()) {
     IndexQueryMeta new_qmeta;
     error_code = query_quantizer_->quantize(
         query, qmeta, context->mutable_features(), &new_qmeta);
@@ -367,7 +367,7 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (query_quantizer_) {
+  if (query_quantizer_ && !searcher_->owns_query_quantization()) {
     IndexQueryMeta new_qmeta;
     error_code = query_quantizer_->quantize(
         query, qmeta, context->mutable_features(), &new_qmeta);
@@ -423,7 +423,7 @@ int IndexFlow::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (query_quantizer_) {
+  if (query_quantizer_ && !searcher_->owns_query_quantization()) {
     IndexQueryMeta new_qmeta;
     std::string tmp;
     error_code = query_quantizer_->quantize(query, qmeta, &tmp, &new_qmeta);
@@ -504,7 +504,7 @@ int IndexFlow::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   int error_code = 0;
-  if (query_quantizer_) {
+  if (query_quantizer_ && !searcher_->owns_query_quantization()) {
     IndexQueryMeta new_qmeta;
     std::string tmp;
     error_code = query_quantizer_->quantize(query, qmeta, &tmp, &new_qmeta);
