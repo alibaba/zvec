@@ -35,7 +35,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
   }
 
   //! Destructor
-  ~FlatSearcherContext(void) override {}
+  ~FlatSearcherContext(void) override = default;
 
   //! Set topk of search result
   void set_topk(uint32_t topk) override {

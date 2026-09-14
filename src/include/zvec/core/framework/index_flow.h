@@ -115,7 +115,7 @@ class IndexFlow {
   };
 
   //! Constructor
-  IndexFlow(void) {}
+  IndexFlow(void) = default;
 
   //! Constructor
   IndexFlow(IndexFlow &&rhs)
@@ -380,11 +380,12 @@ class IndexFlow {
     return Context::Pointer(new Context(searcher_->create_context()));
   }
 
- private:
+ public:
   //! Disable them
   IndexFlow(const IndexFlow &) = delete;
   IndexFlow &operator=(const IndexFlow &) = delete;
 
+ private:
   int load_internal();
 
   //! Members
@@ -494,7 +495,7 @@ class IndexSparseFlow {
   };
 
   //! Constructor
-  IndexSparseFlow(void) {}
+  IndexSparseFlow(void) = default;
 
   //! Constructor
   IndexSparseFlow(IndexSparseFlow &&rhs)
@@ -630,11 +631,12 @@ class IndexSparseFlow {
     return Context::Pointer(new Context(searcher_->create_context()));
   }
 
- private:
+ public:
   //! Disable them
   IndexSparseFlow(const IndexSparseFlow &) = delete;
   IndexSparseFlow &operator=(const IndexSparseFlow &) = delete;
 
+ private:
   int load_internal();
 
   //! Members

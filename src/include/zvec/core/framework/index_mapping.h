@@ -30,7 +30,7 @@ class IndexMapping {
   class Segment {
    public:
     //! Constructor
-    Segment(void) {}
+    Segment(void) = default;
 
     //! Constructor
     Segment(IndexFormat::SegmentMeta *segmeta) : meta_(segmeta) {}
@@ -89,7 +89,7 @@ class IndexMapping {
   };
 
   //! Constructor
-  IndexMapping(void) {}
+  IndexMapping(void) = default;
 
   //! Constructor
   IndexMapping(IndexMapping &&rhs)
@@ -195,11 +195,12 @@ class IndexMapping {
   int init_meta_section();
   int init_hugepage_meta_section();
 
- private:
+ public:
   //! Disable them
   IndexMapping(const IndexMapping &) = delete;
   IndexMapping &operator=(const IndexMapping &) = delete;
 
+ private:
   //! Members
   uint32_t segment_ids_offset_{0};
   IndexFormat::SegmentMeta *segment_start_{nullptr};

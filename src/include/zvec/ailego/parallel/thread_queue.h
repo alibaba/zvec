@@ -140,13 +140,14 @@ class ThreadQueue {
       return true;
     }
 
-   private:
+   public:
     //! Disable them
     ThreadWorker(void) = delete;
     ThreadWorker(ThreadWorker &&) = delete;
     ThreadWorker(const ThreadWorker &) = delete;
     ThreadWorker &operator=(const ThreadWorker &) = delete;
 
+   private:
     //! Members
     ThreadQueue *owner_{nullptr};
     std::queue<ClosureHandler> queue_{};
@@ -274,12 +275,13 @@ class ThreadQueue {
     }
   }
 
- private:
+ public:
   //! Disable them
   ThreadQueue(const ThreadQueue &) = delete;
   ThreadQueue(ThreadQueue &&) = delete;
   ThreadQueue &operator=(const ThreadQueue &) = delete;
 
+ private:
   //! Members
   std::atomic_uint worker_count_{0};
   std::mutex wait_mutex_{};

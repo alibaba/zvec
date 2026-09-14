@@ -29,7 +29,7 @@ class Fp16Quantizer : public Quantizer {
  public:
   Fp16Quantizer() : Quantizer(QuantizeType::kFp16) {}
 
-  virtual ~Fp16Quantizer() {}
+  virtual ~Fp16Quantizer() = default;
 
  public:
   int init(const core::IndexMeta &meta, const ailego::Params &params) override;

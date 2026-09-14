@@ -40,7 +40,7 @@ class Int4Quantizer : public Quantizer {
  public:
   Int4Quantizer() : Quantizer(QuantizeType::kRecord) {}
 
-  virtual ~Int4Quantizer() {}
+  virtual ~Int4Quantizer() = default;
 
  public:
   int init(const core::IndexMeta &meta, const ailego::Params &params) override;

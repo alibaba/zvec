@@ -109,7 +109,7 @@ struct ZVEC_AILEGO_API Logger {
   }
 
   //! Destructor
-  virtual ~Logger(void) {}
+  virtual ~Logger(void) = default;
 
   //! Initialize Logger
   virtual int init(const Params &params) = 0;
@@ -170,12 +170,12 @@ class ZVEC_AILEGO_API LoggerBroker {
     }
   }
 
- private:
   //! Disable them
   LoggerBroker(void) = delete;
   LoggerBroker(const LoggerBroker &) = delete;
   LoggerBroker(LoggerBroker &&) = delete;
 
+ private:
   //! Accessors of logger state (Meyers singleton to avoid multiple
   //! __cxa_atexit registrations when logger.cc is compiled into multiple
   //! shared libraries via --whole-archive; the guard variable is shared

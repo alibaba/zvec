@@ -111,14 +111,14 @@ class IndexContext {
   };
 
   //! Constructor
-  IndexContext() {}
+  IndexContext() = default;
 
   //! Constructor
   IndexContext(IndexMetric::Pointer index_metric)
       : index_metric_(std::move(index_metric)) {}
 
   //! Destructor
-  virtual ~IndexContext(void) {}
+  virtual ~IndexContext(void) = default;
 
   //! Set topk of search result
   virtual void set_topk(uint32_t topk) = 0;

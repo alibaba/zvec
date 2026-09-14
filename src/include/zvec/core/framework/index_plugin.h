@@ -38,7 +38,7 @@ class IndexPlugin {
   }
 
   //! Destructor
-  ~IndexPlugin(void) {}
+  ~IndexPlugin(void) = default;
 
   //! Test if the plugin is valid
   bool is_valid(void) const {
@@ -59,11 +59,11 @@ class IndexPlugin {
   //! Unload plugin
   void unload(void);
 
- private:
   //! Disable them
   IndexPlugin(const IndexPlugin &) = delete;
   IndexPlugin &operator=(const IndexPlugin &) = delete;
 
+ private:
   //! Members
   void *handle_;
 };
@@ -80,7 +80,7 @@ class IndexPluginBroker {
       : plugins_(std::move(broker.plugins_)) {}
 
   //! Destructor
-  ~IndexPluginBroker(void) {}
+  ~IndexPluginBroker(void) = default;
 
   //! Emplace a plugin
   bool emplace(IndexPlugin &&plugin);
@@ -104,11 +104,11 @@ class IndexPluginBroker {
     return plugins_.size();
   }
 
- private:
   //! Disable them
   IndexPluginBroker(const IndexPluginBroker &) = delete;
   IndexPluginBroker &operator=(const IndexPluginBroker &) = delete;
 
+ private:
   //! Members
   std::vector<IndexPlugin> plugins_;
 };

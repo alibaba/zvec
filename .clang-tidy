@@ -4,6 +4,8 @@ Checks: >
   bugprone-sizeof-expression,
   modernize-use-nullptr,
   modernize-use-override,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
 WarningsAsErrors: "*"
 HeaderFilterRegex: "^(src|tests|tools)/(?!db/sqlengine/antlr/gen/|db/index/column/fts_column/gen/|include/zvec/ailego/encoding/json/mod_json\\.h).*"
 FormatStyle: none

@@ -40,7 +40,7 @@ class EntropyIntegerQuantizer {
   static_assert(RANGE_MIN < RANGE_MAX, "Invalid value range");
 
   //! Constructor
-  EntropyIntegerQuantizer(void) {}
+  EntropyIntegerQuantizer(void) = default;
 
   //! Set histogram bins in train
   void set_histogram_bins(size_t bins) {
@@ -112,11 +112,11 @@ class EntropyIntegerQuantizer {
     return scale_reciprocal_;
   }
 
- protected:
   //! Disable them
   EntropyIntegerQuantizer(const EntropyIntegerQuantizer &) = delete;
   EntropyIntegerQuantizer &operator=(const EntropyIntegerQuantizer &) = delete;
 
+ protected:
   //! Members
   size_t histogram_bins_{0};
   float hist_interval_{1.0f};

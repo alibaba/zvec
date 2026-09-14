@@ -38,9 +38,9 @@ bool group_options_valid(const DiskAnnContext *ctx) {
 
 }  // namespace
 
-DiskAnnStreamer::DiskAnnStreamer() {}
+DiskAnnStreamer::DiskAnnStreamer() = default;
 
-DiskAnnStreamer::~DiskAnnStreamer() {}
+DiskAnnStreamer::~DiskAnnStreamer() = default;
 
 int DiskAnnStreamer::init(const IndexMeta &meta,
                           const ailego::Params &search_params) {

@@ -36,7 +36,7 @@ class BenchResult {
     min_time_by_us_ = std::numeric_limits<long>::max();
     max_time_by_us_ = 0;
   }
-  ~BenchResult() {}
+  ~BenchResult() = default;
 
   void add_time(int query_count, long time_by_us) {
     lock_.lock();

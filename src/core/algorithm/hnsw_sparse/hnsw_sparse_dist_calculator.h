@@ -164,7 +164,6 @@ class HnswSparseDistCalculator {
     return compare_cnt_;
   }
 
- private:
   HnswSparseDistCalculator(const HnswSparseDistCalculator &) = delete;
   HnswSparseDistCalculator &operator=(const HnswSparseDistCalculator &) =
       delete;

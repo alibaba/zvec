@@ -26,10 +26,10 @@ class StratifiedClusterTrainer : public IndexTrainer {
   typedef std::shared_ptr<StratifiedClusterTrainer> Pointer;
 
   //! Constructor
-  StratifiedClusterTrainer(void) {}
+  StratifiedClusterTrainer(void) = default;
 
   //! Destructor
-  ~StratifiedClusterTrainer(void) {}
+  ~StratifiedClusterTrainer(void) = default;
 
  protected:
   //! Initialize Trainer

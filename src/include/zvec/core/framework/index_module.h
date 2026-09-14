@@ -27,7 +27,7 @@ class IndexModule {
   typedef std::shared_ptr<IndexModule> Pointer;
 
   //! Destructor
-  virtual ~IndexModule(void) {}
+  virtual ~IndexModule(void) = default;
 
   //! Retrieve debug information
   virtual std::string debug_string(void) const {

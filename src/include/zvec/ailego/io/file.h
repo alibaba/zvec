@@ -297,11 +297,11 @@ class ZVEC_AILEGO_API File {
     return FileHelper::IsSame(path1.c_str(), path2.c_str());
   }
 
- private:
   //! Disable them
   File(const File &) = delete;
   File &operator=(const File &) = delete;
 
+ private:
   //! Members
   NativeHandle native_handle_;
   bool read_only_;

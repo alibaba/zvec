@@ -134,10 +134,10 @@ struct IndexFormat {
       return ailego::Crc32c::Hash(buffer_.data(), buffer_.size(), 0);
     }
 
-   private:
     //! Disable them
     SegmentMetaBuffer(void) = delete;
 
+   private:
     //! Members
     std::string buffer_{};
     size_t offset_{0u};

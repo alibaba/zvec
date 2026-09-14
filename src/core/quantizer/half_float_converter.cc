@@ -53,7 +53,7 @@ class HalfFloatHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -128,11 +128,11 @@ class HalfFloatHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
-  friend class Iterator;
+ public:
   //! Disable them
   HalfFloatHolder(void) = delete;
 
+ private:
   //! Members
   IndexHolder::Pointer front_{};
   turbo::ConvertFunc convert_func_{nullptr};
@@ -143,7 +143,7 @@ class HalfFloatHolder : public IndexHolder {
 class HalfFloatConverter : public IndexConverter {
  public:
   //! Destructor
-  ~HalfFloatConverter(void) override {}
+  ~HalfFloatConverter(void) override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &) override {
@@ -230,7 +230,7 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
@@ -310,10 +310,11 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
     return front_->total_sparse_count();
   }
 
- private:
+ public:
   //! Disable them
   HalfFloatSparseHolder(void) = delete;
 
+ private:
   //! Members
   IndexSparseHolder::Pointer front_{};
 };
@@ -323,7 +324,7 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
 class HalfFloatSparseConverter : public IndexConverter {
  public:
   //! Destructor
-  ~HalfFloatSparseConverter(void) override {}
+  ~HalfFloatSparseConverter(void) override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &) override {

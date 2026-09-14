@@ -244,7 +244,7 @@ class Callback<void> {
   using Pointer = std::shared_ptr<Callback<void>>;
 
   //! Destructor
-  virtual ~Callback(void) {}
+  virtual ~Callback(void) = default;
 
   //! Function call
   void operator()(void) {
@@ -309,7 +309,7 @@ class Callback : public Callback<void> {
 
  protected:
   //! Constructor
-  Callback(void) {};
+  Callback(void) = default;
 };
 
 /*! Callback Implementation
@@ -344,7 +344,6 @@ class CallbackImpl : public Callback<R> {
     *r = Functor::Run(obj_, impl_, tuple_);
   }
 
- protected:
   //! Disable them
   CallbackImpl(void) = delete;
   CallbackImpl(const CallbackImpl &) = delete;
@@ -384,7 +383,6 @@ class CallbackImpl<T, void, TFunc> : public Callback<void> {
     Functor::Run(obj_, impl_, tuple_);
   }
 
- protected:
   //! Disable them
   CallbackImpl(void) = delete;
   CallbackImpl(const CallbackImpl &) = delete;
@@ -424,7 +422,6 @@ class CallbackImpl<void, R, TFunc> : public Callback<R> {
     *r = Functor::Run(impl_, tuple_);
   }
 
- protected:
   //! Disable them
   CallbackImpl(void) = delete;
   CallbackImpl(const CallbackImpl &) = delete;
@@ -458,7 +455,6 @@ class CallbackImpl<void, void, TFunc> : public Callback<void> {
     Functor::Run(impl_, tuple_);
   }
 
- protected:
   //! Disable them
   CallbackImpl(void) = delete;
   CallbackImpl(const CallbackImpl &) = delete;

@@ -28,7 +28,7 @@ class IndexDumper : public IndexModule {
   typedef std::shared_ptr<IndexDumper> Pointer;
 
   //! Destructor
-  ~IndexDumper(void) override {}
+  ~IndexDumper(void) override = default;
 
   //! Initialize dumper
   virtual int init(const ailego::Params &params) = 0;

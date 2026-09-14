@@ -563,9 +563,11 @@ class HnswStreamerEntity : public HnswEntity {
                 &upper_neighbor_chunks_);
   }
 
- private:
+ public:
   HnswStreamerEntity(const HnswStreamerEntity &) = delete;
   HnswStreamerEntity &operator=(const HnswStreamerEntity &) = delete;
+
+ private:
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  protected:

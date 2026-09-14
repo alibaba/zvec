@@ -31,14 +31,10 @@ class Seeker {
     Document(uint32_t i, float v) : index(i), score(v) {}
 
     //! Constructor
-    Document(const Document &rhs) : index(rhs.index), score(rhs.score) {}
+    Document(const Document &rhs) = default;
 
     //! Assignment
-    Document &operator=(const Document &rhs) {
-      index = rhs.index;
-      score = rhs.score;
-      return *this;
-    }
+    Document &operator=(const Document &rhs) = default;
 
     //! Less than
     bool operator<(const Document &rhs) const {
@@ -53,7 +49,7 @@ class Seeker {
 
  public:
   //! Destructor
-  virtual ~Seeker(void) {}
+  virtual ~Seeker(void) = default;
 
   virtual int init(const IndexMeta &meta) = 0;
 

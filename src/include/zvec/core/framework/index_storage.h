@@ -40,7 +40,7 @@ class IndexStorage : public IndexModule {
       MBT_HEAP_SCRATCH = 3,
     };
 
-    MemoryBlock() {}
+    MemoryBlock() = default;
     MemoryBlock(ailego::VecBufferPoolHandle *buffer_pool_handle,
                 size_t block_id, void *data)
         : type_(MemoryBlockType::MBT_BUFFERPOOL) {
@@ -289,7 +289,7 @@ class IndexStorage : public IndexModule {
     typedef std::shared_ptr<Segment> Pointer;
 
     //! Destructor
-    virtual ~Segment(void) {}
+    virtual ~Segment(void) = default;
 
     //! Retrieve size of data
     virtual size_t data_size(void) const = 0;
@@ -343,7 +343,7 @@ class IndexStorage : public IndexModule {
   };
 
   //! Destructor
-  ~IndexStorage(void) override {}
+  ~IndexStorage(void) override = default;
 
   //! Initialize storage
   virtual int init(const ailego::Params &params) = 0;

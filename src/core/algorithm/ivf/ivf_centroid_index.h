@@ -28,7 +28,7 @@ class IVFCentroidIndex {
   typedef std::shared_ptr<IVFCentroidIndex> Pointer;
 
   //! Constructor
-  IVFCentroidIndex(void) {}
+  IVFCentroidIndex(void) = default;
 
   //! Destructor
   ~IVFCentroidIndex(void) {
@@ -114,7 +114,7 @@ class IVFCentroidIndex {
       Iterator(std::vector<const void *> *features) : features_(features) {}
 
       //! Destructor
-      ~Iterator(void) override {}
+      ~Iterator(void) override = default;
 
       //! Retrieve pointer of data
       const void *data(void) const override {

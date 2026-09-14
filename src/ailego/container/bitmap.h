@@ -40,7 +40,7 @@ class FixedBitset {
   }
 
   //! Destructor
-  ~FixedBitset(void) {}
+  ~FixedBitset(void) = default;
 
   //! Assignment
   FixedBitset &operator=(const FixedBitset &rhs) {
@@ -238,19 +238,16 @@ class Bitset {
   Bitset(size_t bits) : array_((bits + 0x1f) >> 5) {}
 
   //! Constructor
-  Bitset(const Bitset &rhs) : array_(rhs.array_) {}
+  Bitset(const Bitset &rhs) = default;
 
   //! Constructor
   Bitset(Bitset &&rhs) : array_(std::move(rhs.array_)) {}
 
   //! Destructor
-  ~Bitset(void) {}
+  ~Bitset(void) = default;
 
   //! Assignment
-  Bitset &operator=(const Bitset &rhs) {
-    array_ = rhs.array_;
-    return *this;
-  }
+  Bitset &operator=(const Bitset &rhs) = default;
 
   //! Assignment
   Bitset &operator=(Bitset &&rhs) {

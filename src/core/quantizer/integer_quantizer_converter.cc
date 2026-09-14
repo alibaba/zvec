@@ -45,7 +45,7 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -372,7 +372,7 @@ class IntegerStreamingConverter : public IndexConverter {
       : data_type_(dst_type) {}
 
   //! Destructor
-  ~IntegerStreamingConverter() override {}
+  ~IntegerStreamingConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
@@ -506,7 +506,7 @@ class IntegerStreamingConverter : public IndexConverter {
       }
 
       //! Destructor
-      ~Iterator(void) override {}
+      ~Iterator(void) override = default;
 
       //! Retrieve pointer of data
       const void *data(void) const override {

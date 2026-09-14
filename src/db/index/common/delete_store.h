@@ -52,12 +52,11 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   }
 
 
- private:
   DeleteStore(const DeleteStore &) = delete;
   DeleteStore &operator=(const DeleteStore &) = delete;
   DeleteStore &operator=(DeleteStore &&) = delete;
 
-
+ private:
  public:
   class Filter : public IndexFilter {
    public:
