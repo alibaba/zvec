@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "stratified_cluster_trainer.h"
+#include <cmath>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
@@ -154,12 +155,32 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
     }
   }
 
-  size_t train_sample_count = std::max(
-      sample_count_, static_cast<uint32_t>(sample_ratio_ * holder->count()));
+  const size_t holder_count = holder->count();
+  const bool has_known_count = holder_count != static_cast<size_t>(-1);
+  if (!std::isfinite(sample_ratio_) || sample_ratio_ < 0.0f ||
+      (!has_known_count && sample_ratio_ > 0.0f)) {
+    return IndexError_InvalidArgument;
+  }
+  size_t train_sample_count = sample_count_;
+  if (has_known_count && sample_ratio_ > 0.0f) {
+    size_t ratio_sample_count = holder_count;
+    if (sample_ratio_ < 1.0f) {
+      const float requested = sample_ratio_ * holder_count;
+      // Preserve the existing sampling calculation, but clamp before converting
+      // to an integer: rounded counts and ratios above one must not overflow.
+      if (requested < static_cast<float>(holder_count)) {
+        ratio_sample_count = static_cast<size_t>(requested);
+      }
+    }
+    train_sample_count = std::max(train_sample_count, ratio_sample_count);
+  }
 
   centroids_.clear();
   int result = IndexError_NotImplemented;
-  if (train_sample_count == 0) {
+  // Reservoir sampling preserves every row in input order when its capacity
+  // covers the known corpus. Such a request is full training, too.
+  if (has_known_count &&
+      (train_sample_count == 0 || train_sample_count >= holder_count)) {
     auto streaming_cluster = dynamic_cast<HolderCluster *>(cluster_.get());
     if (streaming_cluster) {
       // A previous fallback train may still have features mounted. They are
@@ -170,9 +191,8 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
       }
       result = streaming_cluster->cluster_holder(threads, holder, centroids_);
       if (result == 0) {
-        stats_.set_trained_count(holder->count());
-        LOG_INFO("Trained directly from holder, HolderCount=%lu",
-                 holder->count());
+        stats_.set_trained_count(holder_count);
+        LOG_INFO("Trained directly from holder, HolderCount=%lu", holder_count);
       }
     }
   }
@@ -199,7 +219,6 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
         sampler->emplace(iter->data());
       }
       features = sampler;
-      stats_.set_trained_count(train_sample_count);
     } else {
       LOG_INFO(
           "Do no sampling, SampleCount=%u, SampleRatio=%f, "
@@ -218,9 +237,11 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
       }
 
       features = no_sampler;
-      stats_.set_trained_count(holder->count());
     }
 
+    // A requested sample may exceed the corpus, and an iterator's size may be
+    // unknown until it has been consumed. Report the actual training input.
+    stats_.set_trained_count(features->count());
     holder.reset();
     result = cluster_->mount(features);
     if (result != 0) {

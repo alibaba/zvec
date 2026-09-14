@@ -16,6 +16,8 @@
 #include <cstring>
 #include <limits>
 #include <random>
+#include <string>
+#include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
@@ -25,7 +27,6 @@
 
 using namespace zvec::core;
 using namespace zvec::ailego;
-using namespace zvec::ailego;
 
 namespace {
 
@@ -33,10 +34,12 @@ namespace {
 // There is no backing full corpus whose pointers the streaming path can retain.
 class StreamingTestHolder : public IndexHolder {
  public:
-  StreamingTestHolder(size_t dim, size_t count)
-      : meta_(IndexMeta::DT_FP32, dim),
-        actual_count(count),
-        reported_count(count) {}
+  StreamingTestHolder(size_t dim, size_t count,
+                      IndexMeta::DataType type = IndexMeta::DT_FP32,
+                      const std::string &metric = "SquaredEuclidean")
+      : meta_(type, dim), actual_count(count), reported_count(count) {
+    meta_.set_metric(metric, 0, Params());
+  }
 
   class Iterator : public IndexHolder::Iterator {
    public:
@@ -50,13 +53,7 @@ class StreamingTestHolder : public IndexHolder {
     const void *data() const override {
       ++owner_->reads;
       if (index_ == owner_->null_at) return nullptr;
-      for (size_t d = 0; d < owner_->dimension(); ++d) {
-        const float value = static_cast<float>((index_ % 3) * 20) +
-                            static_cast<float>((index_ / 3) % 7) * 0.125f +
-                            static_cast<float>(d) * 0.25f + owner_->offset;
-        std::memcpy(buffer_.data() + 1 + d * sizeof(value), &value,
-                    sizeof(value));
-      }
+      owner_->fill(index_, buffer_.data() + 1);
       return buffer_.data() + 1;
     }
     bool is_valid() const override {
@@ -97,6 +94,55 @@ class StreamingTestHolder : public IndexHolder {
     return IndexHolder::Iterator::Pointer(new Iterator(this));
   }
 
+  float value(size_t index, size_t dim) const {
+    // Small signed values exercise all encodings, including signed nibbles,
+    // without overflowing integer centroid sums or FP16 squared distances.
+    // Separated directions keep every seeded cluster nonempty for both L2 and
+    // IP; collinear integer IP seeds would exercise the existing NaN-to-integer
+    // conversion for empty centroids instead of the input-loading contract.
+    const size_t groups = std::min<size_t>(3, dimension());
+    return (dim % groups == index % groups ? 6.0f : -2.0f) +
+           static_cast<float>((index / groups) % 2) + offset;
+  }
+
+  template <typename T>
+  void fill_numeric(size_t index, char *out) const {
+    for (size_t d = 0; d < dimension(); ++d) {
+      const T component(value(index, d));
+      std::memcpy(out + d * sizeof(T), &component, sizeof(T));
+    }
+  }
+
+  void fill(size_t index, char *out) const {
+    switch (data_type()) {
+      case IndexMeta::DT_FP16:
+        fill_numeric<Float16>(index, out);
+        break;
+      case IndexMeta::DT_FP32:
+        fill_numeric<float>(index, out);
+        break;
+      case IndexMeta::DT_FP64:
+        fill_numeric<double>(index, out);
+        break;
+      case IndexMeta::DT_INT8:
+        fill_numeric<int8_t>(index, out);
+        break;
+      case IndexMeta::DT_INT16:
+        fill_numeric<int16_t>(index, out);
+        break;
+      case IndexMeta::DT_INT4: {
+        NibbleVector<int32_t> packed(dimension());
+        for (size_t d = 0; d < dimension(); ++d) {
+          packed.set(d, static_cast<int8_t>(value(index, d)));
+        }
+        std::memcpy(out, packed.data(), element_size());
+        break;
+      }
+      default:
+        ADD_FAILURE() << "Unsupported test data type";
+    }
+  }
+
   IndexMeta meta_;
   size_t actual_count;
   size_t reported_count;
@@ -128,50 +174,85 @@ void ExpectSameCentroids(const IndexCluster::CentroidList &expected,
   }
 }
 
-}  // namespace
+struct HolderTrainingCase {
+  IndexMeta::DataType type;
+  std::string metric;
+  size_t dimension;
+};
 
-TEST(OptKmeansCluster, HolderTrainingMatchesMountedFeatures) {
-  auto threads = std::make_shared<SingleQueueIndexThreads>(1, false);
-  for (const size_t dim : {1u, 7u, 33u, 128u}) {
-    for (const size_t count : {1u, 17u, 259u}) {
-      SCOPED_TRACE(::testing::Message() << "dim=" << dim << " count=" << count);
-      auto holder = std::make_shared<StreamingTestHolder>(dim, count);
-      auto features = Materialize(*holder);
-      auto mounted = IndexFactory::CreateCluster("OptKmeansCluster");
-      auto streamed = IndexFactory::CreateCluster("OptKmeansCluster");
-      ASSERT_NE(nullptr, mounted);
-      ASSERT_NE(nullptr, streamed);
-      ASSERT_EQ(0, mounted->init(holder->meta_, Params()));
-      ASSERT_EQ(0, streamed->init(holder->meta_, Params()));
-      ASSERT_EQ(0, mounted->mount(features));
-      auto fast = dynamic_cast<HolderCluster *>(streamed.get());
-      ASSERT_NE(nullptr, fast);
-      // Identical explicit seeds avoid random initialization in this
-      // comparison.
-      IndexCluster::CentroidList seeds;
-      for (size_t i = 0; i < std::min<size_t>(3, count); ++i) {
-        seeds.emplace_back(features->element(i), features->element_size());
-      }
-      auto expected = seeds;
-      ASSERT_EQ(0, mounted->cluster(threads, expected));
-      const size_t before = holder->iterations;
-      for (int repeat = 0; repeat < 2; ++repeat) {
-        auto actual = seeds;
-        ASSERT_EQ(0, fast->cluster_holder(threads, holder, actual));
-        ExpectSameCentroids(expected, actual);
-        EXPECT_EQ(0u, holder->live_iterators);
-      }
-      EXPECT_EQ(before + 2, holder->iterations);
-      EXPECT_EQ(count * 3, holder->reads);
-      // One-shot input is not implicitly mounted or retained by the cluster.
-      auto actual = seeds;
-      EXPECT_EQ(IndexError_NoReady, streamed->cluster(threads, actual));
-      std::weak_ptr<IndexHolder> input_lifetime = holder;
-      holder.reset();
-      EXPECT_TRUE(input_lifetime.expired());
+std::vector<HolderTrainingCase> HolderTrainingCases() {
+  std::vector<HolderTrainingCase> cases;
+  for (const auto type :
+       {IndexMeta::DT_FP16, IndexMeta::DT_FP32, IndexMeta::DT_FP64,
+        IndexMeta::DT_INT8, IndexMeta::DT_INT16, IndexMeta::DT_INT4}) {
+    const std::vector<size_t> dims =
+        type == IndexMeta::DT_INT4   ? std::vector<size_t>{8, 24, 40, 128}
+        : type == IndexMeta::DT_INT8 ? std::vector<size_t>{4, 12, 36, 128}
+                                     : std::vector<size_t>{1, 7, 33, 128};
+    for (const auto *metric : {"SquaredEuclidean", "InnerProduct"}) {
+      for (const auto dim : dims) cases.push_back({type, metric, dim});
     }
   }
+  return cases;
 }
+
+class HolderTrainingTest : public ::testing::TestWithParam<HolderTrainingCase> {
+};
+
+}  // namespace
+
+TEST_P(HolderTrainingTest, MatchesMountedFeatures) {
+  const auto &param = GetParam();
+  SCOPED_TRACE(::testing::Message()
+               << "type=" << param.type << " metric=" << param.metric
+               << " dim=" << param.dimension);
+  auto threads = std::make_shared<SingleQueueIndexThreads>(1, false);
+  for (const size_t count : {1u, 17u, 259u}) {
+    SCOPED_TRACE(::testing::Message() << "count=" << count);
+    auto holder = std::make_shared<StreamingTestHolder>(
+        param.dimension, count, param.type, param.metric);
+    auto features = Materialize(*holder);
+    auto mounted = IndexFactory::CreateCluster("OptKmeansCluster");
+    auto streamed = IndexFactory::CreateCluster("OptKmeansCluster");
+    ASSERT_NE(nullptr, mounted);
+    ASSERT_NE(nullptr, streamed);
+    ASSERT_EQ(0, mounted->init(holder->meta_, Params()));
+    ASSERT_EQ(0, streamed->init(holder->meta_, Params()));
+    ASSERT_EQ(0, mounted->mount(features));
+    auto fast = dynamic_cast<HolderCluster *>(streamed.get());
+    ASSERT_NE(nullptr, fast);
+    // Identical explicit seeds avoid random initialization in this
+    // comparison.
+    IndexCluster::CentroidList seeds;
+    const size_t seed_count = std::min({size_t{3}, count, param.dimension});
+    for (size_t i = 0; i < seed_count; ++i) {
+      seeds.emplace_back(features->element(i), features->element_size());
+    }
+    auto expected = seeds;
+    ASSERT_EQ(0, mounted->cluster(threads, expected));
+    for (const auto &centroid : expected) {
+      ASSERT_GT(centroid.follows(), 0u);
+    }
+    const size_t before = holder->iterations;
+    for (int repeat = 0; repeat < 2; ++repeat) {
+      auto actual = seeds;
+      ASSERT_EQ(0, fast->cluster_holder(threads, holder, actual));
+      ExpectSameCentroids(expected, actual);
+      EXPECT_EQ(0u, holder->live_iterators);
+    }
+    EXPECT_EQ(before + 2, holder->iterations);
+    EXPECT_EQ(count * 3, holder->reads);
+    // One-shot input is not implicitly mounted or retained by the cluster.
+    auto actual = seeds;
+    EXPECT_EQ(IndexError_NoReady, streamed->cluster(threads, actual));
+    std::weak_ptr<IndexHolder> input_lifetime = holder;
+    holder.reset();
+    EXPECT_TRUE(input_lifetime.expired());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(AllSupportedTypesAndMetrics, HolderTrainingTest,
+                         ::testing::ValuesIn(HolderTrainingCases()));
 
 TEST(OptKmeansCluster, HolderTrainingPreservesExistingMount) {
   auto holder = std::make_shared<StreamingTestHolder>(7, 259);
@@ -196,12 +277,15 @@ TEST(OptKmeansCluster, HolderTrainingPreservesExistingMount) {
   ExpectSameCentroids(expected, actual);
 }
 
-TEST(OptKmeansCluster, HolderTrainingRejectsMalformedInputWithoutRetry) {
-  auto holder = std::make_shared<StreamingTestHolder>(7, 17);
+TEST_P(HolderTrainingTest, RejectsMalformedInputWithoutRetry) {
+  const auto &param = GetParam();
+  auto holder = std::make_shared<StreamingTestHolder>(param.dimension, 17,
+                                                      param.type, param.metric);
   auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
   ASSERT_NE(nullptr, cluster);
   ASSERT_EQ(0, cluster->init(holder->meta_, Params()));
-  cluster->suggest(2);
+  const uint32_t cluster_count = param.dimension == 1 ? 1u : 2u;
+  cluster->suggest(cluster_count);
   auto fast = dynamic_cast<HolderCluster *>(cluster.get());
   ASSERT_NE(nullptr, fast);
   auto threads = std::make_shared<SingleQueueIndexThreads>(1, false);
@@ -221,35 +305,82 @@ TEST(OptKmeansCluster, HolderTrainingRejectsMalformedInputWithoutRetry) {
   }
   holder->reported_count = 17;
   ASSERT_EQ(0, fast->cluster_holder(threads, holder, cents));
-  EXPECT_EQ(2u, cents.size());
-  auto wrong = std::make_shared<StreamingTestHolder>(8, 17);
+  EXPECT_EQ(cluster_count, cents.size());
+  auto wrong = std::make_shared<StreamingTestHolder>(param.dimension + 8, 17,
+                                                     param.type, param.metric);
   EXPECT_EQ(IndexError_Mismatch, fast->cluster_holder(threads, wrong, cents));
   EXPECT_EQ(0u, wrong->iterations);
-  auto empty = std::make_shared<StreamingTestHolder>(7, 0);
+  auto wrong_type = std::make_shared<StreamingTestHolder>(
+      param.dimension, 17,
+      param.type == IndexMeta::DT_FP32 ? IndexMeta::DT_FP16
+                                       : IndexMeta::DT_FP32,
+      param.metric);
+  EXPECT_EQ(IndexError_Mismatch,
+            fast->cluster_holder(threads, wrong_type, cents));
+  EXPECT_EQ(0u, wrong_type->iterations);
+  auto empty = std::make_shared<StreamingTestHolder>(param.dimension, 0,
+                                                     param.type, param.metric);
   EXPECT_EQ(IndexError_InvalidArgument,
             fast->cluster_holder(threads, empty, cents));
+  const size_t before = holder->iterations;
+  const char invalid_seed = 0;
+  IndexCluster::CentroidList invalid_cents{
+      IndexCluster::Centroid(&invalid_seed, 1)};
+  // Dimension-one INT8 is unsupported, so every valid test element is larger
+  // than this deliberately truncated centroid.
+  EXPECT_EQ(IndexError_InvalidArgument,
+            fast->cluster_holder(threads, holder, invalid_cents));
+  EXPECT_EQ(before, holder->iterations);
 }
 
-TEST(OptKmeansCluster, UnsupportedHolderTrainingDoesNotConsumeInput) {
-  auto holder = std::make_shared<StreamingTestHolder>(7, 17);
-  for (int unsupported = 0; unsupported < 4; ++unsupported) {
-    SCOPED_TRACE(unsupported);
-    IndexMeta meta = holder->meta_;
-    holder->reported_count = 17;
-    if (unsupported == 0) meta.set_meta(IndexMeta::DT_FP16, 7);
-    if (unsupported == 1) meta.set_metric("InnerProduct", 0, Params());
-    if (unsupported == 2) holder->reported_count = static_cast<size_t>(-1);
-    if (unsupported == 3) meta.set_meta(IndexMeta::DT_FP64, 7);
+TEST_P(HolderTrainingTest, UnsupportedCountDoesNotConsumeInput) {
+  const auto &param = GetParam();
+  auto holder = std::make_shared<StreamingTestHolder>(param.dimension, 17,
+                                                      param.type, param.metric);
+  std::vector<size_t> counts{std::numeric_limits<size_t>::max()};
+  if (std::numeric_limits<size_t>::max() >
+      std::numeric_limits<uint32_t>::max()) {
+    counts.push_back(static_cast<size_t>(std::numeric_limits<uint32_t>::max()) +
+                     1);
+  }
+  for (const size_t count : counts) {
+    SCOPED_TRACE(count);
+    holder->reported_count = count;
     auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
     ASSERT_NE(nullptr, cluster);
-    ASSERT_EQ(0, cluster->init(meta, Params()));
+    ASSERT_EQ(0, cluster->init(holder->meta_, Params()));
     auto fast = dynamic_cast<HolderCluster *>(cluster.get());
     ASSERT_NE(nullptr, fast);
     IndexCluster::CentroidList cents;
     EXPECT_EQ(IndexError_NotImplemented,
               fast->cluster_holder(nullptr, holder, cents));
     EXPECT_EQ(0u, holder->iterations);
+    EXPECT_EQ(0u, holder->reads);
     EXPECT_TRUE(cents.empty());
+  }
+}
+
+TEST(OptKmeansCluster, HolderTrainingRejectsInvalidPackedDimensions) {
+  for (const auto type : {IndexMeta::DT_INT4, IndexMeta::DT_INT8}) {
+    for (const auto *metric : {"SquaredEuclidean", "InnerProduct"}) {
+      for (const size_t dim : {2u, 6u, 10u}) {
+        SCOPED_TRACE(::testing::Message() << "type=" << type << " metric="
+                                          << metric << " dim=" << dim);
+        auto holder =
+            std::make_shared<StreamingTestHolder>(dim, 17, type, metric);
+        auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
+        ASSERT_NE(nullptr, cluster);
+        ASSERT_EQ(0, cluster->init(holder->meta_, Params()));
+        auto fast = dynamic_cast<HolderCluster *>(cluster.get());
+        ASSERT_NE(nullptr, fast);
+        IndexCluster::CentroidList cents;
+        EXPECT_EQ(IndexError_Mismatch,
+                  fast->cluster_holder(nullptr, holder, cents));
+        EXPECT_EQ(0u, holder->iterations);
+        EXPECT_EQ(0u, holder->reads);
+        EXPECT_TRUE(cents.empty());
+      }
+    }
   }
 }
 
@@ -274,7 +405,7 @@ TEST(OptKmeansCluster, TrainerStreamsOrFallsBackAsAppropriate) {
         holder->reported_count = holder->actual_count;
       }
       ASSERT_EQ(0, trainer->train(threads, holder));
-      EXPECT_EQ(mode == 1 ? 32u : holder->count(),
+      EXPECT_EQ(mode == 1 ? 32u : holder->actual_count,
                 trainer->stats().trained_count());
       EXPECT_EQ(0u, trainer->stats().discarded_count());
       IndexCluster::CentroidList cents;
