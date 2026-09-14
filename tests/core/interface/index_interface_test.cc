@@ -1757,10 +1757,29 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       const auto &before_data =
           std::get<DenseVectorBuffer>(before.vector_buffer).data;
       ASSERT_EQ(kDimension * sizeof(float), before_data.size());
+      float squared_error = 0.0f;
+      float squared_norm = 0.0f;
       for (uint32_t d = 0; d < kDimension; ++d) {
-        EXPECT_NEAR(static_cast<float>(8 + d),
-                    reinterpret_cast<const float *>(before_data.data())[d],
-                    quantizer.type == QuantizerType::kFP16 ? 0.02F : 0.3F);
+        const float expected = static_cast<float>(8 + d);
+        const float actual =
+            reinterpret_cast<const float *>(before_data.data())[d];
+        squared_error += (expected - actual) * (expected - actual);
+        squared_norm += expected * expected;
+        if (quantizer.type != QuantizerType::kInt8) {
+          EXPECT_NEAR(expected, actual,
+                      quantizer.type == QuantizerType::kFP16 ? 0.02F : 0.3F);
+        }
+      }
+      if (quantizer.type == QuantizerType::kInt8) {
+        // Rounding contributes at most half a quantization step per
+        // coordinate. Rotation preserves the error norm, but its coordinate
+        // range can grow to sqrt(2) times the original vector norm.
+        const float range = quantizer.enable_rotate
+                                ? std::sqrt(2.0f * squared_norm)
+                                : static_cast<float>(kDimension - 1);
+        const float max_error =
+            std::sqrt(static_cast<float>(kDimension)) * range / (2.0f * 254.0f);
+        EXPECT_LE(std::sqrt(squared_error), max_error + 1e-4f);
       }
       auto query_param =
           IVFQueryParamBuilder().with_topk(4).with_nprobe(1).build();

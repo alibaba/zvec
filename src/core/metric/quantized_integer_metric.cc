@@ -140,7 +140,7 @@ class QuantizedIntegerMetric : public IndexMetric {
           auto turbo_ret = turbo::get_distance_func(
               turbo::MetricType::kCosine, turbo::DataType::kInt8,
               turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-          if (turbo_ret) {
+          if (turbo_ret && m == 1 && n == 1) {
             return turbo_ret;
           }
           return DistanceMatrixCompute<CosineMinusInnerProduct, int8_t>(m, n);
