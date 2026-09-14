@@ -171,6 +171,7 @@ TEST_F(LikeTest, ForwardSuffixLike) {
   auto ret = engine->execute(collection_schema_, query, segments_);
   ASSERT_TRUE(ret.has_value()) << ret.error();
   auto docs = std::move(ret.value());
+  ASSERT_EQ(docs.size(), 50u);
   for (size_t i = 0; i < docs.size(); i++) {
     auto doc = docs[i];
     int doc_id = i * 100 + 22;
@@ -188,6 +189,7 @@ TEST_F(LikeTest, NotExtendedInvertSuffixLikeRunAsForward) {
   auto ret = engine->execute(collection_schema_, query, segments_);
   ASSERT_TRUE(ret.has_value()) << ret.error();
   auto docs = std::move(ret.value());
+  ASSERT_EQ(docs.size(), 50u);
   for (size_t i = 0; i < docs.size(); i++) {
     auto doc = docs[i];
     int doc_id = i * 100 + 22;
@@ -205,6 +207,7 @@ TEST_F(LikeTest, ExtendedInvertSuffixLike) {
   auto ret = engine->execute(collection_schema_, query, segments_);
   ASSERT_TRUE(ret.has_value()) << ret.error();
   auto docs = std::move(ret.value());
+  ASSERT_EQ(docs.size(), 50u);
   for (size_t i = 0; i < docs.size(); i++) {
     auto doc = docs[i];
     int doc_id = i * 100 + 22;

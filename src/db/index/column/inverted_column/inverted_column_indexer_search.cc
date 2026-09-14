@@ -620,7 +620,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_like(
         "like should have exactly one percent, unescaped:", term));
   }
   if (percent_loc == 0) {
-    return get_bitmap_suffix(term);
+    return get_bitmap_suffix(term.substr(1));
   } else if (percent_loc == size - 1) {
     return get_bitmap_prefix(term.substr(0, percent_loc));
   } else {
