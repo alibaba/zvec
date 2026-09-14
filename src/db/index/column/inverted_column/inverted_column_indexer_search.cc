@@ -177,38 +177,16 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
     return tl::make_unexpected(Status::InvalidArgument());
   }
 
-  roaring_bitmap_t *non_null_bitmap{nullptr};
+  auto non_null_result = get_bitmap_non_null();
+  if (!non_null_result) {
+    return non_null_result;
+  }
+  auto *non_null_bitmap = non_null_result.value();
   AILEGO_DEFER([&]() {
     if (non_null_bitmap) {
       roaring_bitmap_free(non_null_bitmap);
     }
   });
-
-  if (sealed_) {
-    non_null_bitmap = null_bitmap_.copy();
-    roaring_bitmap_flip_inplace(non_null_bitmap, 0, max_id_ + 1);
-  } else {
-    Status s;
-    non_null_bitmap = roaring_bitmap_create();
-    if (!non_null_bitmap) {
-      LOG_ERROR("Failed to create bitmap");
-      return tl::make_unexpected(Status::InternalError());
-    }
-    auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
-    AILEGO_DEFER([&]() { delete iter; });
-    iter->SeekToFirst();
-    while (iter->Valid()) {
-      s = InvertedIndexCodec::Merge_OR(
-          iter->value().data(), iter->value().size(), true, non_null_bitmap);
-      if (s.ok()) {
-        iter->Next();
-      } else {
-        LOG_ERROR("Failed to merge bitmap from %s", ID().c_str());
-        return tl::make_unexpected(s);
-      }
-    }
-    roaring_bitmap_repair_after_lazy(non_null_bitmap);
-  }
 
   auto ret = get_bitmap_contain(terms, is_any);
   if (ret) {
@@ -723,7 +701,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
     return bitmap;
   } else {
     Status s = Status::OK();
-    auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
+    // Empty arrays have a length entry but no term entries.
+    auto *cf = field_.is_array_type() ? cf_array_len_ : cf_terms_;
+    auto iter = ctx_.db_->NewIterator(ctx_.read_opts_, cf);
     AILEGO_DEFER([&]() { delete iter; });
     roaring_bitmap_t *bitmap = roaring_bitmap_create();
     if (!bitmap) {

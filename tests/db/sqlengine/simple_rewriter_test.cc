@@ -283,7 +283,15 @@ TEST_F(EqOrRewriteTest, SimpleManyEqOrParas) {
 TEST_F(EqOrRewriteTest, SimpleNeOr) {
   auto info = parse("age != 10 or age != 20 ");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(), "age in NOT (10, 20)(FORWARD)");
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age!=10(FORWARD)(OR_A)) or (age!=20(FORWARD)(OR_A))");
+}
+
+TEST_F(EqOrRewriteTest, RepeatedNeOr) {
+  auto info = parse("age != 10 or age != 10");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age!=10(FORWARD)(OR_A)) or (age!=10(FORWARD)(OR_A))");
 }
 
 TEST_F(EqOrRewriteTest, SimpleManyNeOr) {
@@ -293,10 +301,20 @@ TEST_F(EqOrRewriteTest, SimpleManyNeOr) {
       "!= 10 or age != 11 or age != 12 or age != 13 or age != 14 or age != 15 "
       "or age != 16 or age != 17 or age != 18 or age != 19 or age != 20");
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->filter_cond()->text(),
-            "age in NOT (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, "
-            "16, 17, 18, "
-            "19, 20)(FORWARD)");
+  auto node = info->filter_cond();
+  for (int value = 20; value >= 2; --value) {
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->op(), QueryNodeOp::Q_OR);
+    ASSERT_NE(node->right(), nullptr);
+    EXPECT_EQ(node->right()->op(), QueryNodeOp::Q_NE);
+    EXPECT_EQ(node->right()->left()->text(), "age");
+    EXPECT_EQ(node->right()->right()->text(), std::to_string(value));
+    node = node->left();
+  }
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->op(), QueryNodeOp::Q_NE);
+  EXPECT_EQ(node->left()->text(), "age");
+  EXPECT_EQ(node->right()->text(), "1");
 }
 
 TEST_F(EqOrRewriteTest, EqAndNe) {
@@ -305,8 +323,25 @@ TEST_F(EqOrRewriteTest, EqAndNe) {
       "age = 40");
   ASSERT_NE(info, nullptr);
   EXPECT_EQ(info->filter_cond()->text(),
-            "(age in NOT (10, 20)(FORWARD)(OR_A)) or (age in (30, "
+            "((age!=10(FORWARD)(OR_A)) or (age!=20(FORWARD)(OR_A))) or "
+            "(age in (30, "
             "40)(FORWARD)(OR_A))");
+}
+
+TEST_F(EqOrRewriteTest, EqOrAcrossNePreservesNe) {
+  auto info = parse("age = 10 or age != 20 or age = 30 or age != 40");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "((age in (10, 30)(FORWARD)(OR_A)) or "
+            "(age!=20(FORWARD)(OR_A))) or (age!=40(FORWARD)(OR_A))");
+}
+
+TEST_F(EqOrRewriteTest, EqOrListAcrossNePreservesNe) {
+  auto info = parse("age = 10 or age = 20 or age != 30 or age = 40");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "(age in (10, 20, 40)(FORWARD)(OR_A)) or "
+            "(age!=30(FORWARD)(OR_A))");
 }
 
 TEST_F(EqOrRewriteTest, PreEqOr) {
@@ -392,6 +427,17 @@ TEST_F(EqOrRewriteTest, EqOrMustNotCrossAndSubtreeBoundary) {
   EXPECT_EQ(info->filter_cond()->text(),
             "((age in (10, 20)(FORWARD)(OR_A)) and "
             "(gender=1(FORWARD)(OR_A))) or (age=30(FORWARD)(OR_A))");
+}
+
+TEST_F(EqOrRewriteTest, MixedEqNeOrMustNotCrossAndSubtreeBoundary) {
+  auto info =
+      parse("age = 10 or (age != 20 and (age = 30 or age = 40)) or age = 50");
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->filter_cond()->text(),
+            "((age=10(FORWARD)(OR_A)) or "
+            "((age!=20(FORWARD)(OR_A)) and "
+            "(age in (30, 40)(FORWARD)(OR_A)))) or "
+            "(age=50(FORWARD)(OR_A))");
 }
 
 TEST_F(EqOrRewriteTest, UserCases1) {
