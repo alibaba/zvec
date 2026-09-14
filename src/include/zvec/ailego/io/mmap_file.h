@@ -243,11 +243,11 @@ class ZVEC_AILEGO_API MMapFile {
     return offset_;
   }
 
- private:
   //! Disable them
   MMapFile(const MMapFile &) = delete;
   MMapFile &operator=(const MMapFile &) = delete;
 
+ private:
   //! Members
   bool read_only_;
   void *region_;

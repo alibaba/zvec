@@ -49,10 +49,10 @@ namespace ailego {
 class ZVEC_AILEGO_API Params {
  public:
   //! Constructor
-  Params(void) : hypercube_() {}
+  Params(void) = default;
 
   //! Constructor
-  Params(const Params &rhs) : hypercube_(rhs.hypercube_) {}
+  Params(const Params &rhs) = default;
 
   //! Constructor
   Params(Params &&rhs) : hypercube_() {
@@ -60,13 +60,10 @@ class ZVEC_AILEGO_API Params {
   }
 
   //! Destructor
-  ~Params(void) {}
+  ~Params(void) = default;
 
   //! Assignment
-  Params &operator=(const Params &rhs) {
-    hypercube_ = rhs.hypercube_;
-    return *this;
-  }
+  Params &operator=(const Params &rhs) = default;
 
   //! Assignment
   Params &operator=(Params &&rhs) {

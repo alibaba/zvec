@@ -26,7 +26,7 @@
 
 #pragma once
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
 #include <dlfcn.h>
 #include <atomic>

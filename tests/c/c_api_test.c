@@ -507,11 +507,11 @@ void test_schema_edge_cases(void) {
   // Test 4: NULL schema parameter handling for all functions
   zvec_error_code_t err;
   const char **test_names = NULL;
-  size_t test_count = 0;
+  size_t field_name_count = 0;
   err = zvec_collection_schema_get_all_field_names(NULL, &test_names,
-                                                   &test_count);
+                                                   &field_name_count);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
-  TEST_ASSERT(test_count == 0);
+  TEST_ASSERT(field_name_count == 0);
 
   const zvec_field_schema_t *null_field =
       zvec_collection_schema_get_field(NULL, "test");

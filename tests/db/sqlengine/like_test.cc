@@ -250,6 +250,36 @@ TEST_F(LikeTest, ExtendedInvertMiddleLike) {
   }
 }
 
+TEST_F(LikeTest, PrefixSuffixMustNotOverlap) {
+  struct TestCase {
+    const char *pattern;
+    size_t expected_count;
+  };
+  const TestCase cases[] = {
+      {"user-2%2", 50},      {"user-%-22", 0}, {"user-22%user-22", 0},
+      {"user-X%2", 0},       {"u%2", 1000},    {R"(user-\%%2)", 300},
+      {R"(user-\_%2)", 200},
+  };
+  for (const auto &test : cases) {
+    for (const auto *field : {"name", "invert_name", "extended_invert_name"}) {
+      SearchQuery query;
+      query.output_fields_ = {"name"};
+      query.topk_ = 10000;
+      query.filter_ = std::string(field) + " like '" + test.pattern + "'";
+      SCOPED_TRACE(query.filter_);
+      auto engine = SQLEngine::create(std::make_shared<Profiler>());
+      auto ret = engine->execute(collection_schema_, query, segments_);
+      ASSERT_TRUE(ret.has_value()) << ret.error();
+      EXPECT_EQ(ret.value().size(), test.expected_count);
+      if (std::string(test.pattern) == "user-2%2") {
+        for (size_t i = 0; i < ret.value().size(); ++i) {
+          EXPECT_EQ(ret.value()[i]->pk(), "pk_" + std::to_string(i * 100 + 22));
+        }
+      }
+    }
+  }
+}
+
 TEST_F(LikeTest, UnderScore) {
   SearchQuery query;
   query.output_fields_ = {"name"};

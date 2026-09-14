@@ -59,7 +59,7 @@ struct IndexMetric : public IndexModule {
                          float *out, const void **extra_values)>;
 
   //! Destructor
-  ~IndexMetric(void) override {}
+  ~IndexMetric(void) override = default;
 
   //! Initialize Metric
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;

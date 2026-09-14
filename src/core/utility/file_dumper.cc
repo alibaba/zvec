@@ -26,7 +26,7 @@ namespace core {
 struct FileDumper : public IndexDumper {
  public:
   //! Constructor
-  FileDumper(void) {}
+  FileDumper(void) = default;
 
   //! Destructor
   ~FileDumper(void) override {

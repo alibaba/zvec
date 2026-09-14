@@ -32,10 +32,10 @@ class IVFEntity {
   class IVFReformerWrapper;
 
   //! Constructor
-  IVFEntity() {}
+  IVFEntity() = default;
 
   //! Destructor
-  virtual ~IVFEntity() {}
+  virtual ~IVFEntity() = default;
 
   //! Disable them
   IVFEntity(const IVFEntity &) = delete;
@@ -252,7 +252,7 @@ class IVFEntity {
   class IVFReformerWrapper {
    public:
     //! Constructor
-    IVFReformerWrapper() {}
+    IVFReformerWrapper() = default;
 
     //! Assignment
     IVFReformerWrapper &operator=(const IVFReformerWrapper &wrapper) {

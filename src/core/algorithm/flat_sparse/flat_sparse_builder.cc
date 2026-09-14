@@ -26,7 +26,7 @@
 namespace zvec {
 namespace core {
 
-FlatSparseBuilder::FlatSparseBuilder() {}
+FlatSparseBuilder::FlatSparseBuilder() = default;
 
 int FlatSparseBuilder::init(const IndexMeta &meta,
                             const ailego::Params & /*params*/) {

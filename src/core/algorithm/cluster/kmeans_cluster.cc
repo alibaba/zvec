@@ -29,7 +29,7 @@ namespace core {
 class KmeansCluster : public IndexCluster {
  public:
   //! Constructor
-  KmeansCluster(void) {}
+  KmeansCluster(void) = default;
 
   //! Constructor
   KmeansCluster(size_t iters, bool batch)
@@ -39,7 +39,7 @@ class KmeansCluster : public IndexCluster {
   KmeansCluster(bool batch) : batch_(batch) {}
 
   //! Destructor
-  ~KmeansCluster(void) override {}
+  ~KmeansCluster(void) override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;

@@ -28,7 +28,7 @@ class LinearSeeker : public Seeker {
   LinearSeeker(void) : meta_(), metric_(), features_() {}
 
   //! Destructor
-  ~LinearSeeker(void) {}
+  ~LinearSeeker(void) = default;
 
   //! Initialize Seeker
   int init(const IndexMeta &meta) override {

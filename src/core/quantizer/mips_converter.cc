@@ -86,7 +86,7 @@ class MipsConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -178,10 +178,11 @@ class MipsConverterHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
   MipsConverterHolder(void) = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -214,7 +215,7 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -307,10 +308,11 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
   MipsConverterForcedHalfHolder(void) = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -343,7 +345,7 @@ class MipsConverterHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -436,10 +438,11 @@ class MipsConverterHalfHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
   MipsConverterHalfHolder(void) = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -453,7 +456,7 @@ class MipsConverterHalfHolder : public IndexHolder {
 class MipsConverter : public IndexConverter {
  public:
   //! Destructor
-  ~MipsConverter(void) override {}
+  ~MipsConverter(void) override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {

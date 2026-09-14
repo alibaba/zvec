@@ -73,7 +73,7 @@ struct HnswSparseHeader {
 
 struct SparseData {
  public:
-  SparseData() {};
+  SparseData() = default;
 
   SparseData(uint32_t sparse_count, const uint32_t *sparse_indices,
              const void *sparse_vec)
@@ -214,7 +214,7 @@ struct HnswSparseNeighborMeta {
 class HnswSparseEntity {
  public:
   //! Constructor
-  HnswSparseEntity() {}
+  HnswSparseEntity() = default;
 
   //! Constructor
   HnswSparseEntity(const HNSWSparseHeader &hd) {
@@ -222,7 +222,7 @@ class HnswSparseEntity {
   }
 
   //! Destructor
-  virtual ~HnswSparseEntity() {}
+  virtual ~HnswSparseEntity() = default;
 
   //! HnswSparseEntity Pointerd;
   typedef std::shared_ptr<HnswSparseEntity> Pointer;

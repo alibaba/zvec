@@ -138,6 +138,29 @@ class FlatStreamerContext : public IndexStreamer::Context {
     }
   }
 
+  // Candidate searches consume their heap once. Transfer its document buffer
+  // when vectors are not requested; keep the regular materialization path
+  // when storage blocks must be pinned for fetch_vector.
+  void take_topk_result(uint32_t idx) {
+    if (fetch_vector_) {
+      topk_to_result(idx);
+      return;
+    }
+    ailego_assert_with(idx < results_.size(), "invalid idx");
+    result_heap_.sort();
+    auto &documents = result_heap_.mutable_container();
+    const size_t limit = std::min(size_t{topk_}, documents.size());
+    size_t size = 0;
+    for (; size < limit; ++size) {
+      if (documents[size].score() > this->threshold()) break;
+      *documents[size].mutable_index() =
+          static_cast<uint32_t>(documents[size].key());
+    }
+    documents.resize(size);
+    results_[idx].clear();
+    results_[idx].swap(documents);
+  }
+
   void topk_to_group_result(uint32_t idx) {
     ailego_assert_with(idx < group_results_.size(), "invalid idx");
     group_results_[idx].clear();

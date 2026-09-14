@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <thread>
@@ -237,13 +238,31 @@ TEST(DistanceMatrix, MinusInnerProduct_General) {
       0.0f, MinusInnerProductDistance(x21, y21), 1000));
 }
 
+static float Fp16MatrixTolerance(float lhs, float rhs, size_t dimension) {
+  // Invalid results must not produce an infinite error budget.
+  if (!std::isfinite(lhs) || !std::isfinite(rhs)) {
+    return 0.0f;
+  }
+  // Keep the existing relative tolerance for normal FP16 results. Native FP16
+  // kernels can also round tiny products/partial sums to subnormals or zero,
+  // while the batched path accumulates in FP32. Allow one minimum FP16
+  // subnormal (2^-24) per term for this absolute rounding error.
+  const float relative =
+      std::numeric_limits<float>::epsilon() * std::fabs(lhs + rhs) * 10000;
+  return relative + dimension * 0x1p-24f;
+}
+
 template <size_t M, size_t N>
 void TestInnerProductMatrix(void) {
-  std::mt19937 gen((std::random_device())());
+  const auto seed = (std::random_device())();
+  std::mt19937 gen(seed);
 
   const size_t batch_size = M;
   const size_t query_size = N;
   size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
+  SCOPED_TRACE(::testing::Message()
+               << "seed=" << seed << ", dimension=" << dimension
+               << ", shape=" << M << "x" << N);
   size_t matrix_size = batch_size * dimension;
   size_t query_matrix_size = query_size * dimension;
 
@@ -277,17 +296,23 @@ void TestInnerProductMatrix(void) {
       &matrix2[0], &query2[0], dimension, &result2[0]);
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
-    EXPECT_TRUE(MathHelper::IsAlmostEqual(result1[i], result2[i], 10000));
+    EXPECT_NEAR(result1[i], result2[i],
+                Fp16MatrixTolerance(result1[i], result2[i], dimension))
+        << "result index=" << i;
   }
 }
 
 template <size_t M, size_t N>
 void TestMinusInnerProductMatrix(void) {
-  std::mt19937 gen((std::random_device())());
+  const auto seed = (std::random_device())();
+  std::mt19937 gen(seed);
 
   const size_t batch_size = M;
   const size_t query_size = N;
   size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
+  SCOPED_TRACE(::testing::Message()
+               << "seed=" << seed << ", dimension=" << dimension
+               << ", shape=" << M << "x" << N);
   size_t matrix_size = batch_size * dimension;
   size_t query_matrix_size = query_size * dimension;
 
@@ -321,8 +346,49 @@ void TestMinusInnerProductMatrix(void) {
       &matrix2[0], &query2[0], dimension, &result2[0]);
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
-    EXPECT_TRUE(MathHelper::IsAlmostEqual(result1[i], result2[i], 10000));
+    EXPECT_NEAR(result1[i], result2[i],
+                Fp16MatrixTolerance(result1[i], result2[i], dimension))
+        << "result index=" << i;
   }
+}
+
+static void TestSmallInnerProductMatrix(bool negate) {
+  const auto single_compute =
+      negate ? MinusInnerProductMatrix<Float16, 1, 1>::Compute
+             : InnerProductMatrix<Float16, 1, 1>::Compute;
+  const auto batch_compute =
+      negate ? MinusInnerProductMatrix<Float16, 64, 64>::Compute
+             : InnerProductMatrix<Float16, 64, 64>::Compute;
+  for (size_t dimension : {1, 4, 8, 31, 32, 33, 63, 64, 65}) {
+    SCOPED_TRACE(::testing::Message() << "dimension=" << dimension);
+    // All entries are identical, so the same buffer also represents the
+    // transposed matrix. Its products require FP16 subnormal rounding.
+    const Float16 value(0.001f);
+    std::vector<Float16> matrix(64 * dimension, value);
+    const float expected = (negate ? -1.0f : 1.0f) * dimension *
+                           static_cast<float>(value) *
+                           static_cast<float>(value);
+    float single_result;
+    single_compute(matrix.data(), matrix.data(), dimension, &single_result);
+    EXPECT_NEAR(expected, single_result,
+                Fp16MatrixTolerance(expected, single_result, dimension));
+
+    std::vector<float> results(64 * 64);
+    batch_compute(matrix.data(), matrix.data(), dimension, results.data());
+    for (size_t i = 0; i < results.size(); ++i) {
+      EXPECT_NEAR(expected, results[i],
+                  Fp16MatrixTolerance(expected, results[i], dimension))
+          << "result index=" << i;
+    }
+  }
+}
+
+TEST(DistanceMatrix, InnerProduct_SmallValues) {
+  TestSmallInnerProductMatrix(false);
+}
+
+TEST(DistanceMatrix, MinusInnerProduct_SmallValues) {
+  TestSmallInnerProductMatrix(true);
 }
 
 TEST(DistanceMatrix, InnerProduct_1x1) {

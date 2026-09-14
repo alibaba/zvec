@@ -27,7 +27,7 @@ namespace internal {
  */
 struct CubePolicy {
   //! Destructor
-  virtual ~CubePolicy(void) {}
+  virtual ~CubePolicy(void) = default;
 
   //! Assign `src` to `dst`
   virtual void assign(const void *src, void **dst) = 0;

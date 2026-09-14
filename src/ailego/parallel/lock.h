@@ -36,7 +36,7 @@ namespace ailego {
 class SpinMutex {
  public:
   //! Constructor
-  SpinMutex(void) {}
+  SpinMutex(void) = default;
 
   //! Locking
   void lock(void) {
@@ -63,13 +63,13 @@ class SpinMutex {
     flag_.store(false, std::memory_order_release);
   }
 
- private:
   //! Disable them
   SpinMutex(const SpinMutex &) = delete;
   SpinMutex(SpinMutex &&) = delete;
   SpinMutex &operator=(const SpinMutex &) = delete;
   SpinMutex &operator=(SpinMutex &&) = delete;
 
+ private:
   //! Members
   std::atomic_bool flag_{false};
 };
@@ -227,7 +227,6 @@ class WriteLock {
     mutex_.unlock();
   }
 
- private:
   //! Disable them
   WriteLock(void) = delete;
   WriteLock(const WriteLock &) = delete;
@@ -235,6 +234,7 @@ class WriteLock {
   WriteLock &operator=(const WriteLock &) = delete;
   WriteLock &operator=(WriteLock &&) = delete;
 
+ private:
   //! Members
   SharedMutex &mutex_;
 };
@@ -261,7 +261,6 @@ class ReadLock {
     mutex_.unlock_shared();
   }
 
- private:
   //! Disable them
   ReadLock(void) = delete;
   ReadLock(const ReadLock &) = delete;
@@ -269,6 +268,7 @@ class ReadLock {
   ReadLock &operator=(const ReadLock &) = delete;
   ReadLock &operator=(ReadLock &&) = delete;
 
+ private:
   //! Members
   SharedMutex &mutex_;
 };

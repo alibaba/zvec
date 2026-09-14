@@ -69,8 +69,8 @@ int VamanaContext::init(ContextType type) {
 
   switch (type) {
     case kBuilderContext:
-      ret = visit_filter_.init(VisitFilter::ByteMap, entity_->doc_cnt(),
-                               max_scan_num_, filter_negative_prob_);
+      ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(), max_scan_num_,
+                               filter_negative_prob_);
       if (ret != 0) {
         LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
         return ret;

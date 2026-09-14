@@ -84,7 +84,7 @@ class IVFBuilder : public IndexBuilder {
       Iterator(RandomAccessIndexHolder *owner) : holder_(owner) {}
 
       //! Destructor
-      ~Iterator(void) override {}
+      ~Iterator(void) override = default;
 
       //! Retrieve pointer of data
       const void *data(void) const override {
@@ -169,10 +169,11 @@ class IVFBuilder : public IndexBuilder {
       return keys_[id];
     }
 
-   private:
+   public:
     //! Disable them
     RandomAccessIndexHolder(void) = delete;
 
+   private:
     //! Members
     CompactIndexFeatures::Pointer features_{};
     std::vector<uint64_t> keys_{};

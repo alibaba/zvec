@@ -43,7 +43,7 @@ static float *create_test_vector(size_t dimension) {
   }
 
   for (size_t i = 0; i < dimension; i++) {
-    vector[i] = (float)rand() / RAND_MAX;
+    vector[i] = (float)rand() / (float)RAND_MAX;
   }
 
   return vector;

@@ -28,7 +28,7 @@ namespace core {
  */
 struct VectorMean {
   //! Destructor
-  virtual ~VectorMean(void) {}
+  virtual ~VectorMean(void) = default;
 
   //! Reset accumulator
   virtual void reset(void) = 0;
@@ -56,7 +56,7 @@ struct VectorMean {
  */
 struct VectorMeanArray {
   //! Destructor
-  virtual ~VectorMeanArray(void) {}
+  virtual ~VectorMeanArray(void) = default;
 
   //! Operator []
   VectorMean &operator[](size_t i) {
@@ -150,10 +150,10 @@ class GeneralVectorMeanArray : public VectorMeanArray {
     return dimension_;
   }
 
- private:
   //! Disable them
   GeneralVectorMeanArray(void) = delete;
 
+ private:
   //! Members
   size_t dimension_;
   std::vector<T> array_;

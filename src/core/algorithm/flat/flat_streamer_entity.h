@@ -219,11 +219,12 @@ class FlatStreamerEntity {
     return use_key_info_map_;
   }
 
- private:
+ public:
   //! Disable them
   FlatStreamerEntity(const FlatStreamerEntity &) = delete;
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
+ private:
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {

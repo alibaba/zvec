@@ -19,9 +19,9 @@
 namespace zvec {
 namespace core {
 
-HnswSparseSearcher::HnswSparseSearcher() {}
+HnswSparseSearcher::HnswSparseSearcher() = default;
 
-HnswSparseSearcher::~HnswSparseSearcher() {}
+HnswSparseSearcher::~HnswSparseSearcher() = default;
 
 int HnswSparseSearcher::init(const ailego::Params &search_params) {
   params_ = search_params;

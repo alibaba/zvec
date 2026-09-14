@@ -109,7 +109,7 @@ template <size_t K>
 class BloomFilter {
  public:
   //! Constructor
-  BloomFilter(void) {}
+  BloomFilter(void) = default;
 
   //! Constructor
   BloomFilter(size_t n, double p) {
@@ -227,11 +227,11 @@ class BloomFilter {
     return probability_;
   }
 
- protected:
   //! Disable them
   BloomFilter(const BloomFilter &) = delete;
   BloomFilter &operator=(const BloomFilter &) = delete;
 
+ protected:
   //! Set bits in bloom filter
   template <typename TArg>
   void set_bits(TArg val) {

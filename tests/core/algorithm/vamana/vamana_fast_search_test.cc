@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <array>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <gtest/gtest.h>
@@ -85,9 +86,9 @@ class VamanaFastSearchTest : public testing::Test {
     MakeContext();
   }
 
-  void MakeContext(VisitFilter::Mode mode = VisitFilter::ByteMap) {
+  void MakeContext(std::optional<VisitFilter::Mode> mode = std::nullopt) {
     context_ = std::make_unique<VamanaContext>(kDimension, metric_, entity_);
-    context_->set_filter_mode(mode);
+    if (mode) context_->set_filter_mode(*mode);
     context_->set_max_scan_num(10000);
     ASSERT_EQ(0, context_->init(VamanaContext::kSearcherContext));
     const auto batch = metric_->batch_distance();
@@ -135,6 +136,30 @@ class VamanaFastSearchTest : public testing::Test {
   std::unordered_map<const void *, node_id_t> ids_;
   std::vector<std::vector<node_id_t>> evaluated_;
 };
+
+TEST_F(VamanaFastSearchTest, ContextDefaultsToBitmapAndAllowsExplicitOverride) {
+  CreateGraph({10, 2}, {{1}, {0}});
+  EXPECT_EQ(VisitFilter::BitMap, context_->visit_filter().get_mode());
+  for (auto type :
+       {VamanaContext::kBuilderContext, VamanaContext::kSearcherContext,
+        VamanaContext::kStreamerContext}) {
+    SCOPED_TRACE(type);
+    VamanaContext context(kDimension, metric_, entity_);
+    ASSERT_EQ(0, context.init(type));
+    auto &visit = context.visit_filter();
+    EXPECT_EQ(VisitFilter::BitMap, visit.get_mode());
+    EXPECT_FALSE(visit.visited(1));
+    visit.set_visited(1);
+    EXPECT_TRUE(visit.visited(1));
+    visit.clear();
+    EXPECT_FALSE(visit.visited(1));
+
+    VamanaContext explicit_context(kDimension, metric_, entity_);
+    explicit_context.set_filter_mode(VisitFilter::ByteMap);
+    ASSERT_EQ(0, explicit_context.init(type));
+    EXPECT_EQ(VisitFilter::ByteMap, explicit_context.visit_filter().get_mode());
+  }
+}
 
 TEST_F(VamanaFastSearchTest, LocalOptimumReusesRowThenPoolFindsBetterPoint) {
   CreateGraph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});

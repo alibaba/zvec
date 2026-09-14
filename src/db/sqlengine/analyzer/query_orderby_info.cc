@@ -16,7 +16,7 @@
 
 namespace zvec::sqlengine {
 
-QueryOrderbyInfo::QueryOrderbyInfo() {}
+QueryOrderbyInfo::QueryOrderbyInfo() = default;
 
 QueryOrderbyInfo::QueryOrderbyInfo(const std::string &m_field_name, bool m_desc)
     : field_name_(m_field_name), desc_(m_desc) {}

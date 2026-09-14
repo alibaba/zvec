@@ -25,7 +25,7 @@ SQLInfo::SQLInfo(SQLType m_type, BaseInfo::Ptr m_base_info) {
   base_info_ = m_base_info;
 }
 
-SQLInfo::~SQLInfo() {}
+SQLInfo::~SQLInfo() = default;
 
 SQLInfo::SQLInfo(const SQLInfo &info) {
   type_ = info.type_;

@@ -41,7 +41,7 @@ class BinaryConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -132,7 +132,7 @@ class BinaryConverterHolder : public IndexHolder {
 class BinaryConverter : public IndexConverter {
  public:
   //! Destructor
-  ~BinaryConverter(void) override {}
+  ~BinaryConverter(void) override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {

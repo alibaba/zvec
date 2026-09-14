@@ -42,7 +42,7 @@ class UniformUint7Converter : public IndexConverter {
   UniformUint7Converter(IndexMeta::DataType /*dst_type*/) {}
 
   //! Destructor
-  ~UniformUint7Converter() override {}
+  ~UniformUint7Converter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
@@ -251,7 +251,7 @@ class UniformUint7Converter : public IndexConverter {
         this->encode_record();
       }
 
-      ~Iterator(void) override {}
+      ~Iterator(void) override = default;
 
       const void *data(void) const override {
         return buffer_.data();

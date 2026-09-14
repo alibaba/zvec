@@ -91,10 +91,10 @@ class SparseChunkBroker {
     return stg_;
   }
 
- private:
   SparseChunkBroker(const SparseChunkBroker &) = delete;
   SparseChunkBroker &operator=(const SparseChunkBroker &) = delete;
 
+ private:
   struct HnswSparseChunkMeta {
     HnswSparseChunkMeta(void) {
       memset(static_cast<void *>(this), 0, sizeof(HnswSparseChunkMeta));

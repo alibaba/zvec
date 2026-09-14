@@ -1841,7 +1841,7 @@ class JsonPair {
   JsonPair(mod_json_pair_t *pair) : pair_(pair) {}
 
   //! Constructor for friends
-  JsonPair(const JsonPair &rhs) : pair_(rhs.pair_) {}
+  JsonPair(const JsonPair &rhs) = default;
 
  private:
   mod_json_pair_t *pair_;
@@ -2764,7 +2764,7 @@ class JsonParser {
   }
 
   //! Destructor
-  ~JsonParser(void) {}
+  ~JsonParser(void) = default;
 
   //! Set the max object depth
   void set_object_depth(size_type depth) {
@@ -2872,7 +2872,7 @@ class JsonDumper {
   JsonDumper(void) : str_() {}
 
   //! Destructor
-  ~JsonDumper(void) {}
+  ~JsonDumper(void) = default;
 
   //! Dump a JSON value to string
   bool dump(const JsonValue &val) {

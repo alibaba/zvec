@@ -56,7 +56,6 @@ class ScopeGuardImpl {
     }
   }
 
- protected:
   //! Disable them
   ScopeGuardImpl(void) = delete;
   ScopeGuardImpl(const ScopeGuardImpl &) = delete;
@@ -104,7 +103,6 @@ class ScopeGuardImpl<void, TFunc> {
     }
   }
 
- protected:
   //! Disable them
   ScopeGuardImpl(void) = delete;
   ScopeGuardImpl(const ScopeGuardImpl &) = delete;

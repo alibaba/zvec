@@ -61,7 +61,7 @@ class FileReadStorage : public IndexStorage {
           file_path_(rhs.file_path_) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment(void) override = default;
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -274,7 +274,7 @@ class FileReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~FileReadStorage(void) override {}
+  ~FileReadStorage(void) override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {

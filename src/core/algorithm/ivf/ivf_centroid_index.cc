@@ -28,7 +28,7 @@ class FakeClusterTrainer : public IndexTrainer {
       : meta_(imeta), bundle_(bundle) {}
 
   //! Destructor
-  ~FakeClusterTrainer(void) override {}
+  ~FakeClusterTrainer(void) override = default;
 
  protected:
   //! Initialize Trainer

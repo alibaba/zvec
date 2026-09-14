@@ -24,9 +24,9 @@ namespace core {
 
 const uint32_t FlatSparseSearcher::VERSION = 0U;
 
-FlatSparseSearcher::FlatSparseSearcher(void) {}
+FlatSparseSearcher::FlatSparseSearcher(void) = default;
 
-FlatSparseSearcher::~FlatSparseSearcher(void) {}
+FlatSparseSearcher::~FlatSparseSearcher(void) = default;
 
 int FlatSparseSearcher::init(const ailego::Params & /*params*/) {
   state_ = STATE_INITED;

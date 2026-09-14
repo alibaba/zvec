@@ -2,16 +2,26 @@ include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
 file(GLOB_RECURSE ALL_TEST_SRCS *_test.cc)
 
-if(WIN32)
-  list(FILTER ALL_TEST_SRCS EXCLUDE REGEX "/diskann_file_reader_test\\.cc$")
+# The full DiskAnn suite repeatedly builds 10k-vector indexes and is intended
+# for desktop CI. Mobile CI runs a focused compatibility test that covers the
+# portable I/O path, failure recovery, concurrency, and an end-to-end
+# build/dump/load/search cycle.
+if(ANDROID OR IOS)
+  # Mobile CI runs the focused portable-I/O and end-to-end compatibility test.
+  list(FILTER ALL_TEST_SRCS INCLUDE REGEX "diskann_mobile_compat_test\\.cc$")
 else()
-  list(FILTER ALL_TEST_SRCS EXCLUDE REGEX
-       "/diskann_file_reader_windows_test\\.cc$")
-endif()
+  if(WIN32)
+    list(FILTER ALL_TEST_SRCS EXCLUDE REGEX
+         "/diskann_file_reader_test\\.cc$|/diskann_mobile_compat_test\\.cc$")
+  else()
+    list(FILTER ALL_TEST_SRCS EXCLUDE REGEX
+         "/diskann_file_reader_windows_test\\.cc$")
+  endif()
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  list(FILTER ALL_TEST_SRCS EXCLUDE REGEX
-       "/diskann_file_reader_aio_test\\.cc$")
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(FILTER ALL_TEST_SRCS EXCLUDE REGEX
+         "/diskann_file_reader_aio_test\\.cc$")
+  endif()
 endif()
 
 foreach(CC_SRCS ${ALL_TEST_SRCS})

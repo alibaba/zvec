@@ -46,7 +46,7 @@ class MemoryReadStorage : public IndexStorage {
           rope_(rope) {}
 
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment(void) override = default;
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -139,7 +139,7 @@ class MemoryReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~MemoryReadStorage(void) override {}
+  ~MemoryReadStorage(void) override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {

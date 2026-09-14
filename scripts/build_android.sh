@@ -51,6 +51,11 @@ BUILD_DIR="build_android_${ABI}"
 # Force CMake reconfigure to pick up any bazel.cmake changes
 rm -f "$BUILD_DIR/CMakeCache.txt"
 
+# With c++_static, disable the C++ shared libraries so C++ consumers link the
+# static SDK into a single executable or JNI library. Otherwise, the app and
+# C++ shared libraries can each embed libc++, making cross-library STL ownership
+# and exception handling unsafe. The shared C API remains available through
+# BUILD_C_BINDINGS.
 cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DANDROID_NDK="$ANDROID_NDK_HOME" \
     -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
@@ -58,8 +63,12 @@ cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DANDROID_NATIVE_API_LEVEL="$API_LEVEL" \
     -DANDROID_STL="c++_static" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DBUILD_ZVEC_SHARED=OFF \
+    -DBUILD_ZVEC_AILEGO_SHARED=OFF \
+    -DBUILD_ZVEC_CORE_SHARED=OFF \
     -DBUILD_PYTHON_BINDINGS=OFF \
     -DBUILD_TOOLS=OFF \
+    -DBUILD_CPP_EXAMPLES=ON \
     -DENABLE_NATIVE=OFF \
     -DAUTO_DETECT_ARCH=OFF \
     -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/install" \
@@ -359,5 +368,34 @@ echo "============================================================"
 if [ $FAILED -gt 0 ]; then
     exit 1
 fi
+
+echo ""
+echo ">>> Step 6: Running statically linked C++ examples..."
+cmake --build "$BUILD_DIR" --target zvec_cpp_examples -j"$CORE_COUNT"
+READELF=$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -type f -name llvm-readelf | head -1)
+if [ -z "$READELF" ]; then
+    echo "ERROR: llvm-readelf was not found in $ANDROID_NDK_HOME"
+    exit 1
+fi
+
+for example in ailego-example core-example external-vector-example db-example; do
+    example_path="$BUILD_DIR/bin/$example"
+    if [ ! -f "$example_path" ]; then
+        echo "ERROR: Example binary not found: $example_path"
+        exit 1
+    fi
+
+    dynamic_section=$("$READELF" --dynamic "$example_path")
+    if echo "$dynamic_section" | grep -Eq 'libzvec[^]]*\.so|libc\+\+_shared\.so'; then
+        echo "ERROR: $example unexpectedly depends on a C++ shared library"
+        echo "$dynamic_section" | grep NEEDED || true
+        exit 1
+    fi
+
+    echo "  Running $example..."
+    $ADB_BIN push "$example_path" "/data/local/tmp/$example" > /dev/null 2>&1
+    $ADB_BIN shell "chmod 755 /data/local/tmp/$example && cd /data/local/tmp && ./$example"
+    $ADB_BIN shell "rm -f /data/local/tmp/$example"
+done
 
 echo "All tests passed!"

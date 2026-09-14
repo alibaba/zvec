@@ -29,7 +29,7 @@
 
 #include <cstdint>
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
 // ---------------------------------------------------------------------------
 // Syscall numbers
@@ -187,6 +187,22 @@ static inline void io_uring_prep_read(struct io_uring_sqe *sqe, int fd,
                                       void *buf, uint32_t nbytes,
                                       uint64_t offset) {
   sqe->opcode = IORING_OP_READ;
+  sqe->flags = 0;
+  sqe->ioprio = 0;
+  sqe->fd = fd;
+  sqe->off = offset;
+  sqe->addr = reinterpret_cast<uint64_t>(buf);
+  sqe->len = nbytes;
+  sqe->rw_flags = 0;
+  sqe->user_data = 0;
+  sqe->buf.buf_index = 0;
+  sqe->buf.personality = 0;
+}
+
+static inline void io_uring_prep_write(struct io_uring_sqe *sqe, int fd,
+                                       const void *buf, uint32_t nbytes,
+                                       uint64_t offset) {
+  sqe->opcode = IORING_OP_WRITE;
   sqe->flags = 0;
   sqe->ioprio = 0;
   sqe->fd = fd;

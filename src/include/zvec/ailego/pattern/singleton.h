@@ -39,12 +39,14 @@ class Singleton {
   //! Constructor (Allow inheritance)
   Singleton(void) {}
 
- private:
+ public:
   //! Disable them
   Singleton(Singleton const &) = delete;
   Singleton(Singleton &&) = delete;
   Singleton &operator=(Singleton const &) = delete;
   Singleton &operator=(Singleton &&) = delete;
+
+ private:
 };
 
 }  // namespace ailego

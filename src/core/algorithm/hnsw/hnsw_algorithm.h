@@ -134,7 +134,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! expand neighbors until group nums are reached
   void expand_neighbors_by_group(TopkHeap &topk, HnswContext *ctx) const;
 
- private:
+ public:
   HnswAlgorithm(const HnswAlgorithm &) = delete;
   HnswAlgorithm &operator=(const HnswAlgorithm &) = delete;
 

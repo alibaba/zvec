@@ -48,7 +48,7 @@ struct VectorItem {
   std::string sparse_buffer_{};
   uint32_t sparse_unit_size_{0};
 
-  VectorItem() {}
+  VectorItem() = default;
   VectorItem(key_t pkey, std::vector<uint8_t> vec)
       : pkey_(pkey), vec_(std::move(vec)) {}
   // TODO: drop support for hybrid vectors
@@ -65,7 +65,7 @@ struct SparseVectorItem {
   std::vector<uint32_t> sparse_indices_{};
   std::string sparse_values_{};
 
-  SparseVectorItem() {}
+  SparseVectorItem() = default;
   SparseVectorItem(key_t pkey, std::vector<uint32_t> sparse_indices,
                    std::string sparse_values)
       : pkey_(pkey),

@@ -31,7 +31,7 @@ class MergedProviderIndexHolder;
 class MixedStreamerReducer : public IndexStreamerReducer {
  public:
   //! Constructor
-  MixedStreamerReducer(void) {}
+  MixedStreamerReducer(void) = default;
 
   //! Initialize Reducer
   int init(const ailego::Params &params) override;

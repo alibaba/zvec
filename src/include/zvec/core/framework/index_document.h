@@ -245,7 +245,7 @@ class IndexDocument {
 class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
  public:
   //! Constructor
-  IndexDocumentHeap(void) : ailego::Heap<IndexDocument>() {}
+  IndexDocumentHeap(void) = default;
 
   //! Constructor
   IndexDocumentHeap(size_t max) : ailego::Heap<IndexDocument>(max) {}
@@ -255,8 +255,7 @@ class IndexDocumentHeap : public ailego::Heap<IndexDocument> {
       : ailego::Heap<IndexDocument>(max), threshold_(val) {}
 
   //! Constructor
-  IndexDocumentHeap(const IndexDocumentHeap &rhs)
-      : ailego::Heap<IndexDocument>(rhs), threshold_(rhs.threshold_) {}
+  IndexDocumentHeap(const IndexDocumentHeap &rhs) = default;
 
   //! Constructor
   IndexDocumentHeap(IndexDocumentHeap &&rhs)

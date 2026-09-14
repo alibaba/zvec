@@ -39,7 +39,7 @@ class LabelFilteredIndexHolder : public IndexHolder {
         : holder_(holder), elems_(elems) {}
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator(void) override = default;
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -111,7 +111,7 @@ class LabelFilteredIndexHolder : public IndexHolder {
   const std::vector<uint32_t> *elems_{};
 };
 
-IVFBuilder::IVFBuilder() {}
+IVFBuilder::IVFBuilder() = default;
 
 IVFBuilder::~IVFBuilder() {
   this->cleanup();

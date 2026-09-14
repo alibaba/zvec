@@ -344,7 +344,9 @@ def test_fp16_cosine_refine_uses_native_flat_pipeline(tmp_path, index_kind):
     for i in range(doc_count):
         vector = np.asarray(
             [
-                0.25 + d * 0.017 + (((i * 37 + d * 19) % 97) - 48) * 0.00011
+                # Separate directions so INT8 coarse search reliably retains
+                # the self match. Keep non-FP16-exact values to test casting.
+                (((i * 37 + d * 19 + i * d * 7) % 97) - 48) * 0.013
                 for d in range(dimension)
             ],
             dtype=np.float32,

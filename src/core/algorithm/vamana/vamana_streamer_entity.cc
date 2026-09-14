@@ -27,7 +27,7 @@ VamanaStreamerEntity::VamanaStreamerEntity(IndexStreamer::Stats &stats)
   broker_ = std::make_shared<ChunkBroker>(stats);
 }
 
-VamanaStreamerEntity::~VamanaStreamerEntity() {}
+VamanaStreamerEntity::~VamanaStreamerEntity() = default;
 
 int VamanaStreamerEntity::cleanup() {
   node_chunks_.clear();

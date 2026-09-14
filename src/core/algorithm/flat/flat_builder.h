@@ -27,7 +27,7 @@ template <size_t BATCH_SIZE>
 class FlatBuilder : public IndexBuilder {
  public:
   //! Destructor
-  ~FlatBuilder(void) override {}
+  ~FlatBuilder(void) override = default;
 
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;

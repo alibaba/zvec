@@ -25,10 +25,10 @@ namespace core {
 class StratifiedCluster : public IndexCluster {
  public:
   //! Constructor
-  StratifiedCluster(void) {}
+  StratifiedCluster(void) = default;
 
   //! Destructor
-  ~StratifiedCluster(void) override {}
+  ~StratifiedCluster(void) override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override {
