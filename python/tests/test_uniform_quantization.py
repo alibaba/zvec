@@ -10,6 +10,7 @@ from zvec import (
     CollectionOption,
     CollectionSchema,
     Doc,
+    FieldSchema,
     HnswIndexParam,
     HnswQueryParam,
     Query,
@@ -18,6 +19,127 @@ from zvec import (
     VectorSchema,
 )
 from zvec.typing import DataType, MetricType, QuantizeType
+
+
+@pytest.mark.parametrize(
+    "quantize_type",
+    [
+        QuantizeType.UNIFORM_UINT7,
+        QuantizeType.UNIFORM_UINT8,
+        QuantizeType.UNIFORM_UINT4,
+    ],
+)
+@pytest.mark.parametrize("index_type", ["vamana", "hnsw"])
+@pytest.mark.parametrize(
+    "flat_data_type",
+    [DataType.VECTOR_FP32, DataType.VECTOR_FP16, DataType.VECTOR_UINT8],
+    ids=["flat_fp32", "flat_fp16", "flat_uint8"],
+)
+@pytest.mark.parametrize("use_refiner", [False, True])
+def test_uniform_quantization_queries_untrained_segments(
+    tmp_path, quantize_type, index_type, flat_data_type, use_refiner
+):
+    """Raw-only writes stay searchable alongside trained graph segments."""
+    dimension = 32
+    initial_count = 128
+    vectors = (
+        np.random.default_rng(754)
+        .integers(32, 224, size=(initial_count + 3, dimension))
+        .astype(np.float32)
+    )
+    index_options = dict(
+        metric_type=MetricType.L2,
+        quantize_type=quantize_type,
+        flat_data_type=flat_data_type,
+        use_flat_contiguous_memory=True,
+    )
+    if index_type == "vamana":
+        index_param = VamanaIndexParam(
+            max_degree=16, search_list_size=64, **index_options
+        )
+
+        def query_param(is_linear=False):
+            return VamanaQueryParam(
+                ef_search=256, is_using_refiner=use_refiner, is_linear=is_linear
+            )
+    else:
+        index_param = HnswIndexParam(m=16, ef_construction=64, **index_options)
+
+        def query_param(is_linear=False):
+            return HnswQueryParam(
+                ef=256, is_using_refiner=use_refiner, is_linear=is_linear
+            )
+
+    schema = CollectionSchema(
+        name="uniform_incremental",
+        fields=[FieldSchema("ordinal", DataType.INT32)],
+        vectors=[
+            VectorSchema(
+                "dense", DataType.VECTOR_FP32, dimension, index_param=index_param
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    collection = zvec.create_and_open(path=path, schema=schema)
+
+    def insert(start, end):
+        results = collection.insert(
+            [
+                Doc(
+                    id=str(i),
+                    fields={"ordinal": i},
+                    vectors={"dense": vectors[i].tolist()},
+                )
+                for i in range(start, end)
+            ]
+        )
+        assert all(result.ok() for result in results)
+
+    def assert_searchable(count):
+        # Check both the trained segment and every subsequent raw-only block.
+        for i in [0, *range(initial_count, count)]:
+            hits = collection.query(
+                Query("dense", vector=vectors[i].tolist(), param=query_param()),
+                topk=1,
+                include_vector=True,
+            )
+            assert [hit.id for hit in hits] == [str(i)]
+            assert hits[0].vectors["dense"] == vectors[i].tolist()
+            if use_refiner:
+                assert hits[0].score == pytest.approx(0.0, abs=1e-5)
+
+        # Exhaustive recall also verifies block offsets and result merging.
+        query = Query(
+            "dense", vector=vectors[0].tolist(), param=query_param(is_linear=True)
+        )
+        hits = collection.query(query, topk=count)
+        assert len(hits) == count
+        assert {hit.id for hit in hits} == {str(i) for i in range(count)}
+        hits = collection.query(query, topk=count, filter="ordinal >= 128")
+        assert len(hits) == count - initial_count
+        assert {hit.id for hit in hits} == {str(i) for i in range(initial_count, count)}
+
+    try:
+        insert(0, initial_count)
+        assert_searchable(initial_count)
+        collection.optimize()
+        assert_searchable(initial_count)
+
+        for i in range(initial_count, len(vectors)):
+            insert(i, i + 1)
+            assert_searchable(i + 1)
+            collection.flush()
+            assert_searchable(i + 1)
+
+        collection.close()
+        collection = zvec.open(path=path, option=CollectionOption(read_only=True))
+        assert_searchable(len(vectors))
+        collection.close()
+        collection = zvec.open(path=path)
+        collection.optimize()
+        assert_searchable(len(vectors))
+    finally:
+        collection.close()
 
 
 @pytest.mark.parametrize(

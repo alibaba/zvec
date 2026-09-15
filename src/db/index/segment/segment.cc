@@ -1430,12 +1430,20 @@ CombinedVectorColumnIndexer::Ptr SegmentImpl::get_quant_combined_vector_indexer(
   auto vector_index_params =
       std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
   MetricType metric_type = vector_index_params->metric_type();
-  auto blocks =
-      get_persist_block_metas(BlockType::VECTOR_INDEX_QUANTIZE, field_name);
+  // Quantizers that need training leave new segments with only raw Flat
+  // blocks until optimize builds their quantized index. Search those blocks
+  // in the meantime, including writes flushed to disk or reopened later.
+  const bool is_quantized = !indexers.empty();
+  if (!is_quantized) {
+    indexers = normal_indexers;
+  }
+  auto blocks = get_persist_block_metas(
+      is_quantized ? BlockType::VECTOR_INDEX_QUANTIZE : BlockType::VECTOR_INDEX,
+      field_name);
 
   return std::make_shared<CombinedVectorColumnIndexer>(
       indexers, normal_indexers, *field, *segment_meta_, std::move(blocks),
-      metric_type, true);
+      metric_type, is_quantized);
 }
 
 VectorColumnIndexer::Ptr SegmentImpl::get_memory_vector_indexer(
