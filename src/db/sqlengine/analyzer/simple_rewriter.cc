@@ -95,32 +95,41 @@ void EqualOrRewriteRule::rewrite_impl(bool is_or, QueryNode::Ptr query_node) {
   if (!is_or) {
     return;
   }
-  // Only equality predicates can be combined into IN under OR. In particular,
-  // a != x OR a != y is not equivalent to a NOT IN (x, y).
-  if (query_node->op() == QueryNodeOp::Q_EQ) {
+  if (query_node->op() == QueryNodeOp::Q_EQ ||
+      query_node->op() == QueryNodeOp::Q_NE) {
+    bool is_ne = query_node->op() == QueryNodeOp::Q_NE;
     if (cur_ == nullptr || !cur_->left()->is_matched(*query_node->left())) {
       cur_ = query_node;
     } else {
       if (cur_->op() == QueryNodeOp::Q_IN) {
         QueryListNode::Ptr list =
             std::dynamic_pointer_cast<QueryListNode>(cur_->right());
-        list->add_value_expr(query_node->right());
-        // detach from parent
-        query_node->detach_from_parent();
-      } else {  // EQ
-        // create in node
-        QueryListNode::Ptr list = std::make_shared<QueryListNode>();
-        list->add_value_expr(cur_->right());
-        list->add_value_expr(query_node->right());
-        auto in_node = std::make_shared<QueryRelNode>();
-        in_node->set_left(cur_->left());
-        in_node->set_right(std::move(list));
-        in_node->set_op(QueryNodeOp::Q_IN);
-        // detach from parent
-        query_node->detach_from_parent();
-        cur_->replace_from_parent(in_node);
-        cur_ = std::move(in_node);
-        rewrited_ = true;
+        if (is_ne == list->exclude()) {
+          list->add_value_expr(query_node->right());
+          // detach from parent
+          query_node->detach_from_parent();
+        } else {
+          cur_ = query_node;
+        }
+      } else {  // EQ || NE
+        if (query_node->op() == cur_->op()) {
+          // create in node
+          QueryListNode::Ptr list = std::make_shared<QueryListNode>();
+          list->add_value_expr(cur_->right());
+          list->add_value_expr(query_node->right());
+          list->set_exclude(is_ne);
+          auto in_node = std::make_shared<QueryRelNode>();
+          in_node->set_left(cur_->left());
+          in_node->set_right(std::move(list));
+          in_node->set_op(QueryNodeOp::Q_IN);
+          // detach from parent
+          query_node->detach_from_parent();
+          cur_->replace_from_parent(in_node);
+          cur_ = std::move(in_node);
+          rewrited_ = true;
+        } else {
+          cur_ = query_node;
+        }
       }
     }
   }
