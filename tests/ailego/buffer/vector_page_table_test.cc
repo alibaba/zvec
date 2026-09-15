@@ -727,7 +727,16 @@ TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
 }
 
 TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  // Keep the single resident page below the background-reclaim watermark so
+  // only this thread advances the failed-flush/recovery sequence.
+  InitTablePool(/*capacity_pages=*/2, /*entry_num=*/1);
+  auto &queue = BlockEvictionQueue::get_instance();
+  BlockEvictionQueue::BlockType discarded;
+  // Earlier tests can leave stale global queue entries. batch_recycle(1)
+  // intentionally has a bounded scan and must reach this test's page.
+  while (queue.evict_single_block(discarded)) {
+  }
+
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -747,7 +756,7 @@ TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
   // failed flush then leaves a released resident page for recovery to find.
   table.set_evict_priority(/*block_id=*/0, std::numeric_limits<uint8_t>::max());
   table.release_block(/*block_id=*/0);
-  EXPECT_EQ(0u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(0u, queue.batch_recycle(1));
   EXPECT_EQ(1u, flush_attempts);
   EXPECT_TRUE(table.is_loaded(/*block_id=*/0));
   EXPECT_TRUE(table.is_block_dirty(/*block_id=*/0));
@@ -758,7 +767,7 @@ TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
     ++flush_attempts;
     return 0;
   });
-  EXPECT_EQ(1u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(1u, queue.batch_recycle(1));
   EXPECT_EQ(2u, flush_attempts);
   EXPECT_FALSE(table.is_loaded(/*block_id=*/0));
   EXPECT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
