@@ -267,9 +267,19 @@ Status FieldSchema::validate() const {
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         const auto quantize_type = vector_index_params->quantize_type();
-        if ((quantize_type == QuantizeType::UNIFORM_UINT7 ||
-             quantize_type == QuantizeType::UNIFORM_UINT8 ||
-             quantize_type == QuantizeType::UNIFORM_UINT4) &&
+        const bool is_uniform = quantize_type == QuantizeType::UNIFORM_UINT7 ||
+                                quantize_type == QuantizeType::UNIFORM_UINT8 ||
+                                quantize_type == QuantizeType::UNIFORM_UINT4;
+        // DB Flat fields are marked indexed at creation and do not run the
+        // deferred training step required by Uniform quantizers.
+        if (is_uniform && index_params_->type() == IndexType::FLAT) {
+          return Status::InvalidArgument(
+              "schema validate failed: ",
+              QuantizeTypeCodeBook::AsString(quantize_type),
+              " quantization is not supported with FLAT index, field[", name_,
+              "]");
+        }
+        if (is_uniform &&
             vector_index_params->metric_type() != MetricType::L2) {
           return Status::InvalidArgument(
               "schema validate failed: ",

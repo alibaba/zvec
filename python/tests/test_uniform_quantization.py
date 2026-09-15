@@ -11,6 +11,7 @@ from zvec import (
     CollectionSchema,
     Doc,
     FieldSchema,
+    FlatIndexParam,
     HnswIndexParam,
     HnswQueryParam,
     Query,
@@ -19,6 +20,77 @@ from zvec import (
     VectorSchema,
 )
 from zvec.typing import DataType, MetricType, QuantizeType
+
+
+@pytest.mark.parametrize("operation", ["create", "create_index"])
+@pytest.mark.parametrize(
+    "quantize_type",
+    [
+        QuantizeType.UNIFORM_UINT7,
+        QuantizeType.UNIFORM_UINT8,
+        QuantizeType.UNIFORM_UINT4,
+    ],
+)
+def test_uniform_quantization_rejects_flat_index(tmp_path, quantize_type, operation):
+    flat_param = FlatIndexParam(metric_type=MetricType.L2, quantize_type=quantize_type)
+    graph_param = HnswIndexParam(
+        metric_type=MetricType.L2,
+        quantize_type=quantize_type,
+        flat_data_type=DataType.VECTOR_FP16,
+    )
+    schema = CollectionSchema(
+        name="uniform_flat_validation",
+        vectors=[
+            VectorSchema(
+                "dense",
+                DataType.VECTOR_FP32,
+                32,
+                index_param=flat_param if operation == "create" else graph_param,
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    error = "quantization is not supported with FLAT"
+    if operation == "create":
+        with pytest.raises(ValueError, match=error):
+            collection = zvec.create_and_open(path=path, schema=schema)
+            collection.close()
+        return
+
+    collection = zvec.create_and_open(path=path, schema=schema)
+    try:
+        vectors = np.random.default_rng(754).integers(32, 128, size=(64, 32))
+        assert all(
+            status.ok()
+            for status in collection.insert(
+                [
+                    Doc(id=str(i), vectors={"dense": v.tolist()})
+                    for i, v in enumerate(vectors)
+                ]
+            )
+        )
+        collection.optimize()
+        query = Query("dense", vector=vectors[0].tolist())
+        before = [(hit.id, hit.score) for hit in collection.query(query, topk=5)]
+        before_schema = collection.schema.vectors[0].index_param.to_dict()
+
+        with pytest.raises(ValueError, match=error):
+            collection.create_index("dense", flat_param)
+
+        # Rejection must preserve the trained index, its schema and writeability.
+        assert collection.schema.vectors[0].index_param.to_dict() == before_schema
+        assert [
+            (hit.id, hit.score) for hit in collection.query(query, topk=5)
+        ] == before
+        assert collection.insert(Doc(id="new", vectors={"dense": [50.0] * 32})).ok()
+        collection.close()
+        collection = zvec.open(path=path)
+        assert collection.schema.vectors[0].index_param.to_dict() == before_schema
+        assert collection.stats.doc_count == 65
+        hits = collection.query(Query("dense", vector=[50.0] * 32), topk=1)
+        assert [hit.id for hit in hits] == ["new"]
+    finally:
+        collection.close()
 
 
 @pytest.mark.parametrize("param_type", [HnswIndexParam, VamanaIndexParam])
