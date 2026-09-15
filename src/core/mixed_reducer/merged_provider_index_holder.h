@@ -27,6 +27,9 @@
 #include "utility/ordinal_access_holder.h"
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
 namespace core {
 
 /*! A multi-pass holder that presents multiple source providers as one dense
@@ -43,7 +46,9 @@ class MergedProviderIndexHolder final : public IndexHolder,
     // (and its source-specific buffers) for every source at the same time.
     IndexStreamer::Pointer owner{};
     IndexReformer::Pointer reformer{};
+    std::shared_ptr<turbo::Quantizer> quantizer{};
     IndexQueryMeta provider_meta{};
+    // Decode with the quantizer (preferred) or the legacy reformer.
     bool need_revert{false};
 
     // Filled by init() and consumed by each merged iterator.

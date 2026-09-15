@@ -9,6 +9,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       STRICT
       LIBS zvec_ailego core_framework core_mix_reducer core_quantizer
       SRCS ${CC_SRCS}
-      INCS ${PROJECT_ROOT_DIR}/src/core
+      INCS ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/turbo
     )
 endforeach()

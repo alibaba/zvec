@@ -17,6 +17,7 @@
 #include <limits>
 #include <new>
 #include <utility>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_error.h>
 
@@ -71,8 +72,11 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
     }
 
     revert_buffer_.clear();
-    int ret = source.reformer->revert(source_data, source.provider_meta,
-                                      &revert_buffer_);
+    int ret = source.quantizer
+                  ? source.quantizer->dequantize(
+                        source_data, source.provider_meta, &revert_buffer_)
+                  : source.reformer->revert(source_data, source.provider_meta,
+                                            &revert_buffer_);
     if (ret != 0) {
       return this->fail(ret, "Failed to revert source vector");
     }
@@ -358,8 +362,14 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   for (size_t source_index = 0; source_index < sources_.size();
        ++source_index) {
     auto &source = sources_[source_index];
-    if (!source.owner || (source.need_revert && !source.reformer)) {
+    if (!source.owner ||
+        (source.need_revert && !source.reformer && !source.quantizer)) {
       this->set_status(IndexError_InvalidArgument);
+      return this->status();
+    }
+    if (source.quantizer &&
+        source.quantizer->dim() != output_meta_.dimension()) {
+      this->set_status(IndexError_Mismatch);
       return this->status();
     }
 
@@ -419,10 +429,13 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
           }
           if (source.need_revert) {
             std::string reverted;
-            int ret = source.reformer->revert(source_data, source.provider_meta,
-                                              &reverted);
+            int ret = source.quantizer
+                          ? source.quantizer->dequantize(
+                                source_data, source.provider_meta, &reverted)
+                          : source.reformer->revert(
+                                source_data, source.provider_meta, &reverted);
             if (ret != 0) {
-              LOG_ERROR("Failed to validate source reformer, source=%zu ret=%d",
+              LOG_ERROR("Failed to decode source vector, source=%zu ret=%d",
                         source_index, ret);
               this->set_status(ret);
               return this->status();
@@ -518,6 +531,16 @@ IndexProvider::Pointer MergedProviderIndexHolder::acquire_provider(
       provider->dimension() != source.provider_meta.dimension() ||
       provider->element_size() != source.provider_meta.element_size()) {
     LOG_ERROR("Source provider meta changed, source=%zu", source_index);
+    this->set_status(IndexError_Mismatch);
+    return nullptr;
+  }
+
+  if (source.quantizer &&
+      (provider->data_type() != source.quantizer->meta().data_type() ||
+       provider->dimension() != source.quantizer->meta().dimension() ||
+       provider->element_size() != source.quantizer->meta().element_size())) {
+    LOG_ERROR("Source provider meta does not match quantizer, source=%zu",
+              source_index);
     this->set_status(IndexError_Mismatch);
     return nullptr;
   }

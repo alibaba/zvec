@@ -638,11 +638,23 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
     MergedProviderIndexHolder::Source source;
     source.owner = streamers_[i];
     source.reformer = source_streamers_reformers_[i];
-    source.provider_meta = IndexQueryMeta{streamers_[i]->meta().data_type(),
-                                          streamers_[i]->meta().dimension()};
-    // A builder consumes the original input meta. This intentionally matches
-    // the old read_vec() builder path, which reverted whenever one existed.
-    source.need_revert = source.reformer != nullptr;
+    source.quantizer = source_streamers_quantizers_[i];
+    const auto &meta = streamers_[i]->meta();
+    source.provider_meta = IndexQueryMeta{
+        meta.meta_type(),
+        meta.data_type(),
+        meta.unit_size(),
+        meta.dimension(),
+        source.quantizer ? static_cast<uint32_t>(source.quantizer->type()) : 0,
+        meta.extra_meta_size()};
+    // Builders consume original vectors, not encoded records. Plain FP32
+    // quantization is an identity transform; keep its zero-copy ordinal path.
+    // Cosine normalization and FP16/INT8/INT4 storage must be decoded first.
+    source.need_revert =
+        source.quantizer
+            ? source.quantizer->type() != turbo::QuantizeType::kFp32 ||
+                  meta.extra_meta_size() != 0
+            : source.reformer != nullptr;
     sources.emplace_back(std::move(source));
   }
 

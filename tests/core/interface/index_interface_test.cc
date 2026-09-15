@@ -1170,12 +1170,16 @@ TEST(IndexInterface, Merge) {
   }
 }
 
-TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
+class TurboFlatMergeTest
+    : public testing::TestWithParam<std::pair<DataType, MetricType>> {};
+
+TEST_P(TurboFlatMergeTest, MergeIntoIvfWithDenseIdRewrite) {
   constexpr uint32_t kDimension = 16;
   static constexpr uint32_t kSourceCount = 64;
   const std::string first_name{"provider_merge_ivf_source_1.index"};
   const std::string second_name{"provider_merge_ivf_source_2.index"};
   const std::string target_name{"provider_merge_ivf_target.index"};
+  const auto [storage_type, metric] = GetParam();
 
   auto remove_files = [](const std::string &path) {
     zvec::test_util::RemoveTestFiles(path);
@@ -1184,15 +1188,22 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
   remove_files(second_name);
   remove_files(target_name);
 
-  auto source_param = FlatIndexParamBuilder()
-                          .with_metric_type(MetricType::kL2sq)
-                          .with_data_type(DataType::DT_FP32)
-                          .with_storage_data_type(DataType::DT_FP16)
-                          .with_dimension(kDimension)
-                          .with_is_sparse(false)
-                          .build();
+  auto source_param =
+      FlatIndexParamBuilder()
+          .with_metric_type(metric)
+          .with_data_type(DataType::DT_FP32)
+          .with_storage_data_type(storage_type == DataType::DT_FP16
+                                      ? DataType::DT_FP16
+                                      : DataType::DT_UNDEFINED)
+          .with_quantizer_param(QuantizerParam(
+              storage_type == DataType::DT_INT8   ? QuantizerType::kInt8
+              : storage_type == DataType::DT_INT4 ? QuantizerType::kInt4
+                                                  : QuantizerType::kNone))
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .build();
   auto target_param = IVFIndexParamBuilder()
-                          .with_metric_type(MetricType::kL2sq)
+                          .with_metric_type(metric)
                           .with_data_type(DataType::DT_FP32)
                           .with_dimension(kDimension)
                           .with_is_sparse(false)
@@ -1218,10 +1229,24 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
 
   std::vector<float> vector(kDimension, 0.0f);
   for (uint32_t i = 0; i < kSourceCount; ++i) {
-    vector[0] = static_cast<float>(i);
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vector[d] = i == 0 ? 0.0F : static_cast<float>(i + d) - 17.25F;
+    }
     ASSERT_EQ(0, first->add(VectorData{DenseVector{vector.data()}}, i));
-    vector[0] = static_cast<float>(1000 + i);
+    for (auto &value : vector) value += 1000.0F;
     ASSERT_EQ(0, second->add(VectorData{DenseVector{vector.data()}}, i));
+  }
+
+  // Compare against decoded source values, including lossy storage precision.
+  std::vector<std::string> expected;
+  for (const auto &source : {first, second}) {
+    for (uint32_t i = 0; i < kSourceCount; ++i) {
+      if ((source == first && i == 3) || (source == second && i == 5)) continue;
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, source->fetch(i, &fetched));
+      expected.push_back(
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    }
   }
 
   IndexFilter filter;
@@ -1231,26 +1256,48 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
   ASSERT_EQ(0, target->merge({first, second}, filter));
   ASSERT_EQ(kSourceCount * 2 - 2, target->get_doc_count());
 
-  auto expect_first_value = [&](uint32_t doc_id, float expected) {
-    VectorDataBuffer fetched;
-    ASSERT_EQ(0, target->fetch(doc_id, &fetched));
-    const auto &buffer = std::get<DenseVectorBuffer>(fetched.vector_buffer);
-    const float *data = reinterpret_cast<const float *>(buffer.data.data());
-    ASSERT_NE(nullptr, data);
-    EXPECT_FLOAT_EQ(expected, data[0]);
-  };
-  expect_first_value(0, 0.0f);
-  expect_first_value(3, 4.0f);
-  expect_first_value(kSourceCount - 1, 1000.0f);
-  expect_first_value(kSourceCount + 4, 1006.0f);
-
   ASSERT_EQ(0, first->close());
   ASSERT_EQ(0, second->close());
-  ASSERT_EQ(0, target->close());
+  for (int pass = 0; pass < 2; ++pass) {
+    for (uint32_t id = 0; id < expected.size(); ++id) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, target->fetch(id, &fetched));
+      const auto &buffer =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), buffer.size());
+      const auto *actual = reinterpret_cast<const float *>(buffer.data());
+      const auto *values = reinterpret_cast<const float *>(expected[id].data());
+      for (uint32_t d = 0; d < kDimension; ++d) {
+        EXPECT_NEAR(values[d], actual[d],
+                    1.0e-4F * std::max(1.0F, std::abs(values[d])));
+      }
+    }
+    ASSERT_EQ(0, target->close());
+    if (pass == 0) {
+      target = IndexFactory::CreateAndInitIndex(*target_param);
+      ASSERT_NE(nullptr, target);
+      ASSERT_EQ(0, target->open(target_name,
+                                {StorageOptions::StorageType::kMMAP, false}));
+    }
+  }
   remove_files(first_name);
   remove_files(second_name);
   remove_files(target_name);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    StorageAndMetric, TurboFlatMergeTest,
+    testing::Values(
+        std::make_pair(DataType::DT_FP32, MetricType::kL2sq),
+        std::make_pair(DataType::DT_FP32, MetricType::kCosine),
+        std::make_pair(DataType::DT_FP32, MetricType::kInnerProduct),
+        std::make_pair(DataType::DT_FP16, MetricType::kL2sq),
+        std::make_pair(DataType::DT_FP16, MetricType::kCosine),
+        std::make_pair(DataType::DT_FP16, MetricType::kInnerProduct),
+        std::make_pair(DataType::DT_INT8, MetricType::kL2sq),
+        std::make_pair(DataType::DT_INT8, MetricType::kCosine),
+        std::make_pair(DataType::DT_INT4, MetricType::kL2sq),
+        std::make_pair(DataType::DT_INT4, MetricType::kCosine)));
 
 TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
   constexpr uint32_t kDim = 16;
