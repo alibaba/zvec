@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -451,6 +452,299 @@ static void LoadIndex(const std::string &path,
   ASSERT_EQ(0, searcher->init(params));
   ASSERT_EQ(0, storage->open(path, false));
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+}
+
+namespace {
+class ThresholdContext : public IndexContext {
+ public:
+  using IndexContext::copy_common_query_options_from;
+  using IndexContext::update_index_metric;
+  using IndexContext::update_index_quantizer;
+  void set_topk(uint32_t) override {}
+  const IndexDocumentList &result() const override {
+    return docs_;
+  }
+  IndexDocumentList *mutable_result(size_t) override {
+    return &docs_;
+  }
+
+ private:
+  IndexDocumentList docs_;
+};
+}  // namespace
+
+TEST_F(FlatBuilderTest, ThresholdBackendRebinding) {
+  IndexMeta meta(IndexMeta::DT_FP32, 32);
+  meta.set_metric("InnerProduct", 0, Params());
+  auto ip_metric = IndexFactory::CreateMetric("InnerProduct");
+  ASSERT_NE(nullptr, ip_metric);
+  ASSERT_EQ(0, ip_metric->init(meta, Params()));
+  auto ip_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_NE(nullptr, ip_quantizer);
+  ASSERT_EQ(0, ip_quantizer->init(meta, Params()));
+
+  ThresholdContext context;
+  context.update_index_quantizer(ip_quantizer);
+  EXPECT_FALSE(context.threshold_set());
+  EXPECT_FLOAT_EQ(std::numeric_limits<float>::max(), context.threshold());
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    context.set_threshold(0.5f);
+    context.update_index_quantizer(ip_quantizer);
+    EXPECT_FLOAT_EQ(0.5f, context.raw_threshold());
+    EXPECT_FLOAT_EQ(-0.5f, context.threshold());
+  }
+
+  for (const char *metric_name : {"SquaredEuclidean", "Cosine"}) {
+    meta.set_metric(metric_name, 0, Params());
+    auto metric = IndexFactory::CreateMetric(metric_name);
+    ASSERT_NE(nullptr, metric);
+    ASSERT_EQ(0, metric->init(meta, Params()));
+    context.update_index_metric(metric);
+    EXPECT_FLOAT_EQ(0.5f, context.threshold());
+    context.update_index_metric(ip_metric);
+    EXPECT_FLOAT_EQ(-0.5f, context.threshold());
+    for (const char *name : kTurboQuantizers) {
+      auto quantizer = IndexFactory::CreateQuantizer(name);
+      ASSERT_NE(nullptr, quantizer);
+      ASSERT_EQ(0, quantizer->init(meta, Params()));
+      context.update_index_quantizer(quantizer);
+      EXPECT_FLOAT_EQ(0.5f, context.threshold());
+      // Copy from an IP context into another score space using the raw radius.
+      ThresholdContext source;
+      source.update_index_metric(ip_metric);
+      source.set_threshold(0.75f);
+      context.copy_common_query_options_from(source);
+      EXPECT_FLOAT_EQ(0.75f, context.threshold());
+      EXPECT_FLOAT_EQ(0.75f, context.raw_threshold());
+      source.reset_threshold();
+      context.copy_common_query_options_from(source);
+      EXPECT_FALSE(context.threshold_set());
+      EXPECT_FLOAT_EQ(std::numeric_limits<float>::max(), context.threshold());
+      context.set_threshold(0.5f);
+      context.update_index_metric(ip_metric);
+      EXPECT_FLOAT_EQ(-0.5f, context.threshold());
+    }
+  }
+
+  context.update_index_quantizer(ip_quantizer);
+  std::weak_ptr<zvec::turbo::Quantizer> weak = ip_quantizer;
+  ip_quantizer.reset();
+  EXPECT_TRUE(weak.expired());
+  EXPECT_FALSE(context.threshold_is_valid());
+  context.set_threshold(0.25f);
+  EXPECT_FLOAT_EQ(0.25f, context.raw_threshold());
+  EXPECT_EQ(-std::numeric_limits<float>::infinity(), context.threshold());
+  // Rebinding recovers even after the previous converter has expired.
+  context.update_index_metric(ip_metric);
+  EXPECT_TRUE(context.threshold_is_valid());
+  EXPECT_FLOAT_EQ(-0.25f, context.threshold());
+  context.reset_threshold();
+  context.update_index_metric(ip_metric);
+  EXPECT_FLOAT_EQ(std::numeric_limits<float>::max(), context.threshold());
+}
+
+TEST_F(FlatBuilderTest, RadiusAcrossFlatBackendsAndQueryModes) {
+  constexpr size_t dimension = 32;
+  const std::vector<float> values{1.0f, 0.5f, 0.25f, -0.25f, -0.5f, -1.0f};
+  std::vector<std::vector<float>> vectors(values.size(),
+                                          std::vector<float>(dimension, 0));
+  for (size_t i = 0; i < values.size(); ++i) vectors[i][0] = values[i];
+  // Reuse the same context across different owners, encodings and metrics.
+  IndexContext::Pointer contexts[2];
+  auto reusable_streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, reusable_streamer);
+  const std::pair<const char *, const char *> cases[] = {
+      {"Fp32Quantizer", "InnerProduct"},     {nullptr, "SquaredEuclidean"},
+      {"Fp16Quantizer", "InnerProduct"},     {nullptr, "InnerProduct"},
+      {"Fp32Quantizer", "SquaredEuclidean"}, {"Fp32Quantizer", "Cosine"},
+      {"Fp16Quantizer", "SquaredEuclidean"}, {"Fp16Quantizer", "Cosine"},
+      {"Int8Quantizer", "SquaredEuclidean"}, {"Int8Quantizer", "Cosine"},
+      {"Int4Quantizer", "SquaredEuclidean"}, {"Int4Quantizer", "Cosine"},
+      {"Fp32Quantizer", "InnerProduct"}};
+  for (const auto &test_case : cases) {
+    const char *name = test_case.first;
+    const std::string metric = test_case.second;
+    const bool ip = metric == "InnerProduct", cosine = metric == "Cosine";
+    IndexMeta meta(IndexMeta::DT_FP32, dimension);
+    meta.set_metric(metric, 0, Params());
+    meta.set_major_order(IndexMeta::MO_ROW);
+    const std::string suffix = std::string(name ? name : "legacy") + metric;
+    const std::string path = dir_ + "radius_" + suffix;
+    std::shared_ptr<zvec::turbo::Quantizer> quantizer;
+    if (name) {
+      BuildQuantizedIndex(metric, vectors, dimension, path, &quantizer, name);
+      ASSERT_NE(nullptr, quantizer);
+      meta = quantizer->meta();
+      meta.set_quantizer(name, 0, Params());
+    } else {
+      auto holder =
+          std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dimension);
+      for (size_t i = 0; i < values.size(); ++i) {
+        NumericalVector<float> vector(dimension);
+        memcpy(&vector[0], vectors[i].data(), dimension * sizeof(float));
+        ASSERT_TRUE(holder->emplace(i, vector));
+      }
+      BuildIndex(meta, holder, path);
+    }
+    const auto encode = [&quantizer](const std::vector<float> &raw) {
+      if (!quantizer)
+        return std::string(reinterpret_cast<const char *>(raw.data()),
+                           raw.size() * sizeof(float));
+      std::string code(quantizer->quantized_query_vector_length(), '\0');
+      quantizer->quantize_query(raw.data(), code.data());
+      return code;
+    };
+    IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension);
+    if (quantizer) {
+      std::string code;
+      const IndexQueryMeta raw_meta(IndexMeta::DT_FP32, dimension);
+      ASSERT_EQ(
+          0, quantizer->quantize(vectors[0].data(), raw_meta, &code, &qmeta));
+    }
+    auto query = vectors[0];
+    const auto positive = encode(query);
+    query[0] = -1.0f;
+    const auto batch = positive + encode(query);
+    const std::vector<std::vector<uint64_t>> candidates{{0, 1, 3, 4, 5},
+                                                        {0, 1, 3, 4, 5}};
+
+    for (int kind = 0; kind < 2; ++kind) {
+      SCOPED_TRACE(testing::Message() << suffix << " streamer " << kind);
+      IndexSearcher::Pointer searcher;
+      IndexStreamer::Pointer streamer;
+      IndexRunner *runner = nullptr;
+      if (kind == 0) {
+        if (quantizer) {
+          LoadQuantizedIndex(path, quantizer, searcher);
+        } else {
+          LoadIndex(path, searcher);
+        }
+        runner = searcher.get();
+      } else {
+        // Reinitialize the owner too: a stale legacy metric must not take
+        // precedence over its newly selected turbo quantizer.
+        streamer = reusable_streamer;
+        if (quantizer) {
+          ASSERT_EQ(0, streamer->init(meta, Params(), quantizer));
+        } else {
+          ASSERT_EQ(0, streamer->init(meta, Params()));
+        }
+        auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+        ASSERT_NE(nullptr, storage);
+        ASSERT_EQ(0, storage->init(Params()));
+        const auto stream_path = path + "_stream";
+        zvec::test_util::RemoveTestFiles(stream_path);
+        ASSERT_EQ(0, storage->open(stream_path, true));
+        ASSERT_EQ(0, streamer->open(storage));
+        auto add_context = streamer->create_context();
+        for (size_t key = 0; key < values.size(); ++key) {
+          std::string code;
+          if (quantizer) {
+            code.resize(quantizer->quantized_datapoint_vector_length());
+            quantizer->quantize_data(vectors[key].data(), code.data());
+          } else {
+            code = encode(vectors[key]);
+          }
+          ASSERT_EQ(0,
+                    streamer->add_impl(key, code.data(), qmeta, add_context));
+        }
+        runner = streamer.get();
+      }
+      ASSERT_NE(nullptr, runner);
+      auto &context = contexts[kind];
+      if (!context) context = runner->create_context();
+      ASSERT_NE(nullptr, context);
+      context->set_topk(values.size());
+      const std::vector<float> radii =
+          ip ? std::vector<float>{0.5f, 0, 2, 0, 1, 0.25f}
+             : std::vector<float>{0.3f, 0, 0.8f, 0, 1.8f, 5};
+      for (float radius : radii) {
+        SCOPED_TRACE(testing::Message() << "radius " << radius);
+        if (radius > 0) {
+          context->set_threshold(radius);
+        } else {
+          context->reset_threshold();
+        }
+        for (bool grouped : {false, true}) {
+          context->set_group_params(grouped ? 2 : 0, values.size());
+          context->set_group_by(
+              [](uint64_t key) { return std::to_string(key % 2); });
+          for (bool filtered : {false, true}) {
+            if (filtered) {
+              context->set_filter([](uint64_t key) { return key == 0; });
+            } else {
+              context->reset_filter();
+            }
+            for (int mode = 0; mode < 3; ++mode) {
+              SCOPED_TRACE(testing::Message()
+                           << "group " << grouped << " filter " << filtered
+                           << " mode " << mode);
+              if (mode == 0) {
+                ASSERT_EQ(0, runner->search_impl(batch.data(), qmeta, context));
+              } else if (mode == 1) {
+                ASSERT_EQ(0,
+                          runner->search_impl(batch.data(), qmeta, 2, context));
+              } else {
+                ASSERT_EQ(0, runner->search_bf_by_p_keys_impl(
+                                 batch.data(), candidates, qmeta, 2, context));
+              }
+              EXPECT_TRUE(context->threshold_is_valid());
+              EXPECT_FLOAT_EQ(
+                  radius > 0 ? radius : std::numeric_limits<float>::max(),
+                  context->raw_threshold());
+              EXPECT_FLOAT_EQ(radius > 0 ? (ip ? -radius : radius)
+                                         : std::numeric_limits<float>::max(),
+                              context->threshold());
+              for (int q = 0; q < (mode == 0 ? 1 : 2); ++q) {
+                std::vector<std::pair<uint64_t, float>> actual, expected;
+                const auto collect = [&actual](const auto &docs) {
+                  for (const auto &doc : docs)
+                    actual.emplace_back(doc.key(), doc.score());
+                };
+                if (grouped) {
+                  for (const auto &group : context->group_result(q))
+                    collect(group.docs());
+                } else {
+                  collect(context->result(q));
+                }
+                const float direction = q == 0 ? 1.0f : -1.0f;
+                for (size_t key = 0; key < values.size(); ++key) {
+                  if ((filtered && key == 0) || (mode == 2 && key == 2))
+                    continue;
+                  const float dot = direction * values[key];
+                  const float score = ip       ? -dot
+                                      : cosine ? (dot > 0 ? 0.0f : 2.0f)
+                                               : (direction - values[key]) *
+                                                     (direction - values[key]);
+                  if (radius == 0 || score <= (ip ? -radius : radius))
+                    expected.emplace_back(key, score);
+                }
+                std::sort(actual.begin(), actual.end());
+                ASSERT_EQ(expected.size(), actual.size());
+                for (size_t i = 0; i < expected.size(); ++i) {
+                  EXPECT_EQ(expected[i].first, actual[i].first);
+                  EXPECT_NEAR(expected[i].second, actual[i].second, 1e-5f);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (searcher) {
+        ASSERT_EQ(0, searcher->unload());
+      } else {
+        ASSERT_EQ(0, streamer->cleanup());
+      }
+      EXPECT_EQ(nullptr, runner->create_context());
+      EXPECT_EQ(IndexError_NoReady,
+                runner->search_impl(batch.data(), qmeta, context));
+      EXPECT_EQ(IndexError_NoReady,
+                runner->search_impl(batch.data(), qmeta, 2, context));
+      EXPECT_EQ(IndexError_NoReady,
+                runner->search_bf_by_p_keys_impl(batch.data(), candidates,
+                                                 qmeta, 2, context));
+    }
+  }
 }
 
 TEST_F(FlatBuilderTest, TestInitWithTurboQuantizer) {

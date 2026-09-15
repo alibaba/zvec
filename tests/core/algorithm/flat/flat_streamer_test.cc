@@ -1499,7 +1499,8 @@ TEST_F(FlatStreamerTest, TestCleanUp) {
     ASSERT_EQ(0, storage1->open(dir_ + "cleanup1_" + suffix, true));
     constexpr size_t dim1 = 32;
     IndexMeta meta1(IndexMeta::DT_FP32, dim1);
-    meta1.set_metric("SquaredEuclidean", 0, Params());
+    meta1.set_metric(use_quantizer ? "InnerProduct" : "SquaredEuclidean", 0,
+                     Params());
     std::vector<float> vec1(dim1, 1.0f);
     IndexQueryMeta qmeta1(IndexMeta::DT_FP32, dim1);
     std::string encoded;
@@ -1524,16 +1525,19 @@ TEST_F(FlatStreamerTest, TestCleanUp) {
     auto ctx1 = streamer->create_context();
     ASSERT_NE(nullptr, ctx1);
     ctx1->set_topk(1);
+    ctx1->set_threshold(16.0f);
     ASSERT_EQ(0, streamer->add_impl(1, data1, qmeta1, ctx1));
 
     // close/open keeps the encoding and the existing records usable.
     ASSERT_EQ(0, streamer->close());
+    EXPECT_EQ(IndexError_NoReady, streamer->search_impl(data1, qmeta1, ctx1));
     ASSERT_EQ(0, streamer->open(storage1));
     if (use_quantizer) EXPECT_FALSE(weak_quantizer.expired());
     ASSERT_EQ(0, streamer->search_impl(data1, qmeta1, ctx1));
     ASSERT_EQ(1u, ctx1->result().size());
     EXPECT_EQ(1u, ctx1->result()[0].key());
-    EXPECT_FLOAT_EQ(0.0f, ctx1->result()[0].score());
+    EXPECT_FLOAT_EQ(use_quantizer ? -32.0f : 0.0f, ctx1->result()[0].score());
+    EXPECT_FLOAT_EQ(use_quantizer ? -16.0f : 16.0f, ctx1->threshold());
 
     // Cover cleanup both after close and while the streamer is still open.
     if (!use_quantizer) ASSERT_EQ(0, streamer->close());
@@ -1541,6 +1545,8 @@ TEST_F(FlatStreamerTest, TestCleanUp) {
     // The test no longer owns the quantizer; neither the streamer nor its
     // closed entity should keep it alive after cleanup.
     EXPECT_TRUE(weak_quantizer.expired());
+    EXPECT_EQ(!use_quantizer, ctx1->threshold_is_valid());
+    EXPECT_EQ(IndexError_NoReady, streamer->search_impl(data1, qmeta1, ctx1));
 
     auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
     ASSERT_NE(nullptr, storage2);
@@ -1563,6 +1569,14 @@ TEST_F(FlatStreamerTest, TestCleanUp) {
     ASSERT_EQ(1u, ctx2->result().size());
     EXPECT_EQ(2u, ctx2->result()[0].key());
     EXPECT_FLOAT_EQ(16.0f, ctx2->result()[0].score());
+    // An old context can be rebound even after its quantizer expired. Its raw
+    // radius is retained but is now interpreted by the legacy L2 metric.
+    ASSERT_EQ(0, streamer->search_impl(query2.data(), qmeta2, ctx1));
+    EXPECT_TRUE(ctx1->threshold_is_valid());
+    EXPECT_FLOAT_EQ(16.0f, ctx1->raw_threshold());
+    EXPECT_FLOAT_EQ(16.0f, ctx1->threshold());
+    ASSERT_EQ(1u, ctx1->result().size());
+    EXPECT_EQ(2u, ctx1->result()[0].key());
     ASSERT_EQ(0, streamer->close());
     ASSERT_EQ(0, streamer->cleanup());
   }

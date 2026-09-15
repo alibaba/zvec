@@ -180,6 +180,9 @@ class Quantizer {
   //! (e.g. the InnerProduct kernels rank by the negated dot product).
   virtual void normalize_score(float * /*score*/) const {}
 
+  //! Convert a caller-facing score threshold into the internal distance space.
+  virtual void denormalize_score(float * /*score*/) const {}
+
   //! Whether internal distances differ from caller-facing scores.
   virtual bool support_score_normalization() const {
     return false;

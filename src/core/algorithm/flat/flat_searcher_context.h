@@ -201,6 +201,11 @@ class FlatSearcherContext : public IndexSearcher::Context {
     features_segment_ = owner->clone_features_segment();
     quantizer_ = owner->quantizer();
     owner_ = owner;
+    if (quantizer_) {
+      this->update_index_quantizer(quantizer_);
+    } else {
+      this->update_index_metric(owner->metric());
+    }
   }
 
   //! Similarity search

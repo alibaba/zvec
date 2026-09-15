@@ -357,6 +357,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
                                              const IndexQueryMeta &qmeta,
                                              uint32_t count,
                                              Context::Pointer &context) const {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
   ailego_assert(query && count && !!context);
   ailego_assert(quantizer_ || metric_->is_matched(meta_, qmeta));
 
@@ -371,6 +372,8 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
     bf_context->reset(this);
   }
 
+  if (!bf_context->threshold_is_valid()) return IndexError_NoReady;
+
   if (bf_context->group_by_search()) {
     return group_by_search_impl(query, qmeta, count, context);
   }
@@ -379,6 +382,9 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
 
   for (size_t q = 0; q < count; ++q) {
     auto *heap = bf_context->result_heap();
+    // Each query has its own result set; keep the configured threshold but
+    // discard candidates (and heap ordering) from the previous query.
+    heap->clear();
     uint32_t scan_count = 0;
     int ret = entity_->search(query, bf_context->filter(), &scan_count, heap,
                               bf_context->mutable_stats(q),
@@ -399,6 +405,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
   if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   ailego_assert(query && count && !!context);
   ailego_assert(quantizer_ || metric_->is_matched(meta_, qmeta));
@@ -413,6 +420,8 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
   if (bf_context->magic() != magic_) {
     bf_context->reset(this);
   }
+
+  if (!bf_context->threshold_is_valid()) return IndexError_NoReady;
 
   if (bf_context->group_by_search()) {
     return group_by_search_p_keys_impl(query, p_keys, qmeta, count, context);

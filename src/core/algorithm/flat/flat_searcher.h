@@ -161,8 +161,12 @@ class FlatSearcher : public IndexSearcher {
   }
 
   //! Retrieve the turbo quantizer
-  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer(void) const {
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
     return quantizer_;
+  }
+
+  const IndexMetric::Pointer &metric() const {
+    return measure_;
   }
 
   //! Clone a features segment

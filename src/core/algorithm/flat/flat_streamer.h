@@ -132,8 +132,12 @@ class FlatStreamer : public IndexStreamer {
   }
 
   //! Retrieve the turbo quantizer
-  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer(void) const {
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
     return quantizer_;
+  }
+
+  const IndexMetric::Pointer &metric() const {
+    return metric_;
   }
 
   const void *get_vector(uint64_t key) const override {

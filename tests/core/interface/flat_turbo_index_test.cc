@@ -299,6 +299,108 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.name();
     });
 
+TEST(FlatTurboRadius, InnerProductUsesCallerScoreSpace) {
+  // Binary fractions are exact in both FP32 and FP16. The oracle is the
+  // original dot product, independent of quantizer score conversion methods.
+  const std::vector<float> values{1.0f, 0.5f, 0.25f, 0.0f, -0.5f, -1.0f};
+  for (auto format : {QuantizerType::kNone, QuantizerType::kFP16}) {
+    for (bool contiguous : {false, true}) {
+      SCOPED_TRACE(testing::Message() << "format " << static_cast<int>(format)
+                                      << " contiguous " << contiguous);
+      const std::string path = "flat_turbo_ip_radius.index";
+      zvec::test_util::RemoveTestFiles(path);
+      auto param =
+          MakeParam(MetricType::kInnerProduct, format, false, contiguous);
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
+      ASSERT_EQ(0,
+                index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+      std::vector<float> vector(kDimension, 0.0f);
+      for (size_t key = 0; key < values.size(); ++key) {
+        vector[0] = values[key];
+        VectorData data;
+        data.vector = DenseVector{vector.data()};
+        ASSERT_EQ(0, index->add(data, key));
+      }
+      ASSERT_EQ(0, index->train());
+
+      for (bool reopen : {false, true}) {
+        SCOPED_TRACE(testing::Message() << "reopen " << reopen);
+        if (reopen) {
+          ASSERT_EQ(0, index->close());
+          index = IndexFactory::CreateAndInitIndex(*param);
+          ASSERT_NE(nullptr, index);
+          ASSERT_EQ(0, index->open(
+                           path, {StorageOptions::StorageType::kMMAP, false}));
+        }
+        // normal / linear / candidates, each with and without grouping.
+        for (int mode = 0; mode < 6; ++mode) {
+          for (bool filtered : {false, true}) {
+            // Alternate configured and disabled radii to exercise pooled
+            // contexts. Non-positive radius keeps the existing API semantics.
+            for (float radius : {0.5f, 0.0f, 2.0f, 0.0f, 1.0f, 0.25f, -1.0f}) {
+              for (float direction : {1.0f, -1.0f}) {
+                SCOPED_TRACE(testing::Message()
+                             << "mode " << mode << " filtered " << filtered
+                             << " radius " << radius << " direction "
+                             << direction);
+                auto query = FlatQueryParamBuilder()
+                                 .with_topk(kTopK)
+                                 .with_radius(radius)
+                                 .with_is_linear(mode % 3 == 1)
+                                 .build();
+                if (mode % 3 == 2) {
+                  query->bf_pks = std::make_shared<std::vector<uint64_t>>(
+                      std::initializer_list<uint64_t>{0, 1, 3, 4, 5});
+                }
+                if (filtered) {
+                  query->filter = std::make_shared<IndexFilter>();
+                  query->filter->set([](uint64_t key) { return key == 0; });
+                }
+                if (mode >= 3) {
+                  query->group_by_param = std::make_shared<GroupByParam>();
+                  query->group_by_param->group_count = 2;
+                  query->group_by_param->group_topk = kTopK;
+                  query->group_by_param->group_by = [](uint64_t key) {
+                    return std::to_string(key % 2);
+                  };
+                }
+                vector[0] = direction;
+                VectorData data;
+                data.vector = DenseVector{vector.data()};
+                SearchResult result;
+                ASSERT_EQ(0, index->search(data, query, &result));
+                std::vector<std::pair<uint64_t, float>> actual, expected;
+                const auto collect = [&actual](const auto &docs) {
+                  for (const auto &doc : docs) {
+                    actual.emplace_back(doc.key(), doc.score());
+                  }
+                };
+                collect(result.doc_list_);
+                for (const auto &group : result.group_doc_list_) {
+                  collect(group.docs());
+                }
+                for (size_t key = 0; key < values.size(); ++key) {
+                  if ((filtered && key == 0) || (mode % 3 == 2 && key == 2))
+                    continue;
+                  const float score = direction * values[key];
+                  if (radius <= 0.0f || score >= radius) {
+                    expected.emplace_back(key, score);
+                  }
+                }
+                std::sort(actual.begin(), actual.end());
+                EXPECT_EQ(expected, actual);
+              }
+            }
+          }
+        }
+      }
+      ASSERT_EQ(0, index->close());
+      zvec::test_util::RemoveTestFiles(path);
+    }
+  }
+}
+
 // enable_rotate and inner product cannot be expressed by the turbo
 // quantizer; INT8 must fall back to the legacy converter path and still work
 // end to end.
