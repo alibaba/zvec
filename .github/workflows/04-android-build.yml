@@ -55,6 +55,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          # Avoid the unavailable legacy "tools" package in the action defaults.
+          packages: 'platform-tools'
 
       - name: Enable KVM
         if: matrix.abi == 'x86_64'
