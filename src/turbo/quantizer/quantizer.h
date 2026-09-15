@@ -52,7 +52,7 @@ class Quantizer {
  public:
   typedef std::shared_ptr<Quantizer> Pointer;
 
-  virtual ~Quantizer() {}
+  virtual ~Quantizer() = default;
 
   //! Initialize quantizer with index metadata and parameters
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;

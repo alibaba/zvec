@@ -208,7 +208,12 @@ class CollectionImpl : public Collection {
   Result<std::unique_ptr<DocIterator::Impl>> prepare_iterate(
       const IteratorOptions &options);
 
+  //! Collects the segment list under a shared write_mtx_: writing_segment_ and
+  //! the doc_ids_ behind doc_count() are mutated under the exclusive one.
   std::vector<Segment::Ptr> get_all_segments() const;
+
+  //! Same as get_all_segments(), for callers that already hold write_mtx_.
+  std::vector<Segment::Ptr> get_all_segments_unsafe() const;
 
   std::vector<Segment::Ptr> get_all_persist_segments() const;
 
@@ -301,9 +306,6 @@ class CollectionImpl : public Collection {
   int active_iterators_{0};
   // Signalled when the count reaches zero; close_internal waits on it.
   std::condition_variable_any iterator_cv_;
-  // Guards writes and every read that includes the mutable writing segment.
-  // Readers take this shared for the complete query/fetch operation so the
-  // segment's forward store, indexes and metadata form one visible state.
   mutable std::shared_mutex write_mtx_;
   // Serializes maintenance operations (optimize, schema DDL, close and
   // destroy) without holding schema_handle_mtx_, so a maintenance
@@ -489,9 +491,9 @@ Status CollectionImpl::destroy() {
 Status CollectionImpl::flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  // Only flushes the writing segment's WAL (no schema/segment-structure
-  // change), so it needs neither maintenance_mtx_ nor exclusion from a
-  // running optimize.
+  // The exclusive schema lock also excludes all readers, which the writing
+  // segment's flush() relies on (it runs finish_memory_components() without
+  // the segment lock).
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -525,7 +527,7 @@ Result<CollectionStats> CollectionImpl::stats() const {
   // of which Insert mutates under the exclusive write_mtx_.
   std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
 
-  auto segments = get_all_segments();
+  auto segments = get_all_segments_unsafe();
 
   CollectionStats stats;
   auto vector_fields = schema_->vector_fields();
@@ -1552,7 +1554,8 @@ Result<WriteResults> CollectionImpl::upsert(std::vector<Doc> &docs) {
 
 Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
                                              Doc::Ptr *doc_out) {
-  auto segments = get_all_segments();
+  // Called from handle_update(), i.e. under write_impl()'s write_mtx_.
+  auto segments = get_all_segments_unsafe();
   uint64_t doc_id;
   bool has = id_map_->has(doc.pk(), &doc_id);
   if (!has) {
@@ -1717,7 +1720,7 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
 
   Version version = version_manager_->get_current_version();
   auto writing_segment_meta = writing_segment_->meta();
-  writing_segment_meta->remove_writing_forward_block();
+  writing_segment_->remove_writing_forward_block();
   s = version.add_persisted_segment_meta(writing_segment_meta);
   CHECK_RETURN_STATUS(s);
 
@@ -1767,12 +1770,14 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
   query.output_fields_ = std::vector<std::string>{};
   query.include_doc_id_ = true;
 
-  // A query must see a stable writing segment. Writers publish the forward
-  // store, scalar/vector indexes and segment metadata in several steps while
-  // holding write_mtx_ exclusively.
+  // The matched set decides what gets deleted, so it must reflect one
+  // collection state: hold write_mtx_ shared across the scan to exclude
+  // concurrent write batches. Plain queries tolerate a mid-write view and skip
+  // this; delete needs the stronger guarantee.
   auto ret = [&]() {
     std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
-    return sql_engine_->execute(schema_, std::move(query), get_all_segments());
+    return sql_engine_->execute(schema_, std::move(query),
+                                get_all_segments_unsafe());
   }();
   if (!ret.has_value()) {
     return ret.error();
@@ -1797,7 +1802,6 @@ Result<DocPtrList> CollectionImpl::query(const SearchQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   return query_unsafe(query);
 }
 
@@ -1807,7 +1811,6 @@ Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   return query_unsafe(query);
 }
 
@@ -1819,7 +1822,6 @@ CollectionImpl::query_result_snapshot_impl(const Query &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   auto docs = query_unsafe(query);
   if (!docs) {
     return tl::make_unexpected(docs.error());
@@ -1956,7 +1958,6 @@ Result<GroupResults> CollectionImpl::group_by_query(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   auto segments = get_all_segments();
   if (segments.empty()) {
     return GroupResults();
@@ -1989,7 +1990,6 @@ Result<DocPtrMap> CollectionImpl::fetch(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   auto segments = get_all_segments();
 
   DocPtrMap results;
@@ -2024,7 +2024,6 @@ Result<std::string> CollectionImpl::debug_get_hnsw_storage_mode(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
   // Try all segments (including the writing one). The first segment that has
   // a fully-built HNSW index wins; if only a building segment exists we still
   // surface its current storage mode so that tests can observe the entity
@@ -2384,8 +2383,9 @@ Segment::Ptr CollectionImpl::local_segment_by_doc_id(
 
   while (left < right) {
     size_t mid = left + (right - left) / 2;
-    uint64_t min_id = segments[mid]->meta()->min_doc_id();
-    uint64_t max_id = segments[mid]->meta()->max_doc_id();
+    uint64_t min_id = 0;
+    uint64_t max_id = 0;
+    segments[mid]->doc_id_range(&min_id, &max_id);
 
     if (doc_id < min_id) {
       right = mid;
@@ -2400,6 +2400,11 @@ Segment::Ptr CollectionImpl::local_segment_by_doc_id(
 }
 
 std::vector<Segment::Ptr> CollectionImpl::get_all_segments() const {
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+  return get_all_segments_unsafe();
+}
+
+std::vector<Segment::Ptr> CollectionImpl::get_all_segments_unsafe() const {
   std::vector<Segment::Ptr> segments = get_all_persist_segments();
   if (writing_segment_->doc_count() > 0) {
     segments.push_back(writing_segment_);
@@ -2509,7 +2514,7 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
       // No flushing on read-only collections; include the writing segment
       // (SegmentImpl::scan reads its in-memory block), which is stable since
       // no concurrent writes exist.
-      impl->segments = get_all_segments();
+      impl->segments = get_all_segments_unsafe();
     } else {
       // Seal the writing segment so concurrent writes cannot mutate the
       // snapshot; has_record() also covers delete-only segments.

@@ -103,34 +103,39 @@ class BufferStorage : public IndexStorage {
           capacity_(static_cast<size_t>(info->segment.meta()->data_size +
                                         info->segment.meta()->padding_size)) {}
     //! Destructor
-    ~WrappedSegment(void) override = default;
+    ~WrappedSegment() override = default;
 
-    //! Retrieve size of data. Paired acquire/release operations publish
-    //! concurrent write/resize metadata changes to lock-free readers.
-    size_t data_size(void) const override {
+    //! Retrieve size of data
+    //!
+    //! data_size / padding_size are mutated lock-free by concurrent
+    //! writers (write/resize) and observed by concurrent readers on the
+    //! lock-free hot path.  Use acquire/release ordering so weakly-ordered
+    //! ARM (e.g. Android arm64) cannot see stale values that would cause
+    //! read() to truncate len to 0.
+    size_t data_size() const override {
       return static_cast<size_t>(
           bs_load_acquire(&segment_info_->segment.meta()->data_size));
     }
 
-    size_t data_offset(void) const override {
+    size_t data_offset() const override {
       return segment_info_->segment_header_start_offset +
              segment_info_->segment_header->content_offset +
              segment_info_->segment.meta()->data_index;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return segment_info_->segment.meta()->data_crc;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return static_cast<size_t>(
           bs_load_acquire(&segment_info_->segment.meta()->padding_size));
     }
 
     //! Retrieve capacity of segment
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return capacity_;
     }
 
@@ -896,7 +901,7 @@ class BufferStorage : public IndexStorage {
     }
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return shared_from_this();
     }
 
@@ -1018,16 +1023,16 @@ class BufferStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~BufferStorage(void) override {
+  ~BufferStorage() override {
     this->cleanup();
   }
 
   //! Retrieve the memory block type of this storage
-  MemoryBlock::MemoryBlockType memory_block_type(void) const override {
+  MemoryBlock::MemoryBlockType memory_block_type() const override {
     return MemoryBlock::MBT_BUFFERPOOL;
   }
 
-  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const override {
+  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool() const override {
     return cache_enabled_ ? buffer_pool_ : nullptr;
   }
 
@@ -1041,7 +1046,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Cleanup storage
-  int cleanup(void) override {
+  int cleanup() override {
     this->close_index();
     return 0;
   }
@@ -1295,12 +1300,12 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Flush storage
-  int flush(void) override {
+  int flush() override {
     return this->flush_index();
   }
 
   //! Close storage
-  int close(void) override {
+  int close() override {
     this->close_index();
     return 0;
   }
@@ -1316,7 +1321,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Retrieve check point of storage
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return meta_chains_.empty() ? 0 : meta_chains_.back().footer.check_point;
   }
 
@@ -1340,7 +1345,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     if (meta_chains_.empty()) {
       return 0u;
     }
@@ -1399,12 +1404,15 @@ class BufferStorage : public IndexStorage {
     return ret;
   }
 
-  bool is_dirty(void) const override {
+  bool is_dirty() const override {
     return index_dirty_.load(std::memory_order_relaxed);
   }
 
-  //! Publish dirty unconditionally to avoid racing a concurrent flush.
-  void set_as_dirty(void) {
+  //! Mark the index as dirty.  HOT PATH: store(true) unconditionally --
+  //! a load-then-store guard could let a stale cached `true` skip the
+  //! store after flush_index() CAS'd dirty=false on another core, losing
+  //! the writer's modification.
+  void set_as_dirty() {
     index_dirty_.store(true, std::memory_order_relaxed);
   }
 
@@ -1426,7 +1434,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Flush index storage.
-  int flush_index(void) {
+  int flush_index() {
     if (!index_dirty_.load(std::memory_order_relaxed)) {
       return 0;
     }
@@ -1435,9 +1443,12 @@ class BufferStorage : public IndexStorage {
     return flush_index_locked();
   }
 
-  //! Requires AllShardsExclusiveLatch.
-  int flush_index_locked(void) {
-    // close_index() may call this before open or after close.
+  //! PRECONDITION: caller holds AllShardsExclusiveLatch.  Used by
+  //! flush_index() (acquires the latch) and close_index() (must flush
+  //! and tear down under one continuous latch hold).
+  int flush_index_locked() {
+    // No-op on never-opened / already-closed storage: close_index()
+    // unconditionally calls us during teardown.
     if (!buffer_pool_ || !buffer_pool_handle_) {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
@@ -1516,8 +1527,10 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Close index storage
-  void close_index(void) {
-    // Keep writers excluded across both flush and teardown.
+  void close_index() {
+    // Hold ONE continuous all-shards latch across flush + teardown so no
+    // writer can slip in between (which would dirty meta_buf only to have
+    // the page table reset under it, dropping the modification).
     AllShardsExclusiveLatch latch(mapping_shards_);
     flush_index_locked();
     file_name_.clear();

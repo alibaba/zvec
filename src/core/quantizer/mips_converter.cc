@@ -86,32 +86,32 @@ class MipsConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iter_->is_valid();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_data();
     }
 
    private:
     //! Transform the data
-    void transform_data(void) {
+    void transform_data() {
       if (!front_iter_->is_valid()) {
         return;
       }
@@ -145,43 +145,44 @@ class MipsConverterHolder : public IndexHolder {
         front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension() + m_value_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP32;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP32,
                                     front_->dimension() + m_value_);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new MipsConverterHolder::Iterator(this, std::move(iter)))
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
-  MipsConverterHolder(void) = delete;
+  MipsConverterHolder() = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -214,31 +215,31 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iter_->is_valid();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_record();
     }
 
    private:
-    void transform_record(void) {
+    void transform_record() {
       if (!front_iter_->is_valid()) {
         return;
       }
@@ -273,33 +274,33 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
         front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension() + m_value_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP16,
                                     front_->dimension() + m_value_);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new MipsConverterForcedHalfHolder::Iterator(
@@ -307,10 +308,11 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
-  MipsConverterForcedHalfHolder(void) = delete;
+  MipsConverterForcedHalfHolder() = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -343,31 +345,31 @@ class MipsConverterHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iter_->is_valid();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_record();
     }
 
    private:
-    void transform_record(void) {
+    void transform_record() {
       if (!front_iter_->is_valid()) {
         return;
       }
@@ -402,33 +404,33 @@ class MipsConverterHalfHolder : public IndexHolder {
         front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension() + m_value_;
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP16,
                                     front_->dimension() + m_value_);
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new MipsConverterHalfHolder::Iterator(this,
@@ -436,10 +438,11 @@ class MipsConverterHalfHolder : public IndexHolder {
                 : IndexHolder::Iterator::Pointer();
   }
 
- private:
+ public:
   //! Disable them
-  MipsConverterHalfHolder(void) = delete;
+  MipsConverterHalfHolder() = delete;
 
+ private:
   //! Members
   uint32_t m_value_{0u};
   float u_value_{0.0f};
@@ -453,7 +456,7 @@ class MipsConverterHalfHolder : public IndexHolder {
 class MipsConverter : public IndexConverter {
  public:
   //! Destructor
-  ~MipsConverter(void) override {}
+  ~MipsConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {
@@ -511,7 +514,7 @@ class MipsConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -629,17 +632,17 @@ class MipsConverter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 

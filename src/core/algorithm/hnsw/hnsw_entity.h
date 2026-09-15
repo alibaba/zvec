@@ -159,7 +159,7 @@ struct Neighbors {
     data = hd->neighbors;
   }
 
-  size_t size(void) const {
+  size_t size() const {
     return cnt;
   }
 
@@ -218,7 +218,7 @@ struct NeighborsT {
     data = hd->neighbors;
   }
 
-  size_t size(void) const {
+  size_t size() const {
     return cnt;
   }
 
@@ -250,7 +250,7 @@ struct HnswNeighborMeta {
 class HnswEntity {
  public:
   //! Constructor
-  HnswEntity() {}
+  HnswEntity() = default;
 
   //! Constructor
   HnswEntity(const HNSWHeader &hd) {
@@ -258,7 +258,7 @@ class HnswEntity {
   }
 
   //! Destructor
-  virtual ~HnswEntity() {}
+  virtual ~HnswEntity() = default;
 
   //! HnswEntity Pointerd;
   typedef std::shared_ptr<HnswEntity> Pointer;
@@ -436,7 +436,7 @@ class HnswEntity {
 
  public:
   //! Cleanup the entity
-  virtual int cleanup(void) {
+  virtual int cleanup() {
     header_.clear();
     return 0;
   }

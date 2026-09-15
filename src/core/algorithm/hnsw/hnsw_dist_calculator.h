@@ -270,7 +270,6 @@ class HnswDistCalculator {
     return 0;
   }
 
- private:
   HnswDistCalculator(const HnswDistCalculator &) = delete;
   HnswDistCalculator &operator=(const HnswDistCalculator &) = delete;
 

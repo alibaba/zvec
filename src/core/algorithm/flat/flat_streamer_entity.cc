@@ -41,10 +41,10 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   const void *batch_query = query;
   if (const auto &preprocess = batch_query_preprocess();
       preprocess != nullptr) {
-    const size_t query_size = meta().dimension();
+    const size_t query_size = meta().element_size();
     query_buffer.resize(query_size);
     std::memcpy(query_buffer.data(), query, query_size);
-    preprocess(query_buffer.data(), query_size);
+    preprocess(query_buffer.data(), meta().dimension());
     batch_query = query_buffer.data();
   }
   vector_ptrs.clear();
@@ -201,7 +201,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   return 0;
 }
 
-int FlatStreamerEntity::close(void) {
+int FlatStreamerEntity::close() {
   segments_.clear();
   storage_.reset();
   key_info_map_lock_.reset();
@@ -222,7 +222,7 @@ int FlatStreamerEntity::close(void) {
   return 0;
 }
 
-int FlatStreamerEntity::flush_linear_meta(void) {
+int FlatStreamerEntity::flush_linear_meta() {
   if (!storage_) {
     return 0;
   }
@@ -470,7 +470,7 @@ int FlatStreamerEntity::search_bf(const void *query, const IndexFilter &filter,
   return this->search(query, filter, &scan_count, heap, context_stats);
 }
 
-FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
+FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
   std::vector<IndexStorage::Segment::Pointer> segments;
   {
     std::lock_guard<std::mutex> lock(segments_mutex_);
@@ -586,7 +586,7 @@ int FlatContiguousStreamerEntity::search_by_p_keys(
                             scratch, nullptr, heap);
 }
 
-int FlatContiguousStreamerEntity::build_contiguous_memory(void) {
+int FlatContiguousStreamerEntity::build_contiguous_memory() {
   degrade_to_mmap();
 
   const size_t count = use_key_info_map() ? id_key_count() : vector_count();
@@ -654,7 +654,7 @@ int FlatContiguousStreamerEntity::build_contiguous_memory(void) {
   return 0;
 }
 
-void FlatContiguousStreamerEntity::degrade_to_mmap(void) {
+void FlatContiguousStreamerEntity::degrade_to_mmap() {
   std::shared_ptr<const ContiguousStorage> empty;
   auto storage = std::atomic_exchange_explicit(
       &contiguous_storage_, std::move(empty), std::memory_order_acq_rel);
@@ -663,7 +663,7 @@ void FlatContiguousStreamerEntity::degrade_to_mmap(void) {
   }
 }
 
-int FlatContiguousStreamerEntity::close(void) {
+int FlatContiguousStreamerEntity::close() {
   degrade_to_mmap();
   return FlatStreamerEntity::close();
 }
@@ -765,8 +765,7 @@ int FlatStreamerEntity::get_vector_by_key(
   return 0;
 }
 
-IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator(
-    void) const {
+IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
   auto entity = this->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone entity");
@@ -777,7 +776,7 @@ IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator(
                                FlatStreamerEntity::Iterator(std::move(entity)));
 }
 
-void FlatStreamerEntity::Iterator::read_next_block(void) {
+void FlatStreamerEntity::Iterator::read_next_block() {
   auto block_size = entity_->linear_block_size();
   while (segment_id_ < entity_->segments_.size()) {
     auto &segment = entity_->segments_[segment_id_];
@@ -1099,7 +1098,7 @@ int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
   return 0;
 }
 
-int FlatStreamerEntity::alloc_segment(void) {
+int FlatStreamerEntity::alloc_segment() {
   // add()/add_vector_with_id() serialize allocation with mutex_. Keep the
   // cache lock out of storage allocation, which may wait for reader pins.
   size_t index;

@@ -36,8 +36,8 @@ namespace core {
 
 class HnswSparseBuilderTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   static std::string _dir;
   static shared_ptr<IndexMeta> _index_meta_ptr;
@@ -46,13 +46,13 @@ class HnswSparseBuilderTest : public testing::Test {
 std::string HnswSparseBuilderTest::_dir("HnswSparseBuilderTest/");
 shared_ptr<IndexMeta> HnswSparseBuilderTest::_index_meta_ptr;
 
-void HnswSparseBuilderTest::SetUp(void) {
+void HnswSparseBuilderTest::SetUp() {
   _index_meta_ptr.reset(new (nothrow) IndexMeta(IndexMeta::MetaType::MT_SPARSE,
                                                 IndexMeta::DataType::DT_FP32));
   _index_meta_ptr->set_metric("InnerProductSparse", 0, ailego::Params());
 }
 
-void HnswSparseBuilderTest::TearDown(void) {
+void HnswSparseBuilderTest::TearDown() {
   zvec::test_util::RemoveTestPath(_dir);
 }
 

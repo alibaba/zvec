@@ -1,8 +1,10 @@
 #include <future>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
+#include <algorithm/hnsw/hnsw_context.h>
 #include <algorithm/hnsw/hnsw_entity.h>
 #include <algorithm/hnsw/hnsw_params.h>
 #include <algorithm/hnsw/hnsw_streamer_entity.h>
@@ -24,8 +26,8 @@ constexpr size_t static dim = 16;
 
 class HnswStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 
@@ -36,7 +38,7 @@ class HnswStreamerTest : public testing::Test {
 std::string HnswStreamerTest::dir_("hnsw_streamer_buffer_test_dir/");
 std::shared_ptr<IndexMeta> HnswStreamerTest::index_meta_ptr_;
 
-void HnswStreamerTest::SetUp(void) {
+void HnswStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (std::nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
@@ -44,7 +46,7 @@ void HnswStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void HnswStreamerTest::TearDown(void) {
+void HnswStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
@@ -60,6 +62,101 @@ TEST_F(HnswStreamerTest, MaxDegreeIsNeighborCountNotSerializedBytes) {
             entity.neighbors_size());
   EXPECT_EQ(sizeof(NeighborsHeader) + 96U * sizeof(node_id_t),
             entity.upper_neighbors_size());
+}
+
+TEST_F(HnswStreamerTest, BufferSearchDispatchReusesContextAcrossVisitModes) {
+  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  constexpr uint32_t kDocCount = 128;
+  const std::string path = dir_ + "SearchDispatch";
+  Params params;
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16);
+  params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 64);
+  params.set(PARAM_HNSW_STREAMER_EF, kDocCount);
+  params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+
+  auto write_streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  auto write_storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, write_streamer);
+  ASSERT_NE(nullptr, write_storage);
+  ASSERT_EQ(0, write_streamer->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, write_storage->init(Params()));
+  ASSERT_EQ(0, write_storage->open(path, true));
+  ASSERT_EQ(0, write_streamer->open(write_storage));
+  auto write_ctx = write_streamer->create_context();
+  ASSERT_NE(nullptr, write_ctx);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+  NumericalVector<float> vector(dim);
+  for (uint32_t id = 0; id < kDocCount; ++id) {
+    for (size_t j = 0; j < dim; ++j) {
+      vector[j] = id;
+    }
+    ASSERT_EQ(0, write_streamer->add_impl(id, vector.data(), qmeta, write_ctx));
+  }
+  ASSERT_EQ(0, write_streamer->flush(0UL));
+  write_ctx.reset();
+  ASSERT_EQ(0, write_streamer->close());
+  write_streamer.reset();
+  ASSERT_EQ(0, write_storage->close());
+
+  auto read_streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  auto read_storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, read_streamer);
+  ASSERT_NE(nullptr, read_storage);
+  ASSERT_EQ(0, read_streamer->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, read_storage->init(Params()));
+  ASSERT_EQ(0, read_storage->open(path, false));
+  ASSERT_EQ(0, read_streamer->open(read_storage));
+  auto ctx = read_streamer->create_context();
+  ASSERT_NE(nullptr, ctx);
+  auto *hnsw_ctx = dynamic_cast<HnswContext *>(ctx.get());
+  ASSERT_NE(nullptr, hnsw_ctx);
+  ASSERT_NE(nullptr, dynamic_cast<const HnswBufferPoolStreamerEntity *>(
+                         &hnsw_ctx->get_entity()));
+  ctx->set_topk(3);
+  for (size_t j = 0; j < dim; ++j) {
+    vector[j] = 64.1f;
+  }
+
+  const bool expect_block =
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+  for (const auto mode :
+       {VisitFilter::ByteMap, VisitFilter::BitMap, VisitFilter::BloomFilter}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    ASSERT_EQ(0,
+              hnsw_ctx->visit_filter().init(mode, kDocCount, kDocCount, 1e-9f));
+    // Use the same context for pool -> filtered heap -> pool, ensuring both
+    // query-boundary dispatch and result export retain the chosen backend.
+    for (int phase = 0; phase < 3; ++phase) {
+      SCOPED_TRACE(phase);
+      const bool filtered = phase == 1;
+      if (filtered) {
+        ctx->set_filter([](uint64_t key) { return key == 64 || key == 65; });
+      } else {
+        ctx->set_filter(nullptr);
+      }
+      ASSERT_EQ(0, read_streamer->search_impl(vector.data(), qmeta, ctx));
+      EXPECT_EQ(mode, hnsw_ctx->visit_filter().get_mode());
+      hnsw_ctx->search_heap().dispatch([&](auto &active) {
+        using Heap = std::decay_t<decltype(active)>;
+        EXPECT_EQ(filtered, (std::is_same_v<Heap, TopkHeap>));
+        EXPECT_EQ(!filtered && expect_block, (std::is_same_v<Heap, BlockHeap>));
+        EXPECT_EQ(!filtered && !expect_block,
+                  (std::is_same_v<Heap, LinearPool<float>>));
+      });
+      const std::vector<uint64_t> expected =
+          filtered ? std::vector<uint64_t>{63, 66, 62}
+                   : std::vector<uint64_t>{64, 65, 63};
+      const auto &results = ctx->result();
+      ASSERT_EQ(expected.size(), results.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i], results[i].key());
+      }
+    }
+  }
+  ctx.reset();
+  ASSERT_EQ(0, read_streamer->close());
+  read_streamer.reset();
+  ASSERT_EQ(0, read_storage->close());
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {

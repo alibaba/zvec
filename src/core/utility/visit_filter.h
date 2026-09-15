@@ -493,17 +493,17 @@ class VisitFilter {
     return ret;
   }
 
-  int get_mode(void) const {
+  int get_mode() const {
     return mode_;
   }
 
 
+  VisitFilter(const VisitFilter &) = delete;
+  VisitFilter &operator=(const VisitFilter &) = delete;
+
  private:
   template <typename Fn>
   friend bool dispatch_visit_filter(VisitFilter &visit_filter, Fn &&fn);
-
-  VisitFilter(const VisitFilter &) = delete;
-  VisitFilter &operator=(const VisitFilter &) = delete;
 
   int mode_{0U};  // custom data for each method
   void *ctx_{nullptr};

@@ -115,7 +115,7 @@ class HnswStreamerEntity : public HnswEntity {
   HnswStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  ~HnswStreamerEntity();
+  ~HnswStreamerEntity() override;
 
   //! Get vector feature data by key
   const void *get_vector_by_key(key_t key) const override {
@@ -539,7 +539,7 @@ class HnswStreamerEntity : public HnswEntity {
   //! Preload the small, universally hot search root for BufferStorage.
   void protect_search_hotset();
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       // do not need to flush
       return 0;
@@ -569,9 +569,11 @@ class HnswStreamerEntity : public HnswEntity {
                 &upper_neighbor_chunks_);
   }
 
- private:
+ public:
   HnswStreamerEntity(const HnswStreamerEntity &) = delete;
   HnswStreamerEntity &operator=(const HnswStreamerEntity &) = delete;
+
+ private:
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  protected:
@@ -996,7 +998,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   //! Cloned entity shares contiguous memory via shared_ptr.
   const HnswEntity::Pointer clone() const override;
 
-  ~HnswContiguousStreamerEntity() = default;
+  ~HnswContiguousStreamerEntity() override = default;
 
   //! Build contiguous memory from chunks after open.
   //! Must be called after the entity is fully opened and all chunks are loaded.

@@ -37,7 +37,7 @@ class FixedCentroidTrainer : public IndexTrainer {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -53,15 +53,15 @@ class FixedCentroidTrainer : public IndexTrainer {
     return 0;
   }
 
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
-  const IndexTrainer::Stats &stats(void) const override {
+  const IndexTrainer::Stats &stats() const override {
     return stats_;
   }
 
-  IndexBundle::Pointer indexes(void) const override {
+  IndexBundle::Pointer indexes() const override {
     return bundle_;
   }
 

@@ -114,34 +114,34 @@ class BufferReadStorage : public IndexStorage {
     //! Destructor. Release scratch eagerly on long-lived worker threads, but
     //! do not touch the registry after it has entered TLS teardown (an Index
     //! context may outlive the registry because of TLS destruction order).
-    ~Segment(void) override {
+    ~Segment() override {
       if (thread_scratch_registry_alive()) {
         release_thread_scratch();
       }
     }
 
     //! Retrieve size of data
-    size_t data_size(void) const override {
+    size_t data_size() const override {
       return data_size_;
     }
 
     //! Retrieve the absolute data offset used by sector readers.
-    size_t data_offset(void) const override {
+    size_t data_offset() const override {
       return data_offset_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return data_crc_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return padding_size_;
     }
 
     //! Retrieve capacity of segment
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return region_size_;
     }
 
@@ -326,7 +326,7 @@ class BufferReadStorage : public IndexStorage {
     void update_data_crc(uint32_t) override {}
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return std::make_shared<BufferReadStorage::Segment>(*this);
     }
 
@@ -340,7 +340,7 @@ class BufferReadStorage : public IndexStorage {
     }
 
     //! Cached pages do not expose a stable base address.
-    const uint8_t *base_data(void) const override {
+    const uint8_t *base_data() const override {
       return nullptr;
     }
 
@@ -522,7 +522,7 @@ class BufferReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~BufferReadStorage(void) override = default;
+  ~BufferReadStorage() override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {
@@ -539,7 +539,7 @@ class BufferReadStorage : public IndexStorage {
     return 0;
   }
 
-  int flush(void) override {
+  int flush() override {
     return 0;
   }
 
@@ -549,12 +549,12 @@ class BufferReadStorage : public IndexStorage {
 
   void refresh(uint64_t) override {}
 
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return 0;
   }
 
   //! Cleanup container
-  int cleanup(void) override {
+  int cleanup() override {
     return this->close();
   }
 
@@ -682,7 +682,7 @@ class BufferReadStorage : public IndexStorage {
     }
   }
 
-  int close(void) override {
+  int close() override {
     segments_.clear();
     handle_ = nullptr;
     buffer_pool_ = nullptr;
@@ -703,8 +703,8 @@ class BufferReadStorage : public IndexStorage {
         handle_, cache_enabled_, index_offset_, it->second);
   }
 
-  std::map<std::string, IndexStorage::Segment::Pointer> get_all(
-      void) const override {
+  std::map<std::string, IndexStorage::Segment::Pointer> get_all()
+      const override {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     if (handle_) {
       for (const auto &it : segments_) {
@@ -722,21 +722,21 @@ class BufferReadStorage : public IndexStorage {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
   //! Reads go through the VecBufferPool paged cache.
-  MemoryBlock::MemoryBlockType memory_block_type(void) const override {
+  MemoryBlock::MemoryBlockType memory_block_type() const override {
     return MemoryBlock::MBT_BUFFERPOOL;
   }
 
-  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool(void) const override {
+  std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool() const override {
     return cache_enabled_ ? buffer_pool_ : nullptr;
   }
 
   //! Path of the opened index file (diagnostics / backend consistency).
-  std::string file_path(void) const override {
+  std::string file_path() const override {
     return file_path_;
   }
 

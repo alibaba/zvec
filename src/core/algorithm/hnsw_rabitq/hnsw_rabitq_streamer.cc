@@ -239,7 +239,7 @@ int HnswRabitqStreamer::init(const IndexMeta &imeta,
   return 0;
 }
 
-int HnswRabitqStreamer::cleanup(void) {
+int HnswRabitqStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -414,7 +414,7 @@ int HnswRabitqStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int HnswRabitqStreamer::close(void) {
+int HnswRabitqStreamer::close() {
   LOG_INFO("HnswRabitqStreamer close");
 
   stats_.clear();
@@ -456,7 +456,7 @@ int HnswRabitqStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_.dump(dumper);
 }
 
-IndexStreamer::Context::Pointer HnswRabitqStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer HnswRabitqStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -500,7 +500,7 @@ IndexStreamer::Context::Pointer HnswRabitqStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer HnswRabitqStreamer::create_provider(void) const {
+IndexProvider::Pointer HnswRabitqStreamer::create_provider() const {
   LOG_DEBUG("HnswRabitqStreamer create provider");
 
   auto entity = entity_.clone();

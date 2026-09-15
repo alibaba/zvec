@@ -128,7 +128,7 @@ int ChunkBroker::open(IndexStorage::Pointer stg, uint32_t &chunk_size,
   return load_storage(chunk_size);
 }
 
-int ChunkBroker::close(void) {
+int ChunkBroker::close() {
   flush(0UL);
 
   stg_.reset();

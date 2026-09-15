@@ -19,12 +19,12 @@ using namespace zvec;
 using namespace zvec::ailego;
 
 struct Base {
-  virtual ~Base(void) {}
+  virtual ~Base() = default;
   virtual void do_something() = 0;
 };
 
 struct AAA : public Base {
-  AAA(void) {}
+  AAA() = default;
 
   void do_something() override {
     printf("do something\n");

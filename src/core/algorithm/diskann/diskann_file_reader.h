@@ -129,7 +129,7 @@ struct PendingBatch {
 
 class AlignedFileReader {
  public:
-  virtual ~AlignedFileReader() {}
+  virtual ~AlignedFileReader() = default;
 
   virtual void open(const std::string &fname) = 0;
   virtual void close() = 0;

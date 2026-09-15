@@ -78,22 +78,22 @@ class IndexContext {
     }
 
     //! Retrieve count of documents filtered
-    size_t filtered_count(void) const {
+    size_t filtered_count() const {
       return filtered_count_;
     }
 
     //! Retrieve count of documents dist-calced
-    size_t dist_calced_count(void) const {
+    size_t dist_calced_count() const {
       return dist_calced_count_;
     }
 
     //! Retrieve count of documents filtered (mutable)
-    size_t *mutable_filtered_count(void) {
+    size_t *mutable_filtered_count() {
       return &filtered_count_;
     }
 
     //! Retrieve count of documents dist-calced (mutable)
-    size_t *mutable_dist_calced_count(void) {
+    size_t *mutable_dist_calced_count() {
       return &dist_calced_count_;
     }
 
@@ -111,14 +111,14 @@ class IndexContext {
   };
 
   //! Constructor
-  IndexContext() {}
+  IndexContext() = default;
 
   //! Constructor
   IndexContext(IndexMetric::Pointer index_metric)
       : index_metric_(std::move(index_metric)) {}
 
   //! Destructor
-  virtual ~IndexContext(void) {}
+  virtual ~IndexContext() = default;
 
   //! Set topk of search result
   virtual void set_topk(uint32_t topk) = 0;
@@ -140,7 +140,7 @@ class IndexContext {
   virtual void set_fetch_vector(bool /*enable*/) {}
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const = 0;
+  virtual const IndexDocumentList &result() const = 0;
 
   //! Retrieve search result with index
   virtual const IndexDocumentList &result(size_t /*index*/) const {
@@ -151,7 +151,7 @@ class IndexContext {
   virtual IndexDocumentList *mutable_result(size_t idx) = 0;
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const {
+  virtual const IndexGroupDocumentList &group_result() const {
     // to make it compile
     static const IndexGroupDocumentList empty_list{};
     return empty_list;
@@ -163,7 +163,7 @@ class IndexContext {
   }
 
   //! Retrieve mutable search group result
-  virtual IndexGroupDocumentList *mutable_group_result(void) {
+  virtual IndexGroupDocumentList *mutable_group_result() {
     return nullptr;
   }
 
@@ -178,32 +178,32 @@ class IndexContext {
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const {
+  virtual bool debug_mode() const {
     return false;
   }
 
   //! Retrieve debug information
-  virtual std::string debug_string(void) const {
+  virtual std::string debug_string() const {
     return std::string();
   }
 
   //! Retrieve magic number
-  virtual uint32_t magic(void) const {
+  virtual uint32_t magic() const {
     return 0;
   }
 
   //! Retrieve search filter
-  const IndexFilter &filter(void) const {
+  const IndexFilter &filter() const {
     return filter_;
   }
 
   //! Retrieve fetch vector
-  virtual bool fetch_vector(void) const {
+  virtual bool fetch_vector() const {
     return false;
   }
 
   //! Reset context
-  virtual void reset(void) {}
+  virtual void reset() {}
 
   //! Set the filter of context
   template <typename T>
@@ -212,12 +212,12 @@ class IndexContext {
   }
 
   //! Reset the filter of context
-  void reset_filter(void) {
+  void reset_filter() {
     filter_.reset();
   }
 
   //! Retrieve search groupby
-  const IndexGroupBy &group_by(void) const {
+  const IndexGroupBy &group_by() const {
     return group_by_;
   }
 
@@ -228,7 +228,7 @@ class IndexContext {
   }
 
   //! Reset the groupby of context
-  void reset_group_by(void) {
+  void reset_group_by() {
     group_by_.reset();
   }
 
@@ -240,29 +240,29 @@ class IndexContext {
   }
 
   //! Retrieve threshold in the caller-facing metric space.
-  float raw_threshold(void) const {
+  float raw_threshold() const {
     return raw_threshold_;
   }
 
   //! Retrieve whether an RNN threshold was explicitly configured.
-  bool threshold_set(void) const {
+  bool threshold_set() const {
     return threshold_set_;
   }
 
   //! Retrieve the internal threshold used by the search implementation.
-  float threshold(void) const {
+  float threshold() const {
     return threshold_;
   }
 
   //! Reset value of threshold for RNN
-  void reset_threshold(void) {
+  void reset_threshold() {
     raw_threshold_ = std::numeric_limits<float>::max();
     threshold_ = std::numeric_limits<float>::max();
     threshold_set_ = false;
   }
 
   //! Retrieve reusable storage for a transformed query.
-  std::string *mutable_features(void) {
+  std::string *mutable_features() {
     return &features_;
   }
 
@@ -300,7 +300,7 @@ class IndexContext {
 
  public:
   //! Generate a global magic number
-  static uint32_t GenerateMagic(void);
+  static uint32_t GenerateMagic();
 
   //! Profiler
   Profiler &profiler() {

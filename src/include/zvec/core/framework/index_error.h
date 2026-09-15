@@ -70,7 +70,7 @@ class IndexError {
 
  protected:
   //! Constructor
-  IndexError(void) : map_() {}
+  IndexError() : map_() {}
 
   //! Inserts a new code into map
   void emplace(const IndexError::Code *code) {
@@ -87,17 +87,18 @@ class IndexError {
   }
 
   //! Retrieve the singleton
-  static IndexError *Instance(void) {
+  static IndexError *Instance() {
     static IndexError error;
     return (&error);
   }
 
- private:
+ public:
   //! Disable them
   IndexError(const IndexError &) = delete;
   IndexError(IndexError &&) = delete;
   IndexError &operator=(const IndexError &) = delete;
 
+ private:
   //! Error code map
   std::map<int, const IndexError::Code *> map_;
 };

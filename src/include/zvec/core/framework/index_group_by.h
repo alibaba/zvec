@@ -36,12 +36,12 @@ class IndexGroupBy {
   }
 
   //! Reset the group by function
-  void reset(void) {
+  void reset() {
     group_by_ = nullptr;
   }
 
   //! Test if the function is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (!!group_by_);
   }
 

@@ -145,7 +145,7 @@ struct StreamerLinearMeta {
   uint8_t reserved_[32] = {0};
   LinearIndexHeader header;
 
-  const char *index_meta_data(void) const {
+  const char *index_meta_data() const {
     return reinterpret_cast<const char *>(this) + sizeof(*this);
   }
 };
@@ -157,7 +157,7 @@ static_assert(sizeof(StreamerLinearMeta) == 128,
  */
 struct VectorLocation {
   //! Constructor
-  VectorLocation(void)
+  VectorLocation()
       : segment_id(0u), column_major(0u), reserved(0u), offset(0u) {}
 
   //! Constructor
@@ -180,7 +180,7 @@ struct VectorLocation {
 //               "VectorLocation must be size of 8 bytes");
 
 struct KeyInfo {
-  KeyInfo(void) : centroid_idx(0u) {}
+  KeyInfo() : centroid_idx(0u) {}
   KeyInfo(uint32_t idx, const VectorLocation &loc)
       : centroid_idx(idx), location(loc) {}
   KeyInfo(VectorLocation loc) : location(loc) {}

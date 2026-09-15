@@ -29,12 +29,12 @@ class Fp32Quantizer : public Quantizer {
  public:
   Fp32Quantizer() : Quantizer(QuantizeType::kFp32) {}
 
-  virtual ~Fp32Quantizer() {}
+  virtual ~Fp32Quantizer() = default;
 
  public:
   int init(const core::IndexMeta &meta, const ailego::Params &params) override;
 
-  const core::IndexMeta &meta(void) const override {
+  const core::IndexMeta &meta() const override {
     return meta_;
   }
 

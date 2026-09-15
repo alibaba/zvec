@@ -39,22 +39,22 @@ class IndexUnpacker {
           data_crc_(crc) {}
 
     //! Retrieve offset of data
-    size_t data_offset(void) const {
+    size_t data_offset() const {
       return data_offset_;
     }
 
     //! Retrieve size of data
-    size_t data_size(void) const {
+    size_t data_size() const {
       return data_size_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const {
+    uint32_t data_crc() const {
       return data_crc_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const {
+    size_t padding_size() const {
       return padding_size_;
     }
 
@@ -66,37 +66,37 @@ class IndexUnpacker {
   };
 
   //! Reset the unpacker
-  void reset(void) {
+  void reset() {
     segments_.clear();
   }
 
   //! Retrieve segments of index package
-  const std::map<std::string, SegmentMeta> &segments(void) const {
+  const std::map<std::string, SegmentMeta> &segments() const {
     return segments_;
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return header_.magic;
   }
 
   //! Retrieve header of index package
-  const IndexFormat::MetaHeader &header(void) const {
+  const IndexFormat::MetaHeader &header() const {
     return header_;
   }
 
   //! Retrieve footer of index package
-  const IndexFormat::MetaFooter &footer(void) const {
+  const IndexFormat::MetaFooter &footer() const {
     return footer_;
   }
 
   //! Retrieve version information
-  const std::string &version(void) const {
+  const std::string &version() const {
     return version_;
   }
 
   //! Retrieve mutable segments of index package
-  std::map<std::string, SegmentMeta> *mutable_segments(void) {
+  std::map<std::string, SegmentMeta> *mutable_segments() {
     return &segments_;
   }
 

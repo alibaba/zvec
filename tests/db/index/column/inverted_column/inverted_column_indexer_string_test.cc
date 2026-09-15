@@ -346,6 +346,34 @@ TEST_F(InvertedIndexTest, STRINGS) {
 }
 
 
+TEST_F(InvertedIndexTest, LikePrefixSuffixMustNotOverlap) {
+  ASSERT_TRUE(indexer_);
+  FieldSchema field{"like_overlap", DataType::STRING, true, params_};
+  ASSERT_TRUE(indexer_->create_column_indexer(field).ok());
+  auto column = (*indexer_)["like_overlap"];
+  ASSERT_TRUE(column);
+  const std::vector<std::string> values = {"aba", "abba", "abXba", "axba",
+                                           "a",   "aa",   "a%a",   "a_a"};
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    ASSERT_TRUE(column->insert(i, values[i]).ok());
+  }
+  const std::vector<std::pair<std::string, std::vector<uint32_t>>> cases = {
+      {"ab%ba", {1, 2}},
+      {"a%a", {0, 1, 2, 3, 5, 6, 7}},
+      {"aba%aba", {}},
+      {R"(a\%%a)", {6}},
+      {R"(a\_%a)", {7}}};
+  for (const auto &[pattern, expected] : cases) {
+    SCOPED_TRACE(pattern);
+    auto result = column->search(pattern, CompareOp::LIKE);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->count(), expected.size());
+    for (auto id : expected) {
+      EXPECT_TRUE(result->contains(id)) << id;
+    }
+  }
+}
+
 TEST_F(InvertedIndexTest, STRING_ARRAYS) {
   ASSERT_TRUE(indexer_);
 

@@ -210,8 +210,8 @@ size_t expected_fetch_buffer_size(const DiskAnnContext &context) {
 
 class DiskAnnSearcherTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   //! Create an initialized turbo quantizer matching the index meta, used by
   //! the *Turbo test variants to inject an externally constructed quantizer
@@ -236,7 +236,7 @@ class DiskAnnSearcherTest : public testing::Test {
 std::string DiskAnnSearcherTest::_dir("DiskAnnSearcherTest/");
 shared_ptr<IndexMeta> DiskAnnSearcherTest::_index_meta_ptr;
 
-void DiskAnnSearcherTest::SetUp(void) {
+void DiskAnnSearcherTest::SetUp() {
   LoggerBroker::SetLevel(Logger::LEVEL_INFO);
 
   _index_meta_ptr.reset(new (nothrow)
@@ -244,7 +244,7 @@ void DiskAnnSearcherTest::SetUp(void) {
   _index_meta_ptr->set_metric("SquaredEuclidean", 0, Params());
 }
 
-void DiskAnnSearcherTest::TearDown(void) {
+void DiskAnnSearcherTest::TearDown() {
   std::filesystem::remove_all(_dir);
 }
 

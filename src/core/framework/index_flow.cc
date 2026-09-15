@@ -265,7 +265,7 @@ int IndexFlow::load_internal() {
   return 0;
 }
 
-int IndexFlow::unload(void) {
+int IndexFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {
@@ -776,7 +776,7 @@ int IndexSparseFlow::load_internal() {
   return 0;
 }
 
-int IndexSparseFlow::unload(void) {
+int IndexSparseFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {

@@ -28,7 +28,7 @@
 using namespace zvec;
 using namespace zvec::ailego;
 
-static inline const char *IntelIntrinsics(void) {
+static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
@@ -175,7 +175,7 @@ TEST(DistanceMatrix, FixedVectorsRepeatedQuadraticInjection) {
 }
 
 template <size_t M, size_t N>
-void TestSquaredEuclideanMatrixRepeatedQuadraticInjection(void) {
+void TestSquaredEuclideanMatrixRepeatedQuadraticInjection() {
   std::mt19937 gen((std::random_device())());
 
   const size_t m_val = std::uniform_int_distribution<size_t>(1, 4)(gen);
@@ -384,7 +384,7 @@ TEST(DistanceMatrix, MipsSquaredEuclideanRepeatedQuadraticInjection_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void MipsRepeatedQuadraticInjectionBenchMark(void) {
+void MipsRepeatedQuadraticInjectionBenchMark() {
   const size_t m_val = 4;
   const float u_val = 0.6;
   const float l2_norm = 1.0f;
@@ -632,7 +632,7 @@ TEST(DistanceMatrix, FixedVectorsSphericalInjection) {
 }
 
 template <size_t M, size_t N>
-void TestSquaredEuclideanMatrixSphericalInjection(void) {
+void TestSquaredEuclideanMatrixSphericalInjection() {
   std::mt19937 gen((std::random_device())());
 
   const float u_val = std::uniform_real_distribution<float>(0.3, 0.9)(gen);
@@ -839,7 +839,7 @@ TEST(DistanceMatrix, MipsSquaredEuclideanSphericalInjection_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void MipsSphericalInjectionBenchMark(void) {
+void MipsSphericalInjectionBenchMark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;
