@@ -14,6 +14,7 @@
 
 #include "db/index/segment/segment_helper.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -686,12 +687,6 @@ class SegmentCompactReuseTest
     float score;
   };
 
-  // CreateDoc seeds VECTOR_FP32 with a constant vector of value (doc_id+0.1f).
-  static std::vector<float> MakeFp32QueryVector(uint64_t doc_id_value,
-                                                uint32_t dim) {
-    return std::vector<float>(dim, static_cast<float>(doc_id_value) + 0.1f);
-  }
-
   static std::vector<ScoredDoc> RunSearch(
       const VectorColumnIndexer::Ptr &indexer, const std::vector<float> &qvec,
       uint32_t topk, const zvec::QueryParams::Ptr &query_params) {
@@ -710,6 +705,7 @@ class SegmentCompactReuseTest
     if (vec_res == nullptr) return {};
     std::vector<ScoredDoc> out;
     for (auto it = vec_res->create_iterator(); it->valid(); it->next()) {
+      EXPECT_TRUE(std::isfinite(it->score())) << "doc_id=" << it->doc_id();
       out.push_back({it->doc_id(), it->score()});
     }
     return out;
@@ -787,13 +783,15 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
 
   // Capture groundtruth via FlatQuery on each source segment while every
   // segment is still backed by a flat indexer (before seg[0] is optimized).
-  const std::vector<uint64_t> query_doc_values{0, kDocsPerSeg,
-                                               kSegCount * kDocsPerSeg - 1};
+  // CreateDoc uses constant vectors of value (doc_id + 0.1f). Positive
+  // constant queries preserve their IP ranking. Use exactly representable
+  // FP16 values that keep even the largest dot product below 65504.
+  const std::vector<float> query_values{0.125f, 0.25f, 0.5f};
   std::vector<std::set<uint64_t>> groundtruth;
-  groundtruth.reserve(query_doc_values.size());
+  groundtruth.reserve(query_values.size());
   auto flat_qp = std::make_shared<zvec::FlatQueryParams>();
-  for (uint64_t qv : query_doc_values) {
-    auto qvec = MakeFp32QueryVector(qv, kDim);
+  for (float qv : query_values) {
+    const std::vector<float> qvec(kDim, qv);
     std::vector<std::vector<ScoredDoc>> per_seg;
     per_seg.reserve(segs.size());
     // Per-segment indexers use block-local doc ids (0..kDocsPerSeg-1).
@@ -852,8 +850,8 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   // groundtruth. Quantized indexers are allowed a small recall hit.
   auto linear_qp = MakeIsLinearQueryParam(param.expected_output_type);
   const double kMinRecall = quantized ? 0.8 : 1.0;
-  for (size_t qi = 0; qi < query_doc_values.size(); ++qi) {
-    auto qvec = MakeFp32QueryVector(query_doc_values[qi], kDim);
+  for (size_t qi = 0; qi < query_values.size(); ++qi) {
+    const std::vector<float> qvec(kDim, query_values[qi]);
     auto hits = RunSearch(out_indexers.front(), qvec, kTopK, linear_qp);
     ASSERT_EQ(hits.size(), kTopK);
     size_t intersect = 0;
@@ -862,7 +860,7 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
     }
     double recall = static_cast<double>(intersect) / kTopK;
     EXPECT_GE(recall, kMinRecall)
-        << "query[" << qi << "] (value=" << query_doc_values[qi]
+        << "query[" << qi << "] (value=" << query_values[qi]
         << ") recall=" << recall;
   }
 }
