@@ -503,6 +503,10 @@ void SimpleRewriter::rewrite(QueryInfo *query_info,
   if (result.truth == TruthValue::ALWAYS_TRUE) {
     query_info->set_search_cond(nullptr);
   } else {
+    // A promoted child must not retain the discarded logic root as its parent.
+    if (result.root != nullptr) {
+      result.root->set_parent(nullptr);
+    }
     query_info->set_search_cond(std::move(result.root));
   }
   const auto &search_cond = query_info->search_cond();
