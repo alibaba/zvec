@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstdint>
 #include <cstring>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_framework.h>
@@ -65,12 +66,17 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
         return IndexError_Runtime;
       }
 
-      // Providers may return reused, unaligned storage. Keep only one aligned
-      // FP32 input and one FP16 output per reader, never a converted corpus.
-      input_.resize(front_->dimension());
       output_.resize(front_->dimension());
-      std::memcpy(input_.data(), source_data, input_.size() * sizeof(float));
-      convert_func_(input_.data(), input_.size(), output_.data());
+      // SIMD conversion accepts unaligned loads, but scalar paths still need
+      // natural float alignment. Copy only byte-unaligned provider storage.
+      if (reinterpret_cast<uintptr_t>(source_data) % alignof(float) != 0) {
+        input_.resize(front_->dimension());
+        std::memcpy(input_.data(), source_data, input_.size() * sizeof(float));
+        source_data = input_.data();
+      }
+      // Consume reused provider storage before the next source read/reset.
+      convert_func_(static_cast<const float *>(source_data), output_.size(),
+                    output_.data());
       *key = source_key;
       *data = output_.data();
       return 0;

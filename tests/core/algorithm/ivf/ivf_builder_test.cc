@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_builder.h"
+#include <cstdint>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <vector>
@@ -207,20 +209,34 @@ class OrdinalTestHolder : public IndexHolder, public OrdinalAccessHolder {
         *data = nullptr;
         return 0;
       }
-      buffer_.assign(1, '\0');
-      buffer_.append(owner_->vectors_[id]);
       *key = owner_->keys_[id];
-      *data = buffer_.data() + 1;
+      if (owner_->aligned_data) {
+        // Natural float alignment is enough; deliberately avoid SIMD alignment.
+        aligned_buffer_.resize(owner_->dimension() + 1);
+        float *values = aligned_buffer_.data();
+        if (reinterpret_cast<uintptr_t>(values) % 16 == 0) {
+          ++values;
+        }
+        std::memcpy(values, owner_->vectors_[id].data(),
+                    owner_->element_size());
+        *data = values;
+      } else {
+        buffer_.assign(1, '\0');
+        buffer_.append(owner_->vectors_[id]);
+        *data = buffer_.data() + 1;
+      }
       return 0;
     }
     void reset() override {
       ++owner_->resets;
       buffer_.clear();
+      aligned_buffer_.clear();
     }
 
    private:
     OrdinalTestHolder *owner_;
     std::string buffer_;
+    std::vector<float> aligned_buffer_;
   };
   int create_ordinal_reader(
       OrdinalAccessHolder::Reader::Pointer *reader) override {
@@ -233,7 +249,7 @@ class OrdinalTestHolder : public IndexHolder, public OrdinalAccessHolder {
   size_t reader_creations{0}, iterations{0}, reads{0}, resets{0},
       extra_count{0};
   int create_error{0}, read_error{0};
-  bool null_reader{false}, null_data{false};
+  bool null_reader{false}, null_data{false}, aligned_data{false};
 
  private:
   IndexHolder::Pointer delegate_;
@@ -243,7 +259,7 @@ class OrdinalTestHolder : public IndexHolder, public OrdinalAccessHolder {
 
 TEST_F(IVFBuilderTest, HalfFloatOrdinalReaderConvertsLazilyAndRetainsSource) {
   // Exercise vectorized conversion plus a tail, negative/fractional values,
-  // and the source reader's deliberately unaligned, reused storage.
+  // and reused source storage with natural and byte-unaligned addresses.
   dimension_ = 129;
   index_meta_.set_meta(IndexMeta::DataType::DT_FP32, dimension_);
   auto input =
@@ -282,14 +298,18 @@ TEST_F(IVFBuilderTest, HalfFloatOrdinalReaderConvertsLazilyAndRetainsSource) {
   converted.reset();
   converter.reset();
   EXPECT_FALSE(weak.expired());
-  for (size_t id : {6u, 0u, 3u, 0u}) {
-    uint64_t key = 0;
-    const void *data = nullptr;
-    ASSERT_EQ(0, reader->read(id, &key, &data));
-    ASSERT_NE(nullptr, data);
-    EXPECT_EQ(100 + id * 3, key);
-    EXPECT_EQ(expected[id], std::string(static_cast<const char *>(data),
-                                        expected[id].size()));
+  for (bool aligned_data : {true, false, true}) {
+    SCOPED_TRACE(aligned_data);
+    weak.lock()->aligned_data = aligned_data;
+    for (size_t id : {6u, 0u, 3u, 0u}) {
+      uint64_t key = 0;
+      const void *data = nullptr;
+      ASSERT_EQ(0, reader->read(id, &key, &data));
+      ASSERT_NE(nullptr, data);
+      EXPECT_EQ(100 + id * 3, key);
+      EXPECT_EQ(expected[id], std::string(static_cast<const char *>(data),
+                                          expected[id].size()));
+    }
   }
   uint64_t key = 0;
   const void *data = nullptr, *other_data = nullptr;
