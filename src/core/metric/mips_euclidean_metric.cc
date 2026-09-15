@@ -104,7 +104,7 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     eta_ = 0.0f;
     m_value_ = 0;
     squared_u_value_ = 0.0f;
@@ -141,7 +141,7 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     if (injection_ == Injection::kLocalizedSpherical) {
       switch (data_type_) {
         case IndexMeta::DataType::DT_FP32:
@@ -277,7 +277,7 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixSparseDistance sparse_distance(void) const override {
+  MatrixSparseDistance sparse_distance() const override {
     if (injection_ == Injection::kLocalizedSpherical) {
       return [&](const void *m_sparse, const void *q_sparse, float *out) {
         ailego::MipsSquaredEuclideanSparseDistanceMatrix<float>::Compute(
@@ -441,12 +441,12 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve if it supports normalization
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return query_metric_->support_normalize();
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
@@ -476,13 +476,13 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve if it supports training
-  bool support_train(void) const override {
+  bool support_train() const override {
     // No global norm scaling => eta_ == 0 => no training.
     return eta_ != 0.0f;
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return query_metric_;
   }
 

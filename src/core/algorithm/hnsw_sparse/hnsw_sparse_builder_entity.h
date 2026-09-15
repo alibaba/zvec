@@ -91,7 +91,7 @@ class HnswSparseBuilderEntity : public HnswSparseEntity {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Cleanup the entity
-  int cleanup(void) override;
+  int cleanup() override;
 
  public:
   //! Constructor

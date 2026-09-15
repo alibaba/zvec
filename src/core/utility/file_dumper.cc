@@ -26,10 +26,10 @@ namespace core {
 struct FileDumper : public IndexDumper {
  public:
   //! Constructor
-  FileDumper(void) = default;
+  FileDumper() = default;
 
   //! Destructor
-  ~FileDumper(void) override {
+  ~FileDumper() override {
     this->cleanup();
   }
 
@@ -39,7 +39,7 @@ struct FileDumper : public IndexDumper {
   }
 
   //! Cleanup dumper
-  int cleanup(void) override {
+  int cleanup() override {
     if (!this->close_index()) {
       return IndexError_PackIndex;
     }
@@ -71,7 +71,7 @@ struct FileDumper : public IndexDumper {
   }
 
   //! Close file
-  int close(void) override {
+  int close() override {
     if (!this->close_index()) {
       return IndexError_PackIndex;
     }
@@ -95,18 +95,18 @@ struct FileDumper : public IndexDumper {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return packer_.magic();
   }
 
   //! Retrieve size of index
-  size_t size(void) const override {
+  size_t size() const override {
     return file_.size();
   }
 
  protected:
   //! Close index file
-  bool close_index(void) {
+  bool close_index() {
     if (file_.is_valid()) {
       auto write_data = [this](const void *buf, size_t size) {
         return this->file_.write(buf, size);

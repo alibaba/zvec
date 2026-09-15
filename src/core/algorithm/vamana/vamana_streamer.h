@@ -26,23 +26,23 @@ class VamanaStreamer : public IndexStreamer {
  public:
   using ContextPointer = IndexStreamer::Context::Pointer;
 
-  VamanaStreamer(void);
-  ~VamanaStreamer(void) override;
+  VamanaStreamer();
+  ~VamanaStreamer() override;
 
   VamanaStreamer(const VamanaStreamer &) = delete;
   VamanaStreamer &operator=(const VamanaStreamer &) = delete;
 
   //! Run the configured-alpha second graph pass exactly once.
-  int finalize_build(void);
+  int finalize_build();
 
  protected:
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 
-  int cleanup(void) override;
+  int cleanup() override;
 
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   int add_impl(uint64_t pkey, const void *query, const IndexQueryMeta &qmeta,
                Context::Pointer &context) override;
@@ -99,17 +99,17 @@ class VamanaStreamer : public IndexStreamer {
 
   int open(IndexStorage::Pointer stg) override;
 
-  int close(void) override;
+  int close() override;
 
   int flush(uint64_t checkpoint) override;
 
   int dump(const IndexDumper::Pointer &dumper) override;
 
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -141,7 +141,7 @@ class VamanaStreamer : public IndexStreamer {
 
   class Stats : public IndexStreamer::Stats {
    public:
-    void clear(void) {
+    void clear() {
       set_revision_id(0u);
       set_loaded_count(0u);
       set_added_count(0u);

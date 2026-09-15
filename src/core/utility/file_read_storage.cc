@@ -61,29 +61,29 @@ class FileReadStorage : public IndexStorage {
           file_path_(rhs.file_path_) {}
 
     //! Destructor
-    ~Segment(void) override = default;
+    ~Segment() override = default;
 
     //! Retrieve size of data
-    size_t data_size(void) const override {
+    size_t data_size() const override {
       return data_size_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return padding_size_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return data_crc_;
     }
 
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return region_size_;
     }
 
     //! Retrieve offset of data
-    size_t data_offset(void) const override {
+    size_t data_offset() const override {
       return data_offset_;
     }
 
@@ -156,14 +156,14 @@ class FileReadStorage : public IndexStorage {
     }
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return this->clone_segment<FileReadStorage>();
     }
 
    protected:
     //! Clone the segment
     template <typename T>
-    inline IndexStorage::Segment::Pointer clone_segment(void) {
+    inline IndexStorage::Segment::Pointer clone_segment() {
       auto file_ptr = alone_file_handle_ ? FileReadStorage::OpenFile(
                                                file_path_, enable_direct_io_)
                                          : file_ptr_;
@@ -203,7 +203,7 @@ class FileReadStorage : public IndexStorage {
       ailego_assert_with(data_, "Null Pointer");
     }
 
-    ~MMapSegment(void) override {
+    ~MMapSegment() override {
       cleanup_();
     }
 
@@ -264,7 +264,7 @@ class FileReadStorage : public IndexStorage {
     }
 
     //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
+    IndexStorage::Segment::Pointer clone() override {
       return shared_from_this();
     }
 
@@ -274,7 +274,7 @@ class FileReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  ~FileReadStorage(void) override = default;
+  ~FileReadStorage() override = default;
 
   //! Initialize container
   int init(const ailego::Params &params) override {
@@ -289,7 +289,7 @@ class FileReadStorage : public IndexStorage {
     return 0;
   }
 
-  int flush(void) override {
+  int flush() override {
     // Read-only storage — nothing to flush. Return success so that
     // generic Index::flush() works on read-only-backed indexes (e.g.
     // DiskAnn after build/dump). Mirrors MMapFileReadStorage::flush().
@@ -304,12 +304,12 @@ class FileReadStorage : public IndexStorage {
     return;
   }
 
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return 0;
   }
 
   //! Cleanup container
-  int cleanup(void) override {
+  int cleanup() override {
     return this->close();
   }
 
@@ -351,7 +351,7 @@ class FileReadStorage : public IndexStorage {
     return 0;
   }
 
-  int close(void) override {
+  int close() override {
     file_ptr_ = nullptr;
     segments_.clear();
     return 0;
@@ -365,8 +365,8 @@ class FileReadStorage : public IndexStorage {
   }
 
   //! Retrieve all segments
-  std::map<std::string, IndexStorage::Segment::Pointer> get_all(
-      void) const override {
+  std::map<std::string, IndexStorage::Segment::Pointer> get_all()
+      const override {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     auto file_ptr =
         alone_file_handle_ && !file_path_.empty()
@@ -389,16 +389,16 @@ class FileReadStorage : public IndexStorage {
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
   //! Retrieve file ptr if has
-  std::shared_ptr<ailego::File> file(void) const override {
+  std::shared_ptr<ailego::File> file() const override {
     return file_ptr_;
   }
 
-  std::string file_path(void) const override {
+  std::string file_path() const override {
     return file_path_;
   }
 
@@ -480,8 +480,8 @@ class FileReadStorage : public IndexStorage {
 
   //! Retrieve all segments
   template <typename T>
-  inline std::map<std::string, IndexStorage::Segment::Pointer> get_all_segments(
-      void) const {
+  inline std::map<std::string, IndexStorage::Segment::Pointer>
+  get_all_segments() const {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     auto file_ptr =
         alone_file_handle_ && !file_path_.empty()

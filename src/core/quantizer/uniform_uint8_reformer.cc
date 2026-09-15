@@ -45,7 +45,7 @@ class UniformUint8Reformer : public IndexReformer {
     return SetParams(scale, bias);
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     Reset();
     return 0;
   }
@@ -54,7 +54,7 @@ class UniformUint8Reformer : public IndexReformer {
     return 0;
   }
 
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 
@@ -92,7 +92,7 @@ class UniformUint8Reformer : public IndexReformer {
     return 0;
   }
 
-  bool need_revert(void) const override {
+  bool need_revert() const override {
     return true;
   }
 

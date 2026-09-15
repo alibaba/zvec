@@ -59,17 +59,17 @@ class MergedProviderIndexHolder final : public IndexHolder,
   //! Scan source keys once, cache the filter decisions and calculate count.
   int init(const IndexFilter &filter, std::atomic<bool> *stop_flag = nullptr);
 
-  size_t count(void) const override;
-  size_t dimension(void) const override;
-  IndexMeta::DataType data_type(void) const override;
-  size_t element_size(void) const override;
-  bool multipass(void) const override;
-  IndexHolder::Iterator::Pointer create_iterator(void) override;
+  size_t count() const override;
+  size_t dimension() const override;
+  IndexMeta::DataType data_type() const override;
+  size_t element_size() const override;
+  bool multipass() const override;
+  IndexHolder::Iterator::Pointer create_iterator() override;
   int create_ordinal_reader(
       OrdinalAccessHolder::Reader::Pointer *reader) override;
 
-  size_t filtered_count(void) const;
-  int status(void) const;
+  size_t filtered_count() const;
+  int status() const;
 
   // The reducer clears this after synchronous train/build finishes because a
   // provider-backed IVF builder may retain the holder until a later dump call.
@@ -82,7 +82,7 @@ class MergedProviderIndexHolder final : public IndexHolder,
   IndexProvider::Pointer acquire_provider(size_t source_index,
                                           bool validate_planned_count);
   bool keep(size_t source_index, size_t ordinal) const;
-  bool canceled(void) const;
+  bool canceled() const;
   void set_status(int status);
 
   IndexQueryMeta output_meta_{};

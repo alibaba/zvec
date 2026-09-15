@@ -28,14 +28,14 @@ namespace core {
 class DiskAnnReducer : public IndexReducer {
  public:
   //! Constructor
-  DiskAnnReducer(void) = default;
+  DiskAnnReducer() = default;
 
  protected:
   //! Initialize Reducer
   int init(const ailego::Params &params) override;
 
   //! Cleanup Reducer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Feed indexes from containers
   // int feed(IndexStorage::Pointer container) override;
@@ -47,7 +47,7 @@ class DiskAnnReducer : public IndexReducer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 

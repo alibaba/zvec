@@ -26,7 +26,7 @@ namespace ailego {
 class BlobWrap {
  public:
   //! Constructor
-  BlobWrap(void) : buffer_(nullptr), size_(0u) {}
+  BlobWrap() : buffer_(nullptr), size_(0u) {}
 
   //! Constructor
   BlobWrap(const BlobWrap &rhs) = default;
@@ -46,7 +46,7 @@ class BlobWrap {
       : buffer_(const_cast<char *>(buf.data())), size_(buf.size()) {}
 
   //! Destructor
-  ~BlobWrap(void) = default;
+  ~BlobWrap() = default;
 
   //! Assignment
   BlobWrap &operator=(const BlobWrap &rhs) = default;
@@ -61,7 +61,7 @@ class BlobWrap {
   }
 
   //! Test if the blob is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (buffer_ && size_);
   }
 
@@ -78,23 +78,23 @@ class BlobWrap {
   }
 
   //! Umount the buffer of blob
-  void umount(void) {
+  void umount() {
     buffer_ = nullptr;
     size_ = 0u;
   }
 
   //! Retrieve buffer of blob
-  void *buffer(void) {
+  void *buffer() {
     return buffer_;
   }
 
   //! Retrieve buffer of blob
-  const void *buffer(void) const {
+  const void *buffer() const {
     return buffer_;
   }
 
   //! Retrieve size of blob
-  size_t size(void) const {
+  size_t size() const {
     return size_;
   }
 
@@ -114,7 +114,7 @@ class BlobWrap {
   }
 
   //! Zero the buffer of blob
-  void zero(void) {
+  void zero() {
     memset(buffer_, 0, size_);
   }
 

@@ -122,7 +122,7 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   return 0;
 }
 
-int VamanaStreamer::cleanup(void) {
+int VamanaStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -347,7 +347,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int VamanaStreamer::close(void) {
+int VamanaStreamer::close() {
   LOG_INFO("VamanaStreamer close");
 
   stats_.clear();
@@ -481,7 +481,7 @@ int VamanaStreamer::finalize_build_locked() {
   return 0;
 }
 
-IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer VamanaStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -519,7 +519,7 @@ IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer VamanaStreamer::create_provider(void) const {
+IndexProvider::Pointer VamanaStreamer::create_provider() const {
   LOG_DEBUG("VamanaStreamer create provider");
 
   auto entity = entity_->clone();

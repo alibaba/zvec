@@ -133,7 +133,7 @@ int StratifiedClusterTrainer::init(const IndexMeta &index_meta,
   return 0;
 }
 
-int StratifiedClusterTrainer::cleanup(void) {
+int StratifiedClusterTrainer::cleanup() {
   cluster_ = nullptr;
   centroids_.clear();
   return 0;
@@ -370,15 +370,15 @@ int StratifiedClusterTrainer::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-const IndexMeta &StratifiedClusterTrainer::meta(void) const {
+const IndexMeta &StratifiedClusterTrainer::meta() const {
   return meta_;
 }
 
-const IndexTrainer::Stats &StratifiedClusterTrainer::stats(void) const {
+const IndexTrainer::Stats &StratifiedClusterTrainer::stats() const {
   return stats_;
 }
 
-IndexBundle::Pointer StratifiedClusterTrainer::indexes(void) const {
+IndexBundle::Pointer StratifiedClusterTrainer::indexes() const {
   IndexBundle::Pointer bundle;
   IndexCluster::Serialize(meta_, centroids_, &bundle);
   return bundle;

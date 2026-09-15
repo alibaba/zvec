@@ -30,7 +30,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Destructor
-  ~FlatStreamerContext(void) override = default;
+  ~FlatStreamerContext() override = default;
 
   //! Set topk of search result
   void set_topk(uint32_t topk) override {
@@ -39,7 +39,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -58,12 +58,12 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return &result_heap_;
   }
 
-  FlatSearchScratch *search_scratch(void) {
+  FlatSearchScratch *search_scratch() {
     return &search_scratch_;
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
   //! Retrieve search group result with index
@@ -71,7 +71,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return &group_results_[0];
   }
 
@@ -85,7 +85,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Retrieve magic number
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 

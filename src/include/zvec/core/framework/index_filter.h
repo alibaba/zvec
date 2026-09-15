@@ -23,7 +23,7 @@ namespace core {
 class IndexFilter {
  public:
   //! Constructor
-  IndexFilter(void) = default;
+  IndexFilter() = default;
 
   //! Constructor
   IndexFilter(const IndexFilter &rhs) = default;
@@ -53,12 +53,12 @@ class IndexFilter {
   }
 
   //! Reset the filter function
-  void reset(void) {
+  void reset() {
     filter_ = nullptr;
   }
 
   //! Test if the function is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (!!filter_);
   }
 

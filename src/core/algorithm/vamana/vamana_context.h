@@ -48,7 +48,7 @@ class VamanaContext : public IndexContext {
     search_heap_.limit(std::max(val, ef_));
   }
 
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -61,18 +61,18 @@ class VamanaContext : public IndexContext {
     return &results_[idx];
   }
 
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
   void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
-  bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return debug_mode_;
   }
 
-  std::string debug_string(void) const override {
+  std::string debug_string() const override {
     char buf[4096];
     size_t size = snprintf(buf, sizeof(buf), "scan_cnt=%zu", get_scan_num());
     return std::string(buf, size);
@@ -270,7 +270,7 @@ class VamanaContext : public IndexContext {
     filter_negative_prob_ = prob;
   }
 
-  void reset(void) override {
+  void reset() override {
     search_heap_.clear();
     dc_.clear();
     for (auto &it : results_) {
@@ -281,7 +281,7 @@ class VamanaContext : public IndexContext {
     IndexContext::set_fetch_vector(false);
   }
 
-  inline void check_need_adjuct_ctx(void) {
+  inline void check_need_adjuct_ctx() {
     check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -338,7 +338,7 @@ class VamanaContext : public IndexContext {
     });
   }
 
-  void fill_random_to_topk_full(void);
+  void fill_random_to_topk_full();
   void update_query_prefetch();
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {

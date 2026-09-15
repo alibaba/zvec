@@ -177,7 +177,7 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   return 0;
 }
 
-int HnswStreamer::cleanup(void) {
+int HnswStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -461,7 +461,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int HnswStreamer::close(void) {
+int HnswStreamer::close() {
   LOG_INFO("HnswStreamer close");
 
   stats_.clear();
@@ -498,7 +498,7 @@ int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_->dump(dumper);
 }
 
-IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer HnswStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -544,7 +544,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer HnswStreamer::create_provider(void) const {
+IndexProvider::Pointer HnswStreamer::create_provider() const {
   LOG_DEBUG("HnswStreamer create provider");
 
   auto entity = entity_->clone();

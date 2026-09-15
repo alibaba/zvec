@@ -19,7 +19,7 @@
 namespace zvec {
 namespace core {
 
-uint32_t IndexContext::GenerateMagic(void) {
+uint32_t IndexContext::GenerateMagic() {
   static std::atomic_uint32_t magic_number{std::random_device()()};
   return magic_number.fetch_add(1);
 }

@@ -114,31 +114,31 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iter_->is_valid();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_record();
     }
 
    private:
-    inline void transform_record(void) {
+    inline void transform_record() {
       if (front_iter_->is_valid()) {
         owner_->convert_func_(
             reinterpret_cast<const float *>(front_iter_->data()),
@@ -156,33 +156,33 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
       : front_(std::move(front)), convert_func_(convert_func) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_FP16,
                                     front_->dimension());
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter ? IndexHolder::Iterator::Pointer(
                       new HalfFloatHolder::Iterator(this, std::move(iter)))
@@ -214,7 +214,7 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
 
  public:
   //! Disable them
-  HalfFloatHolder(void) = delete;
+  HalfFloatHolder() = delete;
 
  private:
   //! Members
@@ -227,7 +227,7 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
 class HalfFloatConverter : public IndexConverter {
  public:
   //! Destructor
-  ~HalfFloatConverter(void) override = default;
+  ~HalfFloatConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &) override {
@@ -247,7 +247,7 @@ class HalfFloatConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -273,17 +273,17 @@ class HalfFloatConverter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -314,15 +314,15 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
     }
 
     //! Destructor
-    ~Iterator(void) override = default;
+    ~Iterator() override = default;
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iter_->is_valid();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
@@ -342,13 +342,13 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->transform_record();
     }
 
    private:
-    inline void transform_record(void) {
+    inline void transform_record() {
       if (front_iter_->is_valid()) {
         ailego::FloatHelper::ToFP16(
             reinterpret_cast<const float *>(front_iter_->sparse_data()),
@@ -367,22 +367,22 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
       : front_(std::move(front)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_FP16;
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  IndexSparseHolder::Iterator::Pointer create_iterator(void) override {
+  IndexSparseHolder::Iterator::Pointer create_iterator() override {
     IndexSparseHolder::Iterator::Pointer iter = front_->create_iterator();
     return iter
                ? IndexSparseHolder::Iterator::Pointer(
@@ -390,13 +390,13 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
                : IndexSparseHolder::Iterator::Pointer();
   }
 
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return front_->total_sparse_count();
   }
 
  public:
   //! Disable them
-  HalfFloatSparseHolder(void) = delete;
+  HalfFloatSparseHolder() = delete;
 
  private:
   //! Members
@@ -408,7 +408,7 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
 class HalfFloatSparseConverter : public IndexConverter {
  public:
   //! Destructor
-  ~HalfFloatSparseConverter(void) override = default;
+  ~HalfFloatSparseConverter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &) override {
@@ -427,7 +427,7 @@ class HalfFloatSparseConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -452,17 +452,17 @@ class HalfFloatSparseConverter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexSparseHolder::Pointer sparse_result(void) const override {
+  IndexSparseHolder::Pointer sparse_result() const override {
     return holder_;
   }
 
   //! Retrieve Index Sparse Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 

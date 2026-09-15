@@ -444,7 +444,7 @@ class VisitFilter {
     return 0;  // place holder
   }
 
-  int get_mode(void) const {
+  int get_mode() const {
     return mode_;
   }
 

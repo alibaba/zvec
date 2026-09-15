@@ -27,7 +27,7 @@ class Singleton {
   using ObjectType = typename std::remove_reference<T>::type;
 
   //! Retrieve instance of object
-  static ObjectType &Instance(void) noexcept(
+  static ObjectType &Instance() noexcept(
       std::is_nothrow_constructible<ObjectType>::value) {
     // Since it's a static variable, if the class has already been created,
     // it won't be created again. And it is thread-safe in C++11.
@@ -37,7 +37,7 @@ class Singleton {
 
  protected:
   //! Constructor (Allow inheritance)
-  Singleton(void) {}
+  Singleton() {}
 
  public:
   //! Disable them

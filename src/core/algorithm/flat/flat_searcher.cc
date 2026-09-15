@@ -23,7 +23,7 @@ namespace zvec {
 namespace core {
 
 template <size_t BATCH_SIZE>
-IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider(void) const {
+IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider() const {
   std::lock_guard<std::mutex> lock(mapping_mutex_);
 
   if (mapping_.empty()) {
@@ -238,8 +238,8 @@ int FlatSearcher<BATCH_SIZE>::search_bf_by_p_keys_impl(
 }
 
 template <size_t BATCH_SIZE>
-IndexSearcher::Context::Pointer FlatSearcher<BATCH_SIZE>::create_context(
-    void) const {
+IndexSearcher::Context::Pointer FlatSearcher<BATCH_SIZE>::create_context()
+    const {
   return IndexSearcher::Context::Pointer(
       new FlatSearcherContext<BATCH_SIZE>(this));
 }

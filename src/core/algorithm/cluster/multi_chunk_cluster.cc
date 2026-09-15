@@ -18,7 +18,7 @@
 namespace zvec {
 namespace core {
 
-bool MultiChunkClusterAlgorithm::is_valid(void) const {
+bool MultiChunkClusterAlgorithm::is_valid() const {
   return features_ && features_->count();
 }
 
@@ -33,13 +33,13 @@ void MultiChunkClusterAlgorithm::init_centroids(
   out->resize(count);
 }
 
-int MultiChunkClusterAlgorithm::reset(void) {
+int MultiChunkClusterAlgorithm::reset() {
   features_.reset();
 
   return 0;
 }
 
-int MultiChunkClusterAlgorithm::cleanup(void) {
+int MultiChunkClusterAlgorithm::cleanup() {
   features_.reset();
 
   return 0;
@@ -335,12 +335,12 @@ int MultiChunkCluster::update(const ailego::Params &params) {
 }
 
 //! Reset Cluster
-int MultiChunkCluster::reset(void) {
+int MultiChunkCluster::reset() {
   return algorithm_->reset();
 }
 
 //! Cleanup Cluster
-int MultiChunkCluster::cleanup(void) {
+int MultiChunkCluster::cleanup() {
   return algorithm_->cleanup();
 }
 

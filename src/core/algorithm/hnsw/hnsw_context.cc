@@ -272,7 +272,7 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
   return 0;
 }
 
-void HnswContext::fill_random_to_topk_full(void) {
+void HnswContext::fill_random_to_topk_full() {
   static std::mt19937 mt(
       std::chrono::system_clock::now().time_since_epoch().count());
   search_heap_.dispatch([&](auto &heap) {
@@ -292,11 +292,11 @@ void HnswContext::fill_random_to_topk_full(void) {
     }
 
     if (capacity < entity_->doc_cnt() / 2) {
-      gen = [&](void) { return dt(mt); };
+      gen = [&]() { return dt(mt); };
     } else {
       // If topk limit is big value, gen sequential id from an random initial
       seqid = dt(mt);
-      gen = [&](void) {
+      gen = [&]() {
         seqid = seqid == (entity_->doc_cnt() - 1) ? 0 : (seqid + 1);
         return seqid;
       };

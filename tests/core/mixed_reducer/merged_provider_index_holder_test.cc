@@ -66,27 +66,27 @@ class CountingProvider final : public IndexProvider {
         std::max(stats_->peak_live_count, stats_->live_count);
   }
 
-  ~CountingProvider(void) override {
+  ~CountingProvider() override {
     --stats_->live_count;
   }
 
-  size_t count(void) const override {
+  size_t count() const override {
     return delegate_->count();
   }
 
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return delegate_->dimension();
   }
 
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return delegate_->data_type();
   }
 
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return delegate_->element_size();
   }
 
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return delegate_->create_iterator();
   }
 
@@ -99,7 +99,7 @@ class CountingProvider final : public IndexProvider {
     return delegate_->get_vector(key, block);
   }
 
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return delegate_->owner_class();
   }
 
@@ -240,23 +240,23 @@ class TestStreamer final : public IndexStreamer {
     return 0;
   }
 
-  int close(void) override {
+  int close() override {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_value_;
   }
 
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
-  IndexProvider::Pointer create_provider(void) const override {
+  IndexProvider::Pointer create_provider() const override {
     auto provider = provider_factory_(provider_create_count_++);
     if (!provider) {
       return nullptr;

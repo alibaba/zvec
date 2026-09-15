@@ -26,17 +26,17 @@ class StratifiedClusterTrainer : public IndexTrainer {
   typedef std::shared_ptr<StratifiedClusterTrainer> Pointer;
 
   //! Constructor
-  StratifiedClusterTrainer(void) = default;
+  StratifiedClusterTrainer() = default;
 
   //! Destructor
-  ~StratifiedClusterTrainer(void) = default;
+  ~StratifiedClusterTrainer() = default;
 
  protected:
   //! Initialize Trainer
   virtual int init(const IndexMeta &meta, const ailego::Params &params);
 
   //! Cleanup Trainer
-  virtual int cleanup(void);
+  virtual int cleanup();
 
   //! Train the data
   virtual int train(IndexThreads::Pointer threads, IndexHolder::Pointer holder);
@@ -48,13 +48,13 @@ class StratifiedClusterTrainer : public IndexTrainer {
   virtual int dump(const IndexDumper::Pointer &dumper);
 
   //! Retrieve Index Meta
-  virtual const IndexMeta &meta(void) const;
+  virtual const IndexMeta &meta() const;
 
   //! Retrieve statistics
-  virtual const IndexTrainer::Stats &stats(void) const;
+  virtual const IndexTrainer::Stats &stats() const;
 
   //! Retrieve the output indexes
-  virtual IndexBundle::Pointer indexes(void) const;
+  virtual IndexBundle::Pointer indexes() const;
 
  private:
   int init_params(const ailego::Params &params);

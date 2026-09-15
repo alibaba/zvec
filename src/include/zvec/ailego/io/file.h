@@ -45,7 +45,7 @@ class ZVEC_AILEGO_API File {
   };
 
   //! Constructor
-  File(void) : native_handle_(File::InvalidHandle), read_only_(false) {}
+  File() : native_handle_(File::InvalidHandle), read_only_(false) {}
 
   //! Constructor
   File(File &&rhs) {
@@ -56,7 +56,7 @@ class ZVEC_AILEGO_API File {
   }
 
   //! Destructor
-  ~File(void) {
+  ~File() {
     this->close();
   }
 
@@ -70,17 +70,17 @@ class ZVEC_AILEGO_API File {
   }
 
   //! Test if the file is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (native_handle_ != File::InvalidHandle);
   }
 
   //! Retrieve non-zero if memory region is read only
-  bool read_only(void) const {
+  bool read_only() const {
     return read_only_;
   }
 
   //! Retrieve native handle
-  NativeHandle native_handle(void) const {
+  NativeHandle native_handle() const {
     return native_handle_;
   }
 
@@ -91,10 +91,10 @@ class ZVEC_AILEGO_API File {
   bool open(const char *path, bool rdonly, bool direct);
 
   //! Close the local file
-  void close(void);
+  void close();
 
   //! Reset the file
-  void reset(void);
+  void reset();
 
   //! Write data into the file
   size_t write(const void *data, size_t len);
@@ -109,7 +109,7 @@ class ZVEC_AILEGO_API File {
   size_t read(ssize_t off, void *buf, size_t len);
 
   //! Synchronize memory with physical storage
-  bool flush(void);
+  bool flush();
 
   //! Sets the current position of the file to the given value
   bool seek(ssize_t off, Origin origin);
@@ -118,10 +118,10 @@ class ZVEC_AILEGO_API File {
   bool truncate(size_t len);
 
   //! Retrieve size of file
-  size_t size(void) const;
+  size_t size() const;
 
   //! Retrieve offset of file
-  ssize_t offset(void) const;
+  ssize_t offset() const;
 
   //! Create a local file
   bool create(const char *path, size_t len) {

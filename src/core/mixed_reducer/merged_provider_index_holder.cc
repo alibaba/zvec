@@ -44,7 +44,7 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
     this->seek_to_kept();
   }
 
-  const void *data(void) const override {
+  const void *data() const override {
     // Consumers may read one record more than once before next(). Keep the
     // failure placeholder stable too, even though fail() invalidates us.
     if (data_prepared_) {
@@ -86,16 +86,16 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
     return data_;
   }
 
-  bool is_valid(void) const override {
+  bool is_valid() const override {
     return owner_->status() == 0 && source_index_ < owner_->sources_.size() &&
            source_iter_ && source_iter_->is_valid();
   }
 
-  uint64_t key(void) const override {
+  uint64_t key() const override {
     return output_key_;
   }
 
-  void next(void) override {
+  void next() override {
     if (!this->is_valid()) {
       return;
     }
@@ -109,7 +109,7 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   }
 
  private:
-  void seek_to_kept(void) {
+  void seek_to_kept() {
     while (owner_->status() == 0 && source_index_ < owner_->sources_.size()) {
       if (owner_->canceled()) {
         owner_->set_status(IndexError_Canceled);
@@ -455,39 +455,38 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   return 0;
 }
 
-size_t MergedProviderIndexHolder::count(void) const {
+size_t MergedProviderIndexHolder::count() const {
   return count_;
 }
 
-size_t MergedProviderIndexHolder::dimension(void) const {
+size_t MergedProviderIndexHolder::dimension() const {
   return output_meta_.dimension();
 }
 
-IndexMeta::DataType MergedProviderIndexHolder::data_type(void) const {
+IndexMeta::DataType MergedProviderIndexHolder::data_type() const {
   return output_meta_.data_type();
 }
 
-size_t MergedProviderIndexHolder::element_size(void) const {
+size_t MergedProviderIndexHolder::element_size() const {
   return output_meta_.element_size();
 }
 
-bool MergedProviderIndexHolder::multipass(void) const {
+bool MergedProviderIndexHolder::multipass() const {
   return true;
 }
 
-IndexHolder::Iterator::Pointer MergedProviderIndexHolder::create_iterator(
-    void) {
+IndexHolder::Iterator::Pointer MergedProviderIndexHolder::create_iterator() {
   if (!initialized_ || this->status() != 0) {
     return IndexHolder::Iterator::Pointer();
   }
   return IndexHolder::Iterator::Pointer(new (std::nothrow) Iterator(this));
 }
 
-size_t MergedProviderIndexHolder::filtered_count(void) const {
+size_t MergedProviderIndexHolder::filtered_count() const {
   return filtered_count_;
 }
 
-int MergedProviderIndexHolder::status(void) const {
+int MergedProviderIndexHolder::status() const {
   return status_.load(std::memory_order_relaxed);
 }
 
@@ -557,7 +556,7 @@ bool MergedProviderIndexHolder::keep(size_t source_index,
          ((bits[word] >> (ordinal % kBitsPerWord)) & uint64_t{1}) != 0;
 }
 
-bool MergedProviderIndexHolder::canceled(void) const {
+bool MergedProviderIndexHolder::canceled() const {
   return stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed);
 }
 
