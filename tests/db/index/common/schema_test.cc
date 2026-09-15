@@ -250,6 +250,27 @@ TEST(FieldSchemaTest, ComparisonOperators) {
   EXPECT_TRUE(field1 != field5);
 }
 
+TEST(FieldSchemaTest, UniformQuantizationSupportsHnswWithL2Only) {
+  for (const auto quantize_type :
+       {QuantizeType::UNIFORM_UINT7, QuantizeType::UNIFORM_UINT8,
+        QuantizeType::UNIFORM_UINT4}) {
+    auto l2_params = std::make_shared<HnswIndexParams>(MetricType::L2, 16, 100,
+                                                       quantize_type);
+    FieldSchema l2_field("l2_vector", DataType::VECTOR_FP32, 128, false,
+                         l2_params);
+    EXPECT_TRUE(l2_field.validate().ok());
+
+    auto ip_params = std::make_shared<HnswIndexParams>(MetricType::IP, 16, 100,
+                                                       quantize_type);
+    FieldSchema ip_field("ip_vector", DataType::VECTOR_FP32, 128, false,
+                         ip_params);
+    auto status = ip_field.validate();
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.message().find("only supports L2 metric"),
+              std::string::npos);
+  }
+}
+
 TEST(FieldSchemaTest, Validate) {
   {
     FieldSchema field("", DataType::UNDEFINED);
