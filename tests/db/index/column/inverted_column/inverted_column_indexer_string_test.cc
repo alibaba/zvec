@@ -346,6 +346,35 @@ TEST_F(InvertedIndexTest, STRINGS) {
 }
 
 
+TEST_F(InvertedIndexTest, LikeSuffixStripsWildcard) {
+  ASSERT_TRUE(indexer_);
+  FieldSchema field{"like_suffix", DataType::STRING, true, params_};
+  ASSERT_TRUE(indexer_->create_column_indexer(field).ok());
+  auto column = (*indexer_)["like_suffix"];
+  ASSERT_TRUE(column);
+  const std::vector<std::string> values = {
+      "index.ts",     "src/app.ts", ".ts",         "index.tsx",
+      "index.ts.bak", "README",     "literal%.ts", "literal_.ts"};
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    ASSERT_TRUE(column->insert(i, values[i]).ok());
+  }
+  const std::vector<std::pair<std::string, std::vector<uint32_t>>> cases = {
+      {"%.ts", {0, 1, 2, 6, 7}},
+      {R"(%\%.ts)", {6}},
+      {R"(%\_.ts)", {7}},
+      {"%.js", {}}};
+  for (const auto &[pattern, expected] : cases) {
+    SCOPED_TRACE(pattern);
+    auto result = column->search(pattern, CompareOp::LIKE);
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->count(), expected.size());
+    for (auto id : expected) {
+      EXPECT_TRUE(result->contains(id)) << values[id];
+    }
+  }
+}
+
+
 TEST_F(InvertedIndexTest, LikePrefixSuffixMustNotOverlap) {
   ASSERT_TRUE(indexer_);
   FieldSchema field{"like_overlap", DataType::STRING, true, params_};
