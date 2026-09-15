@@ -29,7 +29,7 @@ template <>
 class FlatDistanceTuple<1> {
  public:
   //! Retrieve non-zero if all distances are valid.
-  bool is_valid(void) const {
+  bool is_valid() const {
     return !!distance_;
   }
 
@@ -66,7 +66,7 @@ class FlatDistanceTuple<
     K, typename std::enable_if<IsEqualPowerofTwo<K>::value>::type> {
  public:
   //! Retrieve non-zero if all distances are valid.
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (distance_tuple_.is_valid() && !!distance_);
   }
 
@@ -118,7 +118,7 @@ template <>
 class FlatDistanceMatrix<1> {
  public:
   //! Retrieve non-zero if all distances are valid.
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (!!distance_);
   }
 
@@ -145,7 +145,7 @@ class FlatDistanceMatrix<
     K, typename std::enable_if<IsEqualPowerofTwo<K>::value>::type> {
  public:
   //! Retrieve non-zero if all distances are valid.
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (tuple_h_.is_valid() && tuple_v_.is_valid());
   }
 

@@ -126,7 +126,7 @@ class Flow {
       ctx_ ? ctx_->set_filter(func) : flow_ctx_->set_filter(func);
     }
 
-    const IndexDocumentList &result(void) const {
+    const IndexDocumentList &result() const {
       return ctx_ ? ctx_->result() : flow_ctx_->result();
     }
 
@@ -137,11 +137,11 @@ class Flow {
    public:
     friend class Flow;
 
-    IndexFlow::Context::Pointer &flow_context(void) {
+    IndexFlow::Context::Pointer &flow_context() {
       return flow_ctx_;
     }
 
-    IndexContext::Pointer &context(void) {
+    IndexContext::Pointer &context() {
       return ctx_;
     }
 
@@ -150,7 +150,7 @@ class Flow {
     IndexFlow::Context::Pointer flow_ctx_;
   };
 
-  Context::Pointer create_context(void) const {
+  Context::Pointer create_context() const {
     IndexContext::Pointer ctx;
     IndexFlow::Context::Pointer flow_ctx;
     if (streamer_) {
@@ -326,7 +326,7 @@ class Flow {
     }
   }
 
-  int unload(void) {
+  int unload() {
     if (streamer_) {
       streamer_->close();
       return stg_->close();
@@ -408,7 +408,7 @@ class SparseFlow {
       ctx_ ? ctx_->set_topk(topk) : flow_ctx_->set_topk(topk);
     }
 
-    const IndexDocumentList &result(void) const {
+    const IndexDocumentList &result() const {
       return ctx_ ? ctx_->result() : flow_ctx_->result();
     }
 
@@ -419,11 +419,11 @@ class SparseFlow {
    private:
     friend class SparseFlow;
 
-    IndexSparseFlow::Context::Pointer &flow_context(void) {
+    IndexSparseFlow::Context::Pointer &flow_context() {
       return flow_ctx_;
     }
 
-    IndexContext::Pointer &context(void) {
+    IndexContext::Pointer &context() {
       return ctx_;
     }
 
@@ -433,7 +433,7 @@ class SparseFlow {
     IndexSparseFlow::Context::Pointer flow_ctx_;
   };
 
-  Context::Pointer create_context(void) const {
+  Context::Pointer create_context() const {
     IndexContext::Pointer ctx;
     IndexSparseFlow::Context::Pointer flow_ctx;
     if (streamer_) {
@@ -497,7 +497,7 @@ class SparseFlow {
     return 0;
   }
 
-  int unload(void) {
+  int unload() {
     if (streamer_) {
       streamer_->close();
       return stg_->close();

@@ -26,10 +26,10 @@ namespace core {
 class OptKmeansAlgorithm : public IndexCluster {
  public:
   //! Constructor
-  OptKmeansAlgorithm(void) = default;
+  OptKmeansAlgorithm() = default;
 
   //! Destructor
-  ~OptKmeansAlgorithm(void) override = default;
+  ~OptKmeansAlgorithm() override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;
@@ -54,10 +54,10 @@ class OptKmeansAlgorithm : public IndexCluster {
               IndexCluster::CentroidList &cents) override = 0;
 
   //! Cleanup Cluster
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reset Cluster
-  int reset(void) override;
+  int reset() override;
 
   //! Update Cluster
   int update(const ailego::Params &params) override;
@@ -76,7 +76,7 @@ class OptKmeansAlgorithm : public IndexCluster {
   bool check_centroids(const IndexCluster::CentroidList &cents);
 
   //! Test if it is valid
-  bool is_valid(void) const;
+  bool is_valid() const;
 
   //! Update Clusters
   void update_clusters(IndexThreads *threads,
@@ -124,7 +124,7 @@ class OptKmeansAlgorithm : public IndexCluster {
   IndexMetric::MatrixDistance distance_func_{nullptr};
 };
 
-bool OptKmeansAlgorithm::is_valid(void) const {
+bool OptKmeansAlgorithm::is_valid() const {
   if (!features_ || !features_->count()) {
     return false;
   }
@@ -467,14 +467,14 @@ int OptKmeansAlgorithm::update(const ailego::Params &params) {
   return 0;
 }
 
-int OptKmeansAlgorithm::reset(void) {
+int OptKmeansAlgorithm::reset() {
   features_.reset();
   shard_cluster_features_.clear();
 
   return 0;
 }
 
-int OptKmeansAlgorithm::cleanup(void) {
+int OptKmeansAlgorithm::cleanup() {
   features_.reset();
   shard_cluster_features_.clear();
 
@@ -495,10 +495,10 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NumericalKmeansAlgorithm(void) = default;
+  NumericalKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NumericalKmeansAlgorithm(void) override = default;
+  ~NumericalKmeansAlgorithm() override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -628,10 +628,10 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NibbleKmeansAlgorithm(void) = default;
+  NibbleKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NibbleKmeansAlgorithm(void) override = default;
+  ~NibbleKmeansAlgorithm() override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -762,10 +762,10 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NumericalInnerProductKmeansAlgorithm(void) = default;
+  NumericalInnerProductKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NumericalInnerProductKmeansAlgorithm(void) override = default;
+  ~NumericalInnerProductKmeansAlgorithm() override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -896,10 +896,10 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NibbleInnerProductKmeansAlgorithm(void) = default;
+  NibbleInnerProductKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NibbleInnerProductKmeansAlgorithm(void) override = default;
+  ~NibbleInnerProductKmeansAlgorithm() override = default;
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
@@ -1023,19 +1023,19 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster(
 class OptKmeansCluster : public IndexCluster {
  public:
   //! Constructor
-  OptKmeansCluster(void) = default;
+  OptKmeansCluster() = default;
 
   //! Destructor
-  ~OptKmeansCluster(void) override = default;
+  ~OptKmeansCluster() override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Cluster
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reset Cluster
-  int reset(void) override;
+  int reset() override;
 
   //! Update Cluster
   int update(const ailego::Params &params) override;
@@ -1089,12 +1089,12 @@ int OptKmeansCluster::update(const ailego::Params &params) {
 }
 
 //! Reset Cluster
-int OptKmeansCluster::reset(void) {
+int OptKmeansCluster::reset() {
   return algorithm_->reset();
 }
 
 //! Cleanup Cluster
-int OptKmeansCluster::cleanup(void) {
+int OptKmeansCluster::cleanup() {
   return algorithm_->cleanup();
 }
 

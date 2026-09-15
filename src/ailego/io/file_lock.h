@@ -30,27 +30,27 @@ class FileLock {
   FileLock(File::NativeHandle handle) : native_handle_(handle) {}
 
   //! Locking
-  bool lock(void) const {
+  bool lock() const {
     return FileLock::Lock(native_handle_);
   }
 
   //! Try locking
-  bool try_lock(void) const {
+  bool try_lock() const {
     return FileLock::TryLock(native_handle_);
   }
 
   //! Locking (shared)
-  bool lock_shared(void) const {
+  bool lock_shared() const {
     return FileLock::LockShared(native_handle_);
   }
 
   //! Try locking (shared)
-  bool try_lock_shared(void) const {
+  bool try_lock_shared() const {
     return FileLock::TryLockShared(native_handle_);
   }
 
   //! Unlocking
-  bool unlock(void) const {
+  bool unlock() const {
     return FileLock::Unlock(native_handle_);
   }
 

@@ -37,8 +37,8 @@ namespace core {
 
 class HnswSparseStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp();
+  void TearDown();
   void generate_sparse_data(
       size_t cnt, uint32_t sparse_dim_count,
       std::vector<NumericalVector<uint32_t>> &sparse_indices_list,
@@ -82,7 +82,7 @@ void HnswSparseStreamerTest::generate_sparse_data(
   }
 }
 
-void HnswSparseStreamerTest::SetUp(void) {
+void HnswSparseStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (nothrow) IndexMeta(IndexMeta::MetaType::MT_SPARSE,
                                                 IndexMeta::DataType::DT_FP32));
   index_meta_ptr_->set_metric("InnerProductSparse", 0, ailego::Params());
@@ -90,7 +90,7 @@ void HnswSparseStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void HnswSparseStreamerTest::TearDown(void) {
+void HnswSparseStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

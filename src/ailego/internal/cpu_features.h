@@ -24,177 +24,177 @@ namespace internal {
 class CpuFeatures {
  public:
   //! 16-bit FP conversions
-  static bool F16C(void);
+  static bool F16C();
 
   //! Multimedia Extensions
-  static bool MMX(void);
+  static bool MMX();
 
   //! Streaming SIMD Extensions
-  static bool SSE(void);
+  static bool SSE();
 
   //! Streaming SIMD Extensions 2
-  static bool SSE2(void);
+  static bool SSE2();
 
   //! Streaming SIMD Extensions 3
-  static bool SSE3(void);
+  static bool SSE3();
 
   //! Supplemental Streaming SIMD Extensions 3
-  static bool SSSE3(void);
+  static bool SSSE3();
 
   //! Streaming SIMD Extensions 4.1
-  static bool SSE4_1(void);
+  static bool SSE4_1();
 
   //! Streaming SIMD Extensions 4.2
-  static bool SSE4_2(void);
+  static bool SSE4_2();
 
   //! Advanced Vector Extensions
-  static bool AVX(void);
+  static bool AVX();
 
   //! Advanced Vector Extensions 2
-  static bool AVX2(void);
+  static bool AVX2();
 
   //! AVX-512 Foundation
-  static bool AVX512F(void);
+  static bool AVX512F();
 
   //! AVX-512 DQ (Double/Quad granular) Instructions
-  static bool AVX512DQ(void);
+  static bool AVX512DQ();
 
   //! AVX-512 Prefetch
-  static bool AVX512PF(void);
+  static bool AVX512PF();
 
   //! AVX-512 Exponential and Reciprocal
-  static bool AVX512ER(void);
+  static bool AVX512ER();
 
   //! AVX-512 Conflict Detection
-  static bool AVX512CD(void);
+  static bool AVX512CD();
 
   //! AVX-512 BW (Byte/Word granular) Instructions
-  static bool AVX512BW(void);
+  static bool AVX512BW();
 
   //! AVX-512 VL (128/256 Vector Length) Extensions
-  static bool AVX512VL(void);
+  static bool AVX512VL();
 
   //! AVX-512 Integer Fused Multiply-Add instructions
-  static bool AVX512_IFMA(void);
+  static bool AVX512_IFMA();
 
   //! AVX512 Vector Bit Manipulation instructions
-  static bool AVX512_VBMI(void);
+  static bool AVX512_VBMI();
 
   //! Additional AVX512 Vector Bit Manipulation Instructions
-  static bool AVX512_VBMI2(void);
+  static bool AVX512_VBMI2();
 
   //! Vector Neural Network Instructions
-  static bool AVX512_VNNI(void);
+  static bool AVX512_VNNI();
 
   //! Support for VPOPCNT[B,W] and VPSHUF-BITQMB instructions
-  static bool AVX512_BITALG(void);
+  static bool AVX512_BITALG();
 
   //! POPCNT for vectors of DW/QW
-  static bool AVX512_VPOPCNTDQ(void);
+  static bool AVX512_VPOPCNTDQ();
 
   //! AVX-512 Neural Network Instructions
-  static bool AVX512_4VNNIW(void);
+  static bool AVX512_4VNNIW();
 
   //! AVX-512 Multiply Accumulation Single precision
-  static bool AVX512_4FMAPS(void);
+  static bool AVX512_4FMAPS();
 
   //! AVX-512 FP16 instructions
-  static bool AVX512_FP16(void);
+  static bool AVX512_FP16();
 
   //! CMPXCHG8 instruction
-  static bool CX8(void);
+  static bool CX8();
 
   //! CMPXCHG16B instruction
-  static bool CX16(void);
+  static bool CX16();
 
   //! PCLMULQDQ instruction
-  static bool PCLMULQDQ(void);
+  static bool PCLMULQDQ();
 
   //! Carry-Less Multiplication Double Quadword
-  static bool VPCLMULQDQ(void);
+  static bool VPCLMULQDQ();
 
   //! CMOV instructions (plus FCMOVcc, FCOMI with FPU)
-  static bool CMOV(void);
+  static bool CMOV();
 
   //! MOVBE instruction
-  static bool MOVBE(void);
+  static bool MOVBE();
 
   //! Enhanced REP MOVSB/STOSB instructions
-  static bool ERMS(void);
+  static bool ERMS();
 
   //! POPCNT instruction
-  static bool POPCNT(void);
+  static bool POPCNT();
 
   //! XSAVE/XRSTOR/XSETBV/XGETBV instructions
-  static bool XSAVE(void);
+  static bool XSAVE();
 
   //! Fused multiply-add
-  static bool FMA(void);
+  static bool FMA();
 
   //! ADCX and ADOX instructions
-  static bool ADX(void);
+  static bool ADX();
 
   //! Galois Field New Instructions
-  static bool GFNI(void);
+  static bool GFNI();
 
   //! AES instructions
-  static bool AES(void);
+  static bool AES();
 
   //! Vector AES
-  static bool VAES(void);
+  static bool VAES();
 
   //! RDSEED instruction
-  static bool RDSEED(void);
+  static bool RDSEED();
 
   //! RDRAND instruction
-  static bool RDRAND(void);
+  static bool RDRAND();
 
   //! SHA1/SHA256 Instruction Extensions
-  static bool SHA(void);
+  static bool SHA();
 
   //! 1st group bit manipulation extensions
-  static bool BMI1(void);
+  static bool BMI1();
 
   //! 2nd group bit manipulation extensions
-  static bool BMI2(void);
+  static bool BMI2();
 
   //! CLFLUSH instruction
-  static bool CLFLUSH(void);
+  static bool CLFLUSH();
 
   //! CLFLUSHOPT instruction
-  static bool CLFLUSHOPT(void);
+  static bool CLFLUSHOPT();
 
   //! CLWB instruction
-  static bool CLWB(void);
+  static bool CLWB();
 
   //! RDPID instruction
-  static bool RDPID(void);
+  static bool RDPID();
 
   //! Onboard FPU
-  static bool FPU(void);
+  static bool FPU();
 
   //! Hyper-Threading
-  static bool HT(void);
+  static bool HT();
 
   //! Hardware virtualization
-  static bool VMX(void);
+  static bool VMX();
 
   // ！Running on a hypervisor
-  static bool HYPERVISOR(void);
+  static bool HYPERVISOR();
 
   //! ARM NEON (ASIMD) support
-  static bool NEON(void);
+  static bool NEON();
 
   //! ARM half-precision vector arithmetic (FEAT_FP16) support
-  static bool FP16(void);
+  static bool FP16();
 
   //! Intrinsics of compiling
-  static const char *Intrinsics(void);
+  static const char *Intrinsics();
 
  private:
   struct CpuFlags {
     //! Constructor
-    CpuFlags(void);
+    CpuFlags();
 
     //! Members
     uint32_t L1_ECX;

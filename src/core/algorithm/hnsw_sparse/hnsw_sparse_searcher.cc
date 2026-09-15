@@ -539,7 +539,7 @@ IndexSearcher::Context::Pointer HnswSparseSearcher::create_context() const {
 }
 
 IndexSearcher::SparseProvider::Pointer
-HnswSparseSearcher::create_sparse_provider(void) const {
+HnswSparseSearcher::create_sparse_provider() const {
   LOG_DEBUG("HnswSparseSearcher create sparse provider");
 
   auto entity = entity_.clone();

@@ -51,7 +51,7 @@ class IndexMemory {
     }
 
     //! Retrieve size of buffer
-    size_t size(void) const {
+    size_t size() const {
       return buffer_.size();
     }
 
@@ -118,7 +118,7 @@ class IndexMemory {
     typedef std::shared_ptr<Rope> Pointer;
 
     //! Constructor
-    Rope(void) = default;
+    Rope() = default;
 
     //! Constructor
     Rope(const Rope &rhs) = default;
@@ -146,12 +146,12 @@ class IndexMemory {
     }
 
     //! Retrieve count of blocks
-    size_t count(void) const {
+    size_t count() const {
       return blocks_.size();
     }
 
     //! Retrieve memory size of rope
-    size_t size(void) const {
+    size_t size() const {
       size_t sum = 0u;
       for (const auto &it : blocks_) {
         sum += it.size();
@@ -160,7 +160,7 @@ class IndexMemory {
     }
 
     //! Test if the rope is empty
-    bool empty(void) const {
+    bool empty() const {
       return blocks_.empty();
     }
 
@@ -175,7 +175,7 @@ class IndexMemory {
   };
 
   //! Constructor
-  IndexMemory(void) = default;
+  IndexMemory() = default;
 
   //! Constructor
   IndexMemory(IndexMemory &&rhs) {
@@ -194,13 +194,13 @@ class IndexMemory {
   }
 
   //! Retrieve the singleton memory
-  static IndexMemory *Instance(void) {
+  static IndexMemory *Instance() {
     static IndexMemory mem;
     return (&mem);
   }
 
   //! Clear the memory
-  void clear(void) {
+  void clear() {
     std::lock_guard<std::mutex> latch(mutex_);
     pool_.clear();
   }

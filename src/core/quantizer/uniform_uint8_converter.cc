@@ -74,7 +74,7 @@ class UniformUint8Converter : public IndexConverter {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     stats_.set_trained_count(0);
     stats_.set_transformed_count(0);
     holder_.reset();
@@ -182,15 +182,15 @@ class UniformUint8Converter : public IndexConverter {
     return 0;
   }
 
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -237,19 +237,19 @@ class UniformUint8Converter : public IndexConverter {
         encode();
       }
 
-      const void *data(void) const override {
+      const void *data() const override {
         return buffer_.data();
       }
 
-      bool is_valid(void) const override {
+      bool is_valid() const override {
         return iterator_ && iterator_->is_valid();
       }
 
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return iterator_->key();
       }
 
-      void next(void) override {
+      void next() override {
         iterator_->next();
         encode();
       }
@@ -277,28 +277,28 @@ class UniformUint8Converter : public IndexConverter {
           scale_(scale),
           bias_(bias) {}
 
-    size_t count(void) const override {
+    size_t count() const override {
       return holder_->count();
     }
 
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return encoded_dimension_;
     }
 
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return IndexMeta::DataType::DT_INT8;
     }
 
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_INT8,
                                       encoded_dimension_);
     }
 
-    bool multipass(void) const override {
+    bool multipass() const override {
       return holder_->multipass();
     }
 
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       auto iterator = holder_->create_iterator();
       return iterator ? std::make_unique<Iterator>(this, std::move(iterator))
                       : nullptr;

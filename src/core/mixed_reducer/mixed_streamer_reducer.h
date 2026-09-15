@@ -30,13 +30,13 @@ namespace core {
 class MixedStreamerReducer : public IndexStreamerReducer {
  public:
   //! Constructor
-  MixedStreamerReducer(void) = default;
+  MixedStreamerReducer() = default;
 
   //! Initialize Reducer
   int init(const ailego::Params &params) override;
 
   //! Cleanup Reducer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reduce operator (with filter)
   int reduce(const IndexFilter &filter) override;
@@ -75,7 +75,7 @@ class MixedStreamerReducer : public IndexStreamerReducer {
   int IndexBuild();
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 

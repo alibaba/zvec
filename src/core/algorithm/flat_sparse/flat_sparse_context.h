@@ -45,7 +45,7 @@ class FlatSparseContext : public IndexContext {
       : searcher_owner_(searcher_ptr), context_type_(kSearcherContext) {}
 
   //! Destructor
-  ~FlatSparseContext(void) override = default;
+  ~FlatSparseContext() override = default;
 
   //! Set topk of search result
   void set_topk(uint32_t topk) override {
@@ -55,7 +55,7 @@ class FlatSparseContext : public IndexContext {
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_.at(0);
   }
 
@@ -79,7 +79,7 @@ class FlatSparseContext : public IndexContext {
   }
 
   //! Retrieve magic number
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -92,7 +92,7 @@ class FlatSparseContext : public IndexContext {
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
 
@@ -101,7 +101,7 @@ class FlatSparseContext : public IndexContext {
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return &group_results_[0];
   }
 

@@ -35,27 +35,27 @@ class IVFIndexProvider : public IndexProvider {
 
  public:
   //! Create a new iterator
-  Iterator::Pointer create_iterator(void) override {
+  Iterator::Pointer create_iterator() override {
     return Iterator::Pointer(new (std::nothrow) SortedIterator(entity_));
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const override {
+  size_t count() const override {
     return entity_->vector_count();
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return meta_.dimension();
   }
 
   //! Retrieve type of vector
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return meta_.data_type();
   }
 
   //! Retrieve vector size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return meta_.element_size();
   }
 
@@ -65,7 +65,7 @@ class IVFIndexProvider : public IndexProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_class_;
   }
 
@@ -88,22 +88,22 @@ class IVFIndexProvider : public IndexProvider {
     //! Retrieve pointer of data
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
-    const void *data(void) const override {
+    const void *data() const override {
       return entity_->get_vector(current_local_id());
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return pos_ < count_;
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return entity_->get_key(current_local_id());
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++pos_;
     }
 
@@ -126,22 +126,22 @@ class IVFIndexProvider : public IndexProvider {
     Iterator(const IVFEntity::Pointer &entity) : entity_(entity) {}
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return entity_->get_vector(index_);
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return index_ < entity_->vector_count();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return entity_->get_key(index_);
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++index_;
     }
 

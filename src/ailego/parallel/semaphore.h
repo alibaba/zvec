@@ -28,13 +28,13 @@ namespace ailego {
 class Semaphore {
  public:
   //! Constructor
-  Semaphore(void) : Semaphore{1} {}
+  Semaphore() : Semaphore{1} {}
 
   //! Constructor
   Semaphore(uint32_t count) : count_(count) {}
 
   //! Acquire a permit from this semaphore, suspending until one is available
-  void lock(void) {
+  void lock() {
     while (!this->try_lock()) {
       std::unique_lock<std::mutex> latch(mutex_);
       cond_.wait(latch, [this]() { return (count_ > 0); });
@@ -42,7 +42,7 @@ class Semaphore {
   }
 
   //! Try to acquire a permit from this semaphore without suspension
-  bool try_lock(void) {
+  bool try_lock() {
     uint32_t count = count_.load(std::memory_order_acquire);
     return (count > 0 ? count_.compare_exchange_strong(
                             count, count - 1, std::memory_order_release,
@@ -51,7 +51,7 @@ class Semaphore {
   }
 
   //! Release a permit, returning it into this semaphore
-  void unlock(void) {
+  void unlock() {
     ++count_;
     std::lock_guard<std::mutex> latch(mutex_);
     cond_.notify_one();
@@ -83,7 +83,7 @@ class BinarySemaphores {
       uint64_t>::type;
 
   //! Constructor
-  BinarySemaphores(void) : BinarySemaphores{1} {}
+  BinarySemaphores() : BinarySemaphores{1} {}
 
   //! Constructor
   BinarySemaphores(uint32_t count) {
@@ -97,7 +97,7 @@ class BinarySemaphores {
   }
 
   //! Acquire a permit from this semaphore, suspending until one is available
-  int acquire(void) {
+  int acquire() {
     int index = -1;
     while ((index = this->try_acquire()) < 0) {
       std::unique_lock<std::mutex> latch(mutex_);
@@ -107,7 +107,7 @@ class BinarySemaphores {
   }
 
   //! Try to acquire a permit from this semaphore without suspension
-  int try_acquire(void) {
+  int try_acquire() {
     BitwiseType flags = flags_.load(std::memory_order_relaxed);
     while (flags > 0) {
       int index = CountTrailingZeros<BitwiseType>(flags);

@@ -28,7 +28,7 @@ template <size_t BATCH_SIZE>
 class FlatBuilder : public IndexBuilder {
  public:
   //! Destructor
-  ~FlatBuilder(void) override = default;
+  ~FlatBuilder() override = default;
 
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;
@@ -38,7 +38,7 @@ class FlatBuilder : public IndexBuilder {
            const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
 
   //! Cleanup the builder
-  int cleanup(void) override {
+  int cleanup() override {
     holder_ = nullptr;
     return 0;
   }
@@ -64,7 +64,7 @@ class FlatBuilder : public IndexBuilder {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const IndexBuilder::Stats &stats(void) const override {
+  const IndexBuilder::Stats &stats() const override {
     return stats_;
   }
 

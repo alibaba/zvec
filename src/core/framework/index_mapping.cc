@@ -235,7 +235,7 @@ int IndexMapping::init_hugepage_meta_section() {
   return this->init_index_mapping(len);
 }
 
-void IndexMapping::close(void) {
+void IndexMapping::close() {
   // Unmap all memory
   this->unmap_all();
   if (header_) {
@@ -407,7 +407,7 @@ void IndexMapping::unmap(const std::string &id) {
   }
 }
 
-void IndexMapping::unmap_all(void) {
+void IndexMapping::unmap_all() {
   for (auto iter = segments_.begin(); iter != segments_.end(); ++iter) {
     SegmentInfo &segment_info = iter->second;
     Segment *item = &segment_info.segment;
@@ -420,7 +420,7 @@ void IndexMapping::unmap_all(void) {
   }
 }
 
-int IndexMapping::flush(void) {
+int IndexMapping::flush() {
   if ((file_.size() < index_size_) && !file_.truncate(index_size_)) {
     LOG_ERROR("Failed to truncate file size %zu, %s", index_size_,
               ailego::FileHelper::GetLastErrorString().c_str());

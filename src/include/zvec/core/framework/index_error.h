@@ -70,7 +70,7 @@ class IndexError {
 
  protected:
   //! Constructor
-  IndexError(void) : map_() {}
+  IndexError() : map_() {}
 
   //! Inserts a new code into map
   void emplace(const IndexError::Code *code) {
@@ -87,7 +87,7 @@ class IndexError {
   }
 
   //! Retrieve the singleton
-  static IndexError *Instance(void) {
+  static IndexError *Instance() {
     static IndexError error;
     return (&error);
   }

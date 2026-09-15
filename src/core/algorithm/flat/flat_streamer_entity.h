@@ -51,16 +51,16 @@ class FlatStreamerEntity {
   explicit FlatStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  virtual ~FlatStreamerEntity(void) = default;
+  virtual ~FlatStreamerEntity() = default;
 
   //! Open the entity with storage
   int open(IndexStorage::Pointer storage, const IndexMeta &mt);
 
   //! Close the entity
-  virtual int close(void);
+  virtual int close();
 
   //! Flush Linear Meta information to storage
-  int flush_linear_meta(void);
+  int flush_linear_meta();
 
   //! Flush linear index to storage
   int flush(uint64_t checkpoint);
@@ -101,36 +101,36 @@ class FlatStreamerEntity {
                 IndexContext::Stats *context_stats) const;
 
   //! Clone the entity
-  virtual FlatStreamerEntity::Pointer clone(void) const;
+  virtual FlatStreamerEntity::Pointer clone() const;
 
   //! Retrieve the total vectors in the index
-  size_t vector_count(void) const {
+  size_t vector_count() const {
     return meta_.header.total_vector_count;
   }
 
   //! Retrieve the linear list count
-  size_t linear_list_count(void) const {
+  size_t linear_list_count() const {
     return meta_.header.linear_list_count;
   }
 
   //! Retrieve block size of the linear vector
-  size_t linear_block_size(void) const {
+  size_t linear_block_size() const {
     return meta_.header.block_size;
   }
 
   //! Retrieve the vectors count in one block
-  size_t block_vector_count(void) const {
+  size_t block_vector_count() const {
     // assert(meta_.header.block_vector_count == 32);
     return meta_.header.block_vector_count;
   }
 
   //! Retrieve IndexMeta of the linear index
-  const IndexMeta &meta(void) const {
+  const IndexMeta &meta() const {
     return index_meta_;
   }
 
   //! Retrieve mutable IndexMeta of the linear index
-  IndexMeta *mutable_meta(void) {
+  IndexMeta *mutable_meta() {
     return &index_meta_;
   }
 
@@ -141,7 +141,7 @@ class FlatStreamerEntity {
                                 IndexStorage::MemoryBlock &block) const;
 
   //! Create a new iterator
-  IndexProvider::Iterator::Pointer creater_iterator(void) const;
+  IndexProvider::Iterator::Pointer creater_iterator() const;
 
 
   //! Set params
@@ -208,24 +208,24 @@ class FlatStreamerEntity {
                                  const uint32_t element_size);
 
  protected:
-  const IndexMetric::MatrixDistance &distance(void) const {
+  const IndexMetric::MatrixDistance &distance() const {
     return row_distance_;
   }
 
-  const IndexMetric::MatrixBatchDistance &batch_distance(void) const {
+  const IndexMetric::MatrixBatchDistance &batch_distance() const {
     return batch_distance_;
   }
 
-  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer(void) const {
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
     return quantizer_;
   }
 
-  size_t extra_values_size(void) const {
+  size_t extra_values_size() const {
     return extra_values_size_;
   }
 
-  const IndexMetric::DistanceBatchQueryPreprocessFunc &batch_query_preprocess(
-      void) const {
+  const IndexMetric::DistanceBatchQueryPreprocessFunc &batch_query_preprocess()
+      const {
     return batch_query_preprocess_;
   }
 
@@ -234,11 +234,11 @@ class FlatStreamerEntity {
 
   int get_key_by_position(uint32_t id, uint64_t *key) const;
 
-  size_t id_key_count(void) const {
+  size_t id_key_count() const {
     return id_key_vector_.size();
   }
 
-  bool use_key_info_map(void) const {
+  bool use_key_info_map() const {
     return use_key_info_map_;
   }
 
@@ -257,20 +257,20 @@ class FlatStreamerEntity {
       this->read_next_block();
     }
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return reinterpret_cast<const char *>(data_) +
              block_vector_index_ * entity_->index_meta_.element_size();
     }
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return is_valid_;
     }
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return keys_[block_vector_index_];
     }
     //! Next iterator
-    void next(void) override {
+    void next() override {
       if (++block_vector_index_ == block_vector_count_) {
         ++block_index_;
         this->read_next_block();
@@ -279,7 +279,7 @@ class FlatStreamerEntity {
 
    private:
     //! Read next non-empty block
-    void read_next_block(void);
+    void read_next_block();
 
     //! Members
     std::string buffer_{};
@@ -332,7 +332,7 @@ class FlatStreamerEntity {
   int load_segment_keys_to_map(BlockLocation block);
 
   //! Load keys to keys map
-  int load_segment_keys_to_vector(void);
+  int load_segment_keys_to_vector();
 
   //! Load index from storage
   int load_storage(IndexStorage::Pointer storage);
@@ -357,7 +357,7 @@ class FlatStreamerEntity {
   }
 
   //! Alloc a new segment
-  int alloc_segment(void);
+  int alloc_segment();
 
   //! Alloc a new block
   int alloc_block(const BlockLocation &next, BlockLocation *block);
@@ -500,10 +500,10 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
  public:
   explicit FlatContiguousStreamerEntity(IndexStreamer::Stats &stats)
       : FlatStreamerEntity(stats) {}
-  ~FlatContiguousStreamerEntity(void) override = default;
+  ~FlatContiguousStreamerEntity() override = default;
 
-  int build_contiguous_memory(void);
-  int close(void) override;
+  int build_contiguous_memory();
+  int close() override;
 
   int add(uint64_t key, const void *vec, size_t size) override;
   int add_vector_with_id(uint32_t id, const void *query,
@@ -517,7 +517,7 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
                        FlatSearchScratch *scratch,
                        size_t batch_size) const override;
 
-  bool is_contiguous(void) const {
+  bool is_contiguous() const {
     return !!load_contiguous_storage();
   }
 
@@ -540,12 +540,12 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
   // Same lifetime model as HNSW/Vamana contiguous entity clones: a search
   // keeps shared ownership of one immutable generation while add() removes
   // the entity's owner reference and falls back to mmap storage.
-  std::shared_ptr<const ContiguousStorage> load_contiguous_storage(void) const {
+  std::shared_ptr<const ContiguousStorage> load_contiguous_storage() const {
     return std::atomic_load_explicit(&contiguous_storage_,
                                      std::memory_order_acquire);
   }
 
-  void degrade_to_mmap(void);
+  void degrade_to_mmap();
   int evaluate_distances(const ContiguousStorage &storage, const void *query,
                          const std::vector<uint64_t> *p_keys,
                          const IndexFilter &filter, size_t batch_size,

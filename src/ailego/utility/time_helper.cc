@@ -22,7 +22,7 @@ namespace zvec {
 namespace ailego {
 
 #if defined(_WIN64) || defined(_WIN32)
-uint64_t Monotime::NanoSeconds(void) {
+uint64_t Monotime::NanoSeconds() {
   LARGE_INTEGER stamp, freq;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&stamp);
@@ -30,21 +30,21 @@ uint64_t Monotime::NanoSeconds(void) {
                     (1000000000.0 / (double)freq.QuadPart));
 }
 
-uint64_t Monotime::MicroSeconds(void) {
+uint64_t Monotime::MicroSeconds() {
   LARGE_INTEGER stamp, freq;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&stamp);
   return (stamp.QuadPart * 1000000u / freq.QuadPart);
 }
 
-uint64_t Monotime::MilliSeconds(void) {
+uint64_t Monotime::MilliSeconds() {
   LARGE_INTEGER stamp, freq;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&stamp);
   return (stamp.QuadPart * 1000u / freq.QuadPart);
 }
 
-uint64_t Monotime::Seconds(void) {
+uint64_t Monotime::Seconds() {
   LARGE_INTEGER stamp, freq;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&stamp);
@@ -54,7 +54,7 @@ uint64_t Monotime::Seconds(void) {
 // January 1, 1970 (start of Unix epoch) in "ticks"
 #define UNIX_TIME_START 0x019DB1DED53E8000ull
 
-uint64_t Realtime::NanoSeconds(void) {
+uint64_t Realtime::NanoSeconds() {
   LARGE_INTEGER stamp;
   FILETIME file;
   GetSystemTimeAsFileTime(&file);
@@ -63,7 +63,7 @@ uint64_t Realtime::NanoSeconds(void) {
   return (stamp.QuadPart - UNIX_TIME_START) * 100u;
 }
 
-uint64_t Realtime::MicroSeconds(void) {
+uint64_t Realtime::MicroSeconds() {
   LARGE_INTEGER stamp;
   FILETIME file;
   GetSystemTimeAsFileTime(&file);
@@ -72,7 +72,7 @@ uint64_t Realtime::MicroSeconds(void) {
   return (stamp.QuadPart - UNIX_TIME_START) / 10u;
 }
 
-uint64_t Realtime::MilliSeconds(void) {
+uint64_t Realtime::MilliSeconds() {
   LARGE_INTEGER stamp;
   FILETIME file;
   GetSystemTimeAsFileTime(&file);
@@ -81,7 +81,7 @@ uint64_t Realtime::MilliSeconds(void) {
   return (stamp.QuadPart - UNIX_TIME_START) / 10000u;
 }
 
-uint64_t Realtime::Seconds(void) {
+uint64_t Realtime::Seconds() {
   LARGE_INTEGER stamp;
   FILETIME file;
   GetSystemTimeAsFileTime(&file);
@@ -121,7 +121,7 @@ uint64_t FileTimeToTicks(FILETIME file_time) {
   return value.QuadPart;
 }
 
-uint64_t CurrentThreadCpuTime100NanoSeconds(void) {
+uint64_t CurrentThreadCpuTime100NanoSeconds() {
   FILETIME creation_time;
   FILETIME exit_time;
   FILETIME kernel_time;
@@ -135,65 +135,65 @@ uint64_t CurrentThreadCpuTime100NanoSeconds(void) {
 
 }  // namespace
 
-uint64_t CPUtime::NanoSeconds(void) {
+uint64_t CPUtime::NanoSeconds() {
   return CurrentThreadCpuTime100NanoSeconds() * 100u;
 }
 
-uint64_t CPUtime::MicroSeconds(void) {
+uint64_t CPUtime::MicroSeconds() {
   return CurrentThreadCpuTime100NanoSeconds() / 10u;
 }
 
-uint64_t CPUtime::MilliSeconds(void) {
+uint64_t CPUtime::MilliSeconds() {
   return CurrentThreadCpuTime100NanoSeconds() / 10000u;
 }
 
-uint64_t CPUtime::Seconds(void) {
+uint64_t CPUtime::Seconds() {
   return CurrentThreadCpuTime100NanoSeconds() / 10000000u;
 }
 #else
-uint64_t Monotime::NanoSeconds(void) {
+uint64_t Monotime::NanoSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_MONOTONIC, &tspec);
   return (tspec.tv_sec * 1000000000u + tspec.tv_nsec);
 }
 
-uint64_t Monotime::MicroSeconds(void) {
+uint64_t Monotime::MicroSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_MONOTONIC, &tspec);
   return (tspec.tv_sec * 1000000u + tspec.tv_nsec / 1000u);
 }
 
-uint64_t Monotime::MilliSeconds(void) {
+uint64_t Monotime::MilliSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_MONOTONIC, &tspec);
   return (tspec.tv_sec * 1000u + tspec.tv_nsec / 1000000u);
 }
 
-uint64_t Monotime::Seconds(void) {
+uint64_t Monotime::Seconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_MONOTONIC, &tspec);
   return (tspec.tv_sec);
 }
 
-uint64_t Realtime::NanoSeconds(void) {
+uint64_t Realtime::NanoSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_REALTIME, &tspec);
   return (tspec.tv_sec * 1000000000u + tspec.tv_nsec);
 }
 
-uint64_t Realtime::MicroSeconds(void) {
+uint64_t Realtime::MicroSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_REALTIME, &tspec);
   return (tspec.tv_sec * 1000000u + tspec.tv_nsec / 1000u);
 }
 
-uint64_t Realtime::MilliSeconds(void) {
+uint64_t Realtime::MilliSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_REALTIME, &tspec);
   return (tspec.tv_sec * 1000u + tspec.tv_nsec / 1000000u);
 }
 
-uint64_t Realtime::Seconds(void) {
+uint64_t Realtime::Seconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_REALTIME, &tspec);
   return (tspec.tv_sec);
@@ -225,25 +225,25 @@ size_t Realtime::Gmtime(const char *format, char *buf, size_t len) {
   return strftime(buf, len, format, gmtime_r(&now, &tmbuf));
 }
 
-uint64_t CPUtime::NanoSeconds(void) {
+uint64_t CPUtime::NanoSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tspec);
   return (tspec.tv_sec * 1000000000u + tspec.tv_nsec);
 }
 
-uint64_t CPUtime::MicroSeconds(void) {
+uint64_t CPUtime::MicroSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tspec);
   return (tspec.tv_sec * 1000000u + tspec.tv_nsec / 1000u);
 }
 
-uint64_t CPUtime::MilliSeconds(void) {
+uint64_t CPUtime::MilliSeconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tspec);
   return (tspec.tv_sec * 1000u + tspec.tv_nsec / 1000000u);
 }
 
-uint64_t CPUtime::Seconds(void) {
+uint64_t CPUtime::Seconds() {
   struct timespec tspec;
   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tspec);
   return (tspec.tv_sec);

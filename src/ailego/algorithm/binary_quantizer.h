@@ -25,13 +25,13 @@ namespace ailego {
 class BinaryQuantizer {
  public:
   //! Constructor
-  BinaryQuantizer(void) = default;
+  BinaryQuantizer() = default;
 
   //! Feed the training data
   bool feed(const float *vec, size_t dim);
 
   //! Train the quantizer
-  bool train(void);
+  bool train();
 
   //! Quantize data: encode the float input to uint32_t output
   void encode(const float *in, size_t dim, uint32_t *out) const;
@@ -50,7 +50,7 @@ class BinaryQuantizer {
   }
 
   //! Get quantization threshold
-  float threshold(void) const {
+  float threshold() const {
     return threshold_;
   }
 

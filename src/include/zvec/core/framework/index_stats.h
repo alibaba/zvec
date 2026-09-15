@@ -46,17 +46,17 @@ class IndexStats {
   }
 
   //! Clear the attributes
-  void clear_attributes(void) {
+  void clear_attributes() {
     attributes_.clear();
   }
 
   //! Retrieve attributes
-  const ailego::Params &attributes(void) const {
+  const ailego::Params &attributes() const {
     return attributes_;
   }
 
   //! Retrieve mutable attributes
-  ailego::Params *mutable_attributes(void) {
+  ailego::Params *mutable_attributes() {
     return &attributes_;
   }
 

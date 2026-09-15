@@ -39,7 +39,7 @@ class IVFBuilder : public IndexBuilder {
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup the builder
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Train the data
   int train(IndexThreads::Pointer threads,
@@ -56,7 +56,7 @@ class IVFBuilder : public IndexBuilder {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
@@ -83,25 +83,25 @@ class IVFBuilder : public IndexBuilder {
       Iterator(RandomAccessIndexHolder *owner) : holder_(owner) {}
 
       //! Destructor
-      ~Iterator(void) override = default;
+      ~Iterator() override = default;
 
       //! Retrieve pointer of data
-      const void *data(void) const override {
+      const void *data() const override {
         return holder_->element(id_);
       }
 
       //! Test if the iterator is valid
-      bool is_valid(void) const override {
+      bool is_valid() const override {
         return id_ < holder_->count();
       }
 
       //! Retrieve primary key
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return holder_->key(id_);
       }
 
       //! Next iterator
-      void next(void) override {
+      void next() override {
         ++id_;
       }
 
@@ -116,32 +116,32 @@ class IVFBuilder : public IndexBuilder {
         : features_(std::make_shared<CompactIndexFeatures>(meta)) {}
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
-    size_t count(void) const override {
+    size_t count() const override {
       return features_->count();
     }
 
     //! Retrieve dimension
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return features_->dimension();
     }
 
     //! Retrieve type information
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return features_->data_type();
     }
 
     //! Retrieve element size in bytes
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return features_->element_size();
     }
 
     //! Retrieve if it can multi-pass
-    bool multipass(void) const override {
+    bool multipass() const override {
       return true;
     }
 
     //! Create a new iterator
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       return IndexHolder::Iterator::Pointer(
           new RandomAccessIndexHolder::Iterator(this));
     }
@@ -170,7 +170,7 @@ class IVFBuilder : public IndexBuilder {
 
    public:
     //! Disable them
-    RandomAccessIndexHolder(void) = delete;
+    RandomAccessIndexHolder() = delete;
 
    private:
     //! Members
@@ -196,7 +196,7 @@ class IVFBuilder : public IndexBuilder {
       return vec_.size();
     }
 
-    uint32_t id(void) const {
+    uint32_t id() const {
       return id_;
     }
 

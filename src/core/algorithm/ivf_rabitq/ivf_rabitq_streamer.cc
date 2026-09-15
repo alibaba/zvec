@@ -194,7 +194,7 @@ IndexStreamer::Context::Pointer IvfRabitqStreamer::create_context() const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer IvfRabitqStreamer::create_provider(void) const {
+IndexProvider::Pointer IvfRabitqStreamer::create_provider() const {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Load the index first before create provider");
     return Provider::Pointer();

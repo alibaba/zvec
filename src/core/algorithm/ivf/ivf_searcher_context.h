@@ -37,7 +37,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -95,7 +95,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve magic number
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -116,12 +116,12 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve scan ratio
-  float scan_ratio(void) const {
+  float scan_ratio() const {
     return scan_ratio_;
   }
 
   //! Retrieve max scan count
-  uint32_t max_scan_count(void) const {
+  uint32_t max_scan_count() const {
     return max_scan_count_;
   }
 
@@ -143,7 +143,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
     fetch_vector_ = v;
   }
 
-  bool fetch_vector(void) const override {
+  bool fetch_vector() const override {
     return fetch_vector_;
   }
 
@@ -175,7 +175,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve the centroid index context
-  IndexSearcher::Context::Pointer &centroid_searcher_ctx(void) {
+  IndexSearcher::Context::Pointer &centroid_searcher_ctx() {
     return centroid_searcher_ctx_;
   }
 

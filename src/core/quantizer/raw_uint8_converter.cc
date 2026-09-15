@@ -55,25 +55,25 @@ class RawUint8Holder : public IndexHolder {
       transform_record();
     }
 
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iterator_->is_valid();
     }
 
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iterator_->key();
     }
 
-    void next(void) override {
+    void next() override {
       front_iterator_->next();
       transform_record();
     }
 
    private:
-    void transform_record(void) {
+    void transform_record() {
       if (front_iterator_->is_valid()) {
         owner_->convert_func_(
             static_cast<const float *>(front_iterator_->data()), buffer_.size(),
@@ -89,27 +89,27 @@ class RawUint8Holder : public IndexHolder {
   RawUint8Holder(IndexHolder::Pointer holder, turbo::ConvertFunc convert_func)
       : front_(std::move(holder)), convert_func_(convert_func) {}
 
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return front_->dimension();
   }
 
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return IndexMeta::DataType::DT_UINT8;
   }
 
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return dimension() * sizeof(uint8_t);
   }
 
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     auto iterator = front_->create_iterator();
     return iterator ? std::make_unique<Iterator>(this, std::move(iterator))
                     : nullptr;
@@ -138,7 +138,7 @@ class RawUint8Converter : public IndexConverter {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -160,15 +160,15 @@ class RawUint8Converter : public IndexConverter {
     return 0;
   }
 
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -186,7 +186,7 @@ class RawUint8Reformer : public IndexReformer {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -194,7 +194,7 @@ class RawUint8Reformer : public IndexReformer {
     return 0;
   }
 
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

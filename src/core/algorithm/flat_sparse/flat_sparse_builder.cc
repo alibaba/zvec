@@ -39,7 +39,7 @@ int FlatSparseBuilder::init(const IndexMeta &meta,
   return 0;
 }
 
-int FlatSparseBuilder::cleanup(void) {
+int FlatSparseBuilder::cleanup() {
   LOG_INFO("Begin FlatSparseBuilder::cleanup");
 
   stats_.clear_attributes();

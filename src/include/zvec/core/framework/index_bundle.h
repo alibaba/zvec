@@ -32,7 +32,7 @@ struct IndexBundle {
   typedef std::shared_ptr<IndexBundle> Pointer;
 
   //! Destructor
-  virtual ~IndexBundle(void) = default;
+  virtual ~IndexBundle() = default;
 
   //! Retrieve index buffer via key
   virtual ailego::BlobWrap get(const std::string &key) const = 0;
@@ -41,10 +41,10 @@ struct IndexBundle {
   virtual bool has(const std::string &key) const = 0;
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all(void) const = 0;
+  virtual std::map<std::string, ailego::BlobWrap> all() const = 0;
 
   //! Retrieve the count of indexes
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 };
 
 /*! Trivial Index Bundle
@@ -69,12 +69,12 @@ class TrivialIndexBundle : public IndexBundle {
   }
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all(void) const {
+  virtual std::map<std::string, ailego::BlobWrap> all() const {
     return map_;
   }
 
   //! Retrieve the count of indexes
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return map_.size();
   }
 
@@ -124,7 +124,7 @@ class MemoryIndexBundle : public IndexBundle {
   }
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all(void) const {
+  virtual std::map<std::string, ailego::BlobWrap> all() const {
     std::map<std::string, ailego::BlobWrap> result;
     for (const auto &it : map_) {
       result.emplace(it.first,
@@ -134,7 +134,7 @@ class MemoryIndexBundle : public IndexBundle {
   }
 
   //! Retrieve the count of indexes
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return map_.size();
   }
 
@@ -194,7 +194,7 @@ class MMapFileIndexBundle : public IndexBundle {
   }
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all(void) const {
+  virtual std::map<std::string, ailego::BlobWrap> all() const {
     std::map<std::string, ailego::BlobWrap> result;
     for (const auto &it : map_) {
       result.emplace(it.first,
@@ -204,7 +204,7 @@ class MMapFileIndexBundle : public IndexBundle {
   }
 
   //! Retrieve the count of indexes
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return map_.size();
   }
 

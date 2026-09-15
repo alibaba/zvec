@@ -109,7 +109,7 @@ template <size_t K>
 class BloomFilter {
  public:
   //! Constructor
-  BloomFilter(void) = default;
+  BloomFilter() = default;
 
   //! Constructor
   BloomFilter(size_t n, double p) {
@@ -138,12 +138,12 @@ class BloomFilter {
   }
 
   //! Destructor
-  ~BloomFilter(void) {
+  ~BloomFilter() {
     delete[] bitset_;
   }
 
   //! Test if the filter is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     return (bitset_ != nullptr);
   }
 
@@ -167,7 +167,7 @@ class BloomFilter {
   }
 
   //! Clear the bloom filter
-  void clear(void) {
+  void clear() {
     if (bitset_) {
       memset(bitset_, 0, (bits_count_ >> 3));
       count_ = 0u;
@@ -208,22 +208,22 @@ class BloomFilter {
   }
 
   //! Retrieve count of bits in bloom filter
-  size_t bits_count(void) const {
+  size_t bits_count() const {
     return bits_count_;
   }
 
   //! Retrieve capacity of bloom filter
-  size_t capacity(void) const {
+  size_t capacity() const {
     return capacity_;
   }
 
   //! Retrieve count of items in bloom filter
-  size_t count(void) const {
+  size_t count() const {
     return count_;
   }
 
   //! Retrieve probability of false positives
-  double probability(void) const {
+  double probability() const {
     return probability_;
   }
 

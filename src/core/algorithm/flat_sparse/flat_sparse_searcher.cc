@@ -24,9 +24,9 @@ namespace core {
 
 const uint32_t FlatSparseSearcher::VERSION = 0U;
 
-FlatSparseSearcher::FlatSparseSearcher(void) = default;
+FlatSparseSearcher::FlatSparseSearcher() = default;
 
-FlatSparseSearcher::~FlatSparseSearcher(void) = default;
+FlatSparseSearcher::~FlatSparseSearcher() = default;
 
 int FlatSparseSearcher::init(const ailego::Params & /*params*/) {
   state_ = STATE_INITED;
@@ -34,7 +34,7 @@ int FlatSparseSearcher::init(const ailego::Params & /*params*/) {
   return 0;
 }
 
-int FlatSparseSearcher::cleanup(void) {
+int FlatSparseSearcher::cleanup() {
   this->unload();
   return 0;
 }
@@ -73,7 +73,7 @@ int FlatSparseSearcher::load(IndexStorage::Pointer container,
   return 0;
 }
 
-int FlatSparseSearcher::unload(void) {
+int FlatSparseSearcher::unload() {
   LOG_INFO("Begin FlatSparseSearcher::unload");
 
   meta_.clear();
@@ -139,7 +139,7 @@ FlatSparseSearcher::ContextPointer FlatSparseSearcher::create_context() const {
 
 //! Create a new iterator
 IndexSearcher::SparseProvider::Pointer
-FlatSparseSearcher::create_sparse_provider(void) const {
+FlatSparseSearcher::create_sparse_provider() const {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Failed to create provider, load container first!");
     return SparseProvider::Pointer();

@@ -21,8 +21,8 @@ constexpr size_t static dim = 128;
 
 class FlatStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 
@@ -33,7 +33,7 @@ class FlatStreamerTest : public testing::Test {
 std::string FlatStreamerTest::dir_("streamer_test/");
 std::shared_ptr<IndexMeta> FlatStreamerTest::index_meta_ptr_;
 
-void FlatStreamerTest::SetUp(void) {
+void FlatStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (std::nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
@@ -41,7 +41,7 @@ void FlatStreamerTest::SetUp(void) {
   zvec::ailego::FileHelper::RemovePath(dir_.c_str());
 }
 
-void FlatStreamerTest::TearDown(void) {
+void FlatStreamerTest::TearDown() {
   zvec::ailego::FileHelper::RemovePath(dir_.c_str());
 }
 
