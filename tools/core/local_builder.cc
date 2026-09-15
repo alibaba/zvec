@@ -828,7 +828,7 @@ struct QuantizedIndexHolder : public MultiPassIndexHolder<DT> {
       : MultiPassIndexHolder<DT>(alloc_dim), raw_dim_(raw_dim) {}
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return raw_dim_;
   }
 
