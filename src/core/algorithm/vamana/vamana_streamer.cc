@@ -887,6 +887,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
                                        search_batch_distance_);
   ctx->resize_results(count);
 
+  const auto &filter = static_cast<IndexContext *>(ctx)->filter();
   auto &topk = ctx->search_heap().select<TopkHeap>();
 
   for (size_t q = 0; q < count; ++q) {
@@ -894,6 +895,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
     topk.clear();
     for (const auto &keys : p_keys) {
       for (auto key : keys) {
+        if (filter.is_valid() && filter(key)) continue;
         node_id_t id = entity_->get_id(key);
         if (id == kInvalidNodeId) continue;
         dist_t dist = ctx->dist_calculator().batch_dist(id);

@@ -53,6 +53,19 @@ def check_collection_basic(coll: Collection, optimize: bool = False):
         results = coll.query()
         assert len(results) == len(docs)
 
+        # A forward scan does not exercise vector-index selection. Check ANN
+        # queries as well, both before and after optimize, for every quantizer.
+        for vector_schema in schema.vectors:
+            results = coll.query(
+                Query(
+                    field_name=vector_schema.name,
+                    vector=docs[0].vector(vector_schema.name),
+                ),
+                topk=len(docs),
+            )
+            assert len(results) == len(docs)
+            assert {doc.id for doc in results} == {doc.id for doc in docs}
+
     check_fetch_query()
 
     if optimize:

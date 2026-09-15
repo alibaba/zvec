@@ -154,12 +154,23 @@ def test_non_training_quantizer_uses_insert_time_vectors(
 )
 @pytest.mark.parametrize("index_kind", ["hnsw", "vamana"])
 @pytest.mark.parametrize("use_flat_contiguous_memory", [False, True])
+@pytest.mark.parametrize(
+    "quantize_type",
+    [
+        QuantizeType.INT8,
+        QuantizeType.UNIFORM_UINT7,
+        QuantizeType.UNIFORM_UINT8,
+        QuantizeType.UNIFORM_UINT4,
+    ],
+    ids=["record_int8", "uniform_uint7", "uniform_uint8", "uniform_uint4"],
+)
 def test_refine_flat_native_storage_roundtrip(
     tmp_path,
     configured_flat_data_type,
     effective_flat_data_type,
     index_kind,
     use_flat_contiguous_memory,
+    quantize_type,
 ):
     dimension = 17
     initial_doc_count = 96
@@ -178,7 +189,7 @@ def test_refine_flat_native_storage_roundtrip(
             metric_type=MetricType.L2,
             m=16,
             ef_construction=100,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_flat_contiguous_memory=use_flat_contiguous_memory,
             **flat_data_type_option,
         )
@@ -187,7 +198,7 @@ def test_refine_flat_native_storage_roundtrip(
             metric_type=MetricType.L2,
             max_degree=16,
             search_list_size=64,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_flat_contiguous_memory=use_flat_contiguous_memory,
             **flat_data_type_option,
         )

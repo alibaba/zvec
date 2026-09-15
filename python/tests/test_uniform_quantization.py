@@ -1,4 +1,4 @@
-"""Exercise DB/Python uniform quantizers through persisted graph indexes."""
+"""Exercise Uniform schema validation, training, writes and persisted indexes."""
 
 import gc
 
@@ -19,6 +19,36 @@ from zvec import (
     VectorSchema,
 )
 from zvec.typing import DataType, MetricType, QuantizeType
+
+
+@pytest.mark.parametrize("param_type", [HnswIndexParam, VamanaIndexParam])
+@pytest.mark.parametrize("metric_type", [MetricType.IP, MetricType.COSINE])
+@pytest.mark.parametrize(
+    "quantize_type",
+    [
+        QuantizeType.UNIFORM_UINT7,
+        QuantizeType.UNIFORM_UINT8,
+        QuantizeType.UNIFORM_UINT4,
+    ],
+)
+def test_uniform_quantization_rejects_non_l2(
+    tmp_path, param_type, metric_type, quantize_type
+):
+    schema = CollectionSchema(
+        name="uniform_invalid_metric",
+        vectors=[
+            VectorSchema(
+                "dense",
+                DataType.VECTOR_FP32,
+                32,
+                index_param=param_type(
+                    metric_type=metric_type, quantize_type=quantize_type
+                ),
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="only supports L2 metric"):
+        zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)
 
 
 @pytest.mark.parametrize(

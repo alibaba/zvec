@@ -1519,6 +1519,46 @@ TEST_F(VamanaStreamerTest, TestConcurrentBuild) {
   ASSERT_GT(result.size(), 0UL);
 }
 
+TEST_F(VamanaStreamerTest, TestBruteForceByPrimaryKeysHonorsFilter) {
+  auto streamer = CreateVamanaStreamer();
+  ASSERT_TRUE(streamer);
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "PrimaryKeyFilter", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(context);
+  context->set_topk(2);
+  IndexQueryMeta meta(IndexMeta::DataType::DT_FP32, kDim);
+  std::array<float, kDim> query{};
+  std::array<float, kDim> other{};
+  other.fill(1.0f);
+  ASSERT_EQ(0, streamer->add_impl(10, query.data(), meta, context));
+  ASSERT_EQ(0, streamer->add_impl(20, other.data(), meta, context));
+  const std::vector<std::vector<uint64_t>> keys{{10, 20, 999}};
+
+  // A primary-key restriction does not replace the deletion/filter callback.
+  context->set_filter([](uint64_t key) { return key == 10; });
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
+  ASSERT_EQ(1U, context->result().size());
+  EXPECT_EQ(20U, context->result()[0].key());
+  EXPECT_FLOAT_EQ(static_cast<float>(kDim), context->result()[0].score());
+
+  context->set_filter([](uint64_t) { return true; });
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
+  EXPECT_TRUE(context->result().empty());
+
+  context->reset_filter();
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
+  ASSERT_EQ(2U, context->result().size());
+  EXPECT_EQ(10U, context->result()[0].key());
+}
+
 TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {
   constexpr size_t kTestDimension = 2;
 
