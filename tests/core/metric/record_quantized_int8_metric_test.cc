@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -174,6 +175,75 @@ TEST(RecordQuantizedInt8Metric,
 
 TEST(RecordQuantizedInt8Metric, VnniStoredPairsAndBatchesIncludeInt8Min) {
   CheckStoredPairsAndBatchRemainders(true);
+}
+
+TEST(RecordQuantizedInt8Metric, CosineDistanceMatrixMatchesDecodedRecords) {
+  // IVF stores full blocks as transposed 4-byte groups, including the
+  // quantization metadata. A single-pair kernel cannot read that layout or
+  // fill all M*N outputs, even when the CPU supports AVX-512 VNNI.
+  for (size_t dimension : {16UL, 64UL, 68UL}) {
+    const size_t encoded_dimension =
+        dimension + kTailBytes + sizeof(float);  // original cosine norm
+    auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+    ASSERT_NE(nullptr, metric);
+    IndexMeta meta(IndexMeta::DataType::DT_INT8, encoded_dimension);
+    ailego::Params params;
+    params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME,
+               std::string("Cosine"));
+    ASSERT_EQ(0, metric->init(meta, params));
+
+    const auto make_matrix = [dimension, encoded_dimension](
+                                 size_t count, int offset, float scale,
+                                 float bias) {
+      std::vector<int8_t> matrix(count * encoded_dimension, 0);
+      for (size_t i = 0; i < count; ++i) {
+        std::vector<int8_t> record(encoded_dimension, 0);
+        for (size_t d = 0; d < dimension; ++d) {
+          record[d] = static_cast<int8_t>(
+              (static_cast<int>(d * 7 + i * 13) + offset) % 255 - 127);
+        }
+        SetTail(&record, dimension, scale, bias);
+        const float norm = 1.0f;
+        std::memcpy(record.data() + dimension + kTailBytes, &norm,
+                    sizeof(norm));
+        for (size_t d = 0; d < encoded_dimension; d += sizeof(uint32_t)) {
+          std::memcpy(matrix.data() + d * count + i * sizeof(uint32_t),
+                      record.data() + d, sizeof(uint32_t));
+        }
+      }
+      return matrix;
+    };
+
+    for (size_t m = 1; m <= 32; m *= 2) {
+      for (size_t n = 1; n <= m; n *= 2) {
+        SCOPED_TRACE(testing::Message() << "dimension=" << dimension
+                                        << ", m=" << m << ", n=" << n);
+        auto records = make_matrix(m, 3, 1.0f / 64, -0.5f);
+        auto queries = make_matrix(n, 17, 1.0f / 32, 0.25f);
+        auto distance = metric->distance_matrix(m, n);
+        ASSERT_TRUE(static_cast<bool>(distance));
+        std::vector<float> actual(m * n,
+                                  std::numeric_limits<float>::quiet_NaN());
+        distance(records.data(), queries.data(), encoded_dimension,
+                 actual.data());
+        for (size_t q = 0; q < n; ++q) {
+          for (size_t r = 0; r < m; ++r) {
+            double expected = 0.0;
+            for (size_t d = 0; d < dimension; ++d) {
+              const int record_code =
+                  static_cast<int>((d * 7 + r * 13 + 3) % 255) - 127;
+              const int query_code =
+                  static_cast<int>((d * 7 + q * 13 + 17) % 255) - 127;
+              expected -=
+                  (record_code / 64.0 - 0.5) * (query_code / 32.0 + 0.25);
+            }
+            EXPECT_NEAR(expected, actual[q * m + r], 1e-4)
+                << "record=" << r << ", query=" << q;
+          }
+        }
+      }
+    }
+  }
 }
 
 }  // namespace

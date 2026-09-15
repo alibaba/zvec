@@ -14,6 +14,7 @@
 
 #include "db/index/segment/segment_helper.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -21,6 +22,9 @@
 #include <set>
 #include <thread>
 #include <variant>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 #include <arrow/array/array_binary.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
@@ -527,6 +531,114 @@ TEST_F(SegmentHelperTest,
   ASSERT_GT(output_segment->get_quant_vector_indexer("dense_fp32").size(), 0u);
 }
 
+TEST_F(SegmentHelperTest, QuantizedIvfClosesRawFlatBeforeBuildingIndex) {
+  auto schema = std::make_shared<CollectionSchema>(col_name);
+  auto field = std::make_shared<FieldSchema>(
+      "vector", DataType::VECTOR_FP32, 16, false,
+      std::make_shared<IVFIndexParams>(MetricType::L2, 4, 2, false,
+                                       QuantizeType::FP16));
+  schema->add_field(field);
+  auto version_manager = CreateVersionManager(*schema);
+  auto seg1 = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      WriteOptions(), 0, 32);
+  auto seg2 = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 1, 32, id_map, delete_store, version_manager,
+      WriteOptions(), 32, 32);
+  ASSERT_NE(seg1, nullptr);
+  ASSERT_NE(seg2, nullptr);
+  ASSERT_TRUE(seg1->flush().ok());
+  ASSERT_TRUE(seg2->flush().ok());
+
+  for (bool fail_quantized_dump : {false, true}) {
+    SCOPED_TRACE(fail_quantized_dump);
+    const auto output_path =
+        col_path + (fail_quantized_dump ? "/failed_reduce" : "/reduce");
+    ASSERT_TRUE(FileHelper::CreateDirectory(output_path));
+    const auto raw_path =
+        FileHelper::MakeVectorIndexPath(output_path, field->name(), 0);
+    const auto quantized_path =
+        FileHelper::MakeQuantizeVectorIndexPath(output_path, field->name(), 1);
+    BlockID next_block_id = 0;
+    std::function<BlockID()> next_block = [&]() {
+      if (next_block_id == 1) {
+        EXPECT_TRUE(FileHelper::FileExists(raw_path));
+#if !defined(_WIN32)
+        // This callback runs after the raw merge and before the quantized
+        // builder is opened. Check the actual file lifetime, not an RSS
+        // threshold or a final-state-only fetch assertion.
+        struct stat raw_stat {};
+        EXPECT_EQ(::stat(raw_path.c_str(), &raw_stat), 0);
+#if defined(__linux__)
+        const auto *descriptor_path = "/proc/self/fd";
+#else
+        const auto *descriptor_path = "/dev/fd";
+#endif
+        // Some mobile sandboxes do not expose the descriptor directory;
+        // still exercise persisted data and the failed-build path there.
+        std::error_code descriptor_error;
+        std::filesystem::directory_iterator descriptor_entry(descriptor_path,
+                                                             descriptor_error);
+        for (; !descriptor_error &&
+               descriptor_entry != std::filesystem::directory_iterator{};
+             descriptor_entry.increment(descriptor_error)) {
+          const auto descriptor = descriptor_entry->path().filename().string();
+          if (descriptor.empty() ||
+              descriptor.find_first_not_of("0123456789") != std::string::npos) {
+            continue;
+          }
+          struct stat descriptor_stat {};
+          if (::fstat(std::stoi(descriptor), &descriptor_stat) == 0) {
+            EXPECT_FALSE(raw_stat.st_dev == descriptor_stat.st_dev &&
+                         raw_stat.st_ino == descriptor_stat.st_ino)
+                << "raw Flat is still open during IVF construction";
+          }
+        }
+#endif
+        if (fail_quantized_dump) {
+          EXPECT_TRUE(FileHelper::CreateDirectory(quantized_path));
+        }
+      }
+      return next_block_id++;
+    };
+    std::vector<BlockMeta> blocks;
+    auto status = SegmentHelper::ReduceVectorIndex(
+        schema, {seg1, seg2}, output_path, nullptr, next_block, 0, 63, 64, 1,
+        &blocks);
+    EXPECT_EQ(status.ok(), !fail_quantized_dump) << status.message();
+    EXPECT_EQ(next_block_id, 2);
+
+    // Closing the new raw index must not delete its original-precision
+    // vectors, including when the subsequent quantized build fails.
+    auto raw_field = std::make_shared<FieldSchema>(*field);
+    raw_field->set_index_params(
+        std::make_shared<FlatIndexParams>(MetricType::L2));
+    VectorColumnIndexer raw(raw_path, *raw_field);
+    ASSERT_TRUE(raw.Open({true, false, true}).ok());
+    EXPECT_EQ(raw.doc_count(), 64);
+    for (uint32_t id : {0U, 31U, 32U, 63U}) {
+      auto fetched = raw.Fetch(id);
+      ASSERT_TRUE(fetched.has_value());
+      const auto &bytes = std::get<vector_column_params::DenseVectorBuffer>(
+                              fetched->vector_buffer)
+                              .data;
+      const std::vector<float> expected(16, static_cast<float>(id) + 0.1f);
+      EXPECT_EQ(bytes,
+                std::string(reinterpret_cast<const char *>(expected.data()),
+                            expected.size() * sizeof(float)));
+      EXPECT_NE((id < 32 ? seg1 : seg2)->Fetch(id), nullptr);
+    }
+    EXPECT_TRUE(raw.Close().ok());
+    if (!fail_quantized_dump) {
+      ASSERT_EQ(blocks.size(), 2);
+      VectorColumnIndexer quantized(quantized_path, *field);
+      ASSERT_TRUE(quantized.Open({true, false, true}).ok());
+      EXPECT_EQ(quantized.doc_count(), 64);
+      EXPECT_TRUE(quantized.Close().ok());
+    }
+  }
+}
+
 struct SegmentCompactReuseParam {
   IndexParams::Ptr vector_index_params;
   IndexType expected_output_type;
@@ -575,12 +687,6 @@ class SegmentCompactReuseTest
     float score;
   };
 
-  // CreateDoc seeds VECTOR_FP32 with a constant vector of value (doc_id+0.1f).
-  static std::vector<float> MakeFp32QueryVector(uint64_t doc_id_value,
-                                                uint32_t dim) {
-    return std::vector<float>(dim, static_cast<float>(doc_id_value) + 0.1f);
-  }
-
   static std::vector<ScoredDoc> RunSearch(
       const VectorColumnIndexer::Ptr &indexer, const std::vector<float> &qvec,
       uint32_t topk, const zvec::QueryParams::Ptr &query_params) {
@@ -599,6 +705,7 @@ class SegmentCompactReuseTest
     if (vec_res == nullptr) return {};
     std::vector<ScoredDoc> out;
     for (auto it = vec_res->create_iterator(); it->valid(); it->next()) {
+      EXPECT_TRUE(std::isfinite(it->score())) << "doc_id=" << it->doc_id();
       out.push_back({it->doc_id(), it->score()});
     }
     return out;
@@ -676,13 +783,15 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
 
   // Capture groundtruth via FlatQuery on each source segment while every
   // segment is still backed by a flat indexer (before seg[0] is optimized).
-  const std::vector<uint64_t> query_doc_values{0, kDocsPerSeg,
-                                               kSegCount * kDocsPerSeg - 1};
+  // CreateDoc uses constant vectors of value (doc_id + 0.1f). Positive
+  // constant queries preserve their IP ranking. Use exactly representable
+  // FP16 values that keep even the largest dot product below 65504.
+  const std::vector<float> query_values{0.125f, 0.25f, 0.5f};
   std::vector<std::set<uint64_t>> groundtruth;
-  groundtruth.reserve(query_doc_values.size());
+  groundtruth.reserve(query_values.size());
   auto flat_qp = std::make_shared<zvec::FlatQueryParams>();
-  for (uint64_t qv : query_doc_values) {
-    auto qvec = MakeFp32QueryVector(qv, kDim);
+  for (float qv : query_values) {
+    const std::vector<float> qvec(kDim, qv);
     std::vector<std::vector<ScoredDoc>> per_seg;
     per_seg.reserve(segs.size());
     // Per-segment indexers use block-local doc ids (0..kDocsPerSeg-1).
@@ -741,8 +850,8 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   // groundtruth. Quantized indexers are allowed a small recall hit.
   auto linear_qp = MakeIsLinearQueryParam(param.expected_output_type);
   const double kMinRecall = quantized ? 0.8 : 1.0;
-  for (size_t qi = 0; qi < query_doc_values.size(); ++qi) {
-    auto qvec = MakeFp32QueryVector(query_doc_values[qi], kDim);
+  for (size_t qi = 0; qi < query_values.size(); ++qi) {
+    const std::vector<float> qvec(kDim, query_values[qi]);
     auto hits = RunSearch(out_indexers.front(), qvec, kTopK, linear_qp);
     ASSERT_EQ(hits.size(), kTopK);
     size_t intersect = 0;
@@ -751,7 +860,7 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
     }
     double recall = static_cast<double>(intersect) / kTopK;
     EXPECT_GE(recall, kMinRecall)
-        << "query[" << qi << "] (value=" << query_doc_values[qi]
+        << "query[" << qi << "] (value=" << query_values[qi]
         << ") recall=" << recall;
   }
 }
@@ -770,10 +879,15 @@ INSTANTIATE_TEST_SUITE_P(Hnsw, SegmentCompactReuseTest,
 
 INSTANTIATE_TEST_SUITE_P(
     Ivf, SegmentCompactReuseTest,
-    testing::Values(SegmentCompactReuseParam{
-        std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
-                                         QuantizeType::UNDEFINED),
-        IndexType::IVF}));
+    testing::Values(
+        SegmentCompactReuseParam{
+            std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
+                                             QuantizeType::UNDEFINED),
+            IndexType::IVF},
+        SegmentCompactReuseParam{
+            std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
+                                             QuantizeType::FP16),
+            IndexType::IVF}));
 
 #if RABITQ_SUPPORTED
 INSTANTIATE_TEST_SUITE_P(HnswRabitq, SegmentCompactReuseTest,

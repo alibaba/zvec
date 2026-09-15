@@ -11,9 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstdint>
+#include <cstring>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/turbo/turbo.h>
+#include "utility/ordinal_access_holder.h"
 
 namespace zvec {
 namespace core {
@@ -34,8 +37,66 @@ turbo::ConvertFunc ResolveFp16ConvertFunc() {
 
 /*! Half Float Holder
  */
-class HalfFloatHolder : public IndexHolder {
+class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
  public:
+  class OrdinalReader : public OrdinalAccessHolder::Reader {
+   public:
+    OrdinalReader(IndexHolder::Pointer front,
+                  OrdinalAccessHolder::Reader::Pointer reader,
+                  turbo::ConvertFunc convert_func)
+        : front_(std::move(front)),
+          reader_(std::move(reader)),
+          convert_func_(convert_func) {}
+
+    int read(size_t ordinal, uint64_t *key, const void **data) override {
+      if (!key || !data) {
+        return IndexError_InvalidArgument;
+      }
+      *data = nullptr;
+      if (ordinal >= front_->count()) {
+        return IndexError_OutOfRange;
+      }
+      uint64_t source_key = 0;
+      const void *source_data = nullptr;
+      int ret = reader_->read(ordinal, &source_key, &source_data);
+      if (ret != 0) {
+        return ret;
+      }
+      if (!source_data) {
+        return IndexError_Runtime;
+      }
+
+      output_.resize(front_->dimension());
+      // SIMD conversion accepts unaligned loads, but scalar paths still need
+      // natural float alignment. Copy only byte-unaligned provider storage.
+      if (reinterpret_cast<uintptr_t>(source_data) % alignof(float) != 0) {
+        input_.resize(front_->dimension());
+        std::memcpy(input_.data(), source_data, input_.size() * sizeof(float));
+        source_data = input_.data();
+      }
+      // Consume reused provider storage before the next source read/reset.
+      convert_func_(static_cast<const float *>(source_data), output_.size(),
+                    output_.data());
+      *key = source_key;
+      *data = output_.data();
+      return 0;
+    }
+
+    void reset() override {
+      reader_->reset();
+      std::vector<float>().swap(input_);
+      std::vector<uint16_t>().swap(output_);
+    }
+
+   private:
+    // The source must outlive its reader, including reader destruction.
+    IndexHolder::Pointer front_;
+    OrdinalAccessHolder::Reader::Pointer reader_;
+    turbo::ConvertFunc convert_func_;
+    std::vector<float> input_{};
+    std::vector<uint16_t> output_{};
+  };
+
   /*! Half Float Holder Iterator
    */
   class Iterator : public IndexHolder::Iterator {
@@ -126,6 +187,29 @@ class HalfFloatHolder : public IndexHolder {
     return iter ? IndexHolder::Iterator::Pointer(
                       new HalfFloatHolder::Iterator(this, std::move(iter)))
                 : IndexHolder::Iterator::Pointer();
+  }
+
+  int create_ordinal_reader(
+      OrdinalAccessHolder::Reader::Pointer *reader) override {
+    if (!reader) {
+      return IndexError_InvalidArgument;
+    }
+    auto *source = dynamic_cast<OrdinalAccessHolder *>(front_.get());
+    if (!source) {
+      return IndexError_NotImplemented;
+    }
+    OrdinalAccessHolder::Reader::Pointer source_reader;
+    int ret = source->create_ordinal_reader(&source_reader);
+    if (ret != 0) {
+      return ret;
+    }
+    if (!source_reader) {
+      return IndexError_Runtime;
+    }
+    // Do not replace the caller's reader unless creation fully succeeds.
+    reader->reset(
+        new OrdinalReader(front_, std::move(source_reader), convert_func_));
+    return 0;
   }
 
  public:
