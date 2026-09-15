@@ -48,7 +48,7 @@ struct IndexFactory {
   static bool HasMetric(const std::string &name);
 
   //! Retrieve all Metric classes
-  static std::vector<std::string> AllMetrics(void);
+  static std::vector<std::string> AllMetrics();
 
   //! Create a index dumper by name
   static IndexDumper::Pointer CreateDumper(const std::string &name);
@@ -57,13 +57,13 @@ struct IndexFactory {
   static bool HasDumper(const std::string &name);
 
   //! Retrieve all dumper classes
-  static std::vector<std::string> AllDumpers(void);
+  static std::vector<std::string> AllDumpers();
 
   //! Test if the container is exist
   static bool HasContainer(const std::string &name);
 
   //! Retrieve all container classes
-  static std::vector<std::string> AllContainers(void);
+  static std::vector<std::string> AllContainers();
 
   //! Create a index storage by name
   static IndexStorage::Pointer CreateStorage(const std::string &name);
@@ -72,7 +72,7 @@ struct IndexFactory {
   static bool HasStorage(const std::string &name);
 
   //! Retrieve all storage classes
-  static std::vector<std::string> AllStorages(void);
+  static std::vector<std::string> AllStorages();
 
   //! Create a index converter by name
   static IndexConverter::Pointer CreateConverter(const std::string &name);
@@ -81,7 +81,7 @@ struct IndexFactory {
   static bool HasConverter(const std::string &name);
 
   //! Retrieve all converter classes
-  static std::vector<std::string> AllConverters(void);
+  static std::vector<std::string> AllConverters();
 
   //! Create a index reformer by name
   static IndexReformer::Pointer CreateReformer(const std::string &name);
@@ -90,7 +90,7 @@ struct IndexFactory {
   static bool HasReformer(const std::string &name);
 
   //! Retrieve all reformer classes
-  static std::vector<std::string> AllReformers(void);
+  static std::vector<std::string> AllReformers();
 
   //! Create a index trainer by name
   static IndexTrainer::Pointer CreateTrainer(const std::string &name);
@@ -99,7 +99,7 @@ struct IndexFactory {
   static bool HasTrainer(const std::string &name);
 
   //! Retrieve all trainer classes
-  static std::vector<std::string> AllTrainers(void);
+  static std::vector<std::string> AllTrainers();
 
   //! Create a index builder by name
   static IndexBuilder::Pointer CreateBuilder(const std::string &name);
@@ -108,7 +108,7 @@ struct IndexFactory {
   static bool HasBuilder(const std::string &name);
 
   //! Retrieve all builder classes
-  static std::vector<std::string> AllBuilders(void);
+  static std::vector<std::string> AllBuilders();
 
   //! Create a index searcher by name
   static IndexSearcher::Pointer CreateSearcher(const std::string &name);
@@ -117,7 +117,7 @@ struct IndexFactory {
   static bool HasSearcher(const std::string &name);
 
   //! Retrieve all searcher classes
-  static std::vector<std::string> AllSearchers(void);
+  static std::vector<std::string> AllSearchers();
 
   //! Create a index streamer by name
   static IndexStreamer::Pointer CreateStreamer(const std::string &name);
@@ -126,7 +126,7 @@ struct IndexFactory {
   static bool HasStreamer(const std::string &name);
 
   //! Retrieve all streamer classes
-  static std::vector<std::string> AllStreamers(void);
+  static std::vector<std::string> AllStreamers();
 
   //! Create a index reducer by name
   static IndexReducer::Pointer CreateReducer(const std::string &name);
@@ -135,7 +135,7 @@ struct IndexFactory {
   static bool HasReducer(const std::string &name);
 
   //! Retrieve all reducer classes
-  static std::vector<std::string> AllReducers(void);
+  static std::vector<std::string> AllReducers();
 
   //! Create a index cluster by name
   static IndexCluster::Pointer CreateCluster(const std::string &name);
@@ -144,7 +144,7 @@ struct IndexFactory {
   static bool HasCluster(const std::string &name);
 
   //! Retrieve all cluster classes
-  static std::vector<std::string> AllClusters(void);
+  static std::vector<std::string> AllClusters();
 
   //! Create a index streamer reducer by name
   static IndexStreamerReducer::Pointer CreateStreamerReducer(
@@ -154,7 +154,7 @@ struct IndexFactory {
   static bool HasStreamerReducer(const std::string &name);
 
   //! Retrieve all streamer reducer classes
-  static std::vector<std::string> AllStreamerReducers(void);
+  static std::vector<std::string> AllStreamerReducers();
 
   //! Create a refiner by name
   static IndexRefiner::Pointer CreateRefiner(const std::string &name);
@@ -163,7 +163,7 @@ struct IndexFactory {
   static bool HasRefiner(const std::string &name);
 
   //! Retrieve all refiner classes
-  static std::vector<std::string> AllRefiners(void);
+  static std::vector<std::string> AllRefiners();
 
   //! Create a quantizer by name
   static std::shared_ptr<zvec::turbo::Quantizer> CreateQuantizer(
@@ -173,7 +173,7 @@ struct IndexFactory {
   static bool HasQuantizer(const std::string &name);
 
   //! Retrieve all quantizer classes
-  static std::vector<std::string> AllQuantizers(void);
+  static std::vector<std::string> AllQuantizers();
 };
 
 //! Register Index Metric

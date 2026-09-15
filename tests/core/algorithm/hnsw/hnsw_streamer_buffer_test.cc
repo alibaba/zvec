@@ -22,8 +22,8 @@ constexpr size_t static dim = 16;
 
 class HnswStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 
@@ -34,7 +34,7 @@ class HnswStreamerTest : public testing::Test {
 std::string HnswStreamerTest::dir_("hnsw_streamer_buffer_test_dir/");
 std::shared_ptr<IndexMeta> HnswStreamerTest::index_meta_ptr_;
 
-void HnswStreamerTest::SetUp(void) {
+void HnswStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (std::nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
@@ -42,7 +42,7 @@ void HnswStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void HnswStreamerTest::TearDown(void) {
+void HnswStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
@@ -334,7 +334,8 @@ TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
+  ASSERT_EQ(0,
+            read_storage->open(dir_ + "Test/TestHnswSearchBufferMMap", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
   size_t topk = 3;
   auto provider = read_streamer->create_provider();

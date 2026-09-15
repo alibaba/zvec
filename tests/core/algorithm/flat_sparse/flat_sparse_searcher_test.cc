@@ -38,8 +38,8 @@ constexpr size_t static sparse_dim_count = 16;
 
 class FlatSparseSearcherTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void generate_sparse_data(
       size_t cnt, uint32_t sparse_dim_count,
       std::vector<NumericalVector<uint32_t>> &sparse_indices_list,
@@ -82,7 +82,7 @@ void FlatSparseSearcherTest::generate_sparse_data(
 }
 
 
-void FlatSparseSearcherTest::SetUp(void) {
+void FlatSparseSearcherTest::SetUp() {
   LoggerBroker::SetLevel(Logger::LEVEL_WARN);
 
   index_meta_ptr_.reset(new IndexMeta(IndexMeta::MetaType::MT_SPARSE,
@@ -92,7 +92,7 @@ void FlatSparseSearcherTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void FlatSparseSearcherTest::TearDown(void) {
+void FlatSparseSearcherTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

@@ -383,12 +383,13 @@ int HNSWIndex::_prepare_for_search(
 
 int HNSWIndex::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
+  if (search_param->refiner_param->scale_factor_ != 0) {
+    return Index::_get_coarse_search_topk(search_param);
+  }
+
   const auto &hnsw_search_param =
       std::dynamic_pointer_cast<HNSWQueryParam>(search_param);
-
-  // scale_factor doesn't take effect for hnsw.
-  auto ret = std::max(search_param->topk, hnsw_search_param->ef_search);
-  return ret;
+  return std::max(search_param->topk, hnsw_search_param->ef_search);
 }
 
 }  // namespace zvec::core_interface

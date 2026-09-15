@@ -173,7 +173,7 @@ int FlatStreamer<BATCH_SIZE>::open(IndexStorage::Pointer stg) {
 }
 
 template <size_t BATCH_SIZE>
-int FlatStreamer<BATCH_SIZE>::close(void) {
+int FlatStreamer<BATCH_SIZE>::close() {
   LOG_DEBUG("FlatStreamer close");
 
   entity_->flush_linear_meta();
@@ -211,8 +211,8 @@ int FlatStreamer<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
 }
 
 template <size_t BATCH_SIZE>
-IndexStreamer::Context::UPointer FlatStreamer<BATCH_SIZE>::create_context(
-    void) const {
+IndexStreamer::Context::UPointer FlatStreamer<BATCH_SIZE>::create_context()
+    const {
   if (state_ != STATE_OPENED) {
     LOG_ERROR("Failed to create Context, open storage first!");
     return Context::UPointer();
@@ -222,7 +222,7 @@ IndexStreamer::Context::UPointer FlatStreamer<BATCH_SIZE>::create_context(
 }
 
 template <size_t BATCH_SIZE>
-IndexProvider::Pointer FlatStreamer<BATCH_SIZE>::create_provider(void) const {
+IndexProvider::Pointer FlatStreamer<BATCH_SIZE>::create_provider() const {
   return IndexProvider::Pointer(new (std::nothrow)
                                     FlatStreamerProvider<BATCH_SIZE>(this));
 }

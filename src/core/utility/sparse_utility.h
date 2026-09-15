@@ -51,7 +51,7 @@ struct VectorItem {
   // converted or turbo-quantized for the target streamer.
   bool needs_convert_{false};
 
-  VectorItem() {}
+  VectorItem() = default;
   VectorItem(key_t pkey, std::vector<uint8_t> vec)
       : pkey_(pkey), vec_(std::move(vec)) {}
   VectorItem(key_t pkey, std::vector<uint8_t> vec, bool needs_convert)
@@ -70,7 +70,7 @@ struct SparseVectorItem {
   std::vector<uint32_t> sparse_indices_{};
   std::string sparse_values_{};
 
-  SparseVectorItem() {}
+  SparseVectorItem() = default;
   SparseVectorItem(key_t pkey, std::vector<uint32_t> sparse_indices,
                    std::string sparse_values)
       : pkey_(pkey),

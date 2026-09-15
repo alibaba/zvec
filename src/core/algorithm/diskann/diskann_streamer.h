@@ -26,8 +26,8 @@ class DiskAnnStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::Pointer;
 
  public:
-  DiskAnnStreamer(void);
-  ~DiskAnnStreamer(void);
+  DiskAnnStreamer();
+  ~DiskAnnStreamer();
 
   DiskAnnStreamer(const DiskAnnStreamer &) = delete;
   DiskAnnStreamer &operator=(const DiskAnnStreamer &) = delete;
@@ -44,13 +44,13 @@ class DiskAnnStreamer : public IndexStreamer {
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Searcher
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Load Index from storage
   int open(IndexStorage::Pointer storage) override;
 
   //! Unload index from storage
-  int unload(void) override;
+  int unload() override;
 
   //! KNN Search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -124,15 +124,15 @@ class DiskAnnStreamer : public IndexStreamer {
   //! Create a vector iterator backed by the aligned DiskAnn file reader.
   //! Used by the merge code path (``MixedStreamerReducer``) to walk every
   //! vector held by this streamer.
-  IndexSearcher::Provider::Pointer create_provider(void) const override;
+  IndexSearcher::Provider::Pointer create_provider() const override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -140,7 +140,7 @@ class DiskAnnStreamer : public IndexStreamer {
     return 0;
   }
 
-  int close(void) override {
+  int close() override {
     return this->unload();
   }
 

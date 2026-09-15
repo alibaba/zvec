@@ -25,10 +25,10 @@ class LinearSeeker : public Seeker {
   typedef std::shared_ptr<LinearSeeker> Pointer;
 
   //! Constructor
-  LinearSeeker(void) : meta_(), metric_(), features_() {}
+  LinearSeeker() : meta_(), metric_(), features_() {}
 
   //! Destructor
-  ~LinearSeeker(void) {}
+  ~LinearSeeker() = default;
 
   //! Initialize Seeker
   int init(const IndexMeta &meta) override {
@@ -56,13 +56,13 @@ class LinearSeeker : public Seeker {
   }
 
   //! Cleanup Seeker
-  int cleanup(void) override {
+  int cleanup() override {
     features_.reset();
     return 0;
   }
 
   //! Reset Seeker
-  int reset(void) override {
+  int reset() override {
     features_.reset();
     return 0;
   }
@@ -83,7 +83,7 @@ class LinearSeeker : public Seeker {
   int seek(const void *query, size_t len, Document *out) override;
 
   //! Retrieve the original features
-  IndexFeatures::Pointer original(void) const override {
+  IndexFeatures::Pointer original() const override {
     return features_;
   }
 

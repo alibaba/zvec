@@ -18,9 +18,9 @@
 namespace zvec {
 namespace core {
 
-HnswSparseSearcherEntity::HnswSparseSearcherEntity() {}
+HnswSparseSearcherEntity::HnswSparseSearcherEntity() = default;
 
-int HnswSparseSearcherEntity::cleanup(void) {
+int HnswSparseSearcherEntity::cleanup() {
   container_.reset();
   sparse_vector_meta_.reset();
   keys_.reset();

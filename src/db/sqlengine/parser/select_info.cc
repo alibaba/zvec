@@ -19,7 +19,7 @@ namespace zvec::sqlengine {
 SelectInfo::SelectInfo(const std::string &m_table_name)
     : BaseInfo(m_table_name) {}
 
-SelectInfo::~SelectInfo() {}
+SelectInfo::~SelectInfo() = default;
 
 SelectInfo::SelectInfo(const SelectInfo &info) : BaseInfo(info) {
   if (info.selected_elems_.empty() == false) {

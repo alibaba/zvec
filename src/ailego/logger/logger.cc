@@ -37,7 +37,7 @@ struct ConsoleLogger : public Logger {
   }
 
   //! Cleanup Logger
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 

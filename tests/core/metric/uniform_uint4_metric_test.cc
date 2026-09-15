@@ -47,7 +47,7 @@ TEST(UniformUint4Metric, PairAndBatchMatchScalarExactly) {
     ASSERT_TRUE(static_cast<bool>(distance));
     ASSERT_TRUE(static_cast<bool>(batch_distance));
 
-    constexpr size_t count = 7;
+    constexpr size_t count = 17;
     std::vector<uint8_t> query(encoded_dimension);
     std::vector<std::vector<uint8_t>> rows(
         count, std::vector<uint8_t>(encoded_dimension));
@@ -65,9 +65,21 @@ TEST(UniformUint4Metric, PairAndBatchMatchScalarExactly) {
       distance(rows[i].data(), query.data(), encoded_dimension, &pair);
       EXPECT_EQ(expected[i], pair);
     }
-    batch_distance(pointers.data(), query.data(), count, encoded_dimension,
-                   actual.data(), nullptr);
-    EXPECT_EQ(expected, actual) << "logical_dimension=" << logical_dimension;
+    for (size_t batch_count = 0; batch_count <= count; ++batch_count) {
+      std::fill(actual.begin(), actual.end(), -1.0f);
+      batch_distance(pointers.data(), query.data(), batch_count,
+                     encoded_dimension, actual.data(), nullptr);
+      for (size_t i = 0; i < batch_count; ++i) {
+        EXPECT_EQ(expected[i], actual[i])
+            << "logical_dimension=" << logical_dimension
+            << " batch_count=" << batch_count << " lane=" << i;
+      }
+      for (size_t i = batch_count; i < count; ++i) {
+        EXPECT_EQ(-1.0f, actual[i]) << "batch wrote past its output range";
+      }
+    }
+    // An empty batch must not dereference input or output pointers.
+    batch_distance(nullptr, nullptr, 0, encoded_dimension, nullptr, nullptr);
   }
 }
 

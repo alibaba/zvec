@@ -214,7 +214,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   return 0;
 }
 
-int HnswSparseStreamer::cleanup(void) {
+int HnswSparseStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -321,7 +321,7 @@ int HnswSparseStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int HnswSparseStreamer::close(void) {
+int HnswSparseStreamer::close() {
   LOG_INFO("HnswSparseStreamer close");
 
   stats_.clear();
@@ -361,7 +361,7 @@ int HnswSparseStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_.dump(dumper);
 }
 
-IndexStreamer::Context::Pointer HnswSparseStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer HnswSparseStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -400,7 +400,7 @@ IndexStreamer::Context::Pointer HnswSparseStreamer::create_context(void) const {
 }
 
 IndexStreamer::SparseProvider::Pointer
-HnswSparseStreamer::create_sparse_provider(void) const {
+HnswSparseStreamer::create_sparse_provider() const {
   LOG_DEBUG("HnswSparseStreamer create sparse provider");
 
   auto entity = entity_.clone();

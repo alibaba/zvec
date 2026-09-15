@@ -54,7 +54,7 @@ class SparseChunkBroker {
   int open(IndexStorage::Pointer stg, size_t max_index_size, size_t chunk_size,
            bool check_crc);
 
-  int close(void);
+  int close();
 
   int flush(uint64_t checkpoint);
 
@@ -75,11 +75,11 @@ class SparseChunkBroker {
     return chunk_meta_.chunk_cnts[type];
   }
 
-  inline bool dirty(void) const {
+  inline bool dirty() const {
     return dirty_;
   }
 
-  inline void mark_dirty(void) {
+  inline void mark_dirty() {
     if (!dirty_) {
       dirty_ = true;
       chunk_meta_.revision_id += 1;
@@ -87,16 +87,16 @@ class SparseChunkBroker {
     }
   }
 
-  const IndexStorage::Pointer storage(void) const {
+  const IndexStorage::Pointer storage() const {
     return stg_;
   }
 
- private:
   SparseChunkBroker(const SparseChunkBroker &) = delete;
   SparseChunkBroker &operator=(const SparseChunkBroker &) = delete;
 
+ private:
   struct HnswSparseChunkMeta {
-    HnswSparseChunkMeta(void) {
+    HnswSparseChunkMeta() {
       memset(static_cast<void *>(this), 0, sizeof(HnswSparseChunkMeta));
     }
     void clear() {

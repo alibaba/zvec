@@ -44,7 +44,7 @@ class HalfFloatReformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -54,7 +54,7 @@ class HalfFloatReformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 
@@ -161,7 +161,7 @@ class HalfFloatSparseReformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -171,7 +171,7 @@ class HalfFloatSparseReformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

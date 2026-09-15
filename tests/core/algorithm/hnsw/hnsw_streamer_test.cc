@@ -63,8 +63,8 @@ std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
 
 class HnswStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
@@ -73,7 +73,7 @@ class HnswStreamerTest : public testing::Test {
 std::string HnswStreamerTest::dir_("hnsw_streamer_test_dir/");
 shared_ptr<IndexMeta> HnswStreamerTest::index_meta_ptr_;
 
-void HnswStreamerTest::SetUp(void) {
+void HnswStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, ailego::Params());
@@ -81,7 +81,7 @@ void HnswStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void HnswStreamerTest::TearDown(void) {
+void HnswStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
@@ -2115,16 +2115,16 @@ class TestDumper : public IndexDumper {
   int init(const ailego::Params &) override {
     return 0;
   }
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
   int create(const std::string &path) override {
     return 0;
   }
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return 0;
   }
-  int close(void) override {
+  int close() override {
     return 0;
   }
   int append(const std::string &id, size_t data_size, size_t padding_size,

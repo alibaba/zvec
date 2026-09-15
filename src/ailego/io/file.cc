@@ -195,13 +195,13 @@ bool File::open(const char *path, bool rdonly, bool direct) {
   return true;
 }
 
-void File::close(void) {
+void File::close() {
   ailego_return_if_false(native_handle_ != File::InvalidHandle);
   CloseSafely(native_handle_);
   native_handle_ = File::InvalidHandle;
 }
 
-void File::reset(void) {
+void File::reset() {
   ailego_return_if_false(native_handle_ != File::InvalidHandle);
   lseek(native_handle_, 0, SEEK_SET);
 }
@@ -278,7 +278,7 @@ size_t File::read(ssize_t off, void *buf, size_t len) {
   return total;
 }
 
-bool File::flush(void) {
+bool File::flush() {
   ailego_false_if_false(native_handle_ != File::InvalidHandle);
   return (fsync(native_handle_) == 0);
 }
@@ -295,14 +295,14 @@ bool File::truncate(size_t len) {
   return true;
 }
 
-size_t File::size(void) const {
+size_t File::size() const {
   struct stat fs;
   ailego_zero_if_false(native_handle_ != File::InvalidHandle &&
                        fstat(native_handle_, &fs) == 0);
   return (fs.st_size);
 }
 
-ssize_t File::offset(void) const {
+ssize_t File::offset() const {
   off_t off;
   ailego_zero_if_false(native_handle_ != File::InvalidHandle &&
                        (off = lseek(native_handle_, 0, SEEK_CUR)) != -1);
@@ -481,13 +481,13 @@ bool File::open(const char *path, bool rdonly, bool direct) {
   return true;
 }
 
-void File::close(void) {
+void File::close() {
   ailego_return_if_false(native_handle_ != File::InvalidHandle);
   CloseHandle(native_handle_);
   native_handle_ = File::InvalidHandle;
 }
 
-void File::reset(void) {
+void File::reset() {
   ailego_return_if_false(native_handle_ != File::InvalidHandle);
   SetFilePointer(native_handle_, 0, nullptr, FILE_BEGIN);
 }
@@ -606,7 +606,7 @@ size_t File::read(ssize_t off, void *buf, size_t len) {
   return total;
 }
 
-bool File::flush(void) {
+bool File::flush() {
   ailego_false_if_false(native_handle_ != File::InvalidHandle);
   return (!!FlushFileBuffers(native_handle_));
 }
@@ -641,14 +641,14 @@ bool File::truncate(size_t len) {
   return true;
 }
 
-size_t File::size(void) const {
+size_t File::size() const {
   LARGE_INTEGER file_size;
   ailego_zero_if_false(native_handle_ != File::InvalidHandle &&
                        GetFileSizeEx(native_handle_, &file_size));
   return (size_t)file_size.QuadPart;
 }
 
-ssize_t File::offset(void) const {
+ssize_t File::offset() const {
   LARGE_INTEGER file_size;
   LARGE_INTEGER file_size_new;
   file_size.QuadPart = 0;
@@ -754,7 +754,7 @@ bool File::MemoryUnlock(void *addr, size_t len) {
   return (!!VirtualUnlock(addr, len));
 }
 
-static inline int getpagesize(void) {
+static inline int getpagesize() {
   SYSTEM_INFO info;
   GetSystemInfo(&info);
   return info.dwPageSize;

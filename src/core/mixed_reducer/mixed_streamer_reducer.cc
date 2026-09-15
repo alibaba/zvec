@@ -44,7 +44,7 @@ int MixedStreamerReducer::init(const ailego::Params &params) {
   return 0;
 }
 
-int MixedStreamerReducer::cleanup(void) {
+int MixedStreamerReducer::cleanup() {
   streamers_.clear();
   target_streamer_->cleanup();
 

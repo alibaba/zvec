@@ -74,7 +74,7 @@ class CosineReformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -98,7 +98,7 @@ class CosineReformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

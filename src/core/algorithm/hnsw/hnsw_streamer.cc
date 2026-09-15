@@ -193,7 +193,7 @@ int HnswStreamer::init(
   return ret;
 }
 
-int HnswStreamer::cleanup(void) {
+int HnswStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -584,7 +584,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int HnswStreamer::close(void) {
+int HnswStreamer::close() {
   LOG_INFO("HnswStreamer close");
 
   stats_.clear();
@@ -625,7 +625,7 @@ int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_->dump(dumper);
 }
 
-IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer HnswStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -671,7 +671,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer HnswStreamer::create_provider(void) const {
+IndexProvider::Pointer HnswStreamer::create_provider() const {
   LOG_DEBUG("HnswStreamer create provider");
 
   auto entity = entity_->clone();
@@ -975,6 +975,52 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
+int HnswStreamer::search_candidates_impl(
+    const void *query, const IndexQueryMeta &qmeta, std::vector<uint64_t> &keys,
+    IndexStreamer::Context::Pointer &context) const {
+  keys.clear();
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) {
+    return ret;
+  }
+  HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to HnswContext failed");
+    return IndexError_Cast;
+  }
+  if (ctx->group_by_search()) {
+    return IndexError_InvalidArgument;
+  }
+
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+    return IndexRunner::search_candidates_impl(query, qmeta, keys, context);
+  }
+
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) {
+      return ret;
+    }
+  }
+
+  ctx->clear();
+  bind_search_dist_space(ctx);
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->reset_query(query, meta_);
+  ret = alg_->search(ctx);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("Hnsw searcher fast search failed");
+    return ret;
+  }
+  ctx->topk_to_keys(keys);
+
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
+  return 0;
+}
+
 void HnswStreamer::print_debug_info() {
   for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
     if (entity_->get_key(id) == kInvalidKey) {
@@ -1064,7 +1110,7 @@ int HnswStreamer::search_bf_impl(
     }
   } else {
     auto &filter = ctx->filter();
-    auto &topk = ctx->topk_heap();
+    auto &topk = ctx->search_heap().select<TopkHeap>();
 
     for (size_t q = 0; q < count; ++q) {
       ctx->reset_query(query, meta_);
@@ -1158,7 +1204,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     }
   } else {
     auto &filter = ctx->filter();
-    auto &topk = ctx->topk_heap();
+    auto &topk = ctx->search_heap().select<TopkHeap>();
 
     for (size_t q = 0; q < count; ++q) {
       ctx->reset_query(query, meta_);

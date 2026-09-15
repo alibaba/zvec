@@ -23,7 +23,7 @@
 
 using namespace zvec::ailego;
 
-static inline const char *IntelIntrinsics(void) {
+static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
@@ -83,7 +83,7 @@ TEST(NormMatrix, Norm2_General) {
 }
 
 template <size_t M>
-void TestNorm1Matrix(void) {
+void TestNorm1Matrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -113,7 +113,7 @@ void TestNorm1Matrix(void) {
 }
 
 template <size_t M>
-void TestNorm2Matrix(void) {
+void TestNorm2Matrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -143,7 +143,7 @@ void TestNorm2Matrix(void) {
 }
 
 template <size_t M>
-void TestSquaredNorm2Matrix(void) {
+void TestSquaredNorm2Matrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -225,7 +225,7 @@ TEST(NormMatrix, SquaredNorm2_Matrix) {
 }
 
 template <size_t M, size_t B, size_t D>
-void Norm1Benchmark(void) {
+void Norm1Benchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;
@@ -276,7 +276,7 @@ void Norm1Benchmark(void) {
 }
 
 template <size_t M, size_t B, size_t D>
-void Norm2Benchmark(void) {
+void Norm2Benchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;

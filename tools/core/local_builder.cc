@@ -82,7 +82,7 @@ void stop(int signo) {
   }
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: local_builder CONFIG.yaml [plugin file path]" << endl;
 }
 
@@ -399,7 +399,6 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
       return;
     }
     std::string ovec;
-    IndexQueryMeta ometa;
     for (uint32_t id = idx; id < sparse_holder->count() && !stop_now;
          id += thread_count) {
       uint64_t key = sparse_holder->get_key(id);

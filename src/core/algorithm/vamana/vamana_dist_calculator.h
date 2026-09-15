@@ -170,10 +170,10 @@ class VamanaDistCalculator {
     return dim_;
   }
 
- private:
   VamanaDistCalculator(const VamanaDistCalculator &) = delete;
   VamanaDistCalculator &operator=(const VamanaDistCalculator &) = delete;
 
+ private:
   const VamanaEntity *entity_;
   IndexMetric::MatrixDistance distance_;
   IndexMetric::MatrixBatchDistance batch_distance_;

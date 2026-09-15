@@ -66,7 +66,7 @@ class UniformUint7Metric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -86,7 +86,7 @@ class UniformUint7Metric : public IndexMetric {
   }
 
   //! Retrieve distance function for query (1x1)
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     return distance_matrix(1, 1);
   }
 
@@ -109,7 +109,7 @@ class UniformUint7Metric : public IndexMetric {
 
   //! Retrieve batch distance function
   //! Uses direct int8 batch L2 with prefetching
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     auto turbo_ret = turbo::get_batch_distance_func(
         turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
         turbo::QuantizeType::kUniform);
@@ -122,7 +122,7 @@ class UniformUint7Metric : public IndexMetric {
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
@@ -132,7 +132,7 @@ class UniformUint7Metric : public IndexMetric {
   }
 
   //! Retrieve if it supports training
-  bool support_train(void) const override {
+  bool support_train() const override {
     return false;
   }
 
@@ -140,12 +140,12 @@ class UniformUint7Metric : public IndexMetric {
   void normalize(float * /*score*/) const override {}
 
   //! Retrieve if it supports normalization
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return false;
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 

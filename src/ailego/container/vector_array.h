@@ -31,25 +31,20 @@ class NumericalVectorArray {
   using ValueType = typename NumericalVector<T>::ValueType;
 
   //! Constructor
-  NumericalVectorArray(void) {}
+  NumericalVectorArray() = default;
 
   //! Constructor
   explicit NumericalVectorArray(size_t dim) : dimension_(dim) {}
 
   //! Constructor
-  NumericalVectorArray(const NumericalVectorArray &rhs)
-      : dimension_(rhs.dimension_), buffer_(rhs.buffer_) {}
+  NumericalVectorArray(const NumericalVectorArray &rhs) = default;
 
   //! Constructor
   NumericalVectorArray(NumericalVectorArray &&rhs)
       : dimension_(rhs.dimension_), buffer_(std::move(rhs.buffer_)) {}
 
   //! Assignment
-  NumericalVectorArray &operator=(const NumericalVectorArray &rhs) {
-    dimension_ = rhs.dimension_;
-    buffer_ = rhs.buffer_;
-    return *this;
-  }
+  NumericalVectorArray &operator=(const NumericalVectorArray &rhs) = default;
 
   //! Assignment
   NumericalVectorArray &operator=(NumericalVectorArray &&rhs) {
@@ -129,7 +124,7 @@ class NumericalVectorArray {
   }
 
   //! Clear the vector array
-  void clear(void) {
+  void clear() {
     buffer_.clear();
   }
 
@@ -140,17 +135,17 @@ class NumericalVectorArray {
   }
 
   //! Requests the removal of unused capacity.
-  void shrink_to_fit(void) {
+  void shrink_to_fit() {
     buffer_.shrink_to_fit();
   }
 
   //! Retrieve pointer of data
-  ValueType *data(void) {
+  ValueType *data() {
     return reinterpret_cast<ValueType *>(&buffer_[0]);
   }
 
   //! Retrieve pointer of data
-  const ValueType *data(void) const {
+  const ValueType *data() const {
     return reinterpret_cast<const ValueType *>(buffer_.data());
   }
 
@@ -172,23 +167,23 @@ class NumericalVectorArray {
   }
 
   //! Test if the array is empty
-  bool empty(void) const {
+  bool empty() const {
     return buffer_.empty();
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const {
+  size_t count() const {
     return (dimension_ > 0 ? buffer_.size() / (dimension_ * sizeof(ValueType))
                            : 0u);
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const {
+  size_t dimension() const {
     return dimension_;
   }
 
   //! Retrieve size of array in bytes
-  size_t bytes(void) const {
+  size_t bytes() const {
     return buffer_.size();
   }
 
@@ -208,7 +203,7 @@ class NibbleVectorArray {
   using StoreType = typename NibbleVector<T>::StoreType;
 
   //! Constructor
-  NibbleVectorArray(void) {}
+  NibbleVectorArray() = default;
 
   //! Constructor
   explicit NibbleVectorArray(size_t dim)
@@ -217,19 +212,14 @@ class NibbleVectorArray {
                    << 1) {}
 
   //! Constructor
-  NibbleVectorArray(const NibbleVectorArray &rhs)
-      : dimension_(rhs.dimension_), buffer_(rhs.buffer_) {}
+  NibbleVectorArray(const NibbleVectorArray &rhs) = default;
 
   //! Constructor
   NibbleVectorArray(NibbleVectorArray &&rhs)
       : dimension_(rhs.dimension_), buffer_(std::move(rhs.buffer_)) {}
 
   //! Assignment
-  NibbleVectorArray &operator=(const NibbleVectorArray &rhs) {
-    dimension_ = rhs.dimension_;
-    buffer_ = rhs.buffer_;
-    return *this;
-  }
+  NibbleVectorArray &operator=(const NibbleVectorArray &rhs) = default;
 
   //! Assignment
   NibbleVectorArray &operator=(NibbleVectorArray &&rhs) {
@@ -307,7 +297,7 @@ class NibbleVectorArray {
   }
 
   //! Clear the vector array
-  void clear(void) {
+  void clear() {
     buffer_.clear();
   }
 
@@ -320,17 +310,17 @@ class NibbleVectorArray {
   }
 
   //! Requests the removal of unused capacity.
-  void shrink_to_fit(void) {
+  void shrink_to_fit() {
     buffer_.shrink_to_fit();
   }
 
   //! Retrieve pointer of data
-  StoreType *data(void) {
+  StoreType *data() {
     return reinterpret_cast<StoreType *>(&buffer_[0]);
   }
 
   //! Retrieve pointer of data
-  const StoreType *data(void) const {
+  const StoreType *data() const {
     return reinterpret_cast<const StoreType *>(buffer_.data());
   }
 
@@ -352,22 +342,22 @@ class NibbleVectorArray {
   }
 
   //! Test if the array is empty
-  bool empty(void) const {
+  bool empty() const {
     return buffer_.empty();
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const {
+  size_t count() const {
     return (dimension_ > 1 ? buffer_.size() / (dimension_ >> 1) : 0u);
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const {
+  size_t dimension() const {
     return dimension_;
   }
 
   //! Retrieve size of array in bytes
-  size_t bytes(void) const {
+  size_t bytes() const {
     return buffer_.size();
   }
 
@@ -386,7 +376,7 @@ class BinaryVectorArray {
   using ValueType = typename BinaryVector<T>::ValueType;
 
   //! Constructor
-  BinaryVectorArray(void) {}
+  BinaryVectorArray() = default;
 
   //! Constructor
   explicit BinaryVectorArray(size_t dim)
@@ -394,19 +384,14 @@ class BinaryVectorArray {
                    (sizeof(ValueType) << 3) * (sizeof(ValueType) << 3)) {}
 
   //! Constructor
-  BinaryVectorArray(const BinaryVectorArray &rhs)
-      : dimension_(rhs.dimension_), buffer_(rhs.buffer_) {}
+  BinaryVectorArray(const BinaryVectorArray &rhs) = default;
 
   //! Constructor
   BinaryVectorArray(BinaryVectorArray &&rhs)
       : dimension_(rhs.dimension_), buffer_(std::move(rhs.buffer_)) {}
 
   //! Assignment
-  BinaryVectorArray &operator=(const BinaryVectorArray &rhs) {
-    dimension_ = rhs.dimension_;
-    buffer_ = rhs.buffer_;
-    return *this;
-  }
+  BinaryVectorArray &operator=(const BinaryVectorArray &rhs) = default;
 
   //! Assignment
   BinaryVectorArray &operator=(BinaryVectorArray &&rhs) {
@@ -484,7 +469,7 @@ class BinaryVectorArray {
   }
 
   //! Clear the vector array
-  void clear(void) {
+  void clear() {
     buffer_.clear();
   }
 
@@ -496,17 +481,17 @@ class BinaryVectorArray {
   }
 
   //! Requests the removal of unused capacity.
-  void shrink_to_fit(void) {
+  void shrink_to_fit() {
     buffer_.shrink_to_fit();
   }
 
   //! Retrieve pointer of data
-  ValueType *data(void) {
+  ValueType *data() {
     return reinterpret_cast<ValueType *>(&buffer_[0]);
   }
 
   //! Retrieve pointer of data
-  const ValueType *data(void) const {
+  const ValueType *data() const {
     return reinterpret_cast<const ValueType *>(buffer_.data());
   }
 
@@ -528,22 +513,22 @@ class BinaryVectorArray {
   }
 
   //! Test if the array is empty
-  bool empty(void) const {
+  bool empty() const {
     return buffer_.empty();
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const {
+  size_t count() const {
     return (dimension_ > 0 ? buffer_.size() / (dimension_ >> 3) : 0u);
   }
 
   //! Retrieve dimension of vector
-  size_t dimension(void) const {
+  size_t dimension() const {
     return dimension_;
   }
 
   //! Retrieve size of array in bytes
-  size_t bytes(void) const {
+  size_t bytes() const {
     return buffer_.size();
   }
 

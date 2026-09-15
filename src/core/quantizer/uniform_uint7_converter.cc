@@ -42,7 +42,7 @@ class UniformUint7Converter : public IndexConverter {
   UniformUint7Converter(IndexMeta::DataType /*dst_type*/) {}
 
   //! Destructor
-  ~UniformUint7Converter() override {}
+  ~UniformUint7Converter() override = default;
 
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
@@ -95,7 +95,7 @@ class UniformUint7Converter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  int cleanup(void) override {
+  int cleanup() override {
     *stats_.mutable_trained_count() = 0;
     *stats_.mutable_transformed_count() = 0;
     holder_.reset();
@@ -223,17 +223,17 @@ class UniformUint7Converter : public IndexConverter {
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -251,27 +251,27 @@ class UniformUint7Converter : public IndexConverter {
         this->encode_record();
       }
 
-      ~Iterator(void) override {}
+      ~Iterator() override = default;
 
-      const void *data(void) const override {
+      const void *data() const override {
         return buffer_.data();
       }
 
-      bool is_valid(void) const override {
+      bool is_valid() const override {
         return front_iter_->is_valid();
       }
 
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return front_iter_->key();
       }
 
-      void next(void) override {
+      void next() override {
         front_iter_->next();
         this->encode_record();
       }
 
      private:
-      void encode_record(void) {
+      void encode_record() {
         if (!front_iter_->is_valid()) {
           return;
         }
@@ -308,28 +308,28 @@ class UniformUint7Converter : public IndexConverter {
           quantize_func_(
               turbo::get_uniform_quantize_func(turbo::DataType::kUint7)) {}
 
-    size_t count(void) const override {
+    size_t count() const override {
       return front_->count();
     }
 
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return original_dim_;
     }
 
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return IndexMeta::DataType::DT_INT8;
     }
 
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return IndexMeta::ElementSizeof(IndexMeta::DataType::DT_INT8,
                                       original_dim_);
     }
 
-    bool multipass(void) const override {
+    bool multipass() const override {
       return front_->multipass();
     }
 
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       auto iter = front_->create_iterator();
       return iter ? IndexHolder::Iterator::Pointer(
                         new UniformUint7Holder::Iterator(this, std::move(iter)))

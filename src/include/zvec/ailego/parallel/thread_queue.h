@@ -39,7 +39,7 @@ class ThreadQueue {
     ThreadWorker(ThreadQueue *owner) : owner_(owner) {}
 
     //! Destructor
-    ~ThreadWorker(void) {
+    ~ThreadWorker() {
       // Join the current thread
       if (thread_.joinable()) {
         thread_.join();
@@ -89,13 +89,13 @@ class ThreadQueue {
     }
 
     //! Wake the thread
-    void wake(void) {
+    void wake() {
       std::lock_guard<std::mutex> lock(mutex_);
       cond_.notify_one();
     }
 
     //! Notify thread stopped
-    void stop(void) {
+    void stop() {
       // Set stop flag as ture, then wake the thread
       stopping_ = true;
       std::lock_guard<std::mutex> lock(mutex_);
@@ -104,7 +104,7 @@ class ThreadQueue {
 
    protected:
     //! Thread worker callback
-    void worker(void) {
+    void worker() {
       owner_->mark_worker_started();
 
       ClosureHandler task;
@@ -140,13 +140,14 @@ class ThreadQueue {
       return true;
     }
 
-   private:
+   public:
     //! Disable them
-    ThreadWorker(void) = delete;
+    ThreadWorker() = delete;
     ThreadWorker(ThreadWorker &&) = delete;
     ThreadWorker(const ThreadWorker &) = delete;
     ThreadWorker &operator=(const ThreadWorker &) = delete;
 
+   private:
     //! Members
     ThreadQueue *owner_{nullptr};
     std::queue<ClosureHandler> queue_{};
@@ -158,7 +159,7 @@ class ThreadQueue {
   };
 
   //! Constructor
-  ThreadQueue(void)
+  ThreadQueue()
       : ThreadQueue{std::max(std::thread::hardware_concurrency(), 1u)} {}
 
   //! Constructor
@@ -169,7 +170,7 @@ class ThreadQueue {
   }
 
   //! Destructor
-  ~ThreadQueue(void) {
+  ~ThreadQueue() {
     this->stop();
     // Cleanup threads
     for (auto it = threads_.begin(); it != threads_.end(); ++it) {
@@ -183,7 +184,7 @@ class ThreadQueue {
   }
 
   //! Stop the thread
-  void stop(void) {
+  void stop() {
     // Stop all workers
     for (auto it = threads_.begin(); it != threads_.end(); ++it) {
       (*it)->stop();
@@ -191,30 +192,30 @@ class ThreadQueue {
   }
 
   //! Wake all worker threads
-  void wake(void) {
+  void wake() {
     for (auto it = threads_.begin(); it != threads_.end(); ++it) {
       (*it)->wake();
     }
   }
 
   //! Wait until all threads stopped processing
-  void wait_stop(void) {
+  void wait_stop() {
     std::unique_lock<std::mutex> lock(wait_mutex_);
     stopped_cond_.wait(lock, [this]() { return this->is_stopped(); });
   }
 
   //! Check if the pool is stopped
-  bool is_stopped(void) const {
+  bool is_stopped() const {
     return (worker_count_ == 0);
   }
 
   //! Retrieve count of worker in queue
-  size_t worker_count(void) const {
+  size_t worker_count() const {
     return worker_count_.load(std::memory_order_relaxed);
   }
 
   //! Retrieve thread count in queue
-  size_t count(void) const {
+  size_t count() const {
     return threads_.size();
   }
 
@@ -261,12 +262,12 @@ class ThreadQueue {
 
  protected:
   //! Mark a worker started
-  void mark_worker_started(void) {
+  void mark_worker_started() {
     ++worker_count_;
   }
 
   //! Mark a worker stopped
-  void mark_worker_stopped(void) {
+  void mark_worker_stopped() {
     // Decrease count of workers
     std::lock_guard<std::mutex> lock(wait_mutex_);
     if (--worker_count_ == 0) {
@@ -274,12 +275,13 @@ class ThreadQueue {
     }
   }
 
- private:
+ public:
   //! Disable them
   ThreadQueue(const ThreadQueue &) = delete;
   ThreadQueue(ThreadQueue &&) = delete;
   ThreadQueue &operator=(const ThreadQueue &) = delete;
 
+ private:
   //! Members
   std::atomic_uint worker_count_{0};
   std::mutex wait_mutex_{};

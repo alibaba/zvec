@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -609,7 +611,12 @@ int Index::search(const VectorData &vector_data,
       return core::IndexError_Runtime;
     }
 
-    context->set_topk(_get_coarse_search_topk(search_param));
+    const int coarse_topk = _get_coarse_search_topk(search_param);
+    if (coarse_topk < 0) {
+      context->reset();
+      return coarse_topk;
+    }
+    context->set_topk(coarse_topk);
     context->set_fetch_vector(false);  // no need to fetch vector
     std::string transformed_vector;
     const void *query = nullptr;
@@ -1268,10 +1275,24 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
 int Index::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
   float scale_factor = search_param->refiner_param->scale_factor_;
+  if (!std::isfinite(scale_factor) || scale_factor < 0) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
   if (scale_factor == 0) {
     scale_factor = 1;
+  } else if (scale_factor < 1.0f) {
+    LOG_WARN("Refine scale factor %f is less than 1, using 1 instead",
+             scale_factor);
+    scale_factor = 1;
   }
-  return floor(search_param->topk * scale_factor);
+  const float count = std::floor(search_param->topk * scale_factor);
+  if (!std::isfinite(count) ||
+      static_cast<double>(count) > (std::numeric_limits<int>::max)()) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
+  return static_cast<int>(count);
 }
 
 // Set or clear group-by state on a pooled context before each search.

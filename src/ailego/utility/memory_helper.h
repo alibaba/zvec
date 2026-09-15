@@ -23,10 +23,10 @@ namespace ailego {
  */
 struct MemoryHelper {
   //! Retrieve the page size of memory
-  static size_t PageSize(void);
+  static size_t PageSize();
 
   //! Retrieve the huge page size of memory
-  static size_t HugePageSize(void);
+  static size_t HugePageSize();
 
   //! Round `size` up to a multiple of the huge page size.
   static size_t AlignHugePageSize(size_t size);
@@ -91,22 +91,22 @@ struct MemoryHelper {
   static bool SelfUsage(size_t *vsz, size_t *rss);
 
   //! Retrieve the RSS of self process in bytes
-  static size_t SelfRSS(void);
+  static size_t SelfRSS();
 
   //! Retrieve the peak RSS of self process in bytes
-  static size_t SelfPeakRSS(void);
+  static size_t SelfPeakRSS();
 
   //! Retrieve the total size of physical memory (RAM) in bytes
-  static size_t TotalRamSize(void);
+  static size_t TotalRamSize();
 
   //! Retrieve the available size of physical memory (RAM) in bytes
-  static size_t AvailableRamSize(void);
+  static size_t AvailableRamSize();
 
   //! Retrieve the used size of physical memory (RAM) in bytes
-  static size_t UsedRamSize(void);
+  static size_t UsedRamSize();
 
   //! Retrieve the total size of physical memory (RAM) in bytes in container
-  static size_t ContainerAwareTotalRamSize(void);
+  static size_t ContainerAwareTotalRamSize();
 };
 
 }  // namespace ailego

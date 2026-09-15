@@ -130,7 +130,7 @@ int HnswRabitqChunkBroker::open(IndexStorage::Pointer stg,
   return load_storage(chunk_size);
 }
 
-int HnswRabitqChunkBroker::close(void) {
+int HnswRabitqChunkBroker::close() {
   flush(0UL);
 
   stg_.reset();

@@ -37,25 +37,25 @@ class LabelFilteredIndexHolder : public IndexHolder {
         : holder_(holder), elems_(elems) {}
 
     //! Destructor
-    ~Iterator(void) override {}
+    ~Iterator() override = default;
 
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return holder_->element((*elems_)[index_]);
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return index_ < elems_->size();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return (*elems_)[index_];
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++index_;
     }
 
@@ -73,32 +73,32 @@ class LabelFilteredIndexHolder : public IndexHolder {
       : holder_(holder), elems_(&items) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return elems_->size();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return holder_->dimension();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return holder_->data_type();
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return holder_->element_size();
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
   //! Create a new iterator
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     return IndexHolder::Iterator::Pointer(
         new LabelFilteredIndexHolder::Iterator(holder_, elems_));
   }
@@ -109,7 +109,7 @@ class LabelFilteredIndexHolder : public IndexHolder {
   const std::vector<uint32_t> *elems_{};
 };
 
-IVFBuilder::IVFBuilder() {}
+IVFBuilder::IVFBuilder() = default;
 
 IVFBuilder::~IVFBuilder() {
   this->cleanup();
@@ -169,7 +169,7 @@ int IVFBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   return 0;
 }
 
-int IVFBuilder::cleanup(void) {
+int IVFBuilder::cleanup() {
   LOG_INFO("Begin IVFBuilder::cleanup");
 
   state_ = INIT;
