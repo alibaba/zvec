@@ -134,7 +134,7 @@ int HNSWIndex::open(const std::string &file_path,
   return Index::open(file_path, storage_options);
 }
 
-int HNSWIndex::FallbackToLegacyPipeline(void) {
+int HNSWIndex::FallbackToLegacyPipeline() {
   turbo_quantizer_.reset();
   streamer_.reset();
   converter_.reset();

@@ -350,7 +350,7 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
-  int FallbackToLegacyPipeline(void);
+  int FallbackToLegacyPipeline();
 
   HNSWIndexParam param_{};
 };
