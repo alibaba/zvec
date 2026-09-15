@@ -138,6 +138,10 @@ int HNSWRabitqIndex::_get_coarse_search_topk(
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return -1;
 #else
+  if (search_param->refiner_param->scale_factor_ != 0) {
+    return Index::_get_coarse_search_topk(search_param);
+  }
+
   const auto &hnsw_search_param =
       std::dynamic_pointer_cast<HNSWRabitqQueryParam>(search_param);
 

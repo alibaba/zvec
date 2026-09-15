@@ -1389,6 +1389,10 @@ Attributes:
     is_linear (bool): If True, forces brute-force linear search instead of
         using the index. Useful for debugging or small datasets. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float): Coarse candidate multiplier when refining. Zero selects
+        the index-specific default; graph indexes use max(topk, ef) candidates.
+        Positive values are rounded down with a minimum of topk candidates.
+        Must be finite and nonnegative. Ignored when is_using_refiner is False.
 )pbdoc");
   query_params
       .def_property_readonly(
@@ -1410,6 +1414,9 @@ Attributes:
             return self.is_using_refiner();
           },
           "bool: Whether to use refiner for the query.")
+      .def_property_readonly(
+          "scale_factor", &QueryParams::scale_factor,
+          "float: Coarse candidate multiplier used when refinement is enabled.")
       .def(py::pickle(
           [](const QueryParams &self) {  // __getstate__
             return py::make_tuple(self.type(), self.radius(), self.is_linear());
@@ -1435,6 +1442,7 @@ Attributes:
     radius (float): Search radius for range queries. Default is 0.0.
     is_linear (bool): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
 
 Examples:
     >>> params = HnswQueryParam(ef=300)
@@ -1445,9 +1453,11 @@ Examples:
 )pbdoc");
   hnsw_params
       .def(py::init([](int ef, float radius, bool is_linear,
-                       bool is_using_refiner, py::dict extra_params) {
+                       bool is_using_refiner, py::dict extra_params,
+                       float scale_factor) {
              auto obj = std::make_shared<HnswQueryParams>(ef, radius, is_linear,
                                                           is_using_refiner);
+             obj->set_scale_factor(scale_factor);
              if (extra_params.contains("prefetch_offset")) {
                obj->set_prefetch_offset(
                    extra_params["prefetch_offset"].cast<uint32_t>());
@@ -1461,7 +1471,7 @@ Examples:
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(),
+           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 0.0f,
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
@@ -1471,6 +1481,8 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float, optional): Refine candidate multiplier; defaults to 0 (max(topk, ef) candidates).
+        Ignored when is_using_refiner is False.
     extra_params (dict, optional): Additional search parameters. Supported keys:
         - ``prefetch_offset`` (int): Graph prefetch offset (PO).
           ``0`` disables prefetching. Default is ``8``.
@@ -1507,17 +1519,20 @@ Args:
                     ", \"prefetch_offset\":" +
                     std::to_string(self.prefetch_offset()) +
                     ", \"prefetch_lines\":" +
-                    std::to_string(self.prefetch_lines()) + "}";
+                    std::to_string(self.prefetch_lines()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const HnswQueryParams &self) {
             return py::make_tuple(self.ef(), self.radius(), self.is_linear(),
                                   self.is_using_refiner(),
-                                  self.prefetch_offset(),
-                                  self.prefetch_lines());
+                                  self.prefetch_offset(), self.prefetch_lines(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6 &&
+                t.size() != 7)
               throw std::runtime_error("Invalid state for HnswQueryParams");
             auto obj = std::make_shared<HnswQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
@@ -1529,6 +1544,7 @@ Args:
             if (t.size() >= 6) {
               obj->set_prefetch_lines(t[5].cast<uint32_t>());
             }
+            if (t.size() >= 7) obj->set_scale_factor(t[6].cast<float>());
             return obj;
           }));
 
@@ -1546,6 +1562,8 @@ Attributes:
         Default is 10.
     radius (float): Search radius for range queries. Default is 0.0.
     is_linear (bool): Force linear search. Default is False.
+    is_using_refiner (bool): Whether to refine candidates. Default is False.
+    scale_factor (float): Refine candidate multiplier. Default is 10.
 
 Examples:
     >>> params = IVFQueryParam(nprobe=20)
@@ -1553,12 +1571,16 @@ Examples:
     20
 )pbdoc");
   ivf_params
-      .def(py::init<int>(), py::arg("nprobe") = 10, R"pbdoc(
+      .def(py::init<int, bool, float>(), py::arg("nprobe") = 10,
+           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
+           R"pbdoc(
 Constructs an IVFQueryParam instance.
 
 Args:
     nprobe (int, optional): Number of inverted lists to probe during search.
         Higher values improve accuracy. Defaults to 10.
+    is_using_refiner (bool, optional): Whether to refine candidates. Default is False.
+    scale_factor (float, optional): Refine candidate multiplier. Default is 10.
 )pbdoc")
       .def_property_readonly(
           "nprobe",
@@ -1569,19 +1591,28 @@ Args:
              return "{"
                     "\"type\":" +
                     index_type_to_string(self.type()) +
-                    ", \"nprobe\":" + std::to_string(self.nprobe()) + "}";
+                    ", \"nprobe\":" + std::to_string(self.nprobe()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const IVFQueryParams &self) {
             return py::make_tuple(self.nprobe(), self.radius(),
-                                  self.is_linear());
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 3)
+            if (t.size() != 3 && t.size() != 5)
               throw std::runtime_error("Invalid state for IVFQueryParams");
             auto obj = std::make_shared<IVFQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_is_using_refiner(t[3].cast<bool>());
+              obj->set_scale_factor(t[4].cast<float>());
+            }
             return obj;
           }));
 
@@ -1602,6 +1633,7 @@ Attributes:
     radius (float): Search radius for range queries. Default is 0.0.
     is_linear (bool): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float, optional): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
 
 Examples:
     >>> params = HnswRabitqQueryParam(ef=300)
@@ -1611,10 +1643,10 @@ Examples:
     {"type":"HNSW_RABITQ", "ef":300}
 )pbdoc");
   hnsw_rabitq_query_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init<int, float, bool, bool, float>(),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false,
+           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 0.0f,
            R"pbdoc(
 Constructs an HnswRabitqQueryParam instance.
 
@@ -1624,6 +1656,7 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float, optional): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
 )pbdoc")
       .def_property_readonly(
           "ef",
@@ -1638,15 +1671,17 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const HnswRabitqQueryParams &self) {
             return py::make_tuple(self.ef(), self.radius(), self.is_linear(),
-                                  self.is_using_refiner());
+                                  self.is_using_refiner(), self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5)
               throw std::runtime_error(
                   "Invalid state for HnswRabitqQueryParams");
             auto obj =
@@ -1654,6 +1689,7 @@ Args:
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) obj->set_scale_factor(t[4].cast<float>());
             return obj;
           }));
 
@@ -1808,6 +1844,7 @@ Attributes:
     is_linear (bool): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    scale_factor (float): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
 
 Examples:
     >>> params = VamanaQueryParam(ef_search=200)
@@ -1816,9 +1853,11 @@ Examples:
 )pbdoc");
   vamana_query_params
       .def(py::init([](int ef_search, float radius, bool is_linear,
-                       bool is_using_refiner, py::dict extra_params) {
+                       bool is_using_refiner, py::dict extra_params,
+                       float scale_factor) {
              auto obj = std::make_shared<VamanaQueryParams>(
                  ef_search, radius, is_linear, is_using_refiner);
+             obj->set_scale_factor(scale_factor);
              if (extra_params.contains("prefetch_offset")) {
                obj->set_prefetch_offset(
                    extra_params["prefetch_offset"].cast<uint32_t>());
@@ -1832,7 +1871,7 @@ Examples:
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(),
+           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 0.0f,
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1843,6 +1882,8 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    scale_factor (float, optional): Refine candidate multiplier; defaults to 0 (max(topk, ef) candidates).
+        Ignored when is_using_refiner is False.
     extra_params (dict, optional): Additional search parameters. Supported keys:
         - ``prefetch_offset`` (int): Vector-prefetch prefix size (PO) during
           pool expansion.
@@ -1886,17 +1927,20 @@ Args:
                     ", \"prefetch_offset\":" +
                     std::to_string(self.prefetch_offset()) +
                     ", \"prefetch_lines\":" +
-                    std::to_string(self.prefetch_lines()) + "}";
+                    std::to_string(self.prefetch_lines()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
                                   self.is_linear(), self.is_using_refiner(),
-                                  self.prefetch_offset(),
-                                  self.prefetch_lines());
+                                  self.prefetch_offset(), self.prefetch_lines(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6 &&
+                t.size() != 7)
               throw std::runtime_error("Invalid state for VamanaQueryParams");
             auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
@@ -1908,6 +1952,7 @@ Args:
             if (t.size() >= 6) {
               obj->set_prefetch_lines(t[5].cast<uint32_t>());
             }
+            if (t.size() >= 7) obj->set_scale_factor(t[6].cast<float>());
             return obj;
           }));
 
