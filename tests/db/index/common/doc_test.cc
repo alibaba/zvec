@@ -14,6 +14,7 @@
 
 #include "zvec/db/doc.h"
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
@@ -770,7 +771,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     ASSERT_TRUE(s.ok());
   }
 
-  // pk with characters inside the allowed set is accepted
+  // Previously valid ASCII IDs remain accepted, including the old boundary.
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     std::vector<std::string> valid_names = {
@@ -805,8 +806,10 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
         "file-name_v1.2",   // -, _, . allowed
         "a-b_c.d!@#$%+=.",  // all specials in one
 
-        // Max length = 64
+        // Former and new length boundaries
         std::string(64, 'a'),
+        std::string(65, 'a'),
+        std::string(1024, 'a'),
         std::string(63, 'a') + "_",
         "_" + std::string(62, 'x') + ".",
         "!" + std::string(62, '0') + "@",
@@ -819,16 +822,11 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     }
   }
 
-  // pk that is too long or uses disallowed characters is rejected
+  // External IDs can contain punctuation, spaces and UTF-8 text.
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
-    std::vector<std::string> invalid_names = {
-        // Too long (>64)
-        std::string(65, 'a'), std::string(64, 'a') + "_",
-
-        // Illegal characters
-        "a b",   // space
-        "a&b",   // & not in set
+    std::vector<std::string> valid_names = {
+        " ",      " padded ", "a b", "a&b",
         "a*b",   // *
         "a(b)",  // ( )
         "a:b",   // :
@@ -851,12 +849,35 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
         "a,b",     // ,
         "用户",    // non-ASCII (Chinese)
         "αβγ",     // Greek
-        "résumé",  // accented chars (é not in [a-zA-Z])
+        "résumé",  // accented characters
     };
-    for (auto pk : invalid_names) {
+    for (const auto &pk : valid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
       auto s = doc.validate_and_sanitize(schema);
-      ASSERT_FALSE(s.ok()) << "expected invalid pk: " << pk;
+      ASSERT_TRUE(s.ok()) << "expected valid pk: " << pk << ": " << s.message();
+    }
+  }
+
+  // Invalid text must be rejected before it can enter storage.
+  {
+    auto schema = test::TestHelper::CreateNormalSchema(false);
+    const std::vector<std::string> invalid_ids = {
+        "",
+        std::string(1025, 'a'),
+        std::string("a\0b", 3),
+        "a\nb",
+        "a\tb",
+        "a\rb",
+        std::string("\xff", 1),
+        std::string("\xe4\xb8", 2),
+    };
+    for (const auto &pk : invalid_ids) {
+      auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
+      doc.set_pk(pk);  // The helper generates a default ID for an empty input.
+      auto s = doc.validate_and_sanitize(schema);
+      ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+      EXPECT_EQ(s.message().find("Invalid doc: "), 0u);
+      EXPECT_EQ(s.message().find("offset"), std::string::npos);
     }
   }
 }
@@ -1004,6 +1025,14 @@ TEST_F(DocDetailedTest, SerializeValueCoverage) {
 
   auto buffer = doc.serialize();
   EXPECT_FALSE(buffer.empty());
+
+  // Exercise every truncated header, scalar, vector and nested string using
+  // independently allocated buffers, so ASan also catches accidental overreads.
+  for (size_t size = 0; size < buffer.size(); ++size) {
+    SCOPED_TRACE(size);
+    std::vector<uint8_t> truncated(buffer.begin(), buffer.begin() + size);
+    EXPECT_EQ(Doc::deserialize(truncated.data(), truncated.size()), nullptr);
+  }
 
   auto deserialized_doc = Doc::deserialize(buffer.data(), buffer.size());
   EXPECT_NE(deserialized_doc, nullptr);
@@ -1622,4 +1651,123 @@ TEST_F(DocDetailedTest, FieldExistenceChecks) {
 
   auto type_mismatch_opt = doc.get<std::string>("existent");
   EXPECT_FALSE(type_mismatch_opt.has_value());
+}
+
+
+TEST_F(DocDetailedTest, DeserializeRejectsMalformedLengthsAndTags) {
+  Doc doc;
+  doc.set_pk("id");
+  doc.set<std::string>("field", "payload");
+  const auto valid = doc.serialize();
+  const size_t operation =
+      sizeof(uint32_t) + 2 + sizeof(float) + sizeof(uint64_t);
+  const size_t fields_count = operation + sizeof(uint32_t);
+  const size_t field = fields_count + sizeof(uint32_t);
+  const size_t tag = field + sizeof(uint32_t) + 5;
+  const auto maximum = std::numeric_limits<uint32_t>::max();
+  for (size_t offset : {size_t{0}, fields_count, field, tag + 1}) {
+    SCOPED_TRACE(offset);
+    auto invalid = valid;
+    std::memcpy(invalid.data() + offset, &maximum, sizeof(maximum));
+    EXPECT_EQ(Doc::deserialize(invalid.data(), invalid.size()), nullptr);
+  }
+  auto invalid = valid;
+  std::memcpy(invalid.data() + operation, &maximum, sizeof(maximum));
+  EXPECT_EQ(Doc::deserialize(invalid.data(), invalid.size()), nullptr);
+  invalid = valid;
+  invalid[tag] = 255;
+  EXPECT_EQ(Doc::deserialize(invalid.data(), invalid.size()), nullptr);
+  invalid = valid;
+  invalid.push_back(0);
+  EXPECT_EQ(Doc::deserialize(invalid.data(), invalid.size()), nullptr);
+  invalid = valid;
+  const uint32_t two = 2;
+  std::memcpy(invalid.data() + fields_count, &two, sizeof(two));
+  invalid.insert(invalid.end(), valid.begin() + field, valid.end());
+  EXPECT_EQ(Doc::deserialize(invalid.data(), invalid.size()), nullptr);
+  EXPECT_EQ(Doc::deserialize(nullptr, valid.size()), nullptr);
+  EXPECT_EQ(Doc::deserialize(valid.data(), 1), nullptr);
+}
+
+TEST_F(DocDetailedTest, DeserializeChecksNestedCountsAndBooleanRepresentation) {
+  const size_t tag = sizeof(uint32_t) + 2 + sizeof(float) + sizeof(uint64_t) +
+                     sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + 1;
+  const std::vector<Doc::Value> values{
+      std::vector<int64_t>{1, 2}, std::vector<std::string>{"hello", "world"},
+      std::vector<bool>{true, false},
+      std::pair<std::vector<uint32_t>, std::vector<float>>{{1, 2}, {1.f, 2.f}},
+      std::pair<std::vector<uint32_t>, std::vector<zvec::float16_t>>{
+          {1, 2}, {zvec::float16_t(1.f), zvec::float16_t(2.f)}}};
+  for (const auto &value : values) {
+    Doc doc;
+    doc.set_pk("id");
+    std::visit(
+        [&](const auto &item) {
+          if constexpr (std::is_same_v<std::decay_t<decltype(item)>,
+                                       std::monostate>) {
+            doc.set_null("v");
+          } else {
+            doc.set("v", item);
+          }
+        },
+        value);
+    auto buffer = doc.serialize();
+    ASSERT_NE(Doc::deserialize(buffer.data(), buffer.size()), nullptr);
+    // A UINT32_MAX element count cannot fit into any of these payloads.
+    std::fill_n(buffer.begin() + tag + 1, sizeof(uint32_t), uint8_t{0xff});
+    EXPECT_EQ(Doc::deserialize(buffer.data(), buffer.size()), nullptr);
+  }
+  Doc sparse;
+  sparse.set_pk("id");
+  sparse.set("v", std::pair<std::vector<uint32_t>, std::vector<float>>{
+                      {1, 2}, {1.f, 2.f}});
+  auto buffer = sparse.serialize();
+  std::fill_n(
+      buffer.begin() + tag + 1 + sizeof(uint32_t) + 2 * sizeof(uint32_t),
+      sizeof(uint32_t), uint8_t{0xff});
+  EXPECT_EQ(Doc::deserialize(buffer.data(), buffer.size()), nullptr);
+  Doc boolean;
+  boolean.set_pk("id");
+  boolean.set("v", true);
+  buffer = boolean.serialize();
+  buffer[tag + 1] = 2;
+  EXPECT_EQ(Doc::deserialize(buffer.data(), buffer.size()), nullptr);
+  boolean.set("v", std::vector<bool>{true});
+  buffer = boolean.serialize();
+  buffer[tag + 1 + sizeof(uint32_t)] = 2;
+  EXPECT_EQ(Doc::deserialize(buffer.data(), buffer.size()), nullptr);
+}
+
+TEST_F(DocDetailedTest, DeserializePreservesHistoricalTextWithoutRevalidation) {
+  Doc doc;
+  doc.set_pk(std::string("old\0id", 6));
+  doc.set("old\nfield", std::string("\xff\0value", 7));
+  const auto buffer = doc.serialize();
+  const auto restored = Doc::deserialize(buffer.data(), buffer.size());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->pk_ref(), doc.pk_ref());
+  EXPECT_EQ(restored->get<std::string>("old\nfield"),
+            doc.get<std::string>("old\nfield"));
+}
+
+TEST_F(DocDetailedTest, ValidationErrorsEscapeAndBoundDocumentAndFieldNames) {
+  auto schema = std::make_shared<CollectionSchema>(
+      "test", FieldSchemaPtrList{
+                  std::make_shared<FieldSchema>("value", DataType::INT32)});
+  for (const auto &name :
+       std::vector<std::string>{std::string("bad\0field", 9), "bad\nfield",
+                                "\xff", std::string(10000, 'x')}) {
+    Doc doc;
+    doc.set_pk(std::string(1024, 'd'));
+    doc.set(name, int32_t{42});
+    const auto status = doc.validate_and_sanitize(schema);
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(status.message().find("Invalid doc:"), 0u);
+    EXPECT_NE(status.message().find("does not exist"), std::string::npos);
+    EXPECT_LT(status.message().size(), 256u);
+    for (unsigned char byte : status.message()) {
+      EXPECT_GE(byte, 0x20);
+      EXPECT_LE(byte, 0x7e);
+    }
+  }
 }

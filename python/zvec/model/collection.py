@@ -24,7 +24,8 @@ from zvec._zvec.param import _GroupByVectorQuery
 from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
-from .convert import convert_to_cpp_doc, convert_to_py_doc
+from ._validation import explain_utf8_conversion_error
+from .convert import convert_to_cpp_docs, convert_to_py_doc
 from .doc import Doc, DocList, GroupResult
 from .param import (
     AddColumnOption,
@@ -304,12 +305,21 @@ class Collection:
             >>> new_schema = FieldSchema(name="doc_id", dtype=DataType.INT64)
             >>> collection.alter_column("id", field_schema=new_schema)
         """
-        self._obj.AlterColumn(
-            old_name,
-            new_name or "",
-            field_schema._get_object() if field_schema else None,
-            option,
-        )
+        if new_name is not None and not isinstance(new_name, str):
+            raise TypeError("Invalid schema: new column name must be str")
+        if field_schema is not None and not isinstance(field_schema, FieldSchema):
+            raise TypeError("Invalid schema: field_schema must be a FieldSchema")
+        try:
+            self._obj.AlterColumn(
+                old_name,
+                "" if new_name is None else new_name,
+                field_schema._get_object() if field_schema is not None else None,
+                option,
+            )
+        except TypeError:
+            explain_utf8_conversion_error(old_name, "Invalid schema: column name")
+            explain_utf8_conversion_error(new_name, "Invalid schema: field name")
+            raise
         self._schema = CollectionSchema._from_core(self._obj.Schema())
         self._querier._schema = self._schema
 
@@ -336,9 +346,7 @@ class Collection:
         """
         is_single = isinstance(docs, Doc)
         doc_list = [docs] if is_single else docs
-        results = self._obj.Insert(
-            [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
-        )
+        results = self._obj.Insert(convert_to_cpp_docs(doc_list, self.schema))
         return results[0] if is_single else results
 
     @overload
@@ -361,9 +369,7 @@ class Collection:
         """
         is_single = isinstance(docs, Doc)
         doc_list = [docs] if is_single else docs
-        results = self._obj.Upsert(
-            [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
-        )
+        results = self._obj.Upsert(convert_to_cpp_docs(doc_list, self.schema))
         return results[0] if is_single else results
 
     @overload
@@ -388,9 +394,7 @@ class Collection:
         """
         is_single = isinstance(docs, Doc)
         doc_list = [docs] if is_single else docs
-        results = self._obj.Update(
-            [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
-        )
+        results = self._obj.Update(convert_to_cpp_docs(doc_list, self.schema))
         return results[0] if is_single else results
 
     @overload

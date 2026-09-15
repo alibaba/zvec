@@ -52,7 +52,7 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
 
   doc.def(py::init([]() { return std::make_shared<Doc>(); }))
       .def("set_pk", &Doc::set_pk)
-      .def("pk", &Doc::pk)
+      .def("pk", &Doc::pk_ref)
       .def("set_score", &Doc::set_score)
       .def("score", &Doc::score)
       .def("has_field", &Doc::has)
@@ -325,7 +325,7 @@ py::tuple ZVecPyDoc::doc_to_tuple_with_fields(
     const FieldSchemaPtrList &vector_fields) {
   py::tuple result(4);
   // 1. set doc id and score
-  result[0] = py::str(self.pk());
+  result[0] = py::str(self.pk_ref());
   result[1] = py::float_(self.score());
 
   if (self.is_empty()) {

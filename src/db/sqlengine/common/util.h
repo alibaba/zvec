@@ -16,15 +16,14 @@
 #include <string>
 #include <arrow/api.h>
 #include <arrow/record_batch.h>
+#include "db/common/constants.h"
 
 namespace zvec::sqlengine {
 
-static const constexpr char *kFieldScore = "_zvec_score";
 static const constexpr char *kFieldVector = "_zvec_vector";
 static const constexpr char *kFieldSparseIndices = "_zvec_sindices";
 static const constexpr char *kFieldSparseValues = "_zvec_svalues";
 static const constexpr char *kFieldIsValid = "_zvec_is_valid";
-static const constexpr char *kFieldGroupId = "_zvec_group_id";
 
 static const inline std::string kCheckNotFiltered = "check_not_filtered";
 static const inline std::string kFetchVector = "fetch_vector";

@@ -1081,6 +1081,100 @@ TEST(ManifestCodecGolden, IndexParamsLastBranchWins) {
   EXPECT_EQ(decoded->type(), IndexType::HNSW);
 }
 
+TEST(ManifestCodecGolden, LegacyFieldNamesSurviveWithoutRevalidation) {
+  // Older alter_column paths could persist names outside the schema rules.
+  // Build the wire data without schema helpers so this also catches a decoder
+  // silently dropping fields after a new validation check is added.
+  const std::vector<std::string> names{"user name", std::string(65, 'f'),
+                                       u8"历史字段", "_zvec_uid_"};
+  std::string encoded_schema;
+  pbwire::Writer schema_writer(&encoded_schema);
+  schema_writer.PutString(1, "legacy_collection");
+  for (const auto &name : names) {
+    std::string encoded_field;
+    pbwire::Writer field_writer(&encoded_field);
+    field_writer.PutString(1, name);
+    field_writer.PutVarint(2, 2);  // Persisted STRING data type.
+    schema_writer.PutMessage(2, encoded_field);
+  }
+  schema_writer.PutVarint(3, 10000);
+  std::string encoded_manifest;
+  pbwire::Writer(&encoded_manifest).PutMessage(2, encoded_schema);
+
+  ManifestData restored;
+  auto status = ManifestCodec::Decode(encoded_manifest, &restored);
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_NE(restored.schema, nullptr);
+  ASSERT_EQ(restored.schema->fields().size(), names.size());
+  for (size_t i = 0; i < names.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto *field = restored.schema->get_field(names[i]);
+    ASSERT_NE(field, nullptr);
+    EXPECT_EQ(field->name(), names[i]);
+    EXPECT_EQ(field->data_type(), DataType::STRING);
+    EXPECT_EQ(restored.schema->fields()[i]->name(), names[i]);
+  }
+  EXPECT_EQ(restored.schema->validate().code(), StatusCode::INVALID_ARGUMENT);
+
+  std::string reencoded;
+  status = ManifestCodec::Encode(restored, &reencoded);
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(reencoded, encoded_manifest);
+}
+
+TEST(ManifestCodecGolden, DuplicateFieldsFailInsteadOfBeingSilentlyDropped) {
+  // This malformed schema could previously be created through the C++ list
+  // constructor. Restoring only its first field silently changes its meaning.
+  CollectionSchema schema(
+      "legacy", {std::make_shared<FieldSchema>("duplicate", DataType::INT32),
+                 std::make_shared<FieldSchema>("duplicate", DataType::INT64)});
+  std::string schema_bytes;
+  ManifestCodec::EncodeCollectionSchema(schema, &schema_bytes);
+  auto decoded_schema = ManifestCodec::DecodeCollectionSchema(schema_bytes);
+  ASSERT_FALSE(decoded_schema.has_value());
+  EXPECT_EQ(decoded_schema.error().code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_NE(decoded_schema.error().message().find("duplicate"),
+            std::string::npos);
+
+  std::string manifest_bytes;
+  pbwire::Writer(&manifest_bytes).PutMessage(2, schema_bytes);
+  ManifestData restored;
+  auto status = ManifestCodec::Decode(manifest_bytes, &restored);
+  EXPECT_EQ(status.code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_EQ(restored.schema, nullptr);
+}
+
+TEST(ManifestCodecGolden, MalformedNestedSchemaFailsExplicitly) {
+  const std::string malformed_schema("\x0a\x05x", 3);
+  std::string manifest_bytes;
+  pbwire::Writer(&manifest_bytes).PutMessage(2, malformed_schema);
+  ManifestData restored;
+  auto status = ManifestCodec::Decode(manifest_bytes, &restored);
+  EXPECT_EQ(status.code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_EQ(restored.schema, nullptr);
+}
+
+TEST(ManifestCodecGolden, StructuralSchemaHelpersPreserveLegacyNames) {
+  CollectionSchema schema("legacy_collection");
+  auto status = schema.add_field(
+      std::make_shared<FieldSchema>("user name", DataType::STRING));
+  ASSERT_TRUE(status.ok()) << status.message();
+  status = schema.alter_field("user name", std::make_shared<FieldSchema>(
+                                               u8"历史字段", DataType::STRING));
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_FALSE(schema.has_field("user name"));
+  ASSERT_TRUE(schema.has_field(u8"历史字段"));
+
+  // Structural mutation is also used during recovery. Explicit validation is
+  // kept separate, and legacy names can still be replaced with legal names.
+  EXPECT_EQ(schema.validate().code(), StatusCode::INVALID_ARGUMENT);
+  status = schema.alter_field(
+      u8"历史字段", std::make_shared<FieldSchema>("renamed", DataType::STRING));
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_TRUE(schema.validate().ok());
+  EXPECT_TRUE(schema.has_field("renamed"));
+}
+
 TEST(ManifestCodecGolden, UnknownFieldsAreIgnored) {
   // Forward compatibility: a manifest written by a newer zvec may carry fields
   // this build does not know about. They must be skipped silently.

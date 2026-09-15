@@ -18,12 +18,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
-#include <regex>
 #include <stdexcept>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/query.h>
 #include "db/common/constants.h"
+#include "db/index/common/name_validation.h"
 #include "db/index/common/type_helper.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -123,28 +123,11 @@ namespace {
 
 template <typename T>
 T byte_swap(T value) {
-  if constexpr (std::is_same_v<T, float16_t>) {
-    uint16_t val;
-    std::memcpy(&val, static_cast<const void *>(&value), sizeof(val));
-    val = ailego_bswap16(val);
-    float16_t result;
-    std::memcpy(static_cast<void *>(&result), &val, sizeof(result));
-    return result;
-  } else if constexpr (sizeof(T) == 1) {
-    return value;
-  } else if constexpr (sizeof(T) == 2) {
-    return (value << 8) | ((value >> 8) & 0xFF);
-  } else if constexpr (sizeof(T) == 4) {
-    return static_cast<T>(ailego_bswap32(static_cast<uint32_t>(value)));
-  } else if constexpr (sizeof(T) == 8) {
-    return static_cast<T>(ailego_bswap64(static_cast<uint64_t>(value)));
-  } else {
-    T result = 0;
-    for (size_t i = 0; i < sizeof(T); ++i) {
-      result |= ((value >> (i * 8)) & 0xFF) << ((sizeof(T) - 1 - i) * 8);
-    }
-    return result;
-  }
+  T result;
+  const auto *source = reinterpret_cast<const uint8_t *>(&value);
+  auto *destination = reinterpret_cast<uint8_t *>(&result);
+  std::reverse_copy(source, source + sizeof(T), destination);
+  return result;
 }
 
 template <typename T>
@@ -157,17 +140,179 @@ void write_value_to_buffer(std::vector<uint8_t> &buffer, const T &value) {
   buffer.insert(buffer.end(), bytes, bytes + sizeof(T));
 }
 
-template <typename T>
-T read_value_from_buffer(const uint8_t *&data) {
-  T value;
-  std::memcpy(&value, data, sizeof(T));
-  data += sizeof(T);
+// Read persisted values only after checking their complete byte range. Length
+// fields are checked before allocation, including each nested array/string.
+class DocBufferReader {
+ public:
+  DocBufferReader(const uint8_t *data, size_t size)
+      : data_(data), remaining_(size) {}
 
-  if (IS_BIG_ENDIAN) {
-    value = byte_swap<T>(value);
+  size_t remaining() const {
+    return remaining_;
   }
-  return value;
-}
+
+  bool ReadBytes(void *destination, size_t size) {
+    if (size > remaining_) return false;
+    if (size != 0) {
+      std::memcpy(destination, data_, size);
+      data_ += size;
+      remaining_ -= size;
+    }
+    return true;
+  }
+
+  template <typename T>
+  bool ReadNative(T &value) {
+    return ReadBytes(&value, sizeof(T));
+  }
+
+  bool ReadStringBytes(std::string &value, size_t size) {
+    if (size > remaining_) return false;
+    value.assign(reinterpret_cast<const char *>(data_), size);
+    data_ += size;
+    remaining_ -= size;
+    return true;
+  }
+
+  bool ReadValue(Doc::Value &value) {
+    uint8_t type;
+    if (!ReadNative(type)) return false;
+    switch (type) {
+      case TYPE_EMPTY:
+        value = std::monostate{};
+        return true;
+      case TYPE_BOOL:
+        return ReadAs<bool>(value);
+      case TYPE_INT32:
+        return ReadAs<int32_t>(value);
+      case TYPE_UINT32:
+        return ReadAs<uint32_t>(value);
+      case TYPE_INT64:
+        return ReadAs<int64_t>(value);
+      case TYPE_UINT64:
+        return ReadAs<uint64_t>(value);
+      case TYPE_FLOAT:
+        return ReadAs<float>(value);
+      case TYPE_DOUBLE:
+        return ReadAs<double>(value);
+      case TYPE_STRING:
+        return ReadAs<std::string>(value);
+      case TYPE_VECTOR_BOOL:
+        return ReadAs<std::vector<bool>>(value);
+      case TYPE_VECTOR_INT8:
+        return ReadAs<std::vector<int8_t>>(value);
+      case TYPE_VECTOR_INT16:
+        return ReadAs<std::vector<int16_t>>(value);
+      case TYPE_VECTOR_INT32:
+        return ReadAs<std::vector<int32_t>>(value);
+      case TYPE_VECTOR_INT64:
+        return ReadAs<std::vector<int64_t>>(value);
+      case TYPE_VECTOR_UINT32:
+        return ReadAs<std::vector<uint32_t>>(value);
+      case TYPE_VECTOR_UINT64:
+        return ReadAs<std::vector<uint64_t>>(value);
+      case TYPE_VECTOR_FLOAT16:
+        return ReadAs<std::vector<float16_t>>(value);
+      case TYPE_VECTOR_FLOAT:
+        return ReadAs<std::vector<float>>(value);
+      case TYPE_VECTOR_DOUBLE:
+        return ReadAs<std::vector<double>>(value);
+      case TYPE_VECTOR_STRING:
+        return ReadAs<std::vector<std::string>>(value);
+      case TYPE_VECTOR_PAIR_INT_FLOAT:
+        return ReadAs<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+            value);
+      case TYPE_VECTOR_PAIR_INT_FLOAT16:
+        return ReadAs<std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(
+            value);
+      default:
+        return false;
+    }
+  }
+
+ private:
+  template <typename T>
+  bool ReadLittle(T &value) {
+    if (!ReadNative(value)) return false;
+    if (IS_BIG_ENDIAN) {
+      auto *bytes = reinterpret_cast<uint8_t *>(&value);
+      std::reverse(bytes, bytes + sizeof(T));
+    }
+    return true;
+  }
+
+  template <typename T>
+  bool ReadAs(Doc::Value &out) {
+    T value;
+    if (!Read(value)) return false;
+    out = std::move(value);
+    return true;
+  }
+
+  template <typename T>
+  bool Read(T &value) {
+    return ReadLittle(value);
+  }
+
+  bool Read(bool &value) {
+    static_assert(sizeof(bool) == sizeof(uint8_t));
+    uint8_t byte;
+    if (!ReadNative(byte) || byte > 1) return false;
+    value = byte != 0;
+    return true;
+  }
+
+  bool Read(std::string &value) {
+    uint32_t size;
+    return ReadLittle(size) && ReadStringBytes(value, size);
+  }
+
+  template <typename T>
+  bool Read(std::vector<T> &values) {
+    uint32_t count;
+    if (!ReadLittle(count)) return false;
+    if constexpr (std::is_same_v<T, std::string>) {
+      // Each string contains at least its four-byte length prefix.
+      if (count > remaining_ / sizeof(uint32_t)) return false;
+      values.reserve(count);
+      for (uint32_t i = 0; i < count; ++i) {
+        std::string value;
+        if (!Read(value)) return false;
+        values.push_back(std::move(value));
+      }
+    } else if constexpr (std::is_same_v<T, bool>) {
+      if (count > remaining_ / sizeof(bool)) return false;
+      values.reserve(count);
+      for (uint32_t i = 0; i < count; ++i) {
+        bool value;
+        if (!Read(value)) return false;
+        values.push_back(value);
+      }
+    } else {
+      // Division avoids overflow before checking the allocation/copy size.
+      if (count > remaining_ / sizeof(T)) return false;
+      values.resize(count);
+      if (!ReadBytes(values.data(), static_cast<size_t>(count) * sizeof(T))) {
+        return false;
+      }
+      if (IS_BIG_ENDIAN) {
+        for (auto &value : values) {
+          auto *bytes = reinterpret_cast<uint8_t *>(&value);
+          std::reverse(bytes, bytes + sizeof(T));
+        }
+      }
+    }
+    return true;
+  }
+
+  template <typename T>
+  bool Read(std::pair<std::vector<uint32_t>, std::vector<T>> &value) {
+    return Read(value.first) && Read(value.second);
+  }
+
+  const uint8_t *data_;
+  size_t remaining_;
+};
 
 template <typename T>
 std::string vec_to_string(const std::vector<T> &v) {
@@ -197,11 +342,6 @@ void Doc::write_to_buffer(std::vector<uint8_t> &buffer, const void *src,
                           size_t size) {
   const uint8_t *bytes = static_cast<const uint8_t *>(src);
   buffer.insert(buffer.end(), bytes, bytes + size);
-}
-
-void Doc::read_from_buffer(const uint8_t *&data, void *dest, size_t size) {
-  std::memcpy(dest, data, size);
-  data += size;
 }
 
 void Doc::serialize_value(std::vector<uint8_t> &buffer, const Value &value) {
@@ -437,238 +577,6 @@ void Doc::serialize_value(std::vector<uint8_t> &buffer, const Value &value) {
 }
 
 
-Doc::Value Doc::deserialize_value(const uint8_t *&data) {
-  uint8_t type;
-  read_from_buffer(data, &type, sizeof(type));
-
-  switch (type) {
-    case TYPE_EMPTY: {
-      return std::monostate{};
-    }
-    case TYPE_BOOL: {
-      bool v;
-      read_from_buffer(data, &v, sizeof(v));
-      return v;
-    }
-    case TYPE_INT32: {
-      return read_value_from_buffer<int32_t>(data);
-    }
-    case TYPE_INT64: {
-      return read_value_from_buffer<int64_t>(data);
-    }
-    case TYPE_UINT32: {
-      return read_value_from_buffer<uint32_t>(data);
-    }
-    case TYPE_UINT64: {
-      return read_value_from_buffer<uint64_t>(data);
-    }
-    case TYPE_FLOAT: {
-      return read_value_from_buffer<float>(data);
-    }
-    case TYPE_DOUBLE: {
-      return read_value_from_buffer<double>(data);
-    }
-    case TYPE_STRING: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::string v(reinterpret_cast<const char *>(data), len);
-      data += len;
-      return v;
-    }
-    case TYPE_VECTOR_BOOL: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<bool> v;
-      v.reserve(len);
-      for (uint32_t i = 0; i < len; ++i) {
-        bool b;
-        read_from_buffer(data, &b, sizeof(b));
-        v.push_back(b);
-      }
-      return v;
-    }
-    case TYPE_VECTOR_INT8: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<int8_t> v(len);
-      read_from_buffer(data, v.data(), len * sizeof(int8_t));
-      return v;
-    }
-    case TYPE_VECTOR_INT16: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<int16_t> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<int16_t>(read_value_from_buffer<int16_t>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(int16_t));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_INT32: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<int32_t> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<int32_t>(read_value_from_buffer<int32_t>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(int32_t));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_INT64: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<int64_t> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<int64_t>(read_value_from_buffer<int64_t>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(int64_t));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_UINT32: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<uint32_t> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<uint32_t>(read_value_from_buffer<uint32_t>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(uint32_t));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_UINT64: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<uint64_t> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<uint64_t>(read_value_from_buffer<uint64_t>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(uint64_t));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_FLOAT: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<float> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<float>(read_value_from_buffer<float>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(float));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_DOUBLE: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<double> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<double>(read_value_from_buffer<double>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(double));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_FLOAT16: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<float16_t> v(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v[i] = byte_swap<float16_t>(read_value_from_buffer<float16_t>(data));
-        }
-      } else {
-        read_from_buffer(data, v.data(), len * sizeof(float16_t));
-      }
-      return v;
-    }
-    case TYPE_VECTOR_STRING: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::vector<std::string> v;
-      v.reserve(len);
-      for (uint32_t i = 0; i < len; ++i) {
-        uint32_t str_len = read_value_from_buffer<uint32_t>(data);
-        std::string s(reinterpret_cast<const char *>(data), str_len);
-        data += str_len;
-        v.push_back(s);
-      }
-      return v;
-    }
-    case TYPE_VECTOR_PAIR_INT_FLOAT: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::pair<std::vector<uint32_t>, std::vector<float>> v;
-      v.first.reserve(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v.first.push_back(
-              byte_swap<uint32_t>(read_value_from_buffer<uint32_t>(data)));
-        }
-      } else {
-        for (uint32_t i = 0; i < len; ++i) {
-          uint32_t first;
-          read_from_buffer(data, &first, sizeof(first));
-          v.first.push_back(first);
-        }
-      }
-      len = read_value_from_buffer<uint32_t>(data);
-      v.second.reserve(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v.second.push_back(
-              byte_swap<float>(read_value_from_buffer<float>(data)));
-        }
-      } else {
-        for (uint32_t i = 0; i < len; ++i) {
-          float second;
-          read_from_buffer(data, &second, sizeof(second));
-          v.second.push_back(second);
-        }
-      }
-      return v;
-    }
-    case TYPE_VECTOR_PAIR_INT_FLOAT16: {
-      uint32_t len = read_value_from_buffer<uint32_t>(data);
-      std::pair<std::vector<uint32_t>, std::vector<float16_t>> v;
-      v.first.reserve(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v.first.push_back(
-              byte_swap<uint32_t>(read_value_from_buffer<uint32_t>(data)));
-        }
-      } else {
-        for (uint32_t i = 0; i < len; ++i) {
-          uint32_t first;
-          read_from_buffer(data, &first, sizeof(first));
-          v.first.push_back(first);
-        }
-      }
-      len = read_value_from_buffer<uint32_t>(data);
-      v.second.reserve(len);
-      if (IS_BIG_ENDIAN) {
-        for (uint32_t i = 0; i < len; ++i) {
-          v.second.push_back(
-              byte_swap<float16_t>(read_value_from_buffer<float16_t>(data)));
-        }
-      } else {
-        for (uint32_t i = 0; i < len; ++i) {
-          float16_t second;
-          read_from_buffer(data, &second, sizeof(second));
-          v.second.push_back(second);
-        }
-      }
-      return v;
-    }
-
-    default:
-      throw std::runtime_error("Unknown value type: " + std::to_string(type));
-  }
-}
-
 std::vector<uint8_t> Doc::serialize() const {
   std::vector<uint8_t> buffer;
   uint32_t pk_len = static_cast<uint32_t>(pk_.size());
@@ -693,37 +601,40 @@ std::vector<uint8_t> Doc::serialize() const {
   return buffer;
 }
 
-Doc::Ptr Doc::deserialize(const uint8_t *data, size_t /*size*/) {
-  const uint8_t *ptr = data;
-  Doc::Ptr doc = std::make_shared<Doc>();
-
-  uint32_t pk_len = read_value_from_buffer<uint32_t>(ptr);
-  std::string pk(reinterpret_cast<const char *>(ptr), pk_len);
-  ptr += pk_len;
-  doc->set_pk(pk);
-
-  float score = read_value_from_buffer<float>(ptr);
-  doc->set_score(score);
-
-  uint64_t doc_id = read_value_from_buffer<uint64_t>(ptr);
-  doc->set_doc_id(doc_id);
-
-  Operator op;
-  read_from_buffer(ptr, &op, sizeof(op));
-  doc->set_operator(op);
-
-  uint32_t field_count = read_value_from_buffer<uint32_t>(ptr);
-
-  for (uint32_t i = 0; i < field_count; ++i) {
-    uint32_t name_len = read_value_from_buffer<uint32_t>(ptr);
-    std::string field_name(reinterpret_cast<const char *>(ptr), name_len);
-    ptr += name_len;
-
-    Doc::Value value = deserialize_value(ptr);
-    doc->fields_[field_name] = value;
+Doc::Ptr Doc::deserialize(const uint8_t *data, size_t size) {
+  if (!data) return nullptr;
+  DocBufferReader reader(data, size);
+  auto doc = std::make_shared<Doc>();
+  uint32_t pk_length;
+  uint32_t operation;
+  uint32_t field_count;
+  // The document header and field-name lengths retain their existing native
+  // representation; value payloads use the existing little-endian encoding.
+  if (!reader.ReadNative(pk_length) ||
+      !reader.ReadStringBytes(doc->pk_, pk_length) ||
+      !reader.ReadNative(doc->score_) || !reader.ReadNative(doc->doc_id_) ||
+      !reader.ReadNative(operation) ||
+      operation > static_cast<uint32_t>(Operator::DELETE) ||
+      !reader.ReadNative(field_count)) {
+    return nullptr;
   }
-
-  return doc;
+  doc->op_ = static_cast<Operator>(operation);
+  // Even an empty name and a null value require a length prefix and type byte.
+  if (field_count > reader.remaining() / (sizeof(uint32_t) + sizeof(uint8_t))) {
+    return nullptr;
+  }
+  for (uint32_t i = 0; i < field_count; ++i) {
+    uint32_t name_length;
+    std::string name;
+    Value value;
+    if (!reader.ReadNative(name_length) ||
+        !reader.ReadStringBytes(name, name_length) ||
+        !reader.ReadValue(value) ||
+        !doc->fields_.emplace(std::move(name), std::move(value)).second) {
+      return nullptr;
+    }
+  }
+  return reader.remaining() == 0 ? doc : nullptr;
 }
 
 Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
@@ -732,20 +643,17 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
     return Status::InternalError("schema is null during doc validation");
   }
 
-  if (pk_.empty()) {
-    return Status::InvalidArgument("Invalid doc: id (primary key) is not set");
-  }
-
-  if (!std::regex_match(pk_, DOC_PK_REGEX)) {
-    return Status::InvalidArgument("Invalid doc: doc[", pk_,
-                                   "] contains invalid characters");
+  auto id_status = ValidateDocumentId(pk_);
+  if (!id_status.ok()) {
+    return id_status;
   }
 
   // check doc fields match schema
   for (auto &[name, value] : fields_) {
     if (!schema->has_field(name)) {
       return Status::InvalidArgument(
-          "Invalid doc[", pk_, "]: field[", name,
+          "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
+          FormatNameForError(name),
           "] does not exist in the collection schema");
     }
   }
@@ -758,16 +666,17 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
       if (field_schema->nullable() || is_update) {
         continue;
       }
-      return Status::InvalidArgument("Invalid doc[", pk_, "]: field[",
-                                     field_name,
-                                     "] is required but not provided");
+      return Status::InvalidArgument(
+          "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
+          FormatNameForError(field_name), "] is required but not provided");
     } else {
       if (std::holds_alternative<std::monostate>(field_pair->second)) {
         if (field_schema->nullable()) {
           continue;
         }
-        return Status::InvalidArgument("Invalid doc[", pk_, "]: field[",
-                                       field_name,
+        return Status::InvalidArgument("Invalid doc: doc[",
+                                       FormatNameForError(pk_), "]: field[",
+                                       FormatNameForError(field_name),
                                        "] is required but its value is null");
       }
     }
@@ -898,12 +807,14 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
               field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "Invalid doc: doc[", FormatNameForError(pk_),
+                "]: sparse vector field[", FormatNameForError(field_name),
                 "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "Invalid doc: doc[", FormatNameForError(pk_),
+                "]: sparse vector field[", FormatNameForError(field_name),
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
@@ -911,7 +822,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                                              sparse_indices.size());
           if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "Invalid doc: doc[", FormatNameForError(pk_),
+                "]: sparse vector field[", FormatNameForError(field_name),
                 "] contains duplicate indices");
           }
           if (status == SparseIndicesStatus::kNeedSort) {
@@ -920,7 +832,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                     reinterpret_cast<char *>(sparse_values.data()),
                     sparse_indices.size(), sizeof(float16_t))) {
               return Status::InvalidArgument(
-                  "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                  "Invalid doc: doc[", FormatNameForError(pk_),
+                  "]: sparse vector field[", FormatNameForError(field_name),
                   "] contains duplicate indices");
             }
           }
@@ -936,12 +849,14 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                   field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "Invalid doc: doc[", FormatNameForError(pk_),
+                "]: sparse vector field[", FormatNameForError(field_name),
                 "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "Invalid doc: doc[", FormatNameForError(pk_),
+                "]: sparse vector field[", FormatNameForError(field_name),
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
@@ -949,7 +864,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                                              sparse_indices.size());
           if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "Invalid doc: doc[", FormatNameForError(pk_),
+                "]: sparse vector field[", FormatNameForError(field_name),
                 "] contains duplicate indices");
           }
           if (status == SparseIndicesStatus::kNeedSort) {
@@ -958,7 +874,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                     reinterpret_cast<char *>(sparse_values.data()),
                     sparse_indices.size(), sizeof(float))) {
               return Status::InvalidArgument(
-                  "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                  "Invalid doc: doc[", FormatNameForError(pk_),
+                  "]: sparse vector field[", FormatNameForError(field_name),
                   "] contains duplicate indices");
             }
           }
@@ -966,25 +883,25 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
         break;
       }
       default:
-        return Status::InvalidArgument("Invalid doc[", pk_, "]: field[",
-                                       field_name,
-                                       "] has unsupported data type");
+        return Status::InvalidArgument(
+            "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
+            FormatNameForError(field_name), "] has unsupported data type");
         break;
     }
 
     if (!type_match) {
       return Status::InvalidArgument(
-          "Invalid doc[", pk_, "]: field[", field_name,
-          "] type mismatch, expected ",
+          "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
+          FormatNameForError(field_name), "] type mismatch, expected ",
           DataTypeCodeBook::AsString(expected_type), " but got ",
           get_value_type_name(field_value, field_schema->is_vector_field()));
     }
     if (field_schema->is_dense_vector()) {
       if (value_dimension != field_schema->dimension()) {
         return Status::InvalidArgument(
-            "Invalid doc[", pk_, "]: field[", field_name,
-            "] dimension mismatch, expected ", field_schema->dimension(),
-            " but got ", value_dimension);
+            "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
+            FormatNameForError(field_name), "] dimension mismatch, expected ",
+            field_schema->dimension(), " but got ", value_dimension);
       }
     }
   }

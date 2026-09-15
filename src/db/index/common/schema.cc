@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <regex>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +25,7 @@
 #include "db/common/utils.h"
 #include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
+#include "db/index/common/name_validation.h"
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
@@ -62,7 +62,7 @@ static Status validate_fts_index_params(const FieldSchema &field) {
   auto params = std::dynamic_pointer_cast<FtsIndexParams>(field.index_params());
   if (!params) {
     return Status::InvalidArgument(
-        "schema validate failed: FTS index requires FtsIndexParams, but field[",
+        "Invalid schema: FTS index requires FtsIndexParams, but field[",
         field.name(), "] has incompatible index params");
   }
 
@@ -74,30 +74,24 @@ static Status validate_fts_index_params(const FieldSchema &field) {
   auto pipeline = fts::TokenizerFactory::create(internal_params);
   if (!pipeline.has_value()) {
     return Status::InvalidArgument(
-        "schema validate failed: invalid FTS index params for field[",
-        field.name(), "]: ", pipeline.error().message());
+        "Invalid schema: invalid FTS index params for field[", field.name(),
+        "]: ", pipeline.error().message());
   }
   return Status::OK();
 }
 
 Status FieldSchema::validate() const {
+  auto name_status = ValidateFieldName(name_);
+  CHECK_RETURN_STATUS(name_status);
+
   if (data_type_ == DataType::UNDEFINED) {
-    return Status::InvalidArgument("schema validate failed: field[", name_,
+    return Status::InvalidArgument("Invalid schema: field[", name_,
                                    "]'s data_type is not defined");
-  }
-  if (name_.empty()) {
-    return Status::InvalidArgument("schema validate failed: field[", name_,
-                                   "]'s name is empty");
-  }
-  if (!std::regex_match(name_, FIELD_NAME_REGEX)) {
-    return Status::InvalidArgument(
-        "schema validate failed: field[", name_,
-        "]'s name cannot pass the regex verification");
   }
   if (is_vector_field()) {
     auto is_sparse = is_sparse_vector();
     if (!is_sparse && (dimension_ == 0 || dimension() > kMaxDenseDimSize)) {
-      return Status::InvalidArgument("schema validate failed: field[", name_,
+      return Status::InvalidArgument("Invalid schema: field[", name_,
                                      "]'s dimension must be in (0,20000]");
     }
 
@@ -105,7 +99,7 @@ Status FieldSchema::validate() const {
       if (support_dense_vector_type.find(data_type_) ==
           support_dense_vector_type.end()) {
         return Status::InvalidArgument(
-            "schema validate failed: dense_vector's data type only "
+            "Invalid schema: dense_vector's data type only "
             "support FP32, "
             "but field[",
             name_, "]'s data type is ", DataTypeCodeBook::AsString(data_type_));
@@ -114,7 +108,7 @@ Status FieldSchema::validate() const {
       if (support_sparse_vector_type.find(data_type_) ==
           support_sparse_vector_type.end()) {
         return Status::InvalidArgument(
-            "schema validate failed: sparse_vector's data type only "
+            "Invalid schema: sparse_vector's data type only "
             "support FP32, "
             "but field[",
             name_, "]'s data type is ", DataTypeCodeBook::AsString(data_type_));
@@ -129,7 +123,7 @@ Status FieldSchema::validate() const {
         if (support_sparse_vector_index.find(index_params_->type()) ==
             support_sparse_vector_index.end()) {
           return Status::InvalidArgument(
-              "schema validate failed: sparse_vector's index_params only "
+              "Invalid schema: sparse_vector's index_params only "
               "support FLAT|HNSW index, "
               "but field[",
               name_, "]'s index_type is ",
@@ -137,7 +131,7 @@ Status FieldSchema::validate() const {
         }
         if (vector_index_params->metric_type() != MetricType::IP) {
           return Status::InvalidArgument(
-              "schema validate failed: sparse_vector's index_params only "
+              "Invalid schema: sparse_vector's index_params only "
               "support IP metric, but "
               "field[",
               name_, "]'s metric is ",
@@ -148,7 +142,7 @@ Status FieldSchema::validate() const {
         if (support_dense_vector_index.find(index_params_->type()) ==
             support_dense_vector_index.end()) {
           return Status::InvalidArgument(
-              "schema validate failed: dense_vector's index_params only "
+              "Invalid schema: dense_vector's index_params only "
               "support FLAT|HNSW|HNSW_RABITQ|IVF|IVF_RABITQ|DISKANN|VAMANA "
               "index, but "
               "field[",
@@ -161,20 +155,20 @@ Status FieldSchema::validate() const {
           index_params_->type() == IndexType::IVF_RABITQ) {
         if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
           return Status::InvalidArgument(
-              "schema validate failed: RabitQ index only support "
+              "Invalid schema: RabitQ index only support "
               "dimension in [",
               kMinRabitqDimSize, ", ", kMaxRabitqDimSize, "]");
         }
         if (data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "schema validate failed: RabitQ index only support FP32 "
+              "Invalid schema: RabitQ index only support FP32 "
               "data types");
         }
         auto metric_type = vector_index_params->metric_type();
         if (metric_type != MetricType::L2 && metric_type != MetricType::IP &&
             metric_type != MetricType::COSINE) {
           return Status::InvalidArgument(
-              "schema validate failed: RabitQ index only support "
+              "Invalid schema: RabitQ index only support "
               "L2/IP/COSINE metric");
         }
 #if !RABITQ_SUPPORTED
@@ -196,17 +190,17 @@ Status FieldSchema::validate() const {
             std::dynamic_pointer_cast<IvfRabitqIndexParams>(index_params_);
         if (!ivf_rabitq_params) {
           return Status::InvalidArgument(
-              "schema validate failed: IVF_RABITQ index requires "
+              "Invalid schema: IVF_RABITQ index requires "
               "IvfRabitqIndexParams");
         }
         if (ivf_rabitq_params->nlist() <= 0) {
           return Status::InvalidArgument(
-              "schema validate failed: IVF_RABITQ nlist must be greater than "
+              "Invalid schema: IVF_RABITQ nlist must be greater than "
               "0");
         }
         if (ivf_rabitq_params->sample_count() < 0) {
           return Status::InvalidArgument(
-              "schema validate failed: IVF_RABITQ sample_count must be "
+              "Invalid schema: IVF_RABITQ sample_count must be "
               "greater than or equal to 0");
         }
       }
@@ -214,7 +208,7 @@ Status FieldSchema::validate() const {
       if (index_params_->type() == IndexType::IVF &&
           vector_index_params->quantize_type() == QuantizeType::RABITQ) {
         return Status::InvalidArgument(
-            "schema validate failed: IVF index does not support RABITQ "
+            "Invalid schema: IVF index does not support RABITQ "
             "quantization; use the dedicated IVF_RABITQ index instead");
       }
 
@@ -246,20 +240,20 @@ Status FieldSchema::validate() const {
             flat_data_type != DataType::VECTOR_FP16 &&
             flat_data_type != DataType::VECTOR_UINT8) {
           return Status::InvalidArgument(
-              "schema validate failed: field[", name_,
+              "Invalid schema: field[", name_,
               "]'s flat_data_type must be VECTOR_FP32, VECTOR_FP16, "
               "or VECTOR_UINT8, but got ",
               DataTypeCodeBook::AsString(flat_data_type));
         }
         if (is_sparse && flat_data_type != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "schema validate failed: non-FP32 flat_data_type is only "
+              "Invalid schema: non-FP32 flat_data_type is only "
               "supported for dense vector fields");
         }
         if (!is_sparse && flat_data_type == DataType::VECTOR_UINT8 &&
             vector_index_params->metric_type() != MetricType::L2) {
           return Status::InvalidArgument(
-              "schema validate failed: field[", name_,
+              "Invalid schema: field[", name_,
               "] can only use VECTOR_UINT8 Flat reference storage with L2 "
               "metric");
         }
@@ -296,8 +290,7 @@ Status FieldSchema::validate() const {
         auto iter = quantize_type_map.find(data_type_);
         if (iter == quantize_type_map.end()) {
           return Status::InvalidArgument(
-              "schema validate failed: ",
-              is_sparse ? "sparse_vector" : "dense_vector",
+              "Invalid schema: ", is_sparse ? "sparse_vector" : "dense_vector",
               "'s index_params of ", DataTypeCodeBook::AsString(data_type_),
               " do not support quantize, but field[", name_,
               "]'s quantize_type is ",
@@ -307,7 +300,7 @@ Status FieldSchema::validate() const {
           if (iter->second.find(vector_index_params->quantize_type()) ==
               iter->second.end()) {
             return Status::InvalidArgument(
-                "schema validate failed: ",
+                "Invalid schema: ",
                 is_sparse ? "sparse_vector" : "dense_vector",
                 "'s index_params of ", DataTypeCodeBook::AsString(data_type_),
                 " support ", QuantizeTypeCodeBook::AsString(iter->second),
@@ -322,7 +315,7 @@ Status FieldSchema::validate() const {
         if (data_type_ != DataType::VECTOR_FP16 &&
             data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "schema validate failed: IVF index only support FP32/FP16 data "
+              "Invalid schema: IVF index only support FP32/FP16 data "
               "types according to the IP metric");
         }
       }
@@ -330,7 +323,7 @@ Status FieldSchema::validate() const {
         if (data_type_ != DataType::VECTOR_FP16 &&
             data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "schema validate failed: cosine metric only supports FP32/FP16 "
+              "Invalid schema: cosine metric only supports FP32/FP16 "
               "data types, but field[",
               name_, "]'s data type is ",
               DataTypeCodeBook::AsString(data_type_));
@@ -341,14 +334,14 @@ Status FieldSchema::validate() const {
     if (index_params_) {
       if (index_params_->is_vector_index_type()) {
         return Status::InvalidArgument(
-            "schema validate failed: scalar field[", name_,
+            "Invalid schema: scalar field[", name_,
             "] does not support vector index params, but got index_type ",
             IndexTypeCodeBook::AsString(index_params_->type()));
       }
       if (index_params_->type() == IndexType::FTS &&
           data_type_ != DataType::STRING) {
         return Status::InvalidArgument(
-            "schema validate failed: FTS index only supports STRING data type, "
+            "Invalid schema: FTS index only supports STRING data type, "
             "but field[",
             name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
       }
@@ -412,32 +405,39 @@ std::string FieldSchema::to_string_formatted(int indent_level) const {
 }
 
 Status CollectionSchema::validate() const {
-  if (name_.empty()) {
-    return Status::InvalidArgument("schema validate failed: name is empty");
-  }
-  if (!std::regex_match(name_, COLLECTION_NAME_REGEX)) {
-    return Status::InvalidArgument(
-        "schema validate failed: collection[", name_,
-        "]'s name cannot pass the regex verification");
+  auto name_status = ValidateCollectionName(name_);
+  CHECK_RETURN_STATUS(name_status);
+  std::unordered_set<std::string> names;
+  for (const auto &field : fields_) {
+    if (!field) {
+      return Status::InvalidArgument(
+          "Invalid schema: field schema must not be null");
+    }
+    if (!names.insert(field->name()).second) {
+      return Status::InvalidArgument("Invalid schema: duplicate field name [",
+                                     FormatNameForError(field->name()),
+                                     "]; field names must be unique");
+    }
   }
   if (forward_fields().size() > kMaxScalarFieldSize) {
     return Status::InvalidArgument(
-        "schema validate failed: collection[", name_,
+        "Invalid schema: collection[", FormatNameForError(name_),
         "]'s field size must <= ", kMaxScalarFieldSize);
   }
   if (max_doc_count_per_segment_ < MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD) {
     return Status::InvalidArgument(
-        "schema validate failed: max_doc_count_per_segment must >= ",
+        "Invalid schema: max_doc_count_per_segment must >= ",
         MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD);
   }
   if (fields_.empty()) {
-    return Status::InvalidArgument("schema validate failed: collection[", name_,
+    return Status::InvalidArgument("Invalid schema: collection[",
+                                   FormatNameForError(name_),
                                    "] has no fields");
   }
   auto v_fields = vector_fields();
   if (v_fields.size() > kMaxVectorFieldSize) {
     return Status::InvalidArgument(
-        "schema validate failed: collection[", name_,
+        "Invalid schema: collection[", FormatNameForError(name_),
         "]'s vector field size must <= ", kMaxVectorFieldSize);
   }
   for (auto &field : fields_) {
@@ -485,9 +485,14 @@ std::string CollectionSchema::to_string_formatted(int indent_level) const {
 }
 
 Status CollectionSchema::add_field(FieldSchema::Ptr column_schema) {
+  if (!column_schema) {
+    return Status::InvalidArgument(
+        "Invalid schema: field schema must not be null");
+  }
   // Check if field already exists
   if (has_field(column_schema->name())) {
-    return Status::AlreadyExists("field[", column_schema->name(),
+    return Status::AlreadyExists("field[",
+                                 FormatNameForError(column_schema->name()),
                                  "] already exists in schema");
   }
 
@@ -507,16 +512,21 @@ Status CollectionSchema::add_field(FieldSchema::Ptr column_schema) {
 Status CollectionSchema::alter_field(
     const std::string &column_name,
     const FieldSchema::Ptr &new_column_options) {
+  if (!new_column_options) {
+    return Status::InvalidArgument(
+        "Invalid schema: field schema must not be null");
+  }
   // Check if field exists
   if (!has_field(column_name)) {
-    return Status::NotFound("field[", column_name, "] not found in schema");
+    return Status::NotFound("field[", FormatNameForError(column_name),
+                            "] not found in schema");
   }
 
   std::string new_column_name = new_column_options->name();
 
   // If renaming to an existing field name (and it's not the same field)
   if (new_column_name != column_name && has_field(new_column_name)) {
-    return Status::AlreadyExists("field[", new_column_name,
+    return Status::AlreadyExists("field[", FormatNameForError(new_column_name),
                                  "] already exists in schema");
   }
 
@@ -540,7 +550,8 @@ Status CollectionSchema::alter_field(
 Status CollectionSchema::drop_field(const std::string &column_name) {
   // Check if field exists
   if (!has_field(column_name)) {
-    return Status::NotFound("field[", column_name, "] not found in schema");
+    return Status::NotFound("field[", FormatNameForError(column_name),
+                            "] not found in schema");
   }
 
   // Remove from map
@@ -723,7 +734,8 @@ Status CollectionSchema::add_index(const std::string &column,
   if (field) {
     field->set_index_params(index_params);
   } else {
-    return Status::NotFound("field[", column, "] not found in schema");
+    return Status::NotFound("field[", FormatNameForError(column),
+                            "] not found in schema");
   }
 
   return Status::OK();
@@ -739,7 +751,8 @@ Status CollectionSchema::drop_index(const std::string &column) {
       field->set_index_params(nullptr);
     }
   } else {
-    return Status::NotFound("field[", column, "] not found in schema");
+    return Status::NotFound("field[", FormatNameForError(column),
+                            "] not found in schema");
   }
 
   return Status::OK();

@@ -317,10 +317,12 @@ class SegmentImpl : public Segment,
   Status insert_vector_indexer(Doc &doc);
   Status internal_insert(Doc &doc);
   Status internal_update(Doc &doc);
-  Status internal_upsert(Doc &doc);
   Status internal_delete(const Doc &doc);
 
   Status recover();
+  Result<std::vector<uint64_t>> find_legacy_upsert_predecessors(
+      const std::unordered_set<std::string> &keys,
+      uint64_t first_replay_id) const;
   Status open_wal_file();
   Status append_wal(const Doc &doc);
   Status update_version(uint32_t delete_snapshot_path_suffix);
@@ -915,7 +917,7 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   }
 
   // write idmap
-  auto s = id_map_->upsert(doc.pk(), g_doc_id);
+  auto s = id_map_->upsert(doc.pk_ref(), g_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // write forward
@@ -950,26 +952,17 @@ Status SegmentImpl::internal_update(Doc &doc) {
   return internal_insert(doc);
 }
 
-Status SegmentImpl::internal_upsert(Doc &doc) {
-  uint64_t g_doc_id;
-  bool exist = id_map_->has(doc.pk(), &g_doc_id);
-  if (exist) {
-    delete_store_->mark_deleted(g_doc_id);
-  }
-  return internal_insert(doc);
-}
-
 Status SegmentImpl::internal_delete(const Doc &doc) {
   delete_store_->mark_deleted(doc.doc_id());
-  id_map_->remove(doc.pk());
+  id_map_->remove(doc.pk_ref());
   return Status::OK();
 }
 
 Status SegmentImpl::Insert(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
 
-  if (id_map_ && id_map_->has(doc.pk())) {
-    return Status::AlreadyExists("insert failed: doc_id[", doc.pk(),
+  if (id_map_ && id_map_->has(doc.pk_ref())) {
+    return Status::AlreadyExists("insert failed: doc_id[", doc.pk_ref(),
                                  "] already exists in collection");
   }
 
@@ -985,8 +978,8 @@ Status SegmentImpl::Insert(Doc &doc) {
 Status SegmentImpl::Update(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
   uint64_t g_doc_id;
-  if (!id_map_->has(doc.pk(), &g_doc_id)) {
-    return Status::NotFound("update failed: doc_id[", doc.pk(),
+  if (!id_map_->has(doc.pk_ref(), &g_doc_id)) {
+    return Status::NotFound("update failed: doc_id[", doc.pk_ref(),
                             "] not found in collection");
   }
 
@@ -1003,13 +996,28 @@ Status SegmentImpl::Update(Doc &doc) {
 Status SegmentImpl::Upsert(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
 
+  // Persist the predecessor explicitly. RocksDB may flush the new ID mapping
+  // before the deletion snapshot is committed, so recovery cannot safely
+  // infer the superseded document from the current ID map.
+  const auto original_doc_id = doc.doc_id();
+  uint64_t previous_id;
+  const bool exists = id_map_->has(doc.pk_ref(), &previous_id);
+  if (exists) {
+    doc.set_doc_id(previous_id);
+    doc.set_operator(Operator::UPDATE);
+  } else {
+    doc.set_operator(Operator::INSERT);
+  }
+
+  auto status = append_wal(doc);
+  // Preserve the public operation on the caller's document; only the WAL
+  // uses the already-supported INSERT/UPDATE representation.
   doc.set_operator(Operator::UPSERT);
-
-  // append WAL
-  auto s = append_wal(doc);
-  CHECK_RETURN_STATUS(s);
-
-  return internal_upsert(doc);
+  if (!status.ok()) {
+    doc.set_doc_id(original_doc_id);
+    return status;
+  }
+  return exists ? internal_update(doc) : internal_insert(doc);
 }
 
 Status SegmentImpl::Delete(const std::string &pk) {
@@ -4266,10 +4274,82 @@ Status SegmentImpl::init_memory_components() {
   return Status::OK();
 }
 
+Result<std::vector<uint64_t>> SegmentImpl::find_legacy_upsert_predecessors(
+    const std::unordered_set<std::string> &keys,
+    uint64_t first_replay_id) const {
+  std::vector<uint64_t> predecessors;
+  const auto version = version_manager_->get_current_version();
+  auto segments = version.persisted_segment_metas();
+  if (auto writing = version.writing_segment_meta()) {
+    segments.push_back(std::move(writing));
+  }
+  for (const auto &segment : segments) {
+    for (const auto &block : segment->persisted_blocks()) {
+      if (block.type() != BlockType::SCALAR ||
+          !block.contain_column(GLOBAL_DOC_ID) ||
+          !block.contain_column(USER_ID)) {
+        continue;
+      }
+      const auto forward_path = FileHelper::MakeForwardBlockPath(
+          path_, segment->id(), block.id(), !options_.enable_mmap_);
+      BaseForwardStore::Ptr store;
+      // BufferPoolForwardStore only supports Parquet; IPC always uses the
+      // mapped store. Release each store and its buffers before the next block.
+      if (options_.enable_mmap_ ||
+          InferFileFormat(forward_path) == FileFormat::IPC) {
+        store = std::make_shared<MmapForwardStore>(forward_path);
+      } else {
+        store = std::make_shared<BufferPoolForwardStore>(forward_path);
+      }
+      auto status = store->Open();
+      if (!status.ok()) {
+        return tl::make_unexpected(Status::InternalError(
+            "Failed to open committed rows for legacy WAL recovery: path[",
+            forward_path, "], reason[", status.message(), "]"));
+      }
+      auto reader = store->scan({GLOBAL_DOC_ID, USER_ID});
+      if (!reader) {
+        return tl::make_unexpected(Status::InternalError(
+            "Failed to scan committed rows for legacy WAL recovery: ",
+            forward_path));
+      }
+      while (true) {
+        std::shared_ptr<arrow::RecordBatch> batch;
+        const auto read_status = reader->ReadNext(&batch);
+        if (!read_status.ok()) {
+          return tl::make_unexpected(Status::InternalError(
+              "Failed to read committed rows for legacy WAL recovery: path[",
+              forward_path, "], reason[", read_status.message(), "]"));
+        }
+        if (!batch) break;
+        const auto ids = std::dynamic_pointer_cast<arrow::UInt64Array>(
+            batch->GetColumnByName(GLOBAL_DOC_ID));
+        const auto pks = std::dynamic_pointer_cast<arrow::StringArray>(
+            batch->GetColumnByName(USER_ID));
+        if (!ids || !pks || ids->length() != pks->length() ||
+            ids->null_count() != 0 || pks->null_count() != 0) {
+          return tl::make_unexpected(Status::InternalError(
+              "Invalid committed identity columns during legacy WAL recovery: ",
+              forward_path));
+        }
+        for (int64_t row = 0; row < ids->length(); ++row) {
+          const auto doc_id = ids->Value(row);
+          if (doc_id < first_replay_id && !delete_store_->is_deleted(doc_id) &&
+              keys.find(pks->GetString(row)) != keys.end()) {
+            predecessors.push_back(doc_id);
+          }
+        }
+      }
+    }
+  }
+  return predecessors;
+}
+
 Status SegmentImpl::recover() {
   // recover mem block meta
   auto &mem_block = segment_meta_->writing_forward_block().value();
-  doc_id_allocator_.store(mem_block.min_doc_id());
+  const auto first_replay_id = mem_block.min_doc_id();
+  doc_id_allocator_.store(first_replay_id);
 
   std::string wal_file_path =
       FileHelper::MakeWalPath(path_, segment_meta_->id(), mem_block.id_);
@@ -4286,99 +4366,141 @@ Status SegmentImpl::recover() {
       0) {
     LOG_ERROR("WAL recovery failed: unable to open WAL file [%s]",
               wal_file_path.c_str());
-    return Status::OK();
+    return Status::InternalError("Failed to open WAL for recovery: ",
+                                 wal_file_path);
   }
   std::array<uint64_t, static_cast<size_t>(Operator::DELETE) + 1>
       recovered_doc_count{};
   uint64_t total_recovered_doc_count{0};
-
-  int ret = recover_wal_file->prepare_for_read();
-  if (ret != 0) {
-    LOG_ERROR(
-        "WAL recovery failed: unable to prepare file for reading, path[%s], "
-        "segment[%d], ret[%d]",
-        wal_file_path.c_str(), id(), ret);
-    return Status::InternalError(
-        "Failed to prepare WAL file for reading: path[", wal_file_path,
-        "], segment[", id(), "], ret[", ret, "]");
-  }
+  std::unordered_set<std::string> legacy_upsert_keys;
 
   LOG_INFO("WAL recovery started: path[%s], segment[%d]", wal_file_path.c_str(),
            id());
 
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
-  while (true) {
-    std::string buf = recover_wal_file->next();
-    if (buf.empty()) {
-      break;
-    }
-    total_recovered_doc_count++;
-    auto doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(buf.data()),
-                                buf.size());
-    if (doc == nullptr) {
+  // Validate the complete stream before changing the ID map or indexes. A
+  // failed open can close and flush those stores, so discovering corruption
+  // after applying a prefix would otherwise persist a partial recovery.
+  // Read one WAL record at a time. Legacy recovery additionally holds unique
+  // UPSERT keys, matched predecessor IDs, and the existing forward-store
+  // buffers for one committed block. New WAL records need no committed scan.
+  for (int pass = 0; pass < 2; ++pass) {
+    const bool replay = pass == 1;
+    total_recovered_doc_count = 0;
+    int ret = recover_wal_file->prepare_for_read();
+    if (ret != 0) {
       LOG_ERROR(
-          "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
-          "reason[deserialization failed]",
-          wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count);
-      continue;
+          "WAL recovery failed: unable to prepare file for reading, path[%s], "
+          "segment[%d], ret[%d]",
+          wal_file_path.c_str(), id(), ret);
+      return Status::InternalError(
+          "Failed to prepare WAL file for reading: path[", wal_file_path,
+          "], segment[", id(), "], ret[", ret, "]");
     }
 
-    Status status;
-    switch (doc->get_operator()) {
-      case Operator::INSERT: {
-        internal_insert(*doc);
+    if (replay && !legacy_upsert_keys.empty()) {
+      // Old UPSERT records did not include their predecessor ID. Reconstruct
+      // it from committed rows even if an interrupted replay already replaced
+      // its ID-map entry. Finish the entire scan before changing tombstones.
+      auto predecessors =
+          find_legacy_upsert_predecessors(legacy_upsert_keys, first_replay_id);
+      if (!predecessors.has_value()) return predecessors.error();
+      for (const auto doc_id : predecessors.value()) {
+        delete_store_->mark_deleted(doc_id);
+      }
+    }
+
+    while (true) {
+      auto record = recover_wal_file->next();
+      if (!record.has_value()) {
+        return Status::InternalError(
+            "Failed to read WAL during recovery: path[", wal_file_path,
+            "], segment[", id(), "], reason[", record.error().message(), "]");
+      }
+      if (!record.value().has_value()) {
         break;
       }
-      case Operator::UPDATE: {
-        internal_update(*doc);
-        break;
+      if (options_.read_only_) {
+        return Status::FailedPrecondition(
+            "WAL recovery is required; open the collection in read-write mode "
+            "once to recover before opening it read-only");
       }
-      case Operator::UPSERT: {
-        internal_upsert(*doc);
-        break;
-      }
-      case Operator::DELETE: {
-        internal_delete(*doc);
-        break;
-      }
-      default:
+      const auto &buf = record.value().value();
+      total_recovered_doc_count++;
+      auto doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(buf.data()),
+                                  buf.size());
+      if (doc == nullptr) {
         LOG_ERROR(
             "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
-            "operator[%d], reason[unknown operator]",
+            "reason[deserialization failed]",
+            wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count);
+        return Status::InternalError(
+            "Corrupt WAL document: path[", wal_file_path, "], segment[", id(),
+            "], record[", total_recovered_doc_count, "]");
+      }
+
+      if (!replay) {
+        if (doc->get_operator() == Operator::UPSERT) {
+          legacy_upsert_keys.insert(doc->pk_ref());
+        }
+        continue;
+      }
+
+      Status status;
+      switch (doc->get_operator()) {
+        case Operator::INSERT: {
+          status = internal_insert(*doc);
+          break;
+        }
+        case Operator::UPDATE: {
+          status = internal_update(*doc);
+          break;
+        }
+        case Operator::UPSERT: {
+          // A previous interrupted replay may already have persisted this
+          // record's ID (or a later ID for the same key) in RocksDB. Only an
+          // older document is superseded; marking this/later replay ID deleted
+          // would hide a successfully recovered document on retry.
+          uint64_t previous_id;
+          if (id_map_->has(doc->pk_ref(), &previous_id) &&
+              previous_id < doc_id_allocator_.load()) {
+            delete_store_->mark_deleted(previous_id);
+          }
+          status = internal_insert(*doc);
+          break;
+        }
+        case Operator::DELETE: {
+          status = internal_delete(*doc);
+          break;
+        }
+        default:
+          LOG_ERROR(
+              "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
+              "operator[%d], reason[unknown operator]",
+              wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
+              static_cast<int>(doc->get_operator()));
+          return Status::InternalError("Unknown WAL document operator: path[",
+                                       wal_file_path, "], record[",
+                                       total_recovered_doc_count, "]");
+      }
+
+      if (!status.ok()) {
+        LOG_ERROR(
+            "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
+            "operator[%d], reason[%s]",
             wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
-            static_cast<int>(doc->get_operator()));
-        break;
+            static_cast<int>(doc->get_operator()), status.message().c_str());
+        return Status(status.code(),
+                      ailego::StringHelper::Concat(
+                          "Failed to apply WAL record: path[", wal_file_path,
+                          "], record[", total_recovered_doc_count, "], reason[",
+                          status.message(), "]"));
+      }
+
+      recovered_doc_count[static_cast<size_t>(doc->get_operator())]++;
     }
-
-    if (!status.ok()) {
-      LOG_ERROR(
-          "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
-          "operator[%d], reason[%s]",
-          wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
-          static_cast<int>(doc->get_operator()), status.message().c_str());
-      continue;
-    }
-
-    recovered_doc_count[static_cast<size_t>(doc->get_operator())]++;
   }
-
-  const auto added_docs = recovered_doc_count[0] +  // INSERT
-                          recovered_doc_count[1] +  // UPSERT
-                          recovered_doc_count[2];   // UPDATE
-  mem_block.max_doc_id_ += added_docs;
-
-  ret = recover_wal_file->close();
-  if (ret != 0) {
-    LOG_ERROR(
-        "WAL recovery failed: unable to close file, path[%s], "
-        "segment[%d], ret[%d]",
-        wal_file_path.c_str(), id(), ret);
-    return Status::InternalError("Failed to close recovered WAL file: path[",
-                                 wal_file_path, "], segment[", id(), "], ret[",
-                                 ret, "]");
-  }
-  recover_wal_file.reset();
 
   LOG_INFO(
       "WAL recovery completed: path[%s], segment[%d], total[%zu], "
@@ -4394,7 +4516,10 @@ Status SegmentImpl::recover() {
   // optimize() flush the writing segment before sealing it; without an open
   // member WAL, flush() treats the recovered memory components as empty and
   // returns without persisting them.
-  return open_wal_file();
+  // Retain the reader's valid-tail position so a later append can discard an
+  // incomplete crash record. Opening read-only does not truncate the WAL.
+  wal_file_ = std::move(recover_wal_file);
+  return Status::OK();
 }
 
 Status SegmentImpl::open_wal_file() {
@@ -4430,10 +4555,10 @@ Status SegmentImpl::append_wal(const Doc &doc) {
   auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
   if (ret != 0) {
     LOG_ERROR("WAL append failed: segment[%d], pk[%s], operator[%d], ret[%d]",
-              id(), doc.pk().c_str(), static_cast<int>(doc.get_operator()),
+              id(), doc.pk_ref().c_str(), static_cast<int>(doc.get_operator()),
               ret);
     return Status::InternalError("Failed to append WAL: segment[", id(),
-                                 "], pk[", doc.pk(), "], operator[",
+                                 "], pk[", doc.pk_ref(), "], operator[",
                                  static_cast<int>(doc.get_operator()),
                                  "], ret[", ret, "]");
   }

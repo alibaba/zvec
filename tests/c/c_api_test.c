@@ -85,6 +85,23 @@ static int current_test_passed = 1;  // Track if current test function passes
     }                          \
   } while (0)
 
+static void check_last_error(zvec_error_code_t code, const char *reason) {
+  char *message = NULL;
+  TEST_ASSERT(zvec_get_last_error(&message) == ZVEC_OK);
+  TEST_ASSERT(message != NULL);
+  if (message) {
+    TEST_ASSERT(strstr(message, reason) != NULL);
+  }
+  zvec_error_details_t details = {0};
+  TEST_ASSERT(zvec_get_last_error_details(&details) == ZVEC_OK);
+  TEST_ASSERT(details.code == code);
+  TEST_ASSERT(details.message != NULL);
+  if (message && details.message) {
+    TEST_ASSERT(strcmp(message, details.message) == 0);
+  }
+  zvec_free(message);
+}
+
 // =============================================================================
 // Helper functions tests
 // =============================================================================
@@ -1023,6 +1040,269 @@ void test_collection_basic_operations(void) {
   // Clean up temporary directory
   cleanup_temp_directory(temp_dir);
 
+  TEST_END();
+}
+
+void test_relaxed_name_validation(void) {
+  TEST_START();
+
+  const char *temp_dir = "./zvec_test_relaxed_name_validation";
+  cleanup_temp_directory(temp_dir);
+  const char *collection_name = "\xe9\x9b\x86\xe5\x90\x88 / 2026";
+  char field_name[65];
+  memset(field_name, 'f', sizeof(field_name) - 1);
+  field_name[sizeof(field_name) - 1] = '\0';
+  zvec_collection_schema_t *schema =
+      zvec_collection_schema_create(collection_name);
+  zvec_field_schema_t *field =
+      zvec_field_schema_create(field_name, ZVEC_DATA_TYPE_INT32, false, 0);
+  TEST_ASSERT(schema != NULL);
+  TEST_ASSERT(field != NULL);
+  TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+  zvec_field_schema_destroy(field);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+  if (collection) {
+    char long_id[1025];
+    memset(long_id, 'x', sizeof(long_id) - 1);
+    long_id[sizeof(long_id) - 1] = '\0';
+    const char *ids[] = {"\xe8\xae\xa2\xe5\x8d\x95:2026",
+                         "https://example.com/articles/42", long_id};
+    zvec_doc_t *doc = zvec_doc_create();
+    int32_t value = 42;
+    TEST_ASSERT(zvec_doc_add_field_by_value(doc, field_name,
+                                            ZVEC_DATA_TYPE_INT32, &value,
+                                            sizeof(value)) == ZVEC_OK);
+    const zvec_doc_t *docs[] = {doc};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+      zvec_doc_set_pk(doc, ids[i]);
+      size_t success_count = 0, error_count = 0;
+      err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                   &error_count);
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(success_count == 1);
+      TEST_ASSERT(error_count == 0);
+
+      zvec_doc_t **fetched = NULL;
+      size_t found_count = 0;
+      err = zvec_collection_fetch(collection, &ids[i], 1, NULL, 0, false,
+                                  &fetched, &found_count);
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(found_count == 1);
+      if (found_count == 1) {
+        TEST_ASSERT(strcmp(zvec_doc_get_pk_pointer(fetched[0]), ids[i]) == 0);
+      }
+      zvec_docs_free(fetched, found_count);
+    }
+
+    char oversized_id[1026];
+    memset(oversized_id, 'x', sizeof(oversized_id) - 1);
+    oversized_id[sizeof(oversized_id) - 1] = '\0';
+    const char *invalid_ids[] = {"\xff", oversized_id, "doc\nid"};
+    const char *reasons[] = {"not valid UTF-8", "exceeds 1024 bytes (got 1025)",
+                             "newline"};
+    for (size_t i = 0; i < sizeof(invalid_ids) / sizeof(invalid_ids[0]); ++i) {
+      zvec_doc_set_pk(doc, invalid_ids[i]);
+      size_t success_count = 0, error_count = 0;
+      err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                   &error_count);
+      TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+      TEST_ASSERT(success_count == 0);
+      TEST_ASSERT(error_count == 1);
+      char *error_msg = NULL;
+      zvec_get_last_error(&error_msg);
+      TEST_ASSERT(error_msg != NULL);
+      if (error_msg) {
+        TEST_ASSERT(strncmp(error_msg, "Invalid doc:", 12) == 0);
+        TEST_ASSERT(strstr(error_msg, reasons[i]) != NULL);
+        TEST_ASSERT(strstr(error_msg, "offset") == NULL);
+        zvec_free(error_msg);
+      }
+    }
+    zvec_doc_destroy(doc);
+    zvec_collection_destroy(collection);
+  }
+  zvec_collection_schema_destroy(schema);
+  cleanup_temp_directory(temp_dir);
+
+  TEST_END();
+}
+
+void test_collection_name_encoding_validation(void) {
+  TEST_START();
+
+  char max_name[257];
+  memset(max_name, 'c', sizeof(max_name) - 1);
+  max_name[sizeof(max_name) - 1] = '\0';
+  char oversized_name[258];
+  memset(oversized_name, 'c', sizeof(oversized_name) - 1);
+  oversized_name[sizeof(oversized_name) - 1] = '\0';
+  const char *names[] = {"x", max_name, "\xff", oversized_name};
+  const char *reasons[] = {NULL, NULL, "not valid UTF-8",
+                           "exceeds 256 bytes (got 257)"};
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    zvec_collection_schema_t *schema = zvec_collection_schema_create(names[i]);
+    zvec_field_schema_t *field =
+        zvec_field_schema_create("value", ZVEC_DATA_TYPE_INT32, false, 0);
+    TEST_ASSERT(schema != NULL);
+    TEST_ASSERT(field != NULL);
+    TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+    zvec_field_schema_destroy(field);
+
+    zvec_string_t *error_msg = NULL;
+    zvec_error_code_t err = zvec_collection_schema_validate(schema, &error_msg);
+    if (reasons[i]) {
+      TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+      TEST_ASSERT(error_msg != NULL);
+      if (error_msg) {
+        const char *message = zvec_string_c_str(error_msg);
+        TEST_ASSERT(strncmp(message, "Invalid schema:", 15) == 0);
+        TEST_ASSERT(strstr(message, "collection name") != NULL);
+        TEST_ASSERT(strstr(message, reasons[i]) != NULL);
+        TEST_ASSERT(strstr(message, "offset") == NULL);
+      }
+    } else {
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(error_msg == NULL);
+    }
+    zvec_free_string(error_msg);
+    zvec_collection_schema_destroy(schema);
+  }
+
+  TEST_END();
+}
+
+void test_validation_last_error(void) {
+  TEST_START();
+
+  zvec_collection_schema_t *schema = zvec_collection_schema_create("\xff");
+  zvec_field_schema_t *field =
+      zvec_field_schema_create("bad name", ZVEC_DATA_TYPE_INT32, false, 0);
+  TEST_ASSERT(schema != NULL);
+  TEST_ASSERT(field != NULL);
+
+  zvec_clear_error();
+  TEST_ASSERT(zvec_collection_schema_validate(schema, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid schema: collection name is not valid UTF-8");
+  // Replacing a previous error must update both text and code.
+  TEST_ASSERT(zvec_field_schema_validate(field, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid schema: field[bad name] contains a space");
+
+  zvec_string_t *error = NULL;
+  TEST_ASSERT(zvec_collection_schema_validate(schema, &error) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(error != NULL);
+  if (error) {
+    check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, zvec_string_c_str(error));
+  }
+  zvec_free_string(error);
+
+  error = (zvec_string_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_collection_schema_validate(NULL, &error) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(error == NULL);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "cannot be null");
+  error = (zvec_string_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_field_schema_validate(NULL, &error) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(error == NULL);
+
+  zvec_collection_t *collection = (zvec_collection_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_collection_create_and_open("./zvec_test_invalid_utf8_name",
+                                              schema, NULL, &collection) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(collection == NULL);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid schema: collection name is not valid UTF-8");
+
+  zvec_field_schema_destroy(field);
+  zvec_collection_schema_destroy(schema);
+  TEST_END();
+}
+
+void test_batch_validation_errors(void) {
+  TEST_START();
+
+  typedef zvec_error_code_t(ZVEC_CALL * count_write_fn)(
+      zvec_collection_t *, const zvec_doc_t **, size_t, size_t *, size_t *);
+  typedef zvec_error_code_t(ZVEC_CALL * result_write_fn)(
+      zvec_collection_t *, const zvec_doc_t **, size_t, zvec_write_result_t **,
+      size_t *);
+  count_write_fn count_ops[] = {zvec_collection_insert, zvec_collection_update,
+                                zvec_collection_upsert};
+  result_write_fn result_ops[] = {zvec_collection_insert_with_results,
+                                  zvec_collection_update_with_results,
+                                  zvec_collection_upsert_with_results};
+  for (size_t op = 0; op < 3; ++op) {
+    zvec_write_result_t *results = (zvec_write_result_t *)(uintptr_t)1;
+    size_t result_count = 123;
+    TEST_ASSERT(result_ops[op](NULL, NULL, 1, &results, &result_count) ==
+                ZVEC_ERROR_INVALID_ARGUMENT);
+    TEST_ASSERT(results == NULL);
+    TEST_ASSERT(result_count == 0);
+    check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "Invalid arguments:");
+  }
+  const char *path = "./zvec_test_batch_validation_errors";
+  cleanup_temp_directory(path);
+  zvec_collection_schema_t *schema = zvec_collection_schema_create("batch");
+  zvec_field_schema_t *field =
+      zvec_field_schema_create("value", ZVEC_DATA_TYPE_INT32, true, 0);
+  TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+  zvec_field_schema_destroy(field);
+  zvec_collection_t *collection = NULL;
+  TEST_ASSERT(zvec_collection_create_and_open(path, schema, NULL,
+                                              &collection) == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+  if (collection) {
+    zvec_doc_t *valid_doc = zvec_doc_create();
+    zvec_doc_t *invalid_doc = zvec_doc_create();
+    zvec_doc_set_pk(valid_doc, "valid_before_error");
+    zvec_doc_set_pk(invalid_doc, "\xff");
+    const zvec_doc_t *invalid_inputs[] = {NULL, invalid_doc};
+    const char *reasons[] = {"document must not be null",
+                             "id is not valid UTF-8"};
+    for (size_t i = 0; i < 2; ++i) {
+      const zvec_doc_t *docs[] = {valid_doc, invalid_inputs[i]};
+      for (size_t op = 0; op < 3; ++op) {
+        size_t success_count = 123, error_count = 456;
+        TEST_ASSERT(count_ops[op](collection, docs, 2, &success_count,
+                                  &error_count) == ZVEC_ERROR_INVALID_ARGUMENT);
+        TEST_ASSERT(success_count == 0);
+        TEST_ASSERT(error_count == 2);
+        check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
+        check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "document at index 1");
+
+        zvec_write_result_t *results = (zvec_write_result_t *)(uintptr_t)1;
+        size_t result_count = 123;
+        TEST_ASSERT(
+            result_ops[op](collection, docs, 2, &results, &result_count) ==
+            ZVEC_ERROR_INVALID_ARGUMENT);
+        TEST_ASSERT(results == NULL);
+        TEST_ASSERT(result_count == 0);
+        check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
+      }
+    }
+    const char *ids[] = {"valid_before_error"};
+    zvec_doc_t **fetched = NULL;
+    size_t found_count = 0;
+    TEST_ASSERT(zvec_collection_fetch(collection, ids, 1, NULL, 0, false,
+                                      &fetched, &found_count) == ZVEC_OK);
+    TEST_ASSERT(found_count == 0);
+    zvec_docs_free(fetched, found_count);
+    zvec_doc_destroy(valid_doc);
+    zvec_doc_destroy(invalid_doc);
+    zvec_collection_destroy(collection);
+  }
+  zvec_collection_schema_destroy(schema);
+  cleanup_temp_directory(path);
   TEST_END();
 }
 
@@ -3364,6 +3644,31 @@ void test_doc_serialization(void) {
       &deserialized_int32, sizeof(deserialized_int32));
   TEST_ASSERT(err == ZVEC_OK);
   TEST_ASSERT(deserialized_int32 == -2147483648);
+
+  const size_t truncated_sizes[] = {1, data_size / 2, data_size - 1};
+  for (size_t i = 0; i < sizeof(truncated_sizes) / sizeof(truncated_sizes[0]);
+       ++i) {
+    zvec_doc_t *invalid_doc = (zvec_doc_t *)(uintptr_t)1;
+    TEST_ASSERT(zvec_doc_deserialize(serialized_data, truncated_sizes[i],
+                                     &invalid_doc) ==
+                ZVEC_ERROR_INVALID_ARGUMENT);
+    TEST_ASSERT(invalid_doc == NULL);
+    check_last_error(ZVEC_ERROR_INVALID_ARGUMENT,
+                     "Invalid doc: serialized data is incomplete or invalid");
+  }
+  zvec_doc_t *invalid_doc = (zvec_doc_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_doc_deserialize(NULL, data_size, &invalid_doc) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(invalid_doc == NULL);
+  invalid_doc = (zvec_doc_t *)(uintptr_t)1;
+  TEST_ASSERT(zvec_doc_deserialize(serialized_data, 0, &invalid_doc) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(invalid_doc == NULL);
+  TEST_ASSERT(zvec_doc_deserialize(serialized_data, data_size, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(
+      ZVEC_ERROR_INVALID_ARGUMENT,
+      "Invalid doc: data, size and document output must be provided");
 
   zvec_free_uint8_array(serialized_data);
   free(string_field.value.string_value.data);
@@ -6791,6 +7096,10 @@ int main(void) {
 
   // Collection-related tests
   test_collection_basic_operations();
+  test_relaxed_name_validation();
+  test_collection_name_encoding_validation();
+  test_validation_last_error();
+  test_batch_validation_errors();
   test_collection_edge_cases();
   test_collection_delete_by_filter();
   test_collection_stats();
