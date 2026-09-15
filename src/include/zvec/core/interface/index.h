@@ -291,7 +291,7 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
   //! Rebuild the legacy converter/reformer/metric/streamer pipeline,
   //! dropping the turbo quantizer.
-  int FallbackToLegacyPipeline(void);
+  int FallbackToLegacyPipeline();
 
   //! Create the legacy converter/reformer for combinations the turbo
   //! quantizers cannot express (including the flat storage_data_type

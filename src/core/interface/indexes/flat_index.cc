@@ -178,7 +178,7 @@ int FlatIndex::open(const std::string &file_path,
   return Index::open(file_path, storage_options);
 }
 
-int FlatIndex::FallbackToLegacyPipeline(void) {
+int FlatIndex::FallbackToLegacyPipeline() {
   turbo_quantizer_.reset();
   streamer_.reset();
 

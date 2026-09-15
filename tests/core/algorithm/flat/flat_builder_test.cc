@@ -344,11 +344,11 @@ struct QuantizedHolder : public MultiPassNumericalIndexHolder<uint8_t> {
       : MultiPassNumericalIndexHolder<uint8_t>(meta.element_size()),
         meta_(meta) {}
 
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return meta_.dimension();
   }
 
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return meta_.data_type();
   }
 
