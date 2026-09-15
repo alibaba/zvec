@@ -14,6 +14,7 @@
 
 #include "db/index/column/fts_column/fts_column_indexer.h"
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -27,8 +28,10 @@
 #include "db/index/common/index_filter.h"
 // FtsQueryParams defined below
 #include "db/index/column/fts_column/fts_ast_rewriter.h"
+#include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 // meta.h not needed in zvec
 #include "db/common/constants.h"
@@ -1918,3 +1921,96 @@ TEST_F(FtsStemmerIndexerTest, StemmerNoMatchAfterStemming) {
   EXPECT_TRUE(search_ok(*indexer, "nonexistent", 10, &results, pipeline));
   EXPECT_TRUE(results.empty());
 }
+
+#if GTEST_HAS_DEATH_TEST
+
+class FtsSealRecoveryDeathTest : public ::testing::TestWithParam<bool> {
+ protected:
+  void SetUp() override {
+    path_ = "./test_fts_seal_recovery_" + std::to_string(GetParam());
+    FileHelper::RemoveDirectory(path_);
+  }
+
+  void TearDown() override {
+    FileHelper::RemoveDirectory(path_);
+  }
+
+  std::string path_;
+};
+
+TEST_P(FtsSealRecoveryDeathTest, PostingsSurviveExitWithoutClose) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const bool seal_all = GetParam();
+  const std::vector<std::string> names =
+      seal_all ? std::vector<std::string>{"text", "title"}
+               : std::vector<std::string>{"text"};
+  FieldSchemaPtrList fields;
+  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+      merge_ops;
+  for (const auto &name : names) {
+    auto params = std::make_shared<zvec::FtsIndexParams>("whitespace");
+    fields.push_back(make_test_field_meta(name, params));
+    merge_ops[name] = std::make_shared<FtsPostingsMerge>();
+  }
+
+  // Re-exec the child instead of forking an initialized RocksDB thread pool.
+  // Exit after sealing, without destructors that would hide missing flushes.
+  ASSERT_EXIT(
+      {
+        auto indexer = FtsIndexer::CreateAndOpen(path_, fields, true);
+        if (!indexer) {
+          std::_Exit(1);
+        }
+        for (const auto &name : names) {
+          if (!indexer->insert(name, 0, "shared shared").ok() ||
+              !indexer->insert(name, 1, "shared").ok()) {
+            std::_Exit(2);
+          }
+        }
+        // Match SegmentImpl::dump(): flush the mutable representation first.
+        if (!indexer->flush().ok()) {
+          std::_Exit(3);
+        }
+        auto status = seal_all ? indexer->seal_all() : indexer->seal("text");
+        if (!status.ok()) {
+          std::_Exit(4);
+        }
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  RocksdbContext recovered;
+  ASSERT_TRUE(
+      recovered
+          .open(RocksdbContext::Args{path_, {}, nullptr, merge_ops, true}, true)
+          .ok());
+  for (const auto &name : names) {
+    auto *postings_cf = recovered.get_cf(name);
+    ASSERT_NE(postings_cf, nullptr);
+    EXPECT_EQ(recovered.get_cf(name + kFtsTfSuffix), nullptr);
+    EXPECT_EQ(recovered.get_cf(name + kFtsMaxTfSuffix), nullptr);
+    EXPECT_EQ(recovered.get_cf(name + kFtsDocLenSuffix), nullptr);
+    std::string raw;
+    ASSERT_TRUE(
+        recovered.db_->Get(recovered.read_opts_, postings_cf, "shared", &raw)
+            .ok());
+    ASSERT_TRUE(
+        BitPackedPostingList::is_bitpacked_format(raw.data(), raw.size()))
+        << "Sealed postings reverted to the mutable format after process exit";
+    BitPackedPostingIterator postings;
+    ASSERT_EQ(postings.open(raw.data(), raw.size()), 0);
+    EXPECT_EQ(postings.next_doc(), 0u);
+    EXPECT_EQ(postings.term_freq(), 2u);
+    EXPECT_EQ(postings.doc_len(), 2u);
+    EXPECT_EQ(postings.next_doc(), 1u);
+    EXPECT_EQ(postings.term_freq(), 1u);
+    EXPECT_EQ(postings.doc_len(), 1u);
+    EXPECT_EQ(postings.next_doc(), BitPackedPostingIterator::NO_MORE_DOCS);
+  }
+  EXPECT_TRUE(recovered.close().ok());
+}
+
+INSTANTIATE_TEST_SUITE_P(SealPaths, FtsSealRecoveryDeathTest,
+                         ::testing::Bool());
+
+#endif  // GTEST_HAS_DEATH_TEST

@@ -289,9 +289,11 @@ Status FtsIndexer::seal(const std::string &field_name) {
   }
 
   indexer->reset_side_cfs();
-  fts_ctx_->drop_cf(field_name + kFtsTfSuffix);
-  fts_ctx_->drop_cf(field_name + kFtsMaxTfSuffix);
-  fts_ctx_->drop_cf(field_name + kFtsDocLenSuffix);
+  for (const auto &suffix : {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+    if (auto status = fts_ctx_->drop_cf(field_name + suffix); !status.ok()) {
+      return status;
+    }
+  }
 
   return Status::OK();
 }
@@ -320,9 +322,12 @@ Status FtsIndexer::seal_all() {
     indexer->reset_side_cfs();
   }
   for (const auto &[name, _] : indexers_) {
-    fts_ctx_->drop_cf(name + kFtsTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsMaxTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
+    for (const auto &suffix :
+         {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+      if (auto status = fts_ctx_->drop_cf(name + suffix); !status.ok()) {
+        return status;
+      }
+    }
   }
 
   return Status::OK();

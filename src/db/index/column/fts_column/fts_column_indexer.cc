@@ -861,6 +861,18 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
     return ret;
   }
 
+  // Postings writes bypass the RocksDB WAL. Make the converted data durable
+  // before clearing the side CFs: a successful dump can publish this segment
+  // before its RocksDB is closed, and recovery expects BitPacked postings.
+  rocksdb::FlushOptions flush_options;
+  flush_options.wait = true;
+  auto flush_status = ctx_->db_->Flush(flush_options, postings_cf_);
+  if (!flush_status.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::convert_postings_to_bitpacked: flush failed. field=",
+        field_name_, " status=", flush_status.ToString()));
+  }
+
   // ---------------------------------------------------------------
   // 3) Clear $TF / $DOC_LEN / $MAX_TF CFs via DeleteRange.
   //
