@@ -1478,8 +1478,8 @@ Status CollectionImpl::alter_column(const std::string &column_name,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
-  auto field_copy =
-      new_column_schema ? std::make_shared<FieldSchema>(*new_column_schema)
+  auto field_copy = new_column_schema
+                        ? std::make_shared<FieldSchema>(*new_column_schema)
                         : nullptr;
   auto s = validate(column_name, field_copy, "", rename, ColumnOp::ALTER);
   CHECK_RETURN_STATUS(s);

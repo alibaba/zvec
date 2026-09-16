@@ -81,8 +81,9 @@ static Status validate_fts_index_params(const FieldSchema &field) {
 }
 
 Status FieldSchema::validate() const {
-  auto name_status = validate_field_name(name_);
-  CHECK_RETURN_STATUS(name_status);
+  if (auto s = validate_field_name(name_); !s.ok()) {
+    return s;
+  }
 
   if (data_type_ == DataType::UNDEFINED) {
     return Status::InvalidArgument("Invalid schema: field[", name_,
@@ -405,8 +406,9 @@ std::string FieldSchema::to_string_formatted(int indent_level) const {
 }
 
 Status CollectionSchema::validate() const {
-  auto name_status = validate_collection_name(name_);
-  CHECK_RETURN_STATUS(name_status);
+  if (auto s = validate_collection_name(name_); !s.ok()) {
+    return s;
+  }
   std::unordered_set<std::string> names;
   for (const auto &field : fields_) {
     if (!field) {
@@ -490,7 +492,7 @@ Status CollectionSchema::add_field(FieldSchema::Ptr column_schema) {
   }
   // Check if field already exists
   if (has_field(column_schema->name())) {
-    return Status::AlreadyExists("field[", format_name(column_schema->name()),
+    return Status::AlreadyExists("field[", column_schema->name(),
                                  "] already exists in schema");
   }
 
@@ -524,7 +526,7 @@ Status CollectionSchema::alter_field(
 
   // If renaming to an existing field name (and it's not the same field)
   if (new_column_name != column_name && has_field(new_column_name)) {
-    return Status::AlreadyExists("field[", format_name(new_column_name),
+    return Status::AlreadyExists("field[", new_column_name,
                                  "] already exists in schema");
   }
 

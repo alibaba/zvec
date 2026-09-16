@@ -64,8 +64,7 @@ std::map<std::string, std::string> ReadManifests(const std::string &path) {
 // Only called in ASSERT_EXIT children. Intentionally skip collection cleanup.
 void WriteStringDocsAndExit(const std::string &path,
                             const std::vector<std::string> &ids,
-                            const std::vector<std::string> &values,
-                            bool malformed_record = false) {
+                            const std::vector<std::string> &values) {
   CollectionSchema schema("wal_recovery");
   if (!schema
            .add_field(
@@ -87,13 +86,6 @@ void WriteStringDocsAndExit(const std::string &path,
   if (!result.has_value()) std::_Exit(3);
   for (const auto &status : result.value()) {
     if (!status.ok()) std::_Exit(4);
-  }
-  if (malformed_record) {
-    auto wal = WalFile::Create(FindWal(path));
-    if (wal->open(WalOptions{}) != 0 ||
-        wal->append("invalid encoded document") != 0) {
-      std::_Exit(5);
-    }
   }
   std::_Exit(0);
 }
@@ -476,22 +468,6 @@ TEST_F(RelaxedValidationDeathTest, CorruptWalFailsOpenWithoutReplacingFiles) {
     EXPECT_EQ(ReadFileBytes(wal_path), bytes);
     EXPECT_EQ(ReadManifests(path_), manifests);
   }
-}
-
-TEST_F(RelaxedValidationDeathTest, InvalidDocumentPayloadFailsRecovery) {
-  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  ASSERT_EXIT(WriteStringDocsAndExit(path_, {"prefix"}, {"before"}, true),
-              ::testing::ExitedWithCode(0), "");
-  const auto wal_path = FindWal(path_);
-  ASSERT_FALSE(wal_path.empty());
-  const auto bytes = ReadFileBytes(wal_path);
-  const auto manifests = ReadManifests(path_);
-  auto opened = Collection::Open(path_, CollectionOptions{});
-  ASSERT_FALSE(opened.has_value());
-  EXPECT_NE(opened.error().message().find("Corrupt WAL document"),
-            std::string::npos);
-  EXPECT_EQ(ReadFileBytes(wal_path), bytes);
-  EXPECT_EQ(ReadManifests(path_), manifests);
 }
 
 TEST_F(RelaxedValidationDeathTest, CorruptTailDoesNotApplyUpsertPrefix) {

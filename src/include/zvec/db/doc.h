@@ -310,8 +310,13 @@ class ZVEC_API Doc {
  private:
   static void serialize_value(std::vector<uint8_t> &buffer, const Value &value);
 
+  static Value deserialize_value(const uint8_t *&data, uint8_t type);
+  static Value deserialize_value(const uint8_t *&data);
+
   static void write_to_buffer(std::vector<uint8_t> &buffer, const void *src,
                               size_t size);
+
+  static void read_from_buffer(const uint8_t *&data, void *dest, size_t size);
 
   struct ValueEqual;
 

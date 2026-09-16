@@ -323,15 +323,64 @@ TEST_F(RelaxedValidationTest, ReservedNamesAndDuplicatesFailBeforeCreation) {
     EXPECT_NE(result.error().message().find("is reserved"), std::string::npos);
     EXPECT_FALSE(ailego::FileHelper::IsExist(path_.c_str()));
   }
-  CollectionSchema duplicate(
-      "x", {std::make_shared<FieldSchema>("value", DataType::INT32),
-            std::make_shared<FieldSchema>("value", DataType::INT64)});
-  auto result = Collection::CreateAndOpen(path_, duplicate, options_);
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
-  EXPECT_NE(result.error().message().find("duplicate field name"),
-            std::string::npos);
-  EXPECT_FALSE(ailego::FileHelper::IsExist(path_.c_str()));
+  auto scalar = std::make_shared<FieldSchema>("value", DataType::INT32);
+  auto other_scalar = std::make_shared<FieldSchema>("value", DataType::INT64);
+  auto vector =
+      std::make_shared<FieldSchema>("value", DataType::VECTOR_FP32, 4, false);
+  auto other_vector =
+      std::make_shared<FieldSchema>("value", DataType::VECTOR_FP32, 8, false);
+  const std::vector<FieldSchemaPtrList> cases{
+      {scalar, std::make_shared<FieldSchema>(*scalar)},
+      {scalar, other_scalar},
+      {scalar, scalar},
+      {vector, other_vector},
+      {scalar, vector},
+      {vector, scalar}};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    CollectionSchema duplicate("x", cases[i]);
+    auto result = Collection::CreateAndOpen(path_, duplicate, options_);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(result.error().message().find("duplicate field name [value]"),
+              std::string::npos);
+    EXPECT_FALSE(ailego::FileHelper::IsExist(path_.c_str()));
+  }
+}
+
+TEST_F(RelaxedValidationTest, DuplicateDdlTargetsLeaveSchemaAndDataUnchanged) {
+  auto schema = MakeSchema();
+  ASSERT_TRUE(schema
+                  .add_field(std::make_shared<FieldSchema>(
+                      "other", DataType::INT32, true))
+                  .ok());
+  ASSERT_TRUE(schema
+                  .add_field(std::make_shared<FieldSchema>(
+                      "embedding", DataType::VECTOR_FP32, 4, true))
+                  .ok());
+  ASSERT_NO_FATAL_FAILURE(Create(schema));
+  std::vector<Doc> docs{MakeDoc("id", 42)};
+  ASSERT_TRUE(docs[0].set<std::vector<float>>("embedding", {1, 2, 3, 4}));
+  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  const auto before = collection_->schema().value();
+  for (const std::string name : {"other", "embedding"}) {
+    SCOPED_TRACE(name);
+    auto field = std::make_shared<FieldSchema>(name, DataType::INT32, true);
+    auto status = collection_->add_column(field, "");
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message().find("already exists"), std::string::npos);
+    status = collection_->alter_column("value", name);
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message().find("already exists"), std::string::npos);
+    status = collection_->alter_column("value", "", field);
+    EXPECT_EQ(status.code(), StatusCode::ALREADY_EXISTS);
+    EXPECT_NE(status.message().find("already exists"), std::string::npos);
+    EXPECT_EQ(collection_->schema().value(), before);
+    ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+  }
+  ASSERT_NO_FATAL_FAILURE(Reopen());
+  EXPECT_EQ(collection_->schema().value(), before);
+  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
 }
 
 TEST_F(RelaxedValidationTest, ReservedDdlTargetsLeaveTheCollectionUnchanged) {

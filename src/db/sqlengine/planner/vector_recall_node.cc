@@ -67,7 +67,7 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
   auto state_ptr = std::make_shared<State>(shared_from_this());
   return [state_ptr = std::move(state_ptr)]() mutable
-             -> arrow::Future<std::optional<cp::ExecBatch>> {
+         -> arrow::Future<std::optional<cp::ExecBatch>> {
     auto &state = *state_ptr;
     if (!state.iter_) {
       auto vector_ret = state.self_->prepare();

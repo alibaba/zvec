@@ -44,24 +44,40 @@ TEST(CollectionSchemaTest, RejectsNullFieldObjectsInMutations) {
 }
 
 TEST(CollectionSchemaTest, ValidatesDuplicateNamesFromConstructorsAndCopies) {
-  CollectionSchema schema(
-      "schema", {std::make_shared<FieldSchema>("duplicate", DataType::INT32),
-                 std::make_shared<FieldSchema>("duplicate", DataType::INT64)});
-  // Retain the invalid input until explicit validation, rather than hiding one
-  // field and allowing a collection whose schema changes after reopening.
-  ASSERT_EQ(schema.fields().size(), 2u);
-  auto status = schema.validate();
-  EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
-  EXPECT_EQ(status.message(),
-            "Invalid schema: duplicate field name [duplicate]; field names "
-            "must be unique");
-  CollectionSchema copied(schema);
-  CollectionSchema assigned;
-  assigned = schema;
-  EXPECT_EQ(copied.validate(), status);
-  EXPECT_EQ(assigned.validate(), status);
-  EXPECT_EQ(copied.fields().size(), 2u);
-  EXPECT_EQ(assigned.fields().size(), 2u);
+  auto scalar = std::make_shared<FieldSchema>("duplicate", DataType::INT32);
+  auto other_scalar =
+      std::make_shared<FieldSchema>("duplicate", DataType::INT64);
+  auto vector = std::make_shared<FieldSchema>("duplicate",
+                                              DataType::VECTOR_FP32, 4, false);
+  auto other_vector = std::make_shared<FieldSchema>(
+      "duplicate", DataType::VECTOR_FP32, 8, false);
+  const std::vector<FieldSchemaPtrList> cases{
+      {scalar, std::make_shared<FieldSchema>(*scalar)},
+      {scalar, other_scalar},
+      {scalar, scalar},
+      {vector, other_vector},
+      {scalar, vector},
+      {vector, scalar},
+      {nullptr, scalar, nullptr, vector}};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    CollectionSchema schema("schema", cases[i]);
+    ASSERT_EQ(schema.fields().size(), 2u);
+    auto status = schema.validate();
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(status.message(),
+              "Invalid schema: duplicate field name [duplicate]; field names "
+              "must be unique");
+    CollectionSchema copied(schema);
+    CollectionSchema assigned(
+        "old", {std::make_shared<FieldSchema>("existing", DataType::INT32)});
+    assigned = schema;
+    EXPECT_EQ(copied.validate(), status);
+    EXPECT_EQ(assigned.validate(), status);
+    EXPECT_EQ(copied.fields().size(), 2u);
+    EXPECT_EQ(assigned.fields().size(), 2u);
+    EXPECT_FALSE(assigned.has_field("existing"));
+  }
 }
 
 TEST(CollectionSchemaTest, CopyOwnsIndependentFieldObjects) {
