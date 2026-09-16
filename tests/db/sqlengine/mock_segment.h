@@ -312,6 +312,12 @@ class MockSegment : public Segment {
     return 0;
   }
 
+  Status get_global_doc_ids(const std::vector<int> &segment_doc_ids,
+                            std::vector<int64_t> &out) const override {
+    out.assign(segment_doc_ids.begin(), segment_doc_ids.end());
+    return Status::OK();
+  }
+
   TablePtr fetch(const std::vector<std::string> &columns,
                  const std::vector<int> &indices) const override {
     std::string s = "";

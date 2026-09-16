@@ -22,6 +22,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/flat/flat_streamer.h"
 #include "mixed_reducer/mixed_reducer_params.h"
 #include "utility/utility_params.h"
 
@@ -835,6 +836,208 @@ int Index::search(const VectorData &vector_data,
 }
 
 
+int Index::search_fast(const VectorData &vector_data,
+                       const BaseIndexQueryParam::Pointer &search_param,
+                       int64_t *output_ids, float *output_scores) {
+  if (!output_ids || !search_param || search_param->topk == 0) {
+    return core::IndexError_InvalidArgument;
+  }
+  const size_t topk = search_param->topk;
+  if (!is_open_) {
+    LOG_ERROR("Index is not open");
+    return core::IndexError_Runtime;
+  }
+  if (is_sparse_ || has_group_by_search(search_param)) {
+    return core::IndexError_Unsupported;
+  }
+
+  if (search_param->refiner_param) {
+    const int direct_ret = _search_refine_fast(vector_data, search_param,
+                                               output_ids, output_scores);
+    if (direct_ret != core::IndexError_NotImplemented) return direct_ret;
+    // Keep the public path for filtered/non-contiguous references and modes
+    // that cannot use the candidate-only operation.
+    thread_local SearchResult result;
+    const int ret = search(vector_data, search_param, &result);
+    if (ret != 0) return ret;
+    const size_t count =
+        std::min(static_cast<size_t>(topk), result.doc_list_.size());
+    for (size_t i = 0; i < count; ++i) {
+      output_ids[i] = static_cast<int64_t>(result.doc_list_[i].key());
+      if (output_scores) output_scores[i] = result.doc_list_[i].score();
+    }
+    std::fill(output_ids + count, output_ids + topk, int64_t{-1});
+    if (output_scores) {
+      std::fill(output_scores + count, output_scores + topk,
+                std::numeric_limits<float>::quiet_NaN());
+    }
+    return 0;
+  }
+
+  if (!is_trained_ && train() != 0) {
+    LOG_ERROR("Failed to train index");
+    return core::IndexError_Runtime;
+  }
+  auto &context = acquire_context();
+  if (!context) return core::IndexError_Runtime;
+
+  int ret = _prepare_for_search(vector_data, search_param, context);
+  std::string transformed_query;
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  if (ret == 0) {
+    ret = _prepare_dense_query(vector_data, &transformed_query, &query,
+                               &query_meta);
+  }
+  thread_local std::vector<uint64_t> keys;
+  std::vector<float> *scores = nullptr;
+  if (output_scores) {
+    thread_local std::vector<float> score_buffer;
+    scores = &score_buffer;
+  }
+  if (ret == 0) {
+    ret = _execute_dense_search(query, query_meta, search_param, context, &keys,
+                                scores);
+  }
+  if (ret == 0) {
+    const size_t count = std::min(static_cast<size_t>(topk), keys.size());
+    if (output_scores && scores->size() != keys.size()) {
+      ret = core::IndexError_Runtime;
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        output_ids[i] = static_cast<int64_t>(keys[i]);
+        if (output_scores) output_scores[i] = (*scores)[i];
+      }
+      if (output_scores) {
+        ret = _normalize_buffer_scores(vector_data, output_ids, output_scores,
+                                       count);
+      }
+    }
+    if (ret == 0) {
+      std::fill(output_ids + count, output_ids + topk, int64_t{-1});
+      if (output_scores) {
+        std::fill(output_scores + count, output_scores + topk,
+                  std::numeric_limits<float>::quiet_NaN());
+      }
+    }
+  }
+  if (context) context->reset();
+  return ret;
+}
+
+
+int Index::_normalize_buffer_scores(const VectorData &vector_data,
+                                    const int64_t *output_ids,
+                                    float *output_scores, size_t count) {
+  if (!output_scores || count == 0) return 0;
+  if (metric_->support_normalize()) {
+    for (size_t i = 0; i < count; ++i) {
+      metric_->normalize(output_scores + i);
+    }
+  }
+  if (!reformer_) return 0;
+  if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
+    return core::IndexError_Runtime;
+  }
+  core::IndexDocumentList documents;
+  documents.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    documents.emplace_back(static_cast<uint64_t>(output_ids[i]),
+                           output_scores[i]);
+  }
+  const auto &dense_vector = std::get<DenseVector>(vector_data.vector);
+  const int ret =
+      reformer_->normalize(dense_vector.data, input_vector_meta_, documents);
+  if (ret != 0) return ret;
+  for (size_t i = 0; i < count; ++i) {
+    output_scores[i] = documents[i].score();
+  }
+  return 0;
+}
+
+
+int Index::_search_refine_fast(const VectorData &vector_data,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               int64_t *output_ids, float *output_scores) {
+  auto &reference = search_param->refiner_param->reference_index;
+  // Public Search remains responsible for these modes and their diagnostics.
+  // In particular, do not consume/move a user filter before taking fallback.
+  if (!reference || reference.get() == this || !reference->is_open_ ||
+      reference->is_sparse_ ||
+      reference->param_.index_type != IndexType::kFlat ||
+      search_param->fetch_vector ||
+      (search_param->filter && search_param->filter->is_valid())) {
+    return core::IndexError_NotImplemented;
+  }
+  const size_t topk = search_param->topk;
+  // Score-only normalization is known to preserve membership for raw L2/IP
+  // references. Other metrics/quantizers retain the public normalization path.
+  const auto &reference_quantizer = reference->param_.quantizer_param;
+  if ((reference->param_.metric_type != MetricType::kL2sq &&
+       reference->param_.metric_type != MetricType::kInnerProduct) ||
+      (reference_quantizer &&
+       reference_quantizer->type != QuantizerType::kNone &&
+       reference_quantizer->type != QuantizerType::kFP16)) {
+    return core::IndexError_NotImplemented;
+  }
+  const auto *flat =
+      dynamic_cast<const core::FlatStreamer<32> *>(reference->streamer_.get());
+  if (!flat) return core::IndexError_NotImplemented;
+  if ((!is_trained_ && train() != 0) ||
+      (!reference->is_trained_ && reference->train() != 0)) {
+    return core::IndexError_Runtime;
+  }
+  auto &context = acquire_context();
+  if (!context) return core::IndexError_Runtime;
+  int ret = _prepare_for_search(vector_data, search_param, context);
+  const int coarse_topk = _get_coarse_search_topk(search_param);
+  if (ret != 0 || coarse_topk < 0) {
+    context->reset();
+    return ret != 0 ? ret : coarse_topk;
+  }
+  context->set_topk(coarse_topk);
+  context->set_fetch_vector(false);
+  // As with the existing candidate vector, this scratch assumes a serial,
+  // non-reentrant query on each thread; this route invokes no user filters or
+  // group-by callbacks.
+  thread_local std::string transformed_query;
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  ret = _prepare_dense_query(vector_data, &transformed_query, &query,
+                             &query_meta);
+  // The thread owns these buffers, so queries on different Index instances
+  // may retain capacity without retaining pointers into a previous index.
+  thread_local std::vector<uint64_t> keys;
+  if (ret == 0) {
+    ret =
+        _execute_dense_search(query, query_meta, search_param, context, &keys);
+  }
+  if (ret == 0) {
+    auto &reference_context = reference->acquire_context();
+    if (!reference_context) {
+      ret = core::IndexError_Runtime;
+    } else {
+      thread_local std::string reference_query_storage;
+      ret = reference->_prepare_dense_query(
+          vector_data, &reference_query_storage, &query, &query_meta);
+      if (ret == 0) {
+        ret = flat->search_by_p_keys_fast(
+            query, keys, output_ids, output_scores, static_cast<size_t>(topk),
+            query_meta, reference_context);
+        if (ret == 0 && output_scores) {
+          ret = reference->_normalize_buffer_scores(vector_data, output_ids,
+                                                    output_scores,
+                                                    static_cast<size_t>(topk));
+        }
+      }
+      reference_context->reset();
+    }
+  }
+  context->reset();
+  return ret;
+}
+
+
 int Index::_dense_fetch(const uint32_t doc_id,
                         VectorDataBuffer *vector_data_buffer) {
   core::IndexStorage::MemoryBlock vector_block;
@@ -1043,9 +1246,10 @@ int Index::_prepare_dense_query(const VectorData &vector_data,
 int Index::_execute_dense_search(
     const void *vector, const core::IndexQueryMeta &new_meta,
     const BaseIndexQueryParam::Pointer &search_param,
-    core::IndexContext::Pointer &context,
-    std::vector<uint64_t> *candidate_keys) {
+    core::IndexContext::Pointer &context, std::vector<uint64_t> *candidate_keys,
+    std::vector<float> *candidate_scores) {
   if (candidate_keys) candidate_keys->clear();
+  if (candidate_scores) candidate_scores->clear();
   if (search_param->bf_pks != nullptr) {
     if (streamer_->search_bf_by_p_keys_impl(
             vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
@@ -1060,7 +1264,7 @@ int Index::_execute_dense_search(
     }
   } else if (candidate_keys) {
     return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
-                                             context);
+                                             candidate_scores, context);
   } else {
     if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
       LOG_ERROR("Failed to search vector");
@@ -1071,8 +1275,10 @@ int Index::_execute_dense_search(
   if (candidate_keys) {
     const auto &documents = context->result();
     candidate_keys->reserve(documents.size());
+    if (candidate_scores) candidate_scores->reserve(documents.size());
     for (const auto &document : documents) {
       candidate_keys->push_back(document.key());
+      if (candidate_scores) candidate_scores->push_back(document.score());
     }
   }
   return 0;

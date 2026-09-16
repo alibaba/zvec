@@ -471,6 +471,21 @@ TEST_F(FlatStreamerTest, TestContiguousCandidateSearchAndInsertFallback) {
   ASSERT_EQ(2, context->result().size());
   EXPECT_EQ(17, context->result()[0].key());
 
+  std::array<int64_t, 2> direct_ids{{-1, -1}};
+  std::array<float, 2> direct_scores{{-1.0F, -1.0F}};
+  ASSERT_EQ(0, flat->search_by_p_keys_fast(
+                   query.data(), keys[0], direct_ids.data(),
+                   direct_scores.data(), direct_ids.size(), qmeta, context));
+  EXPECT_EQ((std::array<int64_t, 2>{{17, 5}}), direct_ids);
+  EXPECT_FLOAT_EQ(0.0F, direct_scores[0]);
+  EXPECT_FLOAT_EQ(static_cast<float>(dim * 12 * 12), direct_scores[1]);
+
+  std::array<int64_t, 2> ids_without_scores{{-1, -1}};
+  ASSERT_EQ(0, flat->search_by_p_keys_fast(
+                   query.data(), keys[0], ids_without_scores.data(), nullptr,
+                   ids_without_scores.size(), qmeta, context));
+  EXPECT_EQ(direct_ids, ids_without_scores);
+
   IndexStorage::MemoryBlock contiguous_block;
   ASSERT_EQ(0, streamer->get_vector_by_id(17, contiguous_block));
   ASSERT_NE(nullptr, contiguous_block.data());

@@ -34,6 +34,11 @@ namespace core {
 
 //! Reusable request-local buffers for storage-specific Flat search paths.
 struct FlatSearchScratch {
+  struct CandidateDocument {
+    uint64_t key;
+    float distance;
+  };
+  std::vector<CandidateDocument> candidate_documents{};
   std::vector<const void *> vector_ptrs{};
   std::vector<const void *> extra_values{};
   std::vector<uint64_t> vector_keys{};
@@ -82,6 +87,15 @@ class FlatStreamerEntity {
                                IndexDocumentHeap *heap,
                                FlatSearchScratch *scratch = nullptr,
                                size_t batch_size = 0) const;
+
+  // A storage-specific candidate-only operation. Generic layouts request
+  // the streamer's existing full-result fallback without touching output.
+  // Scores use the metric's internal representation and are optional.
+  virtual int search_by_p_keys_fast(const void *query,
+                                    const std::vector<uint64_t> &keys,
+                                    int64_t *output_ids, float *output_scores,
+                                    size_t topk,
+                                    FlatSearchScratch *scratch) const;
 
   //! Search in a block
   void search_block(const void *query, const BlockLocation &bl,
@@ -516,6 +530,12 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
                        const IndexFilter &filter, IndexDocumentHeap *heap,
                        FlatSearchScratch *scratch,
                        size_t batch_size) const override;
+
+  int search_by_p_keys_fast(const void *query,
+                            const std::vector<uint64_t> &keys,
+                            int64_t *output_ids, float *output_scores,
+                            size_t topk,
+                            FlatSearchScratch *scratch) const override;
 
   bool is_contiguous() const {
     return !!load_contiguous_storage();

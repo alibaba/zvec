@@ -501,19 +501,29 @@ class IndexRunner : public IndexModule {
 
   //! Search one ungrouped dense query, preserving search_impl's primary keys
   //! and result order (including topk, filters and threshold). The caller owns
-  //! the reusable output buffer, which is cleared on entry. Only keys are
-  //! required; context document/vector results are unspecified. Algorithms may
-  //! override this to export their retained pool without materializing scores.
+  //! the reusable output buffers, which are cleared on entry. Scores are
+  //! optional; context document/vector results are unspecified. Algorithms may
+  //! override this to export their retained pool without materializing docs.
   virtual int search_candidates_impl(const void *query,
                                      const IndexQueryMeta &qmeta,
                                      std::vector<uint64_t> &keys,
+                                     std::vector<float> *scores,
                                      Context::Pointer &context) const {
     keys.clear();
+    if (scores) scores->clear();
     const int ret = search_impl(query, qmeta, 1, context);
     if (ret != 0) return ret;
     const auto &result = context->result();
     keys.reserve(result.size());
-    for (const auto &document : result) keys.push_back(document.key());
+    if (scores) {
+      scores->reserve(result.size());
+      for (const auto &document : result) {
+        keys.push_back(document.key());
+        scores->push_back(document.score());
+      }
+    } else {
+      for (const auto &document : result) keys.push_back(document.key());
+    }
     return 0;
   }
   //! Similarity search
