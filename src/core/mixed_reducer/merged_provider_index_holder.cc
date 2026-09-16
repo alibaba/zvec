@@ -368,7 +368,8 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
       return this->status();
     }
     if (source.quantizer &&
-        source.quantizer->dim() != output_meta_.dimension()) {
+        static_cast<int64_t>(source.quantizer->dim()) !=
+            static_cast<int64_t>(output_meta_.dimension())) {
       this->set_status(IndexError_Mismatch);
       return this->status();
     }
