@@ -761,6 +761,18 @@ TEST_F(ContainRewriteTest, AlwaysFalseConditionOrComplex) {
             "(a>1(FORWARD)(OR_A)) or (a<0(FORWARD)(OR_A))");
 }
 
+TEST_F(ContainRewriteTest, MissingFieldInPrunedBranchIsRejected) {
+  auto result = parse_result(
+      "a = 1 or (category_array contain_any () and missing_field = 2)");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(ContainRewriteTest, InvalidTypeInPrunedBranchIsRejected) {
+  auto result = parse_result(
+      "a = 1 or (category_array contain_any () and age = 'invalid')");
+  EXPECT_FALSE(result.has_value());
+}
+
 TEST_F(SimpleRewriterTest, MiscOr) {
   auto info = parse("a = 1 or a = 2 or a = 3 or category_array contain_any ()");
   ASSERT_NE(info, nullptr);

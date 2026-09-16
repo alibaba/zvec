@@ -94,6 +94,16 @@ Result<QueryInfo::Ptr> QueryAnalyzer::analyze(const CollectionSchema &schema,
 
   // condition check & decide index/filter condition
   if (query_info->search_cond() != nullptr) {
+    // Validate the original tree before rewriting so invalid predicates cannot
+    // be hidden by constant folding. Validation must not annotate or convert
+    // nodes because the normal analysis below owns those mutations.
+    SearchCondCheckWalker validator(schema,
+                                    SearchCondCheckWalker::Mode::VALIDATE_ONLY);
+    validator.traverse_cond_node(query_info->search_cond());
+    if (!validator.err_msg().empty()) {
+      return tl::make_unexpected(Status::NotSupported(validator.err_msg()));
+    }
+
     // rewrite query by  rule
     SimpleRewriter rewriter;
     rewriter.rewrite(query_info.get(), schema);

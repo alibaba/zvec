@@ -114,18 +114,31 @@ void collect_logic_terms(const QueryNode::Ptr &node, QueryNodeOp logic,
   }
 }
 
-QueryNode::Ptr build_logic_tree(QueryNodeOp logic, QueryNodeList terms) {
-  if (terms.empty()) {
+QueryNode::Ptr rebuild_logic_tree(const QueryNode::Ptr &node, QueryNodeOp logic,
+                                  const QueryNodeList &terms,
+                                  const std::vector<bool> &active,
+                                  size_t *term_index) {
+  if (node == nullptr) {
     return nullptr;
   }
-  QueryNode::Ptr root = std::move(terms.front());
-  for (size_t i = 1; i < terms.size(); ++i) {
-    auto parent = std::make_shared<QueryNode>(logic);
-    parent->set_left(std::move(root));
-    parent->set_right(std::move(terms[i]));
-    root = std::move(parent);
+  if (node->op() != logic) {
+    const size_t index = (*term_index)++;
+    return active[index] ? terms[index] : nullptr;
   }
-  return root;
+
+  auto left =
+      rebuild_logic_tree(node->left(), logic, terms, active, term_index);
+  auto right =
+      rebuild_logic_tree(node->right(), logic, terms, active, term_index);
+  if (left == nullptr) {
+    return right;
+  }
+  if (right == nullptr) {
+    return left;
+  }
+  node->set_left(std::move(left));
+  node->set_right(std::move(right));
+  return node;
 }
 
 const FieldSchema *get_set_field(const CollectionSchema &schema,
@@ -360,14 +373,10 @@ NormalizeResult execute_group_rules(QueryNode::Ptr root,
     return {std::move(context.root), TruthValue::DYNAMIC, false};
   }
 
-  QueryNodeList reduced;
-  for (size_t i = 0; i < context.terms.size(); ++i) {
-    if (context.active[i]) {
-      reduced.emplace_back(std::move(context.terms[i]));
-    }
-  }
-  return {build_logic_tree(logic, std::move(reduced)), TruthValue::DYNAMIC,
-          true};
+  size_t term_index = 0;
+  auto rebuilt = rebuild_logic_tree(context.root, logic, context.terms,
+                                    context.active, &term_index);
+  return {std::move(rebuilt), TruthValue::DYNAMIC, true};
 }
 
 NormalizeResult reduce_group_if_needed(QueryNode::Ptr root,

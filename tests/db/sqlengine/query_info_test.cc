@@ -521,6 +521,61 @@ TEST_F(QueryInfoTest, QueryRequestWithNonFoldableBalancedOr4096) {
   EXPECT_LE(stats.max_logic_depth, kMaxBalancedLogicDepth);
 }
 
+TEST_F(QueryInfoTest, QueryRequestWithPartiallyFoldableBalancedOr1024) {
+  SearchQuery query;
+  query.output_fields_ = {"*"};
+  query.topk_ = 10;
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+
+  constexpr int kAndOperandCount = 1022;
+  std::string filter;
+  filter.reserve(kAndOperandCount * 36);
+  for (int i = 0; i < kAndOperandCount; ++i) {
+    if (i != 0) {
+      filter += " or ";
+    }
+    filter += "(name>" + std::to_string(i) + " and category='value')";
+  }
+  filter += " or name=10000 or name=10001";
+  query.filter_ = std::move(filter);
+
+  auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
+  auto ret = engine->build_query_info(schema, query, nullptr);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  ASSERT_TRUE(ret.value()->filter_cond());
+
+  auto root =
+      std::dynamic_pointer_cast<QueryNode>(ret.value()->filter_cond()->right());
+  ASSERT_TRUE(root);
+
+  size_t max_or_depth = 0;
+  size_t operand_count = 0;
+  struct PendingNode {
+    QueryNode::Ptr node;
+    size_t or_depth;
+  };
+  std::vector<PendingNode> stack{{root, 0}};
+  while (!stack.empty()) {
+    PendingNode pending = std::move(stack.back());
+    stack.pop_back();
+    if (pending.node->op() != QueryNodeOp::Q_OR) {
+      ++operand_count;
+      continue;
+    }
+    ASSERT_TRUE(pending.node->left());
+    ASSERT_TRUE(pending.node->right());
+    const size_t or_depth = pending.or_depth + 1;
+    max_or_depth = std::max(max_or_depth, or_depth);
+    stack.push_back({pending.node->right(), or_depth});
+    stack.push_back({pending.node->left(), or_depth});
+  }
+
+  EXPECT_EQ(operand_count, 1023u);
+  EXPECT_LE(max_or_depth, kMaxBalancedLogicDepth);
+}
+
 
 TEST_F(QueryInfoTest, QueryRequestWithFilter_contain) {
   SearchQuery query;
