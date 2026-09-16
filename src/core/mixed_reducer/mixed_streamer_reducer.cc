@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "mixed_streamer_reducer.h"
+#include <cstring>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantizer.h>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
@@ -21,10 +23,49 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
+#include "mixed_reducer/merged_provider_index_holder.h"
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+template <IndexMeta::DataType DT, typename T>
+int MaterializeMergedInput(const MergedProviderIndexHolder::Pointer &source,
+                           IndexHolder::Pointer *output) {
+  auto snapshot =
+      std::make_shared<MultiPassIndexHolder<DT>>(source->dimension());
+  snapshot->reserve(source->count());
+  auto iter = source->create_iterator();
+  if (!iter) {
+    return source->status() != 0 ? source->status() : IndexError_Runtime;
+  }
+  for (; iter->is_valid(); iter->next()) {
+    const void *data = iter->data();
+    if (source->status() != 0) {
+      return source->status();
+    }
+    if (!data) {
+      return IndexError_ReadData;
+    }
+    ailego::NumericalVector<T> vector(source->dimension());
+    std::memcpy(vector.data(), data, source->element_size());
+    if (!snapshot->emplace(iter->key(), std::move(vector))) {
+      return IndexError_Mismatch;
+    }
+  }
+  if (source->status() != 0) {
+    return source->status();
+  }
+  if (snapshot->count() != source->count()) {
+    return IndexError_Mismatch;
+  }
+  *output = std::move(snapshot);
+  return 0;
+}
+
+}  // namespace
 
 int MixedStreamerReducer::init(const ailego::Params &params) {
   enable_pk_rewrite_ =
@@ -45,10 +86,15 @@ int MixedStreamerReducer::init(const ailego::Params &params) {
 
 int MixedStreamerReducer::cleanup() {
   streamers_.clear();
-  target_streamer_->cleanup();
+  source_streamers_reformers_.clear();
+  merged_holder_.reset();
+  if (target_streamer_) {
+    target_streamer_->cleanup();
+  }
 
-  target_builder_->cleanup();
-  doc_cache_.clear();
+  if (target_builder_) {
+    target_builder_->cleanup();
+  }
 
   stats_.clear_attributes();
   state_ = STATE_UNINITED;
@@ -59,7 +105,8 @@ int MixedStreamerReducer::set_target_streamer_wiht_info(
     const IndexBuilder::Pointer builder, const IndexStreamer::Pointer streamer,
     const IndexConverter::Pointer converter,
     const IndexReformer::Pointer reformer,
-    const IndexQueryMeta &original_query_meta) {
+    const IndexQueryMeta &original_query_meta,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
   if (state_ != STATE_INITED) {
     LOG_ERROR("Set target streamer after init");
     return IndexError_Uninitialized;
@@ -69,6 +116,7 @@ int MixedStreamerReducer::set_target_streamer_wiht_info(
   target_streamer_ = streamer;
   target_builder_converter_ = converter;
   target_streamer_reformer_ = reformer;
+  target_streamer_quantizer_ = quantizer;
   original_query_meta_ = original_query_meta;
 
   is_sparse_ =
@@ -79,7 +127,8 @@ int MixedStreamerReducer::set_target_streamer_wiht_info(
 }
 
 int MixedStreamerReducer::feed_streamer_with_reformer(
-    IndexStreamer::Pointer streamer, const IndexReformer::Pointer reformer) {
+    IndexStreamer::Pointer streamer, const IndexReformer::Pointer reformer,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
   if (!(state_ == STATE_STREAMER_SET || state_ == STATE_FEED)) {
     LOG_ERROR("Set target streamer or feed before feed");
     return IndexError_Uninitialized;
@@ -94,6 +143,13 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
                             const IndexMeta &source_meta) -> bool {
     if (!streamers_.empty()) {
       auto &last_meta = streamers_.back()->meta();
+      // Quantizer-encoded sources are dequantized to the original format
+      // before the target re-encodes them, so their stored layout may
+      // legitimately differ from another source's.
+      if (!last_meta.quantizer_name().empty() ||
+          !source_meta.quantizer_name().empty()) {
+        return true;
+      }
       return last_meta.data_type() == source_meta.data_type() &&
              last_meta.dimension() == source_meta.dimension() &&
              last_meta.unit_size() == source_meta.unit_size();
@@ -118,11 +174,14 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
   if (streamers_.empty()) {
     is_target_and_source_same_reformer_ =
         target_streamer_->meta().reformer_name() ==
-        streamer->meta().reformer_name();
+            streamer->meta().reformer_name() &&
+        target_streamer_->meta().quantizer_name() ==
+            streamer->meta().quantizer_name();
   }
 
   streamers_.push_back(streamer);
   source_streamers_reformers_.push_back(reformer);
+  source_streamers_quantizers_.push_back(quantizer);
 
   state_ = STATE_FEED;
   return 0;
@@ -140,6 +199,22 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
   ailego::ElapsedTime timer;
 
+  if (target_builder_ != nullptr) {
+    if (is_sparse_) {
+      LOG_ERROR("Builder-backed sparse merge is not supported");
+      return IndexError_Unsupported;
+    }
+    int ret = this->reduce_with_builder(filter);
+    if (ret != 0) {
+      LOG_ERROR("Failed to build target index, ret=%d", ret);
+      return ret;
+    }
+    stats_.set_reduced_costtime(timer.seconds());
+    state_ = STATE_REDUCE;
+    LOG_INFO("End provider-backed reduce. cost time: [%zu]s",
+             (size_t)timer.seconds());
+    return 0;
+  }
 
   std::vector<int> add_results(num_of_add_threads_, -1);
   auto add_group = thread_pool_->make_group();
@@ -215,13 +290,6 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
   stats_.set_reduced_costtime(timer.seconds());
   state_ = STATE_REDUCE;
-  if (target_builder_ != nullptr) {
-    int ret = IndexBuild();
-    if (ret != 0) {
-      LOG_ERROR("Failed to build target index, ret=%d", ret);
-      return ret;
-    }
-  }
 
   LOG_INFO("End brute force reduce. cost time: [%zu]s",
            (size_t)timer.seconds());
@@ -239,9 +307,12 @@ int MixedStreamerReducer::dump(const IndexDumper::Pointer &dumper) {
   ailego::ElapsedTime timer;
   int ret = 0;
   if (target_builder_ != nullptr) {
-    target_builder_->dump(dumper);
+    ret = target_builder_->dump(dumper);
   } else {
-    target_streamer_->dump(dumper);
+    ret = target_streamer_->dump(dumper);
+  }
+  if (ret == 0 && merged_holder_ && merged_holder_->status() != 0) {
+    ret = merged_holder_->status();
   }
   if (ret == IndexError_NotImplemented) {
     LOG_WARN("Dump index not implemented");
@@ -259,6 +330,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
                                    uint32_t *next_id) {
   const auto &streamer = streamers_[source_streamer_index];
   const auto &reformer = source_streamers_reformers_[source_streamer_index];
+  const auto &quantizer = source_streamers_quantizers_[source_streamer_index];
   const IndexQueryMeta source_streamer_query_meta{streamer->meta().data_type(),
                                                   streamer->meta().dimension()};
 
@@ -267,6 +339,29 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
                       reformer != nullptr);
   if (target_builder_ && reformer) {
     need_revert = true;
+  }
+
+  // Whether the bytes handed to add_vec are still in the original input
+  // format and must be re-encoded (quantized/converted) by the target.
+  // True for reverted legacy vectors, dequantized turbo vectors and plain
+  // sources whose stored format already is the original one; false for raw
+  // copies from a source whose stored layout matches the target.
+  bool need_encode = need_revert || reformer == nullptr;
+  if (quantizer != nullptr) {
+    // Quantizer-encoded records can be copied raw only into an identical
+    // target layout; otherwise (or when a builder consumes original vectors)
+    // dequantize back to the original format.
+    const auto &source_meta = streamer->meta();
+    const auto &target_meta = target_streamer_->meta();
+    const bool same_layout =
+        target_builder_ == nullptr &&
+        turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
+        target_meta.quantizer_name() == source_meta.quantizer_name() &&
+        target_meta.data_type() == source_meta.data_type() &&
+        target_meta.dimension() == source_meta.dimension() &&
+        target_meta.unit_size() == source_meta.unit_size() &&
+        target_meta.extra_meta_size() == source_meta.extra_meta_size();
+    need_encode = !same_layout;
   }
 
   if (!provider) {
@@ -299,7 +394,19 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     }
 
     std::vector<uint8_t> bytes;
-    if (need_revert) {
+    bool needs_convert = false;
+    if (quantizer != nullptr && need_encode) {
+      std::string original_vector;
+      if (quantizer->dequantize(vector_data, source_streamer_query_meta,
+                                &original_vector) != 0) {
+        LOG_ERROR("Failed to dequantize the vector, index=%zu key=%zu",
+                  source_streamer_index, static_cast<size_t>(iterator->key()));
+        return IndexError_Runtime;
+      }
+      bytes.resize(original_vector.size());
+      memcpy(bytes.data(), original_vector.data(), bytes.size());
+      needs_convert = true;
+    } else if (need_revert) {
       std::string new_vector;
       if (reformer->revert(vector_data, source_streamer_query_meta,
                            &new_vector) != 0) {
@@ -308,14 +415,17 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       }
       bytes.resize(new_vector.size());
       memcpy(bytes.data(), new_vector.data(), bytes.size());
+      needs_convert = true;
     } else {
       // TODO: eliminate the copy
       bytes.resize(provider->element_size());
       memcpy(bytes.data(), vector_data, bytes.size());
+      needs_convert = need_encode;
     }
 
     // TODO: use id instead of key
-    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(bytes)))) {
+    if (!mt_list_.produce(
+            VectorItem((*next_id)++, std::move(bytes), needs_convert))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
                 (size_t)iterator->key());
       return IndexError_Runtime;
@@ -326,17 +436,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 }
 
 void MixedStreamerReducer::add_vec(int *result) {
-  if (target_builder_ != nullptr) {
-    add_vec_with_builder(result);
-    return;
-  }
   ailego::ElapsedTime timer;
   auto target_streamer_context = target_streamer_->create_context();
   auto target_streamer_query_meta = IndexQueryMeta{
       IndexMeta::MetaType::MT_DENSE, target_streamer_->meta().data_type(),
       target_streamer_->meta().dimension()};
-  const bool need_convert = (!is_target_and_source_same_reformer_) &&
-                            target_streamer_reformer_ != nullptr;
+  // Quantizer-encoded layouts append an extra meta tail per record
+  // (e.g. turbo Int8Quantizer); without it the element size would not match
+  // the streamer meta and every add would be rejected.
+  target_streamer_query_meta.set_extra_meta_size(
+      target_streamer_->meta().extra_meta_size());
 
   AILEGO_DEFER([&]() {
     // make producer quit
@@ -352,63 +461,45 @@ void MixedStreamerReducer::add_vec(int *result) {
 
     const void *vector = vector_item.vec_.data();
     std::string new_vector;
+    IndexQueryMeta add_meta = target_streamer_query_meta;
 
-
-    if (need_convert) {
-      IndexQueryMeta new_meta;
-      if (target_streamer_reformer_->convert(vector, original_query_meta_,
-                                             &new_vector, &new_meta) != 0) {
-        LOG_ERROR("Failed to transform vector");
-        *result = IndexError_Runtime;
-        return;
+    if (vector_item.needs_convert_) {
+      // Bytes are still in the original input format; re-encode them into
+      // the target layout. A target without quantizer or reformer stores
+      // the original format directly, so no encoding is needed.
+      if (target_streamer_quantizer_ != nullptr) {
+        IndexQueryMeta quantized_meta;
+        if (target_streamer_quantizer_->quantize(vector, original_query_meta_,
+                                                 &new_vector,
+                                                 &quantized_meta) != 0) {
+          LOG_ERROR("Failed to quantize vector. pkey[%zu]",
+                    (size_t)vector_item.pkey_);
+          *result = IndexError_Runtime;
+          return;
+        }
+        vector = new_vector.data();
+        add_meta = quantized_meta;
+      } else if (target_streamer_reformer_ != nullptr) {
+        IndexQueryMeta new_meta;
+        if (target_streamer_reformer_->convert(vector, original_query_meta_,
+                                               &new_vector, &new_meta) != 0) {
+          LOG_ERROR("Failed to transform vector");
+          *result = IndexError_Runtime;
+          return;
+        }
+        vector = new_vector.data();
       }
-      vector = new_vector.data();
     }
-    // 1. no reformer: target_streamer_query_meta_ = original_query_meta_
-    // 2. has reformer, matched(need_convert = false): use
-    // target_streamer_query_meta_
-    // 3. has reformer, not matched(need_convert = true): use
-    // target_streamer_query_meta_
-
 
     // TODO: use id instead of key
     int ret = target_streamer_->add_with_id_impl(
-        (uint32_t)vector_item.pkey_, vector, target_streamer_query_meta,
-        target_streamer_context);
+        (uint32_t)vector_item.pkey_, vector, add_meta, target_streamer_context);
     if (ret != 0) {
       LOG_ERROR("Insert target streamer failed. ret[%d] reason[%s] pkey[%zu]",
                 ret, IndexError::What(ret), (size_t)vector_item.pkey_);
       *result = ret;
       return;
     }
-  }
-
-  *result = 0;
-  LOG_DEBUG("add_vec. cost time: [%zu]s", (size_t)timer.seconds());
-  return;
-}
-
-void MixedStreamerReducer::add_vec_with_builder(int *result) {
-  ailego::ElapsedTime timer;
-
-  AILEGO_DEFER([&]() {
-    // make producer quit
-    mt_list_.done();
-  });
-
-  VectorItem vector_item;
-  while (mt_list_.consume(&vector_item)) {
-    if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
-      LOG_DEBUG("add_vec cancelled.");
-      return;
-    }
-
-    const void *vector = vector_item.vec_.data();
-    std::string out_vector_buffer = std::string(
-        static_cast<const char *>(vector),
-        original_query_meta_.dimension() * original_query_meta_.unit_size());
-    PushToDocCache(original_query_meta_, (uint32_t)vector_item.pkey_,
-                   out_vector_buffer);
   }
 
   *result = 0;
@@ -539,80 +630,103 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
   return 0;
 }
 
-void MixedStreamerReducer::PushToDocCache(const IndexQueryMeta &meta,
-                                          uint32_t doc_id, std::string &doc) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  while (doc_cache_.size() <= doc_id) {
-    std::string fake_data(meta.dimension() * meta.unit_size(), 0);
-    doc_cache_.push_back(std::make_pair(kInvalidKey, fake_data));
+int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
+  std::vector<MergedProviderIndexHolder::Source> sources;
+  sources.reserve(streamers_.size());
+
+  for (size_t i = 0; i < streamers_.size(); ++i) {
+    MergedProviderIndexHolder::Source source;
+    source.owner = streamers_[i];
+    source.reformer = source_streamers_reformers_[i];
+    source.quantizer = source_streamers_quantizers_[i];
+    const auto &meta = streamers_[i]->meta();
+    source.provider_meta = IndexQueryMeta{
+        meta.meta_type(),
+        meta.data_type(),
+        meta.unit_size(),
+        meta.dimension(),
+        source.quantizer ? static_cast<uint32_t>(source.quantizer->type()) : 0,
+        meta.extra_meta_size()};
+    // Builders consume original vectors, not encoded records. Plain FP32
+    // quantization is an identity transform; keep its zero-copy ordinal path.
+    // Cosine normalization and FP16/INT8/INT4 storage must be decoded first.
+    source.need_revert =
+        source.quantizer
+            ? source.quantizer->type() != turbo::QuantizeType::kFp32 ||
+                  meta.extra_meta_size() != 0
+            : source.reformer != nullptr;
+    sources.emplace_back(std::move(source));
   }
-  doc_cache_[doc_id] = std::make_pair(doc_id, doc);
+
+  auto holder = std::make_shared<MergedProviderIndexHolder>(
+      original_query_meta_, std::move(sources));
+  int ret = holder->init(filter, stop_flag_);
+  if (ret != 0) {
+    LOG_ERROR("Failed to initialize merged provider holder, ret=%d", ret);
+    return ret;
+  }
+
+  stats_.set_filtered_count(holder->filtered_count());
+  merged_holder_ = holder;
+
+  AILEGO_DEFER([&]() { holder->set_stop_flag(nullptr); });
+  IndexHolder::Pointer target_holder = holder;
+  // Only IVF has been adapted to propagate source read failures during dump.
+  // Other builders retain an owned multipass snapshot, as before, so their
+  // dump paths never depend on a source provider or its deferred error state.
+  if (target_builder_->name() != "IVFBuilder") {
+    switch (holder->data_type()) {
+      case IndexMeta::DataType::DT_FP32:
+        ret = MaterializeMergedInput<IndexMeta::DataType::DT_FP32, float>(
+            holder, &target_holder);
+        break;
+      case IndexMeta::DataType::DT_FP16:
+        ret = MaterializeMergedInput<IndexMeta::DataType::DT_FP16,
+                                     ailego::Float16>(holder, &target_holder);
+        break;
+      case IndexMeta::DataType::DT_INT8:
+        ret = MaterializeMergedInput<IndexMeta::DataType::DT_INT8, int8_t>(
+            holder, &target_holder);
+        break;
+      default:
+        ret = IndexError_Unsupported;
+        break;
+    }
+    if (ret != 0) {
+      return ret;
+    }
+  }
+  return this->IndexBuild(std::move(target_holder));
 }
 
-int MixedStreamerReducer::IndexBuild() {
-  IndexHolder::Pointer target_holder;
-  if (original_query_meta_.data_type() == core::IndexMeta::DataType::DT_FP16) {
-    auto holder = std::make_shared<
-        zvec::core::MultiPassIndexHolder<core::IndexMeta::DataType::DT_FP16>>(
-        original_query_meta_.dimension());
-    for (auto doc : doc_cache_) {
-      ailego::NumericalVector<uint16_t> vec(doc.second);
-      if (doc.first == kInvalidKey) {
-        continue;
-      }
-      if (!holder->emplace(doc.first, vec)) {
-        LOG_ERROR("Failed to add vector");
-        return core::IndexError_Runtime;
-      }
-    }
-    target_holder = holder;
-  } else if (original_query_meta_.data_type() ==
-             core::IndexMeta::DataType::DT_FP32) {
-    auto holder = std::make_shared<
-        zvec::core::MultiPassIndexHolder<core::IndexMeta::DataType::DT_FP32>>(
-        original_query_meta_.dimension());
-    for (auto doc : doc_cache_) {
-      ailego::NumericalVector<float> vec(doc.second);
-      if (doc.first == kInvalidKey) {
-        continue;
-      }
-      if (!holder->emplace(doc.first, vec)) {
-        LOG_ERROR("Failed to add vector");
-        return core::IndexError_Runtime;
-      }
-    }
-    target_holder = holder;
-  } else if (original_query_meta_.data_type() ==
-             core::IndexMeta::DataType::DT_INT8) {
-    auto holder = std::make_shared<
-        zvec::core::MultiPassIndexHolder<core::IndexMeta::DataType::DT_INT8>>(
-        original_query_meta_.dimension());
-    for (auto doc : doc_cache_) {
-      ailego::NumericalVector<uint8_t> vec(doc.second);
-      if (doc.first == kInvalidKey) {
-        continue;
-      }
-      if (!holder->emplace(doc.first, vec)) {
-        LOG_ERROR("Failed to add vector");
-        return core::IndexError_Runtime;
-      }
-    }
-    target_holder = holder;
-  } else {
-    LOG_ERROR("data_type is not support");
-    return core::IndexError_Runtime;
-  }
+int MixedStreamerReducer::IndexBuild(IndexHolder::Pointer target_holder) {
   if (target_builder_converter_) {
-    core::IndexConverter::TrainAndTransform(target_builder_converter_,
-                                            target_holder);
+    int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
+                                                      target_holder);
+    if (ret != 0) {
+      LOG_ERROR("Failed to convert target holder, ret=%d", ret);
+      return merged_holder_ && merged_holder_->status() != 0
+                 ? merged_holder_->status()
+                 : ret;
+    }
     target_holder = target_builder_converter_->result();
+    if (!target_holder) {
+      LOG_ERROR("Target builder converter returned a null holder");
+      return core::IndexError_Runtime;
+    }
   }
   int ret = target_builder_->train(target_holder);
+  if (merged_holder_ && merged_holder_->status() != 0) {
+    return merged_holder_->status();
+  }
   if (ret != 0) {
     LOG_ERROR("Failed to train target builder, ret=%d", ret);
     return ret;
   }
   ret = target_builder_->build(target_holder);
+  if (merged_holder_ && merged_holder_->status() != 0) {
+    return merged_holder_->status();
+  }
   if (ret != 0) {
     LOG_ERROR("Failed to build target index, ret=%d", ret);
     return ret;

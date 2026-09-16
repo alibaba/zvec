@@ -697,9 +697,14 @@ Status SegmentHelper::ReduceVectorIndex(
       s = MergeWithOptionalReuse(
           vector_index_path, *field_without_quantize,
           collect_merge_indexers(&Segment::get_vector_indexer), filter,
-          concurrency, &vector_indexer);
+          concurrency,
+          vector_index_params->type() == IndexType::IVF ? nullptr
+                                                        : &vector_indexer);
       CHECK_RETURN_STATUS(s);
 
+      // IVF trains from the input segments' quantized indexers, not this new
+      // raw Flat. Flush and close it inside MergeWithOptionalReuse so its
+      // storage does not overlap the IVF training and dump working sets.
       // HNSW_RABITQ training relies on the raw provider held by the flat
       // indexer, so its Close() is deferred until after the quantize indexer
       // is written.
@@ -728,21 +733,24 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      // RABITQ requires raw fp32 vectors as input, because re-encoding the
-      // already-encoded quant indexers would produce garbage data. Other
-      // types require the quantized vectors as input.
+      // Per-record quantizers can concatenate the payloads produced during
+      // insert. Quantizers requiring full-dataset training must consume the
+      // raw Flat sources and train again for the merged segment.
       auto quant_merge_sources =
-          (vector_index_params->quantize_type() == QuantizeType::RABITQ)
-              ? collect_merge_indexers(&Segment::get_vector_indexer)
-              : collect_merge_indexers(&Segment::get_quant_vector_indexer);
+          segment_detail::CanReuseInsertTimeQuantizedVectors(
+              vector_index_params->quantize_type())
+              ? collect_merge_indexers(&Segment::get_quant_vector_indexer)
+              : collect_merge_indexers(&Segment::get_vector_indexer);
 
       s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
                                  quant_merge_sources, filter, concurrency,
                                  nullptr);
       CHECK_RETURN_STATUS(s);
 
-      s = vector_indexer->Close();
-      CHECK_RETURN_STATUS(s);
+      if (vector_indexer != nullptr) {
+        s = vector_indexer->Close();
+        CHECK_RETURN_STATUS(s);
+      }
 
       new_block_meta.set_id(vector_quan_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX_QUANTIZE);

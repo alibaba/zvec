@@ -184,24 +184,34 @@ class TestHnswIndexParamContiguousMemorySurface:
         with pytest.raises(AttributeError, match=match_pattern):
             param.use_contiguous_memory = False  # type: ignore[misc]
 
-    def test_pickle_roundtrip(self):
+    @pytest.mark.parametrize(
+        "metric_type,quantize_type",
+        [
+            (MetricType.COSINE, QuantizeType.INT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT7),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT4),
+        ],
+    )
+    def test_pickle_roundtrip(self, metric_type, quantize_type):
         original = HnswIndexParam(
-            metric_type=MetricType.COSINE,
+            metric_type=metric_type,
             m=24,
             ef_construction=150,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_contiguous_memory=True,
             use_flat_contiguous_memory=True,
             flat_data_type=DataType.VECTOR_FP16,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.use_contiguous_memory is True
-        assert restored.metric_type == MetricType.COSINE
+        assert restored.metric_type == metric_type
         assert restored.m == 24
         assert restored.ef_construction == 150
-        assert restored.quantize_type == QuantizeType.INT8
+        assert restored.quantize_type == quantize_type
         assert restored.use_flat_contiguous_memory is True
         assert restored.flat_data_type == DataType.VECTOR_FP16
+        assert restored.to_dict() == original.to_dict()
 
 
 # ---------------------------------------------------------------------------

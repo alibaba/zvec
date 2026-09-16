@@ -387,6 +387,19 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_->dump(dumper);
 }
 
+void VamanaStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
+  if (!trained_meta.reformer_name().empty()) {
+    meta_.set_reformer(trained_meta.reformer_name(),
+                       trained_meta.reformer_revision(),
+                       trained_meta.reformer_params());
+  }
+  if (!trained_meta.converter_name().empty()) {
+    meta_.set_converter(trained_meta.converter_name(),
+                        trained_meta.converter_revision(),
+                        trained_meta.converter_params());
+  }
+}
+
 void VamanaStreamer::update_entry_point_to_medoid() {
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
@@ -874,6 +887,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
                                        search_batch_distance_);
   ctx->resize_results(count);
 
+  const auto &filter = static_cast<IndexContext *>(ctx)->filter();
   auto &topk = ctx->search_heap().select<TopkHeap>();
 
   for (size_t q = 0; q < count; ++q) {
@@ -881,6 +895,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
     topk.clear();
     for (const auto &keys : p_keys) {
       for (auto key : keys) {
+        if (filter.is_valid() && filter(key)) continue;
         node_id_t id = entity_->get_id(key);
         if (id == kInvalidNodeId) continue;
         dist_t dist = ctx->dist_calculator().batch_dist(id);

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 import time
+import pickle
 
 
 import numpy as np
@@ -23,6 +24,7 @@ from zvec import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
+    DiskAnnIndexParam,
     FlatIndexParam,
     HnswIndexParam,
     IvfRabitqIndexParam,
@@ -41,9 +43,44 @@ from zvec import (
     QuantizerParam,
     DataType,
     VectorSchema,
+    VamanaIndexParam,
 )
 
 from zvec._zvec.param import _SearchQuery
+
+
+@pytest.mark.parametrize(
+    "param_type",
+    [
+        FlatIndexParam,
+        IVFIndexParam,
+        DiskAnnIndexParam,
+        HnswIndexParam,
+        VamanaIndexParam,
+    ],
+)
+@pytest.mark.parametrize(
+    "quantize_type,expected_name",
+    [
+        (QuantizeType.UNDEFINED, "UNDEFINED"),
+        (QuantizeType.FP16, "FP16"),
+        (QuantizeType.INT8, "INT8"),
+        (QuantizeType.INT4, "INT4"),
+        (QuantizeType.UNIFORM_UINT7, "UNIFORM_UINT7"),
+        (QuantizeType.UNIFORM_UINT8, "UNIFORM_UINT8"),
+        (QuantizeType.UNIFORM_UINT4, "UNIFORM_UINT4"),
+    ],
+)
+def test_quantizer_parameter_representation(param_type, quantize_type, expected_name):
+    # Parameters can be represented even when their index/quantizer combination
+    # is rejected at collection creation. Compare to the specified name, not
+    # only to the original: a round trip can preserve an incorrect string.
+    param = param_type(metric_type=MetricType.L2, quantize_type=quantize_type)
+    for value in (param, param.clone(), pickle.loads(pickle.dumps(param))):
+        assert value.quantize_type == quantize_type
+        assert value.to_dict()["quantize_type"] == expected_name
+        assert expected_name in repr(value)
+
 
 # ----------------------------
 # Invert Index Param Test Case
