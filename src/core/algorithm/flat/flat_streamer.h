@@ -97,6 +97,14 @@ class FlatStreamer : public IndexStreamer {
                                const IndexQueryMeta &qmeta, uint32_t count,
                                Context::UPointer &context) const override;
 
+  // Candidate-only output for a contiguous reference. Returns NotImplemented
+  // without writing output if its storage cannot serve every requested key.
+  int search_by_p_keys_fast(const void *query,
+                            const std::vector<uint64_t> &keys,
+                            int64_t *output_ids, float *output_scores,
+                            size_t topk, const IndexQueryMeta &qmeta,
+                            Context::UPointer &context) const;
+
   int group_by_search_impl(const void *query, const IndexQueryMeta &qmeta,
                            uint32_t count, Context::UPointer &context) const;
 
