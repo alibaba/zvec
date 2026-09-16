@@ -105,6 +105,17 @@ class ZVEC_API Collection {
 
   virtual Result<DocPtrList> query(const MultiQuery &query) const = 0;
 
+  // Advanced dense search returning internal numeric IDs and optional scores.
+  // Requires a read-only collection; fast_query calls and close must be serial.
+  // Parameters are read on every call. Index references are cached internally.
+  // Missing neighbors are padded with ID -1 and score NaN. Refinement uses
+  // query_params->scale_factor(), with the same semantics as query().
+  virtual Result<FastQueryResult> fast_query(
+      const std::string &field_name, const void *query_vector,
+      const QueryParams::Ptr &query_params = nullptr, int topk = 10,
+      bool return_scores = false,
+      const DenseQueryShape *query_shape = nullptr) const = 0;
+
   virtual Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const = 0;
 

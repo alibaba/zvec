@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <variant>
@@ -44,6 +46,7 @@
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
 #include "db/doc_iterator_internal.h"
+#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/identifier_validation.h"
@@ -131,6 +134,11 @@ class CollectionImpl : public Collection {
   Result<DocPtrList> query(const SearchQuery &query) const override;
 
   Result<DocPtrList> query(const MultiQuery &query) const override;
+
+  Result<FastQueryResult> fast_query(
+      const std::string &field_name, const void *query_vector,
+      const QueryParams::Ptr &query_params, int topk, bool return_scores,
+      const DenseQueryShape *query_shape) const override;
 
   Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const override;
@@ -291,6 +299,31 @@ class CollectionImpl : public Collection {
                   ColumnOp op);
 
  private:
+  struct FastQuerySegment {
+    Segment::Ptr segment;
+    CombinedVectorColumnIndexer::Ptr indexer;
+    IndexFilter::Ptr filter;
+  };
+
+  struct FastQueryState {
+    DataType data_type{DataType::UNDEFINED};
+    uint32_t dimension{0};
+    IndexType index_type{IndexType::UNDEFINED};
+    MetricType metric{MetricType::L2};
+    std::vector<FastQuerySegment> segments;
+    core_interface::Index::Pointer raw_index;
+    core_interface::Index::Pointer raw_reference_index;
+    core_interface::BaseIndexQueryParam::Pointer engine_query_param;
+    core_interface::BaseIndexQueryParam::Pointer default_engine_query_param;
+    core_interface::RefinerParam::Pointer refiner_param;
+  };
+
+  Result<FastQueryState> resolve_fast_query(
+      const std::string &field_name) const;
+  Status update_fast_query_params(FastQueryState &state,
+                                  const QueryParams::Ptr &params) const;
+  // Only fast_query uses these caches. Its calls and close must be serial.
+  mutable std::unordered_map<std::string, FastQueryState> fast_query_states_;
   std::string path_;
 
   bool destroyed_{false};
@@ -456,6 +489,8 @@ Status CollectionImpl::close_unsafe() {
       result = s;
     }
   }
+
+  fast_query_states_.clear();
 
   // always release resources regardless of flush outcome
   writing_segment_.reset();
@@ -1814,6 +1849,339 @@ Result<DocPtrList> CollectionImpl::query(const SearchQuery &query) const {
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   return query_unsafe(query);
+}
+
+Result<CollectionImpl::FastQueryState> CollectionImpl::resolve_fast_query(
+    const std::string &field_name) const {
+  std::shared_lock schema_lock(schema_handle_mtx_);
+  const FieldSchema *field_schema =
+      field_name.empty() ? nullptr : schema_->get_field(field_name);
+  if (field_schema == nullptr || !field_schema->is_dense_vector()) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "fast search requires a dense vector field: ", field_name));
+  }
+
+  bool quantized = false;
+  MetricType metric = MetricType::L2;
+  if (const auto *vp = dynamic_cast<const VectorIndexParams *>(
+          field_schema->index_params().get())) {
+    metric = vp->metric_type();
+    quantized = vp->quantize_type() != QuantizeType::UNDEFINED;
+  }
+
+  FastQueryState cache;
+  cache.data_type = field_schema->data_type();
+  cache.dimension = field_schema->dimension();
+  cache.index_type = field_schema->index_params()
+                         ? field_schema->index_params()->type()
+                         : IndexType::UNDEFINED;
+  cache.metric = metric;
+  const auto segments = get_all_segments();
+  cache.segments.reserve(segments.size());
+  for (const auto &seg : segments) {
+    CombinedVectorColumnIndexer::Ptr indexer;
+    if (!quantized) {
+      indexer = seg->get_combined_vector_indexer(field_name);
+    } else {
+      indexer = seg->get_quant_combined_vector_indexer(field_name);
+      if (indexer != nullptr && !indexer->has_searchable_indexers()) {
+        indexer = seg->get_combined_vector_indexer(field_name);
+      }
+    }
+    if (!indexer || !indexer->has_searchable_indexers()) {
+      continue;
+    }
+    FastQuerySegment entry;
+    entry.segment = seg;
+    entry.indexer = std::move(indexer);
+    entry.filter = seg->get_filter();
+    cache.segments.push_back(std::move(entry));
+  }
+
+  if (cache.segments.empty()) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "fast query: no searchable vector index for field ", field_name));
+  }
+
+  if (cache.segments.size() == 1) {
+    const auto &entry = cache.segments[0];
+    if (entry.filter == nullptr && entry.indexer->is_single_block() &&
+        entry.segment->has_identity_doc_ids()) {
+      auto primary = entry.indexer->primary_indexer();
+      if (primary) {
+        cache.raw_index = primary->debug_get_index();
+        auto reference = entry.indexer->reference_indexer();
+        if (reference) {
+          cache.raw_reference_index = reference->debug_get_index();
+        }
+      }
+    }
+  }
+
+  if (!cache.raw_index) return cache;
+  auto primary = cache.segments[0].indexer->primary_indexer();
+  vector_column_params::QueryParams qp;
+  qp.data_type = cache.data_type;
+  qp.dimension = cache.dimension;
+  auto engine_qp = ProximaEngineHelper::convert_to_engine_query_param(
+      primary->field_schema(), qp);
+  if (!engine_qp) return tl::make_unexpected(engine_qp.error());
+  cache.engine_query_param = std::move(engine_qp.value());
+  cache.default_engine_query_param = cache.engine_query_param->clone();
+  if (cache.raw_reference_index) {
+    cache.refiner_param = std::make_shared<core_interface::RefinerParam>();
+    cache.refiner_param->reference_index = cache.raw_reference_index;
+  }
+  return cache;
+}
+
+namespace {
+template <typename DbParam, typename EngineParam, typename Update>
+bool UpdateFastQueryParam(const QueryParams::Ptr &params,
+                          core_interface::BaseIndexQueryParam *engine,
+                          const core_interface::BaseIndexQueryParam *defaults,
+                          Update update) {
+  const auto *p = dynamic_cast<const DbParam *>(params.get());
+  if (params && !p) return false;
+  if (auto *e = dynamic_cast<EngineParam *>(engine)) {
+    update(p, e, static_cast<const EngineParam *>(defaults));
+  }
+  return true;
+}
+}  // namespace
+
+Status CollectionImpl::update_fast_query_params(
+    FastQueryState &state, const QueryParams::Ptr &params) const {
+  if (params && params->type() != state.index_type) {
+    return Status::InvalidArgument(
+        "fast query: query parameter type does not match the field index");
+  }
+  auto *engine = state.engine_query_param.get();
+  const auto *defaults = state.default_engine_query_param.get();
+  bool valid = false;
+  switch (state.index_type) {
+    case IndexType::VAMANA:
+      valid = UpdateFastQueryParam<VamanaQueryParams,
+                                   core_interface::VamanaQueryParam>(
+          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
+            e->ef_search = p ? p->ef_search() : d->ef_search;
+            e->prefetch_offset = p ? p->prefetch_offset() : d->prefetch_offset;
+            e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
+          });
+      break;
+    case IndexType::HNSW:
+      valid =
+          UpdateFastQueryParam<HnswQueryParams, core_interface::HNSWQueryParam>(
+              params, engine, defaults,
+              [](const auto *p, auto *e, const auto *d) {
+                e->ef_search = p ? p->ef() : d->ef_search;
+                e->prefetch_offset =
+                    p ? p->prefetch_offset() : d->prefetch_offset;
+                e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
+              });
+      break;
+    case IndexType::HNSW_RABITQ:
+      valid = UpdateFastQueryParam<HnswRabitqQueryParams,
+                                   core_interface::HNSWRabitqQueryParam>(
+          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
+            e->ef_search = p ? p->ef() : d->ef_search;
+          });
+      break;
+    case IndexType::IVF:
+      valid =
+          UpdateFastQueryParam<IVFQueryParams, core_interface::IVFQueryParam>(
+              params, engine, defaults,
+              [](const auto *p, auto *e, const auto *d) {
+                e->nprobe = p ? p->nprobe() : d->nprobe;
+              });
+      break;
+    case IndexType::IVF_RABITQ:
+      valid = UpdateFastQueryParam<IvfRabitqQueryParams,
+                                   core_interface::IVFRabitqQueryParam>(
+          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
+            e->nprobe = p ? p->nprobe() : d->nprobe;
+          });
+      break;
+    case IndexType::DISKANN:
+      valid = UpdateFastQueryParam<DiskAnnQueryParams,
+                                   core_interface::DiskAnnQueryParam>(
+          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
+            e->list_size = p ? p->list_size() : d->list_size;
+          });
+      break;
+    case IndexType::FLAT:
+      valid =
+          UpdateFastQueryParam<FlatQueryParams, core_interface::FlatQueryParam>(
+              params, engine, defaults,
+              [](const auto *, auto *, const auto *) {});
+      break;
+    default:
+      break;
+  }
+  if (!valid)
+    return Status::InvalidArgument(
+        "fast query: unsupported query parameter type");
+  if (engine) {
+    engine->radius = params ? params->radius() : defaults->radius;
+    engine->is_linear = params ? params->is_linear() : defaults->is_linear;
+    engine->refiner_param =
+        params && params->is_using_refiner() ? state.refiner_param : nullptr;
+    if (engine->refiner_param) {
+      engine->refiner_param->scale_factor_ = params->scale_factor();
+    }
+  }
+  return Status::OK();
+}
+
+Result<FastQueryResult> CollectionImpl::fast_query(
+    const std::string &field_name, const void *query_vector,
+    const QueryParams::Ptr &query_params, int topk, bool return_scores,
+    const DenseQueryShape *query_shape) const {
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
+  if (!options_.read_only_) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("fast query requires a read-only collection"));
+  }
+  auto cached = fast_query_states_.find(field_name);
+  if (cached == fast_query_states_.end()) {
+    auto resolved = resolve_fast_query(field_name);
+    if (!resolved) return tl::make_unexpected(resolved.error());
+    cached = fast_query_states_.emplace(field_name, std::move(resolved.value()))
+                 .first;
+  }
+  auto &state = cached->second;
+  const auto param_status = update_fast_query_params(state, query_params);
+  CHECK_RETURN_STATUS_EXPECTED(param_status);
+  if (query_vector == nullptr) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("fast query: query_vector is null"));
+  }
+  if (topk <= 0) {
+    return FastQueryResult{};
+  }
+  if (query_shape && (query_shape->data_type != state.data_type ||
+                      query_shape->dimension != state.dimension)) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "query vector dtype or dimension does not match the field"));
+  }
+  const bool refine = query_params && query_params->is_using_refiner();
+  if (state.raw_index && state.engine_query_param &&
+      (!refine || state.raw_reference_index)) {
+    state.engine_query_param->topk = static_cast<uint32_t>(topk);
+    core_interface::DenseVector dense_query{query_vector};
+    core_interface::VectorData query_data{dense_query};
+    FastQueryResult out;
+    out.ids.resize(static_cast<size_t>(topk), int64_t{-1});
+    if (return_scores) out.scores.resize(static_cast<size_t>(topk));
+    const int ret = state.raw_index->search_fast(
+        query_data, state.engine_query_param, out.ids.data(),
+        return_scores ? out.scores.data() : nullptr);
+    if (ret != 0) {
+      return tl::make_unexpected(
+          Status::InternalError("fast query: index search failed"));
+    }
+    return out;
+  }
+
+  const auto &cache = state;
+
+  const int search_topk = topk;
+
+  const MetricType metric = cache.metric;
+  auto better = [metric](float a, float b) {
+    return metric == MetricType::IP ? a > b : a < b;
+  };
+
+  vector_column_params::QueryParams qp;
+  qp.topk = static_cast<uint32_t>(search_topk);
+  qp.data_type = cache.data_type;
+  qp.dimension = cache.dimension;
+  qp.query_params = query_params;
+
+  vector_column_params::VectorData vector_data;
+  vector_data.vector = vector_column_params::DenseVector{query_vector};
+
+  auto search_one = [&](const FastQuerySegment &entry,
+                        FastQueryResult *out) -> Status {
+    qp.filter = entry.filter ? entry.filter.get() : nullptr;
+
+    auto res = entry.indexer->Search(vector_data, qp);
+    if (!res) {
+      return res.error();
+    }
+    IndexResults::Ptr results = std::move(res.value());
+
+    std::vector<int> indices;
+    indices.reserve(search_topk);
+    const size_t score_begin = out->scores.size();
+    for (auto it = results->create_iterator(); it->valid(); it->next()) {
+      indices.push_back(static_cast<int>(it->doc_id()));
+      out->scores.push_back(it->score());
+    }
+    if (indices.empty()) {
+      return Status::OK();
+    }
+
+    std::vector<int64_t> ids;
+    auto s = entry.segment->get_global_doc_ids(indices, ids);
+    if (!s.ok()) {
+      out->scores.resize(score_begin);
+      return s;
+    }
+    out->ids.insert(out->ids.end(), ids.begin(), ids.end());
+    return Status::OK();
+  };
+
+  auto finish = [topk, return_scores](FastQueryResult out) {
+    out.ids.resize(static_cast<size_t>(topk), int64_t{-1});
+    if (return_scores) {
+      out.scores.resize(static_cast<size_t>(topk),
+                        std::numeric_limits<float>::quiet_NaN());
+    } else {
+      out.scores.clear();
+    }
+    return out;
+  };
+
+  if (cache.segments.size() == 1) {
+    FastQueryResult out;
+    auto s = search_one(cache.segments[0], &out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    if (static_cast<int>(out.ids.size()) > topk) {
+      out.ids.resize(topk);
+      out.scores.resize(topk);
+    }
+    return finish(std::move(out));
+  }
+
+  std::vector<std::pair<float, int64_t>> candidates;
+  candidates.reserve(static_cast<size_t>(search_topk) * cache.segments.size());
+  for (const auto &entry : cache.segments) {
+    FastQueryResult seg_out;
+    auto s = search_one(entry, &seg_out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    for (size_t i = 0; i < seg_out.ids.size(); ++i) {
+      candidates.emplace_back(seg_out.scores[i], seg_out.ids[i]);
+    }
+  }
+
+  const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
+  std::partial_sort(candidates.begin(), candidates.begin() + keep,
+                    candidates.end(),
+                    [&better](const std::pair<float, int64_t> &a,
+                              const std::pair<float, int64_t> &b) {
+                      return better(a.first, b.first);
+                    });
+
+  FastQueryResult out;
+  out.ids.reserve(keep);
+  out.scores.reserve(keep);
+  for (size_t i = 0; i < keep; ++i) {
+    out.scores.push_back(candidates[i].first);
+    out.ids.push_back(candidates[i].second);
+  }
+  return finish(std::move(out));
 }
 
 Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {

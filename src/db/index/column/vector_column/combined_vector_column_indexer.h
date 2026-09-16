@@ -42,6 +42,26 @@ class CombinedVectorColumnIndexer {
       uint32_t segment_doc_id) const;
 
 
+  //! True when at least one backing vector indexer is available for search.
+  bool has_searchable_indexers() const {
+    return !indexers_.empty();
+  }
+
+  //! True when one block starts at segment row zero.
+  bool is_single_block() const {
+    return indexers_.size() == 1 && block_offsets_[0] == 0;
+  }
+
+  //! Primary block indexer (valid when ``is_single_block()``).
+  VectorColumnIndexer::Ptr primary_indexer() const {
+    return indexers_.empty() ? nullptr : indexers_[0];
+  }
+
+  //! Raw-vector reference block used by the primary index's refiner.
+  VectorColumnIndexer::Ptr reference_indexer() const {
+    return normal_indexers_.empty() ? nullptr : normal_indexers_[0];
+  }
+
  protected:
   /**
    * A filter wrapper that applies an offset to document IDs before

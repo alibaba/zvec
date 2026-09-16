@@ -255,6 +255,12 @@ class SegmentImpl : public Segment,
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
                      int segment_doc_id) const override;
 
+  // Gather stable insertion ordinals without Arrow/user-ID materialization.
+  Status get_global_doc_ids(const std::vector<int> &segment_doc_ids,
+                            std::vector<int64_t> &out) const override;
+
+  bool has_identity_doc_ids() const override;
+
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
 
@@ -4533,6 +4539,30 @@ Status SegmentImpl::update_version(uint32_t delete_snapshot_path_suffix) {
 BlockID SegmentImpl::allocate_block_id() {
   return block_id_allocator_.fetch_add(1);
 }
+
+bool SegmentImpl::has_identity_doc_ids() const {
+  std::lock_guard lock(seg_mtx_);
+  for (size_t i = 0; i < doc_ids_.size(); ++i) {
+    if (doc_ids_[i] != i) return false;
+  }
+  return true;
+}
+
+Status SegmentImpl::get_global_doc_ids(const std::vector<int> &segment_doc_ids,
+                                       std::vector<int64_t> &out) const {
+  out.resize(segment_doc_ids.size());
+  std::lock_guard lock(seg_mtx_);
+  const size_t n = doc_ids_.size();
+  for (size_t i = 0; i < segment_doc_ids.size(); ++i) {
+    const int sid = segment_doc_ids[i];
+    if (sid < 0 || static_cast<size_t>(sid) >= n) {
+      return Status::InvalidArgument("segment_doc_id out of range: ", sid);
+    }
+    out[i] = static_cast<int64_t>(doc_ids_[sid]);
+  }
+  return Status::OK();
+}
+
 
 Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t segment_doc_id) const {
   // Read-only lookup into doc_ids_.
