@@ -25,7 +25,7 @@
 #include "db/common/utils.h"
 #include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
-#include "db/index/common/name_validation.h"
+#include "db/index/common/identifier_validation.h"
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
@@ -81,7 +81,7 @@ static Status validate_fts_index_params(const FieldSchema &field) {
 }
 
 Status FieldSchema::validate() const {
-  auto name_status = ValidateFieldName(name_);
+  auto name_status = validate_field_name(name_);
   CHECK_RETURN_STATUS(name_status);
 
   if (data_type_ == DataType::UNDEFINED) {
@@ -405,7 +405,7 @@ std::string FieldSchema::to_string_formatted(int indent_level) const {
 }
 
 Status CollectionSchema::validate() const {
-  auto name_status = ValidateCollectionName(name_);
+  auto name_status = validate_collection_name(name_);
   CHECK_RETURN_STATUS(name_status);
   std::unordered_set<std::string> names;
   for (const auto &field : fields_) {
@@ -415,13 +415,13 @@ Status CollectionSchema::validate() const {
     }
     if (!names.insert(field->name()).second) {
       return Status::InvalidArgument("Invalid schema: duplicate field name [",
-                                     FormatNameForError(field->name()),
+                                     format_name(field->name()),
                                      "]; field names must be unique");
     }
   }
   if (forward_fields().size() > kMaxScalarFieldSize) {
     return Status::InvalidArgument(
-        "Invalid schema: collection[", FormatNameForError(name_),
+        "Invalid schema: collection[", format_name(name_),
         "]'s field size must <= ", kMaxScalarFieldSize);
   }
   if (max_doc_count_per_segment_ < MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD) {
@@ -431,13 +431,12 @@ Status CollectionSchema::validate() const {
   }
   if (fields_.empty()) {
     return Status::InvalidArgument("Invalid schema: collection[",
-                                   FormatNameForError(name_),
-                                   "] has no fields");
+                                   format_name(name_), "] has no fields");
   }
   auto v_fields = vector_fields();
   if (v_fields.size() > kMaxVectorFieldSize) {
     return Status::InvalidArgument(
-        "Invalid schema: collection[", FormatNameForError(name_),
+        "Invalid schema: collection[", format_name(name_),
         "]'s vector field size must <= ", kMaxVectorFieldSize);
   }
   for (auto &field : fields_) {
@@ -491,8 +490,7 @@ Status CollectionSchema::add_field(FieldSchema::Ptr column_schema) {
   }
   // Check if field already exists
   if (has_field(column_schema->name())) {
-    return Status::AlreadyExists("field[",
-                                 FormatNameForError(column_schema->name()),
+    return Status::AlreadyExists("field[", format_name(column_schema->name()),
                                  "] already exists in schema");
   }
 
@@ -518,7 +516,7 @@ Status CollectionSchema::alter_field(
   }
   // Check if field exists
   if (!has_field(column_name)) {
-    return Status::NotFound("field[", FormatNameForError(column_name),
+    return Status::NotFound("field[", format_name(column_name),
                             "] not found in schema");
   }
 
@@ -526,7 +524,7 @@ Status CollectionSchema::alter_field(
 
   // If renaming to an existing field name (and it's not the same field)
   if (new_column_name != column_name && has_field(new_column_name)) {
-    return Status::AlreadyExists("field[", FormatNameForError(new_column_name),
+    return Status::AlreadyExists("field[", format_name(new_column_name),
                                  "] already exists in schema");
   }
 
@@ -550,7 +548,7 @@ Status CollectionSchema::alter_field(
 Status CollectionSchema::drop_field(const std::string &column_name) {
   // Check if field exists
   if (!has_field(column_name)) {
-    return Status::NotFound("field[", FormatNameForError(column_name),
+    return Status::NotFound("field[", format_name(column_name),
                             "] not found in schema");
   }
 
@@ -734,7 +732,7 @@ Status CollectionSchema::add_index(const std::string &column,
   if (field) {
     field->set_index_params(index_params);
   } else {
-    return Status::NotFound("field[", FormatNameForError(column),
+    return Status::NotFound("field[", format_name(column),
                             "] not found in schema");
   }
 
@@ -751,7 +749,7 @@ Status CollectionSchema::drop_index(const std::string &column) {
       field->set_index_params(nullptr);
     }
   } else {
-    return Status::NotFound("field[", FormatNameForError(column),
+    return Status::NotFound("field[", format_name(column),
                             "] not found in schema");
   }
 

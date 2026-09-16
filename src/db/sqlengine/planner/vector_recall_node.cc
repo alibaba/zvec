@@ -47,7 +47,7 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
                            : query_info_->get_selected_scalar_field_names()) {
   auto table = segment_->fetch(fetched_columns_, std::vector<int>{});
   schema_ = table->schema();
-  schema_ = Util::append_field(*schema_, kFieldScore, arrow::float32());
+  schema_ = Util::append_field(*schema_, FIELD_SCORE, arrow::float32());
   if (query_info_->is_include_vector()) {
     for (auto &field : query_info_->selected_vector_fields()) {
       if (field.field_schema_ptr->is_dense_vector()) {
@@ -60,14 +60,14 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
     }
   }
   if (query_info_->group_by()) {
-    schema_ = Util::append_field(*schema_, kFieldGroupId, arrow::utf8());
+    schema_ = Util::append_field(*schema_, FIELD_GROUP_ID, arrow::utf8());
   }
 }
 
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
   auto state_ptr = std::make_shared<State>(shared_from_this());
   return [state_ptr = std::move(state_ptr)]() mutable
-         -> arrow::Future<std::optional<cp::ExecBatch>> {
+             -> arrow::Future<std::optional<cp::ExecBatch>> {
     auto &state = *state_ptr;
     if (!state.iter_) {
       auto vector_ret = state.self_->prepare();
@@ -245,7 +245,7 @@ VectorRecallNode::State::collect_batch() {
   auto record_batch = std::move(batch.ValueUnsafe());
   ARROW_ASSIGN_OR_RAISE(
       record_batch,
-      record_batch->AddColumn(record_batch->num_columns(), kFieldScore,
+      record_batch->AddColumn(record_batch->num_columns(), FIELD_SCORE,
                               score_array.MoveValueUnsafe()));
 
   if (self_->query_info_->is_include_vector()) {
@@ -277,7 +277,7 @@ VectorRecallNode::State::collect_batch() {
     }
     ARROW_ASSIGN_OR_RAISE(
         record_batch,
-        record_batch->AddColumn(record_batch->num_columns(), kFieldGroupId,
+        record_batch->AddColumn(record_batch->num_columns(), FIELD_GROUP_ID,
                                 group_id_array.MoveValueUnsafe()));
   }
 

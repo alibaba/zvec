@@ -17,13 +17,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <numeric>
-#include <stdexcept>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/query.h>
 #include "db/common/constants.h"
-#include "db/index/common/name_validation.h"
+#include "db/common/utils.h"
+#include "db/index/common/identifier_validation.h"
 #include "db/index/common/type_helper.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -151,7 +150,7 @@ class DocBufferReader {
     return remaining_;
   }
 
-  bool ReadBytes(void *destination, size_t size) {
+  bool read_bytes(void *destination, size_t size) {
     if (size > remaining_) return false;
     if (size != 0) {
       std::memcpy(destination, data_, size);
@@ -162,11 +161,11 @@ class DocBufferReader {
   }
 
   template <typename T>
-  bool ReadNative(T &value) {
-    return ReadBytes(&value, sizeof(T));
+  bool read_native(T &value) {
+    return read_bytes(&value, sizeof(T));
   }
 
-  bool ReadStringBytes(std::string &value, size_t size) {
+  bool read_string_bytes(std::string &value, size_t size) {
     if (size > remaining_) return false;
     value.assign(reinterpret_cast<const char *>(data_), size);
     data_ += size;
@@ -174,57 +173,57 @@ class DocBufferReader {
     return true;
   }
 
-  bool ReadValue(Doc::Value &value) {
+  bool read_value(Doc::Value &value) {
     uint8_t type;
-    if (!ReadNative(type)) return false;
+    if (!read_native(type)) return false;
     switch (type) {
       case TYPE_EMPTY:
         value = std::monostate{};
         return true;
       case TYPE_BOOL:
-        return ReadAs<bool>(value);
+        return read_as<bool>(value);
       case TYPE_INT32:
-        return ReadAs<int32_t>(value);
+        return read_as<int32_t>(value);
       case TYPE_UINT32:
-        return ReadAs<uint32_t>(value);
+        return read_as<uint32_t>(value);
       case TYPE_INT64:
-        return ReadAs<int64_t>(value);
+        return read_as<int64_t>(value);
       case TYPE_UINT64:
-        return ReadAs<uint64_t>(value);
+        return read_as<uint64_t>(value);
       case TYPE_FLOAT:
-        return ReadAs<float>(value);
+        return read_as<float>(value);
       case TYPE_DOUBLE:
-        return ReadAs<double>(value);
+        return read_as<double>(value);
       case TYPE_STRING:
-        return ReadAs<std::string>(value);
+        return read_as<std::string>(value);
       case TYPE_VECTOR_BOOL:
-        return ReadAs<std::vector<bool>>(value);
+        return read_as<std::vector<bool>>(value);
       case TYPE_VECTOR_INT8:
-        return ReadAs<std::vector<int8_t>>(value);
+        return read_as<std::vector<int8_t>>(value);
       case TYPE_VECTOR_INT16:
-        return ReadAs<std::vector<int16_t>>(value);
+        return read_as<std::vector<int16_t>>(value);
       case TYPE_VECTOR_INT32:
-        return ReadAs<std::vector<int32_t>>(value);
+        return read_as<std::vector<int32_t>>(value);
       case TYPE_VECTOR_INT64:
-        return ReadAs<std::vector<int64_t>>(value);
+        return read_as<std::vector<int64_t>>(value);
       case TYPE_VECTOR_UINT32:
-        return ReadAs<std::vector<uint32_t>>(value);
+        return read_as<std::vector<uint32_t>>(value);
       case TYPE_VECTOR_UINT64:
-        return ReadAs<std::vector<uint64_t>>(value);
+        return read_as<std::vector<uint64_t>>(value);
       case TYPE_VECTOR_FLOAT16:
-        return ReadAs<std::vector<float16_t>>(value);
+        return read_as<std::vector<float16_t>>(value);
       case TYPE_VECTOR_FLOAT:
-        return ReadAs<std::vector<float>>(value);
+        return read_as<std::vector<float>>(value);
       case TYPE_VECTOR_DOUBLE:
-        return ReadAs<std::vector<double>>(value);
+        return read_as<std::vector<double>>(value);
       case TYPE_VECTOR_STRING:
-        return ReadAs<std::vector<std::string>>(value);
+        return read_as<std::vector<std::string>>(value);
       case TYPE_VECTOR_PAIR_INT_FLOAT:
-        return ReadAs<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+        return read_as<std::pair<std::vector<uint32_t>, std::vector<float>>>(
             value);
       case TYPE_VECTOR_PAIR_INT_FLOAT16:
-        return ReadAs<std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(
-            value);
+        return read_as<
+            std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(value);
       default:
         return false;
     }
@@ -232,8 +231,8 @@ class DocBufferReader {
 
  private:
   template <typename T>
-  bool ReadLittle(T &value) {
-    if (!ReadNative(value)) return false;
+  bool read_little_endian(T &value) {
+    if (!read_native(value)) return false;
     if (IS_BIG_ENDIAN) {
       auto *bytes = reinterpret_cast<uint8_t *>(&value);
       std::reverse(bytes, bytes + sizeof(T));
@@ -242,42 +241,42 @@ class DocBufferReader {
   }
 
   template <typename T>
-  bool ReadAs(Doc::Value &out) {
+  bool read_as(Doc::Value &out) {
     T value;
-    if (!Read(value)) return false;
+    if (!read(value)) return false;
     out = std::move(value);
     return true;
   }
 
   template <typename T>
-  bool Read(T &value) {
-    return ReadLittle(value);
+  bool read(T &value) {
+    return read_little_endian(value);
   }
 
-  bool Read(bool &value) {
+  bool read(bool &value) {
     static_assert(sizeof(bool) == sizeof(uint8_t));
     uint8_t byte;
-    if (!ReadNative(byte) || byte > 1) return false;
+    if (!read_native(byte) || byte > 1) return false;
     value = byte != 0;
     return true;
   }
 
-  bool Read(std::string &value) {
+  bool read(std::string &value) {
     uint32_t size;
-    return ReadLittle(size) && ReadStringBytes(value, size);
+    return read_little_endian(size) && read_string_bytes(value, size);
   }
 
   template <typename T>
-  bool Read(std::vector<T> &values) {
+  bool read(std::vector<T> &values) {
     uint32_t count;
-    if (!ReadLittle(count)) return false;
+    if (!read_little_endian(count)) return false;
     if constexpr (std::is_same_v<T, std::string>) {
       // Each string contains at least its four-byte length prefix.
       if (count > remaining_ / sizeof(uint32_t)) return false;
       values.reserve(count);
       for (uint32_t i = 0; i < count; ++i) {
         std::string value;
-        if (!Read(value)) return false;
+        if (!read(value)) return false;
         values.push_back(std::move(value));
       }
     } else if constexpr (std::is_same_v<T, bool>) {
@@ -285,14 +284,14 @@ class DocBufferReader {
       values.reserve(count);
       for (uint32_t i = 0; i < count; ++i) {
         bool value;
-        if (!Read(value)) return false;
+        if (!read(value)) return false;
         values.push_back(value);
       }
     } else {
       // Division avoids overflow before checking the allocation/copy size.
       if (count > remaining_ / sizeof(T)) return false;
       values.resize(count);
-      if (!ReadBytes(values.data(), static_cast<size_t>(count) * sizeof(T))) {
+      if (!read_bytes(values.data(), static_cast<size_t>(count) * sizeof(T))) {
         return false;
       }
       if (IS_BIG_ENDIAN) {
@@ -306,8 +305,8 @@ class DocBufferReader {
   }
 
   template <typename T>
-  bool Read(std::pair<std::vector<uint32_t>, std::vector<T>> &value) {
-    return Read(value.first) && Read(value.second);
+  bool read(std::pair<std::vector<uint32_t>, std::vector<T>> &value) {
+    return read(value.first) && read(value.second);
   }
 
   const uint8_t *data_;
@@ -610,12 +609,12 @@ Doc::Ptr Doc::deserialize(const uint8_t *data, size_t size) {
   uint32_t field_count;
   // The document header and field-name lengths retain their existing native
   // representation; value payloads use the existing little-endian encoding.
-  if (!reader.ReadNative(pk_length) ||
-      !reader.ReadStringBytes(doc->pk_, pk_length) ||
-      !reader.ReadNative(doc->score_) || !reader.ReadNative(doc->doc_id_) ||
-      !reader.ReadNative(operation) ||
+  if (!reader.read_native(pk_length) ||
+      !reader.read_string_bytes(doc->pk_, pk_length) ||
+      !reader.read_native(doc->score_) || !reader.read_native(doc->doc_id_) ||
+      !reader.read_native(operation) ||
       operation > static_cast<uint32_t>(Operator::DELETE) ||
-      !reader.ReadNative(field_count)) {
+      !reader.read_native(field_count)) {
     return nullptr;
   }
   doc->op_ = static_cast<Operator>(operation);
@@ -627,9 +626,9 @@ Doc::Ptr Doc::deserialize(const uint8_t *data, size_t size) {
     uint32_t name_length;
     std::string name;
     Value value;
-    if (!reader.ReadNative(name_length) ||
-        !reader.ReadStringBytes(name, name_length) ||
-        !reader.ReadValue(value) ||
+    if (!reader.read_native(name_length) ||
+        !reader.read_string_bytes(name, name_length) ||
+        !reader.read_value(value) ||
         !doc->fields_.emplace(std::move(name), std::move(value)).second) {
       return nullptr;
     }
@@ -643,7 +642,7 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
     return Status::InternalError("schema is null during doc validation");
   }
 
-  auto id_status = ValidateDocumentId(pk_);
+  auto id_status = validate_document_id(pk_);
   if (!id_status.ok()) {
     return id_status;
   }
@@ -652,8 +651,7 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
   for (auto &[name, value] : fields_) {
     if (!schema->has_field(name)) {
       return Status::InvalidArgument(
-          "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
-          FormatNameForError(name),
+          "Invalid doc: doc[", format_name(pk_), "]: field[", format_name(name),
           "] does not exist in the collection schema");
     }
   }
@@ -666,17 +664,16 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
       if (field_schema->nullable() || is_update) {
         continue;
       }
-      return Status::InvalidArgument(
-          "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
-          FormatNameForError(field_name), "] is required but not provided");
+      return Status::InvalidArgument("Invalid doc: doc[", format_name(pk_),
+                                     "]: field[", format_name(field_name),
+                                     "] is required but not provided");
     } else {
       if (std::holds_alternative<std::monostate>(field_pair->second)) {
         if (field_schema->nullable()) {
           continue;
         }
-        return Status::InvalidArgument("Invalid doc: doc[",
-                                       FormatNameForError(pk_), "]: field[",
-                                       FormatNameForError(field_name),
+        return Status::InvalidArgument("Invalid doc: doc[", format_name(pk_),
+                                       "]: field[", format_name(field_name),
                                        "] is required but its value is null");
       }
     }
@@ -807,14 +804,14 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
               field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "Invalid doc: doc[", FormatNameForError(pk_),
-                "]: sparse vector field[", FormatNameForError(field_name),
+                "Invalid doc: doc[", format_name(pk_),
+                "]: sparse vector field[", format_name(field_name),
                 "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "Invalid doc: doc[", FormatNameForError(pk_),
-                "]: sparse vector field[", FormatNameForError(field_name),
+                "Invalid doc: doc[", format_name(pk_),
+                "]: sparse vector field[", format_name(field_name),
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
@@ -822,8 +819,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                                              sparse_indices.size());
           if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
-                "Invalid doc: doc[", FormatNameForError(pk_),
-                "]: sparse vector field[", FormatNameForError(field_name),
+                "Invalid doc: doc[", format_name(pk_),
+                "]: sparse vector field[", format_name(field_name),
                 "] contains duplicate indices");
           }
           if (status == SparseIndicesStatus::kNeedSort) {
@@ -832,8 +829,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                     reinterpret_cast<char *>(sparse_values.data()),
                     sparse_indices.size(), sizeof(float16_t))) {
               return Status::InvalidArgument(
-                  "Invalid doc: doc[", FormatNameForError(pk_),
-                  "]: sparse vector field[", FormatNameForError(field_name),
+                  "Invalid doc: doc[", format_name(pk_),
+                  "]: sparse vector field[", format_name(field_name),
                   "] contains duplicate indices");
             }
           }
@@ -849,14 +846,14 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                   field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "Invalid doc: doc[", FormatNameForError(pk_),
-                "]: sparse vector field[", FormatNameForError(field_name),
+                "Invalid doc: doc[", format_name(pk_),
+                "]: sparse vector field[", format_name(field_name),
                 "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "Invalid doc: doc[", FormatNameForError(pk_),
-                "]: sparse vector field[", FormatNameForError(field_name),
+                "Invalid doc: doc[", format_name(pk_),
+                "]: sparse vector field[", format_name(field_name),
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
@@ -864,8 +861,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                                              sparse_indices.size());
           if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
-                "Invalid doc: doc[", FormatNameForError(pk_),
-                "]: sparse vector field[", FormatNameForError(field_name),
+                "Invalid doc: doc[", format_name(pk_),
+                "]: sparse vector field[", format_name(field_name),
                 "] contains duplicate indices");
           }
           if (status == SparseIndicesStatus::kNeedSort) {
@@ -874,8 +871,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                     reinterpret_cast<char *>(sparse_values.data()),
                     sparse_indices.size(), sizeof(float))) {
               return Status::InvalidArgument(
-                  "Invalid doc: doc[", FormatNameForError(pk_),
-                  "]: sparse vector field[", FormatNameForError(field_name),
+                  "Invalid doc: doc[", format_name(pk_),
+                  "]: sparse vector field[", format_name(field_name),
                   "] contains duplicate indices");
             }
           }
@@ -883,24 +880,24 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
         break;
       }
       default:
-        return Status::InvalidArgument(
-            "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
-            FormatNameForError(field_name), "] has unsupported data type");
+        return Status::InvalidArgument("Invalid doc: doc[", format_name(pk_),
+                                       "]: field[", format_name(field_name),
+                                       "] has unsupported data type");
         break;
     }
 
     if (!type_match) {
       return Status::InvalidArgument(
-          "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
-          FormatNameForError(field_name), "] type mismatch, expected ",
+          "Invalid doc: doc[", format_name(pk_), "]: field[",
+          format_name(field_name), "] type mismatch, expected ",
           DataTypeCodeBook::AsString(expected_type), " but got ",
           get_value_type_name(field_value, field_schema->is_vector_field()));
     }
     if (field_schema->is_dense_vector()) {
       if (value_dimension != field_schema->dimension()) {
         return Status::InvalidArgument(
-            "Invalid doc: doc[", FormatNameForError(pk_), "]: field[",
-            FormatNameForError(field_name), "] dimension mismatch, expected ",
+            "Invalid doc: doc[", format_name(pk_), "]: field[",
+            format_name(field_name), "] dimension mismatch, expected ",
             field_schema->dimension(), " but got ", value_dimension);
       }
     }

@@ -13,11 +13,57 @@
 // limitations under the License.
 
 #include "utils.h"
+#include <algorithm>
+
 
 namespace zvec {
 
 std::string indent(int level) {
   return std::string(level * 2, ' ');
+}
+
+std::string format_name(std::string_view value) {
+  constexpr size_t kMaxPreviewBytes = 32;
+  constexpr char kHexDigits[] = "0123456789ABCDEF";
+  auto length = std::min(value.size(), kMaxPreviewBytes);
+  std::string preview;
+  preview.reserve(length);
+  for (size_t i = 0; i < length; ++i) {
+    auto byte = static_cast<unsigned char>(value[i]);
+    switch (byte) {
+      case '\0':
+        preview += "\\0";
+        break;
+      case '\n':
+        preview += "\\n";
+        break;
+      case '\r':
+        preview += "\\r";
+        break;
+      case '\t':
+        preview += "\\t";
+        break;
+      case '\\':
+      case '[':
+      case ']':
+        preview += '\\';
+        preview += static_cast<char>(byte);
+        break;
+      default:
+        if (byte >= 0x20 && byte <= 0x7E) {
+          preview += static_cast<char>(byte);
+        } else {
+          preview += "\\x";
+          preview += kHexDigits[byte >> 4];
+          preview += kHexDigits[byte & 0x0F];
+        }
+        break;
+    }
+  }
+  if (length < value.size()) {
+    preview += "...";
+  }
+  return preview;
 }
 
 }  // namespace zvec

@@ -42,11 +42,12 @@
 #include "db/common/global_resource.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
+#include "db/common/utils.h"
 #include "db/doc_iterator_internal.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
+#include "db/index/common/identifier_validation.h"
 #include "db/index/common/index_filter.h"
-#include "db/index/common/name_validation.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
@@ -1194,7 +1195,7 @@ Status CollectionImpl::validate(const std::string &column,
         field->data_type() > DataType::DOUBLE) {
       return Status::InvalidArgument(
           "Invalid schema: this operation requires a numeric field; field[",
-          FormatNameForError(field->name()), "] has type ",
+          format_name(field->name()), "] has type ",
           DataTypeCodeBook::AsString(field->data_type()));
     }
     return Status::OK();
@@ -1209,7 +1210,7 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (schema_->has_field(schema->name())) {
         return Status::InvalidArgument("Invalid schema: field[",
-                                       FormatNameForError(schema->name()),
+                                       format_name(schema->name()),
                                        "] already exists");
       }
 
@@ -1227,7 +1228,7 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (expression.empty() && !schema->nullable()) {
         return Status::InvalidArgument("Invalid schema: non-nullable field[",
-                                       FormatNameForError(schema->name()),
+                                       format_name(schema->name()),
                                        "] requires an expression when added");
       }
 
@@ -1241,8 +1242,7 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (!schema_->has_field(column)) {
         return Status::InvalidArgument("Invalid schema: field[",
-                                       FormatNameForError(column),
-                                       "] not found");
+                                       format_name(column), "] not found");
       }
 
       if (!rename.empty() && schema) {
@@ -1256,11 +1256,11 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (!rename.empty()) {
         // rename case
-        s = ValidateFieldName(rename);
+        s = validate_field_name(rename);
         CHECK_RETURN_STATUS(s);
         if (schema_->has_field(rename)) {
           return Status::InvalidArgument("Invalid schema: field[",
-                                         FormatNameForError(rename),
+                                         format_name(rename),
                                          "] already exists");
         }
       } else {
@@ -1292,8 +1292,7 @@ Status CollectionImpl::validate(const std::string &column,
     case ColumnOp::DROP: {
       if (!schema_->has_field(column)) {
         return Status::InvalidArgument("Invalid schema: field[",
-                                       FormatNameForError(column),
-                                       "] not found");
+                                       format_name(column), "] not found");
       }
 
       if (schema_->fields().size() <= 1) {

@@ -15,7 +15,6 @@
 #pragma once
 
 #include <cstddef>
-#include <string>
 #include <string_view>
 #include <zvec/db/status.h>
 
@@ -25,19 +24,8 @@ inline constexpr size_t kMaxDocumentIdBytes = 1024;
 inline constexpr size_t kMaxCollectionNameBytes = 256;
 inline constexpr size_t kMaxFieldNameBytes = 64;
 
-// Validate new input without changing its bytes. Document IDs and collection
-// names are nonempty UTF-8 strings without C0/C1 controls or line/paragraph
-// separators. Other spaces, including strings consisting only of spaces, are
-// allowed. These validators do not normalize, trim, or change case.
-Status ValidateDocumentId(std::string_view id);
-Status ValidateCollectionName(std::string_view name);
-
-// Field names retain the ASCII letters, digits, underscore, and hyphen set,
-// excluding exact names used by storage and query execution.
-Status ValidateFieldName(std::string_view name);
-
-// Bounded, escaped preview for errors. Never includes raw control characters
-// or malformed UTF-8 bytes, even when the supplied name has not been validated.
-std::string FormatNameForError(std::string_view name);
+Status validate_document_id(std::string_view id);
+Status validate_collection_name(std::string_view name);
+Status validate_field_name(std::string_view name);
 
 }  // namespace zvec

@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/common/name_validation.h"
+#include "db/index/common/identifier_validation.h"
 #include <array>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <gtest/gtest.h>
+#include "db/common/utils.h"
 
 namespace zvec {
 namespace {
@@ -29,8 +30,8 @@ struct Utf8NameValidator {
 };
 
 const std::array<Utf8NameValidator, 2> kUtf8NameValidators{{
-    {ValidateDocumentId, kMaxDocumentIdBytes, "Invalid doc: id"},
-    {ValidateCollectionName, kMaxCollectionNameBytes,
+    {validate_document_id, kMaxDocumentIdBytes, "Invalid doc: id"},
+    {validate_collection_name, kMaxCollectionNameBytes,
      "Invalid schema: collection name"},
 }};
 
@@ -49,7 +50,7 @@ std::string Repeat(std::string_view text, size_t count) {
   return result;
 }
 
-TEST(NameValidationTest, AcceptsUnicodePunctuationAndSpaces) {
+TEST(IdentifierValidationTest, AcceptsUnicodePunctuationAndSpaces) {
   const std::vector<std::string> values{
       "a",
       "A_b-9",
@@ -76,16 +77,16 @@ TEST(NameValidationTest, AcceptsUnicodePunctuationAndSpaces) {
   }
 }
 
-TEST(NameValidationTest, RejectsEmptyNames) {
+TEST(IdentifierValidationTest, RejectsEmptyNames) {
   for (const auto &validator : kUtf8NameValidators) {
     ExpectInvalid(validator.validate(std::string_view{}),
                   std::string(validator.prefix) + " must not be empty");
   }
-  ExpectInvalid(ValidateFieldName(""),
+  ExpectInvalid(validate_field_name(""),
                 "Invalid schema: field name must not be empty");
 }
 
-TEST(NameValidationTest, MeasuresLimitsInUtf8Bytes) {
+TEST(IdentifierValidationTest, MeasuresLimitsInUtf8Bytes) {
   for (const auto &validator : kUtf8NameValidators) {
     SCOPED_TRACE(validator.prefix);
     const auto max_bytes = validator.max_bytes;
@@ -107,7 +108,7 @@ TEST(NameValidationTest, MeasuresLimitsInUtf8Bytes) {
   }
 }
 
-TEST(NameValidationTest, RejectsMalformedUtf8) {
+TEST(IdentifierValidationTest, RejectsMalformedUtf8) {
   const std::vector<std::string> malformed{
       "\x80",  // Isolated continuation byte.
       "\xBF",
@@ -141,7 +142,7 @@ TEST(NameValidationTest, RejectsMalformedUtf8) {
   }
 }
 
-TEST(NameValidationTest, HonorsStringViewLengthAndEmbeddedNulls) {
+TEST(IdentifierValidationTest, HonorsStringViewLengthAndEmbeddedNulls) {
   const std::string backing = std::string(u8"中文") + "\xFF";
   for (const auto &validator : kUtf8NameValidators) {
     SCOPED_TRACE(validator.prefix);
@@ -153,7 +154,7 @@ TEST(NameValidationTest, HonorsStringViewLengthAndEmbeddedNulls) {
   }
 }
 
-TEST(NameValidationTest, RejectsEveryC0AndC1ControlByCodepoint) {
+TEST(IdentifierValidationTest, RejectsEveryC0AndC1ControlByCodepoint) {
   for (const auto &validator : kUtf8NameValidators) {
     SCOPED_TRACE(validator.prefix);
     for (unsigned int codepoint = 0; codepoint <= 0x9F; ++codepoint) {
@@ -183,7 +184,7 @@ TEST(NameValidationTest, RejectsEveryC0AndC1ControlByCodepoint) {
   }
 }
 
-TEST(NameValidationTest, DistinguishesUnicodeLineAndParagraphSeparators) {
+TEST(IdentifierValidationTest, DistinguishesUnicodeLineAndParagraphSeparators) {
   for (const auto &validator : kUtf8NameValidators) {
     ExpectInvalid(validator.validate(u8"a\u2028b"),
                   std::string(validator.prefix) + " contains a line separator");
@@ -193,87 +194,88 @@ TEST(NameValidationTest, DistinguishesUnicodeLineAndParagraphSeparators) {
   }
 }
 
-TEST(NameValidationTest, RetainsTheFieldAsciiCharacterSet) {
+TEST(IdentifierValidationTest, RetainsTheFieldAsciiCharacterSet) {
   for (const std::string name :
        {"a", "Z", "0", "_", "-", "a_b-c1", "123_test", "_zvec_custom"}) {
-    EXPECT_TRUE(ValidateFieldName(name).ok());
+    EXPECT_TRUE(validate_field_name(name).ok());
   }
-  EXPECT_TRUE(ValidateFieldName("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                "abcdefghijklmnopqrstuvwxyz0123456789_-")
+  EXPECT_TRUE(validate_field_name("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                  "abcdefghijklmnopqrstuvwxyz0123456789_-")
                   .ok());
-  EXPECT_TRUE(ValidateFieldName(std::string(kMaxFieldNameBytes, 'a')).ok());
-  ExpectInvalid(ValidateFieldName(std::string(kMaxFieldNameBytes + 1, 'a')),
+  EXPECT_TRUE(validate_field_name(std::string(kMaxFieldNameBytes, 'a')).ok());
+  ExpectInvalid(validate_field_name(std::string(kMaxFieldNameBytes + 1, 'a')),
                 "Invalid schema: field name exceeds 64 bytes (got 65)");
-  ExpectInvalid(ValidateFieldName(std::string(10000, 'a')),
+  ExpectInvalid(validate_field_name(std::string(10000, 'a')),
                 "Invalid schema: field name exceeds 64 bytes (got 10000)");
 }
 
-TEST(NameValidationTest, RejectsExactInternalFieldNames) {
+TEST(IdentifierValidationTest, RejectsExactInternalFieldNames) {
   for (const std::string name :
        {"_zvec_row_id_", "_zvec_g_doc_id_", "_zvec_uid_", "_zvec_score",
         "_zvec_group_id"}) {
     SCOPED_TRACE(name);
-    ExpectInvalid(ValidateFieldName(name),
+    ExpectInvalid(validate_field_name(name),
                   "Invalid schema: field[" + name +
                       "] is reserved; use a different name");
     // The restriction is an exact match, not a new prefix or case policy.
-    EXPECT_TRUE(ValidateFieldName(name + "_custom").ok());
-    EXPECT_TRUE(ValidateDocumentId(name).ok());
-    EXPECT_TRUE(ValidateCollectionName(name).ok());
+    EXPECT_TRUE(validate_field_name(name + "_custom").ok());
+    EXPECT_TRUE(validate_document_id(name).ok());
+    EXPECT_TRUE(validate_collection_name(name).ok());
   }
-  EXPECT_TRUE(ValidateFieldName("_ZVEC_UID_").ok());
+  EXPECT_TRUE(validate_field_name("_ZVEC_UID_").ok());
   for (const std::string name :
        {"_zvec_vector", "_zvec_sindices", "_zvec_svalues", "_zvec_is_valid"}) {
-    EXPECT_TRUE(ValidateFieldName(name).ok());
+    EXPECT_TRUE(validate_field_name(name).ok());
   }
 }
 
-TEST(NameValidationTest, SharedErrorPreviewIsEscapedAndBounded) {
-  EXPECT_EQ(FormatNameForError(""), "");
-  EXPECT_EQ(FormatNameForError(std::string("a\0\n\r\t[]\\", 8)),
+TEST(IdentifierValidationTest, SharedErrorPreviewIsEscapedAndBounded) {
+  EXPECT_EQ(format_name(""), "");
+  EXPECT_EQ(format_name(std::string("a\0\n\r\t[]\\", 8)),
             "a\\0\\n\\r\\t\\[\\]\\\\");
-  EXPECT_EQ(FormatNameForError(u8"中"), "\\xE4\\xB8\\xAD");
-  EXPECT_EQ(FormatNameForError(std::string(10000, '\xff')),
+  EXPECT_EQ(format_name(u8"中"), "\\xE4\\xB8\\xAD");
+  EXPECT_EQ(format_name(std::string(10000, '\xff')),
             Repeat("\\xFF", 32) + "...");
-  EXPECT_EQ(FormatNameForError(std::string(10000, 'x')),
-            std::string(32, 'x') + "...");
+  EXPECT_EQ(format_name(std::string(10000, 'x')), std::string(32, 'x') + "...");
 }
 
-TEST(NameValidationTest, DescribesInvalidFieldCharactersWithSafePreviews) {
+TEST(IdentifierValidationTest,
+     DescribesInvalidFieldCharactersWithSafePreviews) {
   const std::string rule =
       "; use letters (A-Z, a-z), digits, underscores (_) or hyphens (-)";
-  ExpectInvalid(ValidateFieldName("user name"),
+  ExpectInvalid(validate_field_name("user name"),
                 "Invalid schema: field[user name] contains a space" + rule);
   ExpectInvalid(
-      ValidateFieldName("a.b"),
+      validate_field_name("a.b"),
       "Invalid schema: field[a.b] contains an unsupported character" + rule);
-  ExpectInvalid(ValidateFieldName(u8"中"),
+  ExpectInvalid(validate_field_name(u8"中"),
                 "Invalid schema: field[\\xE4\\xB8\\xAD] contains a non-ASCII "
                 "character" +
                     rule);
   ExpectInvalid(
-      ValidateFieldName("\x80"),
+      validate_field_name("\x80"),
       "Invalid schema: field[\\x80] contains a non-ASCII character" + rule);
   ExpectInvalid(
-      ValidateFieldName(std::string("a\0b", 3)),
+      validate_field_name(std::string("a\0b", 3)),
       "Invalid schema: field[a\\0b] contains a null character" + rule);
-  ExpectInvalid(ValidateFieldName("a\nb"),
+  ExpectInvalid(validate_field_name("a\nb"),
                 "Invalid schema: field[a\\nb] contains a newline" + rule);
-  ExpectInvalid(ValidateFieldName("a\tb"),
+  ExpectInvalid(validate_field_name("a\tb"),
                 "Invalid schema: field[a\\tb] contains a tab" + rule);
   ExpectInvalid(
-      ValidateFieldName("a\x1B"
-                        "b"),
+      validate_field_name("a\x1B"
+                          "b"),
       "Invalid schema: field[a\\x1Bb] contains a control character" + rule);
-  ExpectInvalid(ValidateFieldName("][\\\n"),
+  ExpectInvalid(validate_field_name("][\\\n"),
                 "Invalid schema: field[\\]\\[\\\\\\n] contains an unsupported "
                 "character" +
                     rule);
 }
 
-TEST(NameValidationTest, BoundsInvalidFieldPreviewsAndNeverEchoesRawBytes) {
+TEST(IdentifierValidationTest,
+     BoundsInvalidFieldPreviewsAndNeverEchoesRawBytes) {
   const std::string name(64, '\xFF');
-  const auto status = ValidateFieldName(name);
+  const auto status = validate_field_name(name);
   ExpectInvalid(status,
                 "Invalid schema: field[" + Repeat("\\xFF", 32) +
                     "...] contains a non-ASCII character; use letters "

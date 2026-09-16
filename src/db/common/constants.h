@@ -31,12 +31,9 @@ const std::string GLOBAL_DOC_ID = "_zvec_g_doc_id_";
 
 const std::string USER_ID = "_zvec_uid_";
 
-// Query result columns share a namespace with user fields. Keep these names
-// available to validation without pulling in the Arrow query utilities.
-namespace sqlengine {
-inline constexpr const char *kFieldScore = "_zvec_score";
-inline constexpr const char *kFieldGroupId = "_zvec_group_id";
-}  // namespace sqlengine
+const std::string FIELD_SCORE = "_zvec_score";
+
+const std::string FIELD_GROUP_ID = "_zvec_group_id";
 
 const int kSparseMaxDimSize = 16384;
 
