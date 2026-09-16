@@ -354,15 +354,13 @@ class BufferStorage : public IndexStorage {
                    : IndexStorage::Segment::read_borrowed_batch(reads, count);
       }
 
-      // Cross-page vectors need a contiguous copy. A thread-local scratch arena
-      // is reused across calls instead of a per-vector malloc/free: the arena
-      // is safe to recycle because the previous hop's blocks are destroyed
-      // before this call runs (see fast_search_neighbors_buffer). Cross-page
-      // results become non-owning views into the arena.
-      // Cap the per-thread arena: a batch needing more falls back to malloc so
-      // an abnormally wide batch cannot pin unbounded out-of-pool RSS. HNSW
-      // hops need only about max_degree * vector_size (tens of KiB).
-      static constexpr size_t kMaxArenaBytes = 2UL << 20;  // 2 MiB / thread
+      // Copied results share one batch allocation. Cache an arena per thread,
+      // but recycle it only after all previously returned slices (and copies)
+      // have been released, including results from other storage instances.
+      // Cap the cached arena: larger batches use individually owned buffers
+      // that are freed with their results instead of retained by the thread.
+      static constexpr size_t kMaxArenaBytes = 2UL
+                                               << 20;  // 2 MiB cached / thread
       bool batch_arena = false;
 
       struct BatchState {
@@ -389,7 +387,7 @@ class BufferStorage : public IndexStorage {
         std::vector<ailego::block_id_t> admitted_ids;
         std::vector<size_t> admitted_indices;
         std::vector<char *> admitted_pages;
-        std::vector<char> arena;  // reused cross-page scratch (arena mode)
+        std::shared_ptr<std::vector<char>> arena;
         std::vector<char> bypass_page;
       };
       static thread_local BatchScratch scratch;
@@ -410,7 +408,8 @@ class BufferStorage : public IndexStorage {
       }
 
       auto cleanup_owned = [&]() {
-        // Arena slices are non-owning; only malloc-mode buffers are freed.
+        // Arena slices share their backing owner; only malloc buffers are
+        // freed.
         for (BatchState &state : scratch.states) {
           if (!batch_arena && state.owned != nullptr) {
             ailego_free(state.owned);
@@ -427,6 +426,16 @@ class BufferStorage : public IndexStorage {
           }
         }
       };
+      // Allocation failures must release acquired pages and any earlier
+      // malloc fallback buffers just like an explicit read failure does.
+      struct Cleanup {
+        decltype(cleanup_owned) &owned;
+        decltype(release_pages) &pages;
+        ~Cleanup() {
+          owned();
+          pages();
+        }
+      } cleanup{cleanup_owned, release_pages};
       auto fail = [&]() {
         cleanup_owned();
         release_pages();
@@ -607,16 +616,21 @@ class BufferStorage : public IndexStorage {
         total += aligned;
       }
       batch_arena = total <= kMaxArenaBytes;
-      if (batch_arena) {
-        if (scratch.arena.size() < total) {
-          scratch.arena.resize(total);
+      std::shared_ptr<std::vector<char>> arena_owner;
+      if (batch_arena && total != 0) {
+        if (!scratch.arena || scratch.arena.use_count() != 1) {
+          scratch.arena = std::make_shared<std::vector<char>>();
         }
+        if (scratch.arena->size() < total) {
+          scratch.arena->resize(total);
+        }
+        arena_owner = scratch.arena;
         size_t off = 0;
         for (BatchState &state : scratch.states) {
           if (!state.copy_result) {
             continue;
           }
-          state.owned = scratch.arena.data() + off;
+          state.owned = arena_owner->data() + off;
           off += (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
         }
       }
@@ -718,7 +732,7 @@ class BufferStorage : public IndexStorage {
         }
         *state.request->block =
             batch_arena
-                ? MemoryBlock::MakeBorrowedView(state.owned)
+                ? MemoryBlock::MakeSharedView(state.owned, arena_owner)
                 : MemoryBlock::MakeOwned(state.owned, state.request->length);
         state.owned = nullptr;
       }
@@ -998,8 +1012,8 @@ class BufferStorage : public IndexStorage {
                       : owner_->read_range(abs_offset, len, tmp);
       if (!read_ok && immutable && !force_bypass) {
         // A cross-page immutable read can lose a capacity race after choosing
-        // the cache path. The bytes are immutable, so retry directly instead
-        // of failing the HNSW expansion.
+        // the cache path. Retry without admission; writable bypass reads still
+        // preserve resident dirty bytes and synchronize with page transitions.
         read_ok = owner_->buffer_pool_handle_->read_range_bypass(abs_offset,
                                                                  len, tmp);
       }

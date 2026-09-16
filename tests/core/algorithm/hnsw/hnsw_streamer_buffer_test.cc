@@ -4,6 +4,7 @@
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
+#include <algorithm/hnsw/hnsw_algorithm.h>
 #include <algorithm/hnsw/hnsw_context.h>
 #include <algorithm/hnsw/hnsw_entity.h>
 #include <algorithm/hnsw/hnsw_params.h>
@@ -62,6 +63,107 @@ TEST_F(HnswStreamerTest, MaxDegreeIsNeighborCountNotSerializedBytes) {
             entity.neighbors_size());
   EXPECT_EQ(sizeof(NeighborsHeader) + 96U * sizeof(node_id_t),
             entity.upper_neighbors_size());
+}
+
+TEST_F(HnswStreamerTest, BufferPruningUsesOriginalProviderVectors) {
+  // Four fixed level-0 nodes make both pruning paths deterministic: the
+  // existing triangle has full two-neighbor lists, and the new node must
+  // prune its three candidates before updating the reverse links.
+  class RecordingProvider
+      : public MultiPassIndexProvider<IndexMeta::DataType::DT_FP32> {
+   public:
+    using Base = MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>;
+    using Base::Base;
+
+    int get_vector(uint64_t key,
+                   IndexStorage::MemoryBlock &block) const override {
+      requested_keys.push_back(key);
+      return Base::get_vector(key, block);
+    }
+
+    mutable std::vector<uint64_t> requested_keys;
+  };
+
+  MemoryLimitPool::get_instance().init(64UL * 1024UL * 1024UL);
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "ProviderPruning", true));
+
+  IndexStreamer::Stats stats;
+  auto entity = std::make_shared<HnswBufferPoolStreamerEntity>(stats);
+  entity->set_vector_size(dim * sizeof(uint16_t));
+  entity->set_l0_neighbor_cnt(2);
+  entity->set_upper_neighbor_cnt(2);
+  entity->set_prune_cnt(2);
+  entity->set_scaling_factor(5);
+  entity->set_ef_construction(4);
+  entity->set_use_key_info_map(true);
+  ASSERT_EQ(0, entity->init(4));
+  ASSERT_EQ(0, entity->open(storage, 8UL * 1024UL * 1024UL, false));
+
+  auto provider = std::make_shared<RecordingProvider>(dim);
+  const float coordinates[] = {0.0f, 2.0f, -3.0f, 0.75f};
+  NumericalVector<float> original(dim);
+  NumericalVector<uint16_t> stored(dim);
+  for (node_id_t id = 0; id < 4; ++id) {
+    for (size_t d = 0; d < dim; ++d) {
+      original[d] = coordinates[id];
+      stored[d] = FloatHelper::ToFP16(original[d]);
+    }
+    // Deliberately use keys distinct from node IDs to cover provider lookup.
+    ASSERT_TRUE(provider->emplace(100 + id, original));
+    node_id_t inserted;
+    ASSERT_EQ(0, entity->add_vector(0, 100 + id, stored.data(), &inserted));
+    ASSERT_EQ(id, inserted);
+  }
+  ASSERT_EQ(0, entity->update_neighbors(0, 0, {{1, 0.0f}, {2, 0.0f}}));
+  ASSERT_EQ(0, entity->update_neighbors(0, 1, {{0, 0.0f}, {2, 0.0f}}));
+  ASSERT_EQ(0, entity->update_neighbors(0, 2, {{0, 0.0f}, {1, 0.0f}}));
+  entity->update_ep_and_level(0, 0);
+
+  auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_NE(nullptr, metric);
+  ASSERT_EQ(0, metric->init(*index_meta_ptr_, Params()));
+  auto ctx = std::make_unique<HnswContext>(dim, metric, entity->clone());
+  ASSERT_NE(nullptr, dynamic_cast<const HnswBufferPoolStreamerEntity *>(
+                         &ctx->get_entity()));
+  // Standalone contexts do not inherit the streamer's nonzero scan limits.
+  ctx->set_min_scan_limit(4);
+  ctx->set_max_scan_limit(4);
+  ASSERT_EQ(0, ctx->init(HnswContext::kStreamerContext));
+  ctx->bind_dist_space(metric->distance(), metric->batch_distance(), provider,
+                       dim * sizeof(float), 0);
+  ctx->reset_query_raw(original.data(), *index_meta_ptr_);
+  HnswAlgorithm<HnswBufferPoolStreamerEntity> algorithm(*entity);
+  ASSERT_EQ(0, algorithm.add_node(3, 0, ctx.get()));
+  ASSERT_FALSE(ctx->dist_calculator().error());
+
+  // All three forward candidates, then both full reverse lists, must be
+  // fetched from the FP32 provider rather than read from FP16 index records.
+  const std::vector<uint64_t> expected_prune_reads = {
+      100, 101, 102, 100, 103, 101, 102, 101, 103, 100, 102};
+  ASSERT_GE(provider->requested_keys.size(), expected_prune_reads.size());
+  EXPECT_EQ(expected_prune_reads,
+            std::vector<uint64_t>(
+                provider->requested_keys.end() - expected_prune_reads.size(),
+                provider->requested_keys.end()));
+
+  const std::vector<std::vector<node_id_t>> expected_neighbors = {
+      {3, 2}, {3}, {0, 1}, {0, 1}};
+  for (node_id_t id = 0; id < 4; ++id) {
+    SCOPED_TRACE(id);
+    const auto neighbors = entity->get_neighbors(0, id);
+    ASSERT_EQ(expected_neighbors[id].size(), neighbors.size());
+    for (size_t i = 0; i < neighbors.size(); ++i) {
+      EXPECT_EQ(expected_neighbors[id][i], neighbors[i]);
+    }
+  }
+
+  ctx.reset();
+  ASSERT_EQ(0, entity->close());
+  entity.reset();
+  ASSERT_EQ(0, storage->close());
 }
 
 TEST_F(HnswStreamerTest, BufferSearchDispatchReusesContextAcrossVisitModes) {

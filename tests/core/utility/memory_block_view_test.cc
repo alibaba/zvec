@@ -21,11 +21,11 @@
 using namespace zvec;
 using namespace zvec::core;
 
-// MakeBorrowedView backs the cross-page scratch-arena path in BufferStorage:
-// cross-page vectors are copied into a reused thread-local arena and exposed
-// as non-owning views. The block must therefore free nothing and pin nothing
-// on destruction, and copies/moves must keep aliasing the same buffer without
-// taking ownership. A double-free here would trap under ASan.
+// MakeBorrowedView is only for explicitly caller-managed buffers, not batch
+// results whose backing storage must survive later reads. The block must free
+// nothing and pin nothing on destruction, and copies/moves must keep aliasing
+// the same buffer without taking ownership. A double-free here would trap
+// under ASan.
 TEST(MemoryBlockBorrowedView, IsNonOwning) {
   auto *buf = new char[64];
   std::memset(buf, 0xAB, 64);
@@ -58,4 +58,68 @@ TEST(MemoryBlockBorrowedView, AliasesArenaSlice) {
   // Destroying the view leaves the arena intact for reuse.
   view.reset();
   EXPECT_EQ(0x5A, arena[128]);
+}
+
+TEST(MemoryBlockSharedView, CopiesAndMovesKeepArenaAlive) {
+  auto arena = std::make_shared<std::vector<char>>(256, 0x5A);
+  std::weak_ptr<std::vector<char>> lifetime = arena;
+  const void *slice = arena->data() + 128;
+  auto view =
+      IndexStorage::MemoryBlock::MakeSharedView(arena->data() + 128, arena);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, view.type_);
+  auto copy = view;
+  IndexStorage::MemoryBlock assigned;
+  assigned = copy;
+  auto moved = std::move(copy);
+  EXPECT_EQ(nullptr, copy.data());
+  IndexStorage::MemoryBlock move_assigned;
+  move_assigned = std::move(assigned);
+  EXPECT_EQ(nullptr, assigned.data());
+  arena.reset();
+  view.reset();
+
+  ASSERT_FALSE(lifetime.expired());
+  EXPECT_EQ(slice, moved.data());
+  EXPECT_EQ(slice, move_assigned.data());
+  EXPECT_EQ(0x5A, *static_cast<const char *>(moved.data()));
+  EXPECT_EQ(0x5A, *static_cast<const char *>(move_assigned.data()));
+  moved.reset();
+  EXPECT_FALSE(lifetime.expired());
+  move_assigned.reset();
+  EXPECT_TRUE(lifetime.expired());
+}
+
+TEST(MemoryBlockSharedView, ResetAndReplacementReleasePreviousOwner) {
+  auto arena = std::make_shared<std::vector<char>>(64, 0x2A);
+  std::weak_ptr<std::vector<char>> lifetime = arena;
+  auto view = IndexStorage::MemoryBlock::MakeSharedView(arena->data(), arena);
+  auto copy = view;
+  arena.reset();
+
+  char replacement = 'x';
+  view.reset(&replacement);
+  EXPECT_EQ(&replacement, view.data());
+  EXPECT_FALSE(lifetime.expired());
+  copy = IndexStorage::MemoryBlock::MakeBorrowedView(&replacement);
+  EXPECT_TRUE(lifetime.expired());
+
+  auto next_arena = std::make_shared<std::vector<char>>(64, 0x3A);
+  lifetime = next_arena;
+  view =
+      IndexStorage::MemoryBlock::MakeSharedView(next_arena->data(), next_arena);
+  next_arena.reset();
+  view = copy;
+  EXPECT_TRUE(lifetime.expired());
+}
+
+TEST(MemoryBlockSharedView, DestructionReleasesLastSlice) {
+  std::weak_ptr<std::vector<char>> lifetime;
+  {
+    auto arena = std::make_shared<std::vector<char>>(64, 0x2A);
+    lifetime = arena;
+    auto view = IndexStorage::MemoryBlock::MakeSharedView(arena->data(), arena);
+    arena.reset();
+    EXPECT_FALSE(lifetime.expired());
+  }
+  EXPECT_TRUE(lifetime.expired());
 }

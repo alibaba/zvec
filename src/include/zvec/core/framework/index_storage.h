@@ -40,6 +40,7 @@ class IndexStorage : public IndexModule {
       MBT_MMAP = 1,
       MBT_BUFFERPOOL = 2,
       MBT_HEAP_SCRATCH = 3,
+      MBT_SHARED_SCRATCH = 4,
     };
 
     MemoryBlock() = default;
@@ -80,6 +81,17 @@ class IndexStorage : public IndexModule {
       return mb;
     }
 
+    //! Keep a shared backing allocation alive while this slice or any copy
+    //! exists. Copies alias the slice without allocating per-result buffers.
+    static MemoryBlock MakeSharedView(void *data,
+                                      const std::shared_ptr<void> &owner) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_SHARED_SCRATCH;
+      mb.data_ = data;
+      mb.scratch_owner_ = owner;
+      return mb;
+    }
+
     MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
@@ -98,6 +110,11 @@ class IndexStorage : public IndexModule {
         case MemoryBlockType::MBT_HEAP_SCRATCH:
           // Heap blocks do not share ownership.
           deep_copy_from(rhs);
+          break;
+        case MemoryBlockType::MBT_SHARED_SCRATCH:
+          type_ = rhs.type_;
+          data_ = rhs.data_;
+          scratch_owner_ = rhs.scratch_owner_;
           break;
         default:
           break;
@@ -127,6 +144,13 @@ class IndexStorage : public IndexModule {
           rhs.scratch_size_ = 0;
           rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
           break;
+        case MemoryBlockType::MBT_SHARED_SCRATCH:
+          type_ = rhs.type_;
+          data_ = rhs.data_;
+          scratch_owner_ = std::move(rhs.scratch_owner_);
+          rhs.data_ = nullptr;
+          rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+          break;
         default:
           break;
       }
@@ -151,6 +175,12 @@ class IndexStorage : public IndexModule {
           case MemoryBlockType::MBT_HEAP_SCRATCH:
             release_current();
             deep_copy_from(rhs);
+            break;
+          case MemoryBlockType::MBT_SHARED_SCRATCH:
+            release_current();
+            type_ = rhs.type_;
+            data_ = rhs.data_;
+            scratch_owner_ = rhs.scratch_owner_;
             break;
           default:
             release_current();
@@ -185,6 +215,14 @@ class IndexStorage : public IndexModule {
             scratch_size_ = rhs.scratch_size_;
             rhs.data_ = nullptr;
             rhs.scratch_size_ = 0;
+            rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+            break;
+          case MemoryBlockType::MBT_SHARED_SCRATCH:
+            release_current();
+            type_ = rhs.type_;
+            data_ = rhs.data_;
+            scratch_owner_ = std::move(rhs.scratch_owner_);
+            rhs.data_ = nullptr;
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
           default:
@@ -243,15 +281,7 @@ class IndexStorage : public IndexModule {
     }
 
     void reset(void *data) {
-      if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        if (buffer_pool_handle_) {
-          buffer_pool_handle_->release_one(buffer_block_id_);
-        }
-        buffer_pool_handle_ = nullptr;
-        buffer_pool_handle_owner_.reset();
-      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
-        release_owned();
-      }
+      release_current();
       type_ = MemoryBlockType::MBT_MMAP;
       data_ = data;
     }
@@ -263,6 +293,8 @@ class IndexStorage : public IndexModule {
     size_t buffer_block_id_{0};
     //! Byte size used to copy heap scratch blocks.
     size_t scratch_size_{0};
+    //! Shared allocation backing a scratch slice, independent of storage.
+    std::shared_ptr<void> scratch_owner_{};
 
    private:
     void release_owned() {
@@ -285,6 +317,9 @@ class IndexStorage : public IndexModule {
           break;
         case MemoryBlockType::MBT_HEAP_SCRATCH:
           release_owned();
+          break;
+        case MemoryBlockType::MBT_SHARED_SCRATCH:
+          scratch_owner_.reset();
           break;
         default:
           break;

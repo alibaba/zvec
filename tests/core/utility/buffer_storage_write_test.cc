@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <ailego/pattern/defer.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/io/file.h>
@@ -1119,6 +1120,45 @@ TEST_F(BufferStorageWriteTest, ImmutableReadCopiesCrossPageRange) {
   EXPECT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, ImmutableFallbackPreservesUnflushedPrefix) {
+  auto storage = OpenWritable();
+  ASSERT_TRUE(storage);
+  const size_t page_size = ailego::kVectorPageSize;
+  ASSERT_EQ(0, storage->append("dirty_fallback", 3 * page_size));
+  auto segment = storage->get("dirty_fallback");
+  ASSERT_TRUE(segment);
+  ASSERT_EQ(3 * page_size, segment->resize(3 * page_size));
+  ASSERT_EQ(0, storage->flush());
+
+  const size_t aligned_offset =
+      (page_size - segment->data_offset() % page_size) % page_size;
+  const size_t offset = aligned_offset + page_size - 64;
+  const std::string changed(64, 'Z');
+  ASSERT_EQ(changed.size(),
+            segment->write(offset, changed.data(), changed.size()));
+  IndexStorage::MemoryBlock pin;
+  ASSERT_EQ(changed.size(),
+            segment->read_immutable(offset, pin, changed.size()));
+
+  // Only the first page is dirty/resident. Hold its pin and consume the spare
+  // budget so loading the following cold page necessarily takes the fallback.
+  auto vec_pool = storage->vec_buffer_pool();
+  ASSERT_TRUE(vec_pool);
+  const size_t cold_page = (segment->data_offset() + offset + 64) / page_size;
+  ASSERT_FALSE(vec_pool->is_page_resident(cold_page));
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  const size_t external_charge = memory_pool.available();
+  ASSERT_TRUE(memory_pool.try_charge_external(external_charge));
+  AILEGO_DEFER([&] { memory_pool.release_external(external_charge); });
+
+  IndexStorage::MemoryBlock result;
+  ASSERT_EQ(128u, segment->read_immutable(offset, result, 128));
+  EXPECT_EQ(changed, std::string(static_cast<const char *>(result.data()), 64));
+  EXPECT_EQ(std::string(64, '\0'),
+            std::string(static_cast<const char *>(result.data()) + 64, 64));
+  EXPECT_FALSE(vec_pool->is_page_resident(cold_page));
+}
+
 TEST_F(BufferStorageWriteTest, ImmutableBatchReadUsesWritableCache) {
   auto storage = OpenWritable();
   ASSERT_TRUE(storage);
@@ -1148,7 +1188,7 @@ TEST_F(BufferStorageWriteTest, ImmutableBatchReadUsesWritableCache) {
   };
   ASSERT_TRUE(segment->read_borrowed_batch_immutable(reads, 2));
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[0].type_);
-  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[1].type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, blocks[1].type_);
   EXPECT_EQ(0, std::memcmp(payload.data() + aligned_offset, blocks[0].data(),
                            reads[0].length));
   EXPECT_EQ(0, std::memcmp(payload.data() + cross_offset, blocks[1].data(),
@@ -1209,7 +1249,7 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {
     if (block.type_ == IndexStorage::MemoryBlock::MBT_BUFFERPOOL) {
       ++cached_unique;
     } else {
-      EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, block.type_);
+      EXPECT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, block.type_);
       ++bypassed_unique;
     }
     ASSERT_NE(nullptr, block.data());
@@ -1218,7 +1258,8 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {
   EXPECT_GT(cached_unique, 0U);
   EXPECT_GT(bypassed_unique, 0U);
   for (size_t i = 0; i < kDuplicateTailReads; ++i) {
-    EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[count + i].type_);
+    EXPECT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH,
+              blocks[count + i].type_);
     ASSERT_NE(nullptr, blocks[count + i].data());
     EXPECT_EQ(0, *static_cast<const unsigned char *>(blocks[count + i].data()));
   }
@@ -1724,9 +1765,8 @@ TEST_F(BufferStorageWriteTest, BatchBorrowedReadAcrossSegments) {
 
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[0].type_);
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[1].type_);
-  // Cross-page reads are served from the reused thread-local scratch arena as
-  // non-owning views; the reassembled bytes are still validated below.
-  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_MMAP, blocks[2].type_);
+  // Cross-page reads share ownership of the batch allocation.
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, blocks[2].type_);
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks[3].type_);
   EXPECT_EQ(0, std::memcmp(payload_a.data() + a_page_aligned_offset,
                            blocks[0].data(), 64));
@@ -1770,4 +1810,179 @@ TEST_F(BufferStorageWriteTest, CR_ReadOnlyMetadataPressureFallsBackToBypass) {
     ASSERT_EQ(0, storage->close());
   }
   ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+}
+
+TEST_F(BufferStorageWriteTest, BatchScratchResultsSurviveLaterBatches) {
+  const size_t page_size = ailego::kVectorPageSize;
+  std::vector<char> payload(6 * page_size);
+  for (size_t i = 0; i < payload.size(); ++i) {
+    payload[i] = static_cast<char>((i * 17 + i / page_size * 31) % 251);
+  }
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("seg", payload.size()));
+    auto segment = storage->get("seg");
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(payload.size(),
+              segment->write(0, payload.data(), payload.size()));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  // Exercise both the read-only batch and writable immutable batch paths.
+  for (bool immutable : {false, true}) {
+    auto storage = immutable ? OpenWritable() : OpenReadOnly();
+    ASSERT_TRUE(storage);
+    auto segment = storage->get("seg");
+    ASSERT_TRUE(segment);
+    const size_t offset =
+        (2 * page_size - 32 - segment->data_offset() % page_size) % page_size;
+    auto read_batch = [&](IndexStorage::Segment::BorrowedRead *reads,
+                          size_t count) {
+      return immutable ? segment->read_borrowed_batch_immutable(reads, count)
+                       : segment->read_borrowed_batch(reads, count);
+    };
+
+    IndexStorage::MemoryBlock first[2];
+    IndexStorage::Segment::BorrowedRead batch_a[] = {
+        {segment.get(), offset, 128, &first[0]},
+        {segment.get(), offset + page_size, 192, &first[1]},
+    };
+    ASSERT_TRUE(read_batch(batch_a, 2));
+    ASSERT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, first[0].type_);
+    ASSERT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, first[1].type_);
+    EXPECT_EQ(first[0].scratch_owner_, first[1].scratch_owner_);
+    auto retained = first[0];
+    IndexStorage::MemoryBlock assigned;
+    assigned = first[1];
+    auto moved = std::move(assigned);
+    first[0].reset();
+    first[1].reset();
+
+    // Reusing the same sized arena must not overwrite live copies from A.
+    IndexStorage::MemoryBlock second[2];
+    IndexStorage::Segment::BorrowedRead batch_b[] = {
+        {segment.get(), offset + 2 * page_size, 128, &second[0]},
+        {segment.get(), offset + 3 * page_size, 192, &second[1]},
+    };
+    ASSERT_TRUE(read_batch(batch_b, 2));
+    EXPECT_NE(retained.scratch_owner_, second[0].scratch_owner_);
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset, retained.data(), 128));
+    EXPECT_EQ(
+        0, std::memcmp(payload.data() + offset + page_size, moved.data(), 192));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset + 2 * page_size,
+                             second[0].data(), 128));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset + 3 * page_size,
+                             second[1].data(), 192));
+
+    // A growing batch must likewise leave all earlier results valid.
+    IndexStorage::MemoryBlock larger;
+    IndexStorage::Segment::BorrowedRead growth[] = {
+        {segment.get(), offset + 2 * page_size, page_size + 256, &larger},
+    };
+    ASSERT_TRUE(read_batch(growth, 1));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset, retained.data(), 128));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset + 3 * page_size,
+                             second[1].data(), 192));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset + 2 * page_size,
+                             larger.data(), page_size + 256));
+
+    // The cached arena is thread-local, so another storage shares the cache.
+    auto other_storage = OpenReadOnly();
+    ASSERT_TRUE(other_storage);
+    auto other_segment = other_storage->get("seg");
+    ASSERT_TRUE(other_segment);
+    IndexStorage::MemoryBlock other;
+    IndexStorage::Segment::BorrowedRead cross_storage[] = {
+        {other_segment.get(), offset + 3 * page_size, 128, &other},
+    };
+    ASSERT_TRUE(other_segment->read_borrowed_batch(cross_storage, 1));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset, retained.data(), 128));
+    EXPECT_EQ(
+        0, std::memcmp(payload.data() + offset + page_size, moved.data(), 192));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset + 2 * page_size,
+                             larger.data(), page_size + 256));
+
+    // With every slice from the latest batch released, reuse its allocation.
+    const void *reusable = other.data();
+    other.reset();
+    ASSERT_TRUE(other_segment->read_borrowed_batch(cross_storage, 1));
+    EXPECT_EQ(reusable, other.data());
+    ASSERT_EQ(0, other_storage->close());
+    ASSERT_EQ(0, storage->close());
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset, retained.data(), 128));
+    EXPECT_EQ(0, std::memcmp(payload.data() + offset + 3 * page_size,
+                             other.data(), 128));
+  }
+}
+
+TEST_F(BufferStorageWriteTest, BatchScratchResultsSurviveReadingThreadExit) {
+  const size_t page_size = ailego::kVectorPageSize;
+  std::vector<char> payload(3 * page_size, 't');
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("seg", payload.size()));
+    auto segment = storage->get("seg");
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(payload.size(),
+              segment->write(0, payload.data(), payload.size()));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto segment = storage->get("seg");
+  ASSERT_TRUE(segment);
+  const size_t offset =
+      (2 * page_size - 32 - segment->data_offset() % page_size) % page_size;
+  IndexStorage::MemoryBlock retained;
+  bool succeeded = false;
+  std::thread reader([&]() {
+    IndexStorage::Segment::BorrowedRead reads[] = {
+        {segment.get(), offset, 128, &retained},
+    };
+    succeeded = segment->read_borrowed_batch(reads, 1);
+  });
+  reader.join();
+  ASSERT_TRUE(succeeded);
+  ASSERT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, retained.type_);
+  auto copy = retained;
+  retained.reset();
+  ASSERT_EQ(0, storage->close());
+  EXPECT_EQ(0, std::memcmp(payload.data() + offset, copy.data(), 128));
+}
+
+TEST_F(BufferStorageWriteTest, OversizedBatchScratchKeepsOwnedFallback) {
+  const size_t length = (2UL << 20) + 128;
+  std::vector<char> payload(length + 2 * ailego::kVectorPageSize, 'f');
+  {
+    auto storage = OpenWritable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("seg", payload.size()));
+    auto segment = storage->get("seg");
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(payload.size(),
+              segment->write(0, payload.data(), payload.size()));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+  auto storage = OpenReadOnly();
+  ASSERT_TRUE(storage);
+  auto segment = storage->get("seg");
+  ASSERT_TRUE(segment);
+  IndexStorage::MemoryBlock retained;
+  IndexStorage::Segment::BorrowedRead reads[] = {
+      {segment.get(), 0, length, &retained},
+  };
+  ASSERT_TRUE(segment->read_borrowed_batch(reads, 1));
+  ASSERT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, retained.type_);
+  auto copy = retained;
+  EXPECT_NE(retained.data(), copy.data());
+  ASSERT_TRUE(segment->read_borrowed_batch(reads, 1));
+  EXPECT_EQ(0, std::memcmp(payload.data(), copy.data(), length));
+  retained.reset();
+  ASSERT_EQ(0, storage->close());
+  EXPECT_EQ(0, std::memcmp(payload.data(), copy.data(), length));
 }

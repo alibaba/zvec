@@ -736,9 +736,14 @@ void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
       prune_ids.emplace_back(candidate.first);
     }
     prune_blocks.clear();
-    if (ailego_unlikely(read_entity.get_vector_for_prune(prune_ids.data(),
-                                                         prune_ids.size(),
-                                                         prune_blocks) != 0)) {
+    // The active build metric may describe the provider's original vectors,
+    // not the representation stored in the BufferPool entity.
+    const int ret =
+        dc.has_provider()
+            ? dc.get_vector(prune_ids.data(), prune_ids.size(), prune_blocks)
+            : read_entity.get_vector_for_prune(prune_ids.data(),
+                                               prune_ids.size(), prune_blocks);
+    if (ailego_unlikely(ret != 0)) {
       dc.set_error();
       return;
     }
@@ -857,9 +862,13 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
     }
 
     candidate_blocks.clear();
-    if (ailego_unlikely(read_entity.get_vector_for_prune(
-                            candidate_ids.data(), candidate_ids.size(),
-                            candidate_blocks) != 0)) {
+    const int ret =
+        dc.has_provider()
+            ? dc.get_vector(candidate_ids.data(), candidate_ids.size(),
+                            candidate_blocks)
+            : read_entity.get_vector_for_prune(
+                  candidate_ids.data(), candidate_ids.size(), candidate_blocks);
+    if (ailego_unlikely(ret != 0)) {
       dc.set_error();
       return;
     }

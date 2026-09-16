@@ -317,6 +317,62 @@ TEST_F(BufferPoolTest, BulkReadDoesNotAdmitFirstTouchScanUnderPressure) {
   pool.page_table_.release_block(/*block_id=*/0);
 }
 
+TEST_F(BufferPoolTest, WritableBypassPreservesDirtyPagesWithoutAdmission) {
+  InitVecPool(/*capacity_pages=*/1, /*file_pages=*/2, /*writable=*/true);
+  VecBufferPool pool(NewFile(/*num_pages=*/2), /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  char *page = pool.acquire_buffer(0, 0);
+  ASSERT_NE(nullptr, page);
+
+  // Pin the only page so it cannot be written back or replaced. The second
+  // page must be read from disk without discarding the first page's new bytes.
+  const std::string changed(64, 'X');
+  EXPECT_EQ(0, pool.write_range(kVectorPageSize - changed.size(),
+                                changed.size(), changed.data()));
+  std::array<char, 128> result{};
+  const auto before = pool.stats();
+  EXPECT_TRUE(pool.read_range_bypass(kVectorPageSize - changed.size(),
+                                     result.size(), result.data()));
+  EXPECT_EQ(changed, std::string(result.data(), changed.size()));
+  EXPECT_EQ(std::string(64, '\1'), std::string(result.data() + 64, 64));
+  EXPECT_FALSE(pool.is_page_resident(1));
+  EXPECT_EQ(1u, pool.stats().bypass_io_requests - before.bypass_io_requests);
+  EXPECT_EQ(64u, pool.stats().bypass_bytes - before.bypass_bytes);
+  EXPECT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(1));
+  EXPECT_TRUE(pool.page_table_.cancel_block_load(1));
+  pool.page_table_.release_block(0);
+}
+
+TEST_F(BufferPoolTest, WritableBypassJoinsConcurrentLoadBeforeReading) {
+  InitVecPool(/*capacity_pages=*/16, /*file_pages=*/1, /*writable=*/true);
+  VecBufferPool pool(NewFile(/*num_pages=*/1), /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(0));
+  char *page = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, page));
+  std::memset(page, 'Y', kVectorPageSize);
+
+  std::atomic<bool> started{false};
+  char result = 0;
+  bool read_ok = false;
+  std::thread reader([&] {
+    started.store(true, std::memory_order_release);
+    read_ok = pool.read_range_bypass(0, 1, &result);
+  });
+  while (!started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  EXPECT_NE(nullptr, pool.page_table_.publish_claimed_block(0, page, 0));
+  pool.page_table_.mark_dirty(0);
+  reader.join();
+  EXPECT_TRUE(read_ok);
+  EXPECT_EQ('Y', result);
+  pool.page_table_.release_block(0);
+}
+
 TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
   constexpr size_t kFilePages = 3;
   constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
