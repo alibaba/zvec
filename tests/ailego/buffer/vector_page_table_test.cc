@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/buffer/external_cache.h>
@@ -1579,6 +1580,15 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
   }
   ASSERT_GT(pool.stats().evict, 0u);
 
+  // Keep the target pinned until the policy assertions finish. Otherwise the
+  // background CLOCK can demote it between reads or before the assertions.
+  size_t pinned_page_id = 0;
+  ASSERT_NE(nullptr,
+            handle.get_single_page(0, kVectorPageSize, pinned_page_id));
+  auto release_pin = ScopeGuard::Make(
+      [&handle, pinned_page_id] { handle.release_one(pinned_page_id); });
+  ASSERT_TRUE(MemoryLimitPool::get_instance().under_cache_pressure());
+
   // Reuse promotion is sampled under pressure. Any run of 16 hits contains a
   // policy sample regardless of the thread-local cursor's starting phase.
   for (size_t i = 0; i < 16; ++i) {
@@ -1588,9 +1598,6 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
             pool.page_table_.eviction_priority(0));
   const auto stats = pool.stats();
   EXPECT_EQ(1u, stats.priority_promotions[VecBufferPool::kNormalPriority]);
-  // Residency is not stable after the final read releases its pin: the
-  // background reclaimer may run between assertions. The priority and
-  // promotion counter are the durable policy outcomes under test.
 }
 
 // Keep one resident page below the background-reclaim high watermark so these
@@ -1986,7 +1993,11 @@ TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {
   char *pages[1] = {};
 
   ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
-  handle.release_pages(page_ids, 1);
+  // Retain the initial miss pin so background aging cannot race with either
+  // the probation assertion or the later sampled reuse promotion.
+  auto release_pin = ScopeGuard::Make(
+      [&handle, &page_ids] { handle.release_pages(page_ids, 1); });
+  ASSERT_TRUE(MemoryLimitPool::get_instance().under_cache_pressure());
   EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(1));
 
   for (size_t i = 0; i < 16; ++i) {
