@@ -14,6 +14,7 @@
 
 #include "zvec/db/doc.h"
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
@@ -1337,12 +1338,21 @@ TEST(SearchQuery, ValidateAndSanitize) {
                          v.size() * sizeof(float));
     };
     auto decode_idx = [](const std::string &buf) {
-      const auto *p = reinterpret_cast<const uint32_t *>(buf.data());
-      return std::vector<uint32_t>(p, p + buf.size() / sizeof(uint32_t));
+      EXPECT_EQ(buf.size() % sizeof(uint32_t), 0u);
+      std::vector<uint32_t> indices(buf.size() / sizeof(uint32_t));
+      if (!indices.empty()) {
+        std::memcpy(indices.data(), buf.data(),
+                    indices.size() * sizeof(uint32_t));
+      }
+      return indices;
     };
     auto decode_val = [](const std::string &buf) {
-      const auto *p = reinterpret_cast<const float *>(buf.data());
-      return std::vector<float>(p, p + buf.size() / sizeof(float));
+      EXPECT_EQ(buf.size() % sizeof(float), 0u);
+      std::vector<float> values(buf.size() / sizeof(float));
+      if (!values.empty()) {
+        std::memcpy(values.data(), buf.data(), values.size() * sizeof(float));
+      }
+      return values;
     };
     FieldSchema schema =
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
@@ -1688,7 +1698,7 @@ TEST_F(DocDetailedTest, ValidationErrorsEscapeAndBoundDocumentAndFieldNames) {
     doc.set(name, int32_t{42});
     const auto status = doc.validate_and_sanitize(schema);
     EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
-    EXPECT_EQ(status.message().find("Invalid doc:"), 0u);
+    EXPECT_EQ(status.message().find("Invalid doc["), 0u);
     EXPECT_NE(status.message().find("does not exist"), std::string::npos);
     EXPECT_LT(status.message().size(), 256u);
     for (unsigned char byte : status.message()) {

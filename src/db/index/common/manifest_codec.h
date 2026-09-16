@@ -67,8 +67,7 @@ struct ManifestCodec {
 
   static void EncodeCollectionSchema(const CollectionSchema &schema,
                                      std::string *out);
-  static Result<CollectionSchema::Ptr> DecodeCollectionSchema(
-      std::string_view buf);
+  static CollectionSchema::Ptr DecodeCollectionSchema(std::string_view buf);
 
   static void EncodeBlockMeta(const BlockMeta &meta, std::string *out);
   static BlockMeta::Ptr DecodeBlockMeta(std::string_view buf);

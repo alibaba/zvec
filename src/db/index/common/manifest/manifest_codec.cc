@@ -803,7 +803,7 @@ void ManifestCodec::EncodeCollectionSchema(const CollectionSchema &schema,
               schema.max_doc_count_per_segment());
 }
 
-Result<CollectionSchema::Ptr> ManifestCodec::DecodeCollectionSchema(
+CollectionSchema::Ptr ManifestCodec::DecodeCollectionSchema(
     std::string_view buf) {
   auto schema = std::make_shared<CollectionSchema>();
   // The protobuf-based converter read max_doc_count_per_segment straight from
@@ -816,24 +816,15 @@ Result<CollectionSchema::Ptr> ManifestCodec::DecodeCollectionSchema(
       case f_collection::kName:
         schema->set_name(r.string_value());
         break;
-      case f_collection::kFields: {
-        auto status = schema->add_field(DecodeFieldSchema(r.bytes()));
-        if (!status.ok()) {
-          return tl::make_unexpected(Status::InternalError(
-              "Malformed manifest schema: ", status.message()));
-        }
+      case f_collection::kFields:
+        schema->add_field(DecodeFieldSchema(r.bytes()));
         break;
-      }
       case f_collection::kMaxDocCountPerSegment:
         schema->set_max_doc_count_per_segment(r.varint());
         break;
       default:
         break;
     }
-  }
-  if (!r.ok()) {
-    return tl::make_unexpected(
-        Status::InternalError("Malformed manifest schema"));
   }
   return schema;
 }
@@ -961,14 +952,9 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
       case f_manifest::kVersion:
         data->version = r.uint32_value();
         break;
-      case f_manifest::kSchema: {
-        auto schema = DecodeCollectionSchema(r.bytes());
-        if (!schema.has_value()) {
-          return schema.error();
-        }
-        data->schema = std::move(schema).value();
+      case f_manifest::kSchema:
+        data->schema = DecodeCollectionSchema(r.bytes());
         break;
-      }
       case f_manifest::kEnableMmap:
         data->enable_mmap = r.bool_value();
         break;

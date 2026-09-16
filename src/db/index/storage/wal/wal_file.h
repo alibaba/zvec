@@ -13,11 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
-#include <zvec/db/status.h>
 
 
 namespace zvec {
@@ -49,9 +46,7 @@ class WalFile {
  public:
   virtual int append(std::string &&data) = 0;
   virtual int prepare_for_read() = 0;
-  // A successful empty optional means EOF or an incomplete final crash record.
-  // Read failures and complete but corrupt records return an error.
-  virtual Result<std::optional<std::string>> next() = 0;
+  virtual std::string next() = 0;
 
  public:
   //! Open and initialize WalFile
