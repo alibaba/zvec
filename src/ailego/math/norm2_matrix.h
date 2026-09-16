@@ -117,15 +117,12 @@ struct Norm2Matrix<
     ailego_assert(m && dim && out);
 
     const ValueType *m_end = m + dim;
-    if (m != m_end) {
-      ValueType v = *m++;
-      *out = static_cast<float>(v * v);
-    }
+    float square = 0.0f;
     while (m != m_end) {
       ValueType v = *m++;
-      *out += static_cast<float>(v * v);
+      square += static_cast<float>(v * v);
     }
-    *out = std::sqrt(*out);
+    *out = std::sqrt(square);
   }
 };
 
@@ -291,14 +288,12 @@ struct SquaredNorm2Matrix<
     ailego_assert(m && dim && out);
 
     const ValueType *m_end = m + dim;
-    if (m != m_end) {
-      ValueType v = *m++;
-      *out = static_cast<float>(v * v);
-    }
+    float square = 0.0f;
     while (m != m_end) {
       ValueType v = *m++;
-      *out += static_cast<float>(v * v);
+      square += static_cast<float>(v * v);
     }
+    *out = square;
   }
 };
 

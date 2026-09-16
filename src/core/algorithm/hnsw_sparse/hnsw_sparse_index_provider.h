@@ -30,22 +30,22 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
 
  public:
   //! Create a new iterator
-  IndexSparseProvider::Iterator::Pointer create_iterator(void) override {
+  IndexSparseProvider::Iterator::Pointer create_iterator() override {
     return IndexSparseProvider::Iterator::Pointer(new (std::nothrow)
                                                       Iterator(entity_));
   }
 
   //! Retrieve count of vectors
-  size_t count(void) const override {
+  size_t count() const override {
     return entity_->doc_cnt();
   }
 
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return entity_->total_sparse_count();
   }
 
   //! Retrieve type of vector
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return meta_.data_type();
   }
 
@@ -58,7 +58,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_class_;
   }
 
@@ -96,17 +96,17 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
     }
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return cur_id_ < entity_->doc_cnt() && valid_;
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return entity_->get_key(cur_id_);
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       cur_id_ = get_next_valid_id(cur_id_ + 1);
 
       if (cur_id_ < entity_->doc_cnt()) {
@@ -127,7 +127,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
     }
 
     //! Reset the iterator
-    void reset(void) {
+    void reset() {
       cur_id_ = get_next_valid_id(0);
       const void *sparse_data = entity_->get_sparse_data(cur_id_);
       if (sparse_data != nullptr) {

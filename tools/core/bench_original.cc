@@ -737,7 +737,7 @@ bool check_config(YAML::Node &config_node) {
   return true;
 }
 
-void usage(void) {
+void usage() {
   cout << "Usage: bench CONFIG.yaml [plugin file path]" << endl;
 }
 

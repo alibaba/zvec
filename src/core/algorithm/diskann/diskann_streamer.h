@@ -26,24 +26,31 @@ class DiskAnnStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::Pointer;
 
  public:
-  DiskAnnStreamer(void);
-  ~DiskAnnStreamer(void);
+  DiskAnnStreamer();
+  ~DiskAnnStreamer();
 
   DiskAnnStreamer(const DiskAnnStreamer &) = delete;
   DiskAnnStreamer &operator=(const DiskAnnStreamer &) = delete;
+
+  //! Initialize Streamer with an externally constructed data quantizer.
+  //! The quantizer must be initialized by the caller; it takes precedence
+  //! over the internal factory selection for full-precision distance
+  //! (graph rerank / linear search).
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
 
  protected:
   //! Initialize Searcher
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Searcher
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Load Index from storage
   int open(IndexStorage::Pointer storage) override;
 
   //! Unload index from storage
-  int unload(void) override;
+  int unload() override;
 
   //! KNN Search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -117,15 +124,15 @@ class DiskAnnStreamer : public IndexStreamer {
   //! Create a vector iterator backed by the aligned DiskAnn file reader.
   //! Used by the merge code path (``MixedStreamerReducer``) to walk every
   //! vector held by this streamer.
-  IndexSearcher::Provider::Pointer create_provider(void) const override;
+  IndexSearcher::Provider::Pointer create_provider() const override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -133,7 +140,7 @@ class DiskAnnStreamer : public IndexStreamer {
     return 0;
   }
 
-  int close(void) override {
+  int close() override {
     return this->unload();
   }
 
@@ -152,6 +159,8 @@ class DiskAnnStreamer : public IndexStreamer {
                                 DiskAnnContext *&ctx) const;
 
  private:
+  friend class DiskAnnCacheTestPeer;
+
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
   IndexMetric::Pointer measure_{};
@@ -164,6 +173,10 @@ class DiskAnnStreamer : public IndexStreamer {
 
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
+
+  //! Externally constructed quantizer for full-precision distance, forwarded
+  //! to every context's DistCalculator (may be empty).
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   // Fetches share a lightweight I/O context, while returned MemoryBlocks own
   // independent copies so their lifetime does not depend on this buffer.

@@ -27,9 +27,8 @@ void uniform_squared_euclidean_uint7_distance(const void *a, const void *b,
 // Batch version: compute squared Euclidean distance between `n` UINT7 database
 // vectors and a single UINT7 query. No query preprocessing is required (unlike
 // the record_quantized path which needs int8→uint8 shifting for dpbusd).
-void uniform_squared_euclidean_uint7_batch_distance(const void *const *vectors,
-                                                    const void *query, size_t n,
-                                                    size_t dim,
-                                                    float *distances);
+void uniform_squared_euclidean_uint7_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values);
 
 }  // namespace zvec::turbo::avx512_vnni

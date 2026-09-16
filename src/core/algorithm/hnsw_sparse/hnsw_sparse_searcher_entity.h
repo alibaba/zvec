@@ -100,7 +100,7 @@ class HnswSparseSearcherEntity : public HnswSparseEntity {
 
   int load_segments(bool check_crc);
 
-  int cleanup(void) override;
+  int cleanup() override;
 
  public:
   bool is_loaded() const {
@@ -150,7 +150,7 @@ class HnswSparseSearcherEntity : public HnswSparseEntity {
   }
 
   //! If neighbors_in_memory_enabled, load the level0 neighbors to memory
-  int load_and_flat_neighbors(void);
+  int load_and_flat_neighbors();
 
  public:
   HnswSparseSearcherEntity(const HnswSparseSearcherEntity &) = delete;

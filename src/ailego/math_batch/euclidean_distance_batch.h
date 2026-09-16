@@ -61,7 +61,8 @@ struct SquaredEuclideanDistanceBatch {
 
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
-                                  size_t dim, float *results) {
+                                  size_t dim, float *results,
+                                  const void ** /*extra_values*/) {
     size_t i = 0;
     for (; i + BatchSize <= num_vecs; i += BatchSize) {
       std::array<const ValueType *, BatchSize> prefetch_ptrs;
@@ -97,7 +98,7 @@ struct EuclideanDistanceBatch {
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
     SquaredEuclideanDistanceBatch<T, BatchSize, PrefetchStep>::ComputeBatch(
-        vecs, query, num_vecs, dim, results);
+        vecs, query, num_vecs, dim, results, nullptr);
 
     for (size_t i = 0; i < num_vecs; ++i) {
       results[i] = std::sqrt(results[i]);

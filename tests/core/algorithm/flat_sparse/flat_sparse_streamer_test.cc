@@ -39,8 +39,8 @@ constexpr static size_t sparse_dim_count = 16;
 
 class FlatSparseStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
   void generate_sparse_data(
       size_t cnt, uint32_t sparse_dim_count,
       std::vector<NumericalVector<uint32_t>> &sparse_indices_list,
@@ -83,7 +83,7 @@ void FlatSparseStreamerTest::generate_sparse_data(
 }
 
 
-void FlatSparseStreamerTest::SetUp(void) {
+void FlatSparseStreamerTest::SetUp() {
   LoggerBroker::SetLevel(Logger::LEVEL_WARN);
 
   index_meta_ptr_.reset(new IndexMeta(IndexMeta::MetaType::MT_SPARSE,
@@ -93,7 +93,7 @@ void FlatSparseStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void FlatSparseStreamerTest::TearDown(void) {
+void FlatSparseStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 

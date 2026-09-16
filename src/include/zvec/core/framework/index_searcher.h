@@ -55,10 +55,10 @@ class IndexSearcher : public IndexRunner {
   }
 
   //! Retrieve meta of index
-  virtual const IndexMeta &meta(void) const = 0;
+  virtual const IndexMeta &meta() const = 0;
 
   //! Retrieve params of index
-  virtual const ailego::Params &params(void) const = 0;
+  virtual const ailego::Params &params() const = 0;
 
   virtual int load(IndexStorage::Pointer /*container*/,
                    IndexMetric::Pointer /*metric*/) {

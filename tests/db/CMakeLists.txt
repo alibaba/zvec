@@ -23,10 +23,21 @@ if(APPLE)
 endif()
 
 file(GLOB ALL_TEST_SRCS *_test.cc)
+
+# The collection DiskAnn stress cases repeatedly rebuild large indexes and are
+# intended for desktop CI. Mobile CI exercises DiskAnn through the focused
+# diskann_mobile_collection_test target and the core compatibility suite.
+if(ANDROID OR IOS)
+  set(DISKANN_STRESS_TESTS 0)
+else()
+  set(DISKANN_STRESS_TESTS 1)
+endif()
+
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
   cc_gmock(
     NAME ${CC_TARGET} STRICT
+    DEFS DISKANN_STRESS_TESTS=${DISKANN_STRESS_TESTS}
     LIBS zvec
     core_knn_flat
     core_knn_flat_sparse

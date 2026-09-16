@@ -57,6 +57,19 @@ TEST(QueryParamsTest, IvfRabitqQueryParams) {
   EXPECT_FLOAT_EQ(params.scale_factor(), 3.5f);
 }
 
+TEST(QueryParamsTest, VamanaQueryParams) {
+  VamanaQueryParams params;
+  EXPECT_EQ(params.type(), IndexType::VAMANA);
+  EXPECT_EQ(params.ef_search(), core_interface::kDefaultVamanaEfSearch);
+  EXPECT_EQ(params.prefetch_offset(), core_interface::kDefaultPrefetchOffset);
+  EXPECT_EQ(params.prefetch_lines(), core_interface::kDefaultPrefetchLines);
+
+  params.set_prefetch_offset(0);
+  params.set_prefetch_lines(0);
+  EXPECT_EQ(params.prefetch_offset(), 0U);
+  EXPECT_EQ(params.prefetch_lines(), 0U);
+}
+
 TEST(QueryParamsTest, Polymorphism) {
   // Test polymorphic behavior
   QueryParams::Ptr hnsw_ptr = std::make_shared<HnswQueryParams>(100);

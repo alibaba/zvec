@@ -118,9 +118,9 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       std::vector<float> expected(candidates.size());
       std::vector<float> actual(candidates.size());
       scalar.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
-                   expected.data());
+                   expected.data(), nullptr);
       simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
-                 actual.data());
+                 actual.data(), nullptr);
       for (size_t i = 0; i < candidates.size(); ++i) {
         expect_simd_near(actual[i], expected[i]);
       }

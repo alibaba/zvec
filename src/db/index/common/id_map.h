@@ -43,12 +43,11 @@ class IDMap {
                            bool create_if_missing, bool read_only);
 
 
- private:
   IDMap(const IDMap &) = delete;
   IDMap &operator=(const IDMap &) = delete;
   IDMap &operator=(IDMap &&) = delete;
 
-
+ private:
  public:
   Status open(const std::string &working_dir, bool create_if_missing,
               bool read_only);

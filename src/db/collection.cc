@@ -19,7 +19,6 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <shared_mutex>
 #include <string>
 #include <unordered_set>
@@ -209,7 +208,12 @@ class CollectionImpl : public Collection {
   Result<std::unique_ptr<DocIterator::Impl>> prepare_iterate(
       const IteratorOptions &options);
 
+  //! Collects the segment list under a shared write_mtx_: writing_segment_ and
+  //! the doc_ids_ behind doc_count() are mutated under the exclusive one.
   std::vector<Segment::Ptr> get_all_segments() const;
+
+  //! Same as get_all_segments(), for callers that already hold write_mtx_.
+  std::vector<Segment::Ptr> get_all_segments_unsafe() const;
 
   std::vector<Segment::Ptr> get_all_persist_segments() const;
 
@@ -487,9 +491,9 @@ Status CollectionImpl::destroy() {
 Status CollectionImpl::flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  // Only flushes the writing segment's WAL (no schema/segment-structure
-  // change), so it needs neither maintenance_mtx_ nor exclusion from a
-  // running optimize.
+  // The exclusive schema lock also excludes all readers, which the writing
+  // segment's flush() relies on (it runs finish_memory_components() without
+  // the segment lock).
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
@@ -523,7 +527,7 @@ Result<CollectionStats> CollectionImpl::stats() const {
   // of which Insert mutates under the exclusive write_mtx_.
   std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
 
-  auto segments = get_all_segments();
+  auto segments = get_all_segments_unsafe();
 
   CollectionStats stats;
   auto vector_fields = schema_->vector_fields();
@@ -938,13 +942,11 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
     return Status::OK();
   }
 
-  // Phase 2: lock-free compact. Readers and writers proceed freely.
+  // Phase 2: lock-free optimize. Readers and writers proceed freely.
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,
                          delete_store_clone->make_filter());
-
-  // execute segment compact task
   auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
@@ -1087,50 +1089,48 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
   std::vector<SegmentTask::Ptr> tasks;
   if (segments.empty()) return tasks;
 
-  bool rebuild = false;
-  size_t current_doc_count = 0;
-  size_t current_actual_doc_count = 0;
+  size_t current_physical_doc_count = 0;
+  size_t current_live_doc_count = 0;
   for (auto &segment : segments) {
-    current_doc_count += segment->doc_count();
-    current_actual_doc_count += segment->doc_count(filter);
+    current_physical_doc_count += segment->doc_count();
+    current_live_doc_count += segment->doc_count(filter);
   }
-  if (current_actual_doc_count <
-      current_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD)) {
-    // if delete ratio is large enough, rebuild
-    rebuild = true;
-  }
+  const bool purge_deleted_docs =
+      current_live_doc_count <
+      current_physical_doc_count * (1 - COMPACT_DELETE_RATIO_THRESHOLD);
 
   auto max_doc_count_per_segment = schema->max_doc_count_per_segment();
 
   std::vector<Segment::Ptr> current_group;
-  current_doc_count = 0;
-  current_actual_doc_count = 0;
+  current_physical_doc_count = 0;
+  current_live_doc_count = 0;
 
   for (const auto &seg : segments) {
-    uint64_t doc_count = seg->doc_count();
-    uint64_t actual_doc_count = seg->doc_count(filter);
+    const auto seg_physical_doc_count = seg->doc_count();
+    const auto seg_live_doc_count = seg->doc_count(filter);
 
     if (!current_group.empty()) {
       SegmentTask::Ptr task;
       bool skip_task{false};
-      if (rebuild) {
-        if (current_actual_doc_count + actual_doc_count >
+      if (purge_deleted_docs) {
+        if (current_live_doc_count + seg_live_doc_count >
             max_doc_count_per_segment) {
-          // only create SegmentCompactTask when rebuild=true
+          // Compaction physically removes deleted rows.
           task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
                           allocate_segment_id_for_tmp_segment(), filter,
                           !options_.enable_mmap_, concurrency});
         }
       } else {
-        if (current_doc_count + doc_count > max_doc_count_per_segment) {
-          // check current_group size
+        if (current_physical_doc_count + seg_physical_doc_count >
+            max_doc_count_per_segment) {
           if (current_group.size() == 1) {
             task =
                 SegmentTask::CreateCreateVectorIndexTask(CreateVectorIndexTask{
                     current_group[0], "", nullptr, concurrency});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
+            // Merge segments while preserving deleted rows.
             task = SegmentTask::CreateCompactTask(
                 CompactTask{path_, schema, current_group,
                             allocate_segment_id_for_tmp_segment(), nullptr,
@@ -1141,8 +1141,8 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
 
       if (task) {
         current_group.clear();
-        current_doc_count = 0;
-        current_actual_doc_count = 0;
+        current_physical_doc_count = 0;
+        current_live_doc_count = 0;
         if (!skip_task) {
           tasks.push_back(task);
         }
@@ -1150,19 +1150,20 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
     }
 
     current_group.push_back(seg);
-    current_doc_count += doc_count;
-    current_actual_doc_count += actual_doc_count;
+    current_physical_doc_count += seg_physical_doc_count;
+    current_live_doc_count += seg_live_doc_count;
   }
 
   if (current_group.size() > 0) {
     SegmentTask::Ptr task;
-    if (current_group.size() == 1 && !rebuild) {
+    if (current_group.size() == 1 && !purge_deleted_docs) {
       task = SegmentTask::CreateCreateVectorIndexTask(
           CreateVectorIndexTask{current_group[0], "", nullptr, concurrency});
     } else {
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
-          rebuild ? filter : nullptr, !options_.enable_mmap_, concurrency});
+          purge_deleted_docs ? filter : nullptr, !options_.enable_mmap_,
+          concurrency});
     }
     tasks.push_back(task);
   }
@@ -1553,7 +1554,8 @@ Result<WriteResults> CollectionImpl::upsert(std::vector<Doc> &docs) {
 
 Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
                                              Doc::Ptr *doc_out) {
-  auto segments = get_all_segments();
+  // Called from handle_update(), i.e. under write_impl()'s write_mtx_.
+  auto segments = get_all_segments_unsafe();
   uint64_t doc_id;
   bool has = id_map_->has(doc.pk(), &doc_id);
   if (!has) {
@@ -1718,7 +1720,7 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
 
   Version version = version_manager_->get_current_version();
   auto writing_segment_meta = writing_segment_->meta();
-  writing_segment_meta->remove_writing_forward_block();
+  writing_segment_->remove_writing_forward_block();
   s = version.add_persisted_segment_meta(writing_segment_meta);
   CHECK_RETURN_STATUS(s);
 
@@ -1768,8 +1770,15 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
   query.output_fields_ = std::vector<std::string>{};
   query.include_doc_id_ = true;
 
-  auto ret =
-      sql_engine_->execute(schema_, std::move(query), get_all_segments());
+  // The matched set decides what gets deleted, so it must reflect one
+  // collection state: hold write_mtx_ shared across the scan to exclude
+  // concurrent write batches. Plain queries tolerate a mid-write view and skip
+  // this; delete needs the stronger guarantee.
+  auto ret = [&]() {
+    std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+    return sql_engine_->execute(schema_, std::move(query),
+                                get_all_segments_unsafe());
+  }();
   if (!ret.has_value()) {
     return ret.error();
   }
@@ -2374,8 +2383,9 @@ Segment::Ptr CollectionImpl::local_segment_by_doc_id(
 
   while (left < right) {
     size_t mid = left + (right - left) / 2;
-    uint64_t min_id = segments[mid]->meta()->min_doc_id();
-    uint64_t max_id = segments[mid]->meta()->max_doc_id();
+    uint64_t min_id = 0;
+    uint64_t max_id = 0;
+    segments[mid]->doc_id_range(&min_id, &max_id);
 
     if (doc_id < min_id) {
       right = mid;
@@ -2390,6 +2400,11 @@ Segment::Ptr CollectionImpl::local_segment_by_doc_id(
 }
 
 std::vector<Segment::Ptr> CollectionImpl::get_all_segments() const {
+  std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+  return get_all_segments_unsafe();
+}
+
+std::vector<Segment::Ptr> CollectionImpl::get_all_segments_unsafe() const {
   std::vector<Segment::Ptr> segments = get_all_persist_segments();
   if (writing_segment_->doc_count() > 0) {
     segments.push_back(writing_segment_);
@@ -2499,7 +2514,7 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
       // No flushing on read-only collections; include the writing segment
       // (SegmentImpl::scan reads its in-memory block), which is stable since
       // no concurrent writes exist.
-      impl->segments = get_all_segments();
+      impl->segments = get_all_segments_unsafe();
     } else {
       // Seal the writing segment so concurrent writes cannot mutate the
       // snapshot; has_record() also covers delete-only segments.

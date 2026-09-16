@@ -173,7 +173,7 @@ int FlatStreamer<BATCH_SIZE>::open(IndexStorage::Pointer stg) {
 }
 
 template <size_t BATCH_SIZE>
-int FlatStreamer<BATCH_SIZE>::close(void) {
+int FlatStreamer<BATCH_SIZE>::close() {
   LOG_DEBUG("FlatStreamer close");
 
   entity_->flush_linear_meta();
@@ -211,8 +211,8 @@ int FlatStreamer<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
 }
 
 template <size_t BATCH_SIZE>
-IndexStreamer::Context::UPointer FlatStreamer<BATCH_SIZE>::create_context(
-    void) const {
+IndexStreamer::Context::UPointer FlatStreamer<BATCH_SIZE>::create_context()
+    const {
   if (state_ != STATE_OPENED) {
     LOG_ERROR("Failed to create Context, open storage first!");
     return Context::UPointer();
@@ -222,7 +222,7 @@ IndexStreamer::Context::UPointer FlatStreamer<BATCH_SIZE>::create_context(
 }
 
 template <size_t BATCH_SIZE>
-IndexProvider::Pointer FlatStreamer<BATCH_SIZE>::create_provider(void) const {
+IndexProvider::Pointer FlatStreamer<BATCH_SIZE>::create_provider() const {
   return IndexProvider::Pointer(new (std::nothrow)
                                     FlatStreamerProvider<BATCH_SIZE>(this));
 }
@@ -363,6 +363,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   ailego_assert(query && count && !!context);
   ailego_assert(metric_->is_matched(meta_, qmeta));
 
@@ -385,16 +386,19 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 
   for (size_t q = 0; q < count; ++q) {
     auto *heap = bf_context->result_heap();
+    heap->clear();
+    // Candidate searches are already bounded by p_keys. Let the metric choose
+    // its row batches without introducing storage-sized splits here.
+    const size_t batch_size = std::max(size_t{1}, p_keys[q].size());
     int ret =
         entity_->search_by_p_keys(query, p_keys[q], bf_context->filter(), heap,
-                                  bf_context->search_scratch(), BATCH_SIZE);
+                                  bf_context->search_scratch(), batch_size);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Failed to refine Flat candidates for %s",
                 IndexError::What(ret));
       return ret;
     }
-    heap->sort();
-    bf_context->topk_to_result(q);
+    bf_context->take_topk_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
   return 0;
@@ -452,6 +456,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
   if (!bf_context) {

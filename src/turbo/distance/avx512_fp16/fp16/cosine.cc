@@ -31,9 +31,11 @@ void cosine_fp16_distance(const void *a, const void *b, size_t dim,
 }
 
 void cosine_fp16_batch_distance(const void *const *vectors, const void *query,
-                                size_t n, size_t dim, float *distances) {
+                                size_t n, size_t dim, float *distances,
+                                const void *const *extra_values) {
 #if defined(__AVX512FP16__)
-  inner_product_fp16_batch_distance(vectors, query, n, dim, distances);
+  inner_product_fp16_batch_distance(vectors, query, n, dim, distances,
+                                    extra_values);
   for (size_t i = 0; i < n; ++i) {
     distances[i] += 1.0f;
   }
@@ -43,6 +45,7 @@ void cosine_fp16_batch_distance(const void *const *vectors, const void *query,
   (void)n;
   (void)dim;
   (void)distances;
+  (void)extra_values;
 #endif
 }
 

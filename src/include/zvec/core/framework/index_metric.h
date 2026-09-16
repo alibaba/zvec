@@ -47,22 +47,25 @@ struct IndexMetric : public IndexModule {
       const void *m_sparse_data, const void *q_sparse_data, float *out)>;
 
 
-  //! Matrix Batch Distance Function
+  //! Matrix Batch Distance Function. `extra_values[i]` corresponds to `m[i]`;
+  //! callers pass nullptr when the metric has no per-vector extra values.
   typedef void (*MatrixBatchDistanceHandle)(const void **m, const void *q,
-                                            size_t num, size_t dim, float *out);
+                                            size_t num, size_t dim, float *out,
+                                            const void **extra_values);
 
   //! Matrix Batch Distance Function Object
-  using MatrixBatchDistance = std::function<void(
-      const void **m, const void *q, size_t num, size_t dim, float *out)>;
+  using MatrixBatchDistance =
+      std::function<void(const void **m, const void *q, size_t num, size_t dim,
+                         float *out, const void **extra_values)>;
 
   //! Destructor
-  ~IndexMetric(void) override {}
+  ~IndexMetric() override = default;
 
   //! Initialize Metric
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;
 
   //! Cleanup Metric
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Retrieve if it matched
   virtual bool is_matched(const IndexMeta &meta) const = 0;
@@ -72,18 +75,24 @@ struct IndexMetric : public IndexModule {
                           const IndexQueryMeta &qmeta) const = 0;
 
   //! Retrieve distance function for query
-  virtual MatrixDistance distance(void) const {
+  virtual MatrixDistance distance() const {
     return nullptr;
   }
 
   //! Retrieve hybrid distance function for query
-  virtual MatrixSparseDistance sparse_distance(void) const {
+  virtual MatrixSparseDistance sparse_distance() const {
     return nullptr;
   };
 
   //! Retrieve distance function for query
-  virtual MatrixBatchDistance batch_distance(void) const {
+  virtual MatrixBatchDistance batch_distance() const {
     return nullptr;
+  }
+
+  //! Number of trailing bytes per stored record that a storage backend may
+  //! split into an extra-values column.
+  virtual size_t extra_values_size_per_vector() const {
+    return 0;
   }
 
   //! Retrieve distance function for index features
@@ -92,10 +101,10 @@ struct IndexMetric : public IndexModule {
   }
 
   //! Retrieve params of Metric
-  virtual const ailego::Params &params(void) const = 0;
+  virtual const ailego::Params &params() const = 0;
 
   //! Retrieve query metric object of this index metric
-  virtual Pointer query_metric(void) const = 0;
+  virtual Pointer query_metric() const = 0;
 
   //! Normalize result
   virtual void normalize(float *score) const {
@@ -108,7 +117,7 @@ struct IndexMetric : public IndexModule {
   }
 
   //! Retrieve if it supports normalization
-  virtual bool support_normalize(void) const {
+  virtual bool support_normalize() const {
     return false;
   }
 
@@ -120,7 +129,7 @@ struct IndexMetric : public IndexModule {
   }
 
   //! Retrieve if it supports training
-  virtual bool support_train(void) const {
+  virtual bool support_train() const {
     return false;
   }
 
@@ -147,7 +156,7 @@ struct IndexMetric : public IndexModule {
   //! should override this to return a constant C such that (internal_dist + C)
   //! is always non-negative and preserves the ordering of the original
   //! distance.
-  virtual float build_distance_offset(void) const {
+  virtual float build_distance_offset() const {
     return 0.0f;
   }
 };

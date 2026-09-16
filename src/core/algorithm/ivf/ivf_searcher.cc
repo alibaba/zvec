@@ -31,7 +31,7 @@ int IVFSearcher::init(const ailego::Params &parameters) {
   return 0;
 }
 
-int IVFSearcher::cleanup(void) {
+int IVFSearcher::cleanup() {
   this->unload();
 
   params_.clear();
@@ -112,7 +112,7 @@ int IVFSearcher::load(IndexStorage::Pointer container,
   return 0;
 }
 
-int IVFSearcher::unload(void) {
+int IVFSearcher::unload() {
   magic_ = 0;
   centroid_index_.reset();
   entity_.reset();
@@ -256,7 +256,7 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
-const IndexSearcher::Stats &IVFSearcher::stats(void) const {
+const IndexSearcher::Stats &IVFSearcher::stats() const {
   return stats_;
 }
 
@@ -295,7 +295,7 @@ IndexSearcher::Context::Pointer IVFSearcher::create_context() const {
   return Context::Pointer(context);
 }
 
-IndexProvider::Pointer IVFSearcher::create_provider(void) const {
+IndexProvider::Pointer IVFSearcher::create_provider() const {
   if (searcher_state_ != STATE_LOADED) {
     LOG_ERROR("Load the index first before create provider");
     return nullptr;

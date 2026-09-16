@@ -22,8 +22,10 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/distance/neon_fp16/fp16/cosine.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/turbo/turbo.h>
 #include "zvec/core/framework/index_factory.h"
 
@@ -43,16 +45,93 @@ static float reference_cosine(const float *a, const float *b, size_t dim) {
   return (denom < 1e-12f) ? 1.0f : 1.0f - dot / denom;
 }
 
-// SIMD kernels may reorder accumulation; allow a small relative tolerance.
+static float load_fp16(const void *data, size_t index) {
+  uint16_t bits = 0;
+  std::memcpy(&bits,
+              static_cast<const uint8_t *>(data) + index * sizeof(uint16_t),
+              sizeof(bits));
+  return FloatHelper::ToFP32(bits);
+}
+
+// The forward error of a floating-point sum is proportional to the sum of the
+// absolute terms, not to the (possibly heavily cancelled) final result.
+static double accumulation_magnitude(turbo::MetricType metric, const void *lhs,
+                                     const void *rhs, size_t dim) {
+  double magnitude = 0.0;
+  for (size_t i = 0; i < dim; ++i) {
+    const double a = load_fp16(lhs, i);
+    const double b = load_fp16(rhs, i);
+    if (metric == turbo::MetricType::kSquaredEuclidean) {
+      const double difference = a - b;
+      magnitude += difference * difference;
+    } else {
+      magnitude += std::abs(a * b);
+    }
+  }
+  return magnitude;
+}
+
+static double rounding_error_bound(size_t operation_count,
+                                   double unit_roundoff) {
+  const double accumulated_roundoff = operation_count * unit_roundoff;
+  return accumulated_roundoff / (1.0 - accumulated_roundoff);
+}
+
 static void expect_simd_near(float actual, float expected,
+                             turbo::MetricType metric, const void *lhs,
+                             const void *rhs, size_t dim,
                              turbo::CpuArchType arch) {
-  // AVX512-FP16 performs its fused multiply-add accumulation in FP16.  The
-  // other implementations widen inputs and accumulate in FP32.
-  const float relative_tolerance =
-      arch == turbo::CpuArchType::kAVX512FP16 ? 5.0e-3f : 1.0e-4f;
-  const float tolerance =
-      relative_tolerance * std::max(1.0f, std::abs(expected));
-  EXPECT_NEAR(actual, expected, tolerance);
+  const double magnitude = accumulation_magnitude(metric, lhs, rhs, dim);
+  const double accumulation_scale = std::max(1.0, magnitude);
+  const double result_scale =
+      std::max(1.0, std::abs(static_cast<double>(expected)));
+
+  // FP32 implementations use different reduction orders.  Account for the
+  // error of both the scalar and SIMD reductions, while preserving the
+  // existing result-relative floor for small, well-conditioned inputs.
+  constexpr double kFp32UnitRoundoff = 1.0 / 16777216.0;
+  const double fp32_error = 4.0 *
+                            rounding_error_bound(dim + 32, kFp32UnitRoundoff) *
+                            accumulation_scale;
+  double tolerance = std::max(1.0e-4 * result_scale, fp32_error);
+
+  if (arch == turbo::CpuArchType::kAVX512FP16) {
+    // AVX512-FP16 keeps two 32-lane accumulators in FP16, combines them in
+    // FP16, then widens for horizontal reduction.  Bound the longest FP16
+    // dependency chain.  L2 needs two additional roundoff units for the FP16
+    // subtraction and its squared contribution.
+    size_t fp16_depth = dim / 64 + (dim % 64 >= 32 ? 1 : 0);
+    if (fp16_depth != 0) {
+      fp16_depth += dim >= 64 ? 1 : 0;
+      fp16_depth += metric == turbo::MetricType::kSquaredEuclidean ? 2 : 0;
+      constexpr double kFp16UnitRoundoff = 1.0 / 2048.0;
+      const double fp16_error =
+          rounding_error_bound(fp16_depth, kFp16UnitRoundoff) *
+          accumulation_scale;
+      tolerance = std::max(
+          tolerance, std::max(5.0e-3 * result_scale, fp16_error + fp32_error));
+    }
+  } else if (arch == turbo::CpuArchType::kNEON &&
+             metric == turbo::MetricType::kCosine) {
+    // Native NEON cosine deliberately retains FP16 arithmetic. Its four
+    // 8-lane accumulators process 32-element blocks, with an 8-element tail
+    // folded into the first accumulator and a two-level FP16 combine.
+    // Inner product and L2 widen to FP32 and must retain the tighter bound.
+    size_t fp16_depth = dim / 32 + (dim % 32) / 8;
+    if (fp16_depth != 0) {
+      fp16_depth += 2;
+      constexpr double kFp16UnitRoundoff = 1.0 / 2048.0;
+      const double fp16_error =
+          rounding_error_bound(fp16_depth, kFp16UnitRoundoff) *
+          accumulation_scale;
+      tolerance = std::max(
+          tolerance, std::max(2.0e-2 * result_scale, fp16_error + fp32_error));
+    }
+  }
+
+  EXPECT_NEAR(actual, expected, tolerance)
+      << "accumulation_magnitude=" << magnitude
+      << ", computed_tolerance=" << tolerance;
 }
 
 // Verify that the `arch` distance kernels match the scalar kernels for all
@@ -98,31 +177,37 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       constexpr size_t kVectorCount = 7;
       std::mt19937 gen(
           static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
-      // Small integer components are exactly representable in FP16, so even
-      // the AVX512-FP16 kernels (which accumulate in FP16) produce exact
-      // partial sums and match the scalar kernels deterministically.
-      // Fractional data would make the FP16 accumulation error scale with
-      // sum(|a_i * b_i|), which the relative tolerance (based on the
-      // cancellation-reduced result) cannot bound reliably.
-      std::uniform_int_distribution<int> dist(-4, 5);
       std::vector<std::vector<float>> raw(kVectorCount,
                                           std::vector<float>(dim));
       std::vector<std::string> encoded(
           kVectorCount,
           std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+      constexpr double kGeneratorRange =
+          static_cast<double>(std::mt19937::max()) -
+          static_cast<double>(std::mt19937::min()) + 1.0;
       for (size_t i = 0; i < kVectorCount; ++i) {
         for (float &value : raw[i]) {
-          value = static_cast<float>(dist(gen));
+          // mt19937 output is standardized, while uniform_real_distribution
+          // is allowed to vary between standard-library implementations. Map
+          // the engine output explicitly to preserve the original [-4, 5)
+          // input range and the cancellation-heavy regression case.
+          const double unit = (static_cast<double>(gen()) -
+                               static_cast<double>(std::mt19937::min())) /
+                              kGeneratorRange;
+          value = static_cast<float>(-4.0 + 9.0 * unit);
         }
         quantizer->quantize_data(raw[i].data(), encoded[i].data());
       }
 
+      std::vector<float> single_actual(kVectorCount - 1);
       for (size_t i = 1; i < kVectorCount; ++i) {
+        SCOPED_TRACE(testing::Message() << "path=single, candidate=" << i);
         float expected = 0.0f;
-        float actual = 0.0f;
         scalar.dist(encoded[i].data(), encoded[0].data(), dim, &expected);
-        simd.dist(encoded[i].data(), encoded[0].data(), dim, &actual);
-        expect_simd_near(actual, expected, arch);
+        simd.dist(encoded[i].data(), encoded[0].data(), dim,
+                  &single_actual[i - 1]);
+        expect_simd_near(single_actual[i - 1], expected, metric.type,
+                         encoded[i].data(), encoded[0].data(), dim, arch);
       }
 
       std::vector<const void *> candidates(kVectorCount - 1);
@@ -132,11 +217,18 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       std::vector<float> expected(candidates.size());
       std::vector<float> actual(candidates.size());
       scalar.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
-                   expected.data());
+                   expected.data(), nullptr);
       simd.batch(candidates.data(), encoded[0].data(), candidates.size(), dim,
-                 actual.data());
+                 actual.data(), nullptr);
       for (size_t i = 0; i < candidates.size(); ++i) {
-        expect_simd_near(actual[i], expected[i], arch);
+        SCOPED_TRACE(testing::Message() << "path=batch, candidate=" << i + 1);
+        if (arch == turbo::CpuArchType::kAVX512FP16) {
+          // The AVX512-FP16 single and batch kernels use the same instruction
+          // sequence per candidate, so their outputs should match exactly.
+          EXPECT_EQ(single_actual[i], actual[i]);
+        }
+        expect_simd_near(actual[i], expected[i], metric.type, candidates[i],
+                         encoded[0].data(), dim, arch);
       }
     }
   }
@@ -396,22 +488,349 @@ TEST(Fp16Quantizer, SseDistanceHandlesSubnormals) {
     float actual = 0.0f;
     scalar.dist(lhs.data(), rhs.data(), lhs.size(), &expected);
     sse2.dist(lhs.data(), rhs.data(), lhs.size(), &actual);
-    expect_simd_near(actual, expected, turbo::CpuArchType::kSSE2);
+    expect_simd_near(actual, expected, metric, lhs.data(), rhs.data(),
+                     lhs.size(), turbo::CpuArchType::kSSE2);
 
     const void *vectors[] = {lhs.data(), rhs.data()};
     float expected_batch[2] = {};
     float actual_batch[2] = {};
-    scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch);
-    sse2.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch);
-    expect_simd_near(actual_batch[0], expected_batch[0],
-                     turbo::CpuArchType::kSSE2);
-    expect_simd_near(actual_batch[1], expected_batch[1],
-                     turbo::CpuArchType::kSSE2);
+    scalar.batch(vectors, rhs.data(), 2, lhs.size(), expected_batch, nullptr);
+    sse2.batch(vectors, rhs.data(), 2, lhs.size(), actual_batch, nullptr);
+    expect_simd_near(actual_batch[0], expected_batch[0], metric, vectors[0],
+                     rhs.data(), lhs.size(), turbo::CpuArchType::kSSE2);
+    expect_simd_near(actual_batch[1], expected_batch[1], metric, vectors[1],
+                     rhs.data(), lhs.size(), turbo::CpuArchType::kSSE2);
   }
 }
 
 TEST(Fp16Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
+}
+
+TEST(Fp16Quantizer, NeonDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON);
+}
+
+TEST(Fp16Quantizer, NeonBatchMatchesSingleAcrossBoundaries) {
+  const struct {
+    turbo::MetricType type;
+    const char *name;
+  } metrics[] = {
+      {turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean"},
+      {turbo::MetricType::kCosine, "Cosine"},
+      {turbo::MetricType::kInnerProduct, "InnerProduct"},
+  };
+  constexpr size_t kCandidateCount = 17;
+  constexpr float kGuard = 1234567.0f;
+  const size_t dimensions[] = {0,  1,  7,  8,  15, 16,  17, 31,
+                               32, 33, 63, 64, 65, 128, 768};
+  const size_t counts[] = {0, 1, 2, 3, 4, 5, 7, 8, 9, kCandidateCount};
+
+  for (const auto &metric : metrics) {
+    const auto neon = turbo::get_distance_kernels(
+        metric.type, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kNEON);
+    if (!neon.dist) {
+      GTEST_SKIP() << "NEON kernels unavailable on this CPU";
+    }
+    ASSERT_TRUE(neon.batch);
+
+    for (size_t dim : dimensions) {
+      SCOPED_TRACE(testing::Message()
+                   << "metric=" << metric.name << ", dim=" << dim);
+      auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+      ASSERT_TRUE(quantizer);
+      // Dimension zero is a kernel boundary case, not a valid index shape.
+      if (dim != 0) {
+        IndexMeta meta;
+        meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
+        meta.set_metric(metric.name, 0, Params());
+        ASSERT_EQ(0, quantizer->init(meta, Params()));
+      }
+
+      std::mt19937 gen(
+          static_cast<uint32_t>(dim * 31 + static_cast<int>(metric.type)));
+      auto random_value = [&gen]() {
+        return (static_cast<int>(gen() % 18001) - 8000) / 2000.0f;
+      };
+      std::vector<float> query(dim);
+      std::generate(query.begin(), query.end(), random_value);
+      // Quantized cosine vectors also contain a stored FP32 norm.
+      const size_t query_words =
+          dim == 0 ? 1
+                   : (quantizer->quantized_query_vector_length() +
+                      sizeof(uint16_t) - 1) /
+                         sizeof(uint16_t);
+      const size_t datapoint_words =
+          dim == 0 ? 1
+                   : (quantizer->quantized_datapoint_vector_length() +
+                      sizeof(uint16_t) - 1) /
+                         sizeof(uint16_t);
+      std::vector<uint16_t> encoded_query(query_words);
+      if (dim != 0) {
+        quantizer->quantize_query(query.data(), encoded_query.data());
+      }
+
+      // Separate allocations, varying offsets and a permutation avoid
+      // accidentally requiring contiguous or SIMD-aligned candidates.
+      std::vector<std::vector<uint16_t>> encoded(
+          kCandidateCount, std::vector<uint16_t>(datapoint_words + 3));
+      std::vector<const void *> candidates(kCandidateCount);
+      for (size_t i = 0; i < kCandidateCount; ++i) {
+        std::vector<float> raw(dim);
+        std::generate(raw.begin(), raw.end(), random_value);
+        if (dim != 0) {
+          quantizer->quantize_data(raw.data(), encoded[i].data() + i % 4);
+        }
+      }
+      for (size_t i = 0; i < kCandidateCount; ++i) {
+        const size_t index = (i * 7) % kCandidateCount;
+        candidates[i] = encoded[index].data() + index % 4;
+      }
+
+      std::vector<float> expected(kCandidateCount);
+      for (size_t i = 0; i < kCandidateCount; ++i) {
+        SCOPED_TRACE(testing::Message() << "candidate=" << i);
+        neon.dist(candidates[i], encoded_query.data(), dim, &expected[i]);
+        if (dim != 0) {
+          EXPECT_EQ(expected[i], quantizer->calc_distance_dp_query(
+                                     candidates[i], encoded_query.data()));
+          EXPECT_EQ(expected[i], quantizer->calc_distance_dp_query_unquantized(
+                                     candidates[i], query.data()));
+        }
+      }
+
+      for (size_t count : counts) {
+        SCOPED_TRACE(testing::Message() << "count=" << count);
+        const char *paths[] = {"kernel", "quantized", "unquantized"};
+        std::array<std::vector<float>, 3> actual;
+        for (auto &scores : actual) {
+          scores.assign(count + 2, kGuard);
+        }
+        neon.batch(candidates.data(), encoded_query.data(), count, dim,
+                   actual[0].data() + 1, nullptr);
+        if (dim != 0) {
+          quantizer->calc_distance_dp_query_batch(
+              candidates.data(), static_cast<int>(count), encoded_query.data(),
+              actual[1].data() + 1);
+          quantizer->calc_distance_dp_query_batch_unquantized(
+              candidates.data(), static_cast<int>(count), query.data(),
+              actual[2].data() + 1);
+        }
+        for (size_t path = 0; path < (dim == 0 ? 1u : actual.size()); ++path) {
+          SCOPED_TRACE(testing::Message() << "path=" << paths[path]);
+          EXPECT_EQ(kGuard, actual[path].front());
+          EXPECT_EQ(kGuard, actual[path].back());
+          for (size_t i = 0; i < count; ++i) {
+            SCOPED_TRACE(testing::Message() << "candidate=" << i);
+            // Fusion must preserve each metric's single-vector arithmetic
+            // and reduction order, including intentionally FP16 cosine.
+            EXPECT_EQ(expected[i], actual[path][i + 1]);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Exercise the dispatch cached by Fp16Quantizer, including query conversion.
+// Compare the stored FP16 values so quantization error is not mistaken for
+// distance-kernel error. Explicit scores can instead check a deliberately
+// FP16-rounded result rather than the scalar FP32 reference.
+static void check_quantizer_distances(
+    turbo::MetricType metric, const char *metric_name,
+    const std::vector<float> &query,
+    const std::vector<std::vector<float>> &raw_candidates,
+    double absolute_tolerance, double relative_tolerance = 1.0e-6,
+    const std::vector<float> &explicit_scores = {}) {
+  const size_t dim = query.size();
+  const size_t count = raw_candidates.size();
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
+  meta.set_metric(metric_name, 0, Params());
+  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_TRUE(quantizer);
+  ASSERT_EQ(0, quantizer->init(meta, Params()));
+
+  std::string encoded_query(quantizer->quantized_query_vector_length(), '\0');
+  quantizer->quantize_query(query.data(), encoded_query.data());
+  std::vector<std::string> encoded(
+      count, std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+  std::vector<const void *> candidates(count);
+  for (size_t i = 0; i < count; ++i) {
+    ASSERT_EQ(dim, raw_candidates[i].size());
+    quantizer->quantize_data(raw_candidates[i].data(), encoded[i].data());
+    candidates[i] = encoded[i].data();
+  }
+
+  const auto scalar = turbo::get_distance_kernels(
+      metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+      turbo::CpuArchType::kScalar);
+  ASSERT_TRUE(scalar.dist);
+  ASSERT_TRUE(explicit_scores.empty() || explicit_scores.size() == count);
+  std::vector<float> expected(count);
+  const char *paths[] = {"single", "batch", "unquantized_single",
+                         "unquantized_batch"};
+  std::array<std::vector<float>, 4> actual;
+  for (auto &scores : actual) {
+    scores.resize(count);
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (explicit_scores.empty()) {
+      scalar.dist(candidates[i], encoded_query.data(), dim, &expected[i]);
+    } else {
+      expected[i] = explicit_scores[i];
+    }
+    ASSERT_TRUE(std::isfinite(expected[i]));
+    actual[0][i] =
+        quantizer->calc_distance_dp_query(candidates[i], encoded_query.data());
+    actual[2][i] = quantizer->calc_distance_dp_query_unquantized(candidates[i],
+                                                                 query.data());
+  }
+  quantizer->calc_distance_dp_query_batch(
+      candidates.data(), static_cast<int>(count), encoded_query.data(),
+      actual[1].data());
+  quantizer->calc_distance_dp_query_batch_unquantized(
+      candidates.data(), static_cast<int>(count), query.data(),
+      actual[3].data());
+  for (size_t path = 0; path < actual.size(); ++path) {
+    SCOPED_TRACE(testing::Message() << "path=" << paths[path]);
+    for (size_t i = 0; i < count; ++i) {
+      SCOPED_TRACE(testing::Message() << "candidate=" << i);
+      EXPECT_TRUE(std::isfinite(actual[path][i]));
+      EXPECT_NEAR(
+          actual[path][i], expected[i],
+          absolute_tolerance + relative_tolerance * std::abs(expected[i]));
+    }
+  }
+}
+
+TEST(Fp16Quantizer, NeonDistancesPreserveFp32Range) {
+  const auto neon = turbo::get_distance_kernels(
+      turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
+      turbo::QuantizeType::kFp16, turbo::CpuArchType::kNEON);
+  if (!neon.dist) {
+    GTEST_SKIP() << "NEON kernels unavailable on this CPU";
+  }
+
+  // Cover scalar tails, SIMD boundaries, and accumulation beyond FP16 range.
+  for (size_t dim : {7u, 8u, 9u, 15u, 16u, 17u, 31u, 32u, 33u, 64u, 65u}) {
+    SCOPED_TRACE(testing::Message() << "dim=" << dim);
+    const std::vector<float> zero(dim, 0.0f);
+    const std::vector<float> large(dim, 300.0f);
+    {
+      SCOPED_TRACE("L2 products and accumulation");
+      check_quantizer_distances(
+          turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean", zero,
+          {large, std::vector<float>(dim, 100.0f), zero, large, zero, large,
+           std::vector<float>(dim, 100.0f)},
+          1e-3);
+    }
+    {
+      SCOPED_TRACE("L2 subtraction");
+      const std::vector<float> negative_max(dim, -65504.0f);
+      check_quantizer_distances(
+          turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean",
+          negative_max,
+          {std::vector<float>(dim, 65504.0f), negative_max, zero, large,
+           negative_max, zero, std::vector<float>(dim, 65504.0f)},
+          1e-3);
+    }
+    {
+      SCOPED_TRACE("inner product overflow and cancellation");
+      std::vector<float> alternating = large;
+      for (size_t i = 1; i < dim; i += 2) {
+        alternating[i] = -300.0f;
+      }
+      check_quantizer_distances(
+          turbo::MetricType::kInnerProduct, "InnerProduct", large,
+          {large, alternating, zero, alternating, large, zero, alternating},
+          1e-3);
+    }
+    {
+      // Products must be computed in FP32 too; accumulating rounded FP16
+      // products in FP32 would incorrectly return zero for these inputs.
+      SCOPED_TRACE("small products");
+      const std::vector<float> small(dim, 0.0001f);
+      check_quantizer_distances(
+          turbo::MetricType::kSquaredEuclidean, "SquaredEuclidean", zero,
+          {small, std::vector<float>(dim, 0.0002f), zero, small, zero,
+           std::vector<float>(dim, 0.0002f), small},
+          1e-12);
+      check_quantizer_distances(
+          turbo::MetricType::kInnerProduct, "InnerProduct", small,
+          {small, std::vector<float>(dim, -0.0001f), zero, small,
+           std::vector<float>(dim, -0.0001f), zero, small},
+          1e-12);
+    }
+  }
+}
+
+TEST(Fp16Quantizer, NeonCosineRetainsFp16Arithmetic) {
+  using RawDistance = void (*)(const void *, const void *, size_t, float *);
+  const auto automatic = turbo::get_distance_kernels(
+      turbo::MetricType::kCosine, turbo::DataType::kFp16,
+      turbo::QuantizeType::kFp16, turbo::CpuArchType::kAuto);
+  const auto *target = automatic.dist.target<RawDistance>();
+  if (!target || *target != turbo::neon_fp16::cosine_fp16_distance_neon_fp16) {
+    GTEST_SKIP() << "Native NEON FP16 cosine kernel is not selected";
+  }
+
+  const auto scalar = turbo::get_distance_kernels(
+      turbo::MetricType::kCosine, turbo::DataType::kFp16,
+      turbo::QuantizeType::kFp16, turbo::CpuArchType::kScalar);
+  ASSERT_TRUE(scalar.dist);
+  // Cover both the 8-element remainder and the full 32-element main loop.
+  for (size_t dim : {8u, 32u}) {
+    SCOPED_TRACE(testing::Message() << "dim=" << dim);
+    const std::vector<float> query(dim, 1.0f);
+    std::vector<float> neighbor = query;
+    neighbor[0] = -1.0f;
+
+    // Native FP16 products round to exactly 1/dim, giving distances 0 and
+    // 2/dim. Widening first produces a nonzero self distance, so this detects
+    // cosine accidentally using the FP32 inner-product implementation.
+    const std::vector<uint16_t> encoded(
+        dim, FloatHelper::ToFP16(1.0f / std::sqrt(static_cast<float>(dim))));
+    float scalar_self = 0.0f;
+    scalar.dist(encoded.data(), encoded.data(), dim, &scalar_self);
+    EXPECT_GT(scalar_self, 1.0e-4f);
+
+    check_quantizer_distances(
+        turbo::MetricType::kCosine, "Cosine", query,
+        {query, neighbor, neighbor, query, neighbor, query, neighbor}, 0.0, 0.0,
+        {0.0f, 2.0f / static_cast<float>(dim), 2.0f / static_cast<float>(dim),
+         0.0f, 2.0f / static_cast<float>(dim), 0.0f,
+         2.0f / static_cast<float>(dim)});
+  }
+}
+
+TEST(Fp16Quantizer, AutoDispatchSelectsNeonFp16) {
+  using RawDistance = void (*)(const void *, const void *, size_t, float *);
+  const turbo::MetricType metrics[] = {
+      turbo::MetricType::kSquaredEuclidean,
+      turbo::MetricType::kCosine,
+      turbo::MetricType::kInnerProduct,
+  };
+
+  for (const auto metric : metrics) {
+    const auto neon = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kNEON);
+    if (!neon.dist) {
+      GTEST_SKIP() << "NEON FP16 kernels unavailable on this CPU";
+    }
+    const auto automatic = turbo::get_distance_kernels(
+        metric, turbo::DataType::kFp16, turbo::QuantizeType::kFp16,
+        turbo::CpuArchType::kAuto);
+    ASSERT_TRUE(automatic.dist);
+
+    const auto *neon_target = neon.dist.target<RawDistance>();
+    const auto *auto_target = automatic.dist.target<RawDistance>();
+    ASSERT_TRUE(neon_target);
+    ASSERT_TRUE(auto_target);
+    EXPECT_EQ(*neon_target, *auto_target);
+  }
 }
 
 TEST(Fp16Quantizer, Avx512Fp16DistanceMatchesScalar) {

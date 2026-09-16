@@ -467,6 +467,9 @@ struct ZVEC_CORE_API VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
+  // Requested values: Vamana resolves PO=8 / PL=0 against the loaded layout.
+  // Auto PO uses a nominal 6 KiB budget for pool-phase vector prefetch only;
+  // PO=0 disables that prefix, not local-descent, graph-row or kernel prefetch.
   uint32_t prefetch_offset = kDefaultPrefetchOffset;
   uint32_t prefetch_lines = kDefaultPrefetchLines;
 

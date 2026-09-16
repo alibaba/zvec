@@ -14,12 +14,15 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <random>
 #include <unordered_map>
+#include <utility>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
 #if RABITQ_SUPPORTED
@@ -30,7 +33,11 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
+#include "algorithm/cluster/cluster_params.h"
+#include "algorithm/hnsw/hnsw_entity.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/ivf/ivf_params.h"
+#include "algorithm/vamana/vamana_entity.h"
 #include "algorithm/vamana/vamana_streamer.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
@@ -45,12 +52,97 @@
 
 using namespace zvec::core_interface;
 
+namespace {
+
+std::string ReadIndexBytesForTest(const std::string &path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
+class TestableIVFIndex : public IVFIndex {
+ public:
+  int CreateAndInitStreamerForTest(const BaseIndexParam &param) {
+    return CreateAndInitStreamer(param);
+  }
+
+  const zvec::ailego::Params &proxima_index_params() const {
+    return proxima_index_params_;
+  }
+};
+
+class TestableHNSWIndex : public HNSWIndex {
+ public:
+  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+    return _get_coarse_search_topk(param);
+  }
+};
+
+class TestableVamanaIndex : public VamanaIndex {
+ public:
+  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+    return _get_coarse_search_topk(param);
+  }
+};
+
+}  // namespace
+
+TEST(IndexInterface, GraphRefineKeepsLegacyDefaultCandidateCount) {
+  constexpr uint32_t kTopk = 10;
+  constexpr uint32_t kHnswEf = 100;
+  constexpr uint32_t kVamanaEf = 64;
+  auto refiner = std::make_shared<RefinerParam>();
+
+  auto hnsw_param = HNSWQueryParamBuilder()
+                        .with_topk(kTopk)
+                        .with_ef_search(kHnswEf)
+                        .with_refiner_param(refiner)
+                        .build();
+  auto vamana_param = VamanaQueryParamBuilder()
+                          .with_topk(kTopk)
+                          .with_ef_search(kVamanaEf)
+                          .with_refiner_param(refiner)
+                          .build();
+  TestableHNSWIndex hnsw;
+  TestableVamanaIndex vamana;
+
+  EXPECT_EQ(kHnswEf, hnsw.GetCoarseSearchTopk(hnsw_param));
+  EXPECT_EQ(kVamanaEf, vamana.GetCoarseSearchTopk(vamana_param));
+
+  refiner->scale_factor_ = 2.0f;
+  EXPECT_EQ(kTopk * 2, hnsw.GetCoarseSearchTopk(hnsw_param));
+  EXPECT_EQ(kTopk * 2, vamana.GetCoarseSearchTopk(vamana_param));
+}
+
+TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
+  TestableIVFIndex index;
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(8)
+                   .with_n_list(4)
+                   .with_n_iters(37)
+                   .build();
+
+  ASSERT_EQ(0, index.CreateAndInitStreamerForTest(*param));
+
+  zvec::ailego::Params cluster_params;
+  ASSERT_TRUE(index.proxima_index_params().get(
+      zvec::core::PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX + "1",
+      &cluster_params));
+  EXPECT_EQ(37, cluster_params.get_as_int32(
+                    zvec::core::KMEANS_CLUSTER_MAX_ITERATIONS));
+  EXPECT_EQ(37, cluster_params.get_as_int32(
+                    zvec::core::OPTKMEANS_CLUSTER_MAX_ITERATIONS));
+}
+
 TEST(IndexInterface, IndexTypeKeepsExistingValues) {
   EXPECT_EQ(5, static_cast<int>(IndexType::kDiskAnn));
   EXPECT_EQ(6, static_cast<int>(IndexType::kVamana));
   EXPECT_EQ(7, static_cast<int>(IndexType::kIVFRabitq));
 }
 
+#if DISKANN_SUPPORTED
 TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   auto param = DiskAnnIndexParamBuilder()
                    .with_metric_type(MetricType::kL2sq)
@@ -69,6 +161,7 @@ TEST(IndexInterface, DiskAnnParamJsonRoundTrip) {
   EXPECT_EQ(80, diskann->list_size);
   EXPECT_EQ(16, diskann->pq_chunk_num);
 }
+#endif
 
 #if RABITQ_SUPPORTED
 TEST(IndexInterface, IvfRabitqValidatesBuildParams) {
@@ -1075,6 +1168,697 @@ TEST(IndexInterface, Merge) {
   }
 }
 
+TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
+  constexpr uint32_t kDimension = 16;
+  static constexpr uint32_t kSourceCount = 64;
+  const std::string first_name{"provider_merge_ivf_source_1.index"};
+  const std::string second_name{"provider_merge_ivf_source_2.index"};
+  const std::string target_name{"provider_merge_ivf_target.index"};
+
+  auto remove_files = [](const std::string &path) {
+    zvec::test_util::RemoveTestFiles(path);
+  };
+  remove_files(first_name);
+  remove_files(second_name);
+  remove_files(target_name);
+
+  auto source_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_storage_data_type(DataType::DT_FP16)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .build();
+  auto target_param = IVFIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .with_n_list(4)
+                          .build();
+
+  auto create_index = [](const BaseIndexParam::Pointer &param,
+                         const std::string &path) {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    if (!index ||
+        index->open(path, {StorageOptions::StorageType::kMMAP, true}) != 0) {
+      return Index::Pointer();
+    }
+    return index;
+  };
+
+  auto first = create_index(source_param, first_name);
+  auto second = create_index(source_param, second_name);
+  auto target = create_index(target_param, target_name);
+  ASSERT_NE(nullptr, first);
+  ASSERT_NE(nullptr, second);
+  ASSERT_NE(nullptr, target);
+
+  std::vector<float> vector(kDimension, 0.0f);
+  for (uint32_t i = 0; i < kSourceCount; ++i) {
+    vector[0] = static_cast<float>(i);
+    ASSERT_EQ(0, first->add(VectorData{DenseVector{vector.data()}}, i));
+    vector[0] = static_cast<float>(1000 + i);
+    ASSERT_EQ(0, second->add(VectorData{DenseVector{vector.data()}}, i));
+  }
+
+  IndexFilter filter;
+  filter.set([](uint64_t logical_id) {
+    return logical_id == 3 || logical_id == kSourceCount + 5;
+  });
+  ASSERT_EQ(0, target->merge({first, second}, filter));
+  ASSERT_EQ(kSourceCount * 2 - 2, target->get_doc_count());
+
+  auto expect_first_value = [&](uint32_t doc_id, float expected) {
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, target->fetch(doc_id, &fetched));
+    const auto &buffer = std::get<DenseVectorBuffer>(fetched.vector_buffer);
+    const float *data = reinterpret_cast<const float *>(buffer.data.data());
+    ASSERT_NE(nullptr, data);
+    EXPECT_FLOAT_EQ(expected, data[0]);
+  };
+  expect_first_value(0, 0.0f);
+  expect_first_value(3, 4.0f);
+  expect_first_value(kSourceCount - 1, 1000.0f);
+  expect_first_value(kSourceCount + 4, 1006.0f);
+
+  ASSERT_EQ(0, first->close());
+  ASSERT_EQ(0, second->close());
+  ASSERT_EQ(0, target->close());
+  remove_files(first_name);
+  remove_files(second_name);
+  remove_files(target_name);
+}
+
+TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
+  constexpr uint32_t kDim = 16;
+  constexpr uint32_t kCount = 67;
+  const std::string paths[] = {"ordinal_flat.index", "ordinal_ivf.index",
+                               "ordinal_target.index"};
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDim)
+                        .build();
+  auto ivf_param = IVFIndexParamBuilder()
+                       .with_metric_type(MetricType::kL2sq)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_dimension(kDim)
+                       .with_n_list(4)
+                       .build();
+  for (const auto &path : paths) zvec::test_util::RemoveTestFiles(path);
+  std::vector<Index::Pointer> sources;
+  std::vector<std::string> expected;
+  for (uint32_t s = 0; s < 2; ++s) {
+    auto source = s == 0 ? IndexFactory::CreateAndInitIndex(*flat_param)
+                         : IndexFactory::CreateAndInitIndex(*ivf_param);
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(
+        0, source->open(paths[s], {StorageOptions::StorageType::kMMAP, true}));
+    for (uint32_t i = 0; i < kCount; ++i) {
+      std::vector<float> vec(kDim);
+      for (uint32_t d = 0; d < kDim; ++d) {
+        vec[d] = static_cast<float>((i * 47 + d * 29 + s * 71) % 311) - 23.25F;
+      }
+      ASSERT_EQ(0, source->add(VectorData{DenseVector{vec.data()}}, i));
+      if (i != 3 && i != 66) {
+        expected.emplace_back(reinterpret_cast<const char *>(vec.data()),
+                              kDim * sizeof(float));
+      }
+    }
+    if (s == 1) ASSERT_EQ(0, source->train());
+    sources.push_back(std::move(source));
+  }
+  auto target = IndexFactory::CreateAndInitIndex(*ivf_param);
+  ASSERT_NE(nullptr, target);
+  ASSERT_EQ(0,
+            target->open(paths[2], {StorageOptions::StorageType::kMMAP, true}));
+  IndexFilter filter;
+  filter.set([](uint64_t id) { return id % 67 == 3 || id % 67 == 66; });
+  ASSERT_EQ(0, target->merge(sources, filter, {4, nullptr}));
+  for (auto &source : sources) ASSERT_EQ(0, source->close());
+  sources.clear();
+  for (int pass = 0; pass < 2; ++pass) {
+    ASSERT_EQ(expected.size(), target->get_doc_count());
+    for (uint32_t id = 0; id < expected.size(); ++id) {
+      VectorDataBuffer actual;
+      ASSERT_EQ(0, target->fetch(id, &actual));
+      EXPECT_EQ(expected[id],
+                std::get<DenseVectorBuffer>(actual.vector_buffer).data);
+    }
+    auto query = IVFQueryParamBuilder().with_topk(1).with_nprobe(4).build();
+    SearchResult result;
+    ASSERT_EQ(0, target->search(VectorData{DenseVector{expected[7].data()}},
+                                query, &result));
+    ASSERT_EQ(1u, result.doc_list_.size());
+    EXPECT_EQ(7u, result.doc_list_[0].key());
+    ASSERT_EQ(0, target->close());
+    if (pass == 0) {
+      target = IndexFactory::CreateAndInitIndex(*ivf_param);
+      ASSERT_EQ(0, target->open(paths[2],
+                                {StorageOptions::StorageType::kMMAP, false}));
+    }
+  }
+  for (const auto &path : paths) zvec::test_util::RemoveTestFiles(path);
+}
+
+TEST(IndexInterface, IvfCacheFetchRejectsMissingDocuments) {
+  std::vector<BaseIndexParam::Pointer> params{
+      IVFIndexParamBuilder()
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(16)
+          .with_n_list(1)
+          .build()};
+  const std::string path = "builder_cache_fetch.index";
+  for (const auto &param : params) {
+    SCOPED_TRACE(static_cast<int>(param->index_type));
+    zvec::test_util::RemoveTestFiles(path);
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    VectorDataBuffer fetched;
+    auto expect_missing = [&](uint32_t id, int error) {
+      fetched.vector_buffer = DenseVectorBuffer{"unchanged"};
+      EXPECT_EQ(error, index->fetch(id, &fetched));
+      EXPECT_EQ("unchanged",
+                std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    };
+    expect_missing(0, zvec::core::IndexError_OutOfRange);
+    expect_missing(std::numeric_limits<uint32_t>::max(),
+                   zvec::core::IndexError_OutOfRange);
+    std::vector<float> vector(16, 0.125F);
+    const std::string expected(reinterpret_cast<const char *>(vector.data()),
+                               vector.size() * sizeof(float));
+    ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, 3));
+    expect_missing(0, zvec::core::IndexError_NoExist);
+    expect_missing(2, zvec::core::IndexError_NoExist);
+    expect_missing(4, zvec::core::IndexError_OutOfRange);
+    ASSERT_EQ(0, index->fetch(3, &fetched));
+    EXPECT_EQ(expected,
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    for (uint32_t id = 0; id < 3; ++id) {
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, id));
+    }
+    ASSERT_EQ(0, index->train());
+    ASSERT_EQ(0, index->fetch(3, &fetched));
+    EXPECT_EQ(expected,
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    ASSERT_EQ(0, index->close());
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+TEST(IndexInterface, IvfRejectsMergeIntoReadyIndexWithoutChangingFile) {
+  const std::string path = "ivf_ready_merge.index";
+  const std::string source_path = "ivf_ready_merge_source.index";
+  zvec::test_util::RemoveTestFiles(source_path);
+  auto source_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(16)
+                          .build();
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(16, 0.125F);
+  for (uint32_t id = 0; id < 8; ++id) {
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{vector.data()}}, id));
+  }
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_n_list(1)
+                   .build();
+  for (bool merge : {false, true}) {
+    for (bool reopen : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "merge=" << merge << " reopen=" << reopen);
+      zvec::test_util::RemoveTestFiles(path);
+      auto target = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, target);
+      ASSERT_EQ(0,
+                target->open(path, {StorageOptions::StorageType::kMMAP, true}));
+      if (merge) {
+        IndexFilter filter;
+        filter.set([](uint64_t id) { return id >= 4; });
+        ASSERT_EQ(0, target->merge({source}, filter));
+      } else {
+        for (uint32_t id = 0; id < 4; ++id) {
+          ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, id));
+        }
+        ASSERT_EQ(0, target->train());
+      }
+      if (reopen) {
+        ASSERT_EQ(0, target->close());
+        target = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_NE(nullptr, target);
+        ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP,
+                                         false, true}));
+      }
+      const auto bytes = ReadIndexBytesForTest(path);
+      ASSERT_FALSE(bytes.empty());
+      IndexFilter filter;
+      filter.set([](uint64_t id) { return id >= 2; });
+      EXPECT_EQ(zvec::core::IndexError_Unsupported,
+                target->merge({source}, filter));
+      EXPECT_EQ(bytes, ReadIndexBytesForTest(path));
+      EXPECT_TRUE(target->is_trained());
+      EXPECT_EQ(4u, target->get_doc_count());
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, target->fetch(3, &fetched));
+      EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                            vector.size() * sizeof(float)),
+                std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+      auto query = IVFQueryParamBuilder().with_topk(1).with_nprobe(1).build();
+      SearchResult result;
+      ASSERT_EQ(0, target->search(VectorData{DenseVector{vector.data()}}, query,
+                                  &result));
+      ASSERT_EQ(1u, result.doc_list_.size());
+      EXPECT_FLOAT_EQ(0.0F, result.doc_list_[0].score());
+      ASSERT_EQ(0, target->merge({}, {}));
+      ASSERT_EQ(0, target->train());
+      EXPECT_EQ(bytes, ReadIndexBytesForTest(path));
+      ASSERT_EQ(0, target->close());
+      zvec::test_util::RemoveTestFiles(path);
+    }
+  }
+  ASSERT_EQ(0, source->close());
+  zvec::test_util::RemoveTestFiles(source_path);
+}
+
+
+class InspectableIVFIndex : public IVFIndex {
+ public:
+  int initialize(const BaseIndexParam &param, uint32_t train_sample_count = 0) {
+    proxima_index_params_.set(zvec::core::PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT,
+                              train_sample_count);
+    return Init(param);
+  }
+  std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
+    return builder_;
+  }
+  std::weak_ptr<zvec::core::IndexConverter> conversion_state() const {
+    return converter_;
+  }
+  zvec::core::IndexHolder::Pointer converted_input() const {
+    return converter_ ? converter_->result() : nullptr;
+  }
+  void replace_builder(zvec::core::IndexBuilder::Pointer builder) {
+    builder_ = std::move(builder);
+  }
+  zvec::core::IndexReformer::Pointer replace_reformer(
+      zvec::core::IndexReformer::Pointer reformer) {
+    return std::exchange(reformer_, std::move(reformer));
+  }
+};
+
+TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
+  const std::string parent = "ivf_dump_missing_parent";
+  zvec::test_util::RemoveTestFiles(parent);
+  // FileDumper creates missing directories, so use a regular file as the
+  // parent to make creating the output fail on every platform.
+  std::ofstream blocker(parent);
+  ASSERT_TRUE(blocker.good());
+  blocker.close();
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                   .with_dimension(16)
+                   .with_n_list(1)
+                   .build();
+  auto inspected = std::make_shared<InspectableIVFIndex>();
+  ASSERT_EQ(0, inspected->initialize(*param));
+  Index::Pointer target = inspected;
+  auto build_state = inspected->build_state();
+  ASSERT_EQ(0, target->open(parent + "/index",
+                            {StorageOptions::StorageType::kMMAP, true}));
+  auto conversion_state = inspected->conversion_state();
+  ASSERT_FALSE(conversion_state.expired());
+  std::vector<float> vector(16, 1.0F);
+  ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+  EXPECT_NE(0, target->train());
+  EXPECT_FALSE(build_state.expired());
+  EXPECT_FALSE(conversion_state.expired());
+  EXPECT_NE(nullptr, inspected->converted_input());
+  EXPECT_FALSE(target->is_trained());
+  // The pending snapshot must not silently ignore newly added records.
+  EXPECT_NE(0, target->add(VectorData{DenseVector{vector.data()}}, 1));
+  auto converted_input = inspected->converted_input();
+  EXPECT_NE(0, target->train());
+  EXPECT_EQ(converted_input, inspected->converted_input());
+  converted_input.reset();
+  zvec::test_util::RemoveTestFiles(parent);
+  ASSERT_EQ(0, target->train());
+  EXPECT_TRUE(target->is_trained());
+  EXPECT_TRUE(build_state.expired());
+  EXPECT_TRUE(conversion_state.expired());
+  EXPECT_EQ(nullptr, inspected->converted_input());
+  EXPECT_EQ(1u, target->get_doc_count());
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, target->fetch(0, &fetched));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                        vector.size() * sizeof(float)),
+            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  ASSERT_EQ(0, target->close());
+  zvec::test_util::RemoveTestFiles(parent);
+}
+
+class FailOnceIVFBuilder : public zvec::core::IndexBuilder {
+ public:
+  explicit FailOnceIVFBuilder(Pointer delegate)
+      : delegate_(std::move(delegate)) {}
+  int train(zvec::core::IndexThreads::Pointer threads,
+            zvec::core::IndexHolder::Pointer holder) override {
+    ++train_calls;
+    return delegate_->train(std::move(threads), std::move(holder));
+  }
+  int build(zvec::core::IndexThreads::Pointer threads,
+            zvec::core::IndexHolder::Pointer holder) override {
+    ++build_calls;
+    if (std::exchange(fail_build, false)) return zvec::core::IndexError_Runtime;
+    return delegate_->build(std::move(threads), std::move(holder));
+  }
+  int dump(const zvec::core::IndexDumper::Pointer &dumper) override {
+    ++dump_calls;
+    if (std::exchange(fail_dump, false))
+      return zvec::core::IndexError_WriteData;
+    return delegate_->dump(dumper);
+  }
+  const Stats &stats() const override {
+    return delegate_->stats();
+  }
+  int cleanup() override {
+    return delegate_->cleanup();
+  }
+  bool fail_build{false};
+  bool fail_dump{false};
+  int train_calls{0};
+  int build_calls{0};
+  int dump_calls{0};
+
+ private:
+  Pointer delegate_;
+};
+
+TEST(IndexInterface, IvfRetriesOnlyTheIncompleteBuildStage) {
+  const std::string path = "ivf_retry_build_stage.index";
+  for (bool fail_build : {false, true}) {
+    SCOPED_TRACE(fail_build);
+    zvec::test_util::RemoveTestFiles(path);
+    auto param = IVFIndexParamBuilder()
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(16)
+                     .with_n_list(1)
+                     .build();
+    auto inspected = std::make_shared<InspectableIVFIndex>();
+    ASSERT_EQ(0, inspected->initialize(*param));
+    auto builder =
+        std::make_shared<FailOnceIVFBuilder>(inspected->build_state().lock());
+    inspected->replace_builder(builder);
+    builder->fail_build = fail_build;
+    builder->fail_dump = !fail_build;
+    Index::Pointer target = inspected;
+    ASSERT_EQ(0,
+              target->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<float> vector(16, 0.125F);
+    ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+    EXPECT_NE(0, target->train());
+    EXPECT_FALSE(target->is_trained());
+    ASSERT_EQ(0, target->train());
+    EXPECT_EQ(1, builder->train_calls);
+    EXPECT_EQ(fail_build ? 2 : 1, builder->build_calls);
+    EXPECT_EQ(fail_build ? 1 : 2, builder->dump_calls);
+    EXPECT_EQ(1u, target->get_doc_count());
+    ASSERT_EQ(0, target->train());
+    EXPECT_EQ(1, builder->train_calls);
+    ASSERT_EQ(0, target->close());
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+TEST(IndexInterface, IvfRetriesOpeningWithoutRebuildingOrRedumping) {
+  class FailingLoadReformer : public zvec::core::IndexReformer {
+   public:
+    int init(const zvec::ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    int unload() override {
+      return 0;
+    }
+    int load(zvec::core::IndexStorage::Pointer) override {
+      return zvec::core::IndexError_ReadData;
+    }
+  };
+  const std::string path = "ivf_retry_open.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_n_list(1)
+                   .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                   .build();
+  auto inspected = std::make_shared<InspectableIVFIndex>();
+  ASSERT_EQ(0, inspected->initialize(*param));
+  Index::Pointer target = inspected;
+  auto build_state = inspected->build_state();
+  auto reformer =
+      inspected->replace_reformer(std::make_shared<FailingLoadReformer>());
+  auto conversion_state = inspected->conversion_state();
+  ASSERT_FALSE(conversion_state.expired());
+  ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(16, 0.125F);
+  ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+  EXPECT_NE(0, target->train());
+  EXPECT_FALSE(target->is_trained());
+  EXPECT_TRUE(build_state.expired());
+  EXPECT_FALSE(conversion_state.expired());
+  EXPECT_NE(nullptr, inspected->converted_input());
+  auto next_builder = inspected->build_state();
+  inspected->replace_reformer(std::move(reformer));
+  ASSERT_EQ(0, target->train());
+  EXPECT_FALSE(next_builder.expired());
+  EXPECT_TRUE(conversion_state.expired());
+  EXPECT_EQ(nullptr, inspected->converted_input());
+  EXPECT_EQ(1u, target->get_doc_count());
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, target->fetch(0, &fetched));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                        vector.size() * sizeof(float)),
+            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  ASSERT_EQ(0, target->close());
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+TEST(IndexInterface, IvfFailedMergeCanResumeDumpOrRestartWithNewInputs) {
+  const std::string parent = "ivf_merge_retry_parent";
+  const std::string source_path = "ivf_merge_retry_source.index";
+  zvec::test_util::RemoveTestFiles(source_path);
+  auto source_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(16)
+                          .build();
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(16, 0.125F);
+  for (uint32_t id = 0; id < 4; ++id) {
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{vector.data()}}, id));
+  }
+  for (bool restart_merge : {false, true}) {
+    SCOPED_TRACE(restart_merge);
+    zvec::test_util::RemoveTestFiles(parent);
+    std::ofstream blocker(parent);
+    ASSERT_TRUE(blocker.good());
+    blocker.close();
+    auto param = IVFIndexParamBuilder()
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(16)
+                     .with_n_list(1)
+                     .build();
+    auto target = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, target);
+    ASSERT_EQ(0, target->open(parent + "/index",
+                              {StorageOptions::StorageType::kMMAP, true}));
+    EXPECT_NE(0, target->merge({source}, {}));
+    EXPECT_FALSE(target->is_trained());
+    VectorDataBuffer fetched;
+    EXPECT_EQ(zvec::core::IndexError_OutOfRange, target->fetch(0, &fetched));
+    zvec::test_util::RemoveTestFiles(parent);
+    IndexFilter filter;
+    filter.set([](uint64_t id) { return id >= 2; });
+    ASSERT_EQ(
+        0, restart_merge ? target->merge({source}, filter) : target->train());
+    EXPECT_TRUE(target->is_trained());
+    EXPECT_EQ(restart_merge ? 2u : 4u, target->get_doc_count());
+    ASSERT_EQ(0, target->fetch(0, &fetched));
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                          vector.size() * sizeof(float)),
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    ASSERT_EQ(0, target->close());
+    zvec::test_util::RemoveTestFiles(parent);
+  }
+  ASSERT_EQ(0, source->close());
+  zvec::test_util::RemoveTestFiles(source_path);
+}
+
+TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
+  constexpr uint32_t kDimension = 16;
+  constexpr uint32_t kCount = 64;
+  const std::vector<std::pair<MetricType, QuantizerParam>> cases = {
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kNone)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kNone)},
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kFP16)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kFP16)},
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kInt8)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kInt8)},
+      {MetricType::kL2sq, QuantizerParam(QuantizerType::kInt8, true)},
+      {MetricType::kCosine, QuantizerParam(QuantizerType::kInt8, true)},
+  };
+  for (const auto &[metric, quantizer] : cases) {
+    for (const bool merge : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "metric=" << static_cast<int>(metric)
+                   << " quantizer=" << static_cast<int>(quantizer.type)
+                   << " rotate=" << quantizer.enable_rotate
+                   << " merge=" << merge);
+      const std::string path = "ivf_release_build_state.index";
+      const std::string source_path = "ivf_release_build_source.index";
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(source_path);
+      auto param = IVFIndexParamBuilder()
+                       .with_metric_type(metric)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_quantizer_param(quantizer)
+                       .with_dimension(kDimension)
+                       .with_n_list(1)
+                       .build();
+      auto inspected = std::make_shared<InspectableIVFIndex>();
+      // This tests build-state release and reformer persistence, not
+      // quantized centroid arithmetic. OptKmeans currently averages INT8
+      // record metadata as integer coordinates, which can corrupt scale/bias
+      // with randomly rotated input. Train the single INT8 centroid from one
+      // sample; all kCount distinct vectors still go through build and dump.
+      const uint32_t train_sample_count =
+          quantizer.type == QuantizerType::kInt8 ? 1 : 0;
+      ASSERT_EQ(0, inspected->initialize(*param, train_sample_count));
+      Index::Pointer target = inspected;
+      auto build_state = inspected->build_state();
+      auto conversion_state = inspected->conversion_state();
+      EXPECT_EQ(metric != MetricType::kCosine &&
+                    quantizer.type == QuantizerType::kNone,
+                conversion_state.expired());
+      ASSERT_EQ(0,
+                target->open(path, {StorageOptions::StorageType::kMMAP, true}));
+      auto source_param = FlatIndexParamBuilder()
+                              .with_metric_type(metric)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_dimension(kDimension)
+                              .build();
+      auto source = IndexFactory::CreateAndInitIndex(*source_param);
+      ASSERT_NE(nullptr, source);
+      ASSERT_EQ(0, source->open(source_path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+      std::vector<float> vector(kDimension);
+      for (uint32_t i = 0; i < kCount; ++i) {
+        for (uint32_t d = 0; d < kDimension; ++d) {
+          vector[d] = static_cast<float>(i + d + 1);
+        }
+        ASSERT_EQ(0, (merge ? source : target)
+                         ->add(VectorData{DenseVector{vector.data()}}, i));
+      }
+      ASSERT_EQ(0, merge ? target->merge({source}, {}) : target->train());
+      EXPECT_TRUE(build_state.expired());
+      EXPECT_TRUE(conversion_state.expired());
+      EXPECT_EQ(nullptr, inspected->converted_input());
+      // Releasing the caller's source must also release its streamer, without
+      // needing to destroy the successfully built target index.
+      std::weak_ptr<zvec::core::IndexStreamer> source_state =
+          source->index_searcher();
+      ASSERT_EQ(0, source->close());
+      source.reset();
+      EXPECT_TRUE(source_state.expired());
+      ASSERT_EQ(kCount, target->get_doc_count());
+      ASSERT_EQ(0, target->merge({}, {}));
+      // Calling train after the successful build must not try to rebuild
+      // from the input cache that has already been released.
+      ASSERT_EQ(0, target->train());
+
+      VectorDataBuffer before;
+      ASSERT_EQ(0, target->fetch(7, &before));
+      const auto &before_data =
+          std::get<DenseVectorBuffer>(before.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), before_data.size());
+      float squared_error = 0.0f;
+      float squared_norm = 0.0f;
+      for (uint32_t d = 0; d < kDimension; ++d) {
+        const float expected = static_cast<float>(8 + d);
+        const float actual =
+            reinterpret_cast<const float *>(before_data.data())[d];
+        squared_error += (expected - actual) * (expected - actual);
+        squared_norm += expected * expected;
+        if (quantizer.type != QuantizerType::kInt8) {
+          EXPECT_NEAR(expected, actual,
+                      quantizer.type == QuantizerType::kFP16 ? 0.02F : 0.3F);
+        }
+      }
+      if (quantizer.type == QuantizerType::kInt8) {
+        // Rounding contributes at most half a quantization step per
+        // coordinate. Rotation preserves the error norm, but its coordinate
+        // range can grow to sqrt(2) times the original vector norm.
+        const float range = quantizer.enable_rotate
+                                ? std::sqrt(2.0f * squared_norm)
+                                : static_cast<float>(kDimension - 1);
+        const float max_error =
+            std::sqrt(static_cast<float>(kDimension)) * range / (2.0f * 254.0f);
+        EXPECT_LE(std::sqrt(squared_error), max_error + 1e-4f);
+      }
+      auto query_param =
+          IVFQueryParamBuilder().with_topk(4).with_nprobe(1).build();
+      SearchResult result;
+      ASSERT_EQ(0, target->search(VectorData{DenseVector{vector.data()}},
+                                  query_param, &result));
+      ASSERT_EQ(4u, result.doc_list_.size());
+      for (const auto &doc : result.doc_list_) {
+        EXPECT_TRUE(std::isfinite(doc.score()));
+      }
+      ASSERT_EQ(0, target->close());
+      auto reopened = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, reopened);
+      ASSERT_EQ(
+          0, reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
+      VectorDataBuffer after;
+      ASSERT_EQ(0, reopened->fetch(7, &after));
+      EXPECT_EQ(before_data,
+                std::get<DenseVectorBuffer>(after.vector_buffer).data);
+      SearchResult reopened_result;
+      ASSERT_EQ(0, reopened->search(VectorData{DenseVector{vector.data()}},
+                                    query_param, &reopened_result));
+      ASSERT_EQ(result.doc_list_.size(), reopened_result.doc_list_.size());
+      for (size_t i = 0; i < result.doc_list_.size(); ++i) {
+        EXPECT_EQ(result.doc_list_[i].key(),
+                  reopened_result.doc_list_[i].key());
+        EXPECT_FLOAT_EQ(result.doc_list_[i].score(),
+                        reopened_result.doc_list_[i].score());
+      }
+      ASSERT_EQ(0, reopened->close());
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(source_path);
+    }
+  }
+}
+
 TEST(IndexInterface, FlatStorageDataTypeConvertsFp32InputAndQuery) {
   constexpr uint32_t kDimension = 17;
   constexpr uint32_t kVectorCount = 8;
@@ -1341,6 +2125,339 @@ TEST(IndexInterface, Fp16CosineRefinementMatchesFp16Storage) {
 
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_name);
+}
+
+TEST(IndexInterface, FlatCandidateHandoffPreservesModesAndContextReuse) {
+  constexpr uint32_t kDimension = 16;
+  const std::string coarse_path = "flat_handoff_coarse.index";
+  const std::string fine_path = "flat_handoff_fine.index";
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+  auto coarse_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .build();
+  auto fine_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_storage_data_type(DataType::DT_FP16)
+                        .with_dimension(kDimension)
+                        .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_TRUE(coarse);
+  ASSERT_TRUE(fine);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0,
+            fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(kDimension, 0.0f);
+  for (uint64_t key = 0; key < 12; ++key) {
+    vector[0] = float(key);
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vector.data()}}, key));
+    vector[0] = float(key) + 10.0f;
+    ASSERT_EQ(0, fine->add(VectorData{DenseVector{vector.data()}}, key));
+  }
+  vector[0] = 0.25f;
+  const VectorData query{DenseVector{vector.data()}};
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->scale_factor_ = 2.0f;
+  refiner->reference_index = fine;
+  SearchResult actual;
+  // Reusing a Flat context must not carry a previous request's radius into
+  // an unrestricted search, or lose the radius when it is enabled again.
+  for (float radius : {1.0f, 0.0f, 1.0f, 0.0f}) {
+    SCOPED_TRACE(radius);
+    auto param =
+        FlatQueryParamBuilder().with_topk(12).with_radius(radius).build();
+    ASSERT_EQ(0, coarse->search(query, param, &actual));
+    ASSERT_EQ(radius > 0.0f ? 2U : 12U, actual.doc_list_.size());
+    for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+      EXPECT_EQ(i, actual.doc_list_[i].key());
+    }
+  }
+  for (int mode : {0, 1, 2, 3, 4, 5, 0}) {
+    SCOPED_TRACE(mode);
+    auto make_param = [&](uint32_t topk) {
+      auto param = FlatQueryParamBuilder().with_topk(topk).build();
+      if (mode == 1) param->is_linear = true;
+      if (mode == 2) {
+        param->bf_pks = std::make_shared<std::vector<uint64_t>>(
+            std::initializer_list<uint64_t>{9, 7, 5, 3, 1, 999});
+      }
+      if (mode == 3) param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+      if (mode == 4) {
+        param->filter = std::make_shared<IndexFilter>();
+        param->filter->set([](uint64_t key) { return key >= 4; });
+      }
+      if (mode == 5) param->radius = 1.0f;
+      return param;
+    };
+    auto candidate_param = make_param(6);
+    SearchResult candidates;
+    ASSERT_EQ(0, coarse->search(query, candidate_param, &candidates));
+    auto explicit_param =
+        FlatQueryParamBuilder().with_topk(3).with_fetch_vector(true).build();
+    explicit_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+    for (const auto &doc : candidates.doc_list_) {
+      explicit_param->bf_pks->push_back(doc.key());
+    }
+    SearchResult expected;
+    ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+    auto refine_param = make_param(3);
+    refine_param->refiner_param = refiner;
+    refine_param->fetch_vector = true;
+    ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+    ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+    for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+      EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                      actual.doc_list_[i].score());
+    }
+    EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
+  }
+  // A failed request must not leak its coarse radius into the next search.
+  auto failed_param = FlatQueryParamBuilder()
+                          .with_topk(3)
+                          .with_radius(0.01f)
+                          .with_refiner_param(refiner)
+                          .build();
+  refiner->reference_index.reset();
+  EXPECT_NE(0, coarse->search(query, failed_param, &actual));
+  refiner->reference_index = fine;
+  auto valid_param =
+      FlatQueryParamBuilder().with_topk(3).with_refiner_param(refiner).build();
+  ASSERT_EQ(0, coarse->search(query, valid_param, &actual));
+  EXPECT_EQ(3U, actual.doc_list_.size());
+  ASSERT_EQ(0, coarse->close());
+  ASSERT_EQ(0, fine->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+}
+
+TEST(IndexInterface, HnswNativeRefineMatchesExplicitCandidates) {
+  constexpr uint32_t kDimension = 17;
+  // Keep the data set just above the streamer's BF fallback threshold so both
+  // the explicit candidate search and the refine handoff exercise HNSW search.
+  constexpr uint32_t kCount =
+      zvec::core::HnswEntity::kDefaultBruteForceThreshold + 1;
+  constexpr uint32_t kTopk = 5;
+  constexpr uint32_t kCandidates = 20;
+  const std::string coarse_path = "hnsw_handoff_coarse.index";
+  const std::string fine_path = "hnsw_handoff_fine.index";
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  auto coarse_param =
+      HNSWIndexParamBuilder()
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kInt8))
+          .with_m(16)
+          .with_ef_construction(kCount)
+          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_TRUE(coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<std::vector<float>> vectors(kCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t id = 0; id < kCount; ++id) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[id][d] = float((id * 37 + d * 13) % 251) + 0.37f;
+    }
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[id].data()}}, id));
+  }
+  // Reuse the Flat context across native types and layouts, including a
+  // switch back. Its query storage must survive any context refresh.
+  for (auto type : {DataType::DT_FP16, DataType::DT_UINT8, DataType::DT_FP16}) {
+    for (bool contiguous : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(type));
+      SCOPED_TRACE(contiguous);
+      zvec::test_util::RemoveTestFiles(fine_path);
+      auto fine_param = FlatIndexParamBuilder()
+                            .with_metric_type(MetricType::kL2sq)
+                            .with_data_type(DataType::DT_FP32)
+                            .with_storage_data_type(type)
+                            .with_dimension(kDimension)
+                            .with_use_contiguous_memory(contiguous)
+                            .build();
+      auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+      ASSERT_TRUE(fine);
+      ASSERT_EQ(
+          0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+      for (uint32_t id = 0; id < kCount; ++id) {
+        ASSERT_EQ(0,
+                  fine->add(VectorData{DenseVector{vectors[id].data()}}, id));
+      }
+      auto refiner = std::make_shared<RefinerParam>();
+      refiner->scale_factor_ = float(kCandidates) / kTopk;
+      refiner->reference_index = fine;
+      auto refine_param = HNSWQueryParamBuilder()
+                              .with_topk(kTopk)
+                              .with_ef_search(kCount)
+                              .with_fetch_vector(true)
+                              .with_refiner_param(refiner)
+                              .build();
+      SearchResult actual;
+      for (uint32_t query_id : {7U, 23U, 7U}) {
+        const VectorData query{DenseVector{vectors[query_id].data()}};
+        auto candidate_param = HNSWQueryParamBuilder()
+                                   .with_topk(kCandidates)
+                                   .with_ef_search(kCount)
+                                   .build();
+        SearchResult candidates;
+        ASSERT_EQ(0, coarse->search(query, candidate_param, &candidates));
+        auto explicit_param = FlatQueryParamBuilder()
+                                  .with_topk(kTopk)
+                                  .with_fetch_vector(true)
+                                  .build();
+        explicit_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+        for (const auto &doc : candidates.doc_list_) {
+          explicit_param->bf_pks->push_back(doc.key());
+        }
+        SearchResult expected;
+        ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+        ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+        ASSERT_EQ(kTopk, actual.doc_list_.size());
+        ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+        for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+          EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+          EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                          actual.doc_list_[i].score());
+        }
+        EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
+      }
+      const VectorData query{DenseVector{vectors[7].data()}};
+      for (float invalid :
+           {-1.0f, (std::numeric_limits<float>::infinity)(),
+            std::numeric_limits<float>::quiet_NaN(),
+            (std::numeric_limits<float>::max)(),
+            static_cast<float>((std::numeric_limits<int>::max)())}) {
+        SCOPED_TRACE(invalid);
+        refiner->scale_factor_ = invalid;
+        EXPECT_EQ(int(zvec::core::IndexError_InvalidArgument),
+                  coarse->search(query, refine_param, &actual));
+      }
+      refiner->scale_factor_ = 0.5f;
+      ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+      EXPECT_EQ(kTopk, actual.doc_list_.size());
+      refiner->scale_factor_ = 0.0f;
+      ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+      EXPECT_EQ(kTopk, actual.doc_list_.size());
+      refiner->scale_factor_ = float(kCandidates) / kTopk;
+      ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+      EXPECT_EQ(kTopk, actual.doc_list_.size());
+      ASSERT_EQ(0, fine->close());
+      zvec::test_util::RemoveTestFiles(fine_path);
+    }
+  }
+  ASSERT_EQ(0, coarse->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+}
+
+TEST(IndexInterface, VamanaNativeRefineMatchesExplicitCandidates) {
+  constexpr uint32_t kDimension = 17;
+  // Keep the data set just above the streamer's BF fallback threshold so both
+  // candidate searches exercise the contiguous Vamana graph path.
+  constexpr uint32_t kCount =
+      zvec::core::VamanaEntity::kDefaultBruteForceThreshold + 1;
+  constexpr uint32_t kTopk = 5;
+  constexpr uint32_t kCandidates = 20;
+  constexpr uint32_t kEfSearch = 64;
+  const std::string coarse_path = "vamana_handoff_coarse.index";
+  const std::string fine_path = "vamana_handoff_fine.index";
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+
+  auto coarse_param =
+      VamanaIndexParamBuilder()
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_dimension(kDimension)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kInt8))
+          .with_max_degree(16)
+          .with_search_list_size(32)
+          .with_alpha(1.2f)
+          .with_use_contiguous_memory(true)
+          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_TRUE(coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<std::vector<float>> vectors(kCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t id = 0; id < kCount; ++id) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[id][d] = float((id * 37 + d * 13) % 251) + 0.37f;
+    }
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[id].data()}}, id));
+  }
+  ASSERT_EQ(0, coarse->train());
+
+  auto fine_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_use_contiguous_memory(true)
+                        .build();
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_TRUE(fine);
+  ASSERT_EQ(0,
+            fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t id = 0; id < kCount; ++id) {
+    ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[id].data()}}, id));
+  }
+
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->scale_factor_ = float(kCandidates) / kTopk;
+  refiner->reference_index = fine;
+  auto refine_param = VamanaQueryParamBuilder()
+                          .with_topk(kTopk)
+                          .with_ef_search(kEfSearch)
+                          .with_fetch_vector(true)
+                          .with_refiner_param(refiner)
+                          .build();
+  auto candidate_param = VamanaQueryParamBuilder()
+                             .with_topk(kCandidates)
+                             .with_ef_search(kEfSearch)
+                             .build();
+
+  for (uint32_t query_id : {7U, 23U, 7U}) {
+    SCOPED_TRACE(query_id);
+    const VectorData query{DenseVector{vectors[query_id].data()}};
+    SearchResult candidates;
+    ASSERT_EQ(0, coarse->search(query, candidate_param, &candidates));
+    ASSERT_EQ(kCandidates, candidates.doc_list_.size());
+
+    auto explicit_param = FlatQueryParamBuilder()
+                              .with_topk(kTopk)
+                              .with_fetch_vector(true)
+                              .build();
+    explicit_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+    for (const auto &doc : candidates.doc_list_) {
+      explicit_param->bf_pks->push_back(doc.key());
+    }
+
+    SearchResult expected;
+    SearchResult actual;
+    ASSERT_EQ(0, fine->search(query, explicit_param, &expected));
+    ASSERT_EQ(0, coarse->search(query, refine_param, &actual));
+    ASSERT_EQ(kTopk, actual.doc_list_.size());
+    ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+    for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+      EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                      actual.doc_list_[i].score());
+    }
+    EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
+  }
+
+  ASSERT_EQ(0, coarse->close());
+  ASSERT_EQ(0, fine->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
 }
 
 TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
@@ -1678,6 +2795,19 @@ TEST(IndexInterface, Serialize) {
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
   }
+#if DISKANN_SUPPORTED
+  {
+    DiskAnnQueryParam param;
+    param.topk = 12;
+    param.list_size = 80;
+    const auto json = IndexFactory::QueryParamSerializeToJson(param);
+    const auto parsed =
+        IndexFactory::QueryParamDeserializeFromJson<DiskAnnQueryParam>(json);
+    ASSERT_NE(nullptr, parsed);
+    EXPECT_EQ(param.topk, parsed->topk);
+    EXPECT_EQ(param.list_size, parsed->list_size);
+  }
+#endif
 }
 
 TEST(IndexInterface, Failure) {
@@ -2171,7 +3301,7 @@ TEST(IndexInterface, Score) {
       assert(v1.size() == 3);
       assert(v2.size() == 3);
       float ret = 0.0f;
-      for (int i = 0; i < v1.size(); ++i) {
+      for (size_t i = 0; i < v1.size(); ++i) {
         ret += (v1[i] - v2[i]) * (v1[i] - v2[i]);
       }
       return ret;

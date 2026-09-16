@@ -27,19 +27,19 @@ class IndexReformer : public IndexModule {
   typedef std::shared_ptr<IndexReformer> Pointer;
 
   //! Destructor
-  ~IndexReformer(void) override {}
+  ~IndexReformer() override = default;
 
   //! Initialize Reformer
   virtual int init(const ailego::Params &params) = 0;
 
   //! Cleanup Reformer
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
   //! Load index from container
   virtual int load(IndexStorage::Pointer cntr) = 0;
 
   //! Unload index
-  virtual int unload(void) = 0;
+  virtual int unload() = 0;
 
   //! Transform a query
   virtual int transform(const void * /*query*/,

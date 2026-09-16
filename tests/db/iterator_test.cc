@@ -274,7 +274,7 @@ TEST_F(IteratorTest, ExcludeVector) {
   for (int i = 0; i < 5; i++) {
     docs.push_back(TestHelper::CreateDoc(i, *schema));
   }
-  collection->insert(docs);
+  ASSERT_TRUE(collection->insert(docs).has_value());
   collection->flush();
 
   IteratorOptions iter_opts;
@@ -322,7 +322,7 @@ TEST_F(IteratorTest, OutputFieldsSelection) {
   for (int i = 0; i < N; i++) {
     docs.push_back(TestHelper::CreateDoc(i, *schema));
   }
-  collection->insert(docs);
+  ASSERT_TRUE(collection->insert(docs).has_value());
   collection->flush();
 
   // Request only the "int32" scalar field.

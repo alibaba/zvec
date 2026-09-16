@@ -36,6 +36,7 @@ void pq_sdc_int8_distance_avx2(const void *a, const void *b,
 // each using 8-wide _mm256_i32gather_ps. 4 independent __m256
 // accumulators maximize ILP.
 void pq_adc_int8_batch_distance_avx2(const void **candidates, const void *lut,
-                                     size_t num, size_t num_chunk, float *out);
+                                     size_t num, size_t num_chunk, float *out,
+                                     const void **extra_values);
 
 }  // namespace zvec::turbo::avx2

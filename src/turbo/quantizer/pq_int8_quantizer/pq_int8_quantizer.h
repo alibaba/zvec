@@ -126,7 +126,21 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
 
   int deserialize(const void *data, size_t len) override;
 
+  //! Adopt an externally built codebook: `len` bytes laid out as
+  //! consecutive [256][chunk_dim(m)] blocks in the input data type. The first
+  //! original_dim % num_chunk chunks have one extra dimension.
+  int import_codebook(const void *data, size_t len) override;
+
  private:
+  //! Match legacy DiskAnn chunking: distribute the remainder to leading chunks.
+  //! original_dim_ and num_chunk_ must satisfy 1 <= num_chunk_ <=
+  //! original_dim_.
+  void setup_chunk_offsets();
+
+  size_t chunk_dim(size_t m) const {
+    return chunk_offsets_[m + 1] - chunk_offsets_[m];
+  }
+
   //! Train a single chunk (KMeans, k=256) on the sub-vectors.
   //! Templated on the data type T (float or ailego::Float16) so that
   //! NumericalKmeans<T> operates natively in the input precision.
@@ -206,10 +220,11 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   IndexMeta meta_{};
   uint32_t original_dim_{0};
   uint32_t num_chunk_{0};
-  uint32_t sub_dim_{0};
+  std::vector<uint32_t> chunk_offsets_;
 
   //! Centroids stored as raw bytes in the original data type:
-  //! [num_chunk * kNumCentroids * sub_dim * sizeof(T)]
+  //! consecutive [kNumCentroids][chunk_dim(m)] blocks, totaling
+  //! kNumCentroids * original_dim_ * sizeof(T) bytes.
   //! T = float for kFp32, ailego::Float16 for kFp16.
   std::vector<uint8_t> centroids_;
 

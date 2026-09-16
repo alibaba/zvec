@@ -47,7 +47,7 @@ int DiskAnnReducer::init(const ailego::Params &params) {
   return 0;
 }
 
-int DiskAnnReducer::cleanup(void) {
+int DiskAnnReducer::cleanup() {
   return 0;
 }
 

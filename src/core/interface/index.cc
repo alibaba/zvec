@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
@@ -581,7 +584,9 @@ int Index::search(const VectorData &vector_data,
 
   if (is_sparse_) {
     int ret = _sparse_search(vector_data, search_param, result, context);
-    context->reset();
+    if (context) {
+      context->reset();
+    }
     return ret;
   }
 
@@ -589,7 +594,6 @@ int Index::search(const VectorData &vector_data,
   int ret = 0;
   if (search_param->refiner_param == nullptr) {
     ret = _dense_search(vector_data, search_param, result, context);
-    context->reset();
   } else {
     auto &reference_index = search_param->refiner_param->reference_index;
     if (reference_index == nullptr) {
@@ -604,29 +608,39 @@ int Index::search(const VectorData &vector_data,
       return core::IndexError_Runtime;
     }
 
-    context->set_topk(_get_coarse_search_topk(search_param));
-    context->set_fetch_vector(false);  // no need to fetch vector
-    if (_dense_search(vector_data, search_param, result, context) != 0) {
-      LOG_ERROR("Failed to search");
+    const int coarse_topk = _get_coarse_search_topk(search_param);
+    if (coarse_topk < 0) {
       context->reset();
+      return coarse_topk;
+    }
+    context->set_topk(coarse_topk);
+    context->set_fetch_vector(false);  // no need to fetch vector
+    std::string transformed_vector;
+    const void *query = nullptr;
+    core::IndexQueryMeta query_meta;
+    ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                               &query_meta);
+    if (ret != 0) {
+      context->reset();
+      return ret;
+    }
+    // Refine replaces the coarse scores; only candidate membership and order
+    // cross this boundary, not document/vector materialization or
+    // normalization.
+    std::vector<std::vector<uint64_t>> keys(1);
+    if (_execute_dense_search(query, query_meta, search_param, context,
+                              &keys[0]) != 0) {
+      LOG_ERROR("Failed to search");
+      if (context) {
+        context->reset();
+      }
       return core::IndexError_Runtime;
     }
-
-    auto &base_result = context->result();
-    std::vector<uint64_t> keys(base_result.size());
-    for (size_t i = 0; i < base_result.size(); ++i) {
-      keys[i] = base_result[i].key();
-    }
-
-    auto flat_search_param = std::make_shared<FlatQueryParam>();
-    flat_search_param->topk = search_param->topk;
-    flat_search_param->fetch_vector = search_param->fetch_vector;
-    flat_search_param->filter = search_param->filter;
-    flat_search_param->bf_pks =
-        std::make_shared<std::vector<uint64_t>>(std::move(keys));
-
     result->reverted_vector_list_.clear();
-    ret = reference_index->search(vector_data, flat_search_param, result);
+    ret = reference_index->_refine_dense_candidates(vector_data, search_param,
+                                                    keys, result);
+  }
+  if (context) {
     context->reset();
   }
   return ret;
@@ -769,25 +783,48 @@ int Index::_dense_search(const VectorData &vector_data,
                          const BaseIndexQueryParam::Pointer &search_param,
                          SearchResult *result,
                          core::IndexContext::Pointer &context) {
+  std::string transformed_vector;
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  int ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+  if (ret != 0) return ret;
+  ret = _execute_dense_search(query, query_meta, search_param, context);
+  if (ret != 0) return ret;
+  return _collect_dense_result(vector_data, query_meta, search_param, result,
+                               context);
+}
+
+int Index::_prepare_dense_query(const VectorData &vector_data,
+                                std::string *query_storage,
+                                const void **prepared_query,
+                                core::IndexQueryMeta *prepared_meta) {
   if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
-  auto vector = dense_vector.data;
+  *prepared_query = dense_vector.data;
   // Check if need to transform feature
-  core::IndexQueryMeta new_meta = input_vector_meta_;
+  *prepared_meta = input_vector_meta_;
   if (reformer_ != nullptr) {
-    auto *new_vector = context->mutable_features();
-    if (reformer_->transform(dense_vector.data, input_vector_meta_, new_vector,
-                             &new_meta) != 0) {
+    if (reformer_->transform(dense_vector.data, input_vector_meta_,
+                             query_storage, prepared_meta) != 0) {
       LOG_ERROR("Failed to transform vector");
       return core::IndexError_Runtime;
     }
-    vector = new_vector->data();
+    *prepared_query = query_storage->data();
   }
+  return 0;
+}
+
+int Index::_execute_dense_search(
+    const void *vector, const core::IndexQueryMeta &new_meta,
+    const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context,
+    std::vector<uint64_t> *candidate_keys) {
+  if (candidate_keys) candidate_keys->clear();
   if (search_param->bf_pks != nullptr) {
-    // should we eliminate the copy of bf_pks?
     if (streamer_->search_bf_by_p_keys_impl(
             vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
             new_meta, 1, context) != 0) {
@@ -799,12 +836,83 @@ int Index::_dense_search(const VectorData &vector_data,
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
+  } else if (candidate_keys) {
+    return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
+                                             context);
   } else {
     if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
   }
+
+  if (candidate_keys) {
+    const auto &documents = context->result();
+    candidate_keys->reserve(documents.size());
+    for (const auto &document : documents) {
+      candidate_keys->push_back(document.key());
+    }
+  }
+  return 0;
+}
+
+int Index::_refine_dense_candidates(
+    const VectorData &vector_data,
+    const BaseIndexQueryParam::Pointer &search_param,
+    const std::vector<std::vector<uint64_t>> &keys, SearchResult *result) {
+  if (!is_open_ || is_sparse_) {
+    LOG_ERROR("Reference index must be open and dense");
+    return core::IndexError_Runtime;
+  }
+  if (!is_trained_ && this->train() != 0) {
+    LOG_ERROR("Failed to train reference index");
+    return core::IndexError_Runtime;
+  }
+
+  auto &context = acquire_context();
+  if (!context) return core::IndexError_Runtime;
+  context->set_topk(search_param->topk);
+  context->set_fetch_vector(search_param->fetch_vector);
+  if (search_param->filter && search_param->filter->is_valid()) {
+    context->set_filter(std::move(*search_param->filter));
+  } else {
+    context->reset_filter();
+  }
+  // The radius belongs to the coarse score space, not the refine metric.
+  context->reset_threshold();
+  _set_group_by_on_context(search_param, context);
+
+  // Transform the original query with the reference index's own reformer.
+  std::string transformed_vector;
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  int ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+  if (ret != 0) {
+    context->reset();
+    return ret;
+  }
+  ret =
+      streamer_->search_bf_by_p_keys_impl(query, keys, query_meta, 1, context);
+  if (ret != 0) {
+    if (context) {
+      context->reset();
+    }
+    return ret;
+  }
+  ret = _collect_dense_result(vector_data, query_meta, search_param, result,
+                              context);
+  if (context) {
+    context->reset();
+  }
+  return ret;
+}
+
+int Index::_collect_dense_result(
+    const VectorData &vector_data, const core::IndexQueryMeta &new_meta,
+    const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+    core::IndexContext::Pointer &context) {
+  const auto &dense_vector = std::get<DenseVector>(vector_data.vector);
 
   // Retrieve group_by results if applicable
   bool has_group_by =
@@ -817,7 +925,14 @@ int Index::_dense_search(const VectorData &vector_data,
     }
     result->group_doc_list_ = std::move(*group_result);
   } else {
-    result->doc_list_ = std::move(context->result());
+    // Transfer the final documents instead of copying a const result(). The
+    // context receives the caller's previous buffer for reuse on later calls.
+    auto *documents = context->mutable_result(0);
+    if (documents) {
+      result->doc_list_.swap(*documents);
+    } else {
+      result->doc_list_ = context->result();
+    }
   }
 
   if (metric_->support_normalize()) {
@@ -1076,10 +1191,24 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
 int Index::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
   float scale_factor = search_param->refiner_param->scale_factor_;
+  if (!std::isfinite(scale_factor) || scale_factor < 0) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
   if (scale_factor == 0) {
     scale_factor = 1;
+  } else if (scale_factor < 1.0f) {
+    LOG_WARN("Refine scale factor %f is less than 1, using 1 instead",
+             scale_factor);
+    scale_factor = 1;
   }
-  return floor(search_param->topk * scale_factor);
+  const float count = std::floor(search_param->topk * scale_factor);
+  if (!std::isfinite(count) ||
+      static_cast<double>(count) > (std::numeric_limits<int>::max)()) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
+  return static_cast<int>(count);
 }
 
 // Set or clear group-by state on a pooled context before each search.

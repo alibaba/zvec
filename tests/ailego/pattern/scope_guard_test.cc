@@ -42,7 +42,7 @@ TEST(ScopeGuard, Lambda) {
 }
 
 struct ClassA {
-  static void StaticProcess0(void) {
+  static void StaticProcess0() {
     printf("ScopeGuard: Static Function 1\n");
     ++count;
   }
@@ -67,7 +67,7 @@ TEST(ScopeGuard, StaticFunction) {
 
 class ClassB {
  public:
-  virtual void MemberProcess0(void) const {
+  virtual void MemberProcess0() const {
     printf("ScopeGuard: Member Function 0\n");
     ++count;
   }

@@ -72,7 +72,7 @@ class UniformUint7Reformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     Reset();
     return 0;
   }
@@ -83,7 +83,7 @@ class UniformUint7Reformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

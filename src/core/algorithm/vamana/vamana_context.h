@@ -13,9 +13,10 @@
 // limitations under the License.
 #pragma once
 
+#include <utility>
 #include <zvec/core/framework/index_context.h>
-#include "utility/block_heap.h"
-#include "utility/linear_pool.h"
+#include <zvec/core/interface/constants.h>
+#include "utility/search_heap.h"
 #include "utility/visit_filter.h"
 #include "vamana_dist_calculator.h"
 #include "vamana_entity.h"
@@ -44,10 +45,10 @@ class VamanaContext : public IndexContext {
 
   void set_topk(uint32_t val) override {
     topk_ = val;
-    topk_heap_.limit(std::max(val, ef_));
+    search_heap_.limit(std::max(val, ef_));
   }
 
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -60,24 +61,42 @@ class VamanaContext : public IndexContext {
     return &results_[idx];
   }
 
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
   void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
-  bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return debug_mode_;
   }
 
-  std::string debug_string(void) const override {
+  std::string debug_string() const override {
     char buf[4096];
     size_t size = snprintf(buf, sizeof(buf), "scan_cnt=%zu", get_scan_num());
     return std::string(buf, size);
   }
 
+  // Merge partial PO/PL updates into the requested values, retaining automatic
+  // defaults even after they have been resolved against the current entity.
+  // Once prepared, unchanged requests reuse the cached effective values.
   int update(const ailego::Params &params) override;
+
+  // Streaming contexts are also used for construction. Resolve query defaults
+  // only when preparing a search (or explicitly updating query parameters).
+  inline void prepare_query_prefetch() {
+    if (!query_prefetch_ready_) {
+      update_query_prefetch();
+    }
+  }
+
+  // Resolve the shared query defaults and explicit prefetch overrides against
+  // the stored graph schema. Returned values are concrete, so the hot search
+  // loop does not need default/manual branches.
+  static std::pair<uint32_t, uint32_t> resolve_query_prefetch(
+      size_t vector_data_size, uint32_t max_degree, uint32_t requested_offset,
+      uint32_t requested_lines);
 
   int init(ContextType type);
 
@@ -98,6 +117,8 @@ class VamanaContext : public IndexContext {
   }
 
   void topk_to_result(uint32_t idx);
+
+  void topk_to_keys(std::vector<uint64_t> &keys);
 
   inline void reset_query(const void *query) {
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
@@ -120,19 +141,11 @@ class VamanaContext : public IndexContext {
       const IndexMetric::MatrixBatchDistance &batch_distance) {
     dc_.update_distance(distance, batch_distance);
   }
-  inline TopkHeap &topk_heap() {
-    return topk_heap_;
-  }
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
-  inline LinearPool<dist_t> &pool() {
-    return pool_;
-  }
-  // Block-insert pool used by the AVX2-gated greedy_search fast path.
-  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
-  inline BlockHeap &block_pool() {
-    return block_pool_;
+  inline SearchHeap &search_heap() {
+    return search_heap_;
   }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
@@ -164,6 +177,22 @@ class VamanaContext : public IndexContext {
     return batch_indices_buf_;
   }
 
+  // Reusable scratch for the mmap/contiguous query fast path. Keeping these
+  // buffers in the context avoids allocating three (or four for metrics with
+  // extra values) max-degree arrays for every query.
+  inline std::vector<node_id_t> &search_neighbor_ids_buf() {
+    return search_neighbor_ids_buf_;
+  }
+  inline std::vector<float> &search_dists_buf() {
+    return search_dists_buf_;
+  }
+  inline std::vector<const void *> &search_vecs_buf() {
+    return search_vecs_buf_;
+  }
+  inline std::vector<const void *> &search_extra_values_buf() {
+    return search_extra_values_buf_;
+  }
+
   //! Build-time distance offset cached from the metric. Used by RobustPrune
   //! to shift the internal distance to a non-negative range before computing
   //! the ratio-based occlude_factor. Zero for metrics whose internal distance
@@ -183,7 +212,10 @@ class VamanaContext : public IndexContext {
     return ef_;
   }
   inline void set_po(uint32_t v) {
-    po_ = v;
+    if (v != requested_po_) {
+      requested_po_ = po_ = v;
+      query_prefetch_ready_ = false;
+    }
   }
 
   inline uint32_t po() const {
@@ -191,7 +223,10 @@ class VamanaContext : public IndexContext {
   }
 
   inline void set_pl(uint32_t v) {
-    pl_ = v;
+    if (v != requested_pl_) {
+      requested_pl_ = pl_ = v;
+      query_prefetch_ready_ = false;
+    }
   }
 
   inline uint32_t pl() const {
@@ -235,7 +270,8 @@ class VamanaContext : public IndexContext {
     filter_negative_prob_ = prob;
   }
 
-  void reset(void) override {
+  void reset() override {
+    search_heap_.clear();
     dc_.clear();
     for (auto &it : results_) {
       it.clear();
@@ -245,7 +281,7 @@ class VamanaContext : public IndexContext {
     IndexContext::set_fetch_vector(false);
   }
 
-  inline void check_need_adjuct_ctx(void) {
+  inline void check_need_adjuct_ctx() {
     check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -276,6 +312,7 @@ class VamanaContext : public IndexContext {
   }
 
   inline void clear() {
+    search_heap_.clear();
     dc_.clear();
     for (auto &it : results_) {
       it.clear();
@@ -287,7 +324,22 @@ class VamanaContext : public IndexContext {
   }
 
  private:
-  void fill_random_to_topk_full(void);
+  template <typename Fn>
+  void collect_search_result(Fn &&fn) {
+    if (force_padding_topk_) {
+      fill_random_to_topk_full();
+    }
+    search_heap_.for_each_sorted(topk_, [&](node_id_t id, dist_t score) {
+      if (score > this->threshold()) {
+        return false;
+      }
+      fn(id, score);
+      return true;
+    });
+  }
+
+  void fill_random_to_topk_full();
+  void update_query_prefetch();
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {
     if (cur_doc > kMaxReserveDocCnt) return kMaxReserveDocCnt;
@@ -316,14 +368,18 @@ class VamanaContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t ef_{VamanaEntity::kDefaultEf};
-  uint32_t po_{8};
-  uint32_t pl_{0};
+  uint32_t requested_po_{core_interface::kDefaultPrefetchOffset};
+  uint32_t requested_pl_{core_interface::kDefaultPrefetchLines};
+  // Active values keep the existing build defaults until query preparation.
+  uint32_t po_{requested_po_};
+  uint32_t pl_{requested_pl_};
+  bool query_prefetch_ready_{false};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};
-  TopkHeap topk_heap_{};
+  SearchHeap search_heap_{};
   TopkHeap update_heap_{};
   CandidateHeap candidates_{};
   VisitFilter visit_filter_{};
@@ -340,15 +396,16 @@ class VamanaContext : public IndexContext {
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
+  std::vector<node_id_t> search_neighbor_ids_buf_;
+  std::vector<float> search_dists_buf_;
+  std::vector<const void *> search_vecs_buf_;
+  std::vector<const void *> search_extra_values_buf_;
 
   //! Cached build-time distance offset (see build_distance_offset()).
   float build_distance_offset_{0.0f};
 
-  VisitFilter::Mode filter_mode_{VisitFilter::ByteMap};
+  VisitFilter::Mode filter_mode_{VisitFilter::BitMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
-
-  LinearPool<dist_t> pool_;
-  BlockHeap block_pool_;
 };
 
 }  // namespace core

@@ -46,7 +46,7 @@ class VecsIndexHolder : public IndexProvider {
     return true;
   }
 
-  const IndexMeta &index_meta(void) const {
+  const IndexMeta &index_meta() const {
     return vecs_reader_.index_meta();
   }
 
@@ -62,16 +62,18 @@ class VecsIndexHolder : public IndexProvider {
     //! Constructor
     Iterator(const VecsIndexHolder &holder, uint32_t cursor)
         : cursor_(cursor),
+          start_cursor_(cursor),
+          end_cursor_(holder.end_cursor()),
           vecs_reader_(holder.vecs_reader_),
           stop_(holder.stop_) {}
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
-      return !stop_ && cursor_ < vecs_reader_.num_vecs();
+    bool is_valid() const override {
+      return !stop_ && cursor_ < end_cursor_;
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return vecs_reader_.get_key(cursor_);
     }
 
@@ -96,63 +98,72 @@ class VecsIndexHolder : public IndexProvider {
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++cursor_;
     }
 
     //! Reset the iterator
-    virtual void reset(void) {
-      cursor_ = 0;
+    virtual void reset() {
+      cursor_ = start_cursor_;
     }
 
    private:
     size_t cursor_;
+    const size_t start_cursor_;
+    const size_t end_cursor_;
     const VecsReader &vecs_reader_;
     const bool &stop_;
   };
 
-  IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator() override {
     // make sure iter has value whenn create_iterator finished
     IndexHolder::Iterator::Pointer iter(
         new VecsIndexHolder::Iterator(*this, start_cursor_));
     return iter;
   }
 
-  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(void) {
+  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator() {
     // make sure iter has value whenn create_iterator finished
     IndexHybridHolder::Iterator::Pointer iter(
         new VecsIndexHolder::Iterator(*this, start_cursor_));
     return iter;
   }
 
-  //! Retrieve count of elements in holder
-  size_t count(void) const override {
+  //! Number of records in the selected iterator range.
+  size_t count() const override {
+    const size_t end = end_cursor();
+    return end > start_cursor_ ? end - start_cursor_ : 0;
+  }
+
+  //! Exclusive file offset after applying MaxDocs. Random-access methods and
+  //! the streaming benchmark use original file offsets, not selected offsets.
+  size_t end_cursor() const {
     return max_doc_count_ != 0
                ? std::min(max_doc_count_, vecs_reader_.num_vecs())
                : vecs_reader_.num_vecs();
   }
 
   //! Retrieve dimension
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return vecs_reader_.index_meta().dimension();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return vecs_reader_.index_meta().data_type();
   }
 
   //! Retrieve element size in bytes
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return vecs_reader_.index_meta().element_size();
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
-  void stop(void) {
+  void stop() {
     stop_ = true;
   }
 
@@ -188,7 +199,7 @@ class VecsIndexHolder : public IndexProvider {
     return start_cursor_;
   }
 
-  size_t total_sparse_count(void) const {
+  size_t total_sparse_count() const {
     return vecs_reader_.get_total_sparse_count();
   }
 
@@ -238,7 +249,7 @@ class VecsIndexHolder : public IndexProvider {
   }
 
   //! Retrieve the owner class
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     static std::string owner_class_name = "VecsIndexHolder";
     return owner_class_name;
   }
@@ -261,7 +272,6 @@ class VecsIndexHolder : public IndexProvider {
   std::unordered_map<uint64_t, size_t> key_to_index_map_;
 };
 
-
 /*!
  * Vecs Index Sparse Holder
  *  framwork will use IndexHolder in this way:
@@ -278,7 +288,7 @@ class VecsIndexSparseHolder : public IndexSparseHolder {
     return vecs_reader_.load(file_path);
   }
 
-  const IndexMeta &index_meta(void) const {
+  const IndexMeta &index_meta() const {
     return vecs_reader_.index_meta();
   }
 
@@ -298,12 +308,12 @@ class VecsIndexSparseHolder : public IndexSparseHolder {
           stop_(holder.stop_) {}
 
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return !stop_ && cursor_ < vecs_reader_.num_vecs();
     }
 
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return vecs_reader_.get_key(cursor_);
     }
 
@@ -323,12 +333,12 @@ class VecsIndexSparseHolder : public IndexSparseHolder {
     }
 
     //! Next iterator
-    void next(void) override {
+    void next() override {
       ++cursor_;
     }
 
     //! Reset the iterator
-    virtual void reset(void) {
+    virtual void reset() {
       cursor_ = 0;
     }
 
@@ -338,7 +348,7 @@ class VecsIndexSparseHolder : public IndexSparseHolder {
     const bool &stop_;
   };
 
-  IndexSparseHolder::Iterator::Pointer create_iterator(void) override {
+  IndexSparseHolder::Iterator::Pointer create_iterator() override {
     // make sure iter has value whenn create_iterator finished
     IndexSparseHolder::Iterator::Pointer iter(
         new VecsIndexSparseHolder::Iterator(*this, start_cursor_));
@@ -346,23 +356,23 @@ class VecsIndexSparseHolder : public IndexSparseHolder {
   }
 
   //! Retrieve count of elements in holder
-  size_t count(void) const override {
+  size_t count() const override {
     return max_doc_count_ != 0
                ? std::min(max_doc_count_, vecs_reader_.num_vecs())
                : vecs_reader_.num_vecs();
   }
 
   //! Retrieve type information
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return vecs_reader_.index_meta().data_type();
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return true;
   }
 
-  void stop(void) {
+  void stop() {
     stop_ = true;
   }
 
@@ -398,7 +408,7 @@ class VecsIndexSparseHolder : public IndexSparseHolder {
     return start_cursor_;
   }
 
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count() const override {
     return vecs_reader_.get_total_sparse_count();
   }
 

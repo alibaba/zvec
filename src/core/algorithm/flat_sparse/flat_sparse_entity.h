@@ -31,7 +31,7 @@ class FlatSparseEntity {
   typedef std::shared_ptr<FlatSparseEntity> Pointer;
 
   //! Constructor
-  explicit FlatSparseEntity() {}
+  explicit FlatSparseEntity() = default;
 
   //! Destructor
   ~FlatSparseEntity() = default;

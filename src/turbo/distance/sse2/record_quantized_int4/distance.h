@@ -20,18 +20,20 @@ namespace zvec::turbo::sse2 {
 
 void squared_euclidean_int4_distance_sse2(const void *a, const void *b,
                                           size_t dim, float *distance);
-void squared_euclidean_int4_batch_distance_sse2(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim, float *distances);
+void squared_euclidean_int4_batch_distance_sse2(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values);
 void cosine_int4_distance_sse2(const void *a, const void *b, size_t dim,
                                float *distance);
 void cosine_int4_batch_distance_sse2(const void *const *vectors,
                                      const void *query, size_t n, size_t dim,
-                                     float *distances);
+                                     float *distances,
+                                     const void *const *extra_values);
 void inner_product_int4_distance_sse2(const void *a, const void *b, size_t dim,
                                       float *distance);
 void inner_product_int4_batch_distance_sse2(const void *const *vectors,
                                             const void *query, size_t n,
-                                            size_t dim, float *distances);
+                                            size_t dim, float *distances,
+                                            const void *const *extra_values);
 
 }  // namespace zvec::turbo::sse2

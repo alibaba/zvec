@@ -29,10 +29,9 @@ void squared_euclidean_raw_uint8_distance(const void *lhs, const void *rhs,
   *distance = static_cast<float>(sum);
 }
 
-void squared_euclidean_raw_uint8_batch_distance(const void *const *vectors,
-                                                const void *query, size_t count,
-                                                size_t dimension,
-                                                float *distances) {
+void squared_euclidean_raw_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t count,
+    size_t dimension, float *distances, const void *const * /*extra_values*/) {
   for (size_t i = 0; i < count; ++i) {
     squared_euclidean_raw_uint8_distance(vectors[i], query, dimension,
                                          distances + i);

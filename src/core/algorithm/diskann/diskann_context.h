@@ -53,7 +53,8 @@ class DiskAnnContext : public IndexContext,
 
   //! Construct
   DiskAnnContext(const IndexMeta &meta, const IndexMetric::Pointer &measure,
-                 const DiskAnnEntity::Pointer &entity);
+                 const DiskAnnEntity::Pointer &entity,
+                 const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Destructor
   virtual ~DiskAnnContext();
@@ -71,10 +72,11 @@ class DiskAnnContext : public IndexContext,
   //! Update context, the context may be shared by different searcher/streamer
   int update_context(ContextType type, const IndexMeta &meta,
                      const IndexMetric::Pointer &measure,
-                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num);
+                     const DiskAnnEntity::Pointer &entity, uint32_t magic_num,
+                     const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -90,7 +92,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
 
@@ -99,7 +101,7 @@ class DiskAnnContext : public IndexContext,
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return &group_results_[0];
   }
 
@@ -107,7 +109,7 @@ class DiskAnnContext : public IndexContext,
     return &group_results_[idx];
   }
 
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -121,12 +123,12 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Retrieve mode of debug
-  bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return debug_mode_;
   }
 
   //! Retrieve string of debug
-  std::string debug_string(void) const override {
+  std::string debug_string() const override {
     return std::string("");
   }
 
@@ -178,14 +180,6 @@ class DiskAnnContext : public IndexContext,
 
   inline void *query_rotated() {
     return query_rotated_;
-  }
-
-  inline float *pq_table_dist_buffer() {
-    return pq_table_dist_buffer_;
-  }
-
-  inline void *pq_coord_buffer() {
-    return pq_coord_buffer_;
   }
 
   inline void *coord_buffer() {
@@ -280,7 +274,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Reset context
-  void reset(void) override {
+  void reset() override {
     set_filter(nullptr);
     reset_threshold();
     set_fetch_vector(false);
@@ -387,8 +381,6 @@ class DiskAnnContext : public IndexContext,
   IOContext io_ctx_{};
   SearchStats query_stats_;
 
-  float *pq_table_dist_buffer_{nullptr};
-  void *pq_coord_buffer_{nullptr};
   void *query_{nullptr};
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};

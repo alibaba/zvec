@@ -25,8 +25,8 @@ class HnswSparseSearcher : public IndexSearcher {
   using ContextPointer = IndexSearcher::Context::Pointer;
 
  public:
-  HnswSparseSearcher(void);
-  ~HnswSparseSearcher(void) override;
+  HnswSparseSearcher();
+  ~HnswSparseSearcher() override;
 
   HnswSparseSearcher(const HnswSparseSearcher &) = delete;
   HnswSparseSearcher &operator=(const HnswSparseSearcher &) = delete;
@@ -36,14 +36,14 @@ class HnswSparseSearcher : public IndexSearcher {
   int init(const ailego::Params &params) override;
 
   //! Cleanup Searcher
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Load Index from storage
   int load(IndexStorage::Pointer container,
            IndexMetric::Pointer measure) override;
 
   //! Unload index from storage
-  int unload(void) override;
+  int unload() override;
 
   //! Similarity search with sparse inputs
   int search_impl(const uint32_t sparse_count, const uint32_t *sparse_indices,
@@ -101,21 +101,21 @@ class HnswSparseSearcher : public IndexSearcher {
   ContextPointer create_context() const override;
 
   //! Create a new iterator
-  IndexSearcher::SparseProvider::Pointer create_sparse_provider(
-      void) const override;
+  IndexSearcher::SparseProvider::Pointer create_sparse_provider()
+      const override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Retrieve params of index
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 

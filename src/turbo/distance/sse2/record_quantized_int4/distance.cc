@@ -176,7 +176,9 @@ void inner_product_int4_distance_sse2(const void *a, const void *b, size_t dim,
 
 void inner_product_int4_batch_distance_sse2(const void *const *vectors,
                                             const void *query, size_t n,
-                                            size_t dim, float *distances) {
+                                            size_t dim, float *distances,
+                                            const void *const *
+                                            /*extra_values*/) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
@@ -238,7 +240,9 @@ void squared_euclidean_int4_distance_sse2(const void *a, const void *b,
 
 void squared_euclidean_int4_batch_distance_sse2(const void *const *vectors,
                                                 const void *query, size_t n,
-                                                size_t dim, float *distances) {
+                                                size_t dim, float *distances,
+                                                const void *const *
+                                                /*extra_values*/) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 32;
   if (dim <= kTailUnits) {
@@ -301,7 +305,8 @@ void cosine_int4_distance_sse2(const void *a, const void *b, size_t dim,
 
 void cosine_int4_batch_distance_sse2(const void *const *vectors,
                                      const void *query, size_t n, size_t dim,
-                                     float *distances) {
+                                     float *distances, const void *const *
+                                     /*extra_values*/) {
 #if ZVEC_TURBO_SSE2
   constexpr size_t kTailUnits = 40;
   if (dim <= kTailUnits) {

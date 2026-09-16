@@ -40,7 +40,8 @@ void UniformUint4SquaredEuclidean(const void *lhs, const void *rhs,
 void UniformUint4SquaredEuclideanBatch(const void *const *vectors,
                                        const void *query, size_t count,
                                        size_t encoded_dimension,
-                                       float *distances) {
+                                       float *distances,
+                                       const void *const * /*extra_values*/) {
   for (size_t i = 0; i < count; ++i) {
     UniformUint4SquaredEuclidean(vectors[i], query, encoded_dimension,
                                  distances + i);
@@ -71,7 +72,7 @@ class UniformUint4Metric : public IndexMetric {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
   bool is_matched(const IndexMeta &meta) const override {
@@ -86,7 +87,7 @@ class UniformUint4Metric : public IndexMetric {
            qmeta.unit_size() == meta_.unit_size();
   }
 
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     auto turbo_distance = turbo::get_distance_func(
         turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt4,
         turbo::QuantizeType::kUniformUint4);
@@ -95,7 +96,7 @@ class UniformUint4Metric : public IndexMetric {
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     return m == 1 && n == 1 ? distance() : MatrixDistance{};
   }
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     auto turbo_distance = turbo::get_batch_distance_func(
         turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt4,
         turbo::QuantizeType::kUniformUint4);
@@ -104,20 +105,20 @@ class UniformUint4Metric : public IndexMetric {
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return nullptr;
   }
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
   int train(const void * /*vector*/, size_t /*dimension*/) override {
     return 0;
   }
-  bool support_train(void) const override {
+  bool support_train() const override {
     return false;
   }
   void normalize(float * /*score*/) const override {}
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return false;
   }
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 

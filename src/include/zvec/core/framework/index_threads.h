@@ -40,35 +40,35 @@ class IndexThreads {
     using Pointer = std::shared_ptr<TaskGroup>;
 
     //! Destructor
-    virtual ~TaskGroup(void) {}
+    virtual ~TaskGroup() = default;
 
     //! Submit a task to be executed asynchronous
     virtual void submit(ailego::ClosureHandler &&task) = 0;
 
     //! Check if the group is finished
-    virtual bool is_finished(void) const = 0;
+    virtual bool is_finished() const = 0;
 
     //! Wait until all tasks in group finished
-    virtual void wait_finish(void) = 0;
+    virtual void wait_finish() = 0;
   };
 
   //! Destructor
-  virtual ~IndexThreads(void) {}
+  virtual ~IndexThreads() = default;
 
   //! Retrieve thread count in pool
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Stop all threads
-  virtual void stop(void) = 0;
+  virtual void stop() = 0;
 
   //! Submit a task to be executed asynchronous
   virtual void submit(ailego::ClosureHandler &&task) = 0;
 
   //! Make a task group
-  virtual TaskGroup::Pointer make_group(void) = 0;
+  virtual TaskGroup::Pointer make_group() = 0;
 
   //! Get the current work thread index
-  virtual int indexof_this(void) const = 0;
+  virtual int indexof_this() const = 0;
 };
 
 /*! Single Queue Index Threads
@@ -95,12 +95,12 @@ class SingleQueueIndexThreads : public IndexThreads {
     }
 
     //! Check if the group is finished
-    bool is_finished(void) const override {
+    bool is_finished() const override {
       return task_group_->is_finished();
     }
 
     //! Wait until all tasks in group finished
-    void wait_finish(void) override {
+    void wait_finish() override {
       return task_group_->wait_finish();
     }
 
@@ -120,18 +120,18 @@ class SingleQueueIndexThreads : public IndexThreads {
       : SingleQueueIndexThreads(0, binding) {}
 
   //! Constructor
-  SingleQueueIndexThreads(void) : SingleQueueIndexThreads{false} {}
+  SingleQueueIndexThreads() : SingleQueueIndexThreads{false} {}
 
   //! Destructor
-  ~SingleQueueIndexThreads(void) override {}
+  ~SingleQueueIndexThreads() override = default;
 
   //! Retrieve thread count in pool
-  size_t count(void) const override {
+  size_t count() const override {
     return pool_.count();
   }
 
   //! Stop all threads
-  void stop(void) override {
+  void stop() override {
     pool_.stop();
   }
 
@@ -144,22 +144,23 @@ class SingleQueueIndexThreads : public IndexThreads {
   }
 
   //! Make a task group
-  TaskGroup::Pointer make_group(void) override {
+  TaskGroup::Pointer make_group() override {
     return std::make_shared<SingleQueueTaskGroup>(pool_.make_group());
   }
 
   //! Get the current work thread index
-  int indexof_this(void) const override {
+  int indexof_this() const override {
     return pool_.indexof_this();
   }
 
- private:
-  static constexpr size_t kMaxQueueSize = 4096u;
-
+ public:
   //! Disable them
   SingleQueueIndexThreads(const SingleQueueIndexThreads &) = delete;
   SingleQueueIndexThreads(SingleQueueIndexThreads &&) = delete;
   SingleQueueIndexThreads &operator=(const SingleQueueIndexThreads &) = delete;
+
+ private:
+  static constexpr size_t kMaxQueueSize = 4096u;
 
   //! Members
   ailego::ThreadPool pool_{};

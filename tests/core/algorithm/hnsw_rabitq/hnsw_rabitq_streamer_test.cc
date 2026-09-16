@@ -35,8 +35,8 @@ constexpr size_t static dim = 128;
 
 class HnswRabitqStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
@@ -45,7 +45,7 @@ class HnswRabitqStreamerTest : public testing::Test {
 std::string HnswRabitqStreamerTest::dir_("hnswRabitqStreamerTest");
 shared_ptr<IndexMeta> HnswRabitqStreamerTest::index_meta_ptr_;
 
-void HnswRabitqStreamerTest::SetUp(void) {
+void HnswRabitqStreamerTest::SetUp() {
   if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2()) {
     GTEST_SKIP() << "CPU does not support AVX2/FMA or AVX512F/BW/DQ";
   }
@@ -55,7 +55,7 @@ void HnswRabitqStreamerTest::SetUp(void) {
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, ailego::Params());
 }
 
-void HnswRabitqStreamerTest::TearDown(void) {
+void HnswRabitqStreamerTest::TearDown() {
   ailego::FileHelper::RemovePath(dir_.c_str());
 }
 

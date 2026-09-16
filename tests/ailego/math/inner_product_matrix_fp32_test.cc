@@ -26,7 +26,7 @@
 
 using namespace zvec::ailego;
 
-static inline const char *IntelIntrinsics(void) {
+static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
@@ -209,7 +209,7 @@ TEST(DistanceMatrix, MinusInnerProduct_General) {
 }
 
 template <size_t M, size_t N>
-void TestMinusInnerProductMatrix(void) {
+void TestMinusInnerProductMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -253,7 +253,7 @@ void TestMinusInnerProductMatrix(void) {
 }
 
 template <size_t M, size_t N>
-void TestInnerProductMatrix(void) {
+void TestInnerProductMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -593,7 +593,7 @@ TEST(DistanceMatrix, InnerProduct_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void InnerProductBenchmark(void) {
+void InnerProductBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;
@@ -677,7 +677,7 @@ void InnerProductBenchmark(void) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void MinusInnerProductBenchmark(void) {
+void MinusInnerProductBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;
@@ -863,7 +863,7 @@ static inline float SparseDistanceCommon(uint32_t count1, uint32_t *index1,
   return result;
 }
 
-void TestInnerProductSparse(void) {
+void TestInnerProductSparse() {
   // test 1
   const uint32_t sparse_vec_count_0 = 52;
 
@@ -1003,7 +1003,7 @@ void TestInnerProductSparse(void) {
   EXPECT_GE(0.00001, std::abs(result2 - result3));
 }
 
-void TestInnerProductSparseMore(void) {
+void TestInnerProductSparseMore() {
   std::vector<uint32_t> sparse_vec_counts;
   std::vector<uint32_t *> sparse_vec_indices;
   std::vector<float *> sparse_vec_values;

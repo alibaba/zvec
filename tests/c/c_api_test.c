@@ -507,11 +507,11 @@ void test_schema_edge_cases(void) {
   // Test 4: NULL schema parameter handling for all functions
   zvec_error_code_t err;
   const char **test_names = NULL;
-  size_t test_count = 0;
+  size_t field_name_count = 0;
   err = zvec_collection_schema_get_all_field_names(NULL, &test_names,
-                                                   &test_count);
+                                                   &field_name_count);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
-  TEST_ASSERT(test_count == 0);
+  TEST_ASSERT(field_name_count == 0);
 
   const zvec_field_schema_t *null_field =
       zvec_collection_schema_get_field(NULL, "test");
@@ -5235,7 +5235,7 @@ void test_performance_benchmarks(void) {
           // Create random vector
           float vec[128];
           for (int j = 0; j < 128; j++) {
-            vec[j] = (float)rand() / RAND_MAX;
+            vec[j] = (float)rand() / (float)RAND_MAX;
           }
           zvec_doc_add_field_by_value(batch_docs[i], "vec",
                                       ZVEC_DATA_TYPE_VECTOR_FP32, vec,
@@ -5276,7 +5276,7 @@ void test_performance_benchmarks(void) {
       // Test query performance
       float query_vec[128];
       for (int i = 0; i < 128; i++) {
-        query_vec[i] = (float)rand() / RAND_MAX;
+        query_vec[i] = (float)rand() / (float)RAND_MAX;
       }
 
       zvec_vector_query_t *query = zvec_vector_query_create();

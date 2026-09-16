@@ -36,16 +36,13 @@ class IndexMemory {
     Block(size_t sz) : buffer_(sz) {}
 
     //! Constructor
-    Block(const Block &rhs) : buffer_(rhs.buffer_) {}
+    Block(const Block &rhs) = default;
 
     //! Constructor
     Block(Block &&rhs) noexcept : buffer_(std::move(rhs.buffer_)) {}
 
     //! Assignment
-    Block &operator=(const Block &rhs) {
-      buffer_ = rhs.buffer_;
-      return *this;
-    }
+    Block &operator=(const Block &rhs) = default;
 
     //! Assignment
     Block &operator=(Block &&rhs) {
@@ -54,7 +51,7 @@ class IndexMemory {
     }
 
     //! Retrieve size of buffer
-    size_t size(void) const {
+    size_t size() const {
       return buffer_.size();
     }
 
@@ -121,19 +118,16 @@ class IndexMemory {
     typedef std::shared_ptr<Rope> Pointer;
 
     //! Constructor
-    Rope(void) {}
+    Rope() = default;
 
     //! Constructor
-    Rope(const Rope &rhs) : blocks_(rhs.blocks_) {}
+    Rope(const Rope &rhs) = default;
 
     //! Constructor
     Rope(Rope &&rhs) : blocks_(std::move(rhs.blocks_)) {}
 
     //! Assignment
-    Rope &operator=(const Rope &rhs) {
-      blocks_ = rhs.blocks_;
-      return *this;
-    }
+    Rope &operator=(const Rope &rhs) = default;
 
     //! Assignment
     Rope &operator=(Rope &&rhs) {
@@ -152,12 +146,12 @@ class IndexMemory {
     }
 
     //! Retrieve count of blocks
-    size_t count(void) const {
+    size_t count() const {
       return blocks_.size();
     }
 
     //! Retrieve memory size of rope
-    size_t size(void) const {
+    size_t size() const {
       size_t sum = 0u;
       for (const auto &it : blocks_) {
         sum += it.size();
@@ -166,7 +160,7 @@ class IndexMemory {
     }
 
     //! Test if the rope is empty
-    bool empty(void) const {
+    bool empty() const {
       return blocks_.empty();
     }
 
@@ -181,7 +175,7 @@ class IndexMemory {
   };
 
   //! Constructor
-  IndexMemory(void) {}
+  IndexMemory() = default;
 
   //! Constructor
   IndexMemory(IndexMemory &&rhs) {
@@ -200,13 +194,13 @@ class IndexMemory {
   }
 
   //! Retrieve the singleton memory
-  static IndexMemory *Instance(void) {
+  static IndexMemory *Instance() {
     static IndexMemory mem;
     return (&mem);
   }
 
   //! Clear the memory
-  void clear(void) {
+  void clear() {
     std::lock_guard<std::mutex> latch(mutex_);
     pool_.clear();
   }
@@ -252,11 +246,12 @@ class IndexMemory {
     }
   }
 
- private:
+ public:
   //! Disable them
   IndexMemory(const IndexMemory &) = delete;
   IndexMemory &operator=(const IndexMemory &) = delete;
 
+ private:
   //! Members
   std::map<std::string, Rope::Pointer> pool_{};
   mutable std::mutex mutex_{};

@@ -434,7 +434,8 @@ TEST(CosineMeasure_General_Test, TestDistanceBatchFp16Simple) {
     vecs[0] = a_out.data();
     vecs[1] = b_out.data();
     dist_batch(vecs, b_out.data(), 2,
-               dimension + ExtraDimension(IndexMeta::DT_FP16), results);
+               dimension + ExtraDimension(IndexMeta::DT_FP16), results,
+               nullptr);
 
     if (measure->support_normalize()) {
       measure->normalize(&results[0]);
@@ -476,7 +477,8 @@ TEST(CosineMeasure_General_Test, TestDistanceBatchFp32Simple) {
     vecs[0] = a_out.data();
     vecs[1] = b_out.data();
     dist_batch(vecs, b_out.data(), 2,
-               dimension + ExtraDimension(IndexMeta::DT_FP32), results);
+               dimension + ExtraDimension(IndexMeta::DT_FP32), results,
+               nullptr);
 
     if (measure->support_normalize()) {
       measure->normalize(&results[0]);
@@ -516,7 +518,7 @@ void calculate_distance(std::vector<T> &a, std::vector<T> &b, size_t dimension,
   vecs[0] = a_out.data();
   vecs[1] = b_out.data();
   dist_batch(vecs, b_out.data(), batch_size,
-             dimension + ExtraDimension(data_type), results);
+             dimension + ExtraDimension(data_type), results, nullptr);
 
   if (measure->support_normalize()) {
     measure->normalize(&results[0]);

@@ -907,7 +907,7 @@ int IVFEntity::get_vector_by_key(uint64_t key,
   }
 }
 
-IVFEntity::Pointer IVFEntity::clone(void) const {
+IVFEntity::Pointer IVFEntity::clone() const {
   auto entity = std::make_shared<IVFEntity>();
   return clone(entity);
 }
