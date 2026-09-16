@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 #include <gtest/gtest.h>
+#include <rocksdb/utilities/stackable_db.h>
 #include <zvec/db/config.h>
 #include <zvec/db/index_params.h>
 #include "db/common/file_helper.h"
@@ -2014,3 +2015,107 @@ INSTANTIATE_TEST_SUITE_P(SealPaths, FtsSealRecoveryDeathTest,
                          ::testing::Bool());
 
 #endif  // GTEST_HAS_DEATH_TEST
+
+namespace zvec {
+namespace {
+class FailDropDB : public rocksdb::StackableDB {
+ public:
+  FailDropDB(rocksdb::DB *db, int fail_at)
+      : rocksdb::StackableDB(db), fail_at_(fail_at) {}
+
+  rocksdb::Status DropColumnFamily(rocksdb::ColumnFamilyHandle *cf) override {
+    if (++attempts_ == fail_at_) {
+      failed_cf = cf->GetName();
+      return rocksdb::Status::IOError("injected column family drop failure");
+    }
+    return rocksdb::StackableDB::DropColumnFamily(cf);
+  }
+
+  std::string failed_cf;
+
+ private:
+  int fail_at_;
+  int attempts_{0};
+};
+}  // namespace
+
+class FtsSealRetryTest : public ::testing::TestWithParam<int> {
+ protected:
+  void TearDown() override {
+    FileHelper::RemoveDirectory("./test_fts_seal_retry_" +
+                                std::to_string(GetParam()));
+  }
+
+  RocksdbContext &context(FtsIndexer &indexer) {
+    return *indexer.fts_ctx_;
+  }
+};
+
+TEST_P(FtsSealRetryTest, RetriesPendingColumnFamilyCleanup) {
+  const int fail_at = GetParam();
+  const bool seal_all = fail_at > 0;
+  const std::string path = "./test_fts_seal_retry_" + std::to_string(fail_at);
+  FileHelper::RemoveDirectory(path);
+  const std::vector<std::string> names =
+      seal_all ? std::vector<std::string>{"text", "title"}
+               : std::vector<std::string>{"text"};
+  FieldSchemaPtrList fields;
+  for (const auto &name : names) {
+    fields.push_back(make_test_field_meta(
+        name, std::make_shared<zvec::FtsIndexParams>("whitespace")));
+  }
+  auto indexer = FtsIndexer::CreateAndOpen(path, fields, true);
+  ASSERT_NE(indexer, nullptr);
+  auto &ctx = context(*indexer);
+  auto *fault = new FailDropDB(ctx.db_.release(), std::abs(fail_at));
+  ctx.db_.reset(fault);
+  for (const auto &name : names) {
+    ASSERT_TRUE(indexer->insert(name, 0, "shared shared").ok());
+    ASSERT_TRUE(indexer->insert(name, 1, "shared").ok());
+  }
+  const auto seal = [&]() {
+    return seal_all ? indexer->seal_all() : indexer->seal("text");
+  };
+  ASSERT_FALSE(seal().ok());
+  ASSERT_FALSE(fault->failed_cf.empty());
+  ASSERT_NE(ctx.get_cf(fault->failed_cf), nullptr);
+  // Retry the dump's flush as well as seal, without reopening the segment.
+  ASSERT_TRUE(indexer->flush().ok());
+  ASSERT_TRUE(seal().ok());
+  ASSERT_TRUE(seal().ok());
+  for (const auto &name : names) {
+    for (const auto &suffix :
+         {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+      EXPECT_EQ(ctx.get_cf(name + suffix), nullptr);
+    }
+    std::string raw;
+    ASSERT_TRUE(
+        ctx.db_->Get(ctx.read_opts_, ctx.get_cf(name), "shared", &raw).ok());
+    ASSERT_TRUE(
+        fts::BitPackedPostingList::is_bitpacked_format(raw.data(), raw.size()));
+    fts::BitPackedPostingIterator postings;
+    ASSERT_EQ(postings.open(raw.data(), raw.size()), 0);
+    EXPECT_EQ(postings.next_doc(), 0u);
+    EXPECT_EQ(postings.term_freq(), 2u);
+    EXPECT_EQ(postings.doc_len(), 2u);
+    EXPECT_EQ(postings.next_doc(), 1u);
+    EXPECT_EQ(postings.term_freq(), 1u);
+    EXPECT_EQ(postings.doc_len(), 1u);
+    EXPECT_EQ(postings.next_doc(), fts::BitPackedPostingIterator::NO_MORE_DOCS);
+  }
+  // Recreating the same field must not inherit the previous conversion state.
+  ASSERT_TRUE(indexer->remove_field_indexer("text").ok());
+  ASSERT_TRUE(indexer->create_field_indexer(*fields.front()).ok());
+  ASSERT_TRUE(indexer->insert("text", 0, "fresh fresh").ok());
+  ASSERT_TRUE(seal().ok());
+  std::string fresh;
+  ASSERT_TRUE(
+      ctx.db_->Get(ctx.read_opts_, ctx.get_cf("text"), "fresh", &fresh).ok());
+  EXPECT_TRUE(fts::BitPackedPostingList::is_bitpacked_format(fresh.data(),
+                                                             fresh.size()));
+  EXPECT_TRUE(indexer->close().ok());
+}
+
+INSTANTIATE_TEST_SUITE_P(DropFailures, FtsSealRetryTest,
+                         ::testing::Values(-1, -2, -3, 1, 2, 3, 4, 5, 6));
+}  // namespace zvec

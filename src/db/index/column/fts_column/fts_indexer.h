@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
@@ -82,12 +83,17 @@ class FtsIndexer {
   }
 
  private:
+  friend class FtsSealRetryTest;
+
   Status open(const FieldSchemaPtrList &fts_fields, bool create,
               bool read_only);
 
   std::string working_dir_;
   std::shared_ptr<RocksdbContext> fts_ctx_;
   std::unordered_map<std::string, fts::FtsColumnIndexerPtr> indexers_;
+  // Conversion has completed, but dropping side CFs may still need a retry.
+  // Retain completed fields until removal/close so sealing is idempotent.
+  std::unordered_set<std::string> converted_fields_;
 };
 
 }  // namespace zvec

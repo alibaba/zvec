@@ -134,6 +134,7 @@ Status FtsIndexer::flush() {
 
 Status FtsIndexer::close() {
   indexers_.clear();
+  converted_fields_.clear();
   if (fts_ctx_) {
     auto s = fts_ctx_->close();
     fts_ctx_.reset();
@@ -218,6 +219,7 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
   auto it = indexers_.find(field_name);
   if (it != indexers_.end()) {
     indexers_.erase(it);
+    converted_fields_.erase(field_name);
   }
 
   // Drop all CFs belonging to this field.
@@ -282,10 +284,13 @@ Status FtsIndexer::seal(const std::string &field_name) {
                                  " ", ret.error().message());
   }
 
-  ret = indexer->convert_postings_to_bitpacked();
-  if (!ret.has_value()) {
-    return Status::InternalError("FtsIndexer::seal convert failed: ",
-                                 field_name, " ", ret.error().message());
+  if (converted_fields_.count(field_name) == 0) {
+    ret = indexer->convert_postings_to_bitpacked();
+    if (!ret.has_value()) {
+      return Status::InternalError("FtsIndexer::seal convert failed: ",
+                                   field_name, " ", ret.error().message());
+    }
+    converted_fields_.insert(field_name);
   }
 
   indexer->reset_side_cfs();
@@ -310,11 +315,15 @@ Status FtsIndexer::seal_all() {
 
   // Convert all postings to bitpacked format.
   for (const auto &[name, indexer] : indexers_) {
+    if (converted_fields_.count(name) != 0) {
+      continue;
+    }
     auto ret = indexer->convert_postings_to_bitpacked();
     if (!ret.has_value()) {
       return Status::InternalError("FtsIndexer::seal_all convert failed: ",
                                    name, " ", ret.error().message());
     }
+    converted_fields_.insert(name);
   }
 
   // Reset side CFs and drop them.
