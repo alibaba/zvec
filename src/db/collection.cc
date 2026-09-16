@@ -1195,7 +1195,7 @@ Status CollectionImpl::validate(const std::string &column,
         field->data_type() > DataType::DOUBLE) {
       return Status::InvalidArgument(
           "Invalid schema: this operation requires a numeric field; field[",
-          format_name(field->name()), "] has type ",
+          field->name(), "] has type ",
           DataTypeCodeBook::AsString(field->data_type()));
     }
     return Status::OK();
@@ -1209,8 +1209,7 @@ Status CollectionImpl::validate(const std::string &column,
       }
 
       if (schema_->has_field(schema->name())) {
-        return Status::InvalidArgument("Invalid schema: field[",
-                                       format_name(schema->name()),
+        return Status::InvalidArgument("Invalid schema: field[", schema->name(),
                                        "] already exists");
       }
 
@@ -1228,7 +1227,7 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (expression.empty() && !schema->nullable()) {
         return Status::InvalidArgument("Invalid schema: non-nullable field[",
-                                       format_name(schema->name()),
+                                       schema->name(),
                                        "] requires an expression when added");
       }
 
@@ -1259,8 +1258,7 @@ Status CollectionImpl::validate(const std::string &column,
         s = validate_field_name(rename);
         CHECK_RETURN_STATUS(s);
         if (schema_->has_field(rename)) {
-          return Status::InvalidArgument("Invalid schema: field[",
-                                         format_name(rename),
+          return Status::InvalidArgument("Invalid schema: field[", rename,
                                          "] already exists");
         }
       } else {
@@ -1325,18 +1323,16 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
-  // Keep caller-owned mutable objects out of the published schema. Validate
-  // and execute the operation using the same independent snapshot.
-  auto field_snapshot =
+  auto field_copy =
       column_schema ? std::make_shared<FieldSchema>(*column_schema) : nullptr;
-  auto s = validate("", field_snapshot, expression, "", ColumnOp::ADD);
+  auto s = validate("", field_copy, expression, "", ColumnOp::ADD);
   CHECK_RETURN_STATUS(s);
 
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
-  s = new_schema->add_field(field_snapshot);
+  s = new_schema->add_field(field_copy);
   CHECK_RETURN_STATUS(s);
 
   if (writing_segment_->has_record()) {
@@ -1347,7 +1343,7 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
   Version new_version = version_manager_->get_current_version();
 
   // add column on segment manager
-  s = segment_manager_->add_column(field_snapshot, expression,
+  s = segment_manager_->add_column(field_copy, expression,
                                    options.concurrency_);
   CHECK_RETURN_STATUS(s);
 
@@ -1482,23 +1478,23 @@ Status CollectionImpl::alter_column(const std::string &column_name,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
-  auto new_field_schema =
+  auto field_copy =
       new_column_schema ? std::make_shared<FieldSchema>(*new_column_schema)
                         : nullptr;
-  auto s = validate(column_name, new_field_schema, "", rename, ColumnOp::ALTER);
+  auto s = validate(column_name, field_copy, "", rename, ColumnOp::ALTER);
   CHECK_RETURN_STATUS(s);
 
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
   if (!rename.empty()) {
-    new_field_schema =
+    field_copy =
         std::make_shared<FieldSchema>(*schema_->get_field(column_name));
-    new_field_schema->set_name(rename);
+    field_copy->set_name(rename);
   }
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
-  s = new_schema->alter_field(column_name, new_field_schema);
+  s = new_schema->alter_field(column_name, field_copy);
   CHECK_RETURN_STATUS(s);
 
   if (writing_segment_->has_record()) {
@@ -1509,7 +1505,7 @@ Status CollectionImpl::alter_column(const std::string &column_name,
   Version new_version = version_manager_->get_current_version();
 
   // alter column on segment manager
-  s = segment_manager_->alter_column(column_name, new_field_schema,
+  s = segment_manager_->alter_column(column_name, field_copy,
                                      options.concurrency_);
   CHECK_RETURN_STATUS(s);
 
@@ -1621,14 +1617,9 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  for (size_t i = 0; i < docs.size(); ++i) {
-    auto &doc = docs[i];
+  for (auto &&doc : docs) {
     auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
-    if (!s.ok()) {
-      return tl::make_unexpected(Status(
-          s.code(),
-          s.message() + " (document at index " + std::to_string(i) + ")"));
-    }
+    CHECK_RETURN_STATUS_EXPECTED(s);
   }
 
   // TODO: The granularity of the write_lock is too coarse.

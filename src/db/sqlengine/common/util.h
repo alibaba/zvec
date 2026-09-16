@@ -16,7 +16,6 @@
 #include <string>
 #include <arrow/api.h>
 #include <arrow/record_batch.h>
-#include "db/common/constants.h"
 
 namespace zvec::sqlengine {
 

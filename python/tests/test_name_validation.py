@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
+
 import pytest
 import zvec
 
@@ -96,8 +98,16 @@ def test_invalid_id_rejects_batch_before_writing(collection, operation, doc_id, 
     message = str(exc_info.value)
     assert message.startswith("Invalid doc:")
     assert reason in message
-    assert "document at index 1" in message
+    if doc_id == "\ud800":
+        # Conversion fails in Python before native validation runs.
+        assert "document at index 1" in message
+    else:
+        assert "document at index" not in message
     assert "offset" not in message
+    if doc_id:
+        assert "id[" in message
+    assert "\n" not in message
+    assert "\0" not in message
     fetched = collection.fetch("valid")
     if operation == "update":
         assert fetched["valid"].field("text") == "before"
@@ -149,6 +159,24 @@ def test_invalid_collection_names_report_the_reason(tmp_path, name, reason):
     assert "collection name" in message
     assert reason in message
     assert "offset" not in message
+    if name:
+        assert "collection name[" in message
+    assert "\n" not in message
+    assert "\0" not in message
+
+
+@pytest.mark.parametrize(
+    "doc_id,preview",
+    [
+        ("order\n[123]", r"order\n\[123\]"),
+        (b"\xff", r"\xFF"),
+        ("x" * 1025, "x" * 32 + "..."),
+    ],
+)
+def test_id_error_includes_safe_preview(collection, doc_id, preview):
+    with pytest.raises(ValueError) as exc_info:
+        collection.insert(zvec.Doc(doc_id, fields={"text": "value"}))
+    assert f"Invalid doc: id[{preview}]" in str(exc_info.value)
 
 
 def test_long_field_name_and_rejected_rename_preserve_data(tmp_path):
@@ -175,7 +203,11 @@ def test_long_field_name_and_rejected_rename_preserve_data(tmp_path):
 def test_surrogate_id_has_a_readable_encoding_error(collection, operation):
     with pytest.raises(
         ValueError,
-        match=r"^Invalid doc: id is not valid UTF-8 \(document at index 0\)$",
+        match="^"
+        + re.escape(
+            r"Invalid doc: id['\ud800'] is not valid UTF-8 (document at index 0)"
+        )
+        + "$",
     ):
         getattr(collection, operation)(zvec.Doc("\ud800", fields={"text": "value"}))
     assert collection.stats.doc_count == 0
@@ -183,13 +215,16 @@ def test_surrogate_id_has_a_readable_encoding_error(collection, operation):
 
 @pytest.mark.parametrize("kind", ["collection", "field", "vector"])
 def test_surrogate_schema_name_has_a_readable_encoding_error(kind):
-    with pytest.raises(ValueError, match="^Invalid schema: .* is not valid UTF-8$"):
+    with pytest.raises(
+        ValueError, match="^Invalid schema: .* is not valid UTF-8$"
+    ) as exc_info:
         if kind == "collection":
             zvec.CollectionSchema("\ud800")
         elif kind == "field":
             zvec.FieldSchema("\ud800", zvec.DataType.INT32)
         else:
             zvec.VectorSchema("\ud800", zvec.DataType.VECTOR_FP32, dimension=2)
+    assert r"['\ud800']" in str(exc_info.value)
 
 
 @pytest.mark.parametrize("invalid", [0, False, [], {}, b""])

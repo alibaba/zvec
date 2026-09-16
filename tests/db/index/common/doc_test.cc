@@ -1738,6 +1738,25 @@ TEST_F(DocDetailedTest, DeserializeChecksNestedCountsAndBooleanRepresentation) {
   EXPECT_EQ(Doc::deserialize(buffer.data(), buffer.size()), nullptr);
 }
 
+TEST_F(DocDetailedTest,
+       LongFieldNamesKeepDistinctIdentitiesAcrossSerialization) {
+  const std::string prefix(32, 'f');
+  const std::vector<std::string> names{prefix, prefix + "a",
+                                       prefix + std::string(31, 'a') + "x",
+                                       prefix + std::string(31, 'a') + "y"};
+  for (size_t i = 0; i < names.size(); ++i) {
+    ASSERT_TRUE(test_doc_->set<int32_t>(names[i], static_cast<int32_t>(i)));
+  }
+  const auto bytes = test_doc_->serialize();
+  const auto restored = Doc::deserialize(bytes.data(), bytes.size());
+  ASSERT_NE(restored, nullptr);
+  for (size_t i = 0; i < names.size(); ++i) {
+    const auto value = restored->get<int32_t>(names[i]);
+    ASSERT_TRUE(value.has_value()) << names[i];
+    EXPECT_EQ(value.value(), static_cast<int32_t>(i));
+  }
+}
+
 TEST_F(DocDetailedTest, DeserializePreservesHistoricalTextWithoutRevalidation) {
   Doc doc;
   doc.set_pk(std::string("old\0id", 6));

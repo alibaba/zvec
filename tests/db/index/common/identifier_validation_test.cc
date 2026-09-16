@@ -41,6 +41,13 @@ void ExpectInvalid(const Status &status, const std::string &message) {
   EXPECT_EQ(status.message().find("offset"), std::string::npos);
 }
 
+void ExpectInvalidName(const Utf8NameValidator &validator,
+                       std::string_view value, const std::string &reason) {
+  ExpectInvalid(
+      validator.validate(value),
+      std::string(validator.prefix) + "[" + format_name(value) + "] " + reason);
+}
+
 std::string Repeat(std::string_view text, size_t count) {
   std::string result;
   result.reserve(text.size() * count);
@@ -97,14 +104,12 @@ TEST(IdentifierValidationTest, MeasuresLimitsInUtf8Bytes) {
     EXPECT_TRUE(
         validator.validate(std::string(max_bytes - 3, 'a') + u8"中").ok());
 
-    const auto expected = std::string(validator.prefix) + " exceeds " +
-                          std::to_string(max_bytes) + " bytes (got " +
-                          std::to_string(max_bytes + 1) + ")";
-    ExpectInvalid(validator.validate(std::string(max_bytes + 1, 'a')),
-                  expected);
-    ExpectInvalid(validator.validate(emoji + "a"), expected);
-    ExpectInvalid(validator.validate(std::string(max_bytes - 2, 'a') + u8"中"),
-                  expected);
+    const auto reason = "exceeds " + std::to_string(max_bytes) +
+                        " bytes (got " + std::to_string(max_bytes + 1) + ")";
+    ExpectInvalidName(validator, std::string(max_bytes + 1, 'a'), reason);
+    ExpectInvalidName(validator, emoji + "a", reason);
+    ExpectInvalidName(validator, std::string(max_bytes - 2, 'a') + u8"中",
+                      reason);
   }
 }
 
@@ -134,10 +139,8 @@ TEST(IdentifierValidationTest, RejectsMalformedUtf8) {
   for (const auto &validator : kUtf8NameValidators) {
     SCOPED_TRACE(validator.prefix);
     for (const auto &value : malformed) {
-      ExpectInvalid(validator.validate(value),
-                    std::string(validator.prefix) + " is not valid UTF-8");
-      ExpectInvalid(validator.validate("prefix" + value),
-                    std::string(validator.prefix) + " is not valid UTF-8");
+      ExpectInvalidName(validator, value, "is not valid UTF-8");
+      ExpectInvalidName(validator, "prefix" + value, "is not valid UTF-8");
     }
   }
 }
@@ -147,10 +150,10 @@ TEST(IdentifierValidationTest, HonorsStringViewLengthAndEmbeddedNulls) {
   for (const auto &validator : kUtf8NameValidators) {
     SCOPED_TRACE(validator.prefix);
     EXPECT_TRUE(validator.validate(std::string_view(backing.data(), 6)).ok());
-    ExpectInvalid(validator.validate(std::string_view(backing.data(), 5)),
-                  std::string(validator.prefix) + " is not valid UTF-8");
-    ExpectInvalid(validator.validate(std::string("a\0b", 3)),
-                  std::string(validator.prefix) + " contains a null character");
+    ExpectInvalidName(validator, std::string_view(backing.data(), 5),
+                      "is not valid UTF-8");
+    ExpectInvalidName(validator, std::string("a\0b", 3),
+                      "contains a null character");
   }
 }
 
@@ -175,8 +178,7 @@ TEST(IdentifierValidationTest, RejectsEveryC0AndC1ControlByCodepoint) {
       } else if (codepoint == '\t') {
         reason = "contains a tab";
       }
-      ExpectInvalid(validator.validate("a" + value + "b"),
-                    std::string(validator.prefix) + " " + reason);
+      ExpectInvalidName(validator, "a" + value + "b", reason);
     }
     // These continuation bytes overlap the C1 byte range, but their decoded
     // codepoints are ordinary letters/symbols and must not be rejected.
@@ -186,11 +188,31 @@ TEST(IdentifierValidationTest, RejectsEveryC0AndC1ControlByCodepoint) {
 
 TEST(IdentifierValidationTest, DistinguishesUnicodeLineAndParagraphSeparators) {
   for (const auto &validator : kUtf8NameValidators) {
-    ExpectInvalid(validator.validate(u8"a\u2028b"),
-                  std::string(validator.prefix) + " contains a line separator");
+    ExpectInvalidName(validator, u8"a\u2028b", "contains a line separator");
+    ExpectInvalidName(validator, u8"a\u2029b",
+                      "contains a paragraph separator");
+  }
+}
+
+TEST(IdentifierValidationTest, Utf8ErrorsIncludeEscapedAndBoundedPreviews) {
+  for (const auto &validator : kUtf8NameValidators) {
+    const std::string prefix = validator.prefix;
+    ExpectInvalid(validator.validate("order\n[123]"),
+                  prefix + "[order\\n\\[123\\]] contains a newline");
+    ExpectInvalid(validator.validate("order\xff"),
+                  prefix + "[order\\xFF] is not valid UTF-8");
     ExpectInvalid(
-        validator.validate(u8"a\u2029b"),
-        std::string(validator.prefix) + " contains a paragraph separator");
+        validator.validate(std::string(40, 'a') + "\n"),
+        prefix + "[" + std::string(32, 'a') + "...] contains a newline");
+    const auto status = validator.validate(std::string(10000, '\xff'));
+    EXPECT_EQ(status.message().find(prefix + "[" + Repeat("\\xFF", 32) +
+                                    "...] exceeds "),
+              0u);
+    EXPECT_LT(status.message().size(), 256u);
+    for (unsigned char byte : status.message()) {
+      EXPECT_GE(byte, 0x20);
+      EXPECT_LE(byte, 0x7E);
+    }
   }
 }
 

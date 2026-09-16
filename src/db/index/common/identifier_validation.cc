@@ -53,8 +53,9 @@ Status validate_utf8_name(std::string_view value, size_t max_bytes,
     return Status::InvalidArgument(prefix, " must not be empty");
   }
   if (value.size() > max_bytes) {
-    return Status::InvalidArgument(prefix, " exceeds ", max_bytes,
-                                   " bytes (got ", value.size(), ")");
+    return Status::InvalidArgument(prefix, "[", format_name(value),
+                                   "] exceeds ", max_bytes, " bytes (got ",
+                                   value.size(), ")");
   }
 
   const auto *data = reinterpret_cast<const utf8proc_uint8_t *>(value.data());
@@ -65,10 +66,12 @@ Status validate_utf8_name(std::string_view value, size_t max_bytes,
         data + position, static_cast<utf8proc_ssize_t>(value.size() - position),
         &codepoint);
     if (bytes <= 0) {
-      return Status::InvalidArgument(prefix, " is not valid UTF-8");
+      return Status::InvalidArgument(prefix, "[", format_name(value),
+                                     "] is not valid UTF-8");
     }
     if (const char *reason = forbidden_codepoint_reason(codepoint)) {
-      return Status::InvalidArgument(prefix, " ", reason);
+      return Status::InvalidArgument(prefix, "[", format_name(value), "] ",
+                                     reason);
     }
     position += static_cast<size_t>(bytes);
   }

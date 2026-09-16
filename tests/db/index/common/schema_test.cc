@@ -19,12 +19,21 @@
 
 using namespace zvec;
 
-TEST(CollectionSchemaTest, RejectsNullFieldObjectsWithoutDroppingThem) {
-  auto field = std::make_shared<FieldSchema>("valid", DataType::INT32);
-  EXPECT_THROW(CollectionSchema("schema", {nullptr}), std::invalid_argument);
-  EXPECT_THROW(CollectionSchema("schema", {field, nullptr}),
-               std::invalid_argument);
+TEST(CollectionSchemaTest, SkipsNullFieldObjectsDuringConstruction) {
+  CollectionSchema empty("schema", {nullptr});
+  EXPECT_TRUE(empty.fields().empty());
+  EXPECT_EQ(empty.validate().code(), StatusCode::INVALID_ARGUMENT);
 
+  auto field = std::make_shared<FieldSchema>("valid", DataType::INT32);
+  CollectionSchema schema("schema", {nullptr, field, nullptr});
+  ASSERT_EQ(schema.fields().size(), 1u);
+  ASSERT_NE(schema.get_field("valid"), nullptr);
+  EXPECT_EQ(schema.get_field("valid")->data_type(), DataType::INT32);
+  EXPECT_TRUE(schema.validate().ok());
+}
+
+TEST(CollectionSchemaTest, RejectsNullFieldObjectsInMutations) {
+  auto field = std::make_shared<FieldSchema>("valid", DataType::INT32);
   CollectionSchema schema("schema", {field});
   const CollectionSchema before(schema);
   EXPECT_EQ(schema.add_field(nullptr).code(), StatusCode::INVALID_ARGUMENT);

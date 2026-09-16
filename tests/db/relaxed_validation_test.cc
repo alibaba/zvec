@@ -164,8 +164,13 @@ TEST_F(RelaxedValidationTest, ShortAndMaximumLengthCollectionNamesPersist) {
 
 TEST_F(RelaxedValidationTest, MaximumLengthFieldsSupportIndexesAndFilters) {
   const std::string scalar = "s" + std::string(63, 'a');
+  const std::string second_scalar = scalar.substr(0, 63) + "b";
   const std::string vector = "v" + std::string(63, 'b');
   auto schema = MakeSchema("x", scalar);
+  ASSERT_TRUE(schema
+                  .add_field(std::make_shared<FieldSchema>(
+                      second_scalar, DataType::INT32, false))
+                  .ok());
   ASSERT_TRUE(schema
                   .add_field(std::make_shared<FieldSchema>(
                       vector, DataType::VECTOR_FP32, 4, false,
@@ -174,6 +179,7 @@ TEST_F(RelaxedValidationTest, MaximumLengthFieldsSupportIndexesAndFilters) {
   ASSERT_NO_FATAL_FAILURE(Create(schema));
   const std::vector<float> values{1.0f, 2.0f, 3.0f, 4.0f};
   Doc doc = MakeDoc(u8"文档:1", 42, scalar);
+  ASSERT_TRUE(doc.set<int32_t>(second_scalar, 7));
   ASSERT_TRUE(doc.set<std::vector<float>>(vector, values));
   std::vector<Doc> docs{doc};
   ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
@@ -184,6 +190,9 @@ TEST_F(RelaxedValidationTest, MaximumLengthFieldsSupportIndexesAndFilters) {
   ASSERT_TRUE(status.ok()) << status.message();
   status = collection_->create_index(
       vector, std::make_shared<HnswIndexParams>(MetricType::L2));
+  ASSERT_TRUE(status.ok()) << status.message();
+  status = collection_->create_index(second_scalar,
+                                     std::make_shared<InvertIndexParams>());
   ASSERT_TRUE(status.ok()) << status.message();
   ASSERT_NO_FATAL_FAILURE(Reopen());
 
@@ -201,13 +210,27 @@ TEST_F(RelaxedValidationTest, MaximumLengthFieldsSupportIndexesAndFilters) {
   query.target_.set_vector(
       std::string(reinterpret_cast<const char *>(stored_vector->data()),
                   stored_vector->size() * sizeof(float)));
-  query.filter_ = scalar + " = 42";
-  query.output_fields_ = std::vector<std::string>{scalar};
+  query.filter_ = scalar + " = 42 AND " + second_scalar + " = 7";
+  query.output_fields_ = std::vector<std::string>{scalar, second_scalar};
   auto matches = collection_->query(query);
   ASSERT_TRUE(matches.has_value()) << matches.error().message();
   ASSERT_EQ(matches.value().size(), 1u);
   EXPECT_EQ(matches.value()[0]->pk(), doc.pk());
   EXPECT_EQ(matches.value()[0]->get<int32_t>(scalar), 42);
+  EXPECT_EQ(matches.value()[0]->get<int32_t>(second_scalar), 7);
+}
+
+TEST_F(RelaxedValidationTest, MaximumLengthFieldsPersistWithBufferedStorage) {
+  options_.enable_mmap_ = false;
+  const std::string field(64, 'f');
+  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema("buffered", field)));
+  std::vector<Doc> docs{MakeDoc("doc", 42, field)};
+  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  const auto status = collection_->flush();
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_NO_FATAL_FAILURE(Reopen());
+  EXPECT_TRUE(collection_->schema().value().has_field(field));
+  ASSERT_NO_FATAL_FAILURE(ExpectValue("doc", 42, field));
 }
 
 TEST_F(RelaxedValidationTest, InvalidRenameLeavesSchemaAndDataUnchanged) {
@@ -255,6 +278,7 @@ TEST_F(RelaxedValidationTest, InvalidIdRejectsWholeBatchBeforeWriting) {
     EXPECT_EQ(result.error().message().find("Invalid doc:"), 0u);
     EXPECT_NE(result.error().message().find("null character"),
               std::string::npos);
+    EXPECT_NE(result.error().message().find("id[bad\\0id]"), std::string::npos);
     EXPECT_EQ(result.error().message().find("offset"), std::string::npos);
     ASSERT_NO_FATAL_FAILURE(ExpectValue("existing", 1));
     auto missing = collection_->fetch({"new:id"});

@@ -15,7 +15,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <unordered_map>
 #include <zvec/db/index_params.h>
 #include <zvec/db/status.h>
@@ -408,15 +407,10 @@ class ZVEC_API CollectionSchema {
 
  private:
   void copy_fields(const FieldSchemaPtrList &fields) {
-    // Constructors cannot return a Status. Reject missing field objects here
-    // instead of dereferencing them or silently omitting part of the schema.
-    for (const auto &field : fields) {
-      if (!field) {
-        throw std::invalid_argument(
-            "Invalid schema: field schema must not be null");
-      }
-    }
     for (auto &field : fields) {
+      if (!field) {
+        continue;
+      }
       auto c = std::make_shared<FieldSchema>(*field);
       fields_.push_back(c);
       fields_map_[field->name()] = c;

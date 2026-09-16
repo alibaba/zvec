@@ -20,7 +20,9 @@ def explain_utf8_conversion_error(value: object, context: str) -> None:
         try:
             value.encode("utf-8")
         except UnicodeEncodeError:
-            raise ValueError(f"{context} is not valid UTF-8") from None
+            raise ValueError(
+                f"{context}[{format_name_for_error(value)}] is not valid UTF-8"
+            ) from None
 
 
 def format_name_for_error(name: str) -> str:
