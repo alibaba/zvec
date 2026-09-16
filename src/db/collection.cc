@@ -135,10 +135,12 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> query(const MultiQuery &query) const override;
 
-  Result<FastQueryResult> fast_query(
-      const std::string &field_name, const void *query_vector,
-      const QueryParams::Ptr &query_params, int topk, bool return_scores,
-      const DenseQueryShape *query_shape) const override;
+  Result<FastQueryResult> fast_query(const std::string &field_name,
+                                     const void *query_vector,
+                                     const QueryParams::Ptr &query_params,
+                                     int topk, bool return_scores,
+                                     DataType query_data_type,
+                                     uint32_t query_dimension) const override;
 
   Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const override;
@@ -2036,7 +2038,7 @@ Status CollectionImpl::update_fast_query_params(
 Result<FastQueryResult> CollectionImpl::fast_query(
     const std::string &field_name, const void *query_vector,
     const QueryParams::Ptr &query_params, int topk, bool return_scores,
-    const DenseQueryShape *query_shape) const {
+    DataType query_data_type, uint32_t query_dimension) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
   if (!options_.read_only_) {
@@ -2060,8 +2062,9 @@ Result<FastQueryResult> CollectionImpl::fast_query(
   if (topk <= 0) {
     return FastQueryResult{};
   }
-  if (query_shape && (query_shape->data_type != state.data_type ||
-                      query_shape->dimension != state.dimension)) {
+  if ((query_data_type != DataType::UNDEFINED || query_dimension != 0) &&
+      (query_data_type != state.data_type ||
+       query_dimension != state.dimension)) {
     return tl::make_unexpected(Status::InvalidArgument(
         "query vector dtype or dimension does not match the field"));
   }
