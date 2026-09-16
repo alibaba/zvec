@@ -273,8 +273,7 @@ Status FieldSchema::validate() const {
                            index_params_->type() == IndexType::IVF ||
                            index_params_->type() == IndexType::DISKANN)) {
           return Status::InvalidArgument(
-              "schema validate failed: ",
-              QuantizeTypeCodeBook::AsString(quantize_type),
+              "Invalid schema: ", QuantizeTypeCodeBook::AsString(quantize_type),
               " quantization is not supported with ",
               IndexTypeCodeBook::AsString(index_params_->type()),
               " index, field[", name_, "]");
@@ -282,8 +281,7 @@ Status FieldSchema::validate() const {
         if (is_uniform &&
             vector_index_params->metric_type() != MetricType::L2) {
           return Status::InvalidArgument(
-              "schema validate failed: ",
-              QuantizeTypeCodeBook::AsString(quantize_type),
+              "Invalid schema: ", QuantizeTypeCodeBook::AsString(quantize_type),
               " quantize only supports L2 metric, but field[", name_,
               "]'s metric is ",
               MetricTypeCodeBook::AsString(vector_index_params->metric_type()));

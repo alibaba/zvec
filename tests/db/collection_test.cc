@@ -4598,6 +4598,10 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 }
 
 TEST_F(CollectionTest, Feature_Query_MaximumLengthFieldNames) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
   auto check = [&](bool enable_mmap) {
     SCOPED_TRACE(enable_mmap);
     options_.enable_mmap_ = enable_mmap;
