@@ -4306,7 +4306,7 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
 TEST(IndexInterface, ContiguousMemoryEndToEnd) {
   constexpr uint32_t kDimension = 32;
   constexpr uint32_t kNumDocs = 1200;
-  constexpr int kTopk = 10;
+  static constexpr int kTopk = 10;
   const std::string index_name{"test_contiguous.index"};
 
   // build_then_search builds an index from scratch (with use_contiguous_memory
