@@ -271,13 +271,18 @@ Status FieldSchema::validate() const {
                                 quantize_type == QuantizeType::UNIFORM_UINT8 ||
                                 quantize_type == QuantizeType::UNIFORM_UINT4;
         // DB Flat fields are marked indexed at creation and do not run the
-        // deferred training step required by Uniform quantizers.
-        if (is_uniform && index_params_->type() == IndexType::FLAT) {
+        // deferred training step required by Uniform quantizers. IVF lacks
+        // trained-parameter restoration and UniformUint8 query preprocessing.
+        // DiskANN's PQ builder cannot consume Uniform-encoded vectors.
+        if (is_uniform && (index_params_->type() == IndexType::FLAT ||
+                           index_params_->type() == IndexType::IVF ||
+                           index_params_->type() == IndexType::DISKANN)) {
           return Status::InvalidArgument(
               "schema validate failed: ",
               QuantizeTypeCodeBook::AsString(quantize_type),
-              " quantization is not supported with FLAT index, field[", name_,
-              "]");
+              " quantization is not supported with ",
+              IndexTypeCodeBook::AsString(index_params_->type()),
+              " index, field[", name_, "]");
         }
         if (is_uniform &&
             vector_index_params->metric_type() != MetricType::L2) {

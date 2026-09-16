@@ -9,11 +9,13 @@ import zvec
 from zvec import (
     CollectionOption,
     CollectionSchema,
+    DiskAnnIndexParam,
     Doc,
     FieldSchema,
     FlatIndexParam,
     HnswIndexParam,
     HnswQueryParam,
+    IVFIndexParam,
     Query,
     VamanaIndexParam,
     VamanaQueryParam,
@@ -24,6 +26,10 @@ from zvec.typing import DataType, MetricType, QuantizeType
 
 @pytest.mark.parametrize("operation", ["create", "create_index"])
 @pytest.mark.parametrize(
+    "param_type,index_name",
+    [(FlatIndexParam, "FLAT"), (IVFIndexParam, "IVF"), (DiskAnnIndexParam, "DISKANN")],
+)
+@pytest.mark.parametrize(
     "quantize_type",
     [
         QuantizeType.UNIFORM_UINT7,
@@ -31,28 +37,38 @@ from zvec.typing import DataType, MetricType, QuantizeType
         QuantizeType.UNIFORM_UINT4,
     ],
 )
-def test_uniform_quantization_rejects_flat_index(tmp_path, quantize_type, operation):
-    flat_param = FlatIndexParam(metric_type=MetricType.L2, quantize_type=quantize_type)
+def test_uniform_quantization_rejects_unsupported_index(
+    tmp_path, quantize_type, operation, param_type, index_name
+):
+    extra_params = dict(n_list=4, n_iters=2) if param_type is IVFIndexParam else {}
+    unsupported_param = param_type(
+        metric_type=MetricType.L2, quantize_type=quantize_type, **extra_params
+    )
     graph_param = HnswIndexParam(
         metric_type=MetricType.L2,
         quantize_type=quantize_type,
         flat_data_type=DataType.VECTOR_FP16,
     )
     schema = CollectionSchema(
-        name="uniform_flat_validation",
+        name="uniform_index_validation",
         vectors=[
             VectorSchema(
                 "dense",
                 DataType.VECTOR_FP32,
                 32,
-                index_param=flat_param if operation == "create" else graph_param,
+                index_param=unsupported_param if operation == "create" else graph_param,
             )
         ],
     )
     path = str(tmp_path / "collection")
-    error = "quantization is not supported with FLAT"
+    error = f"quantization is not supported with {index_name}"
+    # On platforms without DiskANN, its existing platform check runs first.
+    error_type = ValueError
+    if index_name == "DISKANN":
+        error += "|DiskAnn is not supported on this platform"
+        error_type = (ValueError, RuntimeError)
     if operation == "create":
-        with pytest.raises(ValueError, match=error):
+        with pytest.raises(error_type, match=error):
             collection = zvec.create_and_open(path=path, schema=schema)
             collection.close()
         return
@@ -74,8 +90,8 @@ def test_uniform_quantization_rejects_flat_index(tmp_path, quantize_type, operat
         before = [(hit.id, hit.score) for hit in collection.query(query, topk=5)]
         before_schema = collection.schema.vectors[0].index_param.to_dict()
 
-        with pytest.raises(ValueError, match=error):
-            collection.create_index("dense", flat_param)
+        with pytest.raises(error_type, match=error):
+            collection.create_index("dense", unsupported_param)
 
         # Rejection must preserve the trained index, its schema and writeability.
         assert collection.schema.vectors[0].index_param.to_dict() == before_schema
