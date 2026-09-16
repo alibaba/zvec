@@ -14,8 +14,12 @@
 
 
 #include <csignal>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <thread>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
@@ -160,6 +164,64 @@ class CrashRecoveryTest : public ::testing::Test {
   }
 };
 
+
+TEST_F(CrashRecoveryTest, Utf8AndLongIdsRecoverFromUnflushedWal) {
+  const std::vector<std::string> ids{u8"订单:😀",
+                                     std::string(1021, 'x') + u8"中", " doc ",
+                                     u8"café", u8"cafe\u0301"};
+  // Re-exec the child before starting collection threads. Exit without stack
+  // unwinding so Collection destruction cannot flush the writing segment.
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        CollectionSchema schema(u8"恢复 集合");
+        if (!schema
+                 .add_field(std::make_shared<FieldSchema>(
+                     "value", DataType::INT32, false))
+                 .ok()) {
+          std::_Exit(1);
+        }
+        auto created =
+            Collection::CreateAndOpen(dir_path_, schema, CollectionOptions{});
+        if (!created.has_value()) std::_Exit(2);
+        auto collection = std::move(created).value();
+        std::vector<Doc> docs;
+        for (size_t i = 0; i < ids.size(); ++i) {
+          Doc doc;
+          doc.set_pk(ids[i]);
+          doc.set<int32_t>("value", static_cast<int32_t>(i));
+          docs.push_back(std::move(doc));
+        }
+        auto inserted = collection->insert(docs);
+        if (!inserted.has_value()) std::_Exit(3);
+        for (const auto &status : inserted.value()) {
+          if (!status.ok()) std::_Exit(4);
+        }
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  auto opened = Collection::Open(dir_path_, CollectionOptions{});
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  auto collection = std::move(opened).value();
+  EXPECT_EQ(collection->schema().value().name(), u8"恢复 集合");
+  auto fetched = collection->fetch(ids);
+  ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
+  ASSERT_EQ(fetched.value().size(), ids.size());
+  for (size_t i = 0; i < ids.size(); ++i) {
+    const auto found = fetched.value().find(ids[i]);
+    ASSERT_NE(found, fetched.value().end());
+    ASSERT_NE(found->second, nullptr);
+    EXPECT_EQ(found->second->pk_ref(), ids[i]);
+    EXPECT_EQ(found->second->get<int32_t>("value"), static_cast<int32_t>(i));
+  }
+  auto status = collection->flush();
+  ASSERT_TRUE(status.ok()) << status.message();
+  collection.reset();
+  auto reopened = Collection::Open(dir_path_, CollectionOptions{});
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  EXPECT_EQ(reopened.value()->stats().value().doc_count, ids.size());
+}
 
 TEST_F(CrashRecoveryTest, BasicInsertAndReopen) {
   {
