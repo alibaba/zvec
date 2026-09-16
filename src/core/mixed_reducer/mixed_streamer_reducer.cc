@@ -143,6 +143,9 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
                             const IndexMeta &source_meta) -> bool {
     if (!streamers_.empty()) {
       auto &last_meta = streamers_.back()->meta();
+      // Quantizer-encoded sources are dequantized to the original format
+      // before the target re-encodes them, so their stored layout may
+      // legitimately differ from another source's.
       if (!last_meta.quantizer_name().empty() ||
           !source_meta.quantizer_name().empty()) {
         return true;
@@ -338,12 +341,21 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     need_revert = true;
   }
 
+  // Whether the bytes handed to add_vec are still in the original input
+  // format and must be re-encoded (quantized/converted) by the target.
+  // True for reverted legacy vectors, dequantized turbo vectors and plain
+  // sources whose stored format already is the original one; false for raw
+  // copies from a source whose stored layout matches the target.
   bool need_encode = need_revert || reformer == nullptr;
   if (quantizer != nullptr) {
+    // Quantizer-encoded records can be copied raw only into an identical
+    // target layout; otherwise (or when a builder consumes original vectors)
+    // dequantize back to the original format.
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
     const bool same_layout =
         target_builder_ == nullptr &&
+        turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
         target_meta.data_type() == source_meta.data_type() &&
         target_meta.dimension() == source_meta.dimension() &&
@@ -429,6 +441,9 @@ void MixedStreamerReducer::add_vec(int *result) {
   auto target_streamer_query_meta = IndexQueryMeta{
       IndexMeta::MetaType::MT_DENSE, target_streamer_->meta().data_type(),
       target_streamer_->meta().dimension()};
+  // Quantizer-encoded layouts append an extra meta tail per record
+  // (e.g. turbo Int8Quantizer); without it the element size would not match
+  // the streamer meta and every add would be rejected.
   target_streamer_query_meta.set_extra_meta_size(
       target_streamer_->meta().extra_meta_size());
 
@@ -449,6 +464,9 @@ void MixedStreamerReducer::add_vec(int *result) {
     IndexQueryMeta add_meta = target_streamer_query_meta;
 
     if (vector_item.needs_convert_) {
+      // Bytes are still in the original input format; re-encode them into
+      // the target layout. A target without quantizer or reformer stores
+      // the original format directly, so no encoding is needed.
       if (target_streamer_quantizer_ != nullptr) {
         IndexQueryMeta quantized_meta;
         if (target_streamer_quantizer_->quantize(vector, original_query_meta_,
@@ -472,12 +490,6 @@ void MixedStreamerReducer::add_vec(int *result) {
         vector = new_vector.data();
       }
     }
-    // 1. no reformer: target_streamer_query_meta_ = original_query_meta_
-    // 2. has reformer, matched(need_convert = false): use
-    // target_streamer_query_meta_
-    // 3. has reformer, not matched(need_convert = true): use
-    // target_streamer_query_meta_
-
 
     // TODO: use id instead of key
     int ret = target_streamer_->add_with_id_impl(
@@ -626,11 +638,23 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
     MergedProviderIndexHolder::Source source;
     source.owner = streamers_[i];
     source.reformer = source_streamers_reformers_[i];
-    source.provider_meta = IndexQueryMeta{streamers_[i]->meta().data_type(),
-                                          streamers_[i]->meta().dimension()};
-    // A builder consumes the original input meta. This intentionally matches
-    // the old read_vec() builder path, which reverted whenever one existed.
-    source.need_revert = source.reformer != nullptr;
+    source.quantizer = source_streamers_quantizers_[i];
+    const auto &meta = streamers_[i]->meta();
+    source.provider_meta = IndexQueryMeta{
+        meta.meta_type(),
+        meta.data_type(),
+        meta.unit_size(),
+        meta.dimension(),
+        source.quantizer ? static_cast<uint32_t>(source.quantizer->type()) : 0,
+        meta.extra_meta_size()};
+    // Builders consume original vectors, not encoded records. Plain FP32
+    // quantization is an identity transform; keep its zero-copy ordinal path.
+    // Cosine normalization and FP16/INT8/INT4 storage must be decoded first.
+    source.need_revert =
+        source.quantizer
+            ? source.quantizer->type() != turbo::QuantizeType::kFp32 ||
+                  meta.extra_meta_size() != 0
+            : source.reformer != nullptr;
     sources.emplace_back(std::move(source));
   }
 

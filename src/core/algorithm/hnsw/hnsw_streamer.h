@@ -32,6 +32,8 @@ class HnswStreamer : public IndexStreamer {
   HnswStreamer(const HnswStreamer &streamer) = delete;
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
 
+  void merge_trained_meta(const IndexMeta &meta) override;
+
   //! Bind a provider which supplies the original vectors, so the graph is
   //! built from them instead of the vectors stored in index. It must be
   //! called before open, where the build distance is derived from the

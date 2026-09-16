@@ -422,6 +422,7 @@ class HnswQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+        scale_factor (float): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
         prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
             HNSW fast path. ``0`` disables prefetching. Default is ``8``.
             Values are clamped to ``256``.
@@ -445,6 +446,7 @@ class HnswQueryParam(QueryParam):
         is_linear: bool = False,
         is_using_refiner: bool = False,
         extra_params: dict[str, int] = ...,
+        scale_factor: typing.SupportsFloat = 0.0,
     ) -> None:
         """
         Constructs an HnswQueryParam instance.
@@ -455,6 +457,7 @@ class HnswQueryParam(QueryParam):
             radius (float, optional): Search radius for range queries. Default is 0.0.
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+            scale_factor (float, optional): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
             extra_params (dict, optional): Additional search parameters. Supported keys:
                 - ``prefetch_offset`` (int): Graph prefetch offset (PO).
                   ``0`` disables prefetching. Default is ``8``.
@@ -579,6 +582,7 @@ class HnswRabitqQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+        scale_factor (float): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
 
     Examples:
         >>> params = HnswRabitqQueryParam(ef=300)
@@ -593,6 +597,7 @@ class HnswRabitqQueryParam(QueryParam):
         radius: typing.SupportsFloat = 0.0,
         is_linear: bool = False,
         is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 0.0,
     ) -> None:
         """
         Constructs an HnswRabitqQueryParam instance.
@@ -603,6 +608,7 @@ class HnswRabitqQueryParam(QueryParam):
             radius (float, optional): Search radius for range queries. Default is 0.0.
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+            scale_factor (float, optional): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
         """
 
     def __repr__(self) -> str: ...
@@ -786,13 +792,20 @@ class IVFQueryParam(QueryParam):
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, nprobe: typing.SupportsInt = 10) -> None:
+    def __init__(
+        self,
+        nprobe: typing.SupportsInt = 10,
+        is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
+    ) -> None:
         """
         Constructs an IVFQueryParam instance.
 
         Args:
             nprobe (int, optional): Number of inverted lists to probe during search.
                 Higher values improve accuracy. Defaults to 10.
+            is_using_refiner (bool, optional): Whether to refine. Default is False.
+            scale_factor (float, optional): Refine candidate multiplier. Default is 10.
         """
 
     def __repr__(self) -> str: ...
@@ -913,6 +926,7 @@ class VamanaQueryParam(QueryParam):
         is_linear: bool = False,
         is_using_refiner: bool = False,
         extra_params: dict[str, int] = ...,
+        scale_factor: typing.SupportsFloat = 0.0,
     ) -> None:
         """
         Constructs a VamanaQueryParam instance.
@@ -922,6 +936,7 @@ class VamanaQueryParam(QueryParam):
             radius (float, optional): Search radius for range queries. Default is 0.0.
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+            scale_factor (float, optional): Refine candidate multiplier. Default is 0 (max(topk, ef) candidates).
             extra_params (dict, optional): Additional search parameters. Supported keys:
                 - ``prefetch_offset`` (int): Pool-phase vector-prefetch prefix (PO).
                   The default ``8`` is resolved after loading the index from the
@@ -1295,6 +1310,15 @@ class QueryParam:
     def is_using_refiner(self) -> bool:
         """
         bool: Whether to use refiner for the query.
+        """
+
+    @property
+    def scale_factor(self) -> float:
+        """Refine candidate multiplier; zero selects the index-specific default.
+
+        Graph indexes use max(topk, ef) candidates when zero is specified.
+        Positive values are rounded down with a minimum of topk candidates.
+        Must be finite and nonnegative. Ignored without refinement.
         """
 
     @property

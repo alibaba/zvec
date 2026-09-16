@@ -41,6 +41,14 @@ inline DataType FlatStorageDataTypeForField(DataType field_data_type,
                                                   : DataType::UNDEFINED;
 }
 
+// These quantizers encode each record independently and therefore produce a
+// valid quantized index during insert, before optimize sees the full dataset.
+inline bool CanReuseInsertTimeQuantizedVectors(QuantizeType quantize_type) {
+  return quantize_type == QuantizeType::FP16 ||
+         quantize_type == QuantizeType::INT8 ||
+         quantize_type == QuantizeType::INT4;
+}
+
 }  // namespace segment_detail
 
 struct CompactTask {

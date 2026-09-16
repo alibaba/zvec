@@ -4,6 +4,7 @@ from zvec import (
     OptimizeOption,
     InvertIndexParam,
     HnswIndexParam,
+    VamanaIndexParam,
     IVFIndexParam,
     FlatIndexParam,
     AlterColumnOption,
@@ -61,6 +62,15 @@ VALID_VECTOR_DATA_TYPE_INDEX_PARAM_MAP = {
             n_iters=15,
             use_soar=False,
         ),
+        *[
+            param_type(metric_type=MetricType.L2, quantize_type=quantize_type)
+            for param_type in (HnswIndexParam, VamanaIndexParam)
+            for quantize_type in (
+                QuantizeType.UNIFORM_UINT7,
+                QuantizeType.UNIFORM_UINT8,
+                QuantizeType.UNIFORM_UINT4,
+            )
+        ],
     ],
     DataType.VECTOR_FP16: [
         HnswIndexParam(),

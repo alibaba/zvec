@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -481,8 +482,10 @@ TEST(MergedProviderIndexHolderTest,
   EXPECT_EQ(nullptr, builder->holder);
 }
 
-TEST(MergedProviderIndexHolderTest, IvfBuilderKeepsProviderBackedInput) {
+TEST(MergedProviderIndexHolderTest, PlainTurboFp32KeepsOrdinalReads) {
   auto source = MakeStreamer({{0, 0.0F}, {1, 1.0F}});
+  auto quantizer = std::make_shared<turbo::Fp32Quantizer>();
+  ASSERT_EQ(0, quantizer->init(source->meta(), {}));
   auto builder = std::make_shared<RetainingTestBuilder>("IVFBuilder");
   ailego::ThreadPool pool(1, false);
   MixedStreamerReducer reducer;
@@ -493,7 +496,7 @@ TEST(MergedProviderIndexHolderTest, IvfBuilderKeepsProviderBackedInput) {
   ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
                    builder, source, nullptr, nullptr,
                    IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
-  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr, quantizer));
   ASSERT_EQ(0, reducer.reduce({}));
   ASSERT_NE(nullptr, builder->holder);
   auto *merged =
@@ -501,6 +504,82 @@ TEST(MergedProviderIndexHolderTest, IvfBuilderKeepsProviderBackedInput) {
   ASSERT_NE(nullptr, merged);
   EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 0.0F}, {1, 1.0F}}),
             ReadAll(merged));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, merged->create_ordinal_reader(&reader));
+  uint64_t key = 0;
+  const void *data = nullptr;
+  ASSERT_EQ(0, reader->read(1, &key, &data));
+  EXPECT_EQ(1u, key);
+  ASSERT_NE(nullptr, data);
+  EXPECT_FLOAT_EQ(1.0F, static_cast<const float *>(data)[0]);
+}
+
+TEST(MergedProviderIndexHolderTest, QuantizerDecodeFailuresPropagate) {
+  class FailingQuantizer : public turbo::Fp32Quantizer {
+   public:
+    int dequantize(const void *in, const IndexQueryMeta &meta,
+                   std::string *out) const override {
+      if (fail) return IndexError_ReadData;
+      int ret = Fp32Quantizer::dequantize(in, meta, out);
+      if (short_output) out->resize(1);
+      return ret;
+    }
+    bool fail{false};
+    bool short_output{false};
+  };
+  for (bool fail_planning : {false, true}) {
+    for (bool short_output : {false, true}) {
+      auto source = MakeSource(MakeStreamer({{0, 0.0F}, {1, 1.0F}}));
+      auto quantizer = std::make_shared<FailingQuantizer>();
+      ASSERT_EQ(0, quantizer->init(source.owner->meta(), {}));
+      source.quantizer = quantizer;
+      source.need_revert = true;
+      MergedProviderIndexHolder holder(source.provider_meta, {source});
+      const int error =
+          short_output ? IndexError_Mismatch : IndexError_ReadData;
+      if (fail_planning) {
+        quantizer->fail = !short_output;
+        quantizer->short_output = short_output;
+        EXPECT_EQ(error, holder.init({}));
+      } else {
+        ASSERT_EQ(0, holder.init({}));
+        OrdinalAccessHolder::Reader::Pointer reader;
+        EXPECT_EQ(IndexError_NotImplemented,
+                  holder.create_ordinal_reader(&reader));
+        EXPECT_EQ(0, holder.status());
+        for (int pass = 0; pass < 2; ++pass) {
+          EXPECT_EQ(
+              (std::vector<std::pair<uint64_t, float>>{{0, 0.0F}, {1, 1.0F}}),
+              ReadAll(&holder));
+        }
+        auto iter = holder.create_iterator();
+        ASSERT_NE(nullptr, iter);
+        ASSERT_NE(nullptr, iter->data());
+        quantizer->fail = !short_output;
+        quantizer->short_output = short_output;
+        iter->next();
+        const void *placeholder = iter->data();
+        ASSERT_NE(nullptr, placeholder);
+        EXPECT_EQ(placeholder, iter->data());
+        EXPECT_FALSE(iter->is_valid());
+      }
+      EXPECT_EQ(error, holder.status());
+    }
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, RejectsQuantizerMetaMismatch) {
+  for (bool wrong_dimension : {false, true}) {
+    auto source = MakeSource(MakeStreamer({{0, 1.0F}}));
+    IndexMeta meta(IndexMeta::DT_FP32,
+                   wrong_dimension ? kDimension + 1 : kDimension);
+    if (!wrong_dimension) meta.set_metric("Cosine", 0, ailego::Params());
+    source.quantizer = std::make_shared<turbo::Fp32Quantizer>();
+    ASSERT_EQ(0, source.quantizer->init(meta, {}));
+    source.need_revert = true;
+    MergedProviderIndexHolder holder(source.provider_meta, {source});
+    EXPECT_EQ(IndexError_Mismatch, holder.init({}));
+  }
 }
 
 TEST(MergedProviderIndexHolderTest, FailedReadKeepsRepeatedDataCallsSafe) {

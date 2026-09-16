@@ -19,6 +19,7 @@
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
@@ -30,6 +31,147 @@ namespace {
 
 bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
   return search_param->group_by_param && search_param->group_by_param->group_by;
+}
+
+// A multipass training view over merge sources. Decode through each source's
+// existing reformer, just as the merge reducer does. This lets global
+// quantizers train from FP16/UINT8 Flat references without materializing an
+// additional full-dataset FP32 copy or adding input types to the quantizers.
+class MergeSourceIndexHolder final : public core::IndexHolder {
+ public:
+  struct Source {
+    core::IndexHolder::Pointer holder;
+    core::IndexReformer::Pointer reformer;
+    core::IndexQueryMeta stored_meta;
+  };
+
+  class Iterator final : public core::IndexHolder::Iterator {
+   public:
+    explicit Iterator(MergeSourceIndexHolder *owner) : owner_(owner) {
+      advance_to_valid_source();
+    }
+
+    const void *data() const override {
+      return data_;
+    }
+
+    bool is_valid() const override {
+      return owner_->error_ == 0 && source_iter_ && source_iter_->is_valid();
+    }
+
+    uint64_t key() const override {
+      return source_iter_->key();
+    }
+
+    void next() override {
+      if (source_iter_) source_iter_->next();
+      advance_to_valid_source();
+    }
+
+   private:
+    void advance_to_valid_source() {
+      data_ = nullptr;
+      if (owner_->error_ != 0) return;
+      while (!source_iter_ || !source_iter_->is_valid()) {
+        source_iter_.reset();
+        if (source_index_ >= owner_->sources_.size()) return;
+        source_ = &owner_->sources_[source_index_++];
+        source_iter_ = source_->holder->create_iterator();
+        if (!source_iter_) {
+          owner_->error_ = core::IndexError_ReadData;
+          return;
+        }
+      }
+      data_ = source_iter_->data();
+      if (!data_) {
+        owner_->error_ = core::IndexError_ReadData;
+        return;
+      }
+      if (source_->reformer) {
+        const int ret =
+            source_->reformer->revert(data_, source_->stored_meta, &decoded_);
+        if (ret != 0) {
+          owner_->error_ = ret;
+          return;
+        }
+        if (decoded_.size() != owner_->element_size()) {
+          owner_->error_ = core::IndexError_Mismatch;
+          return;
+        }
+        data_ = decoded_.data();
+      }
+    }
+
+    MergeSourceIndexHolder *owner_;
+    const Source *source_{nullptr};
+    size_t source_index_{0};
+    core::IndexHolder::Iterator::Pointer source_iter_{};
+    std::string decoded_;
+    const void *data_{nullptr};
+  };
+
+  MergeSourceIndexHolder(std::vector<Source> sources,
+                         core::IndexQueryMeta source_meta)
+      : sources_(std::move(sources)), source_meta_(std::move(source_meta)) {
+    for (const auto &source : sources_) {
+      if (source.holder->count() >
+          (std::numeric_limits<size_t>::max)() - count_) {
+        error_ = core::IndexError_InvalidArgument;
+        return;
+      }
+      count_ += source.holder->count();
+    }
+  }
+
+  size_t count() const override {
+    return count_;
+  }
+  size_t dimension() const override {
+    return source_meta_.dimension();
+  }
+  core::IndexMeta::DataType data_type() const override {
+    return source_meta_.data_type();
+  }
+  size_t element_size() const override {
+    return source_meta_.element_size();
+  }
+  bool multipass() const override {
+    return true;
+  }
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<Iterator>(this);
+  }
+  int error() const {
+    return error_;
+  }
+
+ private:
+  std::vector<Source> sources_;
+  core::IndexQueryMeta source_meta_;
+  size_t count_{0};
+  int error_{0};
+};
+
+int CreateReformerFromConverterMeta(
+    const core::IndexConverter::Pointer &converter,
+    core::IndexMeta *proxima_index_meta,
+    core::IndexQueryMeta *streamer_vector_meta,
+    core::IndexReformer::Pointer *reformer) {
+  const auto &meta = converter->meta();
+  if (meta.reformer_name().empty()) {
+    LOG_ERROR("Trained converter did not provide a reformer");
+    return core::IndexError_Runtime;
+  }
+  *proxima_index_meta = meta;
+  streamer_vector_meta->set_meta(meta.data_type(), meta.dimension());
+  streamer_vector_meta->set_meta_type(meta.meta_type());
+  *reformer = core::IndexFactory::CreateReformer(meta.reformer_name());
+  if (!*reformer || (*reformer)->init(meta.reformer_params()) != 0) {
+    LOG_ERROR("Failed to create reformer '%s' from converter meta",
+              meta.reformer_name().c_str());
+    return core::IndexError_Runtime;
+  }
+  return core::IndexError_Success;
 }
 
 }  // namespace
@@ -398,16 +540,21 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (converter_ != nullptr && reformer_ == nullptr) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {
-      LOG_ERROR(
-          "Index::open: converter exists but reformer not initialized and "
-          "no reformer in persisted meta");
-      return core::IndexError_Runtime;
-    }
-    reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
-    if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
-      LOG_ERROR("Failed to create reformer '%s' from persisted meta",
-                meta.reformer_name().c_str());
-      return core::IndexError_Runtime;
+      if (!storage_options.create_new) {
+        LOG_ERROR(
+            "Index::open: converter exists but reformer not initialized and "
+            "no reformer in persisted meta");
+        return core::IndexError_Runtime;
+      }
+      // Global quantizers learn their parameters from merge sources after
+      // the empty target is opened.
+    } else {
+      reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
+      if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
+        LOG_ERROR("Failed to create reformer '%s' from persisted meta",
+                  meta.reformer_name().c_str());
+        return core::IndexError_Runtime;
+      }
     }
   }
 
@@ -666,6 +813,7 @@ int Index::_dense_fetch(const uint32_t doc_id,
   out_vector_buffer.resize(input_vector_meta_.element_size());
 
   if (turbo_quantizer_ != nullptr) {
+    // Decode the quantizer's stored layout back to the original vector format.
     if (turbo_quantizer_->dequantize(vector, streamer_vector_meta_,
                                      &out_vector_buffer) != 0) {
       LOG_ERROR("Failed to dequantize vector");
@@ -1160,6 +1308,19 @@ int Index::_sparse_search(const VectorData &vector_data,
         metric_->normalize(doc.mutable_score());
       }
     }
+  } else if (turbo_quantizer_ != nullptr &&
+             turbo_quantizer_->support_score_normalization()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          turbo_quantizer_->normalize_score(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        turbo_quantizer_->normalize_score(doc.mutable_score());
+      }
+    }
   }
   if (reformer_) {
     // TODO: no need to call reformer_->normalize() when sparse?
@@ -1249,6 +1410,47 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (reducer->init(reducer_params) != 0) {
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
+  }
+  if (converter_ != nullptr && reformer_ == nullptr) {
+    std::vector<MergeSourceIndexHolder::Source> sources;
+    sources.reserve(indexes.size());
+    for (const auto &index : indexes) {
+      auto provider = index->create_index_provider();
+      if (!provider || index->is_sparse_ ||
+          index->input_vector_meta_.data_type() !=
+              input_vector_meta_.data_type() ||
+          index->input_vector_meta_.dimension() !=
+              input_vector_meta_.dimension() ||
+          (!index->reformer_ &&
+           (provider->data_type() != input_vector_meta_.data_type() ||
+            provider->dimension() != input_vector_meta_.dimension() ||
+            provider->element_size() != input_vector_meta_.element_size()))) {
+        LOG_ERROR("Merge-source vector type mismatch");
+        return core::IndexError_Mismatch;
+      }
+      // Use the actual stored metadata, including packed quantizer dimensions.
+      core::IndexQueryMeta stored_meta(provider->data_type(),
+                                       provider->dimension());
+      sources.push_back(
+          {std::move(provider), index->reformer_, std::move(stored_meta)});
+    }
+    auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
+                                                           input_vector_meta_);
+    if (holder->error() != 0) return holder->error();
+    if (holder->count() == 0) {
+      LOG_ERROR("No vectors available to train converter");
+      return core::IndexError_InvalidArgument;
+    }
+    int ret = converter_->train(holder);
+    if (holder->error() != 0) return holder->error();
+    if (ret != 0) {
+      LOG_ERROR("Failed to train converter from merge sources");
+      return ret;
+    }
+    ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
+                                          &streamer_vector_meta_, &reformer_);
+    if (ret != 0) return ret;
+    streamer_->merge_trained_meta(proxima_index_meta_);
   }
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
                                              reformer_, input_vector_meta_,
