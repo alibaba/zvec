@@ -67,6 +67,16 @@ void ExpectPageContent(const char *buf, size_t page_id) {
 
 class BufferPoolTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    // Stop the previous test's reclaimer even when the next test uses the
+    // same budget. Bounded recycling can leave stale queue entries behind.
+    ASSERT_EQ(0, MemoryLimitPool::get_instance().init(0));
+    auto &queue = BlockEvictionQueue::get_instance();
+    BlockEvictionQueue::BlockType stale;
+    while (queue.evict_single_block(stale)) {
+    }
+  }
+
   void InitPool(size_t capacity_pages) {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(capacity_pages *
                                                       kVectorPageSize));
@@ -595,7 +605,8 @@ TEST_F(BufferPoolTest, PageLoadClaimCoalescesConcurrentWaiters) {
 }
 
 TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  // Keep the background reclaimer from racing with the explicit eviction.
+  InitTablePool(/*capacity_pages=*/2, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -615,7 +626,8 @@ TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
 }
 
 TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
-  InitTablePool(/*capacity_pages=*/1, /*entry_num=*/1);
+  // Only this thread should drive eviction and update the flush callback.
+  InitTablePool(/*capacity_pages=*/2, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
