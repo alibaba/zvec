@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <random>
+#include <utility>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/collection.h>
@@ -69,6 +70,24 @@ TEST(FastQueryTest, ReadsRefineParametersOnEveryCall) {
       auto actual =
           reader->fast_query("vector", vector.data(), param, 10, true);
       ASSERT_TRUE(actual) << actual.error().message();
+      if (repeat == 0) {
+        auto checked = reader->fast_query("vector", vector.data(), param, 10,
+                                          true, DataType::VECTOR_FP32, 32);
+        ASSERT_TRUE(checked) << checked.error().message();
+        EXPECT_EQ(actual->ids, checked->ids);
+        EXPECT_EQ(actual->scores, checked->scores);
+        // Wrong or partially supplied metadata must fail before vector reads.
+        for (const auto &[type, dimension] :
+             {std::pair{DataType::VECTOR_FP64, 32U},
+              std::pair{DataType::VECTOR_FP32, 31U},
+              std::pair{DataType::VECTOR_FP32, 0U},
+              std::pair{DataType::UNDEFINED, 32U}}) {
+          auto invalid = reader->fast_query("vector", vector.data(), param, 10,
+                                            true, type, dimension);
+          ASSERT_FALSE(invalid);
+          EXPECT_EQ(StatusCode::INVALID_ARGUMENT, invalid.error().code());
+        }
+      }
       ASSERT_EQ(actual->ids.size(), expected->size());
       for (size_t i = 0; i < expected->size(); ++i) {
         EXPECT_EQ(actual->ids[i], std::stoll(expected.value()[i]->pk()));
