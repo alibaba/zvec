@@ -24,6 +24,7 @@ from . import (
     HnswRabitqQueryParam,
     IVFQueryParam,
     IvfRabitqQueryParam,
+    VamanaQueryParam,
 )
 
 __all__ = ["Fts", "Query", "VectorQuery"]
@@ -59,7 +60,7 @@ class Query:
         field_name (str): Name of the field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
-        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, IvfRabitqQueryParam, FtsQueryParam]], optional):
+        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, IvfRabitqQueryParam, VamanaQueryParam, FtsQueryParam]], optional):
             Index-specific query parameters. Default is None.
         fts (Optional[Fts], optional): Full-text search parameters. Default is None.
 
@@ -94,6 +95,7 @@ class Query:
             HnswQueryParam,
             HnswRabitqQueryParam,
             IVFQueryParam,
+            VamanaQueryParam,
             IvfRabitqQueryParam,
             FtsQueryParam,
         ]

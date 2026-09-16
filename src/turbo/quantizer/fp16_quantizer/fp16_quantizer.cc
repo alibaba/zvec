@@ -23,8 +23,14 @@
 namespace zvec {
 namespace turbo {
 
-int Fp16Quantizer::init(const IndexMeta &meta,
-                        const ailego::Params & /*params*/) {
+int Fp16Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
+  if (!GetQuantizerStorageDataType(params, &storage_data_type_)) {
+    return kErrInvalidArgument;
+  }
+  if (storage_data_type_ != IndexMeta::DT_UNDEFINED &&
+      storage_data_type_ != IndexMeta::DT_FP16) {
+    return kErrUnsupported;
+  }
   meta_ = meta;
 
   meta_.set_meta(IndexMeta::DataType::DT_FP16, meta.dimension());
@@ -37,9 +43,16 @@ int Fp16Quantizer::init(const IndexMeta &meta,
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
+  // Physical FP16 storage preserves FP32 cosine arithmetic so native FP16
+  // accumulation cannot reorder close neighbors. Explicit quantization can
+  // still use the native FP16 cosine kernels.
+  const auto quantize_type =
+      storage_data_type_ == IndexMeta::DT_FP16 && metric_name == "Cosine"
+          ? QuantizeType::kRaw
+          : QuantizeType::kFp16;
   auto kernels =
       get_distance_kernels(metric_from_name(metric_name), DataType::kFp16,
-                           QuantizeType::kFp16, CpuArchType::kAuto);
+                           quantize_type, CpuArchType::kAuto);
   if (!kernels.dist || !kernels.batch) {
     LOG_ERROR("Unsupported metric %s for FP16 quantizer", metric_name.c_str());
     return kErrUnsupported;
@@ -67,14 +80,8 @@ int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   uint16_t *out_buf = reinterpret_cast<uint16_t *>(&(*out)[0]);
 
   if (meta_.metric_name() == "Cosine") {
-    // L2-normalize the vector before converting to fp16 and store the norm
-    // at the end so the original vector can be reconstructed during
-    // dequantize.
-    std::vector<float> buf(raw_dim);
-    std::memcpy(buf.data(), query, raw_dim * sizeof(float));
-    float norm = 0.0f;
-    ailego::Normalizer<float>::L2(buf.data(), raw_dim, &norm);
-    ailego::FloatHelper::ToFP16(buf.data(), raw_dim, out_buf);
+    const float norm = quantize_cosine(reinterpret_cast<const float *>(query),
+                                       raw_dim, out_buf);
     std::memcpy(
         reinterpret_cast<uint8_t *>(&(*out)[0]) + raw_dim * sizeof(uint16_t),
         &norm, extra_meta_size_);
@@ -109,8 +116,17 @@ int Fp16Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
         &norm,
         reinterpret_cast<const uint8_t *>(in) + raw_dim * sizeof(uint16_t),
         extra_meta_size_);
-    for (size_t i = 0; i < raw_dim; ++i) {
-      out_buf[i] *= norm;
+    if (storage_data_type_ == IndexMeta::DT_FP16) {
+      const auto *in_fp16 = reinterpret_cast<const ailego::Float16 *>(in);
+      for (size_t i = 0; i < raw_dim; ++i) {
+        ailego::Float16 restored;
+        restored = static_cast<float>(in_fp16[i]) * norm;
+        out_buf[i] = static_cast<float>(restored);
+      }
+    } else {
+      for (size_t i = 0; i < raw_dim; ++i) {
+        out_buf[i] *= norm;
+      }
     }
   }
   return 0;
@@ -134,12 +150,8 @@ void Fp16Quantizer::quantize_one(const void *input, void *output) const {
   uint16_t *out_buf = reinterpret_cast<uint16_t *>(output);
 
   if (meta_.metric_name() == "Cosine") {
-    // L2-normalize before converting and store the norm at the end.
-    std::vector<float> buf(original_dim_);
-    std::memcpy(buf.data(), input, original_dim_ * sizeof(float));
-    float norm = 0.0f;
-    ailego::Normalizer<float>::L2(buf.data(), original_dim_, &norm);
-    ailego::FloatHelper::ToFP16(buf.data(), original_dim_, out_buf);
+    const float norm = quantize_cosine(reinterpret_cast<const float *>(input),
+                                       original_dim_, out_buf);
     std::memcpy(reinterpret_cast<uint8_t *>(output) +
                     static_cast<size_t>(original_dim_) * sizeof(uint16_t),
                 &norm, extra_meta_size_);
@@ -147,6 +159,26 @@ void Fp16Quantizer::quantize_one(const void *input, void *output) const {
     ailego::FloatHelper::ToFP16(reinterpret_cast<const float *>(input),
                                 original_dim_, out_buf);
   }
+}
+
+float Fp16Quantizer::quantize_cosine(const float *input, size_t dim,
+                                     uint16_t *output) const {
+  std::vector<float> normalized(dim);
+  if (storage_data_type_ == IndexMeta::DT_FP16) {
+    // Physical FP16 Flat storage casts first. Widen the rounded values before
+    // normalization so CPUs with native FP16 arithmetic do not silently use
+    // lower-precision accumulation or division than baseline ARM and x86.
+    ailego::FloatHelper::ToFP16(input, dim, output);
+    ailego::FloatHelper::ToFP32(output, dim, normalized.data());
+  } else {
+    // Explicit FP16 quantization normalizes in the input domain first.
+    std::memcpy(normalized.data(), input, dim * sizeof(float));
+  }
+
+  float norm = 0.0f;
+  ailego::Normalizer<float>::L2(normalized.data(), dim, &norm);
+  ailego::FloatHelper::ToFP16(normalized.data(), dim, output);
+  return norm;
 }
 
 float Fp16Quantizer::calc_distance_dp_query(const void *dp,

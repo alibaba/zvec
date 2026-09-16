@@ -300,8 +300,9 @@ class SegmentImpl : public Segment,
                                                  bool is_quantized = false);
 
   Result<VectorColumnIndexer::Ptr> merge_vector_indexer(
-      const std::string &index_file_path, const std::string &column,
-      const FieldSchema &field, int concurrency);
+      const std::string &index_file_path, const FieldSchema &field,
+      const std::vector<VectorColumnIndexer::Ptr> &source_indexers,
+      int concurrency);
 
   // Helper functions for Insert/Update/Upsert/Delete
   template <typename ValueType>
@@ -831,13 +832,20 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
     if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
       m_indexer = get_memory_quant_vector_indexer(field->name());
-      if (!m_indexer) {
+      if (m_indexer) {
+        indexers.push_back(m_indexer);
+      } else if (vector_index_params->quantize_type() !=
+                     QuantizeType::UNIFORM_UINT7 &&
+                 vector_index_params->quantize_type() !=
+                     QuantizeType::UNIFORM_UINT8 &&
+                 vector_index_params->quantize_type() !=
+                     QuantizeType::UNIFORM_UINT4) {
         LOG_ERROR("quant vector indexer not found for field %s",
                   field->name().c_str());
         return Status::InternalError(
             "quant vector indexer not found for field: ", field->name());
       }
-      indexers.push_back(m_indexer);
+      // Global quantizers train during optimize; writer queries use raw Flat.
     }
 
     for (auto indexer : indexers) {
@@ -1422,12 +1430,20 @@ CombinedVectorColumnIndexer::Ptr SegmentImpl::get_quant_combined_vector_indexer(
   auto vector_index_params =
       std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
   MetricType metric_type = vector_index_params->metric_type();
-  auto blocks =
-      get_persist_block_metas(BlockType::VECTOR_INDEX_QUANTIZE, field_name);
+  // Quantizers that need training leave new segments with only raw Flat
+  // blocks until optimize builds their quantized index. Search those blocks
+  // in the meantime, including writes flushed to disk or reopened later.
+  const bool is_quantized = !indexers.empty();
+  if (!is_quantized) {
+    indexers = normal_indexers;
+  }
+  auto blocks = get_persist_block_metas(
+      is_quantized ? BlockType::VECTOR_INDEX_QUANTIZE : BlockType::VECTOR_INDEX,
+      field_name);
 
   return std::make_shared<CombinedVectorColumnIndexer>(
       indexers, normal_indexers, *field, *segment_meta_, std::move(blocks),
-      metric_type, true);
+      metric_type, is_quantized);
 }
 
 VectorColumnIndexer::Ptr SegmentImpl::get_memory_vector_indexer(
@@ -1509,8 +1525,9 @@ Status SegmentImpl::create_all_vector_indexes(
 }
 
 Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
-    const std::string &index_file_path, const std::string &column,
-    const FieldSchema &field, int concurrency) {
+    const std::string &index_file_path, const FieldSchema &field,
+    const std::vector<VectorColumnIndexer::Ptr> &source_indexers,
+    int concurrency) {
   VectorColumnIndexer::Ptr vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
 
@@ -1518,8 +1535,6 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
 
   auto s = vector_indexer->Open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  std::vector<VectorColumnIndexer::Ptr> to_merge_indexers =
-      vector_indexers_[column];
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
@@ -1529,7 +1544,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     merge_options.write_concurrency = concurrency;
   }
   // Keep tombstoned vectors: forward rows are unchanged.
-  s = vector_indexer->Merge(to_merge_indexers, nullptr, merge_options);
+  s = vector_indexer->Merge(source_indexers, nullptr, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
   s = vector_indexer->Flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
@@ -1578,8 +1593,9 @@ Status SegmentImpl::create_vector_index(
           index_file_path.c_str());
       FileHelper::RemoveFile(index_file_path);
     }
-    auto vector_indexer = merge_vector_indexer(
-        index_file_path, column, *field_with_new_index_params, concurrency);
+    auto vector_indexer =
+        merge_vector_indexer(index_file_path, *field_with_new_index_params,
+                             vector_indexers_[column], concurrency);
     if (!vector_indexer.has_value()) {
       return vector_indexer.error();
     }
@@ -1643,8 +1659,9 @@ Status SegmentImpl::create_vector_index(
             index_file_path.c_str());
         FileHelper::RemoveFile(index_file_path);
       }
-      auto vector_indexer = merge_vector_indexer(index_file_path, column,
-                                                 *field_with_flat, concurrency);
+      auto vector_indexer =
+          merge_vector_indexer(index_file_path, *field_with_flat,
+                               vector_indexers_[column], concurrency);
       if (!vector_indexer.has_value()) {
         return vector_indexer.error();
       }
@@ -1692,8 +1709,35 @@ Status SegmentImpl::create_vector_index(
           index_file_path.c_str());
       FileHelper::RemoveFile(index_file_path);
     }
+    // Reuse insert-time quantized payloads when the quantizer operates on each
+    // record independently. This keeps graph construction independent of the
+    // configured raw Flat precision. Quantizers requiring full-dataset
+    // training continue to consume the raw Flat sources.
+    const auto *quantize_sources = &vector_indexers_[column];
+    if (segment_detail::CanReuseInsertTimeQuantizedVectors(
+            vector_index_params->quantize_type())) {
+      auto quant_iter = quant_vector_indexers_.find(column);
+      if (quant_iter != quant_vector_indexers_.end() &&
+          !quant_iter->second.empty() &&
+          std::all_of(quant_iter->second.begin(), quant_iter->second.end(),
+                      [&](const VectorColumnIndexer::Ptr &source) {
+                        auto source_params =
+                            std::dynamic_pointer_cast<VectorIndexParams>(
+                                source->field_schema().index_params());
+                        return source_params &&
+                               source_params->metric_type() ==
+                                   vector_index_params->metric_type() &&
+                               source_params->quantize_type() ==
+                                   vector_index_params->quantize_type() &&
+                               source_params->quantizer_param() ==
+                                   vector_index_params->quantizer_param();
+                      })) {
+        quantize_sources = &quant_iter->second;
+      }
+    }
+
     auto vector_indexer = merge_vector_indexer(
-        index_file_path, column, *field_for_quantize, concurrency);
+        index_file_path, *field_for_quantize, *quantize_sources, concurrency);
     if (!vector_indexer.has_value()) {
       return vector_indexer.error();
     }
@@ -4191,6 +4235,14 @@ Status SegmentImpl::init_memory_components() {
                                      field->name());
       }
       memory_vector_indexers_.insert({field->name(), vector_indexer});
+
+      // Uniform quantizers need the full dataset to train their scale/bias.
+      // Until optimize creates that index, retain only the raw writer Flat.
+      if (index_params->quantize_type() == QuantizeType::UNIFORM_UINT7 ||
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT8 ||
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4) {
+        continue;
+      }
 
       // second create quantize vector indexer
       block_id = allocate_block_id();

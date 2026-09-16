@@ -41,6 +41,9 @@ from zvec import (
         (IOBackendType.WINDOWS_OVERLAPPED, "WINDOWS_OVERLAPPED"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
+        (QuantizeType.UNIFORM_UINT7, "UNIFORM_UINT7"),
+        (QuantizeType.UNIFORM_UINT8, "UNIFORM_UINT8"),
+        (QuantizeType.UNIFORM_UINT4, "UNIFORM_UINT4"),
         (StatusCode.OK, "OK"),
     ],
 )
@@ -58,6 +61,9 @@ def test_enum_names(member, name):
         (IOBackendType.WINDOWS_OVERLAPPED, 3),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
+        (QuantizeType.UNIFORM_UINT7, 5),
+        (QuantizeType.UNIFORM_UINT8, 6),
+        (QuantizeType.UNIFORM_UINT4, 7),
         (StatusCode.OK, 0),
     ],
 )
@@ -140,7 +146,19 @@ def test_current_io_backend_type():
         assert "pread" in zvec.io_backend_description().lower()
 
 
-@pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "RABITQ", "UNDEFINED"])
+@pytest.mark.parametrize(
+    "member",
+    [
+        "FP16",
+        "INT8",
+        "INT4",
+        "RABITQ",
+        "UNIFORM_UINT7",
+        "UNIFORM_UINT8",
+        "UNIFORM_UINT4",
+        "UNDEFINED",
+    ],
+)
 def test_quantize_type_has_member(member):
     assert member in QuantizeType.__members__
 
