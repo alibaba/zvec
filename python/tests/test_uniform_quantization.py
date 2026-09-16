@@ -342,6 +342,9 @@ def test_uniform_quantization_survives_reopen(tmp_path, quantize_type, index_typ
 
 
 @pytest.mark.parametrize(
+    "use_flat_contiguous_memory", [False, True], ids=["regular", "contiguous"]
+)
+@pytest.mark.parametrize(
     "quantize_type",
     [
         QuantizeType.UNIFORM_UINT7,
@@ -356,7 +359,7 @@ def test_uniform_quantization_survives_reopen(tmp_path, quantize_type, index_typ
     ids=["flat_fp16", "flat_uint8"],
 )
 def test_uniform_quantizer_uses_flat_storage_vectors(
-    tmp_path, quantize_type, index_type, flat_data_type
+    tmp_path, quantize_type, index_type, flat_data_type, use_flat_contiguous_memory
 ):
     """Uniform training and encoding must consume the configured Flat type."""
     dimension = 32
@@ -383,7 +386,7 @@ def test_uniform_quantizer_uses_flat_storage_vectors(
                 search_list_size=64,
                 quantize_type=quantize_type,
                 use_contiguous_memory=True,
-                use_flat_contiguous_memory=True,
+                use_flat_contiguous_memory=use_flat_contiguous_memory,
                 flat_data_type=flat_data_type,
             )
             query_param = VamanaQueryParam(
@@ -396,7 +399,7 @@ def test_uniform_quantizer_uses_flat_storage_vectors(
                 m=16,
                 ef_construction=64,
                 quantize_type=quantize_type,
-                use_flat_contiguous_memory=True,
+                use_flat_contiguous_memory=use_flat_contiguous_memory,
                 flat_data_type=flat_data_type,
             )
             query_param = HnswQueryParam(ef=doc_count, is_linear=True)
