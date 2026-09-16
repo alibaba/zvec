@@ -35,6 +35,8 @@ class VamanaStreamer : public IndexStreamer {
   //! Run the configured-alpha second graph pass exactly once.
   int finalize_build();
 
+  void merge_trained_meta(const IndexMeta &meta) override;
+
  protected:
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 

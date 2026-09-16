@@ -65,6 +65,9 @@ class IndexStreamer : public IndexRunner {
   //! Close index
   virtual int close() = 0;
 
+  //! Persist converter/reformer parameters learned after opening a target.
+  virtual void merge_trained_meta(const IndexMeta & /*meta*/) {}
+
   //! Retrieve meta of index
   virtual const IndexMeta &meta() const = 0;
 };

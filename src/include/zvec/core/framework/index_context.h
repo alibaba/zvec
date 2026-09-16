@@ -25,6 +25,9 @@
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}
 namespace core {
 
 /*! Profiler
@@ -249,6 +252,12 @@ class IndexContext {
     return threshold_set_;
   }
 
+  //! An explicitly configured threshold needs a live score converter.
+  bool threshold_is_valid() const {
+    return !threshold_set_ || !threshold_uses_quantizer_ ||
+           !index_quantizer_.expired();
+  }
+
   //! Retrieve the internal threshold used by the search implementation.
   float threshold() const {
     return threshold_;
@@ -270,7 +279,21 @@ class IndexContext {
   //! Replace the metric associated with this context and recompute any
   //! configured threshold in the new metric's internal distance space.
   void update_index_metric(IndexMetric::Pointer index_metric) {
+    index_quantizer_.reset();
+    threshold_uses_quantizer_ = false;
     index_metric_ = std::move(index_metric);
+    if (threshold_set_) {
+      apply_threshold();
+    }
+  }
+
+  //! Select turbo score conversion instead of the legacy metric. A context
+  //! must not extend the lifetime of its owner's quantizer just for radius.
+  void update_index_quantizer(
+      const std::shared_ptr<turbo::Quantizer> &quantizer) {
+    index_metric_.reset();
+    index_quantizer_ = quantizer;
+    threshold_uses_quantizer_ = true;
     if (threshold_set_) {
       apply_threshold();
     }
@@ -290,13 +313,7 @@ class IndexContext {
   }
 
  private:
-  void apply_threshold() {
-    float val = raw_threshold_;
-    if (index_metric_ && index_metric_->support_normalize()) {
-      index_metric_->denormalize(&val);
-    }
-    threshold_ = val;
-  }
+  void apply_threshold();
 
  public:
   //! Generate a global magic number
@@ -314,6 +331,8 @@ class IndexContext {
   float raw_threshold_{std::numeric_limits<float>::max()};
   float threshold_{std::numeric_limits<float>::max()};
   bool threshold_set_{false};
+  bool threshold_uses_quantizer_{false};
+  std::weak_ptr<turbo::Quantizer> index_quantizer_{};
   std::string features_{};
 
   Profiler profiler_{};

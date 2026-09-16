@@ -12,7 +12,7 @@ cc_library(
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
     LIBS core_framework zvec_turbo
-    INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm ${PROJECT_ROOT_DIR}/src/core/framework
+    INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm ${PROJECT_ROOT_DIR}/src/core/framework ${PROJECT_ROOT_DIR}/src/turbo
     LDFLAGS "${CORE_KNN_FLAT_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )

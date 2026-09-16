@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -24,6 +25,7 @@
 #include <unordered_map>
 #include <utility>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include "tests/test_util.h"
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
@@ -1168,12 +1170,16 @@ TEST(IndexInterface, Merge) {
   }
 }
 
-TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
+class TurboFlatMergeTest
+    : public testing::TestWithParam<std::pair<DataType, MetricType>> {};
+
+TEST_P(TurboFlatMergeTest, MergeIntoIvfWithDenseIdRewrite) {
   constexpr uint32_t kDimension = 16;
   static constexpr uint32_t kSourceCount = 64;
   const std::string first_name{"provider_merge_ivf_source_1.index"};
   const std::string second_name{"provider_merge_ivf_source_2.index"};
   const std::string target_name{"provider_merge_ivf_target.index"};
+  const auto [storage_type, metric] = GetParam();
 
   auto remove_files = [](const std::string &path) {
     zvec::test_util::RemoveTestFiles(path);
@@ -1182,15 +1188,22 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
   remove_files(second_name);
   remove_files(target_name);
 
-  auto source_param = FlatIndexParamBuilder()
-                          .with_metric_type(MetricType::kL2sq)
-                          .with_data_type(DataType::DT_FP32)
-                          .with_storage_data_type(DataType::DT_FP16)
-                          .with_dimension(kDimension)
-                          .with_is_sparse(false)
-                          .build();
+  auto source_param =
+      FlatIndexParamBuilder()
+          .with_metric_type(metric)
+          .with_data_type(DataType::DT_FP32)
+          .with_storage_data_type(storage_type == DataType::DT_FP16
+                                      ? DataType::DT_FP16
+                                      : DataType::DT_UNDEFINED)
+          .with_quantizer_param(QuantizerParam(
+              storage_type == DataType::DT_INT8   ? QuantizerType::kInt8
+              : storage_type == DataType::DT_INT4 ? QuantizerType::kInt4
+                                                  : QuantizerType::kNone))
+          .with_dimension(kDimension)
+          .with_is_sparse(false)
+          .build();
   auto target_param = IVFIndexParamBuilder()
-                          .with_metric_type(MetricType::kL2sq)
+                          .with_metric_type(metric)
                           .with_data_type(DataType::DT_FP32)
                           .with_dimension(kDimension)
                           .with_is_sparse(false)
@@ -1216,10 +1229,24 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
 
   std::vector<float> vector(kDimension, 0.0f);
   for (uint32_t i = 0; i < kSourceCount; ++i) {
-    vector[0] = static_cast<float>(i);
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vector[d] = i == 0 ? 0.0F : static_cast<float>(i + d) - 17.25F;
+    }
     ASSERT_EQ(0, first->add(VectorData{DenseVector{vector.data()}}, i));
-    vector[0] = static_cast<float>(1000 + i);
+    for (auto &value : vector) value += 1000.0F;
     ASSERT_EQ(0, second->add(VectorData{DenseVector{vector.data()}}, i));
+  }
+
+  // Compare against decoded source values, including lossy storage precision.
+  std::vector<std::string> expected;
+  for (const auto &source : {first, second}) {
+    for (uint32_t i = 0; i < kSourceCount; ++i) {
+      if ((source == first && i == 3) || (source == second && i == 5)) continue;
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, source->fetch(i, &fetched));
+      expected.push_back(
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    }
   }
 
   IndexFilter filter;
@@ -1229,26 +1256,48 @@ TEST(IndexInterface, MergeFp16FlatSourcesIntoIvfWithDenseIdRewrite) {
   ASSERT_EQ(0, target->merge({first, second}, filter));
   ASSERT_EQ(kSourceCount * 2 - 2, target->get_doc_count());
 
-  auto expect_first_value = [&](uint32_t doc_id, float expected) {
-    VectorDataBuffer fetched;
-    ASSERT_EQ(0, target->fetch(doc_id, &fetched));
-    const auto &buffer = std::get<DenseVectorBuffer>(fetched.vector_buffer);
-    const float *data = reinterpret_cast<const float *>(buffer.data.data());
-    ASSERT_NE(nullptr, data);
-    EXPECT_FLOAT_EQ(expected, data[0]);
-  };
-  expect_first_value(0, 0.0f);
-  expect_first_value(3, 4.0f);
-  expect_first_value(kSourceCount - 1, 1000.0f);
-  expect_first_value(kSourceCount + 4, 1006.0f);
-
   ASSERT_EQ(0, first->close());
   ASSERT_EQ(0, second->close());
-  ASSERT_EQ(0, target->close());
+  for (int pass = 0; pass < 2; ++pass) {
+    for (uint32_t id = 0; id < expected.size(); ++id) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, target->fetch(id, &fetched));
+      const auto &buffer =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), buffer.size());
+      const auto *actual = reinterpret_cast<const float *>(buffer.data());
+      const auto *values = reinterpret_cast<const float *>(expected[id].data());
+      for (uint32_t d = 0; d < kDimension; ++d) {
+        EXPECT_NEAR(values[d], actual[d],
+                    1.0e-4F * std::max(1.0F, std::abs(values[d])));
+      }
+    }
+    ASSERT_EQ(0, target->close());
+    if (pass == 0) {
+      target = IndexFactory::CreateAndInitIndex(*target_param);
+      ASSERT_NE(nullptr, target);
+      ASSERT_EQ(0, target->open(target_name,
+                                {StorageOptions::StorageType::kMMAP, false}));
+    }
+  }
   remove_files(first_name);
   remove_files(second_name);
   remove_files(target_name);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    StorageAndMetric, TurboFlatMergeTest,
+    testing::Values(
+        std::make_pair(DataType::DT_FP32, MetricType::kL2sq),
+        std::make_pair(DataType::DT_FP32, MetricType::kCosine),
+        std::make_pair(DataType::DT_FP32, MetricType::kInnerProduct),
+        std::make_pair(DataType::DT_FP16, MetricType::kL2sq),
+        std::make_pair(DataType::DT_FP16, MetricType::kCosine),
+        std::make_pair(DataType::DT_FP16, MetricType::kInnerProduct),
+        std::make_pair(DataType::DT_INT8, MetricType::kL2sq),
+        std::make_pair(DataType::DT_INT8, MetricType::kCosine),
+        std::make_pair(DataType::DT_INT4, MetricType::kL2sq),
+        std::make_pair(DataType::DT_INT4, MetricType::kCosine)));
 
 TEST(IndexInterface, MergeUnquantizedFlatAndIvfSourcesWithOrdinalReads) {
   constexpr uint32_t kDim = 16;
@@ -2004,6 +2053,170 @@ TEST(IndexInterface, FlatStorageDataTypeConvertsFp32InputAndQuery) {
   zvec::test_util::RemoveTestFiles(source_name);
 }
 
+static Index::Pointer CreateFp16CosineTestIndex(bool storage, bool contiguous) {
+  auto param = FlatIndexParamBuilder()
+                   .with_metric_type(MetricType::kCosine)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(3)
+                   .with_storage_data_type(storage ? DataType::DT_FP16
+                                                   : DataType::DT_UNDEFINED)
+                   .with_quantizer_param(QuantizerParam(
+                       storage ? QuantizerType::kNone : QuantizerType::kFP16))
+                   .with_use_contiguous_memory(contiguous)
+                   .build();
+  return IndexFactory::CreateAndInitIndex(*param);
+}
+
+TEST(IndexInterface, Fp16CosineReopenPreservesStoredEncoding) {
+  const std::vector<float> vector{0.25371F, 0.27084F, 0.28797F};
+  const VectorData query{DenseVector{vector.data()}};
+  auto query_param =
+      FlatQueryParamBuilder().with_topk(2).with_fetch_vector(true).build();
+  const std::string path = "fp16_cosine_reopen.index";
+  const std::string fresh_path = "fp16_cosine_reopen_fresh.index";
+  for (bool stored_raw : {false, true}) {
+    for (bool contiguous : {false, true}) {
+      SCOPED_TRACE(testing::Message() << stored_raw << ", " << contiguous);
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(fresh_path);
+      auto writer = CreateFp16CosineTestIndex(stored_raw, contiguous);
+      ASSERT_NE(nullptr, writer);
+      ASSERT_EQ(0,
+                writer->open(path, {StorageOptions::StorageType::kMMAP, true}));
+      ASSERT_EQ(0, writer->add(query, 0));
+      SearchResult original;
+      ASSERT_EQ(0, writer->search(query, query_param, &original));
+      ASSERT_EQ(1U, original.doc_list_.size());
+      ASSERT_EQ(1U, original.reverted_vector_list_.size());
+      ASSERT_EQ(0, writer->close());
+
+      // Direct streamer opens reject an encoding mismatch; FlatIndex restores
+      // it.
+      auto wrong_mode = CreateFp16CosineTestIndex(!stored_raw, contiguous);
+      auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_NE(nullptr, wrong_mode);
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+      ASSERT_EQ(0, storage->open(path, false));
+      EXPECT_EQ(zvec::core::IndexError_Mismatch,
+                wrong_mode->index_searcher()->open(storage));
+      wrong_mode.reset();
+      ASSERT_EQ(0, storage->close());
+
+      auto reopened = CreateFp16CosineTestIndex(true, contiguous);
+      ASSERT_NE(nullptr, reopened);
+      ASSERT_EQ(
+          0, reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
+      ASSERT_EQ(0, reopened->add(query, 1));
+      SearchResult actual;
+      ASSERT_EQ(0, reopened->search(query, query_param, &actual));
+      ASSERT_EQ(2U, actual.doc_list_.size());
+      ASSERT_EQ(2U, actual.reverted_vector_list_.size());
+      for (size_t i = 0; i < 2; ++i) {
+        EXPECT_FLOAT_EQ(original.doc_list_[0].score(),
+                        actual.doc_list_[i].score());
+        EXPECT_EQ(original.reverted_vector_list_[0],
+                  actual.reverted_vector_list_[i]);
+      }
+      ASSERT_EQ(0, reopened->close());
+
+      // A new file on this object must use the configured physical FP16 mode.
+      ASSERT_EQ(0, reopened->open(fresh_path,
+                                  {StorageOptions::StorageType::kMMAP, true}));
+      int32_t storage_type = zvec::core::IndexMeta::DT_UNDEFINED;
+      ASSERT_TRUE(reopened->index_searcher()->meta().quantizer_params().get(
+          zvec::turbo::QUANTIZER_STORAGE_DATA_TYPE, &storage_type));
+      EXPECT_EQ(zvec::core::IndexMeta::DT_FP16, storage_type);
+      ASSERT_EQ(0, reopened->add(query, 0));
+      SearchResult fresh;
+      ASSERT_EQ(0, reopened->search(query, query_param, &fresh));
+      ASSERT_EQ(1U, fresh.doc_list_.size());
+      if (stored_raw) {
+        EXPECT_FLOAT_EQ(original.doc_list_[0].score(),
+                        fresh.doc_list_[0].score());
+      } else {
+        EXPECT_NE(original.doc_list_[0].score(), fresh.doc_list_[0].score());
+      }
+      ASSERT_EQ(0, reopened->close());
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(fresh_path);
+    }
+  }
+}
+
+TEST(IndexInterface, Fp16CosineMergePreservesOrConvertsStoredEncoding) {
+  const std::vector<std::vector<float>> vectors{{0.25371F, 0.27084F, 0.28797F},
+                                                {-0.21317F, 0.73343F, 0.01237F},
+                                                {0.63017F, -0.26331F, 0.61757F},
+                                                {0.02334F, 0.65663F, 0.14325F}};
+  const std::string source_path = "fp16_cosine_merge_source.index";
+  const std::string target_path = "fp16_cosine_merge_target.index";
+  const std::string reference_path = "fp16_cosine_merge_reference.index";
+  for (bool source_raw : {false, true}) {
+    for (bool target_raw : {false, true}) {
+      for (bool contiguous : {false, true}) {
+        SCOPED_TRACE(testing::Message()
+                     << source_raw << ", " << target_raw << ", " << contiguous);
+        auto source = CreateFp16CosineTestIndex(source_raw, !contiguous);
+        auto target = CreateFp16CosineTestIndex(target_raw, contiguous);
+        ASSERT_NE(nullptr, source);
+        ASSERT_NE(nullptr, target);
+        ASSERT_EQ(0, source->open(source_path,
+                                  {StorageOptions::StorageType::kMMAP, true}));
+        ASSERT_EQ(0, target->open(target_path,
+                                  {StorageOptions::StorageType::kMMAP, true}));
+        for (uint32_t i = 0; i < vectors.size(); ++i) {
+          ASSERT_EQ(0,
+                    source->add(VectorData{DenseVector{vectors[i].data()}}, i));
+        }
+
+        // Same-mode merges must retain bytes; cross-mode merges must match
+        // fetching the source vectors and inserting them into the target mode.
+        auto reference = source;
+        if (source_raw != target_raw) {
+          reference = CreateFp16CosineTestIndex(target_raw, contiguous);
+          ASSERT_NE(nullptr, reference);
+          ASSERT_EQ(
+              0, reference->open(reference_path,
+                                 {StorageOptions::StorageType::kMMAP, true}));
+          for (uint32_t i = 0; i < vectors.size(); ++i) {
+            VectorDataBuffer fetched;
+            ASSERT_EQ(0, source->fetch(i, &fetched));
+            const auto &data =
+                std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+            ASSERT_EQ(0,
+                      reference->add(VectorData{DenseVector{data.data()}}, i));
+          }
+        }
+        MergeOptions options;
+        options.write_concurrency = 1;
+        ASSERT_EQ(0, target->merge({source}, IndexFilter(), options));
+        ASSERT_EQ(vectors.size(), target->get_doc_count());
+        auto expected = reference->create_index_provider();
+        auto actual = target->create_index_provider();
+        ASSERT_NE(nullptr, expected);
+        ASSERT_NE(nullptr, actual);
+        ASSERT_EQ(expected->element_size(), actual->element_size());
+        for (uint32_t i = 0; i < vectors.size(); ++i) {
+          ASSERT_NE(nullptr, expected->get_vector(i));
+          ASSERT_NE(nullptr, actual->get_vector(i));
+          EXPECT_EQ(0,
+                    std::memcmp(expected->get_vector(i), actual->get_vector(i),
+                                expected->element_size()));
+        }
+        if (reference != source) {
+          ASSERT_EQ(0, reference->close());
+        }
+        ASSERT_EQ(0, target->close());
+        ASSERT_EQ(0, source->close());
+        for (const auto &path : {source_path, target_path, reference_path}) {
+          zvec::test_util::RemoveTestFiles(path);
+        }
+      }
+    }
+  }
+}
+
 TEST(IndexInterface, Fp16CosineRefinementMatchesFp16Storage) {
   constexpr uint32_t kDimension = 33;
   constexpr uint32_t kVectorCount = 40;
@@ -2074,6 +2287,10 @@ TEST(IndexInterface, Fp16CosineRefinementMatchesFp16Storage) {
     ASSERT_NE(nullptr, target);
     ASSERT_EQ(0, target->open(target_name,
                               {StorageOptions::StorageType::kMMAP, false}));
+    int32_t storage_type = zvec::core::IndexMeta::DT_UNDEFINED;
+    ASSERT_TRUE(target->index_searcher()->meta().quantizer_params().get(
+        zvec::turbo::QUANTIZER_STORAGE_DATA_TYPE, &storage_type));
+    EXPECT_EQ(zvec::core::IndexMeta::DT_FP16, storage_type);
 
     auto query_param = FlatQueryParamBuilder()
                            .with_topk(kTopk)
