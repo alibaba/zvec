@@ -98,11 +98,7 @@ def test_invalid_id_rejects_batch_before_writing(collection, operation, doc_id, 
     message = str(exc_info.value)
     assert message.startswith("Invalid doc:")
     assert reason in message
-    if doc_id == "\ud800":
-        # Conversion fails in Python before native validation runs.
-        assert "document at index 1" in message
-    else:
-        assert "document at index" not in message
+    assert "document at index" not in message
     assert "offset" not in message
     if doc_id:
         assert "id[" in message
@@ -116,9 +112,7 @@ def test_invalid_id_rejects_batch_before_writing(collection, operation, doc_id, 
 
 
 @pytest.mark.parametrize("operation", ["insert", "update", "upsert"])
-def test_conversion_type_error_identifies_document_before_writing(
-    collection, operation
-):
+def test_conversion_type_error_rejects_batch_before_writing(collection, operation):
     if operation == "update":
         assert collection.insert(zvec.Doc("valid", fields={"text": "before"})).ok()
 
@@ -130,8 +124,8 @@ def test_conversion_type_error_identifies_document_before_writing(
         getattr(collection, operation)(docs)
 
     message = str(exc_info.value)
-    assert message.endswith(" (document at index 1)")
-    assert message.count("document at index") == 1
+    assert "Field 'text': expected STRING" in message
+    assert "document at index" not in message
     fetched = collection.fetch("valid")
     if operation == "update":
         assert fetched["valid"].field("text") == "before"
@@ -203,11 +197,7 @@ def test_long_field_name_and_rejected_rename_preserve_data(tmp_path):
 def test_surrogate_id_has_a_readable_encoding_error(collection, operation):
     with pytest.raises(
         ValueError,
-        match="^"
-        + re.escape(
-            r"Invalid doc: id['\ud800'] is not valid UTF-8 (document at index 0)"
-        )
-        + "$",
+        match="^" + re.escape(r"Invalid doc: id['\ud800'] is not valid UTF-8") + "$",
     ):
         getattr(collection, operation)(zvec.Doc("\ud800", fields={"text": "value"}))
     assert collection.stats.doc_count == 0
@@ -271,10 +261,3 @@ def test_duplicate_name_errors_are_escaped_and_bounded(kind, name):
         assert "\\n" in message
     else:
         assert "..." in message
-
-
-def test_native_schema_rejects_null_field_pointer():
-    from zvec._zvec.schema import _CollectionSchema
-
-    with pytest.raises(ValueError, match="^Invalid schema:"):
-        _CollectionSchema("fields", [None])

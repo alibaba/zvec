@@ -51,25 +51,6 @@ def convert_to_cpp_doc(doc: Doc, collection_schema: CollectionSchema) -> _Doc:
     return _doc
 
 
-def convert_to_cpp_docs(
-    docs: list[Doc], collection_schema: CollectionSchema
-) -> list[_Doc]:
-    converted = []
-    for index, doc in enumerate(docs):
-        try:
-            converted.append(convert_to_cpp_doc(doc, collection_schema))
-        except (TypeError, ValueError) as error:
-            # Preserve the original exception and cause. Unicode error subclasses
-            # carry structured arguments that must not be replaced with a string.
-            if type(error) in (TypeError, ValueError):
-                suffix = f" (document at index {index})"
-                message = str(error)
-                if not message.endswith(suffix):
-                    error.args = (message + suffix,)
-            raise
-    return converted
-
-
 def convert_to_py_doc(doc: _Doc, collection_schema: CollectionSchema) -> Doc:
     if not doc or not collection_schema:
         return None

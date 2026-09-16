@@ -25,7 +25,7 @@ from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
 from ._validation import explain_utf8_conversion_error
-from .convert import convert_to_cpp_docs, convert_to_py_doc
+from .convert import convert_to_cpp_doc, convert_to_py_doc
 from .doc import Doc, DocList, GroupResult
 from .param import (
     AddColumnOption,
@@ -346,7 +346,9 @@ class Collection:
         """
         is_single = isinstance(docs, Doc)
         doc_list = [docs] if is_single else docs
-        results = self._obj.Insert(convert_to_cpp_docs(doc_list, self.schema))
+        results = self._obj.Insert(
+            [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
+        )
         return results[0] if is_single else results
 
     @overload
@@ -369,7 +371,9 @@ class Collection:
         """
         is_single = isinstance(docs, Doc)
         doc_list = [docs] if is_single else docs
-        results = self._obj.Upsert(convert_to_cpp_docs(doc_list, self.schema))
+        results = self._obj.Upsert(
+            [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
+        )
         return results[0] if is_single else results
 
     @overload
@@ -394,7 +398,9 @@ class Collection:
         """
         is_single = isinstance(docs, Doc)
         doc_list = [docs] if is_single else docs
-        results = self._obj.Update(convert_to_cpp_docs(doc_list, self.schema))
+        results = self._obj.Update(
+            [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
+        )
         return results[0] if is_single else results
 
     @overload
