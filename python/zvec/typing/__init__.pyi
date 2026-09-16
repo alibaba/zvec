@@ -308,16 +308,31 @@ class QuantizeType:
       INT4
 
       RABITQ
+
+      UNIFORM_UINT7
+
+      UNIFORM_UINT8
+
+      UNIFORM_UINT4
     """
 
     FP16: typing.ClassVar[QuantizeType]  # value = <QuantizeType.FP16: 1>
     INT4: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT4: 3>
     INT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT8: 2>
     RABITQ: typing.ClassVar[QuantizeType]  # value = <QuantizeType.RABITQ: 4>
+    UNIFORM_UINT7: typing.ClassVar[
+        QuantizeType
+    ]  # value = <QuantizeType.UNIFORM_UINT7: 5>
+    UNIFORM_UINT8: typing.ClassVar[
+        QuantizeType
+    ]  # value = <QuantizeType.UNIFORM_UINT8: 6>
+    UNIFORM_UINT4: typing.ClassVar[
+        QuantizeType
+    ]  # value = <QuantizeType.UNIFORM_UINT4: 7>
     UNDEFINED: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNDEFINED: 0>
     __members__: typing.ClassVar[
         dict[str, QuantizeType]
-    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>, 'RABITQ': <QuantizeType.RABITQ: 4>}
+    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>, 'RABITQ': <QuantizeType.RABITQ: 4>, 'UNIFORM_UINT7': <QuantizeType.UNIFORM_UINT7: 5>, 'UNIFORM_UINT8': <QuantizeType.UNIFORM_UINT8: 6>, 'UNIFORM_UINT4': <QuantizeType.UNIFORM_UINT4: 7>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...

@@ -243,6 +243,11 @@ class FlatStreamerContext : public IndexStreamer::Context {
     actual_read_size_ =
         (owner->read_block_size() + block_size - 1) / block_size * block_size;
     owner_ = owner;
+    if (owner->quantizer()) {
+      this->update_index_quantizer(owner->quantizer());
+    } else {
+      this->update_index_metric(owner->metric());
+    }
   }
 
   //! Reset all the query results

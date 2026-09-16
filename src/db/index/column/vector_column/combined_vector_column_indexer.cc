@@ -332,17 +332,7 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
             "normal indexers size[", normal_indexers_.size(),
             "] not match indexers size[", indexers_.size(), "]"));
       }
-      // query_params of HNSW doesn't have scale_factor
-      if (q_params->type() == IndexType::FLAT) {
-        scale_factor = std::dynamic_pointer_cast<FlatQueryParams>(q_params)
-                           ->scale_factor();
-      } else if (q_params->type() == IndexType::IVF) {
-        scale_factor =
-            std::dynamic_pointer_cast<IVFQueryParams>(q_params)->scale_factor();
-      } else if (q_params->type() == IndexType::IVF_RABITQ) {
-        scale_factor = std::dynamic_pointer_cast<IvfRabitqQueryParams>(q_params)
-                           ->scale_factor();
-      }
+      scale_factor = q_params->scale_factor();
       need_refine = true;
     }
 
