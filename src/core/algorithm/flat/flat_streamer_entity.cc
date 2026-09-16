@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <algorithm>
 #include <cstdint>
+#include <utility>
 #include <zvec/core/framework/index_error.h>
 #include "flat_utility.h"
 
@@ -619,7 +620,6 @@ int FlatContiguousStreamerEntity::search_by_p_keys_fast(
   auto &ptrs = scratch->vector_ptrs;
   auto &extras = scratch->extra_values;
   auto &distances = scratch->distances;
-  auto &documents = scratch->candidate_documents;
   const size_t count = keys.size();
   const size_t extra_size = extra_values_size();
   const bool has_extras = extra_size != 0;
@@ -627,7 +627,6 @@ int FlatContiguousStreamerEntity::search_by_p_keys_fast(
   ptrs.resize(count);
   extras.resize(has_extras ? count : 0);
   distances.resize(count);
-  documents.resize(count);
   for (size_t i = 0; i < count; ++i) {
     ptrs[i] = get_vector_ptr_by_key(*storage, keys[i]);
     if (!ptrs[i]) return IndexError_NotImplemented;
@@ -654,12 +653,13 @@ int FlatContiguousStreamerEntity::search_by_p_keys_fast(
       distance()(query, ptrs[i], meta().dimension(), distances.data() + i);
     }
   }
+  std::vector<std::pair<uint64_t, float>> documents(count);
   for (size_t i = 0; i < count; ++i) {
     documents[i] = {keys[i], distances[i]};
   }
   const auto better = [](const auto &lhs, const auto &rhs) {
-    return lhs.distance < rhs.distance ||
-           (lhs.distance == rhs.distance && lhs.key < rhs.key);
+    return lhs.second < rhs.second ||
+           (lhs.second == rhs.second && lhs.first < rhs.first);
   };
   auto selected_end = documents.begin() + topk;
   std::make_heap(documents.begin(), selected_end, better);
@@ -673,8 +673,8 @@ int FlatContiguousStreamerEntity::search_by_p_keys_fast(
   }
   std::sort_heap(documents.begin(), selected_end, better);
   for (size_t i = 0; i < topk; ++i) {
-    output_ids[i] = static_cast<int64_t>(documents[i].key);
-    if (output_scores) output_scores[i] = documents[i].distance;
+    output_ids[i] = static_cast<int64_t>(documents[i].first);
+    if (output_scores) output_scores[i] = documents[i].second;
   }
   return 0;
 }
