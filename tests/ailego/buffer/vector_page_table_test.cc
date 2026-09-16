@@ -606,7 +606,7 @@ TEST_F(BufferPoolTest, PageLoadClaimCoalescesConcurrentWaiters) {
 
 TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
   // Keep the background reclaimer from racing with the explicit eviction.
-  InitTablePool(/*capacity_pages=*/2, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/16, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -627,7 +627,7 @@ TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
 
 TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
   // Only this thread should drive eviction and update the flush callback.
-  InitTablePool(/*capacity_pages=*/2, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/16, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -741,7 +741,7 @@ TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
 TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
   // Keep the single resident page below the background-reclaim watermark so
   // only this thread advances the failed-flush/recovery sequence.
-  InitTablePool(/*capacity_pages=*/2, /*entry_num=*/1);
+  InitTablePool(/*capacity_pages=*/16, /*entry_num=*/1);
   auto &queue = BlockEvictionQueue::get_instance();
   BlockEvictionQueue::BlockType discarded;
   // Earlier tests can leave stale global queue entries. batch_recycle(1)
