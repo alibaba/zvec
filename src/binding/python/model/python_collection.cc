@@ -25,7 +25,7 @@ namespace zvec {
 
 namespace {
 
-DenseQueryShape dense_query_shape(const py::array &vector) {
+DataType dense_query_data_type(const py::array &vector) {
   if (vector.ndim() != 1 || !(vector.flags() & py::array::c_style)) {
     throw py::value_error("query vector must be a contiguous 1D array");
   }
@@ -57,7 +57,7 @@ DenseQueryShape dense_query_shape(const py::array &vector) {
   } else {
     throw py::value_error("unsupported query vector dtype");
   }
-  return {type, static_cast<uint32_t>(vector.shape(0))};
+  return type;
 }
 
 // Batch-materialize a DocPtrList into a list of (id, score, fields, vectors)
@@ -395,7 +395,8 @@ void ZVecPyCollection::bind_dql_methods(
           [](const Collection &self, const std::string &field_name,
              const py::array &vector, QueryParams *params, int topk,
              bool return_scores) -> py::object {
-            const auto shape = dense_query_shape(vector);
+            const auto data_type = dense_query_data_type(vector);
+            const auto dimension = static_cast<uint32_t>(vector.shape(0));
             // Python keeps the argument alive for this call. The DB reads it
             // synchronously and never retains it, so no shared ownership
             // conversion or reference-count traffic is needed here.
@@ -403,8 +404,9 @@ void ZVecPyCollection::bind_dql_methods(
             Result<FastQueryResult> result;
             {
               py::gil_scoped_release release;
-              result = self.fast_query(field_name, vector.data(), borrowed,
-                                       topk, return_scores, &shape);
+              result =
+                  self.fast_query(field_name, vector.data(), borrowed, topk,
+                                  return_scores, data_type, dimension);
             }
             auto output = unwrap_expected(std::move(result));
             auto ids = owned_array(std::move(output.ids));

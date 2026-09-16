@@ -138,12 +138,6 @@ struct FastQueryResult {
   std::vector<float> scores;
 };
 
-// Optional buffer metadata supplied by bindings before passing raw pointers.
-struct DenseQueryShape {
-  DataType data_type;
-  uint32_t dimension;
-};
-
 struct ZVEC_API SearchQuery {
   QueryTarget target_;
   int topk_{0};

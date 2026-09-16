@@ -110,11 +110,14 @@ class ZVEC_API Collection {
   // Parameters are read on every call. Index references are cached internally.
   // Missing neighbors are padded with ID -1 and score NaN. Refinement uses
   // query_params->scale_factor(), with the same semantics as query().
+  // Supply both input dtype and dimension for validation; omitting both trusts
+  // the caller to provide a buffer matching the field.
   virtual Result<FastQueryResult> fast_query(
       const std::string &field_name, const void *query_vector,
       const QueryParams::Ptr &query_params = nullptr, int topk = 10,
       bool return_scores = false,
-      const DenseQueryShape *query_shape = nullptr) const = 0;
+      DataType query_data_type = DataType::UNDEFINED,
+      uint32_t query_dimension = 0) const = 0;
 
   virtual Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const = 0;
