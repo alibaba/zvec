@@ -1886,9 +1886,6 @@ Result<CollectionImpl::FastQueryState> CollectionImpl::resolve_fast_query(
       indexer = seg->get_combined_vector_indexer(field_name);
     } else {
       indexer = seg->get_quant_combined_vector_indexer(field_name);
-      if (indexer != nullptr && !indexer->has_searchable_indexers()) {
-        indexer = seg->get_combined_vector_indexer(field_name);
-      }
     }
     if (!indexer || !indexer->has_searchable_indexers()) {
       continue;
