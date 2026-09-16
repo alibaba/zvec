@@ -34,11 +34,6 @@ namespace core {
 
 //! Reusable request-local buffers for storage-specific Flat search paths.
 struct FlatSearchScratch {
-  struct CandidateDocument {
-    uint64_t key;
-    float distance;
-  };
-  std::vector<CandidateDocument> candidate_documents{};
   std::vector<const void *> vector_ptrs{};
   std::vector<const void *> extra_values{};
   std::vector<uint64_t> vector_keys{};
