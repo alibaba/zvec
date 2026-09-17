@@ -25,7 +25,7 @@ namespace zvec::core_interface {
 
 #if !DISKANN_SUPPORTED
 
-int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
   (void)param;
   LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
@@ -39,7 +39,7 @@ int DiskAnnIndex::open(const std::string &file_path,
   return core::IndexError_Unsupported;
 }
 
-int DiskAnnIndex::GenerateHolder() {
+int DiskAnnIndex::generate_holder() {
   LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
