@@ -246,6 +246,7 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
   wal_option.create_new = false;
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);
+  ASSERT_EQ(wal_file->prepare_for_read(), 0);
   uint32_t idx = 0;
   std::string record = ReadRecord(wal_file);
   while (!record.empty()) {
@@ -430,6 +431,7 @@ TEST_F(WalFileTest, TestFirstErrorCase) {
   EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
   EXPECT_NE(result.error().message().find("CRC mismatch"), std::string::npos);
   EXPECT_NE(wal_file->append("after corruption"), 0);
+  EXPECT_NE(wal_file->flush(), 0);
   // close
   ret = wal_file->close();
   ASSERT_EQ(ret, 0);
@@ -801,6 +803,59 @@ TEST_F(WalFileTest, ClosedReaderReturnsError) {
   auto result = wal->next();
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
+}
+
+TEST_F(WalFileTest, ReadOnlyWalCannotBeModified) {
+  const std::string path = "./data.wal.readonly";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->append("prefix"), 0);
+  ASSERT_EQ(wal->close(), 0);
+  options.create_new = false;
+  options.read_only = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "prefix");
+  EXPECT_NE(wal->append("suffix"), 0);
+  EXPECT_NE(wal->flush(), 0);
+  EXPECT_NE(wal->remove(), 0);
+  ASSERT_EQ(wal->close(), 0);
+  EXPECT_NE(wal->remove(), 0);
+  options.read_only = false;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "prefix");
+  auto end = wal->next();
+  ASSERT_TRUE(end.has_value());
+  EXPECT_FALSE(end.value().has_value());
+  ASSERT_EQ(wal->remove(), 0);
+}
+
+TEST_F(WalFileTest, AppendRequiresReadCursorToBePreparedAgain) {
+  auto wal = WalFile::Create("./data.wal.cursor");
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->append("first"), 0);
+  ASSERT_EQ(wal->append("second"), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "first");
+  ASSERT_EQ(wal->append("third"), 0);
+  EXPECT_FALSE(wal->next().has_value());
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "first");
+  EXPECT_EQ(ReadRecord(wal), "second");
+  EXPECT_EQ(ReadRecord(wal), "third");
+}
+
+TEST_F(WalFileTest, RemoveReportsFilesystemFailure) {
+  const std::string path = "./data.wal.remove";
+  ASSERT_TRUE(FileHelper::CreateDirectory(path));
+  auto wal = WalFile::Create(path);
+  EXPECT_NE(wal->remove(), 0);
+  ASSERT_TRUE(FileHelper::RemoveDirectory(path));
 }
 
 TEST_F(WalFileTest, ZeroLengthRecordIsCorruption) {

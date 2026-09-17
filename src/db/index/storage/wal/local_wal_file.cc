@@ -39,9 +39,12 @@ int LocalWalFile::append(std::string &&data) {
   record.content_ = std::move(data);
 
   std::lock_guard<std::mutex> lock(file_mutex_);
-  if (!opened_ || failed_) {
+  if (!opened_ || failed_ || read_only_) {
     return -1;
   }
+  // Append changes the shared file position. Require a fresh read preparation
+  // instead of silently skipping unread records after an intervening write.
+  reader_ready_ = false;
   if (incomplete_tail_offset_) {
     if (!file_.truncate(*incomplete_tail_offset_)) {
       WLOG_ERROR("Wal incomplete tail truncation failed");
@@ -71,7 +74,7 @@ int LocalWalFile::append(std::string &&data) {
 
 Result<std::optional<std::string>> LocalWalFile::next() {
   std::lock_guard<std::mutex> lock(file_mutex_);
-  if (!opened_ || failed_) {
+  if (!opened_ || failed_ || !reader_ready_) {
     return tl::make_unexpected(
         Status::InternalError("WAL is not open for reading or has failed"));
   }
@@ -95,7 +98,9 @@ Result<std::optional<std::string>> LocalWalFile::next() {
 }
 
 int LocalWalFile::open(const WalOptions &wal_option) {
+  std::lock_guard<std::mutex> lock(file_mutex_);
   CHECK_STATUS(opened_, false);
+  if (wal_option.create_new && wal_option.read_only) return -1;
   if (wal_option.create_new) {
     if (FileHelper::FileExists(wal_path_)) {
       WLOG_ERROR("Wal open error. file already exist create_new[%d]",
@@ -109,10 +114,12 @@ int LocalWalFile::open(const WalOptions &wal_option) {
     }
 
     // write wal header
+    header_ = WalHeader{};
     size_t write_size = file_.write((const void *)&header_, sizeof(header_));
     if (write_size != sizeof(header_)) {
       WLOG_ERROR("Wal write header error. create_new[%d]",
                  wal_option.create_new);
+      file_.close();
       return -1;
     }
 
@@ -123,19 +130,22 @@ int LocalWalFile::open(const WalOptions &wal_option) {
       return -1;
     }
 
-    if (!file_.open(wal_path_.c_str(), false)) {
+    if (!file_.open(wal_path_.c_str(), wal_option.read_only)) {
       WLOG_ERROR("Wal open error. create_new[%d]", wal_option.create_new);
       return -1;
     }
 
     // open default for write
     if (!file_.seek(0, ailego::File::Origin::End)) {
+      file_.close();
       return -1;
     }
   }
 
   max_docs_wal_flush_ = wal_option.max_docs_wal_flush;
   opened_ = true;
+  read_only_ = wal_option.read_only;
+  reader_ready_ = false;
   failed_ = false;
   incomplete_tail_offset_.reset();
   docs_count_ = 0;
@@ -145,35 +155,50 @@ int LocalWalFile::open(const WalOptions &wal_option) {
 }
 
 int LocalWalFile::close() {
+  std::lock_guard<std::mutex> lock(file_mutex_);
   CHECK_STATUS(opened_, true);
   file_.close();
   WLOG_INFO("Wal close success");
   opened_ = false;
+  reader_ready_ = false;
   return 0;
 }
 
 int LocalWalFile::remove() {
+  std::lock_guard<std::mutex> lock(file_mutex_);
+  if (read_only_) return -1;
   if (opened_) {
-    close();
+    file_.close();
+    opened_ = false;
+    reader_ready_ = false;
   }
   if (FileHelper::FileExists(wal_path_)) {
-    FileHelper::RemoveFile(wal_path_);
+    if (!FileHelper::RemoveFile(wal_path_)) {
+      WLOG_ERROR("Wal remove failed");
+      return -1;
+    }
     WLOG_INFO("Wal remove success.");
   }
   return 0;
 }
 
 int LocalWalFile::flush() {
+  std::lock_guard<std::mutex> lock(file_mutex_);
   CHECK_STATUS(opened_, true);
+  if (failed_ || read_only_) return -1;
   if (!file_.flush()) {
     WLOG_ERROR("Wal flush error.");
+    failed_ = true;
     return -1;
   }
+  docs_count_ = 0;
   return 0;
 }
 
 int LocalWalFile::prepare_for_read() {
+  std::lock_guard<std::mutex> lock(file_mutex_);
   CHECK_STATUS(opened_, true);
+  reader_ready_ = false;
   incomplete_tail_offset_.reset();
   if (failed_ || !file_.seek(0, ailego::File::Origin::Begin)) {
     return -1;
@@ -189,6 +214,7 @@ int LocalWalFile::prepare_for_read() {
     failed_ = true;
     return -1;
   }
+  reader_ready_ = true;
   return 0;
 }
 

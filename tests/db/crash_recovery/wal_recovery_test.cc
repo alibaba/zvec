@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -557,6 +558,132 @@ TEST_F(WalRecoveryDeathTest, UpsertWalRecordsInsertOrUpdatePredecessor) {
   EXPECT_EQ(docs[1]->doc_id(), 0u);
   EXPECT_EQ(docs[1]->get<std::string>("text"), "second");
 }
+
+class InvalidWalPayloadDeathTest : public WalRecoveryDeathTest,
+                                   public ::testing::WithParamInterface<int> {};
+
+TEST_P(InvalidWalPayloadDeathTest, FailsBeforeApplyingValidPrefix) {
+  ASSERT_EXIT(WriteUpsertsAndExit(path_, true, true),
+              ::testing::ExitedWithCode(0), "");
+  std::vector<Doc::Ptr> docs;
+  ASSERT_NO_FATAL_FAILURE(ReadWalDocuments(path_, &docs));
+  ASSERT_EQ(docs.size(), 3u);
+  const int corruption = GetParam();
+  if (corruption == 1) {
+    docs.back()->set_operator(static_cast<Operator>(99));
+  } else if (corruption >= 2) {
+    docs.back()->set_operator(corruption == 2 ? Operator::UPDATE
+                                              : Operator::DELETE);
+    docs.back()->set_doc_id(std::numeric_limits<uint64_t>::max());
+  }
+  const auto wal_path = FindWal(path_);
+  auto wal = WalFile::Create(wal_path);
+  ASSERT_EQ(wal->remove(), 0);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  for (size_t i = 0; i < docs.size(); ++i) {
+    auto payload = docs[i]->serialize();
+    if (corruption == 0 && i + 1 == docs.size()) payload.resize(3);
+    // Recompute the CRC so validation must inspect the document, not just the
+    // WAL frame. A valid prefix must remain unapplied even after retrying open.
+    ASSERT_EQ(wal->append(std::string(payload.begin(), payload.end())), 0);
+  }
+  ASSERT_EQ(wal->close(), 0);
+  const auto idmap_path = FindIdMap(path_);
+  ASSERT_FALSE(idmap_path.empty());
+  {
+    auto map = IDMap::CreateAndOpen("wal_recovery", idmap_path, false, false);
+    ASSERT_NE(map, nullptr);
+    ASSERT_TRUE(map->upsert("target", 0).ok());
+    map->remove("broken");
+    ASSERT_TRUE(map->flush().ok());
+  }
+  const auto bytes = ReadFileBytes(wal_path);
+  const auto manifests = ReadManifests(path_);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto opened = Collection::Open(path_, CollectionOptions{});
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_EQ(opened.error().code(), StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(opened.error().message().find(corruption < 2
+                                                ? "Corrupt WAL document"
+                                                : "Invalid WAL predecessor"),
+              std::string::npos);
+    EXPECT_EQ(ReadFileBytes(wal_path), bytes);
+    EXPECT_EQ(ReadManifests(path_), manifests);
+    auto map = IDMap::CreateAndOpen("wal_recovery", idmap_path, false, true);
+    ASSERT_NE(map, nullptr);
+    uint64_t id;
+    ASSERT_TRUE(map->has("target", &id));
+    EXPECT_EQ(id, 0u);
+    EXPECT_FALSE(map->has("broken"));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(CorruptDocuments, InvalidWalPayloadDeathTest,
+                         ::testing::Values(0, 1, 2, 3));
+
+class WalBlockBoundaryDeathTest
+    : public WalRecoveryDeathTest,
+      public ::testing::WithParamInterface<Operator> {};
+
+TEST_P(WalBlockBoundaryDeathTest, PendingWriteSurvivesBlockRotation) {
+  const auto operation = GetParam();
+  ASSERT_EXIT(
+      {
+        CollectionSchema schema("wal_recovery");
+        if (!schema
+                 .add_field(std::make_shared<FieldSchema>(
+                     "text", DataType::STRING, false))
+                 .ok())
+          std::_Exit(1);
+        CollectionOptions options;
+        options.max_buffer_size_ = 1;  // The first row fills the block.
+        auto created = Collection::CreateAndOpen(path_, schema, options);
+        if (!created.has_value()) std::_Exit(2);
+        Doc doc;
+        doc.set_pk("target");
+        doc.set<std::string>("text", "first");
+        std::vector<Doc> first{doc};
+        auto inserted = created.value()->insert(first);
+        if (!inserted.has_value() || !inserted.value().front().ok())
+          std::_Exit(3);
+        if (operation == Operator::INSERT) doc.set_pk("suffix");
+        doc.set<std::string>("text", "second");
+        std::vector<Doc> second{doc};
+        auto written =
+            operation == Operator::INSERT   ? created.value()->insert(second)
+            : operation == Operator::UPDATE ? created.value()->update(second)
+                                            : created.value()->upsert(second);
+        if (!written.has_value() || !written.value().front().ok())
+          std::_Exit(4);
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+  ASSERT_FALSE(FindWal(path_).empty());
+  for (int reopen = 0; reopen < 2; ++reopen) {
+    auto opened = Collection::Open(path_, CollectionOptions{});
+    ASSERT_TRUE(opened.has_value()) << opened.error().message();
+    if (operation == Operator::INSERT) {
+      auto fetched = opened.value()->fetch({"target", "suffix"});
+      ASSERT_TRUE(fetched.has_value());
+      ASSERT_NE(fetched.value().at("target"), nullptr);
+      ASSERT_NE(fetched.value().at("suffix"), nullptr);
+      EXPECT_EQ(fetched.value().at("target")->get<std::string>("text"),
+                "first");
+      EXPECT_EQ(fetched.value().at("suffix")->get<std::string>("text"),
+                "second");
+      EXPECT_EQ(opened.value()->stats().value().doc_count, 2u);
+    } else {
+      ASSERT_NO_FATAL_FAILURE(ExpectOnlyTarget(opened.value(), "second"));
+    }
+    ASSERT_TRUE(opened.value()->flush().ok());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(WriteOperations, WalBlockBoundaryDeathTest,
+                         ::testing::Values(Operator::INSERT, Operator::UPDATE,
+                                           Operator::UPSERT));
 
 }  // namespace
 }  // namespace zvec

@@ -20,6 +20,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -904,11 +906,6 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
 Status SegmentImpl::internal_insert(Doc &doc) {
   uint64_t g_doc_id = doc_id_allocator_.fetch_add(1);
   doc.set_doc_id(g_doc_id);
-
-  if (ready_for_dump_block()) {
-    auto s = flush();
-    CHECK_RETURN_STATUS(s);
-  }
 
   // init writing memory components
   if (!memory_store_) {
@@ -4362,6 +4359,7 @@ Status SegmentImpl::recover() {
   WalFilePtr recover_wal_file;
   WalOptions wal_option;
   wal_option.create_new = false;
+  wal_option.read_only = options_.read_only_;
   if (WalFile::CreateAndOpen(wal_file_path, wal_option, &recover_wal_file) !=
       0) {
     LOG_ERROR("WAL recovery failed: unable to open WAL file [%s]",
@@ -4388,6 +4386,7 @@ Status SegmentImpl::recover() {
   for (int pass = 0; pass < 2; ++pass) {
     const bool replay = pass == 1;
     total_recovered_doc_count = 0;
+    uint64_t next_doc_id = first_replay_id;
     int ret = recover_wal_file->prepare_for_read();
     if (ret != 0) {
       LOG_ERROR(
@@ -4428,8 +4427,17 @@ Status SegmentImpl::recover() {
       }
       const auto &buf = record.value().value();
       total_recovered_doc_count++;
-      auto doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(buf.data()),
-                                  buf.size());
+      Doc::Ptr doc;
+      try {
+        doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(buf.data()),
+                               buf.size());
+      } catch (const std::bad_alloc &) {
+        return Status(StatusCode::RESOURCE_EXHAUSTED,
+                      "Unable to allocate WAL document during recovery");
+      } catch (const std::length_error &) {
+        return Status::InternalError("Invalid WAL document length: ",
+                                     wal_file_path);
+      }
       if (doc == nullptr) {
         LOG_ERROR(
             "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
@@ -4438,6 +4446,23 @@ Status SegmentImpl::recover() {
         return Status::InternalError(
             "Corrupt WAL document: path[", wal_file_path, "], segment[", id(),
             "], record[", total_recovered_doc_count, "]");
+      }
+
+      // Check references during the first pass as well: an UPDATE/DELETE may
+      // only target an earlier row, never a row yet to be allocated by replay.
+      const auto operation = doc->get_operator();
+      if ((operation == Operator::UPDATE || operation == Operator::DELETE) &&
+          doc->doc_id() >= next_doc_id) {
+        return Status::InternalError("Invalid WAL predecessor: path[",
+                                     wal_file_path, "], record[",
+                                     total_recovered_doc_count, "]");
+      }
+      if (operation != Operator::DELETE) {
+        if (next_doc_id == std::numeric_limits<uint64_t>::max()) {
+          return Status::InternalError("WAL document ID overflow: ",
+                                       wal_file_path);
+        }
+        ++next_doc_id;
       }
 
       if (!replay) {
@@ -4545,6 +4570,15 @@ Status SegmentImpl::open_wal_file() {
 }
 
 Status SegmentImpl::append_wal(const Doc &doc) {
+  // Rotate a full block before logging the next operation. Flushing inside
+  // internal_insert would delete the WAL containing this still-unapplied
+  // operation (and could commit an UPDATE's deletion without its replacement).
+  // Recovery bypasses this path and keeps its source WAL until replay finishes.
+  if (ready_for_dump_block()) {
+    auto status = flush();
+    CHECK_RETURN_STATUS(status);
+  }
+
   std::vector<uint8_t> buf = doc.serialize();
 
   if (!wal_file_) {

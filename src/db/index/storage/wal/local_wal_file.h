@@ -13,7 +13,6 @@
 // limitations under the License.
 #pragma once
 
-#include <atomic>
 #include <mutex>
 #include <zvec/ailego/io/file.h>
 #include "wal_file.h"
@@ -68,7 +67,8 @@ class LocalWalFile : public WalFile {
   int remove() override;
 
   bool has_record() override {
-    return file_.size() > sizeof(header_);
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    return opened_ && file_.size() > sizeof(header_);
   }
 
  private:
@@ -84,10 +84,12 @@ class LocalWalFile : public WalFile {
   std::string wal_path_{};
   std::mutex file_mutex_;
   uint32_t max_docs_wal_flush_{0};
-  std::atomic<uint64_t> docs_count_{0UL};
+  uint64_t docs_count_{0};
   WalHeader header_;
 
   bool opened_{false};
+  bool read_only_{false};
+  bool reader_ready_{false};
   bool failed_{false};
   // Preserve the complete prefix and remove a torn final record before the
   // next append. Merely reading a WAL must not modify it.
