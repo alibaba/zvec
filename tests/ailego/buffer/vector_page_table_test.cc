@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/buffer/external_cache.h>
@@ -67,12 +68,22 @@ void ExpectPageContent(const char *buf, size_t page_id) {
 
 class BufferPoolTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    // Stop the previous test's reclaimer even when the next test uses the
+    // same budget. Bounded recycling can leave stale queue entries behind.
+    ASSERT_EQ(0, MemoryLimitPool::get_instance().init(0));
+    auto &queue = BlockEvictionQueue::get_instance();
+    BlockEvictionQueue::BlockType stale;
+    while (queue.evict_single_block(stale)) {
+    }
+  }
+
   void init_pool(size_t capacity_pages) {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(capacity_pages *
                                                       kVectorPageSize));
   }
   void init_vec_pool(size_t capacity_pages, size_t file_pages,
-                     bool writable = false) {
+                   bool writable = false) {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(
                      capacity_pages * kVectorPageSize +
                      VecBufferPool::metadata_bytes_for_page_count(file_pages,
@@ -307,6 +318,62 @@ TEST_F(BufferPoolTest, BulkReadDoesNotAdmitFirstTouchScanUnderPressure) {
   pool.page_table_.release_block(/*block_id=*/0);
 }
 
+TEST_F(BufferPoolTest, WritableBypassPreservesDirtyPagesWithoutAdmission) {
+  init_vec_pool(/*capacity_pages=*/1, /*file_pages=*/2, /*writable=*/true);
+  VecBufferPool pool(new_file(/*num_pages=*/2), /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  char *page = pool.acquire_buffer(0, 0);
+  ASSERT_NE(nullptr, page);
+
+  // Pin the only page so it cannot be written back or replaced. The second
+  // page must be read from disk without discarding the first page's new bytes.
+  const std::string changed(64, 'X');
+  EXPECT_EQ(0, pool.write_range(kVectorPageSize - changed.size(),
+                                changed.size(), changed.data()));
+  std::array<char, 128> result{};
+  const auto before = pool.stats();
+  EXPECT_TRUE(pool.read_range_bypass(kVectorPageSize - changed.size(),
+                                     result.size(), result.data()));
+  EXPECT_EQ(changed, std::string(result.data(), changed.size()));
+  EXPECT_EQ(std::string(64, '\1'), std::string(result.data() + 64, 64));
+  EXPECT_FALSE(pool.is_page_resident(1));
+  EXPECT_EQ(1u, pool.stats().bypass_io_requests - before.bypass_io_requests);
+  EXPECT_EQ(64u, pool.stats().bypass_bytes - before.bypass_bytes);
+  EXPECT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(1));
+  EXPECT_TRUE(pool.page_table_.cancel_block_load(1));
+  pool.page_table_.release_block(0);
+}
+
+TEST_F(BufferPoolTest, WritableBypassJoinsConcurrentLoadBeforeReading) {
+  init_vec_pool(/*capacity_pages=*/16, /*file_pages=*/1, /*writable=*/true);
+  VecBufferPool pool(new_file(/*num_pages=*/1), /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(0));
+  char *page = nullptr;
+  ASSERT_TRUE(MemoryLimitPool::get_instance().try_acquire_buffer(
+      kVectorPageSize, page));
+  std::memset(page, 'Y', kVectorPageSize);
+
+  std::atomic<bool> started{false};
+  char result = 0;
+  bool read_ok = false;
+  std::thread reader([&] {
+    started.store(true, std::memory_order_release);
+    read_ok = pool.read_range_bypass(0, 1, &result);
+  });
+  while (!started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  EXPECT_NE(nullptr, pool.page_table_.publish_claimed_block(0, page, 0));
+  pool.page_table_.mark_dirty(0);
+  reader.join();
+  EXPECT_TRUE(read_ok);
+  EXPECT_EQ('Y', result);
+  pool.page_table_.release_block(0);
+}
+
 TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
   constexpr size_t kFilePages = 3;
   constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
@@ -402,7 +469,7 @@ TEST_F(BufferPoolTest, ResidentOnlyAcquirePreservesTransitionStates) {
 TEST_F(BufferPoolTest, DataCorrectUnderEviction) {
   const size_t num_pages = 64;
   init_vec_pool(/*capacity_pages=*/16,
-                /*file_pages=*/num_pages);  // 4x smaller than working set
+              /*file_pages=*/num_pages);  // 4x smaller than working set
   std::string file = new_file(num_pages);
 
   VecBufferPool pool(file, /*writable=*/false);
@@ -595,7 +662,8 @@ TEST_F(BufferPoolTest, PageLoadClaimCoalescesConcurrentWaiters) {
 }
 
 TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
-  init_table_pool(/*capacity_pages=*/1, /*entry_num=*/1);
+  // Keep the background reclaimer from racing with the explicit eviction.
+  init_table_pool(/*capacity_pages=*/16, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -615,7 +683,8 @@ TEST_F(BufferPoolTest, FailedPageLoadClaimCanBeRetried) {
 }
 
 TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
-  init_table_pool(/*capacity_pages=*/1, /*entry_num=*/1);
+  // Only this thread should drive eviction and update the flush callback.
+  init_table_pool(/*capacity_pages=*/16, /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -727,7 +796,16 @@ TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
 }
 
 TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
-  init_table_pool(/*capacity_pages=*/1, /*entry_num=*/1);
+  // Keep the single resident page below the background-reclaim watermark so
+  // only this thread advances the failed-flush/recovery sequence.
+  init_table_pool(/*capacity_pages=*/16, /*entry_num=*/1);
+  auto &queue = BlockEvictionQueue::get_instance();
+  BlockEvictionQueue::BlockType discarded;
+  // Earlier tests can leave stale global queue entries. batch_recycle(1)
+  // intentionally has a bounded scan and must reach this test's page.
+  while (queue.evict_single_block(discarded)) {
+  }
+
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -747,7 +825,7 @@ TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
   // failed flush then leaves a released resident page for recovery to find.
   table.set_evict_priority(/*block_id=*/0, std::numeric_limits<uint8_t>::max());
   table.release_block(/*block_id=*/0);
-  EXPECT_EQ(0u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(0u, queue.batch_recycle(1));
   EXPECT_EQ(1u, flush_attempts);
   EXPECT_TRUE(table.is_loaded(/*block_id=*/0));
   EXPECT_TRUE(table.is_block_dirty(/*block_id=*/0));
@@ -758,7 +836,7 @@ TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
     ++flush_attempts;
     return 0;
   });
-  EXPECT_EQ(1u, BlockEvictionQueue::get_instance().batch_recycle(1));
+  EXPECT_EQ(1u, queue.batch_recycle(1));
   EXPECT_EQ(2u, flush_attempts);
   EXPECT_FALSE(table.is_loaded(/*block_id=*/0));
   EXPECT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
@@ -1502,6 +1580,15 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
   }
   ASSERT_GT(pool.stats().evict, 0u);
 
+  // Keep the target pinned until the policy assertions finish. Otherwise the
+  // background CLOCK can demote it between reads or before the assertions.
+  size_t pinned_page_id = 0;
+  ASSERT_NE(nullptr,
+            handle.get_single_page(0, kVectorPageSize, pinned_page_id));
+  auto release_pin = ScopeGuard::Make(
+      [&handle, pinned_page_id] { handle.release_one(pinned_page_id); });
+  ASSERT_TRUE(MemoryLimitPool::get_instance().under_cache_pressure());
+
   // Reuse promotion is sampled under pressure. Any run of 16 hits contains a
   // policy sample regardless of the thread-local cursor's starting phase.
   for (size_t i = 0; i < 16; ++i) {
@@ -1511,9 +1598,6 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
             pool.page_table_.eviction_priority(0));
   const auto stats = pool.stats();
   EXPECT_EQ(1u, stats.priority_promotions[VecBufferPool::kNormalPriority]);
-  // Residency is not stable after the final read releases its pin: the
-  // background reclaimer may run between assertions. The priority and
-  // promotion counter are the durable policy outcomes under test.
 }
 
 // Keep one resident page below the background-reclaim high watermark so these
@@ -1522,7 +1606,7 @@ constexpr size_t kManualEvictionCapacityPages = 2;
 
 TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                  /*entry_num=*/1);
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1557,7 +1641,7 @@ TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
 
 TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                  /*entry_num=*/1);
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1589,7 +1673,7 @@ TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
 
 TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                  /*entry_num=*/1);
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1631,7 +1715,7 @@ TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
 
 TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                  /*entry_num=*/1);
+                /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1726,7 +1810,7 @@ TEST_F(BufferPoolTest, WritablePoolDoesNotAdaptReadPriority) {
 TEST_F(BufferPoolTest, WritablePrefetchUsesClaimedLoadPath) {
   constexpr size_t kPageCount = 2;
   init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/kPageCount,
-                /*writable=*/true);
+              /*writable=*/true);
   std::string file = new_file(kPageCount);
 
   VecBufferPool pool(file, /*writable=*/true);
@@ -1785,8 +1869,8 @@ TEST_F(BufferPoolTest, ReadAndPrefetchRangesRejectOverflow) {
 
 #if defined(__linux__)
 TEST_F(BufferPoolTest, AioAdmissionUsesFreeCapacityBeforeEviction) {
-  InitVecPool(/*capacity_pages=*/8, /*file_pages=*/4);
-  std::string file = NewFile(/*num_pages=*/4);
+  init_vec_pool(/*capacity_pages=*/8, /*file_pages=*/4);
+  std::string file = new_file(/*num_pages=*/4);
 
   VecBufferPool pool(file, /*writable=*/false);
   ASSERT_EQ(pool.init(), 0);
@@ -1909,7 +1993,11 @@ TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {
   char *pages[1] = {};
 
   ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
-  handle.release_pages(page_ids, 1);
+  // Retain the initial miss pin so background aging cannot race with either
+  // the probation assertion or the later sampled reuse promotion.
+  auto release_pin = ScopeGuard::Make(
+      [&handle, &page_ids] { handle.release_pages(page_ids, 1); });
+  ASSERT_TRUE(MemoryLimitPool::get_instance().under_cache_pressure());
   EXPECT_EQ(VecBufferPool::kLowPriority, pool.page_table_.eviction_priority(1));
 
   for (size_t i = 0; i < 16; ++i) {

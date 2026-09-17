@@ -228,7 +228,32 @@ int HnswStreamerEntity::get_vector(const node_id_t id,
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                      "invalid chunk offset");
   size_t read_size = vector_size();
-  size_t ret = node_chunks_[loc.first]->read(loc.second, block, read_size);
+  size_t ret =
+      node_chunks_[loc.first]->read_immutable(loc.second, block, read_size);
+  if (ailego_unlikely(ret != read_size)) {
+    LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
+              loc.second, read_size, ret);
+    return IndexError_ReadData;
+  }
+  return 0;
+}
+
+int HnswStreamerEntity::get_vector_borrowed(
+    const node_id_t id, IndexStorage::MemoryBlock &block) const {
+  auto loc = get_vector_chunk_loc(id);
+  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+  if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+      (*node_chunk_bases_)[loc.first]) {
+    block.reset((void *)((*node_chunk_bases_)[loc.first] + loc.second));
+    return 0;
+  }
+
+  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                     "invalid chunk offset");
+  const size_t read_size = vector_size();
+  const size_t ret = node_chunks_[loc.first]->read_borrowed_immutable(
+      loc.second, block, read_size);
   if (ailego_unlikely(ret != read_size)) {
     LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
               loc.second, read_size, ret);
@@ -257,13 +282,47 @@ int HnswStreamerEntity::get_vector(
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
     size_t read_size = vector_size();
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, vec_blocks[i], read_size);
+    size_t ret = node_chunks_[loc.first]->read_immutable(
+        loc.second, vec_blocks[i], read_size);
     if (ailego_unlikely(ret != read_size)) {
       LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
                 loc.second, read_size, ret);
       return IndexError_ReadData;
     }
+  }
+  return 0;
+}
+
+int HnswBufferPoolStreamerEntity::get_vector_for_prune(
+    const node_id_t *ids, uint32_t count,
+    std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
+  vec_blocks.resize(count);
+  if (count == 0) {
+    return 0;
+  }
+
+  // Unlike the search-time adaptive batch path, construction benefits from a
+  // batch even when every page is resident: each candidate is acquired only
+  // once and remains pinned through the entire prune.
+  static thread_local std::vector<IndexStorage::Segment::BorrowedRead>
+      batch_reads;
+  batch_reads.clear();
+  batch_reads.reserve(count);
+  const size_t read_size = vector_size();
+  for (uint32_t i = 0; i < count; ++i) {
+    auto loc = get_vector_chunk_loc(ids[i]);
+    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                       "invalid chunk offset");
+    batch_reads.emplace_back(node_chunks_[loc.first].get(), loc.second,
+                             read_size, &vec_blocks[i]);
+  }
+  if (ailego_unlikely(
+          !batch_reads.front().segment->read_borrowed_batch_immutable(
+              batch_reads.data(), batch_reads.size()))) {
+    LOG_ERROR("Batch read prune vectors failed, count=%u, read size=%zu", count,
+              read_size);
+    return IndexError_ReadData;
   }
   return 0;
 }
@@ -303,16 +362,14 @@ void HnswStreamerEntity::add_neighbor(level_t level, node_id_t id,
       loc.second + sizeof(NeighborsHeader) + size * sizeof(node_id_t);
   ailego_assert_with(size < neighbor_cnt(level), "invalid neighbor size");
   ailego_assert_with(offset < loc.first->data_size(), "invalid chunk offset");
-  size_t ret = loc.first->write(offset, &neighbor_id, sizeof(node_id_t));
-  if (ailego_unlikely(ret != sizeof(node_id_t))) {
-    LOG_ERROR("Write neighbor id failed, ret=%zu", ret);
-    return;
-  }
-
   uint32_t neighbors = size + 1;
-  ret = loc.first->write(loc.second, &neighbors, sizeof(uint32_t));
-  if (ailego_unlikely(ret != sizeof(uint32_t))) {
-    LOG_ERROR("Write neighbor cnt failed, ret=%zu", ret);
+  // Preserve publication order (payload before count), but let page-backed
+  // storage share one page pin and exclusive latch for both four-byte writes.
+  IndexStorage::SegmentData writes[2];
+  writes[0] = {offset, sizeof(neighbor_id), &neighbor_id};
+  writes[1] = {loc.second, sizeof(neighbors), &neighbors};
+  if (ailego_unlikely(!loc.first->write_batch(writes, 2))) {
+    LOG_ERROR("Append neighbor failed");
   }
 
   return;
@@ -368,6 +425,32 @@ int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
   }
 
   return 0;
+}
+
+void HnswStreamerEntity::protect_search_hotset() {
+  using CachePriority = IndexStorage::Segment::CachePriority;
+
+  // Upper-level adjacency is a small fraction of the index and participates
+  // in every search, so keep it ahead of the much larger level-0/vector
+  // working set. BufferStorage performs a blocking batched prefetch here;
+  // mmap and other backends ignore the hint.
+  for (const auto &chunk : upper_neighbor_chunks_) {
+    chunk->prefetch(0, chunk->data_size(), CachePriority::kHigh);
+  }
+
+  // Every search starts at the entry point. Protect its vector, key and L0
+  // adjacency together because a node record may straddle two cache pages.
+  // Admit it last so it remains resident even when the upper graph is larger
+  // than an unusually small pool.
+  if (doc_cnt() == 0 || entry_point() == kInvalidNodeId) {
+    return;
+  }
+  const uint32_t chunk_idx = entry_point() >> node_index_mask_bits_;
+  const size_t offset =
+      static_cast<size_t>(entry_point() & node_index_mask_) * node_size();
+  sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
+  ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
+  node_chunks_[chunk_idx]->prefetch(offset, node_size(), CachePriority::kHigh);
 }
 
 int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
@@ -455,6 +538,10 @@ int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
   }
 
   stats_.set_loaded_count(doc_cnt());
+
+  if (storage_mode() == HnswStorageMode::kBufferPool) {
+    protect_search_hotset();
+  }
 
   return 0;
 }
@@ -807,6 +894,39 @@ const HnswEntity::Pointer HnswMmapStreamerEntity::clone() const {
       std::move(upper_neighbor_chunks), broker_, nullptr, nullptr);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswMmapStreamerEntity new failed");
+  }
+  return HnswEntity::Pointer(entity);
+}
+
+const HnswEntity::Pointer HnswBufferPoolStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswBufferPoolStreamerEntity get node chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswBufferPoolStreamerEntity get upper chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) HnswBufferPoolStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+      keys_map_, use_key_info_map_, std::move(node_chunks),
+      std::move(upper_neighbor_chunks), broker_, nullptr, nullptr);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswBufferPoolStreamerEntity new failed");
   }
   return HnswEntity::Pointer(entity);
 }

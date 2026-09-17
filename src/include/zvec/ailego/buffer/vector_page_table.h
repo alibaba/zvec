@@ -685,6 +685,8 @@ class ZVEC_AILEGO_API VecBufferPool {
   int get_meta(size_t offset, size_t length, char *buffer);
 
   //! Read without cache admission.
+  // Read without cache admission. Writable pools still use resident bytes and
+  // synchronize with page loads/evictions before falling back to the file.
   bool read_range_bypass(size_t file_offset, size_t length, char *buffer);
 
   //! Write a contiguous range via the page cache; marks touched pages dirty.
