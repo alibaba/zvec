@@ -166,5 +166,63 @@ class SingleQueueIndexThreads : public IndexThreads {
   ailego::ThreadPool pool_{};
 };
 
+/*! Borrowed Single Queue Index Threads
+ *
+ *  Adapts an existing thread pool to IndexThreads. The caller must keep the
+ *  pool alive for the lifetime of this object.
+ */
+class BorrowedSingleQueueIndexThreads : public IndexThreads {
+ public:
+  //! Constructor
+  explicit BorrowedSingleQueueIndexThreads(ailego::ThreadPool &pool)
+      : pool_(pool) {}
+
+  //! Destructor
+  ~BorrowedSingleQueueIndexThreads() override = default;
+
+  //! Retrieve thread count in pool
+  size_t count() const override {
+    return pool_.count();
+  }
+
+  //! Stop all threads
+  void stop() override {
+    pool_.stop();
+  }
+
+  //! Submit a task to be executed asynchronous
+  void submit(ailego::ClosureHandler &&task) override {
+    while (pool_.pending_count() >= kMaxQueueSize) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    pool_.enqueue_and_wake(std::move(task));
+  }
+
+  //! Make a task group
+  TaskGroup::Pointer make_group() override {
+    return std::make_shared<SingleQueueIndexThreads::SingleQueueTaskGroup>(
+        pool_.make_group());
+  }
+
+  //! Get the current work thread index
+  int indexof_this() const override {
+    return pool_.indexof_this();
+  }
+
+ public:
+  //! Disable them
+  BorrowedSingleQueueIndexThreads(const BorrowedSingleQueueIndexThreads &) =
+      delete;
+  BorrowedSingleQueueIndexThreads(BorrowedSingleQueueIndexThreads &&) = delete;
+  BorrowedSingleQueueIndexThreads &operator=(
+      const BorrowedSingleQueueIndexThreads &) = delete;
+
+ private:
+  static constexpr size_t kMaxQueueSize = 4096u;
+
+  //! Members
+  ailego::ThreadPool &pool_;
+};
+
 }  // namespace core
 }  // namespace zvec
