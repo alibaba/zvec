@@ -14,6 +14,7 @@
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/diskann/diskann_params.h"
+#include "mixed_reducer/merged_provider_index_holder.h"
 #include "tests/test_util.h"
 #include "utility/ordinal_access_holder.h"
 
@@ -314,6 +315,107 @@ TEST(DiskAnnBuildMemory, DeferredSourceReadFailureAndRepeatedDump) {
     }
     ASSERT_EQ(0, builder->cleanup());
     test_util::RemoveTestFiles(path);
+  }
+}
+
+class DeferredReadFailureReformer : public core::IndexReformer {
+ public:
+  int init(const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return 0;
+  }
+  int load(core::IndexStorage::Pointer) override {
+    return 0;
+  }
+  int unload() override {
+    return 0;
+  }
+  int revert(const void *data, const core::IndexQueryMeta &meta,
+             std::string *output) const override {
+    if (fail && *static_cast<const float *>(data) == failed_value) {
+      return core::IndexError_ReadData;
+    }
+    output->assign(static_cast<const char *>(data), meta.element_size());
+    return 0;
+  }
+  bool fail{false};
+  float failed_value{0.0F};
+};
+
+TEST(DiskAnnBuildMemory, DeferredDecodedSourceReadFailureDuringDump) {
+  constexpr uint32_t kDocCount = 16;
+  // Cover both node layouts, including failure on the final vector where no
+  // subsequent iteration can notice the invalidated source iterator.
+  for (size_t dim : {16U, 1536U}) {
+    for (uint32_t failed_id : {0U, kDocCount - 1}) {
+      SCOPED_TRACE(::testing::Message() << dim << " " << failed_id);
+      const std::string source_path = "diskann_memory_decoded_source";
+      const std::string path = "diskann_memory_decoded_target";
+      test_util::RemoveTestFiles(source_path);
+      test_util::RemoveTestFiles(path);
+      auto source_param = FlatIndexParamBuilder()
+                              .with_dimension(dim)
+                              .with_metric_type(MetricType::kL2sq)
+                              .with_data_type(DataType::DT_FP32)
+                              .build();
+      auto source = IndexFactory::CreateAndInitIndex(*source_param);
+      ASSERT_NE(nullptr, source);
+      ASSERT_EQ(0, source->open(source_path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+      for (uint32_t id = 0; id < kDocCount; ++id) {
+        auto data = values(id, dim);
+        data[0] = static_cast<float>(id + 1);
+        ASSERT_EQ(0, source->add(VectorData{DenseVector{data.data()}}, id));
+      }
+
+      auto reformer = std::make_shared<DeferredReadFailureReformer>();
+      core::IndexQueryMeta query_meta(core::IndexMeta::DT_FP32, dim);
+      core::MergedProviderIndexHolder::Source merged_source;
+      merged_source.owner = source->index_searcher();
+      merged_source.reformer = reformer;
+      merged_source.provider_meta = query_meta;
+      merged_source.need_revert = true;
+      auto holder = std::make_shared<core::MergedProviderIndexHolder>(
+          query_meta,
+          std::vector<core::MergedProviderIndexHolder::Source>{merged_source});
+      ASSERT_EQ(0, holder->init({}));
+      core::OrdinalAccessHolder::Reader::Pointer reader;
+      ASSERT_EQ(core::IndexError_NotImplemented,
+                holder->create_ordinal_reader(&reader));
+
+      core::IndexMeta meta(core::IndexMeta::DT_FP32, dim);
+      meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+      ailego::Params params;
+      params.set(core::PARAM_DISKANN_BUILDER_THREAD_COUNT, 2U);
+      params.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 4U);
+      auto builder = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
+      ASSERT_NE(nullptr, builder);
+      ASSERT_EQ(0, builder->init(meta, params));
+      ASSERT_EQ(0, builder->train(holder));
+      ASSERT_EQ(0, builder->build(holder));
+
+      // First verify a successful dump through the iterator fallback. Then
+      // fail decoding: MergedProviderIndexHolder returns a non-null zero
+      // placeholder, so checking only data() for nullptr is insufficient.
+      for (bool fail : {false, true}) {
+        reformer->failed_value = static_cast<float>(failed_id + 1);
+        reformer->fail = fail;
+        auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+        ASSERT_NE(nullptr, dumper);
+        ASSERT_EQ(0, dumper->create(path));
+        EXPECT_EQ(fail ? core::IndexError_ReadData : 0, builder->dump(dumper));
+        EXPECT_EQ(fail ? core::IndexError_ReadData : 0, holder->status());
+        const int close_result = dumper->close();
+        if (!fail) EXPECT_EQ(0, close_result);
+      }
+      ASSERT_EQ(0, builder->cleanup());
+      holder.reset();
+      ASSERT_EQ(0, source->close());
+      test_util::RemoveTestFiles(source_path);
+      test_util::RemoveTestFiles(path);
+    }
   }
 }
 }  // namespace

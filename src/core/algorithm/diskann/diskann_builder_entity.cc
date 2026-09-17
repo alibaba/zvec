@@ -438,6 +438,12 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
       if (!iter->is_valid()) return IndexError_Mismatch;
       key = iter->key();
       data = iter->data();
+      // A deferred read failure can return a non-null placeholder and
+      // invalidate the iterator. Reject it before copying, even on the last
+      // vector where no subsequent iteration would detect the error.
+      if (!iter->is_valid()) {
+        return IndexError_ReadData;
+      }
     }
     if (!data) return IndexError_ReadData;
     if (key != get_key(id)) return IndexError_Mismatch;
