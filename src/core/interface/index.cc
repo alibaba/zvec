@@ -930,9 +930,14 @@ int Index::_normalize_buffer_scores(const VectorData &vector_data,
                                     const int64_t *output_ids,
                                     float *output_scores, size_t count) {
   if (!output_scores || count == 0) return 0;
-  if (metric_->support_normalize()) {
+  if (metric_ && metric_->support_normalize()) {
     for (size_t i = 0; i < count; ++i) {
       metric_->normalize(output_scores + i);
+    }
+  } else if (turbo_quantizer_ &&
+             turbo_quantizer_->support_score_normalization()) {
+    for (size_t i = 0; i < count; ++i) {
+      turbo_quantizer_->normalize_score(output_scores + i);
     }
   }
   if (!reformer_) return 0;
