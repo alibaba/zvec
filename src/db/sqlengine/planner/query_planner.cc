@@ -189,9 +189,11 @@ Result<cp::Expression> QueryPlanner::create_filter_node(
           "create array failed", array_res.status().ToString()));
     }
     if (op == QueryNodeOp::Q_IN) {
+      // Keep NULL inputs inconclusive so NOT IN cannot select them.
       auto in_filter = cp::call(
           "is_in", {std::move(left_exp)},
-          std::make_shared<cp::SetLookupOptions>(array_res.MoveValueUnsafe()));
+          std::make_shared<cp::SetLookupOptions>(
+              array_res.MoveValueUnsafe(), cp::SetLookupOptions::INCONCLUSIVE));
       if (list_node->exclude()) {
         return cp::not_(std::move(in_filter));
       }
