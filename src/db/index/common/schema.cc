@@ -33,7 +33,8 @@ namespace zvec {
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
-      QuantizeType::RABITQ}},
+      QuantizeType::RABITQ, QuantizeType::UNIFORM_UINT7,
+      QuantizeType::UNIFORM_UINT8, QuantizeType::UNIFORM_UINT4}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -218,6 +219,8 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
+        // DiskAnn also uses the portable synchronous pread backend on 64-bit
+        // Android and iOS.
         // The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
         // single source of truth for platform eligibility — it is also used by
@@ -227,12 +230,13 @@ Status FieldSchema::validate() const {
         //
         // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
         // synchronous pread() if neither async backend is available. On macOS,
-        // DiskAnn uses synchronous pread(); Windows uses overlapped I/O.
+        // Android and iOS, DiskAnn uses synchronous pread(); Windows uses
+        // overlapped I/O.
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/ARM64), macOS (ARM64), and Windows "
-            "(x86_64).");
+            "Linux (x86_64/ARM64), macOS (ARM64), 64-bit Android/iOS, and "
+            "Windows (x86_64).");
 #endif
       }
 
@@ -262,6 +266,33 @@ Status FieldSchema::validate() const {
       }
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
+        const auto quantize_type = vector_index_params->quantize_type();
+        const bool is_uniform = quantize_type == QuantizeType::UNIFORM_UINT7 ||
+                                quantize_type == QuantizeType::UNIFORM_UINT8 ||
+                                quantize_type == QuantizeType::UNIFORM_UINT4;
+        // DB Flat fields are marked indexed at creation and do not run the
+        // deferred training step required by Uniform quantizers. IVF lacks
+        // trained-parameter restoration and UniformUint8 query preprocessing.
+        // DiskANN's PQ builder cannot consume Uniform-encoded vectors.
+        if (is_uniform && (index_params_->type() == IndexType::FLAT ||
+                           index_params_->type() == IndexType::IVF ||
+                           index_params_->type() == IndexType::DISKANN)) {
+          return Status::InvalidArgument(
+              "schema validate failed: ",
+              QuantizeTypeCodeBook::AsString(quantize_type),
+              " quantization is not supported with ",
+              IndexTypeCodeBook::AsString(index_params_->type()),
+              " index, field[", name_, "]");
+        }
+        if (is_uniform &&
+            vector_index_params->metric_type() != MetricType::L2) {
+          return Status::InvalidArgument(
+              "schema validate failed: ",
+              QuantizeTypeCodeBook::AsString(quantize_type),
+              " quantize only supports L2 metric, but field[", name_,
+              "]'s metric is ",
+              MetricTypeCodeBook::AsString(vector_index_params->metric_type()));
+        }
         auto iter = quantize_type_map.find(data_type_);
         if (iter == quantize_type_map.end()) {
           return Status::InvalidArgument(

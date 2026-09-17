@@ -108,15 +108,12 @@ std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
 
 std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
     float ratio) {
-  auto meta = segment_->meta();
-  if (!meta) {
-    return std::nullopt;
-  }
   // TODO: support forward
   if (!invert_result_) {
     return std::nullopt;
   }
-  size_t doc_count = meta->doc_count();
+  // Insert/flush() rewrite the block behind doc_count(), so read it locked.
+  size_t doc_count = segment_->doc_count_snapshot();
   uint64_t bf_by_keys_threshold = static_cast<uint64_t>(doc_count * ratio);
 
   // decide to use brute force by keys or not

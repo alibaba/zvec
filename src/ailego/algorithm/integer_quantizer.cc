@@ -286,7 +286,7 @@ bool EntropyInt16Quantizer::feed(const float *vec, size_t dim) {
 }
 
 // Train the INT16 quantizer
-bool EntropyInt16Quantizer::train(void) {
+bool EntropyInt16Quantizer::train() {
   TRAIN_QUANTIZER()
 }
 
@@ -313,7 +313,7 @@ bool EntropyUInt16Quantizer::feed(const float *vec, size_t dim) {
 }
 
 // Train the UINT16 quantizer
-bool EntropyUInt16Quantizer::train(void) {
+bool EntropyUInt16Quantizer::train() {
   TRAIN_QUANTIZER()
 }
 
@@ -340,7 +340,7 @@ bool EntropyInt8Quantizer::feed(const float *vec, size_t dim) {
 }
 
 // Train the INT8 quantizer
-bool EntropyInt8Quantizer::train(void) {
+bool EntropyInt8Quantizer::train() {
   TRAIN_QUANTIZER()
 }
 
@@ -367,7 +367,7 @@ bool EntropyUInt8Quantizer::feed(const float *vec, size_t dim) {
 }
 
 // Train the UINT8 quantizer
-bool EntropyUInt8Quantizer::train(void) {
+bool EntropyUInt8Quantizer::train() {
   TRAIN_QUANTIZER()
 }
 
@@ -394,7 +394,7 @@ bool EntropyInt4Quantizer::feed(const float *vec, size_t dim) {
 }
 
 // Train the INT4 quantizer
-bool EntropyInt4Quantizer::train(void) {
+bool EntropyInt4Quantizer::train() {
   TRAIN_QUANTIZER()
 }
 
@@ -432,7 +432,7 @@ bool EntropyUInt4Quantizer::feed(const float *vec, size_t dim) {
 }
 
 // Train the UINT4 quantizer
-bool EntropyUInt4Quantizer::train(void) {
+bool EntropyUInt4Quantizer::train() {
   TRAIN_QUANTIZER()
 }
 

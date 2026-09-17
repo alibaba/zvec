@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <memory>
 #include <unordered_map>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_searcher.h>
 #include "flat_distance_matrix.h"
@@ -27,7 +29,7 @@ template <size_t BATCH_SIZE>
 class FlatSearcher : public IndexSearcher {
  public:
   //! Destructor
-  ~FlatSearcher(void) override = default;
+  ~FlatSearcher() override = default;
 
   //! Initialize Searcher
   int init(const ailego::Params &index_params) override {
@@ -37,8 +39,15 @@ class FlatSearcher : public IndexSearcher {
     return 0;
   }
 
+  //! Initialize Searcher with a turbo quantizer
+  int init(const ailego::Params &index_params,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override {
+    quantizer_ = quantizer;
+    return this->init(index_params);
+  }
+
   //! Cleanup Searcher
-  int cleanup(void) override {
+  int cleanup() override {
     return this->unload();
   }
 
@@ -46,9 +55,10 @@ class FlatSearcher : public IndexSearcher {
   int load(IndexStorage::Pointer cntr, IndexMetric::Pointer measure) override;
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     container_ = nullptr;
     measure_ = nullptr;
+    quantizer_.reset();
     features_segment_ = nullptr;
     keys_ = nullptr;
     key_id_mapping_.clear();
@@ -90,33 +100,33 @@ class FlatSearcher : public IndexSearcher {
                                Context::Pointer &context) const override;
 
   //! Retrieve statistics
-  const IndexSearcher::Stats &stats(void) const override {
+  const IndexSearcher::Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Retrieve params of index
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Create a searcher context
-  IndexSearcher::Context::Pointer create_context(void) const override;
+  IndexSearcher::Context::Pointer create_context() const override;
 
   //! Create a searcher provider
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   //! Retrieve magic number
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return magic_;
   }
 
   //! Retrieve block size of data read
-  uint32_t read_block_size(void) const {
+  uint32_t read_block_size() const {
     return read_block_size_;
   }
 
@@ -141,17 +151,26 @@ class FlatSearcher : public IndexSearcher {
   }
 
   //! Retrieve primary key via index id
-  inline bool column_major_order(void) const {
+  inline bool column_major_order() const {
     return column_major_order_;
   }
 
   //! Retrieve the distance matrix
-  const FlatDistanceMatrix<BATCH_SIZE> &distance_matrix(void) const {
+  const FlatDistanceMatrix<BATCH_SIZE> &distance_matrix() const {
     return distance_matrix_;
   }
 
+  //! Retrieve the turbo quantizer
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
+    return quantizer_;
+  }
+
+  const IndexMetric::Pointer &metric() const {
+    return measure_;
+  }
+
   //! Clone a features segment
-  IndexStorage::Segment::Pointer clone_features_segment(void) const {
+  IndexStorage::Segment::Pointer clone_features_segment() const {
     return features_segment_->clone();
   }
 
@@ -161,6 +180,9 @@ class FlatSearcher : public IndexSearcher {
   }
 
  private:
+  //! Validate turbo query records, preserving legacy metric assertions.
+  int check_query_meta(const IndexQueryMeta &qmeta) const;
+
   //! Members
   const uint64_t *keys_{nullptr};
   std::unordered_map<key_t, node_id_t> key_id_mapping_;
@@ -175,6 +197,7 @@ class FlatSearcher : public IndexSearcher {
   mutable std::vector<uint32_t> mapping_{};
   mutable std::mutex mapping_mutex_{};
   FlatDistanceMatrix<BATCH_SIZE> distance_matrix_{};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   IndexSearcher::Stats stats_{};
 };
 

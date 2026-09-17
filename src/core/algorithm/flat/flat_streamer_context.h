@@ -30,7 +30,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Destructor
-  ~FlatStreamerContext(void) override = default;
+  ~FlatStreamerContext() override = default;
 
   //! Set topk of search result
   void set_topk(uint32_t topk) override {
@@ -39,7 +39,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -58,12 +58,12 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return &result_heap_;
   }
 
-  FlatSearchScratch *search_scratch(void) {
+  FlatSearchScratch *search_scratch() {
     return &search_scratch_;
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
   //! Retrieve search group result with index
@@ -71,7 +71,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return &group_results_[0];
   }
 
@@ -85,7 +85,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Retrieve magic number
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -136,6 +136,29 @@ class FlatStreamerContext : public IndexStreamer::Context {
         results_[idx].emplace_back(key, score, key);
       }
     }
+  }
+
+  // Candidate searches consume their heap once. Transfer its document buffer
+  // when vectors are not requested; keep the regular materialization path
+  // when storage blocks must be pinned for fetch_vector.
+  void take_topk_result(uint32_t idx) {
+    if (fetch_vector_) {
+      topk_to_result(idx);
+      return;
+    }
+    ailego_assert_with(idx < results_.size(), "invalid idx");
+    result_heap_.sort();
+    auto &documents = result_heap_.mutable_container();
+    const size_t limit = std::min(size_t{topk_}, documents.size());
+    size_t size = 0;
+    for (; size < limit; ++size) {
+      if (documents[size].score() > this->threshold()) break;
+      *documents[size].mutable_index() =
+          static_cast<uint32_t>(documents[size].key());
+    }
+    documents.resize(size);
+    results_[idx].clear();
+    results_[idx].swap(documents);
   }
 
   void topk_to_group_result(uint32_t idx) {
@@ -220,6 +243,11 @@ class FlatStreamerContext : public IndexStreamer::Context {
     actual_read_size_ =
         (owner->read_block_size() + block_size - 1) / block_size * block_size;
     owner_ = owner;
+    if (owner->quantizer()) {
+      this->update_index_quantizer(owner->quantizer());
+    } else {
+      this->update_index_metric(owner->metric());
+    }
   }
 
   //! Reset all the query results

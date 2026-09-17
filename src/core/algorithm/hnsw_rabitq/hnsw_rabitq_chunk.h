@@ -53,7 +53,7 @@ class HnswRabitqChunkBroker {
   int open(IndexStorage::Pointer stg, size_t max_index_size, size_t chunk_size,
            bool check_crc);
 
-  int close(void);
+  int close();
 
   int flush(uint64_t checkpoint);
 
@@ -73,11 +73,11 @@ class HnswRabitqChunkBroker {
     return chunk_meta_.chunk_cnts[type];
   }
 
-  inline bool dirty(void) const {
+  inline bool dirty() const {
     return dirty_;
   }
 
-  inline void mark_dirty(void) {
+  inline void mark_dirty() {
     if (!dirty_) {
       dirty_ = true;
       chunk_meta_.revision_id += 1;
@@ -85,7 +85,7 @@ class HnswRabitqChunkBroker {
     }
   }
 
-  const IndexStorage::Pointer storage(void) const {
+  const IndexStorage::Pointer storage() const {
     return stg_;
   }
 
@@ -94,7 +94,7 @@ class HnswRabitqChunkBroker {
   HnswRabitqChunkBroker &operator=(const HnswRabitqChunkBroker &) = delete;
 
   struct HnswChunkMeta {
-    HnswChunkMeta(void) {
+    HnswChunkMeta() {
       memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));
     }
     void clear() {

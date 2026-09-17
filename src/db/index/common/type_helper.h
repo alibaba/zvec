@@ -476,6 +476,12 @@ struct QuantizeTypeCodeBook {
         return QuantizeType::INT8;
       case wire::QuantizeType::QT_RABITQ:
         return QuantizeType::RABITQ;
+      case wire::QuantizeType::QT_UNIFORM_UINT7:
+        return QuantizeType::UNIFORM_UINT7;
+      case wire::QuantizeType::QT_UNIFORM_UINT8:
+        return QuantizeType::UNIFORM_UINT8;
+      case wire::QuantizeType::QT_UNIFORM_UINT4:
+        return QuantizeType::UNIFORM_UINT4;
       default:
         return QuantizeType::UNDEFINED;
     }
@@ -491,6 +497,12 @@ struct QuantizeTypeCodeBook {
         return wire::QuantizeType::QT_INT8;
       case QuantizeType::RABITQ:
         return wire::QuantizeType::QT_RABITQ;
+      case QuantizeType::UNIFORM_UINT7:
+        return wire::QuantizeType::QT_UNIFORM_UINT7;
+      case QuantizeType::UNIFORM_UINT8:
+        return wire::QuantizeType::QT_UNIFORM_UINT8;
+      case QuantizeType::UNIFORM_UINT4:
+        return wire::QuantizeType::QT_UNIFORM_UINT4;
       default:
         return wire::QuantizeType::QT_UNDEFINED;
     }
@@ -506,6 +518,12 @@ struct QuantizeTypeCodeBook {
         return "INT8";
       case QuantizeType::RABITQ:
         return "RABITQ";
+      case QuantizeType::UNIFORM_UINT7:
+        return "UNIFORM_UINT7";
+      case QuantizeType::UNIFORM_UINT8:
+        return "UNIFORM_UINT8";
+      case QuantizeType::UNIFORM_UINT4:
+        return "UNIFORM_UINT4";
       default:
         return "UNDEFINED";
     }

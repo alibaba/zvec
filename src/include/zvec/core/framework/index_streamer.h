@@ -34,7 +34,7 @@ class IndexStreamer : public IndexRunner {
   typedef std::shared_ptr<IndexStreamer> Pointer;
 
   //! Destructor
-  ~IndexStreamer(void) override = default;
+  ~IndexStreamer() override = default;
 
   //! Initialize the streamer
   virtual int init(const IndexMeta & /*meta*/,
@@ -63,10 +63,13 @@ class IndexStreamer : public IndexRunner {
   virtual int flush(uint64_t check_point) = 0;
 
   //! Close index
-  virtual int close(void) = 0;
+  virtual int close() = 0;
+
+  //! Persist converter/reformer parameters learned after opening a target.
+  virtual void merge_trained_meta(const IndexMeta & /*meta*/) {}
 
   //! Retrieve meta of index
-  virtual const IndexMeta &meta(void) const = 0;
+  virtual const IndexMeta &meta() const = 0;
 };
 
 }  // namespace core

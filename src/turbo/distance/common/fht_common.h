@@ -37,7 +37,7 @@ struct FhtPrimitives {
 ///   offset 20: uint8_t pad[4]
 ///   offset 24: uint8_t flip[]
 //
-// `static`: compiled into TUs with different /arch flags (scalar, SSE, AVX2,
+// `static`: compiled into TUs with different /arch flags (scalar, SSE2, AVX2,
 // AVX512); a shared COMDAT copy could carry AVX512 encodings and crash
 // lower-arch callers on CPUs without AVX512.
 static inline void fht_rotate_impl(const float *in, float *out, size_t dim,

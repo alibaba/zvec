@@ -153,7 +153,7 @@ class VecsReader {
     return sparse_data;
   }
 
-  size_t get_total_sparse_count(void) const {
+  size_t get_total_sparse_count() const {
     size_t total_sparse_count = 0;
     for (size_t i = 0; i < num_vecs_; ++i) {
       total_sparse_count += get_sparse_count(i);
@@ -162,7 +162,7 @@ class VecsReader {
     return total_sparse_count;
   }
 
-  bool has_taglist(void) const {
+  bool has_taglist() const {
     return taglist_base_meta_ != nullptr;
   }
 
@@ -331,7 +331,7 @@ class SparseVecsReader {
     return sparse_data;
   }
 
-  size_t get_total_sparse_count(void) const {
+  size_t get_total_sparse_count() const {
     size_t total_sparse_count = 0;
     for (size_t i = 0; i < num_vecs_; ++i) {
       total_sparse_count += get_sparse_count(i);
@@ -340,7 +340,7 @@ class SparseVecsReader {
     return total_sparse_count;
   }
 
-  bool has_taglist(void) const {
+  bool has_taglist() const {
     return taglist_base_meta_ != nullptr;
   }
 

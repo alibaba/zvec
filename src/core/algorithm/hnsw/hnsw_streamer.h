@@ -26,11 +26,13 @@ class HnswStreamer : public IndexStreamer {
  public:
   using ContextPointer = IndexStreamer::Context::Pointer;
 
-  HnswStreamer(void);
-  ~HnswStreamer(void) override;
+  HnswStreamer();
+  ~HnswStreamer() override;
 
   HnswStreamer(const HnswStreamer &streamer) = delete;
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
+
+  void merge_trained_meta(const IndexMeta &meta) override;
 
   //! Bind a provider which supplies the original vectors, so the graph is
   //! built from them instead of the vectors stored in index. It must be
@@ -93,13 +95,13 @@ class HnswStreamer : public IndexStreamer {
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 
   //! Cleanup Streamer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Create a context
-  Context::Pointer create_context(void) const override;
+  Context::Pointer create_context() const override;
 
   //! Create a new iterator
-  IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider() const override;
 
   //! Add a vector into index
   int add_impl(uint64_t pkey, const void *query, const IndexQueryMeta &qmeta,
@@ -117,6 +119,10 @@ class HnswStreamer : public IndexStreamer {
   //! Similarity search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
+
+  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
+                             std::vector<uint64_t> &keys,
+                             Context::Pointer &context) const override;
 
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -164,7 +170,7 @@ class HnswStreamer : public IndexStreamer {
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
-  int close(void) override;
+  int close() override;
 
   //! flush file
   int flush(uint64_t checkpoint) override;
@@ -173,12 +179,12 @@ class HnswStreamer : public IndexStreamer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -220,11 +226,17 @@ class HnswStreamer : public IndexStreamer {
   //! current streamer/searcher
   int update_context(HnswContext *ctx) const;
 
+  //! Bind the distance functions and inline record layout used for graph build
+  void bind_add_dist_space(HnswContext *ctx) const;
+
+  //! Bind the distance functions and inline record layout used for search
+  void bind_search_dist_space(HnswContext *ctx) const;
+
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
    public:
-    void clear(void) {
+    void clear() {
       set_revision_id(0u);
       set_loaded_count(0u);
       set_added_count(0u);

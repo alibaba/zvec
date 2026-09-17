@@ -26,17 +26,18 @@
 namespace zvec {
 namespace core {
 
+class MergedProviderIndexHolder;
 
 class MixedStreamerReducer : public IndexStreamerReducer {
  public:
   //! Constructor
-  MixedStreamerReducer(void) {}
+  MixedStreamerReducer() = default;
 
   //! Initialize Reducer
   int init(const ailego::Params &params) override;
 
   //! Cleanup Reducer
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reduce operator (with filter)
   int reduce(const IndexFilter &filter) override;
@@ -50,29 +51,30 @@ class MixedStreamerReducer : public IndexStreamerReducer {
       const IndexStreamer::Pointer streamer,
       const IndexConverter::Pointer converter,
       const IndexReformer::Pointer reformer,
-      const IndexQueryMeta &original_query_meta) override;
+      const IndexQueryMeta &original_query_meta,
+      const std::shared_ptr<zvec::turbo::Quantizer> &quantizer =
+          nullptr) override;
   // feed_streamer
-  int feed_streamer_with_reformer(
-      IndexStreamer::Pointer streamer,
-      const IndexReformer::Pointer reformer) override;
+  int feed_streamer_with_reformer(IndexStreamer::Pointer streamer,
+                                  const IndexReformer::Pointer reformer,
+                                  const std::shared_ptr<zvec::turbo::Quantizer>
+                                      &quantizer = nullptr) override;
 
  private:
+  int reduce_with_builder(const IndexFilter &filter);
   int read_vec(size_t source_streamer_index,
                const IndexProvider::Pointer &provider,
                const IndexFilter &filter, const uint32_t id_offset,
                uint32_t *next_id);
   void add_vec(int *result);
-  void add_vec_with_builder(int *result);
   int read_sparse_vec(size_t source_streamer_index, const IndexFilter &filter,
                       const uint32_t id_offset, uint32_t *next_id);
   void add_sparse_vec(int *result);
 
-  void PushToDocCache(const IndexQueryMeta &meta, uint32_t doc_id,
-                      std::string &doc);
-  int IndexBuild();
+  int IndexBuild(IndexHolder::Pointer target_holder);
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
@@ -99,17 +101,18 @@ class MixedStreamerReducer : public IndexStreamerReducer {
   ailego::Params params_;
   IndexStreamer::Pointer target_streamer_{nullptr};
   IndexReformer::Pointer target_streamer_reformer_{nullptr};
+  std::shared_ptr<zvec::turbo::Quantizer> target_streamer_quantizer_{nullptr};
   bool is_target_and_source_same_reformer_{false};
   IndexQueryMeta original_query_meta_{};
 
   std::vector<IndexStreamer::Pointer> streamers_;
   std::vector<IndexReformer::Pointer> source_streamers_reformers_;
+  std::vector<std::shared_ptr<zvec::turbo::Quantizer>>
+      source_streamers_quantizers_;
 
   IndexBuilder::Pointer target_builder_{nullptr};
   IndexConverter::Pointer target_builder_converter_{nullptr};
-  std::mutex mutex_{};
-  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
-  const uint64_t kInvalidKey = std::numeric_limits<uint64_t>::max();
+  std::shared_ptr<MergedProviderIndexHolder> merged_holder_{};
 };
 
 }  // namespace core

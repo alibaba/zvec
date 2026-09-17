@@ -75,7 +75,7 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 ### ✅ Supported Platforms
 
 - Linux (x86_64, ARM64; glibc & musl)
-- macOS (ARM64)
+- macOS (ARM64, x86_64)
 - Windows (x86_64)
 
 ### 🛠️ Building from Source

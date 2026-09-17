@@ -145,9 +145,9 @@ void squared_euclidean_fp32_distance_avx2(const void *a, const void *b,
 #endif
 }
 
-void squared_euclidean_fp32_batch_distance_avx2(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim, float *distances) {
+void squared_euclidean_fp32_batch_distance_avx2(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
 #if defined(__AVX2__)
   squared_euclidean_batch(vectors, query, n, dim, distances);
 #else

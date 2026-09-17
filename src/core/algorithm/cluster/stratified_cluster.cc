@@ -25,10 +25,10 @@ namespace core {
 class StratifiedCluster : public IndexCluster {
  public:
   //! Constructor
-  StratifiedCluster(void) {}
+  StratifiedCluster() = default;
 
   //! Destructor
-  ~StratifiedCluster(void) override {}
+  ~StratifiedCluster() override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override {
@@ -38,13 +38,13 @@ class StratifiedCluster : public IndexCluster {
   }
 
   //! Cleanup Cluster
-  int cleanup(void) override {
+  int cleanup() override {
     features_.reset();
     return 0;
   }
 
   //! Reset Cluster
-  int reset(void) override {
+  int reset() override {
     features_.reset();
     return 0;
   }
@@ -87,7 +87,7 @@ class StratifiedCluster : public IndexCluster {
 
  protected:
   //! Test if it is valid
-  bool is_valid(void) const {
+  bool is_valid() const {
     if (!features_ || !features_->count()) {
       return false;
     }

@@ -31,10 +31,10 @@ struct WalOptions {
 class WalFile {
  public:
   //! Constructor
-  WalFile() {}
+  WalFile() = default;
 
   //! Destructor
-  virtual ~WalFile() {}  // LCOV_EXCL_LINE
+  virtual ~WalFile() = default;  // LCOV_EXCL_LINE
 
   //! Create an instance
   static WalFilePtr Create(const std::string &wal_path);

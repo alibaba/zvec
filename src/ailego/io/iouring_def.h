@@ -29,7 +29,7 @@
 
 #include <cstdint>
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
 // ---------------------------------------------------------------------------
 // Syscall numbers
@@ -118,11 +118,17 @@ struct io_uring_sqe {
     uint32_t rw_flags;  // read/write flags (union of all flag types)
   };
   uint64_t user_data;  // data to be passed back at completion time
+  // Deviation from <linux/io_uring.h>: the buffer descriptor is a named type
+  // declared outside the union below. An unnamed struct inside an anonymous
+  // union is a GNU extension (-Wnested-anon-types under -Wpedantic), and
+  // standard C++ forbids declaring a named type inside an anonymous union.
+  // Layout is unaffected: still 4 bytes at offset 40 within a 64-byte sqe.
+  struct buf_desc {
+    uint16_t buf_index;  // index into fixed buffers, if used
+    uint16_t personality;
+  };
   union {
-    struct {
-      uint16_t buf_index;  // index into fixed buffers, if used
-      uint16_t personality;
-    } buf;
+    buf_desc buf;
     uint64_t __pad2[3];
   };
 };
@@ -181,6 +187,22 @@ static inline void io_uring_prep_read(struct io_uring_sqe *sqe, int fd,
                                       void *buf, uint32_t nbytes,
                                       uint64_t offset) {
   sqe->opcode = IORING_OP_READ;
+  sqe->flags = 0;
+  sqe->ioprio = 0;
+  sqe->fd = fd;
+  sqe->off = offset;
+  sqe->addr = reinterpret_cast<uint64_t>(buf);
+  sqe->len = nbytes;
+  sqe->rw_flags = 0;
+  sqe->user_data = 0;
+  sqe->buf.buf_index = 0;
+  sqe->buf.personality = 0;
+}
+
+static inline void io_uring_prep_write(struct io_uring_sqe *sqe, int fd,
+                                       const void *buf, uint32_t nbytes,
+                                       uint64_t offset) {
+  sqe->opcode = IORING_OP_WRITE;
   sqe->flags = 0;
   sqe->ioprio = 0;
   sqe->fd = fd;

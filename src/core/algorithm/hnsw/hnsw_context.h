@@ -14,8 +14,7 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
-#include "utility/block_heap.h"
-#include "utility/linear_pool.h"
+#include "utility/search_heap.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_dist_calculator.h"
@@ -51,11 +50,11 @@ class HnswContext : public IndexContext {
   //! Set topk of search result
   void set_topk(uint32_t val) override {
     topk_ = group_by_search() ? group_topk_ * group_num_ : val;
-    topk_heap_.limit(std::max(topk_, ef_));
+    search_heap_.limit(std::max(topk_, ef_));
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -71,7 +70,7 @@ class HnswContext : public IndexContext {
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
 
@@ -80,7 +79,7 @@ class HnswContext : public IndexContext {
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return &group_results_[0];
   }
 
@@ -88,7 +87,7 @@ class HnswContext : public IndexContext {
     return &group_results_[idx];
   }
 
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -98,12 +97,12 @@ class HnswContext : public IndexContext {
   }
 
   //! Retrieve mode of debug
-  bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return this->debugging();
   }
 
   //! Retrieve string of debug
-  std::string debug_string(void) const override {
+  std::string debug_string() const override {
     char buf[4096];
     size_t size = snprintf(
         buf, sizeof(buf),
@@ -170,38 +169,30 @@ class HnswContext : public IndexContext {
     }
   }
 
-  inline void recal_topk_dist() {
-    TopkHeap heap(topk_heap_);
-    topk_heap_.clear();
+  inline void topk_to_keys(std::vector<uint64_t> &keys) {
+    keys.clear();
+    keys.reserve((std::min)(static_cast<size_t>(topk_), search_heap_.size()));
+    collect_search_result(
+        [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+  }
 
-    for (size_t i = 0; i < heap.size(); ++i) {
-      node_id_t id = heap[i].first;
-      dist_t dist = dc_.dist(id);
-      topk_heap_.emplace(id, dist);
+  inline void recal_topk_dist() {
+    std::vector<std::pair<node_id_t, dist_t>> recalculated;
+    recalculated.reserve(search_heap_.size());
+    search_heap_.for_each([&](node_id_t id, dist_t) {
+      recalculated.emplace_back(id, dc_.dist(id));
+      return true;
+    });
+    auto &topk = search_heap_.reset<TopkHeap>(std::max(topk_, ef_));
+    for (const auto &item : recalculated) {
+      topk.emplace(item);
     }
   }
 
   inline void topk_to_single_result(uint32_t idx) {
-    if (force_padding_topk_ && !topk_heap_.full() &&
-        topk_heap_.size() < entity_->doc_cnt()) {
-      this->fill_random_to_topk_full();
-    }
-    if (ailego_unlikely(topk_heap_.size() == 0)) {
-      return;
-    }
-
     ailego_assert_with(idx < results_.size(), "invalid idx");
-    int size = std::min(topk_, static_cast<uint32_t>(topk_heap_.size()));
-    topk_heap_.sort();
     results_[idx].clear();
-
-    for (int i = 0; i < size; ++i) {
-      auto score = topk_heap_[i].second;
-      if (score > this->threshold()) {
-        break;
-      }
-
-      node_id_t id = topk_heap_[i].first;
+    collect_search_result([&](node_id_t id, dist_t score) {
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
@@ -209,11 +200,25 @@ class HnswContext : public IndexContext {
       } else {
         results_[idx].emplace_back(entity_->get_key(id), score, id);
       }
-    }
-
-    return;
+    });
   }
 
+ private:
+  template <typename Fn>
+  void collect_search_result(Fn &&fn) {
+    if (force_padding_topk_) {
+      fill_random_to_topk_full();
+    }
+    search_heap_.for_each_sorted(topk_, [&](node_id_t id, dist_t score) {
+      if (score > this->threshold()) {
+        return false;
+      }
+      fn(id, score);
+      return true;
+    });
+  }
+
+ public:
   //! Construct result from topk heap, result will be normalized
   inline void topk_to_group_result(uint32_t idx) {
     ailego_assert_with(idx < group_results_.size(), "invalid idx");
@@ -301,21 +306,38 @@ class HnswContext : public IndexContext {
     return dc_;
   }
 
-  inline TopkHeap &topk_heap() {
-    return topk_heap_;
+  //! Retrieve framework-managed extra values from an inline HNSW record.
+  //! The active layout is bound together with the distance functions because
+  //! graph construction may use records supplied by an external provider.
+  inline const void *get_extra_values(const void *vector) const {
+    return extra_values_size_ == 0
+               ? nullptr
+               : static_cast<const char *>(vector) + vector_data_size_;
+  }
+
+  inline bool has_extra_values() const {
+    return extra_values_size_ != 0;
+  }
+
+  //! Fetch a single record at the access layer, then pass both of its fields
+  //! to the distance calculator. Batch paths assemble the same pair in the
+  //! HNSW algorithm while they already own the vector MemoryBlocks.
+  inline dist_t batch_dist(node_id_t id) {
+    IndexStorage::MemoryBlock vector_block;
+    if (ailego_unlikely(dc_.get_vector(id, vector_block) != 0)) {
+      return dc_.batch_dist(nullptr, nullptr);
+    }
+    const void *vector = vector_block.data();
+    return dc_.batch_dist(
+        vector, vector == nullptr ? nullptr : get_extra_values(vector));
   }
 
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
 
-  inline LinearPool<dist_t> &pool() {
-    return pool_;
-  }
-
-  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
-  inline BlockHeap &block_pool() {
-    return block_pool_;
+  inline SearchHeap &search_heap() {
+    return search_heap_;
   }
 
   inline VisitFilter &visit_filter() {
@@ -342,7 +364,7 @@ class HnswContext : public IndexContext {
     ef_ = v;
   }
 
-  inline uint32_t ef(void) const {
+  inline uint32_t ef() const {
     return ef_;
   }
 
@@ -350,7 +372,7 @@ class HnswContext : public IndexContext {
     po_ = v;
   }
 
-  inline uint32_t po(void) const {
+  inline uint32_t po() const {
     return po_;
   }
 
@@ -358,7 +380,7 @@ class HnswContext : public IndexContext {
     pl_ = v;
   }
 
-  inline uint32_t pl(void) const {
+  inline uint32_t pl() const {
     return pl_;
   }
 
@@ -399,7 +421,7 @@ class HnswContext : public IndexContext {
   }
 
   //! Reset context
-  void reset(void) override {
+  void reset() override {
     this->clear();
     set_filter(nullptr);
     reset_threshold();
@@ -429,7 +451,7 @@ class HnswContext : public IndexContext {
     return level_topks_[level];
   }
 
-  inline void check_need_adjuct_ctx(void) {
+  inline void check_need_adjuct_ctx() {
     check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -480,6 +502,7 @@ class HnswContext : public IndexContext {
   }
 
   inline void clear() {
+    search_heap_.clear();
     dc_.clear();
     if (ailego_unlikely(this->debugging())) {
       stats_get_neighbors_cnt_ = 0u;
@@ -507,18 +530,30 @@ class HnswContext : public IndexContext {
     return &stats_visit_dup_cnt_;
   }
 
-  inline bool debugging(void) const {
+  inline bool debugging() const {
     return debug_mode_;
   }
 
   //! Bind the space distances are computed in: the metric functions and
   //! the provider that supplies vectors by node id. A null provider makes
   //! distances use the vectors stored in the entity. Callers must pass
-  //! both, so a build space cannot leak into a search by omission
+  //! both plus the record layout, so a build space cannot leak into a search
+  //! by omission
   inline void bind_dist_space(
       const IndexMetric::MatrixDistance &distance,
       const IndexMetric::MatrixBatchDistance &batch_distance,
-      IndexProvider::Pointer provider) {
+      IndexProvider::Pointer provider, size_t vector_size,
+      size_t extra_values_size) {
+    if (ailego_unlikely(extra_values_size != 0 &&
+                        extra_values_size >= vector_size)) {
+      LOG_ERROR("Invalid HNSW vector layout, vector_size=%zu extra_size=%zu",
+                vector_size, extra_values_size);
+      vector_data_size_ = vector_size;
+      extra_values_size_ = 0;
+    } else {
+      vector_data_size_ = vector_size - extra_values_size;
+      extra_values_size_ = extra_values_size;
+    }
     dc_.update_distance(distance, batch_distance);
     dc_.set_provider(std::move(provider));
   }
@@ -554,7 +589,7 @@ class HnswContext : public IndexContext {
 
  private:
   // Filling random nodes if topk not full
-  void fill_random_to_topk_full(void);
+  void fill_random_to_topk_full();
 
   constexpr static uint32_t kTriggerReserveCnt = 4096UL;
   constexpr static uint32_t kMinReserveDocCnt = 4096UL;
@@ -566,6 +601,8 @@ class HnswContext : public IndexContext {
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
   const VectorSource *vector_source_{nullptr};
+  size_t vector_data_size_{0};
+  size_t extra_values_size_{0};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};
@@ -584,7 +621,7 @@ class HnswContext : public IndexContext {
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};
-  TopkHeap topk_heap_{};
+  SearchHeap search_heap_{};
   TopkHeap update_heap_{};
   std::vector<TopkHeap> level_topks_{};
   CandidateHeap candidates_{};
@@ -601,9 +638,6 @@ class HnswContext : public IndexContext {
   uint32_t stats_get_vector_cnt_{0u};
   uint32_t stats_visit_dup_cnt_{0u};
   std::string preprocess_buffer_;
-
-  LinearPool<dist_t> pool_;
-  BlockHeap block_pool_;
 };
 
 }  // namespace core

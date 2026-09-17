@@ -64,7 +64,7 @@ class UniformUint7Reformer : public IndexReformer {
     bias_ = bias;
     scale_reciprocal_sq_ = 1.0f / (scale_ * scale_);
     initialized_ = true;
-    quantize_func_ = turbo::get_uniform_quantize_func(turbo::DataType::kInt8);
+    quantize_func_ = turbo::get_uniform_quantize_func(turbo::DataType::kUint7);
 
     LOG_INFO("UniformUint7Reformer init: scale=%f, bias=%f, simd=%s", scale_,
              bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
@@ -72,7 +72,7 @@ class UniformUint7Reformer : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     Reset();
     return 0;
   }
@@ -83,7 +83,7 @@ class UniformUint7Reformer : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

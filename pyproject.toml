@@ -192,10 +192,13 @@ musllinux-aarch64-image = "quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1"
 skip = ["*-manylinux_i686"]
 
 [tool.cibuildwheel.macos]
-archs = ["arm64"]
+# Build the native 64-bit architecture on each macOS runner.  The release
+# workflows run on both Apple Silicon and Intel hosts, producing separate
+# arm64 and x86_64 wheels that can each be tested natively.
+archs = ["auto"]
 # Inherits CMAKE_GENERATOR and CMAKE_BUILD_PARALLEL_LEVEL from [tool.cibuildwheel] won't work;
 # platform-level environment overrides the top-level entirely, so all vars must be listed here
-environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16", MACOSX_DEPLOYMENT_TARGET = "11.0" }
+environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "4", MACOSX_DEPLOYMENT_TARGET = "11.0" }
 
 [tool.cibuildwheel.windows]
 archs = ["auto64"]

@@ -28,6 +28,37 @@ namespace turbo {
 
 using namespace zvec::core;
 
+//! Optional physical storage precision, encoded as an integer
+//! IndexMeta::DataType. Round input values to this precision before metric
+//! preprocessing, and round reconstructed values back to it. This is
+//! independent of the input buffer type and the quantizer's output codes.
+//! DT_UNDEFINED keeps ordinary quantization.
+inline constexpr char QUANTIZER_STORAGE_DATA_TYPE[] =
+    "quantizer.storage_data_type";
+
+//! Read storage precision; an absent option preserves the original encoding.
+inline bool GetQuantizerStorageDataType(const ailego::Params &params,
+                                        IndexMeta::DataType *data_type) {
+  *data_type = IndexMeta::DT_UNDEFINED;
+  if (params.has(QUANTIZER_STORAGE_DATA_TYPE)) {
+    int64_t type = 0;
+    if (!params.get(QUANTIZER_STORAGE_DATA_TYPE, &type) ||
+        type < IndexMeta::DT_UNDEFINED || type > IndexMeta::DT_UINT8) {
+      return false;
+    }
+    *data_type = static_cast<IndexMeta::DataType>(type);
+  }
+  return true;
+}
+
+inline bool QuantizerStorageDataTypeMatches(const IndexMeta &lhs,
+                                            const IndexMeta &rhs) {
+  IndexMeta::DataType lhs_type, rhs_type;
+  return GetQuantizerStorageDataType(lhs.quantizer_params(), &lhs_type) &&
+         GetQuantizerStorageDataType(rhs.quantizer_params(), &rhs_type) &&
+         lhs_type == rhs_type;
+}
+
 //! Self-describing, fixed-size header that prefixes every serialized quantizer.
 //! The type-specific payload (scalar params, codebook, rotation matrix, ...)
 //! follows immediately after this header.
@@ -38,8 +69,11 @@ struct QuantizerSerHeader {
   uint32_t dim;           // original dim (sanity check)
   uint32_t metric;        // MetricType  (sanity check)
   uint32_t payload_size;  // bytes following the header
-  uint16_t data_type;     // DataType of the stored codes: distinguishes e.g.
-                          // int8 vs int4 PQ blobs sharing quant_type == kPQ
+  uint16_t data_type;     // DataType of the stored codes: distinguishes PQ
+                          // blobs sharing quant_type == kPQ.  0 means "unset"
+                          // (legacy blobs, parsed as int8); non-int8 layouts
+                          // must stamp a non-zero value (raw DataType::kInt4
+                          // equals 0 and therefore cannot be used here)
   uint16_t reserved;      // 0, for future use / alignment
 };
 static_assert(sizeof(QuantizerSerHeader) == 24,
@@ -49,7 +83,7 @@ class Quantizer {
  public:
   typedef std::shared_ptr<Quantizer> Pointer;
 
-  virtual ~Quantizer() {}
+  virtual ~Quantizer() = default;
 
   //! Initialize quantizer with index metadata and parameters
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;
@@ -142,6 +176,18 @@ class Quantizer {
     return DistanceImpl{};
   }
 
+  //! Convert an internal distance into the caller-facing score in place
+  //! (e.g. the InnerProduct kernels rank by the negated dot product).
+  virtual void normalize_score(float * /*score*/) const {}
+
+  //! Convert a caller-facing score threshold into the internal distance space.
+  virtual void denormalize_score(float * /*score*/) const {}
+
+  //! Whether internal distances differ from caller-facing scores.
+  virtual bool support_score_normalization() const {
+    return false;
+  }
+
   //! Serialize quantizer parameters
   virtual int serialize(std::string * /*out*/) const {
     return 0;
@@ -156,6 +202,14 @@ class Quantizer {
   //! (zero-copy entry point for large payloads such as codebooks/matrices).
   virtual int deserialize(const void * /*data*/, size_t /*len*/) {
     return 0;
+  }
+
+  //! Adopt a codebook built outside this quantizer, on an already initialized
+  //! instance: `data` holds raw centroids in the quantizer's own in-memory
+  //! layout, which the caller has to match.  Used for codebooks persisted in a
+  //! foreign layout, e.g. by an index older than this serialization format.
+  virtual int import_codebook(const void * /*data*/, size_t /*len*/) {
+    return kErrUnsupported;
   }
 
  protected:

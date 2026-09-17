@@ -28,7 +28,7 @@
 using namespace zvec;
 using namespace zvec::ailego;
 
-static inline const char *IntelIntrinsics(void) {
+static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
@@ -68,7 +68,7 @@ TEST(DistanceMatrix, Euclidean_General) {
 }
 
 template <size_t M, size_t N>
-void TestEuclideanMatrix(void) {
+void TestEuclideanMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -114,7 +114,7 @@ void TestEuclideanMatrix(void) {
 }
 
 template <size_t M, size_t N>
-void TestSquaredEuclideanMatrix(void) {
+void TestSquaredEuclideanMatrix() {
   std::mt19937 gen((std::random_device())());
 
   const size_t batch_size = M;
@@ -456,7 +456,7 @@ TEST(DistanceMatrix, SquaredEuclidean_128x128) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void EuclideanBenchmark(void) {
+void EuclideanBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;
@@ -541,7 +541,7 @@ void EuclideanBenchmark(void) {
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
-void SquaredEuclideanBenchmark(void) {
+void SquaredEuclideanBenchmark() {
   const size_t dimension = D;
   const size_t batch_size = M;
   const size_t block_size = B;

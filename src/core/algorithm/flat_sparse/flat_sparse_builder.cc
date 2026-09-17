@@ -26,7 +26,7 @@
 namespace zvec {
 namespace core {
 
-FlatSparseBuilder::FlatSparseBuilder() {}
+FlatSparseBuilder::FlatSparseBuilder() = default;
 
 int FlatSparseBuilder::init(const IndexMeta &meta,
                             const ailego::Params & /*params*/) {
@@ -39,7 +39,7 @@ int FlatSparseBuilder::init(const IndexMeta &meta,
   return 0;
 }
 
-int FlatSparseBuilder::cleanup(void) {
+int FlatSparseBuilder::cleanup() {
   LOG_INFO("Begin FlatSparseBuilder::cleanup");
 
   stats_.clear_attributes();

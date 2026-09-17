@@ -62,7 +62,7 @@ class Kmc2CentroidsGenerator {
   }
 
   //! Retrieve the markov chain length
-  size_t chain_length(void) const {
+  size_t chain_length() const {
     return chain_length_;
   }
 
@@ -72,7 +72,7 @@ class Kmc2CentroidsGenerator {
   }
 
   //! Retrieve assumption free option
-  bool assumption_free(void) const {
+  bool assumption_free() const {
     return assumption_free_;
   }
 
@@ -482,12 +482,12 @@ class NumericalKmeansContext {
     }
 
     //! Retrieve squared error
-    double cost(void) const {
+    double cost() const {
       return cost_;
     }
 
     //! Retrieve feature count
-    size_t count(void) const {
+    size_t count() const {
       return count_;
     }
 
@@ -524,7 +524,7 @@ class NumericalKmeansContext {
   }
 
   //! Clear the context
-  void clear(void) {
+  void clear() {
     clusters_.clear();
   }
 
@@ -535,7 +535,7 @@ class NumericalKmeansContext {
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters(void) const {
+  const std::vector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -681,12 +681,12 @@ class NibbleKmeansContext {
     }
 
     //! Retrieve squared error
-    double cost(void) const {
+    double cost() const {
       return cost_;
     }
 
     //! Retrieve feature count
-    size_t count(void) const {
+    size_t count() const {
       return count_;
     }
 
@@ -708,7 +708,7 @@ class NibbleKmeansContext {
   }
 
   //! Clear the context
-  void clear(void) {
+  void clear() {
     clusters_.clear();
   }
 
@@ -719,7 +719,7 @@ class NibbleKmeansContext {
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters(void) const {
+  const std::vector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -836,12 +836,12 @@ class NumericalInnerProductKmeansContext {
     }
 
     //! Retrieve squared error
-    double cost(void) const {
+    double cost() const {
       return cost_;
     }
 
     //! Retrieve feature count
-    size_t count(void) const {
+    size_t count() const {
       return count_;
     }
 
@@ -878,7 +878,7 @@ class NumericalInnerProductKmeansContext {
   }
 
   //! Clear the context
-  void clear(void) {
+  void clear() {
     clusters_.clear();
   }
 
@@ -889,7 +889,7 @@ class NumericalInnerProductKmeansContext {
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters(void) const {
+  const std::vector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -1054,12 +1054,12 @@ class NibbleInnerProductKmeansContext {
     }
 
     //! Retrieve squared error
-    double cost(void) const {
+    double cost() const {
       return cost_;
     }
 
     //! Retrieve feature count
-    size_t count(void) const {
+    size_t count() const {
       return count_;
     }
 
@@ -1081,7 +1081,7 @@ class NibbleInnerProductKmeansContext {
   }
 
   //! Clear the context
-  void clear(void) {
+  void clear() {
     clusters_.clear();
   }
 
@@ -1092,7 +1092,7 @@ class NibbleInnerProductKmeansContext {
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters(void) const {
+  const std::vector<Cluster> &clusters() const {
     return clusters_;
   }
 

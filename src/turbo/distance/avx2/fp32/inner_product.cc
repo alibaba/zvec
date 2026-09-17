@@ -142,9 +142,9 @@ void inner_product_fp32_distance_avx2(const void *a, const void *b, size_t dim,
 #endif
 }
 
-void inner_product_fp32_batch_distance_avx2(const void *const *vectors,
-                                            const void *query, size_t n,
-                                            size_t dim, float *distances) {
+void inner_product_fp32_batch_distance_avx2(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
 #if defined(__AVX2__)
   inner_product_batch(vectors, query, n, dim, distances);
 #else

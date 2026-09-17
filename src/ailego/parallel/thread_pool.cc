@@ -121,15 +121,15 @@ ThreadPool::ThreadPool(uint32_t size, bool binding) {
   }
 }
 
-void ThreadPool::bind(void) {
+void ThreadPool::bind() {
   BindThreads(pool_);
 }
 
-void ThreadPool::unbind(void) {
+void ThreadPool::unbind() {
   UnbindThreads(pool_);
 }
 
-void ThreadPool::worker(void) {
+void ThreadPool::worker() {
   // Counter of workers
   ++worker_count_;
 

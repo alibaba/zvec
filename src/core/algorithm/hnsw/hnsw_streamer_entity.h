@@ -533,7 +533,7 @@ class HnswStreamerEntity : public HnswEntity {
   //! Init node chunk and neighbor chunks
   int init_chunks(const Chunk::Pointer &header_chunk);
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       // do not need to flush
       return 0;
@@ -563,9 +563,11 @@ class HnswStreamerEntity : public HnswEntity {
                 &upper_neighbor_chunks_);
   }
 
- private:
+ public:
   HnswStreamerEntity(const HnswStreamerEntity &) = delete;
   HnswStreamerEntity &operator=(const HnswStreamerEntity &) = delete;
+
+ private:
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  protected:

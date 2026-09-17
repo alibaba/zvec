@@ -68,7 +68,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -87,7 +87,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     return distance_matrix(1, 1);
   }
 
@@ -140,7 +140,7 @@ class QuantizedIntegerMetric : public IndexMetric {
           auto turbo_ret = turbo::get_distance_func(
               turbo::MetricType::kCosine, turbo::DataType::kInt8,
               turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-          if (turbo_ret) {
+          if (turbo_ret && m == 1 && n == 1) {
             return turbo_ret;
           }
           return DistanceMatrixCompute<CosineMinusInnerProduct, int8_t>(m, n);
@@ -154,7 +154,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     switch (origin_metric_type_) {
       case MetricType::kSquaredEuclidean:
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
@@ -234,7 +234,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
@@ -244,7 +244,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Retrieve if it supports training
-  bool support_train(void) const override {
+  bool support_train() const override {
     // No global norm scaling => eta_ == 0 => no training.
     return false;
   }
@@ -261,7 +261,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Retrieve if it supports normalization
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return origin_metric_type_ == MetricType::kInnerProduct ||
            origin_metric_type_ == MetricType::kNormalizedCosine ||
            origin_metric_type_ == MetricType::kCosine;
@@ -272,7 +272,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   //! distance is -cos(m,q) in [-1, 1]. Adding 1.0 maps it to [0, 2] (i.e.
   //! 1 - cos), which is what ratio-based pruning (Vamana RobustPrune) needs
   //! for a geometrically meaningful occlude_factor.
-  float build_distance_offset(void) const override {
+  float build_distance_offset() const override {
     if (origin_metric_type_ == MetricType::kCosine ||
         origin_metric_type_ == MetricType::kNormalizedCosine) {
       return 1.0f;
@@ -281,7 +281,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     if (origin_metric_type_ == MetricType::kMipsSquaredEuclidean) {
       auto metric = IndexFactory::CreateMetric("QuantizedInteger");
       if (metric) {

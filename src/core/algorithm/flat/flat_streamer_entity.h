@@ -16,10 +16,12 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <ailego/parallel/lock.h>
 #include <ailego/utility/memory_helper.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
@@ -33,8 +35,10 @@ namespace core {
 //! Reusable request-local buffers for storage-specific Flat search paths.
 struct FlatSearchScratch {
   std::vector<const void *> vector_ptrs{};
+  std::vector<const void *> extra_values{};
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
+  std::vector<uint8_t> query_buffer{};
 };
 
 /*! Flat Streamer Entity
@@ -47,16 +51,16 @@ class FlatStreamerEntity {
   explicit FlatStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  virtual ~FlatStreamerEntity(void) = default;
+  virtual ~FlatStreamerEntity() = default;
 
   //! Open the entity with storage
   int open(IndexStorage::Pointer storage, const IndexMeta &mt);
 
   //! Close the entity
-  virtual int close(void);
+  virtual int close();
 
   //! Flush Linear Meta information to storage
-  int flush_linear_meta(void);
+  int flush_linear_meta();
 
   //! Flush linear index to storage
   int flush(uint64_t checkpoint);
@@ -97,36 +101,36 @@ class FlatStreamerEntity {
                 IndexContext::Stats *context_stats) const;
 
   //! Clone the entity
-  virtual FlatStreamerEntity::Pointer clone(void) const;
+  virtual FlatStreamerEntity::Pointer clone() const;
 
   //! Retrieve the total vectors in the index
-  size_t vector_count(void) const {
+  size_t vector_count() const {
     return meta_.header.total_vector_count;
   }
 
   //! Retrieve the linear list count
-  size_t linear_list_count(void) const {
+  size_t linear_list_count() const {
     return meta_.header.linear_list_count;
   }
 
   //! Retrieve block size of the linear vector
-  size_t linear_block_size(void) const {
+  size_t linear_block_size() const {
     return meta_.header.block_size;
   }
 
   //! Retrieve the vectors count in one block
-  size_t block_vector_count(void) const {
+  size_t block_vector_count() const {
     // assert(meta_.header.block_vector_count == 32);
     return meta_.header.block_vector_count;
   }
 
   //! Retrieve IndexMeta of the linear index
-  const IndexMeta &meta(void) const {
+  const IndexMeta &meta() const {
     return index_meta_;
   }
 
   //! Retrieve mutable IndexMeta of the linear index
-  IndexMeta *mutable_meta(void) {
+  IndexMeta *mutable_meta() {
     return &index_meta_;
   }
 
@@ -137,7 +141,7 @@ class FlatStreamerEntity {
                                 IndexStorage::MemoryBlock &block) const;
 
   //! Create a new iterator
-  IndexProvider::Iterator::Pointer creater_iterator(void) const;
+  IndexProvider::Iterator::Pointer creater_iterator() const;
 
 
   //! Set params
@@ -165,6 +169,11 @@ class FlatStreamerEntity {
     filter_same_key_ = enabled;
   }
 
+  //! Set the turbo quantizer
+  void set_quantizer(const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+    quantizer_ = quantizer;
+  }
+
   inline uint64_t key(uint32_t id) const {
     if (id < id_key_vector_.size()) {
       return id_key_vector_[id];
@@ -176,6 +185,19 @@ class FlatStreamerEntity {
   inline void row_major_distance(const void *query, const void *feature,
                                  size_t fnum, float *out) const {
     const uint8_t *cur_feature = reinterpret_cast<const uint8_t *>(feature);
+    if (quantizer_) {
+      if (fnum > 1) {
+        std::vector<const void *> dp_list(fnum);
+        for (size_t f = 0; f < fnum; ++f) {
+          dp_list[f] = cur_feature + f * index_meta_.element_size();
+        }
+        quantizer_->calc_distance_dp_query_batch(
+            dp_list.data(), static_cast<int>(fnum), query, out);
+      } else {
+        *out = quantizer_->calc_distance_dp_query(cur_feature, query);
+      }
+      return;
+    }
     for (size_t f = 0; f < fnum; ++f) {
       row_distance_(query, cur_feature, index_meta_.dimension(), out + f);
       cur_feature += index_meta_.element_size();
@@ -186,12 +208,25 @@ class FlatStreamerEntity {
                                  const uint32_t element_size);
 
  protected:
-  const IndexMetric::MatrixDistance &distance(void) const {
+  const IndexMetric::MatrixDistance &distance() const {
     return row_distance_;
   }
 
-  const IndexMetric::MatrixBatchDistance &batch_distance(void) const {
+  const IndexMetric::MatrixBatchDistance &batch_distance() const {
     return batch_distance_;
+  }
+
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
+    return quantizer_;
+  }
+
+  size_t extra_values_size() const {
+    return extra_values_size_;
+  }
+
+  const IndexMetric::DistanceBatchQueryPreprocessFunc &batch_query_preprocess()
+      const {
+    return batch_query_preprocess_;
   }
 
   int get_vector_by_position(uint32_t id,
@@ -199,19 +234,20 @@ class FlatStreamerEntity {
 
   int get_key_by_position(uint32_t id, uint64_t *key) const;
 
-  size_t id_key_count(void) const {
+  size_t id_key_count() const {
     return id_key_vector_.size();
   }
 
-  bool use_key_info_map(void) const {
+  bool use_key_info_map() const {
     return use_key_info_map_;
   }
 
- private:
+ public:
   //! Disable them
   FlatStreamerEntity(const FlatStreamerEntity &) = delete;
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
+ private:
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {
@@ -221,20 +257,20 @@ class FlatStreamerEntity {
       this->read_next_block();
     }
     //! Retrieve pointer of data
-    const void *data(void) const override {
+    const void *data() const override {
       return reinterpret_cast<const char *>(data_) +
              block_vector_index_ * entity_->index_meta_.element_size();
     }
     //! Test if the iterator is valid
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return is_valid_;
     }
     //! Retrieve primary key
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return keys_[block_vector_index_];
     }
     //! Next iterator
-    void next(void) override {
+    void next() override {
       if (++block_vector_index_ == block_vector_count_) {
         ++block_index_;
         this->read_next_block();
@@ -243,7 +279,7 @@ class FlatStreamerEntity {
 
    private:
     //! Read next non-empty block
-    void read_next_block(void);
+    void read_next_block();
 
     //! Members
     std::string buffer_{};
@@ -259,7 +295,10 @@ class FlatStreamerEntity {
   };
 
   //! Retrive storage segment by index
-  const IndexStorage::Segment::Pointer get_segment(size_t index) const {
+  IndexStorage::Segment::Pointer get_segment(size_t index) const {
+    // Copy the shared_ptr before unlocking: append may reallocate the cache.
+    // Readers can also mutate the cache through the lazy fill below.
+    std::lock_guard<std::mutex> lock(segments_mutex_);
     for (size_t i = segments_.size(); i <= index; ++i) {
       auto segment_id =
           ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, i);
@@ -293,7 +332,7 @@ class FlatStreamerEntity {
   int load_segment_keys_to_map(BlockLocation block);
 
   //! Load keys to keys map
-  int load_segment_keys_to_vector(void);
+  int load_segment_keys_to_vector();
 
   //! Load index from storage
   int load_storage(IndexStorage::Pointer storage);
@@ -305,9 +344,10 @@ class FlatStreamerEntity {
 
   //! Update header block of an linear list
   int update_head_block(const BlockLocation &block) {
-    ailego_assert_with(segments_.size() != 0, "Invalid Segments");
-
-    auto &hd_segment = segments_[0];
+    auto hd_segment = get_segment(0);
+    if (!hd_segment) {
+      return IndexError_WriteData;
+    }
     if (hd_segment->write(0, &block, sizeof(block)) != sizeof(block)) {
       LOG_ERROR("Failed to write head block location");
       return IndexError_WriteData;
@@ -317,7 +357,7 @@ class FlatStreamerEntity {
   }
 
   //! Alloc a new segment
-  int alloc_segment(void);
+  int alloc_segment();
 
   //! Alloc a new block
   int alloc_block(const BlockLocation &next, BlockLocation *block);
@@ -355,8 +395,10 @@ class FlatStreamerEntity {
 
   //! Get header block of an linear list
   int get_head_block(IndexStorage::MemoryBlock &header_block) const {
-    ailego_assert_with(segments_.size() != 0, "Invalid Segments");
-    auto &hd_segment = segments_[0];
+    auto hd_segment = get_segment(0);
+    if (!hd_segment) {
+      return IndexError_ReadData;
+    }
     if (hd_segment->read(0, header_block, sizeof(BlockLocation)) !=
         sizeof(BlockLocation)) {
       LOG_ERROR("Failed to read head block location");
@@ -369,7 +411,7 @@ class FlatStreamerEntity {
   int get_block_header(const BlockLocation &block,
                        IndexStorage::MemoryBlock &header_block) const {
     // The header is located in the end of a block to align features
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_header_offset(block.block_index);
     if (segment->read(off, header_block, sizeof(BlockHeader)) !=
@@ -382,7 +424,7 @@ class FlatStreamerEntity {
   int get_block_deletion_map(
       const BlockLocation &block,
       IndexStorage::MemoryBlock &deletion_map_block) const {
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_deletion_map_offset(block.block_index);
     if (segment->read(off, deletion_map_block, sizeof(DeletionMap)) !=
@@ -395,7 +437,7 @@ class FlatStreamerEntity {
 
   int get_block_keys(const BlockLocation &block,
                      IndexStorage::MemoryBlock &keys_block) const {
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_key_offset(block.block_index, 0);
     if (segment->read(off, keys_block,
@@ -409,7 +451,7 @@ class FlatStreamerEntity {
 
   int get_block_vectors(const BlockLocation &block,
                         IndexStorage::MemoryBlock &vector_block) const {
-    auto &segment = this->get_segment(block.segment_id);
+    auto segment = this->get_segment(block.segment_id);
     ailego_assert_with(segment != nullptr, "Index Overflow");
     size_t off = this->get_block_vector_offset(block.block_index, 0);
     if (segment->read(off, vector_block,
@@ -428,10 +470,16 @@ class FlatStreamerEntity {
 
   //! Members
   std::mutex mutex_{};
+  // Protects the segment cache, independently of the serialized add path.
+  // Open/close and initial loading require external lifecycle exclusion.
+  mutable std::mutex segments_mutex_{};
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc batch_query_preprocess_{};
+  size_t extra_values_size_{0};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};
@@ -452,10 +500,10 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
  public:
   explicit FlatContiguousStreamerEntity(IndexStreamer::Stats &stats)
       : FlatStreamerEntity(stats) {}
-  ~FlatContiguousStreamerEntity(void) override = default;
+  ~FlatContiguousStreamerEntity() override = default;
 
-  int build_contiguous_memory(void);
-  int close(void) override;
+  int build_contiguous_memory();
+  int close() override;
 
   int add(uint64_t key, const void *vec, size_t size) override;
   int add_vector_with_id(uint32_t id, const void *query,
@@ -469,7 +517,7 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
                        FlatSearchScratch *scratch,
                        size_t batch_size) const override;
 
-  bool is_contiguous(void) const {
+  bool is_contiguous() const {
     return !!load_contiguous_storage();
   }
 
@@ -492,12 +540,12 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
   // Same lifetime model as HNSW/Vamana contiguous entity clones: a search
   // keeps shared ownership of one immutable generation while add() removes
   // the entity's owner reference and falls back to mmap storage.
-  std::shared_ptr<const ContiguousStorage> load_contiguous_storage(void) const {
+  std::shared_ptr<const ContiguousStorage> load_contiguous_storage() const {
     return std::atomic_load_explicit(&contiguous_storage_,
                                      std::memory_order_acquire);
   }
 
-  void degrade_to_mmap(void);
+  void degrade_to_mmap();
   int evaluate_distances(const ContiguousStorage &storage, const void *query,
                          const std::vector<uint64_t> *p_keys,
                          const IndexFilter &filter, size_t batch_size,

@@ -50,8 +50,8 @@ constexpr size_t static kDim = 128;
 
 class IvfRabitqStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
@@ -107,11 +107,11 @@ class TrackingIndexThreads : public IndexThreads {
  public:
   TrackingIndexThreads() : threads_(2, false) {}
 
-  size_t count(void) const override {
+  size_t count() const override {
     return threads_.count();
   }
 
-  void stop(void) override {
+  void stop() override {
     threads_.stop();
   }
 
@@ -119,16 +119,16 @@ class TrackingIndexThreads : public IndexThreads {
     threads_.submit(std::move(task));
   }
 
-  TaskGroup::Pointer make_group(void) override {
+  TaskGroup::Pointer make_group() override {
     make_group_count_.fetch_add(1, std::memory_order_relaxed);
     return threads_.make_group();
   }
 
-  int indexof_this(void) const override {
+  int indexof_this() const override {
     return threads_.indexof_this();
   }
 
-  size_t make_group_count(void) const {
+  size_t make_group_count() const {
     return make_group_count_.load(std::memory_order_relaxed);
   }
 
@@ -278,13 +278,13 @@ void BuildLoadedReformer(const IndexMeta &rabitq_meta,
 
 }  // namespace
 
-void IvfRabitqStreamerTest::SetUp(void) {
+void IvfRabitqStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, kDim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, ailego::Params());
 }
 
-void IvfRabitqStreamerTest::TearDown(void) {
+void IvfRabitqStreamerTest::TearDown() {
   ailego::FileHelper::RemovePath(dir_.c_str());
 }
 

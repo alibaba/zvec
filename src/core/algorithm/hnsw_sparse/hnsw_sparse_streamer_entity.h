@@ -473,7 +473,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   //! Init node chunk and neighbor chunks
   int init_chunks(const SparseChunk::Pointer &header_chunk);
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       // do not need to flush
       return 0;
@@ -494,10 +494,12 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     return 0;
   }
 
- private:
+ public:
   HnswSparseStreamerEntity(const HnswSparseStreamerEntity &) = delete;
   HnswSparseStreamerEntity &operator=(const HnswSparseStreamerEntity &) =
       delete;
+
+ private:
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  private:

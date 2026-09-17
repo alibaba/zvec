@@ -22,11 +22,11 @@ namespace core {
 static const char AITHETA_VERSION_DETAILS[] =
     AILEGO_VERSION_COMPILE_DETAILS("All rights reserved.\n");
 
-const char *IndexVersion::String(void) {
+const char *IndexVersion::String() {
   return AITHETA_VERSION_DETAILS;
 }
 
-const char *IndexVersion::Details(void) {
+const char *IndexVersion::Details() {
   return AITHETA_VERSION_DETAILS;
 }
 

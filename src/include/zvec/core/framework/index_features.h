@@ -30,32 +30,32 @@ struct IndexFeatures {
   typedef std::shared_ptr<IndexFeatures> Pointer;
 
   //! Destructor
-  virtual ~IndexFeatures(void) {}
+  virtual ~IndexFeatures() = default;
 
   //! Retrieve feature via index
   virtual const void *element(size_t i) const = 0;
 
   //! Retrieve count of elements
-  virtual size_t count(void) const = 0;
+  virtual size_t count() const = 0;
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const = 0;
+  virtual size_t dimension() const = 0;
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const = 0;
+  virtual IndexMeta::DataType data_type() const = 0;
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted(void) const {
+  virtual bool is_compacted() const {
     return false;
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data(void) const {
+  virtual const void *data() const {
     return nullptr;
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size(void) const {
+  virtual size_t element_size() const {
     return IndexMeta::ElementSizeof(this->data_type(), this->dimension());
   }
 
@@ -80,7 +80,7 @@ class CoherentIndexFeatures : public IndexFeatures {
   typedef std::shared_ptr<CoherentIndexFeatures> Pointer;
 
   //! Constructor
-  CoherentIndexFeatures(void)
+  CoherentIndexFeatures()
       : features_buffer_(nullptr),
         features_count_(0),
         feature_size_(0),
@@ -119,12 +119,12 @@ class CoherentIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return features_count_;
   }
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return feature_dimension_;
   }
 
@@ -135,22 +135,22 @@ class CoherentIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const {
+  virtual IndexMeta::DataType data_type() const {
     return data_type_;
   }
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted(void) const {
+  virtual bool is_compacted() const {
     return true;
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data(void) const {
+  virtual const void *data() const {
     return features_buffer_;
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size(void) const {
+  virtual size_t element_size() const {
     return feature_size_;
   }
 
@@ -170,7 +170,7 @@ class FlexibleIndexFeatures : public IndexFeatures {
   typedef std::shared_ptr<FlexibleIndexFeatures> Pointer;
 
   //! Constructor
-  FlexibleIndexFeatures(void)
+  FlexibleIndexFeatures()
       : features_(nullptr),
         features_count_(0),
         feature_size_(0),
@@ -211,12 +211,12 @@ class FlexibleIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return features_count_;
   }
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return feature_dimension_;
   }
 
@@ -226,12 +226,12 @@ class FlexibleIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const {
+  virtual IndexMeta::DataType data_type() const {
     return data_type_;
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size(void) const {
+  virtual size_t element_size() const {
     return feature_size_;
   }
 
@@ -327,7 +327,7 @@ class GapIndexFeatures : public IndexFeatures {
   }
 
   //! Clear the features
-  void clear(void) {
+  void clear() {
     features_.clear();
     features_count_ = 0;
   }
@@ -345,12 +345,12 @@ class GapIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return features_count_;
   }
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return feature_dimension_;
   }
 
@@ -360,29 +360,29 @@ class GapIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const {
+  virtual IndexMeta::DataType data_type() const {
     return data_type_;
   }
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted(void) const {
+  virtual bool is_compacted() const {
     return (features_.size() == 1u);
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data(void) const {
+  virtual const void *data() const {
     return (features_.size() == 1u ? features_.front().data() : nullptr);
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size(void) const {
+  virtual size_t element_size() const {
     return feature_size_;
   }
 
- private:
   //! Disable them
-  GapIndexFeatures(void) = delete;
+  GapIndexFeatures() = delete;
 
+ private:
   //! Members
   std::vector<std::string> features_;
   size_t bucket_limit_;
@@ -460,7 +460,7 @@ class CompactIndexFeatures : public IndexFeatures {
   }
 
   //! Clear the features
-  void clear(void) {
+  void clear() {
     features_.clear();
   }
 
@@ -475,12 +475,12 @@ class CompactIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count(void) const {
+  virtual size_t count() const {
     return (features_.size() / feature_size_);
   }
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const {
+  virtual size_t dimension() const {
     return feature_dimension_;
   }
 
@@ -490,29 +490,29 @@ class CompactIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const {
+  virtual IndexMeta::DataType data_type() const {
     return data_type_;
   }
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted(void) const {
+  virtual bool is_compacted() const {
     return true;
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data(void) const {
+  virtual const void *data() const {
     return features_.data();
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size(void) const {
+  virtual size_t element_size() const {
     return feature_size_;
   }
 
- private:
   //! Disable them
-  CompactIndexFeatures(void) = delete;
+  CompactIndexFeatures() = delete;
 
+ private:
   //! Members
   std::string features_;
   size_t feature_size_;
@@ -560,12 +560,12 @@ class SampleIndexFeatures : public TBase {
   }
 
   //! Retrieve count of samples
-  size_t samples(void) const {
+  size_t samples() const {
     return samples_;
   }
 
   //! Retrieve count of total
-  size_t total(void) const {
+  size_t total() const {
     return total_;
   }
 
@@ -585,15 +585,15 @@ class SampleIndexFeatures : public TBase {
   }
 
   //! Clear the features
-  void clear(void) {
+  void clear() {
     TBase::clear();
     total_ = 0;
   }
 
- private:
   //! Disable them
-  SampleIndexFeatures(void) = delete;
+  SampleIndexFeatures() = delete;
 
+ private:
   //! Members
   size_t samples_;
   size_t total_;

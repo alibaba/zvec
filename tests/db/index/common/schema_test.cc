@@ -250,6 +250,112 @@ TEST(FieldSchemaTest, ComparisonOperators) {
   EXPECT_TRUE(field1 != field5);
 }
 
+TEST(FieldSchemaTest, UniformQuantizationSupportsHnswWithL2Only) {
+  for (const auto quantize_type :
+       {QuantizeType::UNIFORM_UINT7, QuantizeType::UNIFORM_UINT8,
+        QuantizeType::UNIFORM_UINT4}) {
+    auto l2_params = std::make_shared<HnswIndexParams>(MetricType::L2, 16, 100,
+                                                       quantize_type);
+    FieldSchema l2_field("l2_vector", DataType::VECTOR_FP32, 128, false,
+                         l2_params);
+    EXPECT_TRUE(l2_field.validate().ok());
+
+    auto ip_params = std::make_shared<HnswIndexParams>(MetricType::IP, 16, 100,
+                                                       quantize_type);
+    FieldSchema ip_field("ip_vector", DataType::VECTOR_FP32, 128, false,
+                         ip_params);
+    auto status = ip_field.validate();
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.message().find("only supports L2 metric"),
+              std::string::npos);
+  }
+}
+
+TEST(FieldSchemaTest, UniformQuantizationRejectsFlatIndexes) {
+  for (const auto quantize_type :
+       {QuantizeType::UNIFORM_UINT7, QuantizeType::UNIFORM_UINT8,
+        QuantizeType::UNIFORM_UINT4}) {
+    SCOPED_TRACE(static_cast<int>(quantize_type));
+    auto params =
+        std::make_shared<FlatIndexParams>(MetricType::L2, quantize_type);
+    FieldSchema field("flat_vector", DataType::VECTOR_FP32, 128, false, params);
+    auto status = field.validate();
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message().find("not supported with FLAT"),
+              std::string::npos);
+  }
+}
+
+TEST(FieldSchemaTest, UniformQuantizationRejectsIvfIndexes) {
+  for (const auto quantize_type :
+       {QuantizeType::UNIFORM_UINT7, QuantizeType::UNIFORM_UINT8,
+        QuantizeType::UNIFORM_UINT4}) {
+    SCOPED_TRACE(static_cast<int>(quantize_type));
+    auto params = std::make_shared<IVFIndexParams>(MetricType::L2, 4, 2, false,
+                                                   quantize_type);
+    FieldSchema field("ivf_vector", DataType::VECTOR_FP32, 128, false, params);
+    auto status = field.validate();
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message().find("not supported with IVF"),
+              std::string::npos);
+  }
+}
+
+TEST(FieldSchemaTest, UniformQuantizationRejectsDiskAnnIndexes) {
+  for (const auto quantize_type :
+       {QuantizeType::UNIFORM_UINT7, QuantizeType::UNIFORM_UINT8,
+        QuantizeType::UNIFORM_UINT4}) {
+    auto params = std::make_shared<DiskAnnIndexParams>(MetricType::L2, 8, 16, 4,
+                                                       quantize_type);
+    FieldSchema field("disk_vector", DataType::VECTOR_FP32, 32, false, params);
+    auto status = field.validate();
+    EXPECT_FALSE(status.ok());
+#if DISKANN_SUPPORTED
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message().find("not supported with DISKANN"),
+              std::string::npos);
+#else
+    EXPECT_NE(
+        status.message().find("DiskAnn is not supported on this platform"),
+        std::string::npos);
+#endif
+  }
+}
+
+TEST(FieldSchemaTest, FlatIndexesSupportRecordQuantization) {
+  for (const auto quantize_type : {QuantizeType::UNDEFINED, QuantizeType::FP16,
+                                   QuantizeType::INT8, QuantizeType::INT4}) {
+    SCOPED_TRACE(static_cast<int>(quantize_type));
+    for (const auto metric_type :
+         {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
+      SCOPED_TRACE(static_cast<int>(metric_type));
+      auto params =
+          std::make_shared<FlatIndexParams>(metric_type, quantize_type);
+      FieldSchema field("flat_vector", DataType::VECTOR_FP32, 128, false,
+                        params);
+      auto status = field.validate();
+      EXPECT_TRUE(status.ok()) << status.message();
+    }
+  }
+}
+
+TEST(FieldSchemaTest, IvfIndexesSupportRecordQuantization) {
+  for (const auto quantize_type : {QuantizeType::UNDEFINED, QuantizeType::FP16,
+                                   QuantizeType::INT8, QuantizeType::INT4}) {
+    SCOPED_TRACE(static_cast<int>(quantize_type));
+    for (const auto metric_type :
+         {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
+      SCOPED_TRACE(static_cast<int>(metric_type));
+      auto params = std::make_shared<IVFIndexParams>(metric_type, 4, 2, false,
+                                                     quantize_type);
+      FieldSchema field("ivf_vector", DataType::VECTOR_FP32, 128, false,
+                        params);
+      auto status = field.validate();
+      EXPECT_TRUE(status.ok()) << status.message();
+    }
+  }
+}
+
 TEST(FieldSchemaTest, Validate) {
   {
     FieldSchema field("", DataType::UNDEFINED);
@@ -432,7 +538,7 @@ TEST(FieldSchemaTest, Validate) {
         std::make_shared<FlatIndexParams>(MetricType::L2, QuantizeType::INT4);
     FieldSchema flat_field("fp32_vector_int4_quantize", DataType::VECTOR_FP32,
                            128, false, flat_params);
-    EXPECT_TRUE(field.validate().ok());
+    EXPECT_TRUE(flat_field.validate().ok());
   }
 
   {

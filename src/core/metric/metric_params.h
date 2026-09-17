@@ -42,5 +42,9 @@ static const std::string UNIFORM_UINT7_METRIC_ORIGIN_METRIC_NAME =
 static const std::string UNIFORM_UINT8_METRIC_ORIGIN_METRIC_NAME =
     "proxima.uniform_uint8.metric.origin_metric_name";
 
+//! UniformUint4 Metric
+static const std::string UNIFORM_UINT4_METRIC_ORIGIN_METRIC_NAME =
+    "proxima.uniform_uint4.metric.origin_metric_name";
+
 }  // namespace core
 }  // namespace zvec

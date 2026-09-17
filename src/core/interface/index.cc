@@ -13,8 +13,13 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <magic_enum/magic_enum.hpp>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
@@ -26,6 +31,151 @@ namespace {
 
 bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
   return search_param->group_by_param && search_param->group_by_param->group_by;
+}
+
+// A multipass training view over merge sources. Decode through each source's
+// existing quantizer or reformer, just as the merge reducer does. This lets
+// global quantizers train from FP16/UINT8 Flat references without materializing
+// an additional full-dataset FP32 copy or adding input types to the quantizers.
+class MergeSourceIndexHolder final : public core::IndexHolder {
+ public:
+  struct Source {
+    core::IndexHolder::Pointer holder;
+    core::IndexReformer::Pointer reformer;
+    std::shared_ptr<turbo::Quantizer> quantizer;
+    core::IndexQueryMeta stored_meta;
+  };
+
+  class Iterator final : public core::IndexHolder::Iterator {
+   public:
+    explicit Iterator(MergeSourceIndexHolder *owner) : owner_(owner) {
+      advance_to_valid_source();
+    }
+
+    const void *data() const override {
+      return data_;
+    }
+
+    bool is_valid() const override {
+      return owner_->error_ == 0 && source_iter_ && source_iter_->is_valid();
+    }
+
+    uint64_t key() const override {
+      return source_iter_->key();
+    }
+
+    void next() override {
+      if (source_iter_) source_iter_->next();
+      advance_to_valid_source();
+    }
+
+   private:
+    void advance_to_valid_source() {
+      data_ = nullptr;
+      if (owner_->error_ != 0) return;
+      while (!source_iter_ || !source_iter_->is_valid()) {
+        source_iter_.reset();
+        if (source_index_ >= owner_->sources_.size()) return;
+        source_ = &owner_->sources_[source_index_++];
+        source_iter_ = source_->holder->create_iterator();
+        if (!source_iter_) {
+          owner_->error_ = core::IndexError_ReadData;
+          return;
+        }
+      }
+      data_ = source_iter_->data();
+      if (!data_) {
+        owner_->error_ = core::IndexError_ReadData;
+        return;
+      }
+      if (source_->quantizer || source_->reformer) {
+        const int ret = source_->quantizer
+                            ? source_->quantizer->dequantize(
+                                  data_, source_->stored_meta, &decoded_)
+                            : source_->reformer->revert(
+                                  data_, source_->stored_meta, &decoded_);
+        if (ret != 0) {
+          owner_->error_ = ret;
+          return;
+        }
+        if (decoded_.size() != owner_->element_size()) {
+          owner_->error_ = core::IndexError_Mismatch;
+          return;
+        }
+        data_ = decoded_.data();
+      }
+    }
+
+    MergeSourceIndexHolder *owner_;
+    const Source *source_{nullptr};
+    size_t source_index_{0};
+    core::IndexHolder::Iterator::Pointer source_iter_{};
+    std::string decoded_;
+    const void *data_{nullptr};
+  };
+
+  MergeSourceIndexHolder(std::vector<Source> sources,
+                         core::IndexQueryMeta source_meta)
+      : sources_(std::move(sources)), source_meta_(std::move(source_meta)) {
+    for (const auto &source : sources_) {
+      if (source.holder->count() >
+          (std::numeric_limits<size_t>::max)() - count_) {
+        error_ = core::IndexError_InvalidArgument;
+        return;
+      }
+      count_ += source.holder->count();
+    }
+  }
+
+  size_t count() const override {
+    return count_;
+  }
+  size_t dimension() const override {
+    return source_meta_.dimension();
+  }
+  core::IndexMeta::DataType data_type() const override {
+    return source_meta_.data_type();
+  }
+  size_t element_size() const override {
+    return source_meta_.element_size();
+  }
+  bool multipass() const override {
+    return true;
+  }
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<Iterator>(this);
+  }
+  int error() const {
+    return error_;
+  }
+
+ private:
+  std::vector<Source> sources_;
+  core::IndexQueryMeta source_meta_;
+  size_t count_{0};
+  int error_{0};
+};
+
+int CreateReformerFromConverterMeta(
+    const core::IndexConverter::Pointer &converter,
+    core::IndexMeta *proxima_index_meta,
+    core::IndexQueryMeta *streamer_vector_meta,
+    core::IndexReformer::Pointer *reformer) {
+  const auto &meta = converter->meta();
+  if (meta.reformer_name().empty()) {
+    LOG_ERROR("Trained converter did not provide a reformer");
+    return core::IndexError_Runtime;
+  }
+  *proxima_index_meta = meta;
+  streamer_vector_meta->set_meta(meta.data_type(), meta.dimension());
+  streamer_vector_meta->set_meta_type(meta.meta_type());
+  *reformer = core::IndexFactory::CreateReformer(meta.reformer_name());
+  if (!*reformer || (*reformer)->init(meta.reformer_params()) != 0) {
+    LOG_ERROR("Failed to create reformer '%s' from converter meta",
+              meta.reformer_name().c_str());
+    return core::IndexError_Runtime;
+  }
+  return core::IndexError_Success;
 }
 
 }  // namespace
@@ -218,6 +368,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kUniformUint8:
           converter_name = "UniformUint8Converter";
           break;
+        case QuantizerType::kUniformUint4:
+          converter_name = "UniformUint4Converter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -308,9 +461,11 @@ int Index::Init(const BaseIndexParam &param) {
   }
 
   // must after quantizer handled. e.g., cosine doesn't support int8 quantizer
-  if (CreateAndInitMetric(param) != 0) {
-    LOG_ERROR("Failed to create and init metric");
-    return core::IndexError_Runtime;
+  if (turbo_quantizer_ == nullptr) {
+    if (CreateAndInitMetric(param) != 0) {
+      LOG_ERROR("Failed to create and init metric");
+      return core::IndexError_Runtime;
+    }
   }
 
   if (CreateAndInitStreamer(param) != 0) {
@@ -389,16 +544,21 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (converter_ != nullptr && reformer_ == nullptr) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {
-      LOG_ERROR(
-          "Index::open: converter exists but reformer not initialized and "
-          "no reformer in persisted meta");
-      return core::IndexError_Runtime;
-    }
-    reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
-    if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
-      LOG_ERROR("Failed to create reformer '%s' from persisted meta",
-                meta.reformer_name().c_str());
-      return core::IndexError_Runtime;
+      if (!storage_options.create_new) {
+        LOG_ERROR(
+            "Index::open: converter exists but reformer not initialized and "
+            "no reformer in persisted meta");
+        return core::IndexError_Runtime;
+      }
+      // Global quantizers learn their parameters from merge sources after
+      // the empty target is opened.
+    } else {
+      reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
+      if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
+        LOG_ERROR("Failed to create reformer '%s' from persisted meta",
+                  meta.reformer_name().c_str());
+        return core::IndexError_Runtime;
+      }
     }
   }
 
@@ -578,7 +738,9 @@ int Index::search(const VectorData &vector_data,
 
   if (is_sparse_) {
     int ret = _sparse_search(vector_data, search_param, result, context);
-    context->reset();
+    if (context) {
+      context->reset();
+    }
     return ret;
   }
 
@@ -586,7 +748,6 @@ int Index::search(const VectorData &vector_data,
   int ret = 0;
   if (search_param->refiner_param == nullptr) {
     ret = _dense_search(vector_data, search_param, result, context);
-    context->reset();
   } else {
     auto &reference_index = search_param->refiner_param->reference_index;
     if (reference_index == nullptr) {
@@ -601,29 +762,39 @@ int Index::search(const VectorData &vector_data,
       return core::IndexError_Runtime;
     }
 
-    context->set_topk(_get_coarse_search_topk(search_param));
-    context->set_fetch_vector(false);  // no need to fetch vector
-    if (_dense_search(vector_data, search_param, result, context) != 0) {
-      LOG_ERROR("Failed to search");
+    const int coarse_topk = _get_coarse_search_topk(search_param);
+    if (coarse_topk < 0) {
       context->reset();
+      return coarse_topk;
+    }
+    context->set_topk(coarse_topk);
+    context->set_fetch_vector(false);  // no need to fetch vector
+    std::string transformed_vector;
+    const void *query = nullptr;
+    core::IndexQueryMeta query_meta;
+    ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                               &query_meta);
+    if (ret != 0) {
+      context->reset();
+      return ret;
+    }
+    // Refine replaces the coarse scores; only candidate membership and order
+    // cross this boundary, not document/vector materialization or
+    // normalization.
+    std::vector<std::vector<uint64_t>> keys(1);
+    if (_execute_dense_search(query, query_meta, search_param, context,
+                              &keys[0]) != 0) {
+      LOG_ERROR("Failed to search");
+      if (context) {
+        context->reset();
+      }
       return core::IndexError_Runtime;
     }
-
-    auto &base_result = context->result();
-    std::vector<uint64_t> keys(base_result.size());
-    for (size_t i = 0; i < base_result.size(); ++i) {
-      keys[i] = base_result[i].key();
-    }
-
-    auto flat_search_param = std::make_shared<FlatQueryParam>();
-    flat_search_param->topk = search_param->topk;
-    flat_search_param->fetch_vector = search_param->fetch_vector;
-    flat_search_param->filter = search_param->filter;
-    flat_search_param->bf_pks =
-        std::make_shared<std::vector<uint64_t>>(std::move(keys));
-
     result->reverted_vector_list_.clear();
-    ret = reference_index->search(vector_data, flat_search_param, result);
+    ret = reference_index->_refine_dense_candidates(vector_data, search_param,
+                                                    keys, result);
+  }
+  if (context) {
     context->reset();
   }
   return ret;
@@ -645,7 +816,16 @@ int Index::_dense_fetch(const uint32_t doc_id,
   // for int4, unit_size * dim != element_size
   out_vector_buffer.resize(input_vector_meta_.element_size());
 
-  if (reformer_ != nullptr) {
+  if (turbo_quantizer_ != nullptr) {
+    // The stored record is int8 codes + quantizer tail; dequantize restores
+    // the original FP32 vector (cosine layouts also denormalize by the
+    // stored norm).
+    if (turbo_quantizer_->dequantize(vector, streamer_vector_meta_,
+                                     &out_vector_buffer) != 0) {
+      LOG_ERROR("Failed to dequantize vector");
+      return core::IndexError_Runtime;
+    }
+  } else if (reformer_ != nullptr) {
     if (reformer_->revert(vector, streamer_vector_meta_, &out_vector_buffer) !=
         0) {
       LOG_ERROR("Failed to convert vector");
@@ -694,6 +874,21 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
+  if (turbo_quantizer_ != nullptr) {
+    core::IndexQueryMeta new_meta;
+    auto *new_vector = context->mutable_features();
+    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
+                                   new_vector, &new_meta) != 0) {
+      LOG_ERROR("Failed to quantize vector with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
+                                    context) != 0) {
+      LOG_ERROR("Failed to add vector");
+      return core::IndexError_Runtime;
+    }
+    return 0;
+  }
   if (reformer_ != nullptr) {
     core::IndexQueryMeta new_meta;
     auto *new_vector = context->mutable_features();
@@ -766,25 +961,58 @@ int Index::_dense_search(const VectorData &vector_data,
                          const BaseIndexQueryParam::Pointer &search_param,
                          SearchResult *result,
                          core::IndexContext::Pointer &context) {
+  std::string transformed_vector;
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  int ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+  if (ret != 0) return ret;
+  ret = _execute_dense_search(query, query_meta, search_param, context);
+  if (ret != 0) return ret;
+  return _collect_dense_result(vector_data, query_meta, search_param, result,
+                               context);
+}
+
+int Index::_prepare_dense_query(const VectorData &vector_data,
+                                std::string *query_storage,
+                                const void **prepared_query,
+                                core::IndexQueryMeta *prepared_meta) {
   if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
-  auto vector = dense_vector.data;
+  *prepared_query = dense_vector.data;
+  // A streamer may replace an incompatible pooled context before searching.
+  // Keep the transformed query in caller-owned storage so its data remains
+  // valid after this helper returns and throughout the complete search call.
   // Check if need to transform feature
-  core::IndexQueryMeta new_meta = input_vector_meta_;
-  if (reformer_ != nullptr) {
-    auto *new_vector = context->mutable_features();
-    if (reformer_->transform(dense_vector.data, input_vector_meta_, new_vector,
-                             &new_meta) != 0) {
+  *prepared_meta = input_vector_meta_;
+  if (turbo_quantizer_ != nullptr) {
+    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
+                                   query_storage, prepared_meta) != 0) {
+      LOG_ERROR("Failed to quantize query with turbo quantizer");
+      return core::IndexError_Runtime;
+    }
+    *prepared_query = query_storage->data();
+  } else if (reformer_ != nullptr) {
+    if (reformer_->transform(dense_vector.data, input_vector_meta_,
+                             query_storage, prepared_meta) != 0) {
       LOG_ERROR("Failed to transform vector");
       return core::IndexError_Runtime;
     }
-    vector = new_vector->data();
+    *prepared_query = query_storage->data();
   }
+  return 0;
+}
+
+int Index::_execute_dense_search(
+    const void *vector, const core::IndexQueryMeta &new_meta,
+    const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context,
+    std::vector<uint64_t> *candidate_keys) {
+  if (candidate_keys) candidate_keys->clear();
   if (search_param->bf_pks != nullptr) {
-    // should we eliminate the copy of bf_pks?
     if (streamer_->search_bf_by_p_keys_impl(
             vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
             new_meta, 1, context) != 0) {
@@ -796,12 +1024,83 @@ int Index::_dense_search(const VectorData &vector_data,
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
+  } else if (candidate_keys) {
+    return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
+                                             context);
   } else {
     if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
   }
+
+  if (candidate_keys) {
+    const auto &documents = context->result();
+    candidate_keys->reserve(documents.size());
+    for (const auto &document : documents) {
+      candidate_keys->push_back(document.key());
+    }
+  }
+  return 0;
+}
+
+int Index::_refine_dense_candidates(
+    const VectorData &vector_data,
+    const BaseIndexQueryParam::Pointer &search_param,
+    const std::vector<std::vector<uint64_t>> &keys, SearchResult *result) {
+  if (!is_open_ || is_sparse_) {
+    LOG_ERROR("Reference index must be open and dense");
+    return core::IndexError_Runtime;
+  }
+  if (!is_trained_ && this->train() != 0) {
+    LOG_ERROR("Failed to train reference index");
+    return core::IndexError_Runtime;
+  }
+
+  auto &context = acquire_context();
+  if (!context) return core::IndexError_Runtime;
+  context->set_topk(search_param->topk);
+  context->set_fetch_vector(search_param->fetch_vector);
+  if (search_param->filter && search_param->filter->is_valid()) {
+    context->set_filter(std::move(*search_param->filter));
+  } else {
+    context->reset_filter();
+  }
+  // The radius belongs to the coarse score space, not the refine metric.
+  context->reset_threshold();
+  _set_group_by_on_context(search_param, context);
+
+  // Transform the original query with the reference index's own reformer.
+  std::string transformed_vector;
+  const void *query = nullptr;
+  core::IndexQueryMeta query_meta;
+  int ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+  if (ret != 0) {
+    context->reset();
+    return ret;
+  }
+  ret =
+      streamer_->search_bf_by_p_keys_impl(query, keys, query_meta, 1, context);
+  if (ret != 0) {
+    if (context) {
+      context->reset();
+    }
+    return ret;
+  }
+  ret = _collect_dense_result(vector_data, query_meta, search_param, result,
+                              context);
+  if (context) {
+    context->reset();
+  }
+  return ret;
+}
+
+int Index::_collect_dense_result(
+    const VectorData &vector_data, const core::IndexQueryMeta &new_meta,
+    const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+    core::IndexContext::Pointer &context) {
+  const auto &dense_vector = std::get<DenseVector>(vector_data.vector);
 
   // Retrieve group_by results if applicable
   bool has_group_by =
@@ -814,10 +1113,17 @@ int Index::_dense_search(const VectorData &vector_data,
     }
     result->group_doc_list_ = std::move(*group_result);
   } else {
-    result->doc_list_ = std::move(context->result());
+    // Transfer the final documents instead of copying a const result(). The
+    // context receives the caller's previous buffer for reuse on later calls.
+    auto *documents = context->mutable_result(0);
+    if (documents) {
+      result->doc_list_.swap(*documents);
+    } else {
+      result->doc_list_ = context->result();
+    }
   }
 
-  if (metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -829,6 +1135,55 @@ int Index::_dense_search(const VectorData &vector_data,
         metric_->normalize(doc.mutable_score());
       }
     }
+  } else if (turbo_quantizer_ != nullptr &&
+             turbo_quantizer_->support_score_normalization()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          turbo_quantizer_->normalize_score(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        turbo_quantizer_->normalize_score(doc.mutable_score());
+      }
+    }
+  }
+  if (turbo_quantizer_) {
+    if (context->fetch_vector()) {
+      int revert_err = 0;
+      auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
+        if (revert_err) return;
+        std::string reverted_vector;
+        if (turbo_quantizer_->dequantize(vec, streamer_vector_meta_,
+                                         &reverted_vector) != 0) {
+          LOG_ERROR("Failed to dequantize vector");
+          revert_err = core::IndexError_Runtime;
+          return;
+        }
+        out->push_back(std::move(reverted_vector));
+      };
+      auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
+        out.reserve(docs.size());
+        for (auto &doc : docs) {
+          revert_one(doc.vector(), &out);
+        }
+      };
+      if (has_group_by) {
+        result->group_reverted_vector_list_.reserve(
+            result->group_doc_list_.size());
+        for (auto &group : result->group_doc_list_) {
+          std::vector<std::string> group_vectors;
+          revert_docs(*group.mutable_docs(), group_vectors);
+          result->group_reverted_vector_list_.push_back(
+              std::move(group_vectors));
+        }
+      } else {
+        revert_docs(result->doc_list_, result->reverted_vector_list_);
+      }
+      if (revert_err) return revert_err;
+    }
+    return 0;
   }
   if (reformer_) {
     if (has_group_by) {
@@ -946,7 +1301,7 @@ int Index::_sparse_search(const VectorData &vector_data,
     result->doc_list_ = std::move(context->result());
   }
 
-  if (metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -956,6 +1311,19 @@ int Index::_sparse_search(const VectorData &vector_data,
     } else {
       for (auto &doc : result->doc_list_) {
         metric_->normalize(doc.mutable_score());
+      }
+    }
+  } else if (turbo_quantizer_ != nullptr &&
+             turbo_quantizer_->support_score_normalization()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          turbo_quantizer_->normalize_score(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        turbo_quantizer_->normalize_score(doc.mutable_score());
       }
     }
   }
@@ -1048,16 +1416,65 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
+  if (converter_ != nullptr && reformer_ == nullptr) {
+    std::vector<MergeSourceIndexHolder::Source> sources;
+    sources.reserve(indexes.size());
+    for (const auto &index : indexes) {
+      auto provider = index->create_index_provider();
+      if (!provider || index->is_sparse_ ||
+          index->input_vector_meta_.data_type() !=
+              input_vector_meta_.data_type() ||
+          index->input_vector_meta_.dimension() !=
+              input_vector_meta_.dimension() ||
+          (!index->reformer_ && !index->turbo_quantizer_ &&
+           (provider->data_type() != input_vector_meta_.data_type() ||
+            provider->dimension() != input_vector_meta_.dimension() ||
+            provider->element_size() != input_vector_meta_.element_size()))) {
+        LOG_ERROR("Merge-source vector type mismatch");
+        return core::IndexError_Mismatch;
+      }
+      // Preserve the stored layout, including packed dimensions and norm tails.
+      const auto &meta = index->streamer_->meta();
+      core::IndexQueryMeta stored_meta{
+          meta.meta_type(),
+          provider->data_type(),
+          meta.unit_size(),
+          static_cast<uint32_t>(provider->dimension()),
+          index->turbo_quantizer_
+              ? static_cast<uint32_t>(index->turbo_quantizer_->type())
+              : 0,
+          meta.extra_meta_size()};
+      sources.push_back({std::move(provider), index->reformer_,
+                         index->turbo_quantizer_, std::move(stored_meta)});
+    }
+    auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
+                                                           input_vector_meta_);
+    if (holder->error() != 0) return holder->error();
+    if (holder->count() == 0) {
+      LOG_ERROR("No vectors available to train converter");
+      return core::IndexError_InvalidArgument;
+    }
+    int ret = converter_->train(holder);
+    if (holder->error() != 0) return holder->error();
+    if (ret != 0) {
+      LOG_ERROR("Failed to train converter from merge sources");
+      return ret;
+    }
+    ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
+                                          &streamer_vector_meta_, &reformer_);
+    if (ret != 0) return ret;
+    streamer_->merge_trained_meta(proxima_index_meta_);
+  }
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
-                                             reformer_,
-                                             input_vector_meta_) != 0) {
+                                             reformer_, input_vector_meta_,
+                                             turbo_quantizer_) != 0) {
     LOG_ERROR("Failed to set target streamer");
     return core::IndexError_Runtime;
   }
 
   for (const auto &index : indexes) {
-    if (reducer->feed_streamer_with_reformer(index->streamer_,
-                                             index->reformer_) != 0) {
+    if (reducer->feed_streamer_with_reformer(index->streamer_, index->reformer_,
+                                             index->turbo_quantizer_) != 0) {
       LOG_ERROR("Failed to feed streamer");
       return core::IndexError_Runtime;
     }
@@ -1073,10 +1490,24 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
 int Index::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
   float scale_factor = search_param->refiner_param->scale_factor_;
+  if (!std::isfinite(scale_factor) || scale_factor < 0) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
   if (scale_factor == 0) {
     scale_factor = 1;
+  } else if (scale_factor < 1.0f) {
+    LOG_WARN("Refine scale factor %f is less than 1, using 1 instead",
+             scale_factor);
+    scale_factor = 1;
   }
-  return floor(search_param->topk * scale_factor);
+  const float count = std::floor(search_param->topk * scale_factor);
+  if (!std::isfinite(count) ||
+      static_cast<double>(count) > (std::numeric_limits<int>::max)()) {
+    LOG_ERROR("Invalid refine scale factor or candidate count");
+    return core::IndexError_InvalidArgument;
+  }
+  return static_cast<int>(count);
 }
 
 // Set or clear group-by state on a pooled context before each search.

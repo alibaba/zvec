@@ -529,7 +529,7 @@ class SquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -548,7 +548,7 @@ class SquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16: {
         return turbo::get_distance_kernels(turbo::MetricType::kSquaredEuclidean,
@@ -582,7 +582,7 @@ class SquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve sparse distance function for query
-  MatrixSparseDistance sparse_distance(void) const override {
+  MatrixSparseDistance sparse_distance() const override {
     return reinterpret_cast<MatrixSparseDistanceHandle>(
         ailego::SquaredEuclideanSparseDistanceMatrix<float>::Compute);
   }
@@ -611,7 +611,7 @@ class SquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16: {
         return turbo::get_distance_kernels(turbo::MetricType::kSquaredEuclidean,
@@ -648,12 +648,12 @@ class SquaredEuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 
@@ -684,7 +684,7 @@ class EuclideanMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -703,7 +703,7 @@ class EuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixDistanceHandle>(
@@ -747,7 +747,7 @@ class EuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve distance function for query
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
@@ -775,12 +775,12 @@ class EuclideanMetric : public IndexMetric {
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 
@@ -812,7 +812,7 @@ class SquaredEuclideanSparseMetric : public IndexMetric {
   }
 
   //! Cleanup Metric
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -832,18 +832,18 @@ class SquaredEuclideanSparseMetric : public IndexMetric {
   }
 
   //! Retrieve sparse distance function for query
-  MatrixSparseDistance sparse_distance(void) const override {
+  MatrixSparseDistance sparse_distance() const override {
     return reinterpret_cast<MatrixSparseDistanceHandle>(
         ailego::SquaredEuclideanSparseDistanceMatrix<float>::Compute);
   }
 
   //! Retrieve params of Metric
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
   //! Retrieve query metric object of this index metric
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 

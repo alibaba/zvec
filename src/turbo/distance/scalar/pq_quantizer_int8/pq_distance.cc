@@ -46,7 +46,8 @@ void pq_sdc_int8_distance(const void *a_v, const void *b_v,
 }
 
 void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
-                                size_t num, size_t num_chunk, float *out) {
+                                size_t num, size_t num_chunk, float *out,
+                                const void ** /*extra_values*/) {
   constexpr size_t kNumCentroids = 256;
   const auto *lut = reinterpret_cast<const float *>(lut_v);
   // candidates_v is const void**, but we need const uint8_t**

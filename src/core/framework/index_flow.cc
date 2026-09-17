@@ -176,18 +176,32 @@ int IndexFlow::load_internal() {
   if (!user_reformer_) {
     const std::string &reformer_name = meta_.reformer_name();
     if (!reformer_name.empty()) {
-      reformer_ = IndexFactory::CreateReformer(reformer_name);
-      if (!reformer_) {
-        LOG_ERROR("Failed to create a index reformer with name: %s",
-                  reformer_name.c_str());
-        return IndexError_NoExist;
-      }
-      ret = reformer_->init(meta_.reformer_params());
-      if (ret < 0) {
-        LOG_ERROR("Failed to initialize index reformer %s",
-                  reformer_name.c_str());
-        reformer_ = nullptr;
-        return ret;
+      if (IndexFactory::HasQuantizer(reformer_name)) {
+        query_quantizer_ = IndexFactory::CreateQuantizer(reformer_name);
+        if (!query_quantizer_) {
+          LOG_ERROR("Failed to create quantizer %s", reformer_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = query_quantizer_->init(meta_, meta_.reformer_params());
+        if (ret != 0) {
+          LOG_ERROR("Failed to init quantizer %s", reformer_name.c_str());
+          query_quantizer_.reset();
+          return ret;
+        }
+      } else {
+        reformer_ = IndexFactory::CreateReformer(reformer_name);
+        if (!reformer_) {
+          LOG_ERROR("Failed to create a index reformer with name: %s",
+                    reformer_name.c_str());
+          return IndexError_NoExist;
+        }
+        ret = reformer_->init(meta_.reformer_params());
+        if (ret < 0) {
+          LOG_ERROR("Failed to initialize index reformer %s",
+                    reformer_name.c_str());
+          reformer_ = nullptr;
+          return ret;
+        }
       }
     }
   } else {
@@ -236,6 +250,15 @@ int IndexFlow::load_internal() {
   } else {
     // Using user searcher
     searcher_ = user_searcher_;
+    if (query_quantizer_) {
+      ret = searcher_->init(searcher_->params(), query_quantizer_);
+      if (ret < 0 && ret != IndexError_NotImplemented) {
+        LOG_ERROR("Failed to initialize user searcher %s with quantizer",
+                  searcher_->name().c_str());
+        searcher_ = nullptr;
+        return ret;
+      }
+    }
   }
 
   ret = searcher_->load(storage_, metric_);
@@ -251,7 +274,7 @@ int IndexFlow::load_internal() {
   return 0;
 }
 
-int IndexFlow::unload(void) {
+int IndexFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {
@@ -762,7 +785,7 @@ int IndexSparseFlow::load_internal() {
   return 0;
 }
 
-int IndexSparseFlow::unload(void) {
+int IndexSparseFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {

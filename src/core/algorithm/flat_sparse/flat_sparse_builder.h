@@ -35,7 +35,7 @@ class FlatSparseBuilder : public IndexBuilder {
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup the builder
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Train the data
   int train(IndexThreads::Pointer, IndexSparseHolder::Pointer holder) override;
@@ -61,7 +61,7 @@ class FlatSparseBuilder : public IndexBuilder {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 

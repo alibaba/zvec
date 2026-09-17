@@ -34,6 +34,15 @@ jobs:
     secrets:
       PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
 
+  build_wheels_macos_x64:
+    name: Build wheels on macos-15-intel (x64) for TestPyPi
+    uses: ./.github/workflows/_build_wheel_job.yml
+    with:
+      runner: macos-15-intel
+      pypi_repository_url: https://test.pypi.org/legacy/
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+
   build_wheels_windows_amd64:
     name: Build wheels on Windows (amd64) for TestPyPi
     uses: ./.github/workflows/build_wheel_on_windows.yml

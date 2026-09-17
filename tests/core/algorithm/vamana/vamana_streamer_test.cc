@@ -14,15 +14,23 @@
 #include "vamana_streamer.h"
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "vamana_context.h"
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
 #endif
+#include <array>
+#include <cstdint>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <random>
+#include <string>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/interface/constants.h>
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -39,10 +47,23 @@ namespace core {
 
 constexpr size_t kDim = 16;
 
+std::string EncodeUniformUint8Record(size_t dimension, uint32_t seed) {
+  std::string record(dimension + sizeof(uint32_t), '\0');
+  uint32_t sum_squared = 0;
+  for (size_t d = 0; d < dimension; ++d) {
+    const uint8_t code =
+        static_cast<uint8_t>((seed * 73U + d * 29U + d * seed * 3U) & 0xffU);
+    record[d] = static_cast<char>(static_cast<int>(code) - 128);
+    sum_squared += static_cast<uint32_t>(code) * code;
+  }
+  std::memcpy(record.data() + dimension, &sum_squared, sizeof(sum_squared));
+  return record;
+}
+
 class VamanaStreamerTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   IndexStreamer::Pointer CreateVamanaStreamer(
       const ailego::Params &extra_params = ailego::Params());
@@ -51,10 +72,274 @@ class VamanaStreamerTest : public testing::Test {
   static shared_ptr<IndexMeta> index_meta_ptr_;
 };
 
+TEST(VamanaQueryPrefetchTest, ResolvesSharedDefaultsFromStoredVectorSchema) {
+  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+
+  // SIFT: uniform_uint4 stores 64 B; uniform_uint7/uint8 store 128 B;
+  // int8_record stores 128 B plus its 20-B record metadata.
+  EXPECT_EQ(std::make_pair(64U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, default_offset,
+                                                  default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U),
+            VamanaContext::resolve_query_prefetch(128, 64, default_offset,
+                                                  default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U),
+            VamanaContext::resolve_query_prefetch(148, 64, default_offset,
+                                                  default_lines));
+
+  // GIST: the corresponding stored graph bodies are 480 B, 960 B, and
+  // 980 B. A separate fp16 refine payload is intentionally excluded.
+  EXPECT_EQ(std::make_pair(48U, 2U),
+            VamanaContext::resolve_query_prefetch(480, 64, default_offset,
+                                                  default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U),
+            VamanaContext::resolve_query_prefetch(960, 64, default_offset,
+                                                  default_lines));
+  EXPECT_EQ(std::make_pair(48U, 2U),
+            VamanaContext::resolve_query_prefetch(980, 80, default_offset,
+                                                  default_lines));
+}
+
+TEST(VamanaQueryPrefetchTest, ManualFieldsOverrideDefaultsIndependently) {
+  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+
+  EXPECT_EQ(std::make_pair(48U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, 48, default_lines));
+  EXPECT_EQ(std::make_pair(64U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, default_offset, 1));
+  EXPECT_EQ(std::make_pair(64U, 4U),
+            VamanaContext::resolve_query_prefetch(1920, 80, 64, 4));
+  EXPECT_EQ(std::make_pair(0U, 2U),
+            VamanaContext::resolve_query_prefetch(980, 64, 0, 0));
+  EXPECT_EQ(std::make_pair(0U, 0U), VamanaContext::resolve_query_prefetch(
+                                        0, 64, default_offset, default_lines));
+}
+
+class VamanaPrefetchContextTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    // A 960-B graph body with 64 neighbors has default query PO/PL = 48/2.
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, 240);
+    metric_ = IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_TRUE(metric_);
+    ASSERT_EQ(0, metric_->init(meta, ailego::Params()));
+    entity_ = CreateEntity(960, 64);
+    context_ =
+        std::make_unique<VamanaContext>(meta.dimension(), metric_, entity_);
+    ASSERT_EQ(0, context_->init(VamanaContext::kStreamerContext));
+  }
+
+  VamanaEntity::Pointer CreateEntity(size_t vector_size, uint32_t max_degree) {
+    auto entity = std::make_shared<VamanaContiguousStreamerEntity>(stats_);
+    entity->set_vector_size(vector_size);
+    entity->set_max_degree(max_degree);
+    return entity;
+  }
+
+  void ExpectPrefetch(uint32_t offset, uint32_t lines) const {
+    EXPECT_EQ(offset, context_->po());
+    EXPECT_EQ(lines, context_->pl());
+  }
+
+  IndexStreamer::Stats stats_;
+  IndexMetric::Pointer metric_;
+  VamanaEntity::Pointer entity_;
+  VamanaContext::Pointer context_;
+};
+
+TEST_F(VamanaPrefetchContextTest, UnchangedRequestsReuseResolvedValues) {
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  params.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  // Matching the initial requested values must still resolve a fresh context.
+  ASSERT_EQ(0, context_->update(params));
+  ExpectPrefetch(48, 2);
+
+  // Change only the fixture's metadata, without publishing an entity refresh.
+  // An unnecessary resolve would now produce 96/1 instead of the cached 48/2.
+  // This observes the shortcut without adding counters to production code.
+  entity_->set_vector_size(64);
+  entity_->set_max_degree(96);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_->update(params));
+    ExpectPrefetch(48, 2);
+  }
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(48, 2);
+  ailego::Params ef;
+  ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
+  ASSERT_EQ(0, context_->update(ef));
+  EXPECT_EQ(123U, context_->ef());
+  EXPECT_EQ(123U, context_->search_heap().topk().limit());
+  ExpectPrefetch(48, 2);
+
+  // A notified entity change must resolve even when requests are unchanged.
+  ASSERT_EQ(
+      0, context_->update_context(VamanaContext::kStreamerContext,
+                                  IndexMeta(IndexMeta::DataType::DT_FP32, 16),
+                                  metric_, entity_, 1));
+  ExpectPrefetch(96, 1);
+}
+
+TEST_F(VamanaPrefetchContextTest, UnchangedSettersKeepResolvedValues) {
+  context_->prepare_query_prefetch();
+  entity_->set_vector_size(64);
+  entity_->set_max_degree(96);
+  context_->set_po(core_interface::kDefaultPrefetchOffset);
+  context_->set_pl(core_interface::kDefaultPrefetchLines);
+  // Same requests must neither overwrite effective values nor invalidate them.
+  ExpectPrefetch(48, 2);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, DirtyValuesResolveEvenForUnchangedRequests) {
+  context_->prepare_query_prefetch();
+  context_->set_pl(4);
+  // The setter has already updated requested PL; update still needs to resolve
+  // the dependent automatic PO because the cached pair is no longer ready.
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(params));
+  ExpectPrefetch(24, 4);
+}
+
+TEST_F(VamanaPrefetchContextTest,
+       ManualOffsetEqualToResolvedAutoIsANewRequest) {
+  context_->prepare_query_prefetch();
+  ailego::Params offset;
+  offset.set(PARAM_VAMANA_STREAMER_PO, 48U);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(48, 2);
+
+  ailego::Params lines;
+  lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(48, 4);  // Manual PO stays 48 rather than becoming auto PO=24.
+  offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(24, 4);
+}
+
+TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveAutomaticOffset) {
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(48, 2);
+
+  ailego::Params lines;
+  lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(24, 4);
+
+  ailego::Params ef;
+  ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
+  ASSERT_EQ(0, context_->update(ef));
+  EXPECT_EQ(123U, context_->ef());
+  ExpectPrefetch(24, 4);
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(24, 4);
+
+  lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(48, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveManualFields) {
+  ailego::Params offset;
+  offset.set(PARAM_VAMANA_STREAMER_PO, 12U);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(12, 2);
+
+  ailego::Params lines;
+  lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(12, 4);
+
+  offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(24, 4);
+  lines.set(PARAM_VAMANA_STREAMER_PL, 1U);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(64, 1);
+
+  offset.set(PARAM_VAMANA_STREAMER_PO, 0U);
+  ASSERT_EQ(0, context_->update(offset));
+  ExpectPrefetch(0, 1);
+  lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  ASSERT_EQ(0, context_->update(lines));
+  ExpectPrefetch(0, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, ResolvesOnlyWhenPreparingAQuery) {
+  // Streamer initialization is shared with add_node and two-pass construction.
+  ExpectPrefetch(8, 0);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+  context_->clear();
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+
+  VamanaContext search_context(240, metric_, CreateEntity(960, 64));
+  ASSERT_EQ(0, search_context.init(VamanaContext::kSearcherContext));
+  EXPECT_EQ(48U, search_context.po());
+  EXPECT_EQ(2U, search_context.pl());
+}
+
+TEST_F(VamanaPrefetchContextTest, SettersInvalidateResolvedValues) {
+  context_->prepare_query_prefetch();
+  context_->set_pl(4);
+  EXPECT_EQ(4U, context_->pl());
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(24, 4);
+
+  context_->set_po(12);
+  EXPECT_EQ(12U, context_->po());
+  ASSERT_EQ(0, context_->update(ailego::Params()));
+  ExpectPrefetch(12, 4);
+
+  context_->set_po(core_interface::kDefaultPrefetchOffset);
+  context_->set_pl(core_interface::kDefaultPrefetchLines);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+}
+
+TEST_F(VamanaPrefetchContextTest, EntityRefreshResolvesOriginalRequests) {
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(48, 2);
+  ASSERT_EQ(
+      0, context_->update_context(VamanaContext::kStreamerContext,
+                                  IndexMeta(IndexMeta::DataType::DT_FP32, 16),
+                                  metric_, CreateEntity(64, 96), 1));
+  ExpectPrefetch(96, 1);
+
+  // Preserve explicit requests too, not their schema-clamped effective values.
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_PO, 128U);
+  params.set(PARAM_VAMANA_STREAMER_PL, 16U);
+  ASSERT_EQ(0, context_->update(params));
+  ExpectPrefetch(96, 1);
+  ASSERT_EQ(
+      0, context_->update_context(VamanaContext::kStreamerContext,
+                                  IndexMeta(IndexMeta::DataType::DT_FP32, 1024),
+                                  metric_, CreateEntity(4096, 128), 2));
+  ExpectPrefetch(128, 16);
+}
+
+TEST_F(VamanaPrefetchContextTest, EntityRefreshKeepsBuildDefaultsUnresolved) {
+  ASSERT_EQ(
+      0, context_->update_context(VamanaContext::kStreamerContext,
+                                  IndexMeta(IndexMeta::DataType::DT_FP32, 16),
+                                  metric_, CreateEntity(64, 96), 1));
+  ExpectPrefetch(8, 0);
+  context_->prepare_query_prefetch();
+  ExpectPrefetch(96, 1);
+}
+
 std::string VamanaStreamerTest::dir_("vamana_streamer_test_dir/");
 shared_ptr<IndexMeta> VamanaStreamerTest::index_meta_ptr_;
 
-void VamanaStreamerTest::SetUp(void) {
+void VamanaStreamerTest::SetUp() {
   index_meta_ptr_.reset(new (nothrow)
                             IndexMeta(IndexMeta::DataType::DT_FP32, kDim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, ailego::Params());
@@ -62,7 +347,7 @@ void VamanaStreamerTest::SetUp(void) {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-void VamanaStreamerTest::TearDown(void) {
+void VamanaStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
@@ -277,7 +562,10 @@ TEST_F(VamanaStreamerTest, TestOpenClose) {
 }
 
 TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
-  constexpr size_t dim = 32;
+  // static: gives dim static storage duration so the addVector lambda below
+  // needs no capture for it (MSVC otherwise demands one, C3493, while Clang
+  // warns the capture is unused).
+  constexpr size_t static dim = 32;
   IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
 
@@ -301,7 +589,7 @@ TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
   ASSERT_EQ(0, storage->open(dir_ + "TestKnnMultiThread", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer, dim](int baseKey, size_t addCnt) {
+  auto addVector = [&streamer](int baseKey, size_t addCnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
     size_t succAdd = 0;
@@ -458,6 +746,452 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
   }
   float recall = totalHits * 1.0f / totalCnts;
   EXPECT_GT(recall, 0.90f);
+}
+
+TEST_F(VamanaStreamerTest, UniformUint4MedoidUsesUnpackedCoordinates) {
+  constexpr uint32_t kEncodedDimension = 64;
+  ailego::Params metric_params;
+  metric_params.set("proxima.uniform_uint4.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint4", 0, metric_params);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+
+  // Both inputs have node 1 as their nearest point to the nibble centroid.
+  // Treating bytes as signed or unsigned coordinates instead selects node 0
+  // in the first input. The second additionally exercises a set sign bit.
+  const std::array<std::array<uint8_t, 3>, 2> inputs{
+      {{{0x0f, 0x00, 0x10}}, {{0x00, 0x44, 0x88}}}};
+  for (size_t input = 0; input < inputs.size(); ++input) {
+    for (bool two_pass : {false, true}) {
+      SCOPED_TRACE(input);
+      SCOPED_TRACE(two_pass);
+      ailego::Params params;
+      params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 8U);
+      params.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass);
+      auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
+      ASSERT_TRUE(streamer);
+      ASSERT_EQ(0, streamer->init(meta, params));
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_TRUE(storage);
+      ASSERT_EQ(0, storage->init(ailego::Params()));
+      const std::string path = dir_ + "uint4_medoid_" + std::to_string(input) +
+                               (two_pass ? "_two" : "_one");
+      ASSERT_EQ(0, storage->open(path, true));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto context = streamer->create_context();
+      ASSERT_TRUE(context);
+      std::vector<std::string> records;
+      for (uint32_t i = 0; i < 3; ++i) {
+        std::string record(kEncodedDimension,
+                           static_cast<char>(inputs[input][i]));
+        ASSERT_EQ(0, streamer->add_impl(i, record.data(), query_meta, context));
+        records.push_back(std::move(record));
+      }
+      auto *vamana_streamer = dynamic_cast<VamanaStreamer *>(streamer.get());
+      ASSERT_NE(nullptr, vamana_streamer);
+      ASSERT_EQ(0, vamana_streamer->finalize_build());
+      context = streamer->create_context();
+      auto *vamana_context = dynamic_cast<VamanaContext *>(context.get());
+      ASSERT_NE(nullptr, vamana_context);
+      if (two_pass) {
+        EXPECT_EQ(1U, vamana_context->get_entity().entry_point());
+      }
+      auto dumper = IndexFactory::CreateDumper("FileDumper");
+      ASSERT_TRUE(dumper);
+      ASSERT_EQ(0, dumper->create(path + ".dump"));
+      ASSERT_EQ(0, streamer->dump(dumper));
+      ASSERT_EQ(0, dumper->close());
+      context = streamer->create_context();
+      vamana_context = dynamic_cast<VamanaContext *>(context.get());
+      ASSERT_NE(nullptr, vamana_context);
+      EXPECT_EQ(1U, vamana_context->get_entity().entry_point());
+      for (uint32_t i = 0; i < records.size(); ++i) {
+        EXPECT_EQ(0, std::memcmp(records[i].data(),
+                                 vamana_context->get_entity().get_vector(i),
+                                 kEncodedDimension));
+      }
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, streamer->close());
+
+      params.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+      auto searcher = IndexFactory::CreateStreamer("VamanaStreamer");
+      ASSERT_TRUE(searcher);
+      ASSERT_EQ(0, searcher->init(meta, params));
+      ASSERT_EQ(0, searcher->open(storage));
+      auto search_context = searcher->create_context();
+      auto *contiguous_context =
+          dynamic_cast<VamanaContext *>(search_context.get());
+      ASSERT_NE(nullptr, contiguous_context);
+      EXPECT_EQ(1U, contiguous_context->get_entity().entry_point());
+      ASSERT_EQ(0, searcher->close());
+    }
+  }
+}
+
+TEST_F(VamanaStreamerTest, UniformUint8MedoidExcludesNormTail) {
+  constexpr uint32_t kDimension = 128;
+  constexpr uint32_t kEncodedDimension = kDimension + sizeof(uint32_t);
+  ailego::Params metric_params;
+  metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+
+  for (bool two_pass : {false, true}) {
+    SCOPED_TRACE(two_pass);
+    ailego::Params params;
+    params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 8U);
+    params.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass);
+    auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
+    ASSERT_TRUE(streamer);
+    ASSERT_EQ(0, streamer->init(meta, params));
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    const std::string path = dir_ + (two_pass ? "medoid_two" : "medoid_one");
+    ASSERT_EQ(0, storage->open(path, true));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    auto *vamana_context = dynamic_cast<VamanaContext *>(context.get());
+    ASSERT_NE(nullptr, vamana_context);
+
+    // Bodies 0, 1, 2 have centroid 1. Including their valid norms (0, 128,
+    // 512) as signed bytes incorrectly selects node 0 instead of node 1.
+    std::vector<std::string> records;
+    for (uint32_t i = 0; i < 3; ++i) {
+      std::string record(kEncodedDimension,
+                         static_cast<char>(static_cast<int>(i) - 128));
+      const uint32_t norm = kDimension * i * i;
+      std::memcpy(record.data() + kDimension, &norm, sizeof(norm));
+      ASSERT_EQ(0, streamer->add_impl(i, record.data(), query_meta, context));
+      records.push_back(std::move(record));
+    }
+    auto *vamana_streamer = dynamic_cast<VamanaStreamer *>(streamer.get());
+    ASSERT_NE(nullptr, vamana_streamer);
+    ASSERT_EQ(0, vamana_streamer->finalize_build());
+    context = streamer->create_context();
+    vamana_context = dynamic_cast<VamanaContext *>(context.get());
+    ASSERT_NE(nullptr, vamana_context);
+    if (two_pass) {
+      EXPECT_EQ(1U, vamana_context->get_entity().entry_point());
+    }
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_TRUE(dumper);
+    ASSERT_EQ(0, dumper->create(path + ".dump"));
+    ASSERT_EQ(0, streamer->dump(dumper));
+    ASSERT_EQ(0, dumper->close());
+    context = streamer->create_context();
+    vamana_context = dynamic_cast<VamanaContext *>(context.get());
+    ASSERT_NE(nullptr, vamana_context);
+    EXPECT_EQ(1U, vamana_context->get_entity().entry_point());
+    // Selecting the entry point must not rewrite vector bodies or norms.
+    for (uint32_t i = 0; i < records.size(); ++i) {
+      EXPECT_EQ(0, std::memcmp(records[i].data(),
+                               vamana_context->get_entity().get_vector(i),
+                               kEncodedDimension));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+
+    params.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+    auto searcher = IndexFactory::CreateStreamer("VamanaStreamer");
+    ASSERT_TRUE(searcher);
+    ASSERT_EQ(0, searcher->init(meta, params));
+    ASSERT_EQ(0, searcher->open(storage));
+    auto search_context = searcher->create_context();
+    auto *contiguous_context =
+        dynamic_cast<VamanaContext *>(search_context.get());
+    ASSERT_NE(nullptr, contiguous_context);
+    EXPECT_EQ(1U, contiguous_context->get_entity().entry_point());
+    ASSERT_EQ(0, searcher->close());
+  }
+}
+
+TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
+  constexpr size_t kOriginalDimension = 128;
+  constexpr size_t kEncodedDimension = kOriginalDimension + sizeof(uint32_t);
+  constexpr size_t kCount = 192;
+  constexpr uint64_t kKeyBase = 10000;
+
+  ailego::Params metric_params;
+  metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+
+  const auto create_streamer = [&](bool contiguous) {
+    ailego::Params params;
+    params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 32U);
+    params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE,
+               static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+    params.set(PARAM_VAMANA_STREAMER_EF, static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    params.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, contiguous);
+    auto result = IndexFactory::CreateStreamer("VamanaStreamer");
+    if (result == nullptr || result->init(meta, params) != 0) {
+      return IndexStreamer::Pointer{};
+    }
+    return result;
+  };
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguousPackedLayout.index", true));
+
+  {
+    auto builder = create_streamer(false);
+    ASSERT_TRUE(builder);
+    ASSERT_EQ(0, builder->open(storage));
+    auto context = builder->create_context();
+    ASSERT_TRUE(context);
+    auto *build_context = dynamic_cast<VamanaContext *>(context.get());
+    ASSERT_NE(nullptr, build_context);
+    EXPECT_EQ(8U, build_context->po());
+    EXPECT_EQ(0U, build_context->pl());
+    IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+    for (size_t i = 0; i < kCount; ++i) {
+      const auto record = EncodeUniformUint8Record(kOriginalDimension,
+                                                   static_cast<uint32_t>(i));
+      ASSERT_EQ(0, builder->add_impl(kKeyBase + i, record.data(), query_meta,
+                                     context));
+    }
+    EXPECT_EQ(8U, build_context->po());
+    EXPECT_EQ(0U, build_context->pl());
+    ASSERT_EQ(0, builder->flush(0));
+    ASSERT_EQ(0, builder->close());
+  }
+
+  auto searcher = create_streamer(true);
+  ASSERT_TRUE(searcher);
+  ASSERT_EQ(0, searcher->open(storage));
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_INT8, kEncodedDimension);
+  for (const size_t probe : {size_t{0}, size_t{17}, size_t{91}, kCount - 1}) {
+    const uint64_t expected_key = kKeyBase + probe;
+    const auto query = EncodeUniformUint8Record(kOriginalDimension,
+                                                static_cast<uint32_t>(probe));
+
+    auto graph_context = searcher->create_context();
+    ASSERT_TRUE(graph_context);
+    graph_context->set_topk(1);
+    ASSERT_EQ(0,
+              searcher->search_impl(query.data(), query_meta, graph_context));
+    auto *query_context = dynamic_cast<VamanaContext *>(graph_context.get());
+    ASSERT_NE(nullptr, query_context);
+    // No update() call: first graph search must still resolve query defaults.
+    EXPECT_EQ(32U, query_context->po());
+    EXPECT_EQ(2U, query_context->pl());
+    ASSERT_EQ(1U, graph_context->result().size());
+    EXPECT_EQ(expected_key, graph_context->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, graph_context->result()[0].score());
+
+    // A valid filter selects the dual-heap graph path. Keep only the exact
+    // probe in the result while still allowing traversal through every node.
+    auto filtered_context = searcher->create_context();
+    ASSERT_TRUE(filtered_context);
+    filtered_context->set_topk(1);
+    filtered_context->set_filter(
+        [expected_key](uint64_t key) { return key != expected_key; });
+    ASSERT_EQ(
+        0, searcher->search_impl(query.data(), query_meta, filtered_context));
+    auto *filtered_query_context =
+        dynamic_cast<VamanaContext *>(filtered_context.get());
+    ASSERT_NE(nullptr, filtered_query_context);
+    EXPECT_EQ(32U, filtered_query_context->po());
+    EXPECT_EQ(2U, filtered_query_context->pl());
+    ASSERT_EQ(1U, filtered_context->result().size());
+    EXPECT_EQ(expected_key, filtered_context->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, filtered_context->result()[0].score());
+
+    auto brute_force_context = searcher->create_context();
+    ASSERT_TRUE(brute_force_context);
+    brute_force_context->set_topk(1);
+    ASSERT_EQ(0, searcher->search_bf_impl(query.data(), query_meta,
+                                          brute_force_context));
+    ASSERT_EQ(1U, brute_force_context->result().size());
+    EXPECT_EQ(expected_key, brute_force_context->result()[0].key());
+    EXPECT_FLOAT_EQ(0.0f, brute_force_context->result()[0].score());
+  }
+
+  ASSERT_EQ(0, searcher->close());
+}
+
+TEST_F(VamanaStreamerTest, TestContiguousKeepsInt8RecordTailInline) {
+  constexpr size_t kOriginalDimension = 128;
+  constexpr size_t kCount = 96;
+  constexpr uint64_t kKeyBase = 20000;
+
+  IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kOriginalDimension);
+  raw_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+
+  auto converter = IndexFactory::CreateConverter("Int8StreamingConverter");
+  ASSERT_TRUE(converter);
+  ASSERT_EQ(0, converter->init(raw_meta, ailego::Params()));
+  const IndexMeta record_meta = converter->meta();
+  ASSERT_GT(record_meta.element_size(), kOriginalDimension);
+
+  auto metric = IndexFactory::CreateMetric(record_meta.metric_name());
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(record_meta, record_meta.metric_params()));
+  EXPECT_EQ(0U, metric->extra_values_size_per_vector());
+
+  auto reformer = IndexFactory::CreateReformer(record_meta.reformer_name());
+  ASSERT_TRUE(reformer);
+  ASSERT_EQ(0, reformer->init(record_meta.reformer_params()));
+
+  const auto create_streamer = [&](bool contiguous) {
+    ailego::Params params;
+    params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 32U);
+    params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE,
+               static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+    params.set(PARAM_VAMANA_STREAMER_EF, static_cast<uint32_t>(kCount));
+    params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    params.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, contiguous);
+    auto result = IndexFactory::CreateStreamer("VamanaStreamer");
+    if (result == nullptr || result->init(record_meta, params) != 0) {
+      return IndexStreamer::Pointer{};
+    }
+    return result;
+  };
+
+  std::vector<std::vector<float>> vectors(
+      kCount, std::vector<float>(kOriginalDimension));
+  for (size_t i = 0; i < kCount; ++i) {
+    uint32_t state = static_cast<uint32_t>(i + 1);
+    for (size_t d = 0; d < kOriginalDimension; ++d) {
+      state = state * 1664525U + 1013904223U;
+      vectors[i][d] =
+          static_cast<float>(static_cast<int32_t>(state >> 8U)) / 8388608.0f;
+    }
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguousInt8Record.index", true));
+
+  IndexQueryMeta raw_query_meta(IndexMeta::DataType::DT_FP32,
+                                kOriginalDimension);
+  {
+    auto builder = create_streamer(false);
+    ASSERT_TRUE(builder);
+    ASSERT_EQ(0, builder->open(storage));
+    auto context = builder->create_context();
+    ASSERT_TRUE(context);
+    for (size_t i = 0; i < kCount; ++i) {
+      std::string record;
+      IndexQueryMeta encoded_meta;
+      ASSERT_EQ(0, reformer->convert(vectors[i].data(), raw_query_meta, &record,
+                                     &encoded_meta));
+      ASSERT_EQ(record_meta.element_size(), record.size());
+      ASSERT_EQ(0, builder->add_impl(kKeyBase + i, record.data(), encoded_meta,
+                                     context));
+    }
+    ASSERT_EQ(0, builder->flush(0));
+    ASSERT_EQ(0, builder->close());
+  }
+
+  auto searcher = create_streamer(true);
+  ASSERT_TRUE(searcher);
+  ASSERT_EQ(0, searcher->open(storage));
+  const std::array<size_t, 4> probes{{0, 17, 53, kCount - 1}};
+  for (size_t probe : probes) {
+    std::string query;
+    IndexQueryMeta query_meta;
+    ASSERT_EQ(0, reformer->transform(vectors[probe].data(), raw_query_meta,
+                                     &query, &query_meta));
+    ASSERT_EQ(record_meta.element_size(), query.size());
+
+    auto graph_context = searcher->create_context();
+    ASSERT_TRUE(graph_context);
+    graph_context->set_topk(1);
+    ASSERT_EQ(0,
+              searcher->search_impl(query.data(), query_meta, graph_context));
+    ASSERT_EQ(1U, graph_context->result().size());
+    EXPECT_EQ(kKeyBase + probe, graph_context->result()[0].key());
+    EXPECT_NEAR(0.0f, graph_context->result()[0].score(), 1e-4f);
+
+    auto brute_force_context = searcher->create_context();
+    ASSERT_TRUE(brute_force_context);
+    brute_force_context->set_topk(1);
+    ASSERT_EQ(0, searcher->search_bf_impl(query.data(), query_meta,
+                                          brute_force_context));
+    ASSERT_EQ(1U, brute_force_context->result().size());
+    EXPECT_EQ(kKeyBase + probe, brute_force_context->result()[0].key());
+    EXPECT_NEAR(0.0f, brute_force_context->result()[0].score(), 1e-4f);
+  }
+
+  ASSERT_EQ(0, searcher->close());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(VamanaStreamerTest, TestContiguousPackedGraphTracksNeighborUpdates) {
+  constexpr uint32_t kMaxDegree = 8;
+  constexpr uint32_t kCount = 12;
+
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, kMaxDegree);
+  params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, kCount);
+  params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+  auto builder = CreateVamanaStreamer(params);
+  ASSERT_TRUE(builder);
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(
+      0, storage->open(dir_ + "TestContiguousPackedGraphUpdates.index", true));
+  ASSERT_EQ(0, builder->open(storage));
+
+  auto context = builder->create_context();
+  ASSERT_TRUE(context);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDim);
+  for (uint32_t i = 0; i < kCount; ++i) {
+    std::array<float, kDim> vector{};
+    for (size_t d = 0; d < vector.size(); ++d) {
+      vector[d] = static_cast<float>(i * 17U + d);
+    }
+    ASSERT_EQ(0, builder->add_impl(i, vector.data(), query_meta, context));
+  }
+  ASSERT_EQ(0, builder->flush(0));
+  ASSERT_EQ(0, builder->close());
+  builder.reset();
+
+  IndexStreamer::Stats stats;
+  VamanaContiguousStreamerEntity entity(stats);
+  entity.set_use_key_info_map(true);
+  entity.set_vector_size(index_meta_ptr_->element_size());
+  entity.set_max_degree(kMaxDegree);
+  entity.set_search_list_size(kCount);
+  entity.set_max_occlusion_size(VamanaEntity::kDefaultMaxOcclusionSize);
+  ASSERT_EQ(0, entity.init(kCount));
+  ASSERT_EQ(0, entity.open(storage, 0, false));
+  ASSERT_EQ(0, entity.build_contiguous_memory());
+
+  const std::vector<std::pair<node_id_t, dist_t>> replacement = {{1U, 1.0F},
+                                                                 {2U, 2.0F}};
+  ASSERT_EQ(0, entity.update_neighbors(0U, replacement));
+  auto neighbors = entity.get_neighbors(0U);
+  ASSERT_EQ(2U, neighbors.size());
+  EXPECT_EQ(1U, neighbors[0]);
+  EXPECT_EQ(2U, neighbors[1]);
+
+  entity.add_neighbor(0U, 2U, 3U);
+  neighbors = entity.get_neighbors(0U);
+  ASSERT_EQ(3U, neighbors.size());
+  EXPECT_EQ(3U, neighbors[2]);
+
+  entity.degrade_to_mmap();
+  neighbors = entity.get_neighbors(0U);
+  ASSERT_EQ(3U, neighbors.size());
+  EXPECT_EQ(1U, neighbors[0]);
+  EXPECT_EQ(2U, neighbors[1]);
+  EXPECT_EQ(3U, neighbors[2]);
+  ASSERT_EQ(0, entity.close());
 }
 
 TEST_F(VamanaStreamerTest, TestContiguousMultiThreadSearch) {
@@ -783,6 +1517,46 @@ TEST_F(VamanaStreamerTest, TestConcurrentBuild) {
   ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, search_ctx));
   auto &result = search_ctx->result();
   ASSERT_GT(result.size(), 0UL);
+}
+
+TEST_F(VamanaStreamerTest, TestBruteForceByPrimaryKeysHonorsFilter) {
+  auto streamer = CreateVamanaStreamer();
+  ASSERT_TRUE(streamer);
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "PrimaryKeyFilter", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto context = streamer->create_context();
+  ASSERT_TRUE(context);
+  context->set_topk(2);
+  IndexQueryMeta meta(IndexMeta::DataType::DT_FP32, kDim);
+  std::array<float, kDim> query{};
+  std::array<float, kDim> other{};
+  other.fill(1.0f);
+  ASSERT_EQ(0, streamer->add_impl(10, query.data(), meta, context));
+  ASSERT_EQ(0, streamer->add_impl(20, other.data(), meta, context));
+  const std::vector<std::vector<uint64_t>> keys{{10, 20, 999}};
+
+  // A primary-key restriction does not replace the deletion/filter callback.
+  context->set_filter([](uint64_t key) { return key == 10; });
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
+  ASSERT_EQ(1U, context->result().size());
+  EXPECT_EQ(20U, context->result()[0].key());
+  EXPECT_FLOAT_EQ(static_cast<float>(kDim), context->result()[0].score());
+
+  context->set_filter([](uint64_t) { return true; });
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
+  EXPECT_TRUE(context->result().empty());
+
+  context->reset_filter();
+  ASSERT_EQ(
+      0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
+  ASSERT_EQ(2U, context->result().size());
+  EXPECT_EQ(10U, context->result()[0].key());
 }
 
 TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {

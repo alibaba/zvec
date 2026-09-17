@@ -120,24 +120,24 @@ struct IndexFormat {
     }
 
     //! Retrieve pointer of data
-    const void *data(void) const {
+    const void *data() const {
       return buffer_.data();
     }
 
     //! Retrieve size of data
-    size_t size(void) const {
+    size_t size() const {
       return buffer_.size();
     }
 
     //! Retrieve crc of buffer
-    uint32_t crc(void) const {
+    uint32_t crc() const {
       return ailego::Crc32c::Hash(buffer_.data(), buffer_.size(), 0);
     }
 
-   private:
     //! Disable them
-    SegmentMetaBuffer(void) = delete;
+    SegmentMetaBuffer() = delete;
 
+   private:
     //! Members
     std::string buffer_{};
     size_t offset_{0u};

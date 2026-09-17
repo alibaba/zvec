@@ -27,6 +27,9 @@
 #ifndef HWCAP_ASIMD
 #define HWCAP_ASIMD (1 << 1)
 #endif
+#ifndef HWCAP_ASIMDHP
+#define HWCAP_ASIMDHP (1 << 10)
+#endif
 #endif
 
 namespace zvec {
@@ -43,7 +46,7 @@ namespace internal {
 CpuFeatures::CpuFlags CpuFeatures::flags_;
 
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-CpuFeatures::CpuFlags::CpuFlags(void)
+CpuFeatures::CpuFlags::CpuFlags()
     : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
   int l1[4] = {0, 0, 0, 0};
   int l7[4] = {0, 0, 0, 0};
@@ -57,7 +60,7 @@ CpuFeatures::CpuFlags::CpuFlags(void)
   L7_EDX = l7[3];
 }
 #elif defined(__x86_64__) || defined(__i386__)
-CpuFeatures::CpuFlags::CpuFlags(void)
+CpuFeatures::CpuFlags::CpuFlags()
     : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
   uint32_t eax, ebx, ecx, edx;
 
@@ -73,277 +76,277 @@ CpuFeatures::CpuFlags::CpuFlags(void)
   }
 }
 #else
-CpuFeatures::CpuFlags::CpuFlags(void)
+CpuFeatures::CpuFlags::CpuFlags()
     : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {}
 #endif
 
 //! 16-bit FP conversions
-bool CpuFeatures::F16C(void) {
+bool CpuFeatures::F16C() {
   return !!(flags_.L1_ECX & (1u << 29));
 }
 
 //! Multimedia Extensions
-bool CpuFeatures::MMX(void) {
+bool CpuFeatures::MMX() {
   return !!(flags_.L1_EDX & (1u << 23));
 }
 
 //! Streaming SIMD Extensions
-bool CpuFeatures::SSE(void) {
+bool CpuFeatures::SSE() {
   return !!(flags_.L1_EDX & (1u << 25));
 }
 
 //! Streaming SIMD Extensions 2
-bool CpuFeatures::SSE2(void) {
+bool CpuFeatures::SSE2() {
   return !!(flags_.L1_EDX & (1u << 26));
 }
 
 //! Streaming SIMD Extensions 3
-bool CpuFeatures::SSE3(void) {
+bool CpuFeatures::SSE3() {
   return !!(flags_.L1_ECX & (1u << 0));
 }
 
 //! Supplemental Streaming SIMD Extensions 3
-bool CpuFeatures::SSSE3(void) {
+bool CpuFeatures::SSSE3() {
   return !!(flags_.L1_ECX & (1u << 9));
 }
 
 //! Streaming SIMD Extensions 4.1
-bool CpuFeatures::SSE4_1(void) {
+bool CpuFeatures::SSE4_1() {
   return !!(flags_.L1_ECX & (1u << 19));
 }
 
 //! Streaming SIMD Extensions 4.2
-bool CpuFeatures::SSE4_2(void) {
+bool CpuFeatures::SSE4_2() {
   return !!(flags_.L1_ECX & (1u << 20));
 }
 
 //! Advanced Vector Extensions
-bool CpuFeatures::AVX(void) {
+bool CpuFeatures::AVX() {
   return !!(flags_.L1_ECX & (1u << 28));
 }
 
 //! Advanced Vector Extensions 2
-bool CpuFeatures::AVX2(void) {
+bool CpuFeatures::AVX2() {
   return !!(flags_.L7_EBX & (1u << 5));
 }
 
 //! AVX-512 Foundation
-bool CpuFeatures::AVX512F(void) {
+bool CpuFeatures::AVX512F() {
   return !!(flags_.L7_EBX & (1u << 16));
 }
 
 //! AVX-512 DQ (Double/Quad granular) Instructions
-bool CpuFeatures::AVX512DQ(void) {
+bool CpuFeatures::AVX512DQ() {
   return !!(flags_.L7_EBX & (1u << 17));
 }
 
 //! AVX-512 Prefetch
-bool CpuFeatures::AVX512PF(void) {
+bool CpuFeatures::AVX512PF() {
   return !!(flags_.L7_EBX & (1u << 26));
 }
 
 //! AVX-512 Exponential and Reciprocal
-bool CpuFeatures::AVX512ER(void) {
+bool CpuFeatures::AVX512ER() {
   return !!(flags_.L7_EBX & (1u << 27));
 }
 
 //! AVX-512 Conflict Detection
-bool CpuFeatures::AVX512CD(void) {
+bool CpuFeatures::AVX512CD() {
   return !!(flags_.L7_EBX & (1u << 28));
 }
 
 //! AVX-512 BW (Byte/Word granular) Instructions
-bool CpuFeatures::AVX512BW(void) {
+bool CpuFeatures::AVX512BW() {
   return !!(flags_.L7_EBX & (1u << 30));
 }
 
 //! AVX-512 VL (128/256 Vector Length) Extensions
-bool CpuFeatures::AVX512VL(void) {
+bool CpuFeatures::AVX512VL() {
   return !!(flags_.L7_EBX & (1u << 31));
 }
 
 //! AVX-512 Integer Fused Multiply-Add instructions
-bool CpuFeatures::AVX512_IFMA(void) {
+bool CpuFeatures::AVX512_IFMA() {
   return !!(flags_.L7_EBX & (1u << 21));
 }
 
 //! AVX512 Vector Bit Manipulation instructions
-bool CpuFeatures::AVX512_VBMI(void) {
+bool CpuFeatures::AVX512_VBMI() {
   return !!(flags_.L7_ECX & (1u << 1));
 }
 
 //! Additional AVX512 Vector Bit Manipulation Instructions
-bool CpuFeatures::AVX512_VBMI2(void) {
+bool CpuFeatures::AVX512_VBMI2() {
   return !!(flags_.L7_ECX & (1u << 6));
 }
 
 //! Vector Neural Network Instructions
-bool CpuFeatures::AVX512_VNNI(void) {
+bool CpuFeatures::AVX512_VNNI() {
   return !!(flags_.L7_ECX & (1u << 11));
 }
 
 //! Support for VPOPCNT[B,W] and VPSHUF-BITQMB instructions
-bool CpuFeatures::AVX512_BITALG(void) {
+bool CpuFeatures::AVX512_BITALG() {
   return !!(flags_.L7_ECX & (1u << 12));
 }
 
 //! POPCNT for vectors of DW/QW
-bool CpuFeatures::AVX512_VPOPCNTDQ(void) {
+bool CpuFeatures::AVX512_VPOPCNTDQ() {
   return !!(flags_.L7_ECX & (1u << 14));
 }
 
 //! AVX-512 Neural Network Instructions
-bool CpuFeatures::AVX512_4VNNIW(void) {
+bool CpuFeatures::AVX512_4VNNIW() {
   return !!(flags_.L7_EDX & (1u << 2));
 }
 
 //! AVX-512 Multiply Accumulation Single precision
-bool CpuFeatures::AVX512_4FMAPS(void) {
+bool CpuFeatures::AVX512_4FMAPS() {
   return !!(flags_.L7_EDX & (1u << 3));
 }
 
 //! AVX-512 FP16 instructions
-bool CpuFeatures::AVX512_FP16(void) {
+bool CpuFeatures::AVX512_FP16() {
   return !!(flags_.L7_EDX & (1u << 23));
 }
 
 //! CMPXCHG8 instruction
-bool CpuFeatures::CX8(void) {
+bool CpuFeatures::CX8() {
   return !!(flags_.L1_EDX & (1u << 8));
 }
 
 //! CMPXCHG16B instruction
-bool CpuFeatures::CX16(void) {
+bool CpuFeatures::CX16() {
   return !!(flags_.L1_ECX & (1u << 13));
 }
 
 //! PCLMULQDQ instruction
-bool CpuFeatures::PCLMULQDQ(void) {
+bool CpuFeatures::PCLMULQDQ() {
   return !!(flags_.L1_ECX & (1u << 1));
 }
 
 //! Carry-Less Multiplication Double Quadword
-bool CpuFeatures::VPCLMULQDQ(void) {
+bool CpuFeatures::VPCLMULQDQ() {
   return !!(flags_.L7_ECX & (1u << 10));
 }
 
 //! CMOV instructions (plus FCMOVcc, FCOMI with FPU)
-bool CpuFeatures::CMOV(void) {
+bool CpuFeatures::CMOV() {
   return !!(flags_.L1_EDX & (1u << 15));
 }
 
 //! MOVBE instruction
-bool CpuFeatures::MOVBE(void) {
+bool CpuFeatures::MOVBE() {
   return !!(flags_.L1_ECX & (1u << 22));
 }
 
 //! Enhanced REP MOVSB/STOSB instructions
-bool CpuFeatures::ERMS(void) {
+bool CpuFeatures::ERMS() {
   return !!(flags_.L7_EBX & (1u << 9));
 }
 
 //! POPCNT instruction
-bool CpuFeatures::POPCNT(void) {
+bool CpuFeatures::POPCNT() {
   return !!(flags_.L1_ECX & (1u << 23));
 }
 
 //! XSAVE/XRSTOR/XSETBV/XGETBV instructions
-bool CpuFeatures::XSAVE(void) {
+bool CpuFeatures::XSAVE() {
   return !!(flags_.L1_ECX & (1u << 26));
 }
 
 //! Fused multiply-add
-bool CpuFeatures::FMA(void) {
+bool CpuFeatures::FMA() {
   return !!(flags_.L1_ECX & (1u << 12));
 }
 
 //! ADCX and ADOX instructions
-bool CpuFeatures::ADX(void) {
+bool CpuFeatures::ADX() {
   return !!(flags_.L7_EBX & (1u << 19));
 }
 
 //! Galois Field New Instructions
-bool CpuFeatures::GFNI(void) {
+bool CpuFeatures::GFNI() {
   return !!(flags_.L7_ECX & (1u << 8));
 }
 
 //! AES instructions
-bool CpuFeatures::AES(void) {
+bool CpuFeatures::AES() {
   return !!(flags_.L1_ECX & (1u << 25));
 }
 
 //! Vector AES
-bool CpuFeatures::VAES(void) {
+bool CpuFeatures::VAES() {
   return !!(flags_.L7_ECX & (1u << 9));
 }
 
 //! RDSEED instruction
-bool CpuFeatures::RDSEED(void) {
+bool CpuFeatures::RDSEED() {
   return !!(flags_.L7_EBX & (1u << 18));
 }
 
 //! RDRAND instruction
-bool CpuFeatures::RDRAND(void) {
+bool CpuFeatures::RDRAND() {
   return !!(flags_.L1_ECX & (1u << 30));
 }
 
 //! SHA1/SHA256 Instruction Extensions
-bool CpuFeatures::SHA(void) {
+bool CpuFeatures::SHA() {
   return !!(flags_.L7_EBX & (1u << 29));
 }
 
 //! 1st group bit manipulation extensions
-bool CpuFeatures::BMI1(void) {
+bool CpuFeatures::BMI1() {
   return !!(flags_.L7_EBX & (1u << 3));
 }
 
 //! 2nd group bit manipulation extensions
-bool CpuFeatures::BMI2(void) {
+bool CpuFeatures::BMI2() {
   return !!(flags_.L7_EBX & (1u << 8));
 }
 
 //! CLFLUSH instruction
-bool CpuFeatures::CLFLUSH(void) {
+bool CpuFeatures::CLFLUSH() {
   return !!(flags_.L1_EDX & (1u << 19));
 }
 
 //! CLFLUSHOPT instruction
-bool CpuFeatures::CLFLUSHOPT(void) {
+bool CpuFeatures::CLFLUSHOPT() {
   return !!(flags_.L7_EBX & (1u << 23));
 }
 
 //! CLWB instruction
-bool CpuFeatures::CLWB(void) {
+bool CpuFeatures::CLWB() {
   return !!(flags_.L7_EBX & (1u << 24));
 }
 
 //! RDPID instruction
-bool CpuFeatures::RDPID(void) {
+bool CpuFeatures::RDPID() {
   return !!(flags_.L7_ECX & (1u << 22));
 }
 
 //! Onboard FPU
-bool CpuFeatures::FPU(void) {
+bool CpuFeatures::FPU() {
   return !!(flags_.L1_EDX & (1u << 0));
 }
 
 //! Hyper-Threading
-bool CpuFeatures::HT(void) {
+bool CpuFeatures::HT() {
   return !!(flags_.L1_EDX & (1u << 28));
 }
 
 //! Hardware virtualization
-bool CpuFeatures::VMX(void) {
+bool CpuFeatures::VMX() {
   return !!(flags_.L1_ECX & (1u << 5));
 }
 
 // ！Running on a hypervisor
-bool CpuFeatures::HYPERVISOR(void) {
+bool CpuFeatures::HYPERVISOR() {
   return !!(flags_.L1_ECX & (1u << 31));
 }
 
 //! ARM NEON (ASIMD) support
-bool CpuFeatures::NEON(void) {
+bool CpuFeatures::NEON() {
 #if defined(__aarch64__) && defined(__linux__)
   return !!(getauxval(AT_HWCAP) & HWCAP_ASIMD);
 #elif defined(AILEGO_HAVE_NEON)
@@ -357,7 +360,22 @@ bool CpuFeatures::NEON(void) {
 #endif
 }
 
-const char *CpuFeatures::Intrinsics(void) {
+//! ARM half-precision vector arithmetic (FEAT_FP16) support
+bool CpuFeatures::FP16() {
+#if defined(__aarch64__) && defined(__linux__)
+  return !!(getauxval(AT_HWCAP) & HWCAP_ASIMDHP);
+#elif defined(__aarch64__) && defined(__APPLE__)
+  // FEAT_FP16 is present on all Apple Silicon (A11 and later).
+  return true;
+#elif defined(AILEGO_HAVE_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+  // No runtime probe available; trust the compile-time target features.
+  return true;
+#else
+  return false;
+#endif
+}
+
+const char *CpuFeatures::Intrinsics() {
   return ""
 #if defined(AILEGO_HAVE_NEON)
          "Neon"

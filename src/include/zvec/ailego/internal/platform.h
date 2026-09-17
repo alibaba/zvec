@@ -26,6 +26,15 @@
 //                           which exposes neither float16_t nor the v*_f16
 //                           intrinsics outside ARMv8.2 FP16. Use for FP16
 //                           kernels and other GCC/Clang-only extensions.
+//   AILEGO_MACOS_X86_64   - native macOS on Intel x86_64. Excludes iOS and
+//                           other Apple targets, including simulators.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX && defined(__x86_64__)
+#define AILEGO_MACOS_X86_64 1
+#endif
+#endif
+
 #if defined(__aarch64__) || defined(_M_ARM64)
 #define AILEGO_ARM64 1
 #endif
@@ -256,6 +265,16 @@ static inline int ailego_clz64(uint64_t x) {
 #else
 #define ailego_force_inline inline __attribute__((always_inline))
 #endif
+
+//! Prefetch `lines` consecutive 64-byte cache lines starting at `ptr`.
+//! Uses the same cache hint as ailego_prefetch; zero lines is a no-op.
+static ailego_force_inline void ailego_prefetch_lines(const void *ptr,
+                                                      size_t lines) {
+  const char *data = (const char *)ptr;
+  for (size_t line = 0; line < lines; ++line) {
+    ailego_prefetch(data + line * 64);
+  }
+}
 
 #if defined(AILEGO_M64)
 #define ailego_ctz ailego_ctz64

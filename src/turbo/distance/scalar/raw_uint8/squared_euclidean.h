@@ -21,9 +21,8 @@ namespace zvec::turbo::scalar {
 void squared_euclidean_raw_uint8_distance(const void *lhs, const void *rhs,
                                           size_t dimension, float *distance);
 
-void squared_euclidean_raw_uint8_batch_distance(const void *const *vectors,
-                                                const void *query, size_t count,
-                                                size_t dimension,
-                                                float *distances);
+void squared_euclidean_raw_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t count,
+    size_t dimension, float *distances, const void *const *extra_values);
 
 }  // namespace zvec::turbo::scalar

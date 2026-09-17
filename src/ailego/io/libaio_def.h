@@ -32,7 +32,7 @@
 #include <time.h>   // struct timespec (used by io_getevents signature)
 #include <cstring>  // memset() — used by io_prep_pread() inline helper
 
-#if defined(__linux) || defined(__linux__)
+#if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
 struct sockaddr;
 struct iovec;

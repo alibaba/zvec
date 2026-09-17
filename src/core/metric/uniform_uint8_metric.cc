@@ -43,13 +43,26 @@ void UniformUint8QueryPreprocess(void *query, size_t encoded_dimension) {
   // Match the existing record-quantizer contract: transform() emits the
   // canonical shifted layout, and graph contexts preprocess their private
   // query copy exactly once before using the query-oriented distance kernels.
-  uint64_t sum = 0;
   uint64_t sum_squared = 0;
+  if (original_dimension <= MAX_DIMENSION) {
+    // Keep the canonical-query contract consistent with the VNNI path: reuse
+    // the exact uint32 norm, including unaligned tails and values > INT32_MAX.
+    uint32_t stored_sum_squared = 0;
+    std::memcpy(&stored_sum_squared, raw_query + original_dimension,
+                sizeof(stored_sum_squared));
+    sum_squared = stored_sum_squared;
+  } else {
+    // Oversized externally supplied queries can have a truncated norm.
+    for (size_t i = 0; i < original_dimension; ++i) {
+      const uint64_t value = raw_query[i] ^ uint8_t { 0x80 };
+      sum_squared += value * value;
+    }
+  }
+
+  uint64_t sum = 0;
   for (size_t i = 0; i < original_dimension; ++i) {
     raw_query[i] ^= uint8_t{0x80};
-    const uint64_t value = raw_query[i];
-    sum += value;
-    sum_squared += value * value;
+    sum += raw_query[i];
   }
 
   const int64_t correction =
@@ -117,14 +130,40 @@ void UniformUint8StoredQuerySquaredEuclidean(const void *stored_data,
   *distance = static_cast<float>(sum);
 }
 
-void UniformUint8StoredQuerySquaredEuclideanBatch(const void *const *vectors,
-                                                  const void *query,
-                                                  size_t count,
-                                                  size_t encoded_dimension,
-                                                  float *distances) {
+void UniformUint8StoredQuerySquaredEuclideanBatch(
+    const void *const *vectors, const void *query, size_t count,
+    size_t encoded_dimension, float *distances,
+    const void *const *extra_values) {
+  ailego_assert_with(extra_values != nullptr,
+                     "UniformUint8 batch distance requires extra values");
+  const size_t original_dimension = OriginalDimension(encoded_dimension);
+  if (original_dimension == 0 || original_dimension > MAX_DIMENSION) {
+    for (size_t i = 0; i < count; ++i) {
+      UniformUint8StoredQuerySquaredEuclidean(vectors[i], query,
+                                              encoded_dimension, distances + i);
+    }
+    return;
+  }
+
+  int32_t query_correction = 0;
+  std::memcpy(&query_correction,
+              static_cast<const uint8_t *>(query) + original_dimension,
+              sizeof(query_correction));
+  const auto *raw_query = static_cast<const uint8_t *>(query);
   for (size_t i = 0; i < count; ++i) {
-    UniformUint8StoredQuerySquaredEuclidean(vectors[i], query,
-                                            encoded_dimension, distances + i);
+    ailego_assert_with(extra_values[i] != nullptr,
+                       "UniformUint8 batch distance requires extra values");
+    const auto *stored = static_cast<const int8_t *>(vectors[i]);
+    int64_t dot_product = 0;
+    for (size_t d = 0; d < original_dimension; ++d) {
+      dot_product +=
+          static_cast<int>(stored[d]) * static_cast<int>(raw_query[d]);
+    }
+    uint32_t stored_sum_squared = 0;
+    std::memcpy(&stored_sum_squared, extra_values[i],
+                sizeof(stored_sum_squared));
+    distances[i] = static_cast<float>(static_cast<int64_t>(stored_sum_squared) -
+                                      2 * dot_product + query_correction);
   }
 }
 
@@ -167,7 +206,7 @@ class UniformUint8QueryMetric : public IndexMetric {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -184,7 +223,7 @@ class UniformUint8QueryMetric : public IndexMetric {
            query_meta.dimension() == meta_.dimension();
   }
 
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     return UniformUint8StoredQuerySquaredEuclidean;
   }
 
@@ -196,7 +235,7 @@ class UniformUint8QueryMetric : public IndexMetric {
     return rows == 1 && columns == 1 ? UniformUint8StoredDistance() : nullptr;
   }
 
-  MatrixBatchDistance batch_distance(void) const override {
+  MatrixBatchDistance batch_distance() const override {
     const size_t original_dimension = OriginalDimension(meta_.dimension());
     // The VNNI kernel reduces its signed dot product in int32 lanes. The
     // public quantizer dimension bound guarantees that reduction is exact;
@@ -212,11 +251,15 @@ class UniformUint8QueryMetric : public IndexMetric {
     return UniformUint8StoredQuerySquaredEuclideanBatch;
   }
 
+  size_t extra_values_size_per_vector() const override {
+    return kTailBytes;
+  }
+
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return UniformUint8QueryPreprocessFunc();
   }
 
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 
@@ -224,17 +267,17 @@ class UniformUint8QueryMetric : public IndexMetric {
     return 0;
   }
 
-  bool support_train(void) const override {
+  bool support_train() const override {
     return false;
   }
 
   void normalize(float * /*score*/) const override {}
 
-  bool support_normalize(void) const override {
+  bool support_normalize() const override {
     return false;
   }
 
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return nullptr;
   }
 
@@ -245,7 +288,7 @@ class UniformUint8QueryMetric : public IndexMetric {
 
 class UniformUint8Metric : public UniformUint8QueryMetric {
  public:
-  MatrixDistance distance(void) const override {
+  MatrixDistance distance() const override {
     return UniformUint8StoredDistance();
   }
 
@@ -254,10 +297,11 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
   }
 
   // Deliberately inherit the query-oriented batch_distance(). Graph builders
-  // preprocess their private build-query copy before batch comparisons, while
-  // pairwise pruning and Flat use the stored-stored functions above.
+  // and contiguous Flat preprocess their private query copy before batch
+  // comparisons, while pairwise pruning uses the stored-stored functions
+  // above.
 
-  Pointer query_metric(void) const override {
+  Pointer query_metric() const override {
     return std::make_shared<UniformUint8QueryMetric>(meta_, params_);
   }
 };

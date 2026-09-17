@@ -37,6 +37,113 @@ from zvec.typing import DataType, MetricType, QuantizeType
 
 
 @pytest.mark.parametrize(
+    "quantize_type",
+    [QuantizeType.FP16, QuantizeType.INT8, QuantizeType.INT4],
+)
+@pytest.mark.parametrize("index_kind", ["hnsw", "vamana"])
+def test_non_training_quantizer_uses_insert_time_vectors(
+    tmp_path, quantize_type, index_kind
+):
+    """Final Flat precision must not change insert-time quantized payloads."""
+    dimension = 64
+    doc_count = 96
+    vectors = np.asarray(
+        [
+            [
+                (i * 7 + d * 13) % 197 / 211.0 + ((i * 17 + d * 5) % 29) / 10000.0
+                for d in range(dimension)
+            ]
+            for i in range(doc_count)
+        ],
+        dtype=np.float32,
+    )
+    query_vector = np.asarray(
+        [(d * 19 % 181) / 193.0 + 0.00031 * (d % 7) for d in range(dimension)],
+        dtype=np.float32,
+    )
+
+    def build_and_search(label, flat_data_type):
+        if index_kind == "hnsw":
+            index_param = HnswIndexParam(
+                metric_type=MetricType.L2,
+                m=16,
+                ef_construction=64,
+                quantize_type=quantize_type,
+                use_flat_contiguous_memory=True,
+                flat_data_type=flat_data_type,
+            )
+            query_param = HnswQueryParam(ef=doc_count, is_linear=True)
+        else:
+            index_param = VamanaIndexParam(
+                metric_type=MetricType.L2,
+                max_degree=16,
+                search_list_size=64,
+                quantize_type=quantize_type,
+                use_contiguous_memory=True,
+                use_flat_contiguous_memory=True,
+                flat_data_type=flat_data_type,
+            )
+            query_param = VamanaQueryParam(
+                ef_search=doc_count,
+                is_linear=True,
+            )
+        schema = CollectionSchema(
+            name="insert_time_quantizer_source_precision",
+            vectors=[
+                VectorSchema(
+                    "dense",
+                    DataType.VECTOR_FP32,
+                    dimension=dimension,
+                    index_param=index_param,
+                )
+            ],
+        )
+        collection = zvec.create_and_open(
+            path=str(tmp_path / label),
+            schema=schema,
+            option=CollectionOption(read_only=False, enable_mmap=True),
+        )
+        try:
+            docs = [
+                Doc(id=str(i), vectors={"dense": vector.tolist()})
+                for i, vector in enumerate(vectors)
+            ]
+            assert all(status.ok() for status in collection.insert(docs))
+            collection = None
+            gc.collect()
+            collection = zvec.open(
+                path=str(tmp_path / label),
+                option=CollectionOption(read_only=False, enable_mmap=True),
+            )
+            collection.optimize()
+            hits = collection.query(
+                Query(
+                    field_name="dense",
+                    vector=query_vector.tolist(),
+                    param=query_param,
+                ),
+                topk=doc_count,
+            )
+            return [hit.id for hit in hits], np.asarray(
+                [hit.score for hit in hits], dtype=np.float32
+            )
+        finally:
+            if collection is not None:
+                collection.destroy()
+
+    name = quantize_type.name.lower()
+    fp16_ids, fp16_scores = build_and_search(
+        f"{index_kind}_{name}_flat_fp16", DataType.VECTOR_FP16
+    )
+    fp32_ids, fp32_scores = build_and_search(
+        f"{index_kind}_{name}_flat_fp32", DataType.VECTOR_FP32
+    )
+
+    assert fp16_ids == fp32_ids
+    np.testing.assert_array_equal(fp16_scores, fp32_scores)
+
+
+@pytest.mark.parametrize(
     ("configured_flat_data_type", "effective_flat_data_type"),
     [
         (None, DataType.VECTOR_FP32),
@@ -47,12 +154,23 @@ from zvec.typing import DataType, MetricType, QuantizeType
 )
 @pytest.mark.parametrize("index_kind", ["hnsw", "vamana"])
 @pytest.mark.parametrize("use_flat_contiguous_memory", [False, True])
+@pytest.mark.parametrize(
+    "quantize_type",
+    [
+        QuantizeType.INT8,
+        QuantizeType.UNIFORM_UINT7,
+        QuantizeType.UNIFORM_UINT8,
+        QuantizeType.UNIFORM_UINT4,
+    ],
+    ids=["record_int8", "uniform_uint7", "uniform_uint8", "uniform_uint4"],
+)
 def test_refine_flat_native_storage_roundtrip(
     tmp_path,
     configured_flat_data_type,
     effective_flat_data_type,
     index_kind,
     use_flat_contiguous_memory,
+    quantize_type,
 ):
     dimension = 17
     initial_doc_count = 96
@@ -71,7 +189,7 @@ def test_refine_flat_native_storage_roundtrip(
             metric_type=MetricType.L2,
             m=16,
             ef_construction=100,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_flat_contiguous_memory=use_flat_contiguous_memory,
             **flat_data_type_option,
         )
@@ -80,7 +198,7 @@ def test_refine_flat_native_storage_roundtrip(
             metric_type=MetricType.L2,
             max_degree=16,
             search_list_size=64,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_flat_contiguous_memory=use_flat_contiguous_memory,
             **flat_data_type_option,
         )
@@ -344,7 +462,9 @@ def test_fp16_cosine_refine_uses_native_flat_pipeline(tmp_path, index_kind):
     for i in range(doc_count):
         vector = np.asarray(
             [
-                0.25 + d * 0.017 + (((i * 37 + d * 19) % 97) - 48) * 0.00011
+                # Separate directions so INT8 coarse search reliably retains
+                # the self match. Keep non-FP16-exact values to test casting.
+                (((i * 37 + d * 19 + i * d * 7) % 97) - 48) * 0.013
                 for d in range(dimension)
             ],
             dtype=np.float32,

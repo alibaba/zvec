@@ -272,9 +272,18 @@ class TestVamanaIndexParamSurface:
         with pytest.raises(AttributeError, match=match_pattern):
             setattr(param, field, getattr(param, field))
 
-    def test_pickle_roundtrip(self):
+    @pytest.mark.parametrize(
+        "metric_type,quantize_type",
+        [
+            (MetricType.COSINE, QuantizeType.INT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT7),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT4),
+        ],
+    )
+    def test_pickle_roundtrip(self, metric_type, quantize_type):
         original = VamanaIndexParam(
-            metric_type=MetricType.COSINE,
+            metric_type=metric_type,
             max_degree=48,
             search_list_size=120,
             alpha=1.4,
@@ -282,13 +291,13 @@ class TestVamanaIndexParamSurface:
             use_contiguous_memory=True,
             use_id_map=False,
             two_pass_build=True,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_flat_contiguous_memory=True,
             flat_data_type=DataType.VECTOR_FP16,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
-        assert restored.metric_type == MetricType.COSINE
+        assert restored.metric_type == metric_type
         assert restored.max_degree == 48
         assert restored.search_list_size == 120
         assert restored.alpha == pytest.approx(1.4)
@@ -296,7 +305,7 @@ class TestVamanaIndexParamSurface:
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
         assert restored.two_pass_build is True
-        assert restored.quantize_type == QuantizeType.INT8
+        assert restored.quantize_type == quantize_type
         assert restored.use_flat_contiguous_memory is True
         assert restored.flat_data_type == DataType.VECTOR_FP16
         # to_dict equality is the strongest end-to-end equivalence we have.
@@ -335,6 +344,20 @@ class TestVamanaQueryParamSurface:
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
 
+    def test_zero_prefetch_values_are_preserved(self):
+        q = VamanaQueryParam(extra_params={"prefetch_offset": 0, "prefetch_lines": 0})
+        assert q.prefetch_offset == 0
+        assert q.prefetch_lines == 0
+
+    def test_prefetch_fields_can_override_defaults_independently(self):
+        offset_only = VamanaQueryParam(extra_params={"prefetch_offset": 96})
+        assert offset_only.prefetch_offset == 96
+        assert offset_only.prefetch_lines == 0
+
+        lines_only = VamanaQueryParam(extra_params={"prefetch_lines": 1})
+        assert lines_only.prefetch_offset == 8
+        assert lines_only.prefetch_lines == 1
+
     def test_repr_contains_key_fields(self):
         text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
         assert "VAMANA" in text
@@ -369,6 +392,12 @@ class TestVamanaQueryParamSurface:
         assert restored.is_using_refiner is True
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
+
+    def test_default_prefetch_pickle_roundtrip(self):
+        restored = pickle.loads(pickle.dumps(VamanaQueryParam(ef_search=96)))
+        assert restored.ef_search == 96
+        assert restored.prefetch_offset == 8
+        assert restored.prefetch_lines == 0
 
 
 class TestVamanaPublicNamespace:

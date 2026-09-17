@@ -2028,19 +2028,19 @@ size_t BitsetHelper::Cardinality(const uint32_t *arr, size_t size) {
   return bitset_cardinality(arr, size);
 }
 
-bool BitsetHelper::test_all(void) const {
+bool BitsetHelper::test_all() const {
   return bitset_test_all(array_, size_);
 }
 
-bool BitsetHelper::test_any(void) const {
+bool BitsetHelper::test_any() const {
   return bitset_test_any(array_, size_);
 }
 
-bool BitsetHelper::test_none(void) const {
+bool BitsetHelper::test_none() const {
   return bitset_test_none(array_, size_);
 }
 
-size_t BitsetHelper::cardinality(void) const {
+size_t BitsetHelper::cardinality() const {
   return bitset_cardinality(array_, size_);
 }
 

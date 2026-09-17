@@ -378,6 +378,15 @@ class MockSegment : public Segment {
     return nullptr;
   }
 
+  void doc_id_range(uint64_t *min_id, uint64_t *max_id) const override {
+    *min_id = 0;
+    *max_id = 0;
+  }
+
+  uint64_t doc_count_snapshot() const override {
+    return 0;
+  }
+
   uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) override {
     return 0;
   }
@@ -403,7 +412,7 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status create_all_vector_index(
+  Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segmnet_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
@@ -540,6 +549,8 @@ class MockSegment : public Segment {
   Status dump() override {
     return Status::OK();
   }
+
+  void remove_writing_forward_block() override {}
 
   Status destroy() override {
     return Status::OK();
