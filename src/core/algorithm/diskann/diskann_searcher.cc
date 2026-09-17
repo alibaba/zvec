@@ -37,9 +37,9 @@ bool group_options_valid(const DiskAnnContext *ctx) {
 
 }  // namespace
 
-DiskAnnSearcher::DiskAnnSearcher() {}
+DiskAnnSearcher::DiskAnnSearcher() = default;
 
-DiskAnnSearcher::~DiskAnnSearcher() {}
+DiskAnnSearcher::~DiskAnnSearcher() = default;
 
 int DiskAnnSearcher::init(const ailego::Params &search_params) {
   if (state_ == STATE_LOADED) {

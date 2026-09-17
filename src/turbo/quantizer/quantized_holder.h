@@ -38,32 +38,32 @@ class QuantizedIndexHolder : public core::IndexHolder {
         code_bytes_(quantizer_->quantized_datapoint_vector_length()) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  size_t count(void) const override {
+  size_t count() const override {
     return front_->count();
   }
 
   //! Retrieve dimension (the raw, non-inflated dimension)
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return raw_dim_;
   }
 
   //! Retrieve type information
-  core::IndexMeta::DataType data_type(void) const override {
+  core::IndexMeta::DataType data_type() const override {
     return type_;
   }
 
   //! Retrieve element size in bytes (the full encoded record length)
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return code_bytes_;
   }
 
   //! Retrieve if it can multi-pass
-  bool multipass(void) const override {
+  bool multipass() const override {
     return front_->multipass();
   }
 
   //! Create a new iterator
-  core::IndexHolder::Iterator::Pointer create_iterator(void) override {
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
     core::IndexHolder::Iterator::Pointer iter = front_->create_iterator();
     if (!iter) {
       return core::IndexHolder::Iterator::Pointer();
@@ -82,25 +82,25 @@ class QuantizedIndexHolder : public core::IndexHolder {
       this->quantize_record();
     }
 
-    const void *data(void) const override {
+    const void *data() const override {
       return buffer_.data();
     }
 
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return front_iter_->is_valid();
     }
 
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return front_iter_->key();
     }
 
-    void next(void) override {
+    void next() override {
       front_iter_->next();
       this->quantize_record();
     }
 
    private:
-    void quantize_record(void) {
+    void quantize_record() {
       if (!front_iter_->is_valid()) {
         return;
       }

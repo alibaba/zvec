@@ -69,7 +69,8 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   // Calculate medoid: find the data point closest to the centroid
   // of all vectors (DiskANN standard entry point selection).
-  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) override;
+  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type,
+                             bool packed_uint4 = false) override;
 
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;
@@ -294,7 +295,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   int init_chunks(const Chunk::Pointer &header_chunk);
 
-  int flush_header(void) {
+  int flush_header() {
     if (!broker_->dirty()) {
       return 0;
     }
@@ -372,22 +373,13 @@ VamanaStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
   sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
   ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock mem_block;
-  size_t ret = node_chunks_[chunk_idx]->read(offset, mem_block, neighbor_size_);
+  size_t ret =
+      node_chunks_[chunk_idx]->read_borrowed(offset, mem_block, neighbor_size_);
   if (ailego_unlikely(ret != neighbor_size_)) {
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<BufferPoolMemoryBlock>();
   }
-  BufferPoolMemoryBlock block;
-  if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-    block = BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
-    mem_block.data_ = nullptr;
-    mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-  } else {
-    block = BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                  mem_block.buffer_block_id_, mem_block.data_);
-    mem_block.buffer_pool_handle_ = nullptr;
-  }
-  return NeighborsT<BufferPoolMemoryBlock>(std::move(block));
+  return NeighborsT<BufferPoolMemoryBlock>(std::move(mem_block));
 }
 
 template <>
@@ -418,25 +410,13 @@ inline int VamanaStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
     IndexStorage::MemoryBlock mem_block;
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, mem_block, vector_size());
+    size_t ret = node_chunks_[loc.first]->read_borrowed(loc.second, mem_block,
+                                                        vector_size());
     if (ailego_unlikely(ret != vector_size())) {
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i] = [&]() {
-      if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-        BufferPoolMemoryBlock b =
-            BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
-        mem_block.data_ = nullptr;
-        mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-        return b;
-      }
-      BufferPoolMemoryBlock b(mem_block.buffer_pool_handle_,
-                              mem_block.buffer_block_id_, mem_block.data_);
-      mem_block.buffer_pool_handle_ = nullptr;
-      return b;
-    }();
+    vec_blocks[i] = std::move(mem_block);
   }
   return 0;
 }
@@ -463,8 +443,8 @@ inline key_t VamanaStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock key_block;
-  size_t ret =
-      node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
+  size_t ret = node_chunks_[loc.first]->read_borrowed(loc.second, key_block,
+                                                      sizeof(key_t));
   if (ailego_unlikely(ret != sizeof(key_t))) {
     LOG_ERROR("Read key failed, ret=%zu", ret);
     return kInvalidKey;

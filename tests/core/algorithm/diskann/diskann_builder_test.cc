@@ -34,8 +34,8 @@ constexpr size_t static dim = 64;
 
 class DiskAnnBuilderTest : public testing::Test {
  protected:
-  void SetUp(void) override;
-  void TearDown(void) override;
+  void SetUp() override;
+  void TearDown() override;
 
   //! Create an initialized turbo quantizer matching the index meta, used by
   //! the *Turbo test variants to inject an externally constructed quantizer
@@ -60,7 +60,7 @@ class DiskAnnBuilderTest : public testing::Test {
 std::string DiskAnnBuilderTest::_dir("DiskAnnBuilderTest");
 shared_ptr<IndexMeta> DiskAnnBuilderTest::_index_meta_ptr;
 
-void DiskAnnBuilderTest::SetUp(void) {
+void DiskAnnBuilderTest::SetUp() {
   LoggerBroker::SetLevel(Logger::LEVEL_INFO);
 
   _index_meta_ptr.reset(new (nothrow)
@@ -68,7 +68,7 @@ void DiskAnnBuilderTest::SetUp(void) {
   _index_meta_ptr->set_metric("SquaredEuclidean", 0, Params());
 }
 
-void DiskAnnBuilderTest::TearDown(void) {
+void DiskAnnBuilderTest::TearDown() {
   zvec::test_util::RemoveTestPath(_dir);
 }
 

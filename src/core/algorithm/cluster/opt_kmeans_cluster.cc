@@ -11,12 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstdint>
+#include <cstring>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/container/reservoir.h>
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "cluster_params.h"
+#include "holder_cluster.h"
 #include "turbo_kmeans_context.h"
 
 namespace zvec {
@@ -27,10 +30,10 @@ namespace core {
 class OptKmeansAlgorithm : public IndexCluster {
  public:
   //! Constructor
-  OptKmeansAlgorithm(void) {}
+  OptKmeansAlgorithm() = default;
 
   //! Destructor
-  ~OptKmeansAlgorithm(void) override {}
+  ~OptKmeansAlgorithm() override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;
@@ -52,18 +55,83 @@ class OptKmeansAlgorithm : public IndexCluster {
 
   //! Cluster
   int cluster(IndexThreads::Pointer threads,
-              IndexCluster::CentroidList &cents) override = 0;
+              IndexCluster::CentroidList &cents) override {
+    return cluster_impl(std::move(threads), nullptr, cents);
+  }
+
+  int cluster_holder(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+                     IndexCluster::CentroidList &cents);
 
   //! Cleanup Cluster
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reset Cluster
-  int reset(void) override;
+  int reset() override;
 
   //! Update Cluster
   int update(const ailego::Params &params) override;
 
  protected:
+  virtual int cluster_impl(IndexThreads::Pointer threads,
+                           IndexHolder::Pointer holder,
+                           IndexCluster::CentroidList &cents) = 0;
+
+  int check_dimension() const;
+
+  // All kernels own their training matrix. Consume each input before advancing
+  // its iterator; never materialize a second, full IndexFeatures corpus.
+  template <typename Algorithm>
+  int load_features(Algorithm &algorithm, const IndexHolder::Pointer &holder) {
+    using StoreType = typename Algorithm::StoreType;
+    const size_t count = holder ? holder->count() : features_->count();
+    const size_t bytes = meta_.element_size();
+    std::vector<StoreType> aligned;
+    auto append = [&](const void *data) -> int {
+      if (!data) {
+        return IndexError_InvalidArgument;
+      }
+      // Providers may return packed or unaligned, reusable storage. At most one
+      // row of scratch is needed; preserve the kernel's physical
+      // representation.
+      if (reinterpret_cast<uintptr_t>(data) % alignof(StoreType) != 0) {
+        aligned.resize(bytes / sizeof(StoreType) +
+                       (bytes % sizeof(StoreType) != 0));
+        std::memcpy(aligned.data(), data, bytes);
+        data = aligned.data();
+      }
+      algorithm.append(reinterpret_cast<const StoreType *>(data),
+                       meta_.dimension());
+      return 0;
+    };
+
+    algorithm.feature_matrix_reserve(count);
+    if (holder) {
+      auto iter = holder->create_iterator();
+      if (!iter) {
+        return IndexError_Runtime;
+      }
+      size_t loaded = 0;
+      for (; iter->is_valid(); iter->next()) {
+        if (loaded == count) {
+          return IndexError_InvalidArgument;
+        }
+        int ret = append(iter->data());
+        if (ret != 0) {
+          return ret;
+        }
+        ++loaded;
+      }
+      return loaded == count ? 0 : IndexError_InvalidArgument;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      int ret = append(features_->element(i));
+      if (ret != 0) {
+        return ret;
+      }
+    }
+    return 0;
+  }
+
   //! Update parameters
   void update_params(const ailego::Params &params);
 
@@ -77,7 +145,7 @@ class OptKmeansAlgorithm : public IndexCluster {
   bool check_centroids(const IndexCluster::CentroidList &cents);
 
   //! Test if it is valid
-  bool is_valid(void) const;
+  bool is_valid() const;
 
   //! Update Clusters
   void update_clusters(IndexThreads *threads,
@@ -125,7 +193,7 @@ class OptKmeansAlgorithm : public IndexCluster {
   IndexMetric::MatrixDistance distance_func_{nullptr};
 };
 
-bool OptKmeansAlgorithm::is_valid(void) const {
+bool OptKmeansAlgorithm::is_valid() const {
   if (!features_ || !features_->count()) {
     return false;
   }
@@ -381,24 +449,32 @@ int OptKmeansAlgorithm::mount(IndexFeatures::Pointer feats) {
     return IndexError_Mismatch;
   }
 
-  // Check dimension
+  int ret = check_dimension();
+  if (ret != 0) {
+    return ret;
+  }
+  features_ = std::move(feats);
+  return 0;
+}
+
+int OptKmeansAlgorithm::check_dimension() const {
   auto type_ = meta_.data_type();
   switch (type_) {
     case IndexMeta::DataType::DT_INT4:
-      if (feats->dimension() % 8 != 0) {
+      if (meta_.dimension() % 8 != 0) {
         LOG_ERROR(
             "Unsupported feature dimension %zu (dimension of int4 "
             "must be an integer multiple of 8).",
-            feats->dimension());
+            static_cast<size_t>(meta_.dimension()));
         return IndexError_Mismatch;
       }
       break;
     case IndexMeta::DataType::DT_INT8:
-      if (feats->dimension() % 4 != 0) {
+      if (meta_.dimension() % 4 != 0) {
         LOG_ERROR(
             "Unsupported feature dimension %zu (dimension of int8 "
             "must be an integer multiple of 4).",
-            feats->dimension());
+            static_cast<size_t>(meta_.dimension()));
         return IndexError_Mismatch;
       }
       break;
@@ -406,8 +482,32 @@ int OptKmeansAlgorithm::mount(IndexFeatures::Pointer feats) {
       break;
   }
 
-  features_ = std::move(feats);
   return 0;
+}
+
+int OptKmeansAlgorithm::cluster_holder(IndexThreads::Pointer threads,
+                                       IndexHolder::Pointer holder,
+                                       IndexCluster::CentroidList &cents) {
+  if (!holder || !holder->count() || !meta_.dimension()) {
+    return IndexError_InvalidArgument;
+  }
+  if (!holder->is_matched(meta_)) {
+    return IndexError_Mismatch;
+  }
+  int ret = check_dimension();
+  if (ret != 0) {
+    return ret;
+  }
+  // Unknown-size or unrepresentable inputs must fall back before consumption.
+  if (holder->count() == static_cast<size_t>(-1) ||
+      holder->count() > std::numeric_limits<uint32_t>::max()) {
+    return IndexError_NotImplemented;
+  }
+  if (holder->count() >
+      std::numeric_limits<size_t>::max() / meta_.element_size()) {
+    return IndexError_InvalidArgument;
+  }
+  return cluster_impl(std::move(threads), std::move(holder), cents);
 }
 
 void OptKmeansAlgorithm::suggest(uint32_t k) {
@@ -476,14 +576,14 @@ int OptKmeansAlgorithm::update(const ailego::Params &params) {
   return 0;
 }
 
-int OptKmeansAlgorithm::reset(void) {
+int OptKmeansAlgorithm::reset() {
   features_.reset();
   shard_cluster_features_.clear();
 
   return 0;
 }
 
-int OptKmeansAlgorithm::cleanup(void) {
+int OptKmeansAlgorithm::cleanup() {
   features_.reset();
   shard_cluster_features_.clear();
 
@@ -504,16 +604,15 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NumericalKmeansAlgorithm(void) {}
+  NumericalKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NumericalKmeansAlgorithm(void) override {}
-
-  //! Cluster
-  int cluster(IndexThreads::Pointer threads,
-              IndexCluster::CentroidList &cents) override;
+  ~NumericalKmeansAlgorithm() override = default;
 
  protected:
+  int cluster_impl(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+                   IndexCluster::CentroidList &cents) override;
+
   void update_centroids(
       IndexCluster::CentroidList &cents,
       const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm);
@@ -534,8 +633,9 @@ void NumericalKmeansAlgorithm<T, Context>::update_centroids(
 }
 
 template <typename T, typename Context>
-int NumericalKmeansAlgorithm<T, Context>::cluster(
-    IndexThreads::Pointer threads, IndexCluster::CentroidList &cents) {
+int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
+    IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+    IndexCluster::CentroidList &cents) {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -549,15 +649,16 @@ int NumericalKmeansAlgorithm<T, Context>::cluster(
     return IndexError_InvalidArgument;
   }
 
-  if (!this->is_valid()) {
+  if (!holder && !this->is_valid()) {
     LOG_ERROR("The cluster is not ready.");
     return IndexError_NoReady;
   }
 
   // get cluster algorithm
+  const size_t features_count = holder ? holder->count() : features_->count();
   size_t centroid_count =
       cents.empty()
-          ? std::min(cluster_count_, static_cast<uint32_t>(features_->count()))
+          ? std::min(cluster_count_, static_cast<uint32_t>(features_count))
           : cents.size();
   if (centroid_count == 0) {
     LOG_ERROR("The count of cluster is unknown.");
@@ -566,16 +667,12 @@ int NumericalKmeansAlgorithm<T, Context>::cluster(
   ailego::NumericalKmeans<T, IndexThreads, Context> algorithm(
       centroid_count, meta_.dimension());
 
-  // mount features into algorithm
-  auto features_count = features_->count();
-  auto dim = meta_.dimension();
-
-  algorithm.feature_matrix_reserve(features_count);
-
-  for (size_t i = 0; i < features_count; ++i) {
-    auto vec = reinterpret_cast<const T *>(features_->element(i));
-    algorithm.append(vec, dim);
+  // Mount directly into the algorithm's matrix.
+  int ret = load_features(algorithm, holder);
+  if (ret != 0) {
+    return ret;
   }
+  holder.reset();
 
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
@@ -607,7 +704,7 @@ int NumericalKmeansAlgorithm<T, Context>::cluster(
 
     new_epsilon = std::abs(cost - old_cost);
     LOG_DEBUG("(%u) Updated %zu Clusters, %zu Features: %zu ms, %f -> %f = %f",
-              i, algorithm.centroids().count(), features_->count(),
+              i, algorithm.centroids().count(), features_count,
               (size_t)stamp.milli_seconds(), old_cost, cost, new_epsilon);
     stamp.reset();
 
@@ -637,16 +734,15 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NibbleKmeansAlgorithm(void) {}
+  NibbleKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NibbleKmeansAlgorithm(void) override {}
-
-  //! Cluster
-  int cluster(IndexThreads::Pointer threads,
-              IndexCluster::CentroidList &cents) override;
+  ~NibbleKmeansAlgorithm() override = default;
 
  protected:
+  int cluster_impl(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+                   IndexCluster::CentroidList &cents) override;
+
   //! update centroids
   void update_centroids(IndexCluster::CentroidList &cents,
                         const ailego::NibbleKmeans<T, IndexThreads> &algorithm);
@@ -666,8 +762,9 @@ void NibbleKmeansAlgorithm<T>::update_centroids(
 }
 
 template <typename T>
-int NibbleKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
-                                      IndexCluster::CentroidList &cents) {
+int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
+                                           IndexHolder::Pointer holder,
+                                           IndexCluster::CentroidList &cents) {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -681,15 +778,16 @@ int NibbleKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
     return IndexError_InvalidArgument;
   }
 
-  if (!this->is_valid()) {
+  if (!holder && !this->is_valid()) {
     LOG_ERROR("The cluster is not ready.");
     return IndexError_NoReady;
   }
 
   // get cluster algorithm
+  const size_t features_count = holder ? holder->count() : features_->count();
   size_t centroid_count =
       cents.empty()
-          ? std::min(cluster_count_, static_cast<uint32_t>(features_->count()))
+          ? std::min(cluster_count_, static_cast<uint32_t>(features_count))
           : cents.size();
   if (centroid_count == 0) {
     LOG_ERROR("The count of cluster is unknown.");
@@ -698,14 +796,11 @@ int NibbleKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
   ailego::NibbleKmeans<T, IndexThreads> algorithm(centroid_count,
                                                   meta_.dimension());
 
-  // mount features into algorithm
-  auto features_count = features_->count();
-  auto dim = meta_.dimension();
-  for (size_t i = 0; i < features_count; ++i) {
-    auto vec = reinterpret_cast<const typename std::make_unsigned<T>::type *>(
-        features_->element(i));
-    algorithm.append(vec, dim);
+  int ret = load_features(algorithm, holder);
+  if (ret != 0) {
+    return ret;
   }
+  holder.reset();
 
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
@@ -741,7 +836,7 @@ int NibbleKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
     LOG_DEBUG(
         "(%u) Updated %zu Clusters, %zu Features: %zu ms, %f -> "
         "%f = %f",
-        i, algorithm.centroids().count(), features_->count(),
+        i, algorithm.centroids().count(), features_count,
         (size_t)stamp.milli_seconds(), old_cost, cost, new_epsilon);
     stamp.reset();
 
@@ -772,16 +867,15 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NumericalInnerProductKmeansAlgorithm(void) {}
+  NumericalInnerProductKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NumericalInnerProductKmeansAlgorithm(void) override {}
-
-  //! Cluster
-  int cluster(IndexThreads::Pointer threads,
-              IndexCluster::CentroidList &cents) override;
+  ~NumericalInnerProductKmeansAlgorithm() override = default;
 
  protected:
+  int cluster_impl(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+                   IndexCluster::CentroidList &cents) override;
+
   void update_centroids(
       IndexCluster::CentroidList &cents,
       const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
@@ -804,8 +898,9 @@ void NumericalInnerProductKmeansAlgorithm<T, Context>::update_centroids(
 }
 
 template <typename T, typename Context>
-int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster(
-    IndexThreads::Pointer threads, IndexCluster::CentroidList &cents) {
+int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
+    IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+    IndexCluster::CentroidList &cents) {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -819,15 +914,16 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster(
     return IndexError_InvalidArgument;
   }
 
-  if (!this->is_valid()) {
+  if (!holder && !this->is_valid()) {
     LOG_ERROR("The cluster is not ready.");
     return IndexError_NoReady;
   }
 
   // get cluster algorithm
+  const size_t features_count = holder ? holder->count() : features_->count();
   size_t centroid_count =
       cents.empty()
-          ? std::min(cluster_count_, static_cast<uint32_t>(features_->count()))
+          ? std::min(cluster_count_, static_cast<uint32_t>(features_count))
           : cents.size();
   if (centroid_count == 0) {
     LOG_ERROR("The count of cluster is unknown.");
@@ -836,16 +932,11 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster(
   ailego::NumericalInnerProductKmeans<T, IndexThreads, Context> algorithm(
       centroid_count, meta_.dimension(), true);
 
-  // mount features into algorithm
-  auto features_count = features_->count();
-  auto dim = meta_.dimension();
-
-  algorithm.feature_matrix_reserve(features_count);
-
-  for (size_t i = 0; i < features_count; ++i) {
-    auto vec = reinterpret_cast<const T *>(features_->element(i));
-    algorithm.append(vec, dim);
+  int ret = load_features(algorithm, holder);
+  if (ret != 0) {
+    return ret;
   }
+  holder.reset();
 
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
@@ -878,7 +969,7 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster(
 
     new_epsilon = std::abs(cost - old_cost);
     LOG_DEBUG("(%u) Updated %zu Clusters, %zu Features: %zu ms, %f -> %f = %f",
-              i, algorithm.centroids().count(), features_->count(),
+              i, algorithm.centroids().count(), features_count,
               (size_t)stamp.milli_seconds(), old_cost, cost, new_epsilon);
     stamp.reset();
 
@@ -908,16 +999,15 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                 "ValueType must be arithmetic");
 
   //! Constructor
-  NibbleInnerProductKmeansAlgorithm(void) {}
+  NibbleInnerProductKmeansAlgorithm() = default;
 
   //! Destructor
-  ~NibbleInnerProductKmeansAlgorithm(void) override {}
-
-  //! Cluster
-  int cluster(IndexThreads::Pointer threads,
-              IndexCluster::CentroidList &cents) override;
+  ~NibbleInnerProductKmeansAlgorithm() override = default;
 
  protected:
+  int cluster_impl(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+                   IndexCluster::CentroidList &cents) override;
+
   //! update centroids
   void update_centroids(
       IndexCluster::CentroidList &cents,
@@ -938,8 +1028,9 @@ void NibbleInnerProductKmeansAlgorithm<T>::update_centroids(
 }
 
 template <typename T>
-int NibbleInnerProductKmeansAlgorithm<T>::cluster(
-    IndexThreads::Pointer threads, IndexCluster::CentroidList &cents) {
+int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
+    IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+    IndexCluster::CentroidList &cents) {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -953,15 +1044,16 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster(
     return IndexError_InvalidArgument;
   }
 
-  if (!this->is_valid()) {
+  if (!holder && !this->is_valid()) {
     LOG_ERROR("The cluster is not ready.");
     return IndexError_NoReady;
   }
 
   // get cluster algorithm
+  const size_t features_count = holder ? holder->count() : features_->count();
   size_t centroid_count =
       cents.empty()
-          ? std::min(cluster_count_, static_cast<uint32_t>(features_->count()))
+          ? std::min(cluster_count_, static_cast<uint32_t>(features_count))
           : cents.size();
   if (centroid_count == 0) {
     LOG_ERROR("The count of cluster is unknown.");
@@ -970,14 +1062,11 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster(
   ailego::NibbleInnerProductKmeans<T, IndexThreads> algorithm(
       centroid_count, meta_.dimension());
 
-  // mount features into algorithm
-  auto features_count = features_->count();
-  auto dim = meta_.dimension();
-  for (size_t i = 0; i < features_count; ++i) {
-    auto vec = reinterpret_cast<const typename std::make_unsigned<T>::type *>(
-        features_->element(i));
-    algorithm.append(vec, dim);
+  int ret = load_features(algorithm, holder);
+  if (ret != 0) {
+    return ret;
   }
+  holder.reset();
 
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
@@ -1013,7 +1102,7 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster(
     LOG_DEBUG(
         "(%u) Updated %zu Clusters, %zu Features: %zu ms, %f -> "
         "%f = %f",
-        i, algorithm.centroids().count(), features_->count(),
+        i, algorithm.centroids().count(), features_count,
         (size_t)stamp.milli_seconds(), old_cost, cost, new_epsilon);
     stamp.reset();
 
@@ -1032,22 +1121,22 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster(
 
 /*! Kmeans Cluster
  */
-class OptKmeansCluster : public IndexCluster {
+class OptKmeansCluster : public IndexCluster, public HolderCluster {
  public:
   //! Constructor
-  OptKmeansCluster(void) {}
+  OptKmeansCluster() = default;
 
   //! Destructor
-  ~OptKmeansCluster(void) override {}
+  ~OptKmeansCluster() override = default;
 
   //! Initialize Cluster
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Cluster
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Reset Cluster
-  int reset(void) override;
+  int reset() override;
 
   //! Update Cluster
   int update(const ailego::Params &params) override;
@@ -1062,6 +1151,12 @@ class OptKmeansCluster : public IndexCluster {
   int cluster(IndexThreads::Pointer threads,
               IndexCluster::CentroidList &cents) override;
 
+  int cluster_holder(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+                     IndexCluster::CentroidList &cents) override {
+    return algorithm_->cluster_holder(std::move(threads), std::move(holder),
+                                      cents);
+  }
+
   //! Classify
   int classify(IndexThreads::Pointer threads,
                IndexCluster::CentroidList &cents) override;
@@ -1073,7 +1168,7 @@ class OptKmeansCluster : public IndexCluster {
 
  protected:
   //! Members
-  IndexCluster::Pointer algorithm_{};
+  std::shared_ptr<OptKmeansAlgorithm> algorithm_{};
 };
 
 //! Cluster
@@ -1101,12 +1196,12 @@ int OptKmeansCluster::update(const ailego::Params &params) {
 }
 
 //! Reset Cluster
-int OptKmeansCluster::reset(void) {
+int OptKmeansCluster::reset() {
   return algorithm_->reset();
 }
 
 //! Cleanup Cluster
-int OptKmeansCluster::cleanup(void) {
+int OptKmeansCluster::cleanup() {
   return algorithm_->cleanup();
 }
 

@@ -30,27 +30,27 @@ template <typename T, typename TCompare = std::less<T>,
 class Heap : private TBase {
  public:
   //! Remove all elements
-  void clear(void) {
+  void clear() {
     TBase::clear();
   }
 
   //! Retrieve the begin iterator
-  auto begin(void) const {
+  auto begin() const {
     return TBase::begin();
   }
 
   //! Retrieve the end iterator
-  auto end(void) const {
+  auto end() const {
     return TBase::end();
   }
 
   //! Retrieve the front element
-  const T &front(void) const {
+  const T &front() const {
     return TBase::front();
   }
 
   //! Retrieve the back element
-  const T &back(void) const {
+  const T &back() const {
     return TBase::back();
   }
 
@@ -65,12 +65,12 @@ class Heap : private TBase {
   }
 
   //! Expose the underlying container for read-only APIs
-  const TBase &container(void) const {
+  const TBase &container() const {
     return *this;
   }
 
   //! Expose the underlying container for intentional mutable interop
-  TBase &mutable_container(void) {
+  TBase &mutable_container() {
     return *this;
   }
 
@@ -82,18 +82,17 @@ class Heap : private TBase {
   }
 
   //! Retrieve the number of elements
-  size_t size(void) const {
+  size_t size() const {
     return TBase::size();
   }
 
   //! Check whether the heap is empty
-  bool empty(void) const {
+  bool empty() const {
     return TBase::empty();
   }
 
   //! Constructor
-  Heap(void)
-      : TBase(), limit_(std::numeric_limits<size_t>::max()), compare_() {}
+  Heap() : TBase(), limit_(std::numeric_limits<size_t>::max()), compare_() {}
 
   //! Constructor
   template <typename... Args>
@@ -152,7 +151,7 @@ class Heap : private TBase {
   }
 
   //! Pop the front element
-  void pop(void) {
+  void pop() {
     if (TBase::empty()) {
       return;
     }
@@ -206,7 +205,7 @@ class Heap : private TBase {
   }
 
   //! Retrieve the limit of heap
-  size_t limit(void) const {
+  size_t limit() const {
     return limit_;
   }
 
@@ -217,17 +216,17 @@ class Heap : private TBase {
   }
 
   //! Unlimit the size of heap
-  void unlimit(void) {
+  void unlimit() {
     limit_ = std::numeric_limits<size_t>::max();
   }
 
   //! Check whether the heap is full
-  bool full(void) const {
+  bool full() const {
     return (TBase::size() == limit_);
   }
 
   //! Update the heap
-  void update(void) {
+  void update() {
     std::make_heap(TBase::begin(), TBase::end(), compare_);
     while (limit_ < TBase::size()) {
       this->pop();
@@ -235,7 +234,7 @@ class Heap : private TBase {
   }
 
   //! Sort the elements in the heap
-  void sort(void) {
+  void sort() {
     std::sort(TBase::begin(), TBase::end(), compare_);
   }
 

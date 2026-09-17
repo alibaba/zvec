@@ -37,19 +37,19 @@ class VamanaIndexProvider : public IndexProvider {
                                                       Iterator(entity_));
   }
 
-  size_t count(void) const override {
+  size_t count() const override {
     return entity_->doc_cnt();
   }
 
-  size_t dimension(void) const override {
+  size_t dimension() const override {
     return meta_.dimension();
   }
 
-  IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type() const override {
     return meta_.data_type();
   }
 
-  size_t element_size(void) const override {
+  size_t element_size() const override {
     return meta_.element_size();
   }
 
@@ -62,7 +62,7 @@ class VamanaIndexProvider : public IndexProvider {
     return entity_->get_vector_by_key(key, block);
   }
 
-  const std::string &owner_class(void) const override {
+  const std::string &owner_class() const override {
     return owner_class_;
   }
 
@@ -74,23 +74,23 @@ class VamanaIndexProvider : public IndexProvider {
       cur_id_ = get_next_valid_id(0);
     }
 
-    const void *data(void) const override {
+    const void *data() const override {
       return entity_->get_vector(cur_id_);
     }
 
-    bool is_valid(void) const override {
+    bool is_valid() const override {
       return cur_id_ < entity_->doc_cnt();
     }
 
-    uint64_t key(void) const override {
+    uint64_t key() const override {
       return entity_->get_key(cur_id_);
     }
 
-    void next(void) override {
+    void next() override {
       cur_id_ = get_next_valid_id(cur_id_ + 1);
     }
 
-    void reset(void) {
+    void reset() {
       cur_id_ = get_next_valid_id(0);
     }
 

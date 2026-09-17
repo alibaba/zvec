@@ -48,7 +48,7 @@ class HnswSparseContext : public IndexContext {
   }
 
   //! Retrieve search result
-  const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result() const override {
     return results_[0];
   }
 
@@ -64,7 +64,7 @@ class HnswSparseContext : public IndexContext {
   }
 
   //! Retrieve search group result with index
-  const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result() const override {
     return group_results_[0];
   }
 
@@ -73,7 +73,7 @@ class HnswSparseContext : public IndexContext {
     return group_results_[idx];
   }
 
-  IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result() override {
     return &group_results_[0];
   }
 
@@ -81,7 +81,7 @@ class HnswSparseContext : public IndexContext {
     return &group_results_[idx];
   }
 
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
@@ -91,12 +91,12 @@ class HnswSparseContext : public IndexContext {
   }
 
   //! Retrieve mode of debug
-  bool debug_mode(void) const override {
+  bool debug_mode() const override {
     return this->debugging();
   }
 
   //! Retrieve string of debug
-  std::string debug_string(void) const override {
+  std::string debug_string() const override {
     char buf[4096];
     size_t size = snprintf(
         buf, sizeof(buf),
@@ -346,7 +346,7 @@ class HnswSparseContext : public IndexContext {
   }
 
   //! Reset context
-  void reset(void) override {
+  void reset() override {
     set_filter(nullptr);
     reset_threshold();
     set_fetch_vector(false);
@@ -373,7 +373,7 @@ class HnswSparseContext : public IndexContext {
     return level_topks_[level];
   }
 
-  inline void check_need_adjuct_ctx(void) {
+  inline void check_need_adjuct_ctx() {
     check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -448,7 +448,7 @@ class HnswSparseContext : public IndexContext {
     return &stats_visit_dup_cnt_;
   }
 
-  inline bool debugging(void) const {
+  inline bool debugging() const {
     return debug_mode_;
   }
 
@@ -488,7 +488,7 @@ class HnswSparseContext : public IndexContext {
 
  private:
   // Filling random nodes if topk not full
-  void fill_random_to_topk_full(void);
+  void fill_random_to_topk_full();
 
   constexpr static uint32_t kTriggerReserveCnt = 4096UL;
   constexpr static uint32_t kMinReserveDocCnt = 4096UL;

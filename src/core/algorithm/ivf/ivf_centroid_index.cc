@@ -29,7 +29,7 @@ class FakeClusterTrainer : public IndexTrainer {
       : meta_(imeta), bundle_(bundle) {}
 
   //! Destructor
-  ~FakeClusterTrainer(void) override {}
+  ~FakeClusterTrainer() override = default;
 
  protected:
   //! Initialize Trainer
@@ -38,7 +38,7 @@ class FakeClusterTrainer : public IndexTrainer {
   }
 
   //! Cleanup Trainer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -63,17 +63,17 @@ class FakeClusterTrainer : public IndexTrainer {
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Retrieve statistics
-  const IndexTrainer::Stats &stats(void) const override {
+  const IndexTrainer::Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve the output indexes
-  IndexBundle::Pointer indexes(void) const override {
+  IndexBundle::Pointer indexes() const override {
     return bundle_;
   }
 
@@ -94,7 +94,7 @@ class Int8QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -104,7 +104,7 @@ class Int8QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 
@@ -188,7 +188,7 @@ class Int4QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Cleanup Reformer
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -198,7 +198,7 @@ class Int4QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Unload index
-  int unload(void) override {
+  int unload() override {
     return 0;
   }
 

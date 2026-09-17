@@ -42,7 +42,7 @@ class RabitqConverter : public IndexConverter {
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Converter
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Train the data - perform KMeans clustering
   int train(IndexHolder::Pointer holder) override;
@@ -59,17 +59,17 @@ class RabitqConverter : public IndexConverter {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve a holder as result
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return result_holder_;
   }
 
   //! Retrieve Index Meta
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 

@@ -49,25 +49,36 @@ class IndexSegmentStorage : public IndexStorage {
           data_crc_(segment.data_crc()),
           parent_(parent->clone()) {}
 
+    //! Constructor (for clone)
+    Segment(const IndexStorage::Segment::Pointer &cloned_parent,
+            size_t data_offset, size_t data_size, size_t padding_size,
+            uint32_t data_crc)
+        : data_offset_(data_offset),
+          data_size_(data_size),
+          padding_size_(padding_size),
+          region_size_(data_size + padding_size),
+          data_crc_(data_crc),
+          parent_(cloned_parent) {}
+
     //! Destructor
-    ~Segment(void) override {}
+    ~Segment() override = default;
 
     //! Retrieve size of data
-    size_t data_size(void) const override {
+    size_t data_size() const override {
       return data_size_;
     }
 
     //! Retrieve crc of data
-    uint32_t data_crc(void) const override {
+    uint32_t data_crc() const override {
       return data_crc_;
     }
 
     //! Retrieve size of padding
-    size_t padding_size(void) const override {
+    size_t padding_size() const override {
       return padding_size_;
     }
 
-    size_t capacity(void) const override {
+    size_t capacity() const override {
       return region_size_;
     }
 
@@ -106,7 +117,7 @@ class IndexSegmentStorage : public IndexStorage {
     }
 
     //! Retrieve offset of data
-    size_t data_offset(void) const override {
+    size_t data_offset() const override {
       return 0;
     }
 
@@ -114,9 +125,11 @@ class IndexSegmentStorage : public IndexStorage {
       return;
     }
 
-    //! Clone the segment
-    IndexStorage::Segment::Pointer clone(void) override {
-      return shared_from_this();
+    //! Clone the segment (each clone gets an independent parent buffer
+    //! for thread safety — concurrent reads require separate buffers).
+    IndexStorage::Segment::Pointer clone() override {
+      return std::make_shared<Segment>(parent_->clone(), data_offset_,
+                                       data_size_, padding_size_, data_crc_);
     }
 
    private:
@@ -137,7 +150,7 @@ class IndexSegmentStorage : public IndexStorage {
       : parent_(seg) {}
 
   //! Destructor
-  ~IndexSegmentStorage(void) override {}
+  ~IndexSegmentStorage() override = default;
 
   //! Initialize container
   int init(const ailego::Params &) override {
@@ -145,7 +158,7 @@ class IndexSegmentStorage : public IndexStorage {
   }
 
   //! Cleanup container
-  int cleanup(void) override {
+  int cleanup() override {
     return 0;
   }
 
@@ -188,8 +201,8 @@ class IndexSegmentStorage : public IndexStorage {
   }
 
   //! Retrieve all segments
-  std::map<std::string, IndexStorage::Segment::Pointer> get_all(
-      void) const override {
+  std::map<std::string, IndexStorage::Segment::Pointer> get_all()
+      const override {
     std::map<std::string, IndexStorage::Segment::Pointer> result;
     if (parent_) {
       for (const auto &it : segments_) {
@@ -201,18 +214,18 @@ class IndexSegmentStorage : public IndexStorage {
   }
 
   //! Unload all indexes
-  int close(void) override {
+  int close() override {
     parent_ = nullptr;
     segments_.clear();
     return 0;
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const override {
+  uint32_t magic() const override {
     return magic_;
   }
 
-  int flush(void) override {
+  int flush() override {
     return IndexError_NotImplemented;
   }
 
@@ -224,7 +237,7 @@ class IndexSegmentStorage : public IndexStorage {
     return;
   }
 
-  uint64_t check_point(void) const override {
+  uint64_t check_point() const override {
     return 0;
   }
 

@@ -25,20 +25,16 @@ class Seeker {
     float score;
 
     //! Constructor
-    Document(void) : index(0), score(0.0f) {}
+    Document() : index(0), score(0.0f) {}
 
     //! Constructor
     Document(uint32_t i, float v) : index(i), score(v) {}
 
     //! Constructor
-    Document(const Document &rhs) : index(rhs.index), score(rhs.score) {}
+    Document(const Document &rhs) = default;
 
     //! Assignment
-    Document &operator=(const Document &rhs) {
-      index = rhs.index;
-      score = rhs.score;
-      return *this;
-    }
+    Document &operator=(const Document &rhs) = default;
 
     //! Less than
     bool operator<(const Document &rhs) const {
@@ -53,19 +49,19 @@ class Seeker {
 
  public:
   //! Destructor
-  virtual ~Seeker(void) {}
+  virtual ~Seeker() = default;
 
   virtual int init(const IndexMeta &meta) = 0;
 
-  virtual int cleanup(void) = 0;
+  virtual int cleanup() = 0;
 
-  virtual int reset(void) = 0;
+  virtual int reset() = 0;
 
   virtual int mount(IndexFeatures::Pointer feats) = 0;
 
   virtual int seek(const void *query, size_t len, Document *out) = 0;
 
-  virtual IndexFeatures::Pointer original(void) const = 0;
+  virtual IndexFeatures::Pointer original() const = 0;
 };
 
 }  // namespace core

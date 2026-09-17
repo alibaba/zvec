@@ -250,6 +250,15 @@ int IndexFlow::load_internal() {
   } else {
     // Using user searcher
     searcher_ = user_searcher_;
+    if (query_quantizer_) {
+      ret = searcher_->init(searcher_->params(), query_quantizer_);
+      if (ret < 0 && ret != IndexError_NotImplemented) {
+        LOG_ERROR("Failed to initialize user searcher %s with quantizer",
+                  searcher_->name().c_str());
+        searcher_ = nullptr;
+        return ret;
+      }
+    }
   }
 
   ret = searcher_->load(storage_, metric_);
@@ -265,7 +274,7 @@ int IndexFlow::load_internal() {
   return 0;
 }
 
-int IndexFlow::unload(void) {
+int IndexFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {
@@ -776,7 +785,7 @@ int IndexSparseFlow::load_internal() {
   return 0;
 }
 
-int IndexSparseFlow::unload(void) {
+int IndexSparseFlow::unload() {
   if (searcher_) {
     int ret = searcher_->unload();
     if (ret < 0) {

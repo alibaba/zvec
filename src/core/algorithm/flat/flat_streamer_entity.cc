@@ -59,16 +59,22 @@ int FlatContiguousStreamerEntity::evaluate_distances(
       return;
     }
     distances.resize(vector_ptrs.size());
-    const auto &batch_distance_func = batch_distance();
-    if (batch_distance_func) {
-      batch_distance_func(vector_ptrs.data(), batch_query, vector_ptrs.size(),
-                          meta().dimension(), distances.data(),
-                          has_extra_values ? extra_values.data() : nullptr);
+    if (quantizer()) {
+      quantizer()->calc_distance_dp_query_batch(
+          vector_ptrs.data(), static_cast<int>(vector_ptrs.size()), query,
+          distances.data());
     } else {
-      const auto &distance_func = distance();
-      for (size_t i = 0; i < vector_ptrs.size(); ++i) {
-        distance_func(query, vector_ptrs[i], meta().dimension(),
-                      distances.data() + i);
+      const auto &batch_distance_func = batch_distance();
+      if (batch_distance_func) {
+        batch_distance_func(vector_ptrs.data(), batch_query, vector_ptrs.size(),
+                            meta().dimension(), distances.data(),
+                            has_extra_values ? extra_values.data() : nullptr);
+      } else {
+        const auto &distance_func = distance();
+        for (size_t i = 0; i < vector_ptrs.size(); ++i) {
+          distance_func(query, vector_ptrs[i], meta().dimension(),
+                        distances.data() + i);
+        }
       }
     }
     if (context_stats) {
@@ -171,28 +177,31 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   storage_ = storage;
 
   //! Create the distance calculator
-  auto metric = IndexFactory::CreateMetric(index_meta_.metric_name());
-  if (!metric) {
-    LOG_ERROR("Failed to create metric %s", index_meta_.metric_name().c_str());
-    return IndexError_NoExist;
-  }
-  int ret = metric->init(index_meta_, index_meta_.metric_params());
-  if (ret != 0) {
-    LOG_ERROR("Failed to initialize metric %s",
-              index_meta_.metric_name().c_str());
-    return ret;
-  }
-  row_distance_ = metric->distance();
-  column_distance_ =
-      metric->distance_matrix(meta_.header.block_vector_count, 1);
-  batch_distance_ = metric->batch_distance();
-  batch_query_preprocess_ = metric->get_query_preprocess_func();
-  extra_values_size_ = metric->extra_values_size_per_vector();
-  if (extra_values_size_ != 0 &&
-      extra_values_size_ >= index_meta_.element_size()) {
-    LOG_ERROR("Invalid Flat vector layout, vector_size=%u extra_size=%zu",
-              index_meta_.element_size(), extra_values_size_);
-    return IndexError_InvalidArgument;
+  if (!quantizer_) {
+    auto metric = IndexFactory::CreateMetric(index_meta_.metric_name());
+    if (!metric) {
+      LOG_ERROR("Failed to create metric %s",
+                index_meta_.metric_name().c_str());
+      return IndexError_NoExist;
+    }
+    int ret = metric->init(index_meta_, index_meta_.metric_params());
+    if (ret != 0) {
+      LOG_ERROR("Failed to initialize metric %s",
+                index_meta_.metric_name().c_str());
+      return ret;
+    }
+    row_distance_ = metric->distance();
+    column_distance_ =
+        metric->distance_matrix(meta_.header.block_vector_count, 1);
+    batch_distance_ = metric->batch_distance();
+    batch_query_preprocess_ = metric->get_query_preprocess_func();
+    extra_values_size_ = metric->extra_values_size_per_vector();
+    if (extra_values_size_ != 0 &&
+        extra_values_size_ >= index_meta_.element_size()) {
+      LOG_ERROR("Invalid Flat vector layout, vector_size=%u extra_size=%zu",
+                index_meta_.element_size(), extra_values_size_);
+      return IndexError_InvalidArgument;
+    }
   }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
@@ -201,7 +210,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   return 0;
 }
 
-int FlatStreamerEntity::close(void) {
+int FlatStreamerEntity::close() {
   segments_.clear();
   storage_.reset();
   key_info_map_lock_.reset();
@@ -222,7 +231,7 @@ int FlatStreamerEntity::close(void) {
   return 0;
 }
 
-int FlatStreamerEntity::flush_linear_meta(void) {
+int FlatStreamerEntity::flush_linear_meta() {
   if (!storage_) {
     return 0;
   }
@@ -470,7 +479,7 @@ int FlatStreamerEntity::search_bf(const void *query, const IndexFilter &filter,
   return this->search(query, filter, &scan_count, heap, context_stats);
 }
 
-FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
+FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
   std::vector<IndexStorage::Segment::Pointer> segments;
   {
     std::lock_guard<std::mutex> lock(segments_mutex_);
@@ -494,6 +503,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
   // entity->reformer_ = this->reformer_;
   entity->segments_ = std::move(segments);
   entity->meta_ = this->meta_;
+  entity->quantizer_ = this->quantizer_;
   entity->key_info_map_lock_ = this->key_info_map_lock_;
   entity->key_info_map_ = this->key_info_map_;
   entity->id_key_vector_ = this->id_key_vector_;
@@ -586,7 +596,7 @@ int FlatContiguousStreamerEntity::search_by_p_keys(
                             scratch, nullptr, heap);
 }
 
-int FlatContiguousStreamerEntity::build_contiguous_memory(void) {
+int FlatContiguousStreamerEntity::build_contiguous_memory() {
   degrade_to_mmap();
 
   const size_t count = use_key_info_map() ? id_key_count() : vector_count();
@@ -654,7 +664,7 @@ int FlatContiguousStreamerEntity::build_contiguous_memory(void) {
   return 0;
 }
 
-void FlatContiguousStreamerEntity::degrade_to_mmap(void) {
+void FlatContiguousStreamerEntity::degrade_to_mmap() {
   std::shared_ptr<const ContiguousStorage> empty;
   auto storage = std::atomic_exchange_explicit(
       &contiguous_storage_, std::move(empty), std::memory_order_acq_rel);
@@ -663,7 +673,7 @@ void FlatContiguousStreamerEntity::degrade_to_mmap(void) {
   }
 }
 
-int FlatContiguousStreamerEntity::close(void) {
+int FlatContiguousStreamerEntity::close() {
   degrade_to_mmap();
   return FlatStreamerEntity::close();
 }
@@ -765,8 +775,7 @@ int FlatStreamerEntity::get_vector_by_key(
   return 0;
 }
 
-IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator(
-    void) const {
+IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
   auto entity = this->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone entity");
@@ -777,7 +786,7 @@ IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator(
                                FlatStreamerEntity::Iterator(std::move(entity)));
 }
 
-void FlatStreamerEntity::Iterator::read_next_block(void) {
+void FlatStreamerEntity::Iterator::read_next_block() {
   auto block_size = entity_->linear_block_size();
   while (segment_id_ < entity_->segments_.size()) {
     auto &segment = entity_->segments_[segment_id_];
@@ -940,17 +949,25 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
               mt->header.index_meta_size);
     return IndexError_InvalidFormat;
   }
+  if (!turbo::QuantizerStorageDataTypeMatches(index_meta, index_meta_)) {
+    LOG_ERROR("Unmatched or invalid quantizer storage precision");
+    return IndexError_Mismatch;
+  }
   if (index_meta.data_type() != index_meta_.data_type() ||
       index_meta.dimension() != index_meta_.dimension() ||
       index_meta.element_size() != index_meta_.element_size() ||
-      index_meta.metric_name() != index_meta_.metric_name()) {
+      index_meta.metric_name() != index_meta_.metric_name() ||
+      index_meta.quantizer_name() != index_meta_.quantizer_name()) {
     LOG_ERROR(
-        "Unmatch IndexMeta, Index(type=%u dim=%u elemsize=%u "
-        "metric=%s) Setting(type=%u dim=%u elemsize=%u metric=%s)",
+        "Unmatch IndexMeta, Index(type=%u dim=%u elemsize=%u metric=%s "
+        "quantizer=%s) Setting(type=%u dim=%u elemsize=%u metric=%s "
+        "quantizer=%s)",
         index_meta.data_type(), index_meta.dimension(),
         index_meta.element_size(), index_meta.metric_name().c_str(),
-        index_meta_.data_type(), index_meta_.dimension(),
-        index_meta_.element_size(), index_meta_.metric_name().c_str());
+        index_meta.quantizer_name().c_str(), index_meta_.data_type(),
+        index_meta_.dimension(), index_meta_.element_size(),
+        index_meta_.metric_name().c_str(),
+        index_meta_.quantizer_name().c_str());
     return IndexError_Mismatch;
   }
   // Segment Size can be reconfigurable
@@ -1099,7 +1116,7 @@ int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
   return 0;
 }
 
-int FlatStreamerEntity::alloc_segment(void) {
+int FlatStreamerEntity::alloc_segment() {
   // add()/add_vector_with_id() serialize allocation with mutex_. Keep the
   // cache lock out of storage allocation, which may wait for reader pins.
   size_t index;

@@ -28,10 +28,10 @@ class IVFCentroidIndex {
   typedef std::shared_ptr<IVFCentroidIndex> Pointer;
 
   //! Constructor
-  IVFCentroidIndex(void) {}
+  IVFCentroidIndex() = default;
 
   //! Destructor
-  ~IVFCentroidIndex(void) {
+  ~IVFCentroidIndex() {
     IndexMemory *instance = IndexMemory::Instance();
     if (instance) {
       if (instance->has(path_)) {
@@ -51,12 +51,12 @@ class IVFCentroidIndex {
   }
 
   //! Retrieve data address of the index
-  const void *data(void) const {
+  const void *data() const {
     return data_;
   }
 
   //! Retrieve size of the index
-  size_t size(void) const {
+  size_t size() const {
     return size_;
   }
 
@@ -84,7 +84,7 @@ class IVFCentroidIndex {
   int load(const IndexStorage::Pointer &container, const ailego::Params params);
 
   //! Retrieve centroid count of the index
-  size_t centroids_count(void) const {
+  size_t centroids_count() const {
     return centroids_count_;
   }
 
@@ -94,7 +94,7 @@ class IVFCentroidIndex {
   }
 
   //! Retrieve reformer of the index
-  const IndexReformer::Pointer reformer(void) const {
+  const IndexReformer::Pointer reformer() const {
     return reformer_;
   }
 
@@ -114,25 +114,25 @@ class IVFCentroidIndex {
       Iterator(std::vector<const void *> *features) : features_(features) {}
 
       //! Destructor
-      ~Iterator(void) override {}
+      ~Iterator() override = default;
 
       //! Retrieve pointer of data
-      const void *data(void) const override {
+      const void *data() const override {
         return (*features_)[id_];
       }
 
       //! Test if the iterator is valid
-      bool is_valid(void) const override {
+      bool is_valid() const override {
         return id_ < features_->size();
       }
 
       //! Retrieve primary key
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return id_;
       }
 
       //! Next iterator
-      void next(void) override {
+      void next() override {
         ++id_;
       }
 
@@ -168,32 +168,32 @@ class IVFCentroidIndex {
     }
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
-    size_t count(void) const override {
+    size_t count() const override {
       return features_.size();
     }
 
     //! Retrieve dimension
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return dimension_;
     }
 
     //! Retrieve type information
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return data_type_;
     }
 
     //! Retrieve element size in bytes
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return element_size_;
     }
 
     //! Retrieve if it can multi-pass
-    bool multipass(void) const override {
+    bool multipass() const override {
       return true;
     }
 
     //! Create a new iterator
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       return IndexHolder::Iterator::Pointer(
           new CentroidsIndexHolder::Iterator(&features_));
     }

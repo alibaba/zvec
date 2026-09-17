@@ -115,7 +115,7 @@ int IVFDumper::dump_container_segment(const IndexStorage::Pointer &container,
   return 0;
 }
 
-int IVFDumper::dump_inverted_vector_finished(void) {
+int IVFDumper::dump_inverted_vector_finished() {
   //! Dump Inverted Index Segment
   if (!block_.empty()) {
     int ret = this->dump_block();
@@ -312,7 +312,7 @@ int IVFDumper::check_dump_inverted_list(uint32_t inverted_list_id) {
   return 0;
 }
 
-int IVFDumper::dump_offsets_segment(void) const {
+int IVFDumper::dump_offsets_segment() const {
   bool col_pri = meta_.major_order() == IndexMeta::MajorOrder::MO_COLUMN;
   size_t total_size = 0;
   for (size_t i = 0; i < inverted_lists_meta_.size(); ++i) {
@@ -403,7 +403,7 @@ int IVFDumper::dump_padding(size_t data_size, size_t *padding_size) const {
   return 0;
 }
 
-int IVFDumper::dump_block(void) {
+int IVFDumper::dump_block() {
   if (block_.empty()) {
     return 0;
   }

@@ -23,7 +23,7 @@ namespace zvec {
 namespace core {
 
 template <size_t BATCH_SIZE>
-IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider(void) const {
+IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider() const {
   std::lock_guard<std::mutex> lock(mapping_mutex_);
 
   if (mapping_.empty()) {
@@ -48,17 +48,15 @@ IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider(void) const {
       return nullptr;
     }
 
-    const uint32_t *mapping = nullptr;
-    if (mapping_segment->read(0, reinterpret_cast<const void **>(&mapping),
-                              mapping_segment->data_size()) !=
+    mapping_.resize(mapping_count);
+    if (mapping_segment->fetch(0, mapping_.data(),
+                               mapping_segment->data_size()) !=
         mapping_segment->data_size()) {
       LOG_ERROR("Failed to read data (%zu bytes) from mapping segment",
                 mapping_segment->data_size());
+      mapping_.clear();
       return nullptr;
     }
-    mapping_.clear();
-    mapping_.reserve(mapping_count);
-    std::copy(mapping, mapping + mapping_count, std::back_inserter(mapping_));
   }
   return IndexProvider::Pointer(new (std::nothrow)
                                     FlatSearcherProvider<BATCH_SIZE>(this));
@@ -80,53 +78,86 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     return error_code;
   }
 
-  if (!measure) {
-    error_code = InitializeMetric(meta_, &measure_);
-    if (error_code != 0) {
-      LOG_ERROR("Failed to initialize index measure %s, error=%d, %s",
-                meta_.metric_name().c_str(), error_code,
-                IndexError::What(error_code));
-      return error_code;
-    }
-    if (measure_->query_metric()) {
-      measure_ = measure_->query_metric();
-    }
-  } else {
-    if (!measure->is_matched(meta_)) {
-      LOG_ERROR(
-          "The index measure is unmatched with index meta from container.");
-      return IndexError_Mismatch;
-    }
-    measure_ = std::move(measure);
-  }
-
   column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
+
+  legacy_quantizer_layout_ = false;
+  distance_matrix_ = {};
   if (quantizer_) {
-    const auto &code_meta = quantizer_->meta();
-    const bool floating = code_meta.data_type() == IndexMeta::DT_FP32 ||
-                          code_meta.data_type() == IndexMeta::DT_FP16;
-    if (!floating || code_meta.data_type() != meta_.data_type() ||
-        code_meta.metric_name() != meta_.metric_name() ||
-        quantizer_->quantized_datapoint_vector_length() !=
-            meta_.element_size() ||
-        quantizer_->quantized_query_vector_length() != meta_.element_size()) {
-      LOG_ERROR("Flat distance quantizer does not match stored vectors");
+    const auto &quantizer_meta = quantizer_->meta();
+    const bool floating = quantizer_meta.data_type() == IndexMeta::DT_FP32 ||
+                          quantizer_meta.data_type() == IndexMeta::DT_FP16;
+    // IVF distance quantizers operate on already converted centroid records.
+    // Legacy cosine records include the norm tail in dimension(), while Turbo
+    // describes the same bytes as extra metadata.
+    legacy_quantizer_layout_ = floating && meta_.quantizer_name().empty() &&
+                               quantizer_meta.quantizer_name().empty();
+    if (column_major_order_ && !legacy_quantizer_layout_) {
+      LOG_ERROR("Quantizer distance does not support column index.");
+      return IndexError_Unsupported;
+    }
+    // Flat requires the same physical record layout for data and queries.
+    if (quantizer_->quantized_query_vector_length() !=
+        quantizer_->quantized_datapoint_vector_length()) {
+      LOG_ERROR("Quantizer query layout does not support flat index.");
+      return IndexError_Unsupported;
+    }
+    const bool same_dimensions =
+        meta_.dimension() == quantizer_meta.dimension() &&
+        meta_.extra_meta_size() == quantizer_meta.extra_meta_size();
+    const bool legacy_cosine_dimensions =
+        legacy_quantizer_layout_ && meta_.metric_name() == "Cosine" &&
+        meta_.extra_meta_size() == 0 &&
+        quantizer_meta.extra_meta_size() == sizeof(float) &&
+        meta_.dimension() == quantizer_meta.dimension() +
+                                 sizeof(float) / quantizer_meta.unit_size();
+    if (meta_.meta_type() != IndexMeta::MT_DENSE ||
+        meta_.meta_type() != quantizer_meta.meta_type() ||
+        meta_.data_type() != quantizer_meta.data_type() ||
+        (!same_dimensions && !legacy_cosine_dimensions) ||
+        meta_.unit_size() != quantizer_meta.unit_size() ||
+        meta_.element_size() != quantizer_meta.element_size() ||
+        meta_.element_size() !=
+            quantizer_->quantized_datapoint_vector_length() ||
+        meta_.metric_name() != quantizer_meta.metric_name()) {
+      LOG_ERROR("The quantizer is unmatched with index meta from container.");
       return IndexError_Mismatch;
     }
-    distance_matrix_.initialize(quantizer_);
-  } else {
-    distance_matrix_.initialize(*measure_);
-  }
-
-  if (column_major_order_) {
-    if (!distance_matrix_.is_valid()) {
-      LOG_ERROR("Lack of distance functions to support column index.");
-      return IndexError_Unsupported;
+    if (legacy_quantizer_layout_) {
+      distance_matrix_.initialize(quantizer_);
     }
+    measure_.reset();
   } else {
-    if (!distance_matrix_.is_valid(1, 1)) {
-      LOG_ERROR("Lack of distance functions to support row index.");
-      return IndexError_Unsupported;
+    if (!measure) {
+      error_code = InitializeMetric(meta_, &measure_);
+      if (error_code != 0) {
+        LOG_ERROR("Failed to initialize index measure %s, error=%d, %s",
+                  meta_.metric_name().c_str(), error_code,
+                  IndexError::What(error_code));
+        return error_code;
+      }
+      if (measure_->query_metric()) {
+        measure_ = measure_->query_metric();
+      }
+    } else {
+      if (!measure->is_matched(meta_)) {
+        LOG_ERROR(
+            "The index measure is unmatched with index meta from container.");
+        return IndexError_Mismatch;
+      }
+      measure_ = std::move(measure);
+    }
+    distance_matrix_.initialize(*measure_);
+
+    if (column_major_order_) {
+      if (!distance_matrix_.is_valid()) {
+        LOG_ERROR("Lack of distance functions to support column index.");
+        return IndexError_Unsupported;
+      }
+    } else {
+      if (!distance_matrix_.is_valid(1, 1)) {
+        LOG_ERROR("Lack of distance functions to support row index.");
+        return IndexError_Unsupported;
+      }
     }
   }
 
@@ -154,13 +185,14 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     return IndexError_Mismatch;
   }
 
-  if (keys_segment->read(0, reinterpret_cast<const void **>(&keys_),
-                         keys_segment->data_size()) !=
+  keys_block_.reset();
+  if (keys_segment->read(0, keys_block_, keys_segment->data_size()) !=
       keys_segment->data_size()) {
     LOG_ERROR("Failed to read data (%zu bytes) from keys segment",
               keys_segment->data_size());
     return IndexError_ReadData;
   }
+  keys_ = static_cast<const uint64_t *>(keys_block_.data());
 
   for (size_t i = 0; i < keys_count; i++) {
     key_id_mapping_[keys_[i]] = i;
@@ -174,11 +206,46 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
 }
 
 template <size_t BATCH_SIZE>
+int FlatSearcher<BATCH_SIZE>::check_query_meta(
+    const IndexQueryMeta &qmeta) const {
+  if (legacy_quantizer_layout_) {
+    if (qmeta.meta_type() != meta_.meta_type() ||
+        qmeta.data_type() != meta_.data_type() ||
+        qmeta.dimension() != meta_.dimension() ||
+        qmeta.unit_size() != meta_.unit_size() ||
+        qmeta.extra_meta_size() != meta_.extra_meta_size() ||
+        qmeta.element_size() != quantizer_->quantized_query_vector_length()) {
+      LOG_ERROR("The query meta is unmatched with stored centroid records.");
+      return IndexError_Mismatch;
+    }
+  } else if (quantizer_) {
+    const auto &quantizer_meta = quantizer_->meta();
+    if (qmeta.meta_type() != quantizer_meta.meta_type() ||
+        qmeta.data_type() != quantizer_meta.data_type() ||
+        qmeta.dimension() != quantizer_meta.dimension() ||
+        qmeta.unit_size() != quantizer_meta.unit_size() ||
+        qmeta.quantize_type() != static_cast<uint32_t>(quantizer_->type()) ||
+        qmeta.extra_meta_size() != quantizer_meta.extra_meta_size() ||
+        qmeta.element_size() != quantizer_->quantized_query_vector_length()) {
+      LOG_ERROR("The query meta is unmatched with the quantizer.");
+      return IndexError_Mismatch;
+    }
+  } else {
+    ailego_assert(measure_->is_matched(meta_, qmeta));
+  }
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
 int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
                                           const IndexQueryMeta &qmeta,
                                           Context::Pointer &context) const {
+  if (!container_) return IndexError_NoReady;
   ailego_assert(query && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  int error_code = this->check_query_meta(qmeta);
+  if (error_code != 0) {
+    return error_code;
+  }
 
   FlatSearcherContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatSearcherContext<BATCH_SIZE> *>(context.get());
@@ -190,6 +257,7 @@ int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
   if (bf_context->magic() != magic_) {
     bf_context->reset(this);
   }
+  if (!bf_context->threshold_is_valid()) return IndexError_NoReady;
   if (bf_context->group_by_search()) {
     return bf_context->group_by_search_impl(query, qmeta, 1);
   } else {
@@ -203,8 +271,12 @@ int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
                                           const IndexQueryMeta &qmeta,
                                           uint32_t count,
                                           Context::Pointer &context) const {
+  if (!container_) return IndexError_NoReady;
   ailego_assert(query && count && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  int error_code = this->check_query_meta(qmeta);
+  if (error_code != 0) {
+    return error_code;
+  }
 
   FlatSearcherContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatSearcherContext<BATCH_SIZE> *>(context.get());
@@ -216,6 +288,8 @@ int FlatSearcher<BATCH_SIZE>::search_impl(const void *query,
   if (bf_context->magic() != magic_) {
     bf_context->reset(this);
   }
+
+  if (!bf_context->threshold_is_valid()) return IndexError_NoReady;
 
   if (bf_context->group_by_search()) {
     return bf_context->group_by_search_impl(query, qmeta, count);
@@ -230,8 +304,12 @@ int FlatSearcher<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (!container_) return IndexError_NoReady;
   ailego_assert(query && count && !!context);
-  ailego_assert(measure_->is_matched(meta_, qmeta));
+  int error_code = this->check_query_meta(qmeta);
+  if (error_code != 0) {
+    return error_code;
+  }
 
   if (ailego_unlikely(p_keys.size() != count)) {
     LOG_ERROR("The size of p_keys is not equal to count");
@@ -249,12 +327,15 @@ int FlatSearcher<BATCH_SIZE>::search_bf_by_p_keys_impl(
     bf_context->reset(this);
   }
 
+  if (!bf_context->threshold_is_valid()) return IndexError_NoReady;
+
   return bf_context->search_bf_by_p_keys_impl(query, p_keys, qmeta, count);
 }
 
 template <size_t BATCH_SIZE>
-IndexSearcher::Context::Pointer FlatSearcher<BATCH_SIZE>::create_context(
-    void) const {
+IndexSearcher::Context::Pointer FlatSearcher<BATCH_SIZE>::create_context()
+    const {
+  if (!container_) return nullptr;
   return IndexSearcher::Context::Pointer(
       new FlatSearcherContext<BATCH_SIZE>(this));
 }

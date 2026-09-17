@@ -50,15 +50,14 @@ class ScopeGuardImpl {
         tuple_(std::forward<TArgs>(args)...) {}
 
   // Destructor
-  ~ScopeGuardImpl(void) {
+  ~ScopeGuardImpl() {
     if (obj_) {
       Functor::Run(obj_, impl_, tuple_);
     }
   }
 
- protected:
   //! Disable them
-  ScopeGuardImpl(void) = delete;
+  ScopeGuardImpl() = delete;
   ScopeGuardImpl(const ScopeGuardImpl &) = delete;
   ScopeGuardImpl &operator=(const ScopeGuardImpl &) = delete;
 
@@ -98,15 +97,14 @@ class ScopeGuardImpl<void, TFunc> {
         valid_(true) {}
 
   // Destructor
-  ~ScopeGuardImpl(void) {
+  ~ScopeGuardImpl() {
     if (valid_) {
       Functor::Run(impl_, tuple_);
     }
   }
 
- protected:
   //! Disable them
-  ScopeGuardImpl(void) = delete;
+  ScopeGuardImpl() = delete;
   ScopeGuardImpl(const ScopeGuardImpl &) = delete;
   ScopeGuardImpl &operator=(const ScopeGuardImpl &) = delete;
 

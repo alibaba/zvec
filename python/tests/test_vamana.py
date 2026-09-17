@@ -272,9 +272,18 @@ class TestVamanaIndexParamSurface:
         with pytest.raises(AttributeError, match=match_pattern):
             setattr(param, field, getattr(param, field))
 
-    def test_pickle_roundtrip(self):
+    @pytest.mark.parametrize(
+        "metric_type,quantize_type",
+        [
+            (MetricType.COSINE, QuantizeType.INT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT7),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT8),
+            (MetricType.L2, QuantizeType.UNIFORM_UINT4),
+        ],
+    )
+    def test_pickle_roundtrip(self, metric_type, quantize_type):
         original = VamanaIndexParam(
-            metric_type=MetricType.COSINE,
+            metric_type=metric_type,
             max_degree=48,
             search_list_size=120,
             alpha=1.4,
@@ -282,13 +291,13 @@ class TestVamanaIndexParamSurface:
             use_contiguous_memory=True,
             use_id_map=False,
             two_pass_build=True,
-            quantize_type=QuantizeType.INT8,
+            quantize_type=quantize_type,
             use_flat_contiguous_memory=True,
             flat_data_type=DataType.VECTOR_FP16,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
-        assert restored.metric_type == MetricType.COSINE
+        assert restored.metric_type == metric_type
         assert restored.max_degree == 48
         assert restored.search_list_size == 120
         assert restored.alpha == pytest.approx(1.4)
@@ -296,7 +305,7 @@ class TestVamanaIndexParamSurface:
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
         assert restored.two_pass_build is True
-        assert restored.quantize_type == QuantizeType.INT8
+        assert restored.quantize_type == quantize_type
         assert restored.use_flat_contiguous_memory is True
         assert restored.flat_data_type == DataType.VECTOR_FP16
         # to_dict equality is the strongest end-to-end equivalence we have.

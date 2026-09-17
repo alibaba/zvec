@@ -30,35 +30,35 @@ class IndexMapping {
   class Segment {
    public:
     //! Constructor
-    Segment(void) {}
+    Segment() = default;
 
     //! Constructor
     Segment(IndexFormat::SegmentMeta *segmeta) : meta_(segmeta) {}
 
     //! Flush the segment
-    bool flush(void) const {
+    bool flush() const {
       ailego_false_if_false(this->meta_ && this->data_);
       return ailego::File::MemoryFlush(
           this->data_, this->meta_->data_size + this->meta_->padding_size);
     }
 
     //! Retrieve mapping address of the segment
-    void *data(void) const {
+    void *data() const {
       return data_;
     }
 
     //! Retrieve pointer of SegmentMeta
-    IndexFormat::SegmentMeta *meta(void) const {
+    IndexFormat::SegmentMeta *meta() const {
       return meta_;
     }
 
     //! Retrieve dirty flag of the segment
-    bool dirty(void) const {
+    bool dirty() const {
       return dirty_;
     }
 
     //! Set the segment as dirty
-    void set_dirty(void) const {
+    void set_dirty() const {
       dirty_ = true;
     }
 
@@ -71,7 +71,7 @@ class IndexMapping {
     }
 
     //! Clear the dirty flag
-    void reset_dirty(void) const {
+    void reset_dirty() const {
       dirty_ = false;
     }
 
@@ -89,7 +89,7 @@ class IndexMapping {
   };
 
   //! Constructor
-  IndexMapping(void) {}
+  IndexMapping() = default;
 
   //! Constructor
   IndexMapping(IndexMapping &&rhs)
@@ -127,7 +127,7 @@ class IndexMapping {
   int create(const std::string &path, size_t segs_size);
 
   //! Close the index
-  void close(void);
+  void close();
 
   //! Refresh meta information (checksum, update time, etc.)
   void refresh(uint64_t check_point);
@@ -142,10 +142,10 @@ class IndexMapping {
   void unmap(const std::string &id);
 
   //! Unmap all segments
-  void unmap_all(void);
+  void unmap_all();
 
   //! Flush the index mapping
-  int flush(void);
+  int flush();
 
   //! Test if the segment is exist
   bool has(const std::string &id) const {
@@ -153,27 +153,27 @@ class IndexMapping {
   }
 
   //! Retrieve count of segments
-  size_t segment_count(void) const {
+  size_t segment_count() const {
     return segments_.size();
   }
 
   //! Retrieve size of index mapping
-  size_t index_size(void) const {
+  size_t index_size() const {
     return index_size_;
   }
 
   //! Retrieve magic number of index
-  uint32_t magic(void) const {
+  uint32_t magic() const {
     return (header_ ? header_->magic : 0);
   }
 
   //! Retrieve header information
-  const IndexFormat::MetaHeader &header(void) const {
+  const IndexFormat::MetaHeader &header() const {
     return *header_;
   }
 
   //! Retrieve footer information
-  const IndexFormat::MetaFooter &footer(void) const {
+  const IndexFormat::MetaFooter &footer() const {
     return *footer_;
   }
 
@@ -195,11 +195,12 @@ class IndexMapping {
   int init_meta_section();
   int init_hugepage_meta_section();
 
- private:
+ public:
   //! Disable them
   IndexMapping(const IndexMapping &) = delete;
   IndexMapping &operator=(const IndexMapping &) = delete;
 
+ private:
   //! Members
   uint32_t segment_ids_offset_{0};
   IndexFormat::SegmentMeta *segment_start_{nullptr};

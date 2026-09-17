@@ -58,7 +58,7 @@ class ErrorCode {
 
  protected:
   //! Constructor
-  ErrorCode(void) : map_() {}
+  ErrorCode() : map_() {}
 
   //! Inserts a new code into map
   void emplace(const ErrorCode::Code *code) {
@@ -75,17 +75,18 @@ class ErrorCode {
   }
 
   //! Retrieve the singleton
-  static ErrorCode *Instance(void) {
+  static ErrorCode *Instance() {
     static ErrorCode error;
     return (&error);
   }
 
- private:
+ public:
   //! Disable them
   ErrorCode(const ErrorCode &) = delete;
   ErrorCode(ErrorCode &&) = delete;
   ErrorCode &operator=(const ErrorCode &) = delete;
 
+ private:
   //! Error code map
   std::map<int, const ErrorCode::Code *> map_;
 };

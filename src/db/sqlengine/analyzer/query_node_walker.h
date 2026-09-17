@@ -28,7 +28,10 @@ enum class ControlOp { CONTINUE, BREAK };
 
 class SearchCondCheckWalker {
  public:
-  SearchCondCheckWalker(const zvec::CollectionSchema &table_ptr);
+  enum class Mode { ANALYZE, VALIDATE_ONLY };
+
+  SearchCondCheckWalker(const zvec::CollectionSchema &table_ptr,
+                        Mode mode = Mode::ANALYZE);
   ControlOp traverse_cond_node(const QueryNode::Ptr &query_node,
                                bool or_ancestor = false);
 
@@ -85,6 +88,7 @@ class SearchCondCheckWalker {
  private:
   std::string err_msg_;
   const CollectionSchema &table_ptr_;
+  Mode mode_{Mode::ANALYZE};
   std::vector<std::string> forward_filter_field_names_{};
 
   QueryRelNode *vector_rel_{nullptr};

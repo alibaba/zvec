@@ -76,7 +76,7 @@ class Factory {
     }
 
     //! Construct a register object
-    static TImpl *Construct(void) {
+    static TImpl *Construct() {
       return new (std::nothrow) TImpl();
     }
   };
@@ -102,13 +102,13 @@ class Factory {
   }
 
   //! Retrieve classes in factory
-  static std::vector<std::string> Classes(void) {
+  static std::vector<std::string> Classes() {
     return Factory::Instance()->classes();
   }
 
  protected:
   //! Constructor
-  Factory(void) : map_() {}
+  Factory() : map_() {}
 
   //! Retrieve the singleton factory.
   //!
@@ -137,7 +137,7 @@ class Factory {
   //! (its zero init is compile-time), so we use a leaked heap singleton with
   //! atomic double-checked locking. Only the atomic pointer itself needs to
   //! be unified across DSOs, and it merges cleanly as STT_GNU_UNIQUE.
-  static Factory *Instance(void) {
+  static Factory *Instance() {
     static std::atomic<Factory *> ptr{nullptr};
     Factory *cur = ptr.load(std::memory_order_acquire);
     if (cur) {
@@ -173,7 +173,7 @@ class Factory {
   }
 
   //! Retrieve classes in factory
-  std::vector<std::string> classes(void) const {
+  std::vector<std::string> classes() const {
     std::vector<std::string> vec;
     for (const auto &it : map_) {
       vec.push_back(std::string(it.first));
@@ -181,12 +181,13 @@ class Factory {
     return vec;
   }
 
- private:
+ public:
   //! Disable them
-  Factory(const Factory &);
-  Factory(Factory &&);
-  Factory &operator=(const Factory &);
+  Factory(const Factory &) = delete;
+  Factory(Factory &&) = delete;
+  Factory &operator=(const Factory &) = delete;
 
+ private:
   /*! Key Comparer
    */
   struct KeyComparer {

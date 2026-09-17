@@ -32,7 +32,7 @@ bool BinaryQuantizer::feed(const float *vec, size_t dim) {
 }
 
 //! Train the quantizer
-bool BinaryQuantizer::train(void) {
+bool BinaryQuantizer::train() {
   return true;
 }
 

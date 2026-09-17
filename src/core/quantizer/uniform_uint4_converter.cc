@@ -152,7 +152,7 @@ class UniformUint4Converter : public IndexConverter {
     return 0;
   }
 
-  int cleanup(void) override {
+  int cleanup() override {
     *stats_.mutable_trained_count() = 0;
     *stats_.mutable_transformed_count() = 0;
     holder_.reset();
@@ -204,8 +204,12 @@ class UniformUint4Converter : public IndexConverter {
         }
         size_t actual_records = 0;
         for (; iter->is_valid(); iter->next(), ++actual_records) {
+          const void *record = iter->data();
+          if (!record || !iter->is_valid()) {
+            return IndexError_ReadData;
+          }
           for (size_t d = 0; d < original_dimension_; ++d) {
-            const float value = SourceValue(iter->data(), source_type, d);
+            const float value = SourceValue(record, source_type, d);
             if (!std::isfinite(value)) {
               LOG_ERROR(
                   "UniformUint4Converter: non-finite training "
@@ -242,8 +246,12 @@ class UniformUint4Converter : public IndexConverter {
       if (!iter) return IndexError_Runtime;
       record_count = 0;
       for (; iter->is_valid(); iter->next(), ++record_count) {
+        const void *record = iter->data();
+        if (!record || !iter->is_valid()) {
+          return IndexError_ReadData;
+        }
         for (size_t d = 0; d < original_dimension_; ++d) {
-          const float value = SourceValue(iter->data(), source_type, d);
+          const float value = SourceValue(record, source_type, d);
           if (!std::isfinite(value)) return IndexError_InvalidArgument;
           minimum_ = std::min(minimum_, value);
           maximum = std::max(maximum, value);
@@ -287,13 +295,13 @@ class UniformUint4Converter : public IndexConverter {
   int dump(const IndexDumper::Pointer & /*dumper*/) override {
     return 0;
   }
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
-  IndexHolder::Pointer result(void) const override {
+  IndexHolder::Pointer result() const override {
     return holder_;
   }
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
@@ -319,16 +327,16 @@ class UniformUint4Converter : public IndexConverter {
         Encode();
       }
 
-      const void *data(void) const override {
+      const void *data() const override {
         return buffer_.data();
       }
-      bool is_valid(void) const override {
+      bool is_valid() const override {
         return front_->is_valid();
       }
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return front_->key();
       }
-      void next(void) override {
+      void next() override {
         front_->next();
         Encode();
       }
@@ -373,22 +381,22 @@ class UniformUint4Converter : public IndexConverter {
               turbo::get_uniform_uint4_quantize_func(turbo::DataType::kUint4)) {
     }
 
-    size_t count(void) const override {
+    size_t count() const override {
       return front_->count();
     }
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return encoded_dimension_;
     }
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return IndexMeta::DataType::DT_INT8;
     }
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return encoded_dimension_;
     }
-    bool multipass(void) const override {
+    bool multipass() const override {
       return front_->multipass();
     }
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       auto iter = front_->create_iterator();
       return iter ? IndexHolder::Iterator::Pointer(
                         new Iterator(this, std::move(iter)))

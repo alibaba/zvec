@@ -27,8 +27,8 @@ class DiskAnnSearcher : public IndexSearcher {
   using ContextPointer = IndexSearcher::Context::Pointer;
 
  public:
-  DiskAnnSearcher(void);
-  ~DiskAnnSearcher(void);
+  DiskAnnSearcher();
+  ~DiskAnnSearcher();
 
   DiskAnnSearcher(const DiskAnnSearcher &) = delete;
   DiskAnnSearcher &operator=(const DiskAnnSearcher &) = delete;
@@ -45,14 +45,14 @@ class DiskAnnSearcher : public IndexSearcher {
   int init(const ailego::Params &params) override;
 
   //! Cleanup Searcher
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Load Index from storage
   int load(IndexStorage::Pointer storage,
            IndexMetric::Pointer /*metric*/) override;
 
   //! Unload index from storage
-  int unload(void) override;
+  int unload() override;
 
   //! KNN Search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -117,22 +117,22 @@ class DiskAnnSearcher : public IndexSearcher {
   ContextPointer create_context() const override;
 
   //! Create a new iterator
-  IndexSearcher::Provider::Pointer create_provider(void) const override {
+  IndexSearcher::Provider::Pointer create_provider() const override {
     return nullptr;
   }
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
   //! Retrieve meta of index
-  const IndexMeta &meta(void) const override {
+  const IndexMeta &meta() const override {
     return meta_;
   }
 
   //! Retrieve params of index
-  const ailego::Params &params(void) const override {
+  const ailego::Params &params() const override {
     return params_;
   }
 

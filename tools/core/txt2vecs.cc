@@ -546,7 +546,7 @@ bool compute_sparse_offset(uint64_t num_vecs, const IndexMeta & /*meta*/,
 }
 
 template <typename T>
-bool process(void) {
+bool process() {
   if (FLAGS_vector_type == "sparse") {
     std::cout << "------------------------" << std::endl;
     std::cout << " Vector Type: sparse    " << std::endl;

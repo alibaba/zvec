@@ -15,6 +15,7 @@
 
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_meta.h>
+#include "utility/ordinal_access_holder.h"
 #include "ivf_centroid_index.h"
 
 namespace zvec {
@@ -46,7 +47,7 @@ class IVFBuilder : public IndexBuilder {
            const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
 
   //! Cleanup the builder
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Train the data
   int train(IndexThreads::Pointer threads,
@@ -63,7 +64,7 @@ class IVFBuilder : public IndexBuilder {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 
@@ -90,25 +91,25 @@ class IVFBuilder : public IndexBuilder {
       Iterator(RandomAccessIndexHolder *owner) : holder_(owner) {}
 
       //! Destructor
-      ~Iterator(void) override {}
+      ~Iterator() override = default;
 
       //! Retrieve pointer of data
-      const void *data(void) const override {
+      const void *data() const override {
         return holder_->element(id_);
       }
 
       //! Test if the iterator is valid
-      bool is_valid(void) const override {
+      bool is_valid() const override {
         return id_ < holder_->count();
       }
 
       //! Retrieve primary key
-      uint64_t key(void) const override {
+      uint64_t key() const override {
         return holder_->key(id_);
       }
 
       //! Next iterator
-      void next(void) override {
+      void next() override {
         ++id_;
       }
 
@@ -123,32 +124,32 @@ class IVFBuilder : public IndexBuilder {
         : features_(std::make_shared<CompactIndexFeatures>(meta)) {}
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
-    size_t count(void) const override {
+    size_t count() const override {
       return features_->count();
     }
 
     //! Retrieve dimension
-    size_t dimension(void) const override {
+    size_t dimension() const override {
       return features_->dimension();
     }
 
     //! Retrieve type information
-    IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type() const override {
       return features_->data_type();
     }
 
     //! Retrieve element size in bytes
-    size_t element_size(void) const override {
+    size_t element_size() const override {
       return features_->element_size();
     }
 
     //! Retrieve if it can multi-pass
-    bool multipass(void) const override {
+    bool multipass() const override {
       return true;
     }
 
     //! Create a new iterator
-    IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator() override {
       return IndexHolder::Iterator::Pointer(
           new RandomAccessIndexHolder::Iterator(this));
     }
@@ -175,10 +176,11 @@ class IVFBuilder : public IndexBuilder {
       return keys_[id];
     }
 
-   private:
+   public:
     //! Disable them
-    RandomAccessIndexHolder(void) = delete;
+    RandomAccessIndexHolder() = delete;
 
+   private:
     //! Members
     CompactIndexFeatures::Pointer features_{};
     std::vector<uint64_t> keys_{};
@@ -202,7 +204,7 @@ class IVFBuilder : public IndexBuilder {
       return vec_.size();
     }
 
-    uint32_t id(void) const {
+    uint32_t id() const {
       return id_;
     }
 
@@ -230,6 +232,9 @@ class IVFBuilder : public IndexBuilder {
 
   //! Dump the index to dumper
   int dump_index(const IndexDumper::Pointer &dumper);
+
+  //! Read one original vector; the returned data is consumed before next read.
+  int read_vector(size_t id, uint64_t *key, const void **data);
 
   //! Prepare the quantizer for inverted index
   int prepare_quantizer(IndexThreads *threads);
@@ -279,7 +284,7 @@ class IVFBuilder : public IndexBuilder {
 
  private:
   //! Constants
-  static constexpr size_t kThreadPoolQueueSize = 300u;
+  static constexpr size_t kLabelMemoryBudget = 4u * 1024u * 1024u;
   static constexpr size_t kBatchSize = 10u;
   static constexpr size_t kDefaultBlockCount = 32u;
 
@@ -301,6 +306,10 @@ class IVFBuilder : public IndexBuilder {
   IVFCentroidIndex::Pointer centroid_index_{};
   IVFCentroidIndex::Pointer searcher_centroid_index_{};
   RandomAccessIndexHolder::Pointer holder_{};
+  // Keep the immutable source alive through dump, including repeated dumps.
+  // The reader owns only a key map and at most one provider, never all vectors.
+  IndexHolder::Pointer source_holder_{};
+  OrdinalAccessHolder::Reader::Pointer source_reader_{};
   IndexMeta converted_meta_{};
   IndexConverter::Pointer converter_{};
   IndexMeta quantized_meta_{};

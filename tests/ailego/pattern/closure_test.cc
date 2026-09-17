@@ -20,7 +20,7 @@
 
 using namespace zvec;
 
-void GlobalProcess0(void) {}
+void GlobalProcess0() {}
 void GlobalProcess1(int) {}
 
 void GlobalProcess2(int a1, int *a2) {
@@ -64,7 +64,7 @@ void GlobalProcess7(int a1, int *a2, int &a3, const int &a4, volatile int *a5,
   EXPECT_EQ(*a6 + 1, a7);
 }
 
-size_t GlobalFunction0(void) {
+size_t GlobalFunction0() {
   return 0;
 }
 size_t GlobalFunction1(long) {
@@ -137,7 +137,7 @@ struct WithoutFunctionCall {
 };
 
 struct ClassA {
-  static void StaticProcess0(void) {}
+  static void StaticProcess0() {}
   static void StaticProcess1(int) {}
 
   static void StaticProcess2(int a1, int *a2) {
@@ -183,7 +183,7 @@ struct ClassA {
     EXPECT_EQ(*a6 + 1, a7);
   }
 
-  static size_t StaticFunction0(void) {
+  static size_t StaticFunction0() {
     return 0;
   }
   static size_t StaticFunction1(long) {
@@ -249,7 +249,7 @@ class ClassB {
     return a1 + b_;
   }
 
-  virtual void MemberProcess0(void) const {}
+  virtual void MemberProcess0() const {}
 
   virtual void MemberProcess1(int a1) {
     EXPECT_EQ(a1, b_);
@@ -303,7 +303,7 @@ class ClassB {
     EXPECT_EQ(*a6 + 1, a7);
   }
 
-  size_t MemberFunction0(void) {
+  size_t MemberFunction0() {
     return 0;
   }
   size_t MemberFunction1(long a1) {
@@ -372,42 +372,42 @@ class ClassB {
 
 class ClassAB {
  public:
-  void Run1(void) const {
+  void Run1() const {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::ConstFunc, &bbb);
   }
 
-  void Run2(void) {
+  void Run2() {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::ConstFunc, &bbb);
   }
 
-  void Run3(void) {
+  void Run3() {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::MutableFunc, &bbb);
   }
 
-  void Run4(void) const {
+  void Run4() const {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::VolatileConstFunc, &bbb);
   }
 
-  void Run5(void) {
+  void Run5() {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::VolatileMutableFunc, &bbb);
   }
 
-  void Run6(void) const volatile {
+  void Run6() const volatile {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::VolatileConstFunc, &bbb);
   }
 
-  void Run7(void) volatile {
+  void Run7() volatile {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::VolatileConstFunc, &bbb);
   }
 
-  void Run8(void) volatile {
+  void Run8() volatile {
     ClassB bbb(1);
     ailego::Closure::New(this, &ClassAB::VolatileMutableFunc, &bbb);
   }
@@ -978,7 +978,7 @@ TEST(Closure, Return) {
 }
 
 struct LeftValue {
-  LeftValue(void) {
+  LeftValue() {
     std::cout << "LeftValue(void)" << std::endl;
   }
   LeftValue(const LeftValue &) {
@@ -996,7 +996,7 @@ struct LeftValue {
 int LeftValue::count = 0;
 
 struct RightValue {
-  RightValue(void) {
+  RightValue() {
     std::cout << "RightValue(void)" << std::endl;
   }
   RightValue(const RightValue &) {

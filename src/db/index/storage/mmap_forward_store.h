@@ -48,7 +48,7 @@ class MmapForwardStore : public BaseForwardStore {
   /// Constructor that initializes the store with a file URI
   /// \param uri The URI of the file to be accessed
   MmapForwardStore(const std::string &uri);
-  virtual ~MmapForwardStore() {}
+  virtual ~MmapForwardStore() = default;
 
   Status Open() override;
 

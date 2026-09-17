@@ -82,23 +82,23 @@ class ZVEC_AILEGO_API ThreadPool {
     }
 
     //! Wait until all tasks in group finished
-    void wait_finish(void) {
+    void wait_finish() {
       std::unique_lock<std::mutex> lock(mutex_);
       cond_.wait(lock, [this]() { return this->is_finished(); });
     }
 
     //! Check if the group is finished
-    bool is_finished(void) const {
+    bool is_finished() const {
       return (active_count_ == 0 && pending_count_ == 0);
     }
 
     //! Retrieve count of pending tasks in group
-    size_t pending_count(void) const {
+    size_t pending_count() const {
       return pending_count_.load(std::memory_order_relaxed);
     }
 
     //! Retrieve count of active tasks in group
-    size_t active_count(void) const {
+    size_t active_count() const {
       return active_count_.load(std::memory_order_relaxed);
     }
 
@@ -106,19 +106,19 @@ class ZVEC_AILEGO_API ThreadPool {
     friend class ThreadPool;
 
     //! Mark a task enqueued
-    void mark_task_enqueued(void) {
+    void mark_task_enqueued() {
       ++pending_count_;
     }
 
     //! Mark a task actived
-    void mark_task_actived(void) {
+    void mark_task_actived() {
       std::lock_guard<std::mutex> lock(mutex_);
       ++active_count_;
       --pending_count_;
     }
 
     //! Notify a task finished
-    void notify(void) {
+    void notify() {
       std::lock_guard<std::mutex> lock(mutex_);
       if (--active_count_ == 0 && pending_count_ == 0) {
         cond_.notify_all();
@@ -150,10 +150,10 @@ class ZVEC_AILEGO_API ThreadPool {
   explicit ThreadPool(uint32_t size, bool binding);
 
   //! Constructor
-  ThreadPool(void);
+  ThreadPool();
 
   //! Destructor
-  ~ThreadPool(void) {
+  ~ThreadPool() {
     this->stop();
 
     // Join all threads
@@ -165,12 +165,12 @@ class ZVEC_AILEGO_API ThreadPool {
   }
 
   //! Retrieve thread count in pool
-  size_t count(void) const {
+  size_t count() const {
     return pool_.size();
   }
 
   //! Stop all threads
-  void stop(void) {
+  void stop() {
     // Set the stop flag while holding the same lock used by workers.
     std::lock_guard<std::mutex> lock(queue_mutex_);
     stopping_ = true;
@@ -212,56 +212,56 @@ class ZVEC_AILEGO_API ThreadPool {
   }
 
   //! Wake any one thread
-  void wake_any(void) {
+  void wake_any() {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     work_cond_.notify_one();
   }
 
   //! Wake all threads
-  void wake_all(void) {
+  void wake_all() {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     work_cond_.notify_all();
   }
 
   //! Wait until all threads finished processing
-  void wait_finish(void) {
+  void wait_finish() {
     std::unique_lock<std::mutex> lock(wait_mutex_);
     finished_cond_.wait(lock, [this]() { return this->is_finished(); });
   }
 
   //! Wait until all threads stopped processing
-  void wait_stop(void) {
+  void wait_stop() {
     std::unique_lock<std::mutex> lock(wait_mutex_);
     stopped_cond_.wait(lock, [this]() { return this->is_stopped(); });
   }
 
   //! Make a task group
-  TaskGroup::Pointer make_group(void) {
+  TaskGroup::Pointer make_group() {
     return std::make_shared<TaskGroup>(this);
   }
 
   //! Check if the pool is finished
-  bool is_finished(void) const {
+  bool is_finished() const {
     return (active_count_ == 0 && pending_count_ == 0);
   }
 
   //! Check if the pool is stopped
-  bool is_stopped(void) const {
+  bool is_stopped() const {
     return (worker_count_ == 0);
   }
 
   //! Retrieve count of worker in pool
-  size_t worker_count(void) const {
+  size_t worker_count() const {
     return worker_count_.load(std::memory_order_relaxed);
   }
 
   //! Retrieve count of pending tasks in pool
-  size_t pending_count(void) const {
+  size_t pending_count() const {
     return pending_count_.load(std::memory_order_relaxed);
   }
 
   //! Retrieve count of active tasks in pool
-  size_t active_count(void) const {
+  size_t active_count() const {
     return active_count_.load(std::memory_order_relaxed);
   }
 
@@ -276,29 +276,29 @@ class ZVEC_AILEGO_API ThreadPool {
   }
 
   //! Get the current work thread index
-  int indexof_this(void) const {
+  int indexof_this() const {
     return this->indexof(std::this_thread::get_id());
   }
 
   //! Bind threads to processors
-  void bind(void);
+  void bind();
 
   //! Unbind threads of processors
-  void unbind(void);
+  void unbind();
 
  protected:
   //! Thread task control
   class TaskControl {
    public:
     //! Notify task finished
-    void notify(void) {
+    void notify() {
       finished_ = true;
       std::lock_guard<std::mutex> lock(mutex_);
       cond_.notify_one();
     }
 
     //! Wait until task finished
-    void wait(void) {
+    void wait() {
       std::unique_lock<std::mutex> lock(mutex_);
       cond_.wait(lock, [this]() { return finished_.load(); });
     }
@@ -327,7 +327,7 @@ class ZVEC_AILEGO_API ThreadPool {
         : handle(std::move(h)), group(std::move(g)), control(c) {}
 
     // Constructor
-    Task(void) {}
+    Task() = default;
 
     //! Members
     ClosureHandler handle{};
@@ -336,7 +336,7 @@ class ZVEC_AILEGO_API ThreadPool {
   };
 
   //! Thread worker callback
-  void worker(void);
+  void worker();
 
   //! Pick a task from queue
   bool picking(Task *task);
@@ -386,12 +386,13 @@ class ZVEC_AILEGO_API ThreadPool {
     }
   }
 
- private:
+ public:
   //! Disable them
   ThreadPool(const ThreadPool &) = delete;
   ThreadPool(ThreadPool &&) = delete;
   ThreadPool &operator=(const ThreadPool &) = delete;
 
+ private:
   //! Members
   std::queue<Task> queue_{};
   std::atomic_bool stopping_{false};

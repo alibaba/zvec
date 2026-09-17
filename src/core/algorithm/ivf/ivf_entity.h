@@ -33,10 +33,10 @@ class IVFEntity {
   class IVFReformerWrapper;
 
   //! Constructor
-  IVFEntity() {}
+  IVFEntity() = default;
 
   //! Destructor
-  virtual ~IVFEntity() {}
+  virtual ~IVFEntity() = default;
 
   //! Disable them
   IVFEntity(const IVFEntity &) = delete;
@@ -70,7 +70,7 @@ class IVFEntity {
              IndexContext::Stats *context_stats) const;
 
   //! Clone the entity
-  virtual IVFEntity::Pointer clone(void) const;
+  virtual IVFEntity::Pointer clone() const;
 
   //! Clone the entity
   IVFEntity::Pointer clone(const IVFEntity::Pointer &entity) const;
@@ -89,27 +89,27 @@ class IVFEntity {
   }
 
   //! Retrieve the total vectors in the index
-  size_t vector_count(void) const {
+  size_t vector_count() const {
     return header_.total_vector_count;
   }
 
   //! Retrieve the inverted list count
-  size_t inverted_list_count(void) const {
+  size_t inverted_list_count() const {
     return header_.inverted_list_count;
   }
 
   //! Retrieve block size of the inverted vector
-  size_t inverted_block_size(void) const {
+  size_t inverted_block_size() const {
     return header_.block_size;
   }
 
   //! Retrieve the vectors count in one block
-  size_t block_vector_count(void) const {
+  size_t block_vector_count() const {
     return header_.block_vector_count;
   }
 
   //! Retrieve IndexMeta of the inverted index
-  const IndexMeta &meta(void) const {
+  const IndexMeta &meta() const {
     return meta_;
   }
 
@@ -266,7 +266,7 @@ class IVFEntity {
   }
 
   //! Retrieve reformer
-  const IVFReformerWrapper &reformer(void) const {
+  const IVFReformerWrapper &reformer() const {
     return reformer_;
   }
 
@@ -276,7 +276,7 @@ class IVFEntity {
   class IVFReformerWrapper {
    public:
     //! Constructor
-    IVFReformerWrapper() {}
+    IVFReformerWrapper() = default;
 
     //! Assignment
     IVFReformerWrapper &operator=(const IVFReformerWrapper &wrapper) {

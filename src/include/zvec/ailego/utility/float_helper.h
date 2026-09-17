@@ -63,7 +63,7 @@ struct ZVEC_AILEGO_API FloatHelper {
 class Float16 {
  public:
   //! Constructor
-  Float16(void) : value_(0) {}
+  Float16() : value_(0) {}
 
   //! Constructor
   Float16(float val) : value_(FloatHelper::ToFP16(val)) {}
@@ -152,7 +152,7 @@ class Float16 {
 class Float16 {
  public:
   //! Constructor
-  Float16(void) : value_(0) {}
+  Float16() : value_(0) {}
 
   //! Constructor
   Float16(__fp16 val) : value_(val) {}

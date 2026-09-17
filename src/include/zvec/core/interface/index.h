@@ -36,6 +36,10 @@
 #include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
 
+namespace zvec::turbo {
+class Quantizer;
+}  // namespace zvec::turbo
+
 namespace zvec::core_interface {
 
 class ZVEC_CORE_API IndexFactory;
@@ -243,6 +247,10 @@ class ZVEC_CORE_API Index {
   core::IndexReformer::Pointer reformer_{};
   core::IndexConverter::Pointer converter_{};  // for build()
   core::IndexMetric::Pointer metric_{};        // to do normalization
+  // Turbo quantizer for the FLAT-on-turbo path: quantizes records and
+  // queries and computes distances via turbo SIMD batch kernels. When set,
+  // converter_/reformer_/metric_ stay null.
+  std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
   size_t context_index_;
   core::IndexStorage::Pointer storage_{};
@@ -260,6 +268,12 @@ class ZVEC_CORE_API FlatIndex : public Index {
   // FlatIndex(const FlatIndexParam &param) : param_(param) {}
   // FlatIndex(FlatIndexParam &&param) : param(std::move(param)) {}
 
+  //! Open the index. A persisted legacy layout (created before the turbo
+  //! quantizers, i.e. no quantizer attachment in the stored meta) falls
+  //! back to the converter/reformer pipeline for compatibility. Turbo indexes
+  //! restore their persisted encoding options for queries and inserts.
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -272,6 +286,20 @@ class ZVEC_CORE_API FlatIndex : public Index {
                           core::IndexContext::Pointer &context) override;
 
  private:
+  //! Initialize the selected quantizer and synchronize encoding metadata.
+  int CreateAndInitTurboQuantizer(const std::string &name,
+                                  const ailego::Params &params);
+
+  //! Rebuild the legacy converter/reformer/metric/streamer pipeline,
+  //! dropping the turbo quantizer.
+  int FallbackToLegacyPipeline();
+
+  //! Create the legacy converter/reformer for combinations the turbo
+  //! quantizers cannot express (including the flat storage_data_type
+  //! converters).
+  int CreateAndInitLegacyConverterReformer(const QuantizerParam &param,
+                                           const BaseIndexParam &index_param);
+
   FlatIndexParam param_{};
 };
 
@@ -311,6 +339,13 @@ class ZVEC_CORE_API IVFIndex : public Index {
   int RestoreLegacyPipeline();
 
   std::shared_ptr<zvec::turbo::Quantizer> ivf_quantizer_{};
+
+  enum class BuildStage { kCollecting, kTrained, kBuilt, kDumped };
+
+  int ResetBuilder();
+  int DumpAndOpen();
+
+  BuildStage build_stage_{BuildStage::kCollecting};
   IVFIndexParam param_{};
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;

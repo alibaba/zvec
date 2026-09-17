@@ -31,6 +31,7 @@
 #include "avx2/record_quantized_int8/inner_product.h"
 #include "avx2/record_quantized_int8/squared_euclidean.h"
 #include "avx2/rotate/fht/fht.h"
+#include "avx2/rotate/opq/opq.h"
 #include "avx512/fp16/cosine.h"
 #include "avx512/fp16/inner_product.h"
 #include "avx512/fp16/squared_euclidean.h"
@@ -47,9 +48,8 @@
 #include "avx512/record_quantized_int8/inner_product.h"
 #include "avx512/record_quantized_int8/squared_euclidean.h"
 #include "avx512/rotate/fht/fht.h"
-#include "avx512_fp16/fp16/cosine.h"
+#include "avx512/rotate/opq/opq.h"
 #include "avx512_fp16/fp16/inner_product.h"
-#include "avx512_fp16/fp16/squared_euclidean.h"
 #include "avx512_vnni/fp16/squared_euclidean.h"
 #include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
@@ -96,6 +96,7 @@
 #include "scalar/record_quantized_int8/inner_product.h"
 #include "scalar/record_quantized_int8/squared_euclidean.h"
 #include "scalar/rotate/fht/fht.h"
+#include "scalar/rotate/opq/opq.h"
 #include "sse2/fp16/distance.h"
 #include "sse2/fp32/distance.h"
 #include "sse2/record_quantized_int4/distance.h"
@@ -185,8 +186,9 @@ struct KernelSet {
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
-    // --- raw physical storage (AVX512/NEON, then scalar fallback) ---
-    // Raw FP16 squared Euclidean always uses FP32 arithmetic.
+    // --- raw physical storage (SIMD, then scalar fallback) ---
+    // Raw FP16 distances always use FP32 arithmetic. Cosine receives vectors
+    // normalized by Fp16Quantizer after conversion to physical FP16 storage.
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::squared_euclidean_uint8_distance,
@@ -201,6 +203,21 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_fp16_distance,
      neon::squared_euclidean_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
+     MetricType::kCosine, avx512::cosine_fp16_distance_avx512,
+     avx512::cosine_fp16_batch_distance_avx512, nullptr, kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX2,
+     MetricType::kCosine, avx2::cosine_fp16_distance_avx2,
+     avx2::cosine_fp16_batch_distance_avx2, nullptr, kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kCosine, sse2::cosine_fp16_distance_sse2,
+     sse2::cosine_fp16_batch_distance_sse2, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kCosine, neon::cosine_fp16_distance,
+     neon::cosine_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kScalar,
+     MetricType::kCosine, scalar::cosine_fp16_distance,
+     scalar::cosine_fp16_batch_distance, nullptr},
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kScalar,
      MetricType::kSquaredEuclidean,
      scalar::squared_euclidean_raw_uint8_distance,
@@ -338,17 +355,11 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint4_distance,
      avx512_vnni::uniform_squared_euclidean_uint4_batch_distance, nullptr},
 
-    // --- fp16 (AVX512-FP16, AVX512, AVX2, SSE2, NEON-FP16, NEON, scalar) ---
-    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
-     MetricType::kSquaredEuclidean,
-     avx512_fp16::squared_euclidean_fp16_distance,
-     avx512_fp16::squared_euclidean_fp16_batch_distance, nullptr},
-    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
-     MetricType::kCosine, avx512_fp16::cosine_fp16_distance,
-     avx512_fp16::cosine_fp16_batch_distance, nullptr},
-    {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,
-     MetricType::kInnerProduct, avx512_fp16::inner_product_fp16_distance,
-     avx512_fp16::inner_product_fp16_batch_distance, nullptr},
+    // --- fp16 (AVX512, AVX2, SSE2, NEON-FP16, NEON, scalar) ---
+    // NOTE: the AVX512-FP16 kernels under distance/avx512_fp16/ are not
+    // registered: they accumulate in FP16, which loses enough precision to
+    // reorder close neighbors and can overflow to inf/nan on unnormalized
+    // data, while only speeding up cache-resident dims (<= 256).
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp16_distance_avx512,
@@ -683,6 +694,20 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
         return {neon::fht_rotate_neon, neon::fht_unrotate_neon};
       }
       return {scalar::fht_rotate, scalar::fht_unrotate};
+    }
+
+    case RotateType::kOpq: {
+      // Dense orthogonal matrix: rotate = R * x, unrotate = R^T * x; ctx is
+      // the matrix itself.
+      if (CpuSupports(CpuArchType::kAVX512) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+        return {avx512::opq_rotate_avx512, avx512::opq_unrotate_avx512};
+      }
+      if (CpuSupports(CpuArchType::kAVX2) &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+        return {avx2::opq_rotate_avx2, avx2::opq_unrotate_avx2};
+      }
+      return {scalar::opq_rotate, scalar::opq_unrotate};
     }
   }
 

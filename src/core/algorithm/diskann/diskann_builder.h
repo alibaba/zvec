@@ -39,7 +39,7 @@ class DiskAnnBuilder : public IndexBuilder {
            const turbo::Quantizer::Pointer &quantizer) override;
 
   //! Cleanup the builder
-  int cleanup(void) override;
+  int cleanup() override;
 
   //! Train the data
   int train(IndexThreads::Pointer threads,
@@ -56,7 +56,7 @@ class DiskAnnBuilder : public IndexBuilder {
   int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  const Stats &stats(void) const override {
+  const Stats &stats() const override {
     return stats_;
   }
 

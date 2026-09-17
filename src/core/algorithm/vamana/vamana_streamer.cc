@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "vamana_streamer.h"
 #include <iostream>
+#include <limits>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "vamana_algorithm.h"
@@ -121,7 +122,7 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   return 0;
 }
 
-int VamanaStreamer::cleanup(void) {
+int VamanaStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
     this->close();
   }
@@ -346,7 +347,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   return 0;
 }
 
-int VamanaStreamer::close(void) {
+int VamanaStreamer::close() {
   LOG_INFO("VamanaStreamer close");
 
   stats_.clear();
@@ -386,11 +387,25 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   return entity_->dump(dumper);
 }
 
+void VamanaStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
+  if (!trained_meta.reformer_name().empty()) {
+    meta_.set_reformer(trained_meta.reformer_name(),
+                       trained_meta.reformer_revision(),
+                       trained_meta.reformer_params());
+  }
+  if (!trained_meta.converter_name().empty()) {
+    meta_.set_converter(trained_meta.converter_name(),
+                        trained_meta.converter_revision(),
+                        trained_meta.converter_params());
+  }
+}
+
 void VamanaStreamer::update_entry_point_to_medoid() {
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
   if (entity_->doc_cnt() > 0) {
     uint32_t medoid_dim = meta_.dimension();
+    const bool packed_uint4 = meta_.metric_name() == "UniformUint4";
     // UniformUint8 appends a squared norm to the encoded coordinates. It is
     // distance metadata, not another four dimensions of the centroid.
     constexpr uint32_t kUniformUint8TailBytes = sizeof(uint32_t);
@@ -398,8 +413,17 @@ void VamanaStreamer::update_entry_point_to_medoid() {
         medoid_dim > kUniformUint8TailBytes) {
       medoid_dim -= kUniformUint8TailBytes;
     }
+    if (packed_uint4) {
+      if (medoid_dim > (std::numeric_limits<uint32_t>::max)() / 2U) {
+        LOG_ERROR("UniformUint4 medoid dimension overflow: %u", medoid_dim);
+        return;
+      }
+      // Each stored byte holds two coordinates. Zero-padded coordinates
+      // contribute zero to both the centroid and its squared distances.
+      medoid_dim *= 2U;
+    }
     node_id_t medoid = entity_->calculate_medoid(
-        medoid_dim, static_cast<uint32_t>(meta_.data_type()));
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()), packed_uint4);
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
@@ -470,7 +494,7 @@ int VamanaStreamer::finalize_build_locked() {
   return 0;
 }
 
-IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
+IndexStreamer::Context::Pointer VamanaStreamer::create_context() const {
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -508,7 +532,7 @@ IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
   return Context::Pointer(ctx);
 }
 
-IndexProvider::Pointer VamanaStreamer::create_provider(void) const {
+IndexProvider::Pointer VamanaStreamer::create_provider() const {
   LOG_DEBUG("VamanaStreamer create provider");
 
   auto entity = entity_->clone();
@@ -727,6 +751,52 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
+int VamanaStreamer::search_candidates_impl(const void *query,
+                                           const IndexQueryMeta &qmeta,
+                                           std::vector<uint64_t> &keys,
+                                           Context::Pointer &context) const {
+  keys.clear();
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) return ret;
+
+  VamanaContext *ctx = dynamic_cast<VamanaContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to VamanaContext failed");
+    return IndexError_Cast;
+  }
+  if (ctx->group_by().is_valid()) {
+    return IndexError_InvalidArgument;
+  }
+
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+    return IndexRunner::search_candidates_impl(query, qmeta, keys, context);
+  }
+
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) return ret;
+  }
+
+  ctx->clear();
+  ctx->update_dist_calculator_distance(search_distance_,
+                                       search_batch_distance_);
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->prepare_query_prefetch();
+  ctx->reset_query(query);
+  ret = alg_->search(ctx);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("Vamana search failed");
+    return ret;
+  }
+  ctx->topk_to_keys(keys);
+
+  if (ailego_unlikely(ctx->error())) {
+    keys.clear();
+    return IndexError_Runtime;
+  }
+  return 0;
+}
+
 void VamanaStreamer::print_debug_info() {
   for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
     if (entity_->get_key(id) == kInvalidKey) continue;
@@ -775,7 +845,7 @@ int VamanaStreamer::search_bf_impl(const void *query,
   ctx->resize_results(count);
 
   const auto &filter = static_cast<IndexContext *>(ctx)->filter();
-  auto &topk = ctx->topk_heap();
+  auto &topk = ctx->search_heap().select<TopkHeap>();
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
@@ -817,13 +887,15 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
                                        search_batch_distance_);
   ctx->resize_results(count);
 
-  auto &topk = ctx->topk_heap();
+  const auto &filter = static_cast<IndexContext *>(ctx)->filter();
+  auto &topk = ctx->search_heap().select<TopkHeap>();
 
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
     topk.clear();
     for (const auto &keys : p_keys) {
       for (auto key : keys) {
+        if (filter.is_valid() && filter(key)) continue;
         node_id_t id = entity_->get_id(key);
         if (id == kInvalidNodeId) continue;
         dist_t dist = ctx->dist_calculator().batch_dist(id);
