@@ -121,7 +121,7 @@ bool CgroupUtil::read_cpu_cgroup() {
     std::getline(file, cpu_max);
 
     int cpu_cores = 0;
-    if (parseCpuMax(cpu_max, &cpu_cores)) {
+    if (parse_cpu_max(cpu_max, &cpu_cores)) {
       cpu_cores_ = cpu_cores;
       return true;
     }
