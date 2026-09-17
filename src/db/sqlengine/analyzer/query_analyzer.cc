@@ -26,6 +26,8 @@
 #include "db/sqlengine/common/util.h"
 #include "db/sqlengine/parser/select_info.h"
 #include "query_info_helper.h"
+#include "search_cond_binder.h"
+#include "search_cond_validator.h"
 #include "simple_rewriter.h"
 
 namespace zvec::sqlengine {
@@ -96,44 +98,21 @@ Result<QueryInfo::Ptr> QueryAnalyzer::analyze(const CollectionSchema &schema,
   if (query_info->search_cond() != nullptr) {
     // Validate the original tree before rewriting so invalid predicates cannot
     // be hidden by constant folding. Validation must not annotate or convert
-    // nodes because the normal analysis below owns those mutations.
-    SearchCondCheckWalker validator(schema,
-                                    SearchCondCheckWalker::Mode::VALIDATE_ONLY);
-    validator.traverse_cond_node(query_info->search_cond());
-    if (!validator.err_msg().empty()) {
-      return tl::make_unexpected(Status::NotSupported(validator.err_msg()));
+    // nodes because the binder below owns those mutations.
+    SearchCondValidator validator(schema);
+    auto validation_status = validator.validate(query_info->search_cond());
+    if (!validation_status.ok()) {
+      return tl::make_unexpected(validation_status);
     }
 
-    // rewrite query by  rule
+    // Rewrite only validated input, preserving literal text.
     SimpleRewriter rewriter;
     rewriter.rewrite(query_info.get(), schema);
 
-    SearchCondCheckWalker search_cond_check_walker(schema);
-    search_cond_check_walker.traverse_cond_node(query_info->search_cond());
-    if (!search_cond_check_walker.err_msg().empty()) {
-      return tl::make_unexpected(
-          Status::NotSupported(search_cond_check_walker.err_msg()));
-    }
-
-    size_t num_of_filters = search_cond_check_walker.filter_rels().size() +
-                            search_cond_check_walker.invert_rels().size();
-    if (num_of_filters > kMaxNumOfFilters) {
-      return tl::make_unexpected(
-          Status::NotSupported("max number of filters is "
-                               "limited to 4096"));
-    }
-
-    auto st = decide_filter_index_cond(schema, search_cond_check_walker,
-                                       query_info.get());
-    if (!st.ok()) {
-      return tl::make_unexpected(
-          Status::InternalError("decide_filter_index_cond failed"));
-    }
-    // add forward filter meta according to final result
-    auto status = set_forward_filter_meta(schema, query_info.get(),
-                                          query_info->filter_cond().get());
-    if (!status.ok()) {
-      return tl::make_unexpected(status);
+    SearchCondBinder binder(schema);
+    auto binding_status = binder.bind(query_info.get());
+    if (!binding_status.ok()) {
+      return tl::make_unexpected(binding_status);
     }
 
     // for special feature: post filtering, move filters to post filters
@@ -199,137 +178,6 @@ Result<QueryInfo::Ptr> QueryAnalyzer::analyze(const CollectionSchema &schema,
     query_info->set_group_by_schema_ptr(forward_field);
   }
   return query_info;
-}
-
-Status QueryAnalyzer::set_forward_filter_meta(const CollectionSchema &schema,
-                                              QueryInfo *query_info,
-                                              QueryNode *filter_cond) {
-  if (filter_cond == nullptr) {
-    return Status::OK();
-  }
-
-  if (filter_cond->type() == QueryNode::QueryNodeType::LOGIC_EXPR) {
-    QueryNode *left_node = filter_cond->left().get();
-    QueryNode *right_node = filter_cond->right().get();
-    if (filter_cond->left() != nullptr) {
-      auto ret = set_forward_filter_meta(schema, query_info, left_node);
-      if (!ret.ok()) {
-        return ret;
-      }
-    }
-    if (filter_cond->right() != nullptr) {
-      return set_forward_filter_meta(schema, query_info, right_node);
-    }
-    return Status::OK();
-  }
-
-  QueryRelNode *query_rel_node = reinterpret_cast<QueryRelNode *>(filter_cond);
-  query_rel_node->set_forward();
-  std::string forward_field_name;
-  auto *left_node = query_rel_node->left_node();
-  if (left_node->op() == QueryNodeOp::Q_ID) {
-    forward_field_name = left_node->text();
-  } else if (left_node->op() == QueryNodeOp::Q_FUNCTION_CALL) {
-    const QueryFuncNode *func_node =
-        dynamic_cast<const QueryFuncNode *>(left_node);
-    const auto &arguments = func_node->arguments();
-    auto func_name = func_node->get_func_name();
-    if (func_name == kFuncArrayLength) {
-      forward_field_name = arguments[0]->text();
-    } else {
-      return Status::NotSupported("function ", func_name, " is not supported");
-    }
-  } else {
-    return Status::NotSupported("left node ", left_node->op(),
-                                " is not supported");
-  }
-  auto forward_field = schema.get_forward_field(forward_field_name);
-  if (forward_field == nullptr) {
-    return Status::InvalidArgument(forward_field_name, " not found in schema");
-  }
-  if (forward_field->has_invert_index()) {
-    // invert condition to forward condition
-    QueryNode *right_node =
-        std::dynamic_pointer_cast<QueryNode>(query_rel_node->right()).get();
-    // Revert numeric buf to numeric text
-    QueryInfoHelper::constant_node_data_buf_2_text(
-        forward_field->element_data_type(), forward_field->is_array_type(),
-        right_node);
-  }
-
-  // forward_field is nullptr for schema free field
-  query_info->add_forward_filter_schema_ptr(forward_field_name, forward_field);
-  return Status::OK();
-}
-
-// decide filter or index condition according to data collected from
-// search_cond_check_walker
-Status QueryAnalyzer::decide_filter_index_cond(
-    const CollectionSchema &schema,
-    const SearchCondCheckWalker &search_cond_check_walker,
-    QueryInfo *query_info) {
-  const std::vector<QueryRelNode *> &filter_rels =
-      search_cond_check_walker.filter_rels();
-  const std::vector<QueryRelNode *> &invert_rels =
-      search_cond_check_walker.invert_rels();
-  QueryRelNode *vector_rel = search_cond_check_walker.vector_rel();
-  uint32_t vector_rel_size = (vector_rel != nullptr) ? 1 : 0;
-  uint32_t invert_size = (uint32_t)invert_rels.size();
-  uint32_t filter_size = (uint32_t)filter_rels.size();
-
-  LOG_DEBUG("vector_rel_size[%u] invert[%u] filter[%u]", vector_rel_size,
-            invert_size, filter_size);
-
-  // sanity check
-  // check if all invert conds exist in one sub-tree, if yes,
-  // move the sub-tree as final invert cond for query.
-  if (invert_size > 0) {
-    QueryNode *invert_subroot =
-        get_invert_subroot(query_info->search_cond().get());
-    if (invert_subroot != nullptr) {
-      LOG_DEBUG(
-          "all invert conds are under one sub-root, invert query applied. "
-          "[%s]",
-          invert_subroot->text().c_str());
-      query_info->set_invert_cond(
-          invert_subroot->detach_from_search_cond(query_info));
-    }
-  }
-
-  if (vector_rel_size > 0) {
-    if (vector_rel->or_ancestor()) {
-      return Status::InvalidArgument(
-          "vector condition must NOT be OR ancestor.");
-    }
-    std::shared_ptr<QueryInfo::QueryVectorCondInfo> vector_cond_info;
-    Status st = check_and_convert_vector(schema, vector_rel, &vector_cond_info);
-    if (!st.ok()) {
-      return st;
-    }
-    vector_rel->detach_from_search_cond(query_info);
-    query_info->set_vector_cond_info(std::move(vector_cond_info));
-  }
-
-  // after set invert and vector well, the left conds are filter cond if any
-  if (query_info->search_cond() != nullptr) {
-    if (filter_size != 0) {  // optimize
-      query_info->set_filter_cond(query_info->search_cond());
-    }
-    // after above steps, all conds are moved to vector/invert/forward,
-    // so clear search cond finally.
-    query_info->set_search_cond(nullptr);
-  }
-
-  return Status::OK();
-}
-
-QueryNode *QueryAnalyzer::get_invert_subroot(QueryNode *search_cond) {
-  SubRootResult subroot_result;
-  std::function<bool(QueryRelNode * node)> rule = [](QueryRelNode *rel_node) {
-    return rel_node->is_invert();
-  };
-  QueryInfoHelper::find_subroot_by_rule(search_cond, rule, &subroot_result);
-  return subroot_result.subroot;
 }
 
 Result<QueryInfo::Ptr> QueryAnalyzer::create_queryinfo_from_sqlinfo(
@@ -509,49 +357,6 @@ QueryNodeOp QueryAnalyzer::nodeop_2_query_nodeop(NodeOp op) {
     return QueryNodeOp::Q_NONE;
   }
   return iter->second;
-}
-
-Status QueryAnalyzer::check_and_convert_vector(
-    const CollectionSchema &schema, const QueryRelNode *query_rel_node,
-    std::shared_ptr<QueryInfo::QueryVectorCondInfo> *vector_cond) {
-  const QueryNode::Ptr &vector_field_node = query_rel_node->left();
-  const auto &vector_field_name = vector_field_node->text();
-
-  auto vector_meta = schema.get_vector_field(vector_field_name);
-  if (vector_meta == nullptr) {
-    return Status::InvalidArgument("vector field not found:",
-                                   vector_field_name);
-  }
-
-  uint32_t dimension = vector_meta->dimension();
-
-  const QueryNode::Ptr &vector_value_node = query_rel_node->right();
-
-  // for pb request
-  if (vector_value_node->op() == QueryNodeOp::Q_VECTOR_MATRIX_VALUE) {
-    // for format vector = [,,,]
-    QueryVectorMatrixNode::Ptr vector_node =
-        std::dynamic_pointer_cast<QueryVectorMatrixNode>(vector_value_node);
-    // Consume the vector payload; this node is detached from the search
-    // condition after conversion.
-    auto vector_data = vector_node->take_node();
-    auto core_data_type =
-        DataTypeCodeBook::to_data_type(vector_meta->data_type());
-    if (core_data_type == core::IndexMeta::DataType::DT_UNDEFINED) {
-      return Status::InvalidArgument("invalid data type:",
-                                     (int)vector_meta->data_type());
-    }
-
-    *vector_cond = std::make_shared<QueryInfo::QueryVectorCondInfo>(
-        vector_meta, vector_data->matrix(), core_data_type, dimension,
-        vector_data->sparse_indices(), vector_data->sparse_values(),
-        vector_data->take_query_params());
-    return Status::OK();
-  } else {
-    return Status::InvalidArgument("invalid vector value node. op[",
-                                   vector_value_node->op_name(), "], text[",
-                                   vector_value_node->text(), "]");
-  }
 }
 
 

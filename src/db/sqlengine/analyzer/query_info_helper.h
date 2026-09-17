@@ -36,6 +36,13 @@ struct SubRootResult {
 
 class QueryInfoHelper {
  public:
+  static bool is_numeric_type(zvec::DataType data_type) {
+    // include INT32, INT64, UINT32, UINT64, FLOAT, DOUBLE
+    // use following code to reduce the runtime comparison cost
+    return (data_type >= zvec::DataType::INT32 &&
+            data_type <= zvec::DataType::DOUBLE);
+  }
+
   static bool text_2_data_buf(const std::string &text, zvec::DataType data_type,
                               std::string *data_buf);
   static bool data_buf_2_text(const std::string &data_buf,
