@@ -31,9 +31,9 @@ namespace zvec {
 namespace core {
 
 struct VisitFilterHeader {
-  VisitFilterHeader() : maxDocCnt(0), maxScanNum(0) {}
-  uint64_t maxDocCnt;
-  uint64_t maxScanNum;
+  VisitFilterHeader() : max_doc_cnt(0), max_scan_num(0) {}
+  uint64_t max_doc_cnt;
+  uint64_t max_scan_num;
 };
 
 constexpr int PROXIMA_HNSW_VISITFILTER_CUSTOM_PARAMS_INDEX_NEGPROB = 0;
@@ -71,16 +71,16 @@ class VisitBloomFilter {
     return c->filter->has(BLOOM_FILTER_HASH_BITS_OFFSETS(idx));
   }
 
-  inline static int set_max_scan_num(Context *c, uint64_t maxScanNum) {
-    if (maxScanNum == c->h.maxScanNum) {
+  inline static int set_max_scan_num(Context *c, uint64_t max_scan_num) {
+    if (max_scan_num == c->h.max_scan_num) {
       return 0;
     }
-    c->h.maxScanNum = maxScanNum;
-    if (c->filter->reset(maxScanNum, c->filter->probability()) != 0) {
+    c->h.max_scan_num = max_scan_num;
+    if (c->filter->reset(max_scan_num, c->filter->probability()) != 0) {
       LOG_ERROR("reset BloomFilter failed");
       return IndexError_Runtime;
     }
-    genRandomHashBits(c);
+    gen_random_hash_bits(c);
     return 0;
   }
 
@@ -89,10 +89,10 @@ class VisitBloomFilter {
     return;
   }
 
-  inline static bool reset(Context *c, uint64_t maxDocCnt,
+  inline static bool reset(Context *c, uint64_t max_doc_cnt,
                            uint64_t max_scan_num) {
-    if (ailego_unlikely(maxDocCnt > c->h.maxDocCnt ||
-                        max_scan_num > c->h.maxScanNum)) {
+    if (ailego_unlikely(max_doc_cnt > c->h.max_doc_cnt ||
+                        max_scan_num > c->h.max_scan_num)) {
       // Create a new one, if failed, we can reuse the old one
       auto filter = new (std::nothrow) ailego::BloomFilter<VisitBloomFilter::N>(
           max_scan_num, c->filter->probability());
@@ -105,15 +105,15 @@ class VisitBloomFilter {
 
       delete c->filter;
       c->filter = filter;
-      c->h.maxScanNum = max_scan_num;
-      c->h.maxDocCnt = maxDocCnt;
-      genRandomHashBits(c);
+      c->h.max_scan_num = max_scan_num;
+      c->h.max_doc_cnt = max_doc_cnt;
+      gen_random_hash_bits(c);
     }
     return true;
   }
 
-  inline static void genRandomHashBits(Context *c) {
-    std::uniform_int_distribution<int> dt(0, c->h.maxDocCnt);
+  inline static void gen_random_hash_bits(Context *c) {
+    std::uniform_int_distribution<int> dt(0, c->h.max_doc_cnt);
     for (size_t i = 0; i < sizeof(c->offset) / sizeof(c->offset[0]); ++i) {
       int r = dt(c->mt);
       size_t j = 0;
@@ -131,24 +131,24 @@ class VisitBloomFilter {
   }
 
   template <class... T>
-  static int init(Context *, void **ctx, uint64_t maxDocCnt,
-                  uint64_t maxScanNum, std::tuple<T...> &&tpl) {
+  static int init(Context *, void **ctx, uint64_t max_doc_cnt,
+                  uint64_t max_scan_num, std::tuple<T...> &&tpl) {
     Context *c = new (std::nothrow) Context;
     if (c == nullptr) {
       LOG_ERROR("New memory in initVisitBitMap failed");
       return IndexError_NoMemory;
     }
-    c->h.maxDocCnt = maxDocCnt;
-    c->h.maxScanNum = maxScanNum;
+    c->h.max_doc_cnt = max_doc_cnt;
+    c->h.max_scan_num = max_scan_num;
     float p =
         std::get<PROXIMA_HNSW_VISITFILTER_CUSTOM_PARAMS_INDEX_NEGPROB>(tpl);
     c->filter = new (std::nothrow)
-        ailego::BloomFilter<VisitBloomFilter::N>(maxScanNum, p);
+        ailego::BloomFilter<VisitBloomFilter::N>(max_scan_num, p);
     if (c->filter == nullptr) {
       LOG_ERROR("New BloomFilter failed, reuse old one");
       return IndexError_NoMemory;
     }
-    genRandomHashBits(c);
+    gen_random_hash_bits(c);
     *ctx = c;
     return 0;
   }
@@ -185,8 +185,8 @@ class VisitBitMap {
     return c->bitset.test(idx);
   }
 
-  inline static int set_max_scan_num(Context *c, uint64_t maxScanNum) {
-    c->h.maxScanNum = maxScanNum;
+  inline static int set_max_scan_num(Context *c, uint64_t max_scan_num) {
+    c->h.max_scan_num = max_scan_num;
     return 0;
   }
 
@@ -195,11 +195,11 @@ class VisitBitMap {
     return;
   }
 
-  inline static bool reset(Context *c, uint64_t maxDocCnt,
-                           uint64_t maxScanNum) {
-    if (ailego_unlikely(maxDocCnt > c->h.maxDocCnt ||
-                        maxScanNum > c->h.maxScanNum)) {
-      uint64_t len = ((maxDocCnt + 31) >> 5) << 2;  // round to uint32_t
+  inline static bool reset(Context *c, uint64_t max_doc_cnt,
+                           uint64_t max_scan_num) {
+    if (ailego_unlikely(max_doc_cnt > c->h.max_doc_cnt ||
+                        max_scan_num > c->h.max_scan_num)) {
+      uint64_t len = ((max_doc_cnt + 31) >> 5) << 2;  // round to uint32_t
       auto buf = new (std::nothrow) char[len];
       if (buf == nullptr) {
         LOG_ERROR("New memory in initVisitBitMap failed");
@@ -207,8 +207,8 @@ class VisitBitMap {
         return false;
       }
 
-      c->h.maxDocCnt = maxDocCnt;
-      c->h.maxScanNum = maxScanNum;
+      c->h.max_doc_cnt = max_doc_cnt;
+      c->h.max_scan_num = max_scan_num;
       delete[] c->buf;
       c->buf = buf;
       memset(c->buf, 0, len);
@@ -218,17 +218,17 @@ class VisitBitMap {
   }
 
   template <class... T>
-  static int init(Context *, void **ctx, uint64_t maxDocCnt,
-                  uint64_t maxScanNum, std::tuple<T...> &&tpl) {
+  static int init(Context *, void **ctx, uint64_t max_doc_cnt,
+                  uint64_t max_scan_num, std::tuple<T...> &&tpl) {
     (void)tpl;  // unused warning
     Context *c = new (std::nothrow) Context;
     if (c == nullptr) {
       LOG_ERROR("New memory in initVisitBitMap failed");
       return IndexError_NoMemory;
     }
-    c->h.maxDocCnt = maxDocCnt;
-    c->h.maxScanNum = maxScanNum;
-    uint64_t len = ((maxDocCnt + 31) >> 5) << 2;  // round to uint32_t
+    c->h.max_doc_cnt = max_doc_cnt;
+    c->h.max_scan_num = max_scan_num;
+    uint64_t len = ((max_doc_cnt + 31) >> 5) << 2;  // round to uint32_t
     c->buf = new (std::nothrow) char[len];
     if (c->buf == nullptr) {
       LOG_ERROR("New memory in initVisitBitMap failed, reuse old one");
@@ -252,18 +252,18 @@ class VisitByteMap {
   static constexpr int mode = 3;
   struct Context {
     VisitFilterHeader h;
-    uint8_t curNum{0};
+    uint8_t cur_num{0};
     std::vector<uint8_t> buf;
   };
 
   VisitByteMap() = delete;
 
   inline static void set_visited(Context *c, id_t idx) {
-    if (ailego_unlikely(idx >= c->h.maxDocCnt)) {
-      c->h.maxDocCnt = idx + 1024;  // reserved
-      c->buf.resize(c->h.maxDocCnt);
+    if (ailego_unlikely(idx >= c->h.max_doc_cnt)) {
+      c->h.max_doc_cnt = idx + 1024;  // reserved
+      c->buf.resize(c->h.max_doc_cnt);
     }
-    c->buf[idx] = c->curNum;
+    c->buf[idx] = c->cur_num;
     return;
   }
 
@@ -272,65 +272,65 @@ class VisitByteMap {
   }
 
   inline static bool visited(Context *c, id_t idx) {
-    if (ailego_unlikely(idx >= c->h.maxDocCnt)) {
+    if (ailego_unlikely(idx >= c->h.max_doc_cnt)) {
       return false;
     }
-    return c->buf[idx] == c->curNum;
+    return c->buf[idx] == c->cur_num;
   }
 
-  inline static int set_max_scan_num(Context *c, uint64_t maxScanNum) {
-    c->h.maxScanNum = maxScanNum;
+  inline static int set_max_scan_num(Context *c, uint64_t max_scan_num) {
+    c->h.max_scan_num = max_scan_num;
     return 0;
   }
 
   inline static void clear(Context *c) {
-    c->curNum++;
-    if (c->curNum == 0) {
-      memset(c->buf.data(), 0, c->h.maxDocCnt * sizeof(uint8_t));
-      c->curNum = 1;
+    c->cur_num++;
+    if (c->cur_num == 0) {
+      memset(c->buf.data(), 0, c->h.max_doc_cnt * sizeof(uint8_t));
+      c->cur_num = 1;
     }
     return;
   }
 
-  inline static bool reset(Context *c, uint64_t maxDocCnt,
-                           uint64_t maxScanNum) {
-    if (ailego_unlikely(maxDocCnt > c->h.maxDocCnt ||
-                        maxScanNum > c->h.maxScanNum)) {
+  inline static bool reset(Context *c, uint64_t max_doc_cnt,
+                           uint64_t max_scan_num) {
+    if (ailego_unlikely(max_doc_cnt > c->h.max_doc_cnt ||
+                        max_scan_num > c->h.max_scan_num)) {
       try {
-        c->buf.resize(maxDocCnt);
+        c->buf.resize(max_doc_cnt);
       } catch (const std::exception &e) {
         LOG_ERROR("New memory in initVisitByteMap failed, reuse old one");
         return false;
       }
-      memset(c->buf.data(), 0, maxDocCnt * sizeof(uint8_t));
-      c->curNum = 1;
-      c->h.maxDocCnt = maxDocCnt;
-      c->h.maxScanNum = maxScanNum;
+      memset(c->buf.data(), 0, max_doc_cnt * sizeof(uint8_t));
+      c->cur_num = 1;
+      c->h.max_doc_cnt = max_doc_cnt;
+      c->h.max_scan_num = max_scan_num;
       return true;
     }
     return true;
   }
 
   template <class... T>
-  static int init(Context *, void **ctx, uint64_t maxDocCnt,
-                  uint64_t maxScanNum, std::tuple<T...> &&tpl) {
+  static int init(Context *, void **ctx, uint64_t max_doc_cnt,
+                  uint64_t max_scan_num, std::tuple<T...> &&tpl) {
     (void)tpl;  // unused warning
     Context *c = new (std::nothrow) Context;
     if (c == nullptr) {
       LOG_ERROR("New memory in initVisitByteMap failed");
       return IndexError_NoMemory;
     }
-    c->h.maxDocCnt = maxDocCnt;
-    c->h.maxScanNum = maxScanNum;
+    c->h.max_doc_cnt = max_doc_cnt;
+    c->h.max_scan_num = max_scan_num;
     try {
-      c->buf.resize(maxDocCnt);
+      c->buf.resize(max_doc_cnt);
     } catch (const std::exception &e) {
       LOG_ERROR("New memory in initVisitByteMap failed");
       delete c;
       return IndexError_NoMemory;
     }
-    memset(c->buf.data(), 0, maxDocCnt * sizeof(uint8_t));
-    c->curNum = 1;
+    memset(c->buf.data(), 0, max_doc_cnt * sizeof(uint8_t));
+    c->cur_num = 1;
     *ctx = c;
     return 0;
   }
@@ -425,8 +425,8 @@ class VisitFilter {
     PROXIMA_HNSW_VISITFILTER_CALL_IMPL(clear);
   }
 
-  inline bool reset(uint64_t maxDocCnt, uint64_t maxScanNum) {
-    PROXIMA_HNSW_VISITFILTER_CALL_IMPL(reset, maxDocCnt, maxScanNum);
+  inline bool reset(uint64_t max_doc_cnt, uint64_t max_scan_num) {
+    PROXIMA_HNSW_VISITFILTER_CALL_IMPL(reset, max_doc_cnt, max_scan_num);
     return true;
   }
 
@@ -436,11 +436,11 @@ class VisitFilter {
     }
   }
 
-  int init(int mode, uint64_t maxDocCnt, uint64_t maxScanNum,
-           float negativeProbability) {
+  int init(int mode, uint64_t max_doc_cnt, uint64_t max_scan_num,
+           float negative_probability) {
     mode_ = mode;
-    PROXIMA_HNSW_VISITFILTER_CALL_IMPL(init, &ctx_, maxDocCnt, maxScanNum,
-                                       std::make_tuple(negativeProbability));
+    PROXIMA_HNSW_VISITFILTER_CALL_IMPL(init, &ctx_, max_doc_cnt, max_scan_num,
+                                       std::make_tuple(negative_probability));
     return 0;  // place holder
   }
 

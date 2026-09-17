@@ -20,26 +20,26 @@ using namespace zvec;
 TEST(CgroupUtil, ParseCpuMaxQuota) {
   int cpu_cores = 0;
 
-  ASSERT_TRUE(CgroupUtil::parseCpuMax("100000 100000", &cpu_cores));
+  ASSERT_TRUE(CgroupUtil::parse_cpu_max("100000 100000", &cpu_cores));
   EXPECT_EQ(1, cpu_cores);
 
-  ASSERT_TRUE(CgroupUtil::parseCpuMax("150000 100000\n", &cpu_cores));
+  ASSERT_TRUE(CgroupUtil::parse_cpu_max("150000 100000\n", &cpu_cores));
   EXPECT_EQ(2, cpu_cores);
 
-  ASSERT_TRUE(CgroupUtil::parseCpuMax("400000 100000", &cpu_cores));
+  ASSERT_TRUE(CgroupUtil::parse_cpu_max("400000 100000", &cpu_cores));
   EXPECT_EQ(4, cpu_cores);
 }
 
 TEST(CgroupUtil, ParseCpuMaxUnlimitedOrInvalid) {
   int cpu_cores = 7;
 
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("max 100000", &cpu_cores));
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("100000/100000", &cpu_cores));
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("100000 0", &cpu_cores));
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("0 100000", &cpu_cores));
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("100000 100000 trailing", &cpu_cores));
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("invalid", &cpu_cores));
-  EXPECT_FALSE(CgroupUtil::parseCpuMax("100000 100000", nullptr));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("max 100000", &cpu_cores));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("100000/100000", &cpu_cores));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("100000 0", &cpu_cores));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("0 100000", &cpu_cores));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("100000 100000 trailing", &cpu_cores));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("invalid", &cpu_cores));
+  EXPECT_FALSE(CgroupUtil::parse_cpu_max("100000 100000", nullptr));
 
   EXPECT_EQ(7, cpu_cores);
 }

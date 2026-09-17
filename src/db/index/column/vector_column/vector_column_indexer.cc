@@ -20,7 +20,7 @@
 
 namespace zvec {
 
-Status VectorColumnIndexer::Open(
+Status VectorColumnIndexer::open(
     const vector_column_params::ReadOptions &read_options) {
   if (index != nullptr) {
     return Status::InvalidArgument("Index already opened");
@@ -28,13 +28,13 @@ Status VectorColumnIndexer::Open(
 
   // TODO: pass read_options to proxima index
   if (engine_name_ == "proxima") {
-    return CreateProximaIndex(read_options);
+    return create_proxima_index(read_options);
   } else {
     return Status::InvalidArgument("Engine name not supported");
   }
 }
 
-Status VectorColumnIndexer::CreateProximaIndex(
+Status VectorColumnIndexer::create_proxima_index(
     const vector_column_params::ReadOptions &read_options) {
   auto index_param_result =
       ProximaEngineHelper::convert_to_engine_index_param(field_schema_);
@@ -62,7 +62,7 @@ Status VectorColumnIndexer::CreateProximaIndex(
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Flush() {
+Status VectorColumnIndexer::flush() {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
   }
@@ -74,7 +74,7 @@ Status VectorColumnIndexer::Flush() {
 }
 
 
-Status VectorColumnIndexer::Close() {
+Status VectorColumnIndexer::close() {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
   }
@@ -86,12 +86,12 @@ Status VectorColumnIndexer::Close() {
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Destroy() {
+Status VectorColumnIndexer::destroy() {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
   }
 
-  if (Close() != Status::OK()) {
+  if (close() != Status::OK()) {
     return Status::InternalError("Failed to close index");
   }
   if (!ailego::File::RemovePath(index_file_path_)) {
@@ -100,7 +100,7 @@ Status VectorColumnIndexer::Destroy() {
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Merge(
+Status VectorColumnIndexer::merge(
     const std::vector<VectorColumnIndexer::Ptr> &indexers,
     const IndexFilter::Ptr &filter,
     const vector_column_params::MergeOptions &merge_options) {
@@ -133,7 +133,7 @@ Status VectorColumnIndexer::Merge(
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Insert(
+Status VectorColumnIndexer::insert(
     const vector_column_params::VectorData &vector_data, uint32_t doc_id) {
   if (index == nullptr) {
     return Status::InvalidArgument("Index not opened");
@@ -147,7 +147,7 @@ Status VectorColumnIndexer::Insert(
   return Status::OK();
 }
 
-Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
+Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::fetch(
     uint32_t doc_id) const {
   if (index == nullptr) {
     return tl::make_unexpected(Status::InvalidArgument("Index not opened"));
@@ -164,7 +164,7 @@ Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
       .value();
 }
 
-Result<IndexResults::Ptr> VectorColumnIndexer::Search(
+Result<IndexResults::Ptr> VectorColumnIndexer::search(
     const vector_column_params::VectorData &vector_data,
     const vector_column_params::QueryParams &query_params) {
   if (index == nullptr) {

@@ -111,7 +111,7 @@ class DirectoryWriteBlockerForTest {
         probe_file << "probe";
         probe_file.close();
         fs::remove(probe_path, ec);
-        Restore();
+        restore();
         skip_reason_ = "Directory permissions do not block writes";
         return;
       }
@@ -119,7 +119,7 @@ class DirectoryWriteBlockerForTest {
   }
 
   ~DirectoryWriteBlockerForTest() {
-    Restore();
+    restore();
   }
 
   bool enabled() const {
@@ -130,7 +130,7 @@ class DirectoryWriteBlockerForTest {
     return skip_reason_;
   }
 
-  void Restore() {
+  void restore() {
     if (enabled_) {
       std::error_code ec;
       std::filesystem::permissions(dir_path_, original_perms_,
@@ -2714,7 +2714,7 @@ TEST_F(CollectionTest,
   }
 
   auto s = collection->drop_index("int32");
-  write_blocker.Restore();
+  write_blocker.restore();
   ASSERT_FALSE(s.ok());
 
   collection.reset();
@@ -7222,7 +7222,7 @@ TEST_F(CollectionTest, Feature_DropFtsIndex_FailureKeepsPersistedOldSchema) {
   }
 
   auto s = col->drop_index("content");
-  write_blocker.Restore();
+  write_blocker.restore();
   ASSERT_FALSE(s.ok());
 
   col.reset();

@@ -91,7 +91,7 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) {
   path_ = path;
   full_mode_ = full_mode;
   copy_on_write_ = cow;
-  huge_page_ = Ishugetlbfs(path);
+  huge_page_ = ishugetlbfs(path);
 
   bool read_only = copy_on_write_ && !full_mode_;
   if (!file_.open(path.c_str(), read_only, false)) {
@@ -126,7 +126,7 @@ int IndexMapping::create(const std::string &path, size_t seg_meta_capacity) {
               ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_CreateFile;
   }
-  huge_page_ = Ishugetlbfs(path);
+  huge_page_ = ishugetlbfs(path);
   if (huge_page_) {
     return init_hugepage_meta_section();
   }
@@ -599,7 +599,7 @@ int IndexMapping::init_index_mapping(size_t len) {
   return 0;
 }
 
-bool IndexMapping::Ishugetlbfs(const std::string &path) const {
+bool IndexMapping::ishugetlbfs(const std::string &path) const {
 #ifdef __linux__
   struct statfs buf;
   if (statfs(path.c_str(), &buf) != 0) {

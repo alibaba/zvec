@@ -150,17 +150,17 @@ class Segment {
                                   const FtsIndexer::Ptr &new_fts_indexer) = 0;
 
   // ---- Data operations ----------------------------------------------------
-  virtual Status Insert(Doc &doc) = 0;
+  virtual Status insert(Doc &doc) = 0;
 
-  virtual Status Upsert(Doc &doc) = 0;
+  virtual Status upsert(Doc &doc) = 0;
 
-  virtual Status Update(Doc &doc) = 0;
+  virtual Status update(Doc &doc) = 0;
 
-  virtual Status Delete(const std::string &pk) = 0;
+  virtual Status Delete(const std::string &pk) = 0;  // NOLINT(readability-identifier-naming): 'delete' is a keyword
 
-  virtual Status Delete(uint64_t g_doc_id) = 0;
+  virtual Status Delete(uint64_t g_doc_id) = 0;  // NOLINT(readability-identifier-naming): 'delete' is a keyword
 
-  virtual Doc::Ptr Fetch(uint64_t g_doc_id,
+  virtual Doc::Ptr fetch(uint64_t g_doc_id,
                          const std::optional<std::vector<std::string>>
                              &output_fields = std::nullopt,
                          bool include_vector = true) = 0;

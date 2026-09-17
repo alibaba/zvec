@@ -209,7 +209,7 @@ class IVFBuilder : public IndexBuilder {
   using VectorList = std::vector<Vector>;
 
   //! Check MajorOrder in meta, and update the major order if needed
-  int CheckAndUpdateMajorOrder(IndexMeta &meta);
+  int check_and_update_major_order(IndexMeta &meta);
 
   //! Parse params
   int parse_centroids_num(const ailego::Params &params);

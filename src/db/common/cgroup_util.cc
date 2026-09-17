@@ -35,35 +35,35 @@ void CgroupUtil::initialize() {
     return;
   }
 
-  updateCpuCores();
-  updateMemoryLimit();
-  initializeCpuStats();
+  update_cpu_cores();
+  update_memory_limit();
+  initialize_cpu_stats();
 
   initialized_ = true;
 }
 
-int CgroupUtil::getCpuLimit() {
+int CgroupUtil::get_cpu_limit() {
   initialize();
   return cpu_cores_;
 }
 
-uint64_t CgroupUtil::getMemoryLimit() {
+uint64_t CgroupUtil::get_memory_limit() {
   initialize();
   return memory_limit_;
 }
 
 // Other static methods implementation
-double CgroupUtil::getCpuUsage() {
+double CgroupUtil::get_cpu_usage() {
   initialize();
-  return calculateCpuUsage();
+  return calculate_cpu_usage();
 }
 
-uint64_t CgroupUtil::getMemoryUsage() {
+uint64_t CgroupUtil::get_memory_usage() {
   initialize();
-  return getCurrentMemoryUsage();
+  return get_current_memory_usage();
 }
 
-uint64_t CgroupUtil::getUptime() {
+uint64_t CgroupUtil::get_uptime() {
 #if defined(PLATFORM_LINUX)
   struct sysinfo info;
   if (sysinfo(&info) == 0) {
@@ -84,8 +84,8 @@ uint64_t CgroupUtil::getUptime() {
   return 0;
 }
 
-void CgroupUtil::updateCpuCores() {
-  if (readCpuCgroup()) {
+void CgroupUtil::update_cpu_cores() {
+  if (read_cpu_cgroup()) {
     return;
   }
 
@@ -112,7 +112,7 @@ void CgroupUtil::updateCpuCores() {
 #endif
 }
 
-bool CgroupUtil::readCpuCgroup() {
+bool CgroupUtil::read_cpu_cgroup() {
 #if defined(PLATFORM_LINUX)
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/cpu.max");
@@ -149,7 +149,7 @@ bool CgroupUtil::readCpuCgroup() {
   return false;
 }
 
-bool CgroupUtil::parseCpuMax(const std::string &cpu_max, int *cpu_cores) {
+bool CgroupUtil::parse_cpu_max(const std::string &cpu_max, int *cpu_cores) {
   if (cpu_cores == nullptr) {
     return false;
   }
@@ -186,8 +186,8 @@ bool CgroupUtil::parseCpuMax(const std::string &cpu_max, int *cpu_cores) {
   return true;
 }
 
-void CgroupUtil::updateMemoryLimit() {
-  if (readMemoryCgroup()) {
+void CgroupUtil::update_memory_limit() {
+  if (read_memory_cgroup()) {
     return;
   }
 
@@ -218,7 +218,7 @@ void CgroupUtil::updateMemoryLimit() {
 #endif
 }
 
-bool CgroupUtil::readMemoryCgroup() {
+bool CgroupUtil::read_memory_cgroup() {
 #if defined(PLATFORM_LINUX)
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/memory.max");
@@ -253,7 +253,7 @@ bool CgroupUtil::readMemoryCgroup() {
   return false;
 }
 
-void CgroupUtil::initializeCpuStats() {
+void CgroupUtil::initialize_cpu_stats() {
   last_cpu_check_ = std::chrono::steady_clock::now();
 #if defined(PLATFORM_LINUX)
   readProcStat();
@@ -294,7 +294,7 @@ bool CgroupUtil::readProcStat() {
 }
 #endif
 
-uint64_t CgroupUtil::getCurrentMemoryUsage() {
+uint64_t CgroupUtil::get_current_memory_usage() {
 #if defined(PLATFORM_LINUX)
   // cgroup
   uint64_t usage = readMemoryUsageCgroup();
@@ -305,7 +305,7 @@ uint64_t CgroupUtil::getCurrentMemoryUsage() {
   // back to /proc/meminfo
   return readMemoryUsageProc();
 #elif defined(PLATFORM_MACOS)
-  return getMacOSMemoryUsage();
+  return get_mac_os_memory_usage();
 #elif defined(PLATFORM_WINDOWS)
   MEMORYSTATUSEX statex;
   statex.dwLength = sizeof(statex);
@@ -381,7 +381,7 @@ uint64_t CgroupUtil::readMemoryUsageProc() {
 #endif
 
 #if defined(PLATFORM_MACOS)
-uint64_t CgroupUtil::getMacOSMemoryUsage() {
+uint64_t CgroupUtil::get_mac_os_memory_usage() {
   mach_port_t host_port = mach_host_self();
   mach_msg_type_number_t host_size =
       sizeof(vm_statistics64_data_t) / sizeof(integer_t);
@@ -405,7 +405,7 @@ uint64_t CgroupUtil::getMacOSMemoryUsage() {
 }
 #endif
 
-uint64_t CgroupUtil::extractMemoryValue(const std::string &line) {
+uint64_t CgroupUtil::extract_memory_value(const std::string &line) {
   size_t colon_pos = line.find(':');
   if (colon_pos == std::string::npos) {
     return 0;
@@ -426,11 +426,11 @@ uint64_t CgroupUtil::extractMemoryValue(const std::string &line) {
   return value;
 }
 
-double CgroupUtil::calculateCpuUsage() {
+double CgroupUtil::calculate_cpu_usage() {
 #if defined(PLATFORM_LINUX)
   return calculateLinuxCpuUsage();
 #elif defined(PLATFORM_MACOS)
-  return calculateMacOSCpuUsage();
+  return calculate_mac_os_cpu_usage();
 #else
   return 0.0;
 #endif
@@ -486,7 +486,7 @@ double CgroupUtil::calculateLinuxCpuUsage() {
 #endif
 
 #if defined(PLATFORM_MACOS)
-double CgroupUtil::calculateMacOSCpuUsage() {
+double CgroupUtil::calculate_mac_os_cpu_usage() {
   host_cpu_load_info_data_t cpuinfo;
   mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
 
@@ -508,7 +508,7 @@ double CgroupUtil::calculateMacOSCpuUsage() {
     prev_total = total_tick;
     prev_idle = idle_tick;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    return calculateMacOSCpuUsage();
+    return calculate_mac_os_cpu_usage();
   }
 
   unsigned long long total_delta = total_tick - prev_total;

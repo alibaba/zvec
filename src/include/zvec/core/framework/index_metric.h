@@ -141,7 +141,7 @@ struct IndexMetric : public IndexModule {
   }
 
   using DistanceBatchQueryPreprocessFunc =
-      ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
+      ailego::distance_batch::DistanceBatchQueryPreprocessFunc;
 
   virtual DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const {
     return nullptr;

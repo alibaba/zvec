@@ -103,7 +103,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   VectorPageTable() : owner_version_(next_owner_version()) {
     BlockEvictionQueue::get_instance().set_valid(this);
   }
-  ~VectorPageTable() {
+  ~VectorPageTable() override {
     BlockEvictionQueue::get_instance().set_invalid(this);
     // No readers remain during destruction.
     size_t cnt = segment_count_.load(std::memory_order_relaxed);

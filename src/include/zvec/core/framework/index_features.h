@@ -119,38 +119,38 @@ class CoherentIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count() const {
+  size_t count() const override {
     return features_count_;
   }
 
   //! Retrieve dimension
-  virtual size_t dimension() const {
+  size_t dimension() const override {
     return feature_dimension_;
   }
 
   //! Retrieve feature via index
-  virtual const void *element(size_t i) const {
+  const void *element(size_t i) const override {
     return (reinterpret_cast<const char *>(features_buffer_) +
             feature_size_ * i);
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type() const {
+  IndexMeta::DataType data_type() const override {
     return data_type_;
   }
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted() const {
+  bool is_compacted() const override {
     return true;
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data() const {
+  const void *data() const override {
     return features_buffer_;
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size() const {
+  size_t element_size() const override {
     return feature_size_;
   }
 
@@ -211,27 +211,27 @@ class FlexibleIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count() const {
+  size_t count() const override {
     return features_count_;
   }
 
   //! Retrieve dimension
-  virtual size_t dimension() const {
+  size_t dimension() const override {
     return feature_dimension_;
   }
 
   //! Retrieve feature via index
-  virtual const void *element(size_t i) const {
+  const void *element(size_t i) const override {
     return *(features_ + i);
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type() const {
+  IndexMeta::DataType data_type() const override {
     return data_type_;
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size() const {
+  size_t element_size() const override {
     return feature_size_;
   }
 
@@ -345,37 +345,37 @@ class GapIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count() const {
+  size_t count() const override {
     return features_count_;
   }
 
   //! Retrieve dimension
-  virtual size_t dimension() const {
+  size_t dimension() const override {
     return feature_dimension_;
   }
 
   //! Retrieve feature via index
-  virtual const void *element(size_t i) const {
+  const void *element(size_t i) const override {
     return this->at(i);
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type() const {
+  IndexMeta::DataType data_type() const override {
     return data_type_;
   }
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted() const {
+  bool is_compacted() const override {
     return (features_.size() == 1u);
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data() const {
+  const void *data() const override {
     return (features_.size() == 1u ? features_.front().data() : nullptr);
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size() const {
+  size_t element_size() const override {
     return feature_size_;
   }
 
@@ -475,37 +475,37 @@ class CompactIndexFeatures : public IndexFeatures {
   }
 
   //! Retrieve count of elements
-  virtual size_t count() const {
+  size_t count() const override {
     return (features_.size() / feature_size_);
   }
 
   //! Retrieve dimension
-  virtual size_t dimension() const {
+  size_t dimension() const override {
     return feature_dimension_;
   }
 
   //! Retrieve feature via index
-  virtual const void *element(size_t i) const {
+  const void *element(size_t i) const override {
     return this->at(i);
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type() const {
+  IndexMeta::DataType data_type() const override {
     return data_type_;
   }
 
   //! Test if it is a compacted buffer
-  virtual bool is_compacted() const {
+  bool is_compacted() const override {
     return true;
   }
 
   //! Retrieve pointer of compacted buffer
-  virtual const void *data() const {
+  const void *data() const override {
     return features_.data();
   }
 
   //! Retrieve size of feature
-  virtual size_t element_size() const {
+  size_t element_size() const override {
     return feature_size_;
   }
 

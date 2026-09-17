@@ -50,7 +50,7 @@ class Utf8PathTest : public ::testing::Test {
       FileHelper::RemovePath(p.c_str());
     }
   }
-  void ScheduleCleanup(const std::string &path) {
+  void schedule_cleanup(const std::string &path) {
     cleanup_.push_back(path);
   }
 
@@ -63,7 +63,7 @@ class Utf8PathTest : public ::testing::Test {
 // ---------------------------------------------------------------------------
 TEST_F(Utf8PathTest, MakePath_Chinese) {
   std::string dir = "utf8_test_" + kChinese;
-  ScheduleCleanup(dir);
+  schedule_cleanup(dir);
 
   ASSERT_TRUE(FileHelper::MakePath(dir.c_str()));
   EXPECT_TRUE(FileHelper::IsExist(dir.c_str()));
@@ -80,7 +80,7 @@ TEST_F(Utf8PathTest, MakePath_Chinese) {
 TEST_F(Utf8PathTest, MakePath_Nested) {
   std::string root = "utf8_test_nested_" + kChinese;
   std::string nested = FileHelper::PathJoin(root, kJapanese, kMixed);
-  ScheduleCleanup(root);
+  schedule_cleanup(root);
 
   ASSERT_TRUE(FileHelper::MakePath(nested.c_str()));
   EXPECT_TRUE(FileHelper::IsDirectory(nested.c_str()));
@@ -95,7 +95,7 @@ TEST_F(Utf8PathTest, MakePath_Nested) {
 TEST_F(Utf8PathTest, FileCreateAndReadWrite) {
   std::string dir = "utf8_test_file_" + kChinese;
   std::string file_path = FileHelper::PathJoin(dir, kJapanese + ".dat");
-  ScheduleCleanup(dir);
+  schedule_cleanup(dir);
 
   ASSERT_TRUE(FileHelper::MakePath(dir.c_str()));
 
@@ -133,7 +133,7 @@ TEST_F(Utf8PathTest, RenameFile) {
   std::string dir = "utf8_test_rename_" + kChinese;
   std::string src = FileHelper::PathJoin(dir, "src_" + kJapanese);
   std::string dst = FileHelper::PathJoin(dir, "dst_" + kMixed);
-  ScheduleCleanup(dir);
+  schedule_cleanup(dir);
 
   ASSERT_TRUE(FileHelper::MakePath(dir.c_str()));
   {
@@ -153,7 +153,7 @@ TEST_F(Utf8PathTest, RenameFile) {
 TEST_F(Utf8PathTest, FstreamUtf8) {
   std::string dir = "utf8_test_fstream_" + kChinese;
   std::string file_path = FileHelper::PathJoin(dir, kMixed + ".txt");
-  ScheduleCleanup(dir);
+  schedule_cleanup(dir);
 
   ASSERT_TRUE(FileHelper::MakePath(dir.c_str()));
 

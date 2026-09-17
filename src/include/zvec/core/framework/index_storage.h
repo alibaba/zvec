@@ -385,7 +385,7 @@ class IndexStorage : public IndexModule {
   virtual uint32_t magic() const = 0;
 
   //! huge page
-  virtual bool isHugePage() const {
+  virtual bool is_huge_page() const {
     return false;
   }
 

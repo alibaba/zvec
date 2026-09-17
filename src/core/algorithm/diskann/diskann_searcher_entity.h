@@ -30,7 +30,7 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
  public:
   DiskAnnSearcherEntity() = default;
-  virtual ~DiskAnnSearcherEntity() = default;
+  ~DiskAnnSearcherEntity() override = default;
 
  public:
   const DiskAnnEntity::Pointer clone() const override;

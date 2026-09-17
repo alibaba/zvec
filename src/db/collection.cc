@@ -1571,7 +1571,7 @@ Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
     return Status::InternalError("Segment not found");
   }
 
-  auto old_doc = segment->Fetch(doc_id, std::nullopt, true);
+  auto old_doc = segment->fetch(doc_id, std::nullopt, true);
   if (!old_doc) {
     LOG_WARN("doc_id: %zu fetch doc failed", (size_t)doc_id);
     return Status::InternalError("Fetch doc failed");
@@ -1581,7 +1581,7 @@ Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
 }
 
 Status CollectionImpl::handle_upsert(Doc &doc) {
-  return writing_segment_->Upsert(doc);
+  return writing_segment_->upsert(doc);
 }
 
 Status CollectionImpl::handle_update(Doc &doc) {
@@ -1590,11 +1590,11 @@ Status CollectionImpl::handle_update(Doc &doc) {
   CHECK_RETURN_STATUS(s);
 
   old_doc->merge(doc);
-  return writing_segment_->Update(*old_doc);
+  return writing_segment_->update(*old_doc);
 }
 
 Status CollectionImpl::handle_insert(Doc &doc) {
-  return writing_segment_->Insert(doc);
+  return writing_segment_->insert(doc);
 }
 
 Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
@@ -2011,7 +2011,7 @@ Result<DocPtrMap> CollectionImpl::fetch(
       results.insert({pk, nullptr});
       continue;
     }
-    results.insert({pk, segment->Fetch(doc_id, output_fields, include_vector)});
+    results.insert({pk, segment->fetch(doc_id, output_fields, include_vector)});
   }
 
   return results;

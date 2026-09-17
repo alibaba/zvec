@@ -93,7 +93,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
  public:
   VamanaStreamerEntity(IndexStreamer::Stats &stats);
-  ~VamanaStreamerEntity();
+  ~VamanaStreamerEntity() override;
 
   const void *get_vector_by_key(key_t key) const override {
     auto id = get_id(key);
@@ -202,7 +202,7 @@ class VamanaStreamerEntity : public VamanaEntity {
   //! Lazy chunk synchronization: fetches chunks from broker when needed.
   //! Protected by node_chunks_mutex_ to synchronize with add_vector's
   //! emplace_back during concurrent build.
-  void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
+  void sync_chunks(ChunkBroker::ChunkType type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
       return;
@@ -619,7 +619,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! Cloned entity shares contiguous memory via shared_ptr.
   const VamanaEntity::Pointer clone() const override;
 
-  ~VamanaContiguousStreamerEntity() = default;
+  ~VamanaContiguousStreamerEntity() override = default;
 
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();

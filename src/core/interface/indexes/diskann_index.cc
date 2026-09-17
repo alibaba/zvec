@@ -86,7 +86,7 @@ int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
 
 #else
 
-int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("Failed to create streamer. Sparse is not Supported.");
     return core::IndexError_Unsupported;
@@ -180,7 +180,7 @@ int DiskAnnIndex::open(const std::string &file_path,
   return 0;
 }
 
-int DiskAnnIndex::GenerateHolder() {
+int DiskAnnIndex::generate_holder() {
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
                               converter_, &holder_);
 }
@@ -210,7 +210,7 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
 }
 
 int DiskAnnIndex::train() {
-  int ret = GenerateHolder();
+  int ret = generate_holder();
   if (ret != 0) {
     LOG_ERROR("Failed to generate holder, err: %s",
               core::IndexError::What(ret));

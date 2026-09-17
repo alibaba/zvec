@@ -182,12 +182,12 @@ std::string vec_to_string(const std::vector<T> &v) {
 }
 
 template <class... Ts>
-struct overloaded : Ts... {
+struct Overloaded : Ts... {
   using Ts::operator()...;
 };
 
 template <class... Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
+Overloaded(Ts...)->Overloaded<Ts...>;
 
 
 }  // namespace
@@ -1118,7 +1118,7 @@ std::string Doc::to_detail_string() const {
     oss << "\"" << key << "\": ";
 
     std::visit(
-        overloaded{
+        Overloaded{
             [&](std::monostate) { oss << "null"; },
             [&](bool b) { oss << (b ? "true" : "false"); },
             [&](int32_t i) { oss << i; },

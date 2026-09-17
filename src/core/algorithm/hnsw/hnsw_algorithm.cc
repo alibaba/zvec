@@ -72,7 +72,7 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 template <typename EntityType>
 int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   spin_lock_.lock();
-  auto maxLevel = entity_.cur_max_level();
+  auto max_level = entity_.cur_max_level();
   auto entry_point = entity_.entry_point();
   spin_lock_.unlock();
 
@@ -81,7 +81,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
-  for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
+  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 

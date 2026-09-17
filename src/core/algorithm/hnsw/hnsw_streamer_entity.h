@@ -112,7 +112,7 @@ class HnswStreamerEntity : public HnswEntity {
   HnswStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  ~HnswStreamerEntity();
+  ~HnswStreamerEntity() override;
 
   //! Get vector feature data by key
   const void *get_vector_by_key(key_t key) const override {
@@ -299,7 +299,7 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   //! Called only in searching procedure per context, so no need to lock
-  void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
+  void sync_chunks(ChunkBroker::ChunkType type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
       return;
@@ -967,7 +967,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   //! Cloned entity shares contiguous memory via shared_ptr.
   const HnswEntity::Pointer clone() const override;
 
-  ~HnswContiguousStreamerEntity() = default;
+  ~HnswContiguousStreamerEntity() override = default;
 
   //! Build contiguous memory from chunks after open.
   //! Must be called after the entity is fully opened and all chunks are loaded.

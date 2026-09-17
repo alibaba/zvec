@@ -45,7 +45,7 @@ class BufferStorageWriteTest : public ::testing::Test {
   void TearDown() override { ailego::File::Delete(file_path_); }
 
   // Open BufferStorage in writable mode (create_if_missing=true)
-  IndexStorage::Pointer OpenWritable() {
+  IndexStorage::Pointer open_writable() {
     auto storage = IndexFactory::CreateStorage("BufferStorage");
     if (!storage) return nullptr;
     ailego::Params params;
@@ -55,7 +55,7 @@ class BufferStorageWriteTest : public ::testing::Test {
   }
 
   // Open BufferStorage in read-only mode
-  IndexStorage::Pointer OpenReadOnly() {
+  IndexStorage::Pointer open_read_only() {
     auto storage = IndexFactory::CreateStorage("BufferStorage");
     if (!storage) return nullptr;
     ailego::Params params;
@@ -71,7 +71,7 @@ class BufferStorageWriteTest : public ::testing::Test {
 
 // Test: Create new index via BufferStorage, append segment, write data, read back
 TEST_F(BufferStorageWriteTest, WriteBasicCreateAndWrite) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -93,7 +93,7 @@ TEST_F(BufferStorageWriteTest, WriteBasicCreateAndWrite) {
 
 // Test: Write at non-zero offset within the segment
 TEST_F(BufferStorageWriteTest, WriteAtNonZeroOffset) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 8192));
@@ -125,7 +125,7 @@ TEST_F(BufferStorageWriteTest, WriteAtNonZeroOffset) {
 
 // Test: Write to multiple independent segments
 TEST_F(BufferStorageWriteTest, WriteMultipleSegments) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg_a", 4096));
@@ -163,7 +163,7 @@ TEST_F(BufferStorageWriteTest, WriteMultipleSegments) {
 
 // Test: Overwrite existing data at the same offset
 TEST_F(BufferStorageWriteTest, WriteOverwrite) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -188,7 +188,7 @@ TEST_F(BufferStorageWriteTest, WriteOverwrite) {
 
 // Test: Write exceeding segment capacity returns 0
 TEST_F(BufferStorageWriteTest, WriteExceedsCapacity) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   // Append a small segment (page-aligned, so at least 4096 bytes capacity)
@@ -212,7 +212,7 @@ TEST_F(BufferStorageWriteTest, WriteExceedsCapacity) {
 
 // Test: Write with zero length (edge case)
 TEST_F(BufferStorageWriteTest, WriteZeroLength) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -233,7 +233,7 @@ TEST_F(BufferStorageWriteTest, WriteFlushReopenVerify) {
   std::string data = "Persistent data that survives close/reopen";
 
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("persist_seg", 8192));
     auto seg = storage->get("persist_seg");
@@ -245,7 +245,7 @@ TEST_F(BufferStorageWriteTest, WriteFlushReopenVerify) {
 
   // Reopen in read-only mode and verify
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("persist_seg");
     ASSERT_TRUE(seg);
@@ -264,7 +264,7 @@ TEST_F(BufferStorageWriteTest, WriteMultipleFlushCycles) {
   std::string data2 = "second_write_longer";
 
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("seg1", 4096));
     auto seg = storage->get("seg1");
@@ -283,7 +283,7 @@ TEST_F(BufferStorageWriteTest, WriteMultipleFlushCycles) {
 
   // Verify persistence
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("seg1");
     ASSERT_TRUE(seg);
@@ -305,7 +305,7 @@ TEST_F(BufferStorageWriteTest, WriteCloseWithoutExplicitFlush) {
   std::string data = "should_persist_on_close";
 
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("seg1", 4096));
     auto seg = storage->get("seg1");
@@ -316,7 +316,7 @@ TEST_F(BufferStorageWriteTest, WriteCloseWithoutExplicitFlush) {
   }
 
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("seg1");
     ASSERT_TRUE(seg);
@@ -333,7 +333,7 @@ TEST_F(BufferStorageWriteTest, WriteCloseWithoutExplicitFlush) {
 TEST_F(BufferStorageWriteTest, WriteReadOnlyNoOp) {
   // First create an index file with a segment
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("seg1", 4096));
     auto seg = storage->get("seg1");
@@ -346,7 +346,7 @@ TEST_F(BufferStorageWriteTest, WriteReadOnlyNoOp) {
 
   // Open read-only and attempt write
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("seg1");
     ASSERT_TRUE(seg);
@@ -369,7 +369,7 @@ TEST_F(BufferStorageWriteTest, WriteReadOnlyNoOp) {
 
 // Test: Resize increases data_size without writing
 TEST_F(BufferStorageWriteTest, ResizeGrow) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -387,7 +387,7 @@ TEST_F(BufferStorageWriteTest, ResizeGrow) {
 
 // Test: Resize shrinks data_size
 TEST_F(BufferStorageWriteTest, ResizeShrink) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -409,7 +409,7 @@ TEST_F(BufferStorageWriteTest, ResizeShrink) {
 
 // Test: Resize beyond capacity is clamped
 TEST_F(BufferStorageWriteTest, ResizeBeyondCapacityClamped) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -429,7 +429,7 @@ TEST_F(BufferStorageWriteTest, ResizeBeyondCapacityClamped) {
 
 // Test: update_data_crc reflects in data_crc() getter
 TEST_F(BufferStorageWriteTest, UpdateDataCrc) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 4096));
@@ -447,7 +447,7 @@ TEST_F(BufferStorageWriteTest, UpdateDataCrc) {
 TEST_F(BufferStorageWriteTest, UpdateDataCrcPersistence) {
   uint32_t crc_val = 0x12345678;
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("seg1", 4096));
     auto seg = storage->get("seg1");
@@ -460,7 +460,7 @@ TEST_F(BufferStorageWriteTest, UpdateDataCrcPersistence) {
   }
 
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("seg1");
     ASSERT_TRUE(seg);
@@ -473,7 +473,7 @@ TEST_F(BufferStorageWriteTest, UpdateDataCrcPersistence) {
 
 // Test: Multiple threads writing to different segments concurrently
 TEST_F(BufferStorageWriteTest, ConcurrentWriteDifferentSegments) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   const int kNumSegments = 8;
@@ -522,7 +522,7 @@ TEST_F(BufferStorageWriteTest, ConcurrentWriteDifferentSegments) {
 
 // Test: Multiple threads writing to the same segment at different offsets
 TEST_F(BufferStorageWriteTest, ConcurrentWriteSameSegment) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   // Need large enough segment for all threads
@@ -568,7 +568,7 @@ TEST_F(BufferStorageWriteTest, ConcurrentWriteSameSegment) {
 
 // Test: Concurrent writers + flush (simulates real workload)
 TEST_F(BufferStorageWriteTest, ConcurrentWriteWithFlush) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 65536));
@@ -614,7 +614,7 @@ TEST_F(BufferStorageWriteTest, ConcurrentWriteWithFlush) {
 
 // Test: Append multiple segments then write to each
 TEST_F(BufferStorageWriteTest, AppendThenWriteSequence) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   for (int i = 0; i < 5; ++i) {
@@ -643,7 +643,7 @@ TEST_F(BufferStorageWriteTest, AppendThenWriteSequence) {
 
 // Test: Write to a segment, append another, write to both, verify all
 TEST_F(BufferStorageWriteTest, InterleavedAppendAndWrite) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   // Append and write first segment
@@ -683,7 +683,7 @@ TEST_F(BufferStorageWriteTest, InterleavedAppendAndWrite) {
 
 // Test: Fill entire segment capacity with data
 TEST_F(BufferStorageWriteTest, WriteLargeBuffer) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   // Request 16KB segment (will be page-aligned)
@@ -718,7 +718,7 @@ TEST_F(BufferStorageWriteTest, WriteLargeBufferPersistence) {
   }
 
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("large_seg", kSize));
     auto seg = storage->get("large_seg");
@@ -728,7 +728,7 @@ TEST_F(BufferStorageWriteTest, WriteLargeBufferPersistence) {
   }
 
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("large_seg");
     ASSERT_TRUE(seg);
@@ -745,7 +745,7 @@ TEST_F(BufferStorageWriteTest, WriteLargeBufferPersistence) {
 
 // Test: refresh() updates checkpoint and marks dirty
 TEST_F(BufferStorageWriteTest, RefreshCheckpoint) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
   ASSERT_EQ(0, storage->append("seg1", 4096));
 
@@ -767,7 +767,7 @@ TEST_F(BufferStorageWriteTest, RefreshCheckpoint) {
 
 // Test: Appending a duplicate segment ID returns error
 TEST_F(BufferStorageWriteTest, AppendDuplicateSegment) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("dup_seg", 4096));
@@ -779,7 +779,7 @@ TEST_F(BufferStorageWriteTest, AppendDuplicateSegment) {
 
 // Test: Appending a zero-size segment returns error
 TEST_F(BufferStorageWriteTest, AppendZeroSize) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   EXPECT_NE(0, storage->append("zero_seg", 0));
@@ -796,7 +796,7 @@ TEST_F(BufferStorageWriteTest, AppendZeroSize) {
 // observed after all writers quiesce (individual unsynchronized reads during
 // concurrent writes may appear torn, which is expected).
 TEST_F(BufferStorageWriteTest, CR_DataSizePaddingSizeInvariant) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 8192));
@@ -836,7 +836,7 @@ TEST_F(BufferStorageWriteTest, CR_DataSizePaddingSizeInvariant) {
 // The invariant is verified after all threads stop (reads without meta_mtx_
 // during concurrent mutation may observe a torn pair, which is expected).
 TEST_F(BufferStorageWriteTest, CR_ConcurrentWriteAndResize) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 8192));
@@ -884,7 +884,7 @@ TEST_F(BufferStorageWriteTest, CR_ChainSplitAllSegmentsAccessible) {
   const int kNumSegments = 50;  // Enough to trigger chain split with default 4096 meta capacity
 
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
 
     for (int i = 0; i < kNumSegments; ++i) {
@@ -903,7 +903,7 @@ TEST_F(BufferStorageWriteTest, CR_ChainSplitAllSegmentsAccessible) {
 
   // Reopen and verify ALL segments are present and readable
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     for (int i = 0; i < kNumSegments; ++i) {
       std::string name = "chain_seg_" + std::to_string(i);
@@ -926,7 +926,7 @@ TEST_F(BufferStorageWriteTest, CR_MultipleInstancesSameThread) {
   std::string path2 = file_path_ + "_second";
   ailego::File::Delete(path2);
 
-  auto storage1 = OpenWritable();
+  auto storage1 = open_writable();
   ASSERT_TRUE(storage1);
 
   // Open a second independent BufferStorage instance
@@ -968,7 +968,7 @@ TEST_F(BufferStorageWriteTest, CR_MultipleInstancesSameThread) {
 // then read back via both fetch() and read(MemoryBlock&) to verify the
 // cross-page buffer allocation path. (Tests fix for UAF in cross-page read.)
 TEST_F(BufferStorageWriteTest, CR_CrossPageWriteAndRead) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   // Segment large enough to span multiple pages
@@ -1015,7 +1015,7 @@ TEST_F(BufferStorageWriteTest, CR_DirtyFlagNotLostAfterFlush) {
   std::string late_data = "late_write_after_flush";
 
   {
-    auto storage = OpenWritable();
+    auto storage = open_writable();
     ASSERT_TRUE(storage);
     ASSERT_EQ(0, storage->append("seg1", 4096));
     auto seg = storage->get("seg1");
@@ -1035,7 +1035,7 @@ TEST_F(BufferStorageWriteTest, CR_DirtyFlagNotLostAfterFlush) {
 
   // Reopen and verify the late write persisted
   {
-    auto storage = OpenReadOnly();
+    auto storage = open_read_only();
     ASSERT_TRUE(storage);
     auto seg = storage->get("seg1");
     ASSERT_TRUE(seg);
@@ -1050,7 +1050,7 @@ TEST_F(BufferStorageWriteTest, CR_DirtyFlagNotLostAfterFlush) {
 // Stress test: Concurrent flush + write interleaving to expose dirty flag races.
 // All writes that return successfully MUST be visible after final close+reopen.
 TEST_F(BufferStorageWriteTest, CR_ConcurrentFlushWriteDirtyFlagStress) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 65536));
@@ -1103,7 +1103,7 @@ TEST_F(BufferStorageWriteTest, CR_ConcurrentFlushWriteDirtyFlagStress) {
 // append must still work correctly AFTER the append (unordered_map address
 // stability guarantee). This tests the fix for reserve()-based invalidation.
 TEST_F(BufferStorageWriteTest, CR_PointerStabilityAcrossAppend) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg_first", 4096));
@@ -1136,7 +1136,7 @@ TEST_F(BufferStorageWriteTest, CR_PointerStabilityAcrossAppend) {
 // update_data_crc concurrent with write: CRC update must be serialized
 // with data_size changes via meta_mtx_. Invariant verified post-quiescence.
 TEST_F(BufferStorageWriteTest, CR_ConcurrentWriteAndCrcUpdate) {
-  auto storage = OpenWritable();
+  auto storage = open_writable();
   ASSERT_TRUE(storage);
 
   ASSERT_EQ(0, storage->append("seg1", 8192));

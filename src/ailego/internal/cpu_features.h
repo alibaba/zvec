@@ -21,6 +21,8 @@ namespace internal {
 
 /*! Cpu Features
  */
+// NOLINTBEGIN(readability-identifier-naming): identifiers mirror CPUID feature
+// mnemonics (SSE4_1, AVX512_VNNI, L1_ECX ...) and stay in hardware casing.
 class CpuFeatures {
  public:
   //! 16-bit FP conversions
@@ -376,6 +378,7 @@ class CpuFeatures {
   };
   static StaticFlags static_flags_;
 };
+// NOLINTEND(readability-identifier-naming)
 
 }  // namespace internal
 }  // namespace ailego

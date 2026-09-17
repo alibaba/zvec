@@ -49,7 +49,7 @@ using BatchDistanceFunc =
     std::function<void(const void **m, const void *q, size_t num, size_t dim,
                        float *out, const void **extra_values)>;
 using QueryPreprocessFunc =
-    zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
+    zvec::ailego::distance_batch::DistanceBatchQueryPreprocessFunc;
 
 // Uniform UINT7 quantize kernel: fp32 -> int8 code in [0, 127] with a global
 // affine transform. Raw function pointer (rather than std::function) avoids

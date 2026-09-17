@@ -57,7 +57,7 @@ enum class NodeOp {
   T_BOOL_VALUE
 };
 
-class Node : public Generic_Node<NodeOp, Node> {
+class Node : public GenericNode<NodeOp, Node> {
  public:
   using Ptr = std::shared_ptr<Node>;
 

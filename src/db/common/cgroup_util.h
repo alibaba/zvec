@@ -41,17 +41,17 @@ namespace zvec {
 class CgroupUtil {
  public:
   // Static methods to get CPU and memory limits
-  static int getCpuLimit();
-  static uint64_t getMemoryLimit();
+  static int get_cpu_limit();
+  static uint64_t get_memory_limit();
 
   // Parse a cgroup v2 cpu.max value. Returns false for an unlimited or
   // malformed value so callers can fall back to the host CPU count.
-  static bool parseCpuMax(const std::string &cpu_max, int *cpu_cores);
+  static bool parse_cpu_max(const std::string &cpu_max, int *cpu_cores);
 
   // Static methods to get other resources
-  static double getCpuUsage();
-  static uint64_t getMemoryUsage();
-  static uint64_t getUptime();
+  static double get_cpu_usage();
+  static uint64_t get_memory_usage();
+  static uint64_t get_uptime();
 
  private:
   CgroupUtil() = default;
@@ -71,17 +71,17 @@ class CgroupUtil {
   static void initialize();
 
   // Helper methods (also made static)
-  static void updateCpuCores();
-  static bool readCpuCgroup();
-  static void updateMemoryLimit();
-  static bool readMemoryCgroup();
-  static void initializeCpuStats();
+  static void update_cpu_cores();
+  static bool read_cpu_cgroup();
+  static void update_memory_limit();
+  static bool read_memory_cgroup();
+  static void initialize_cpu_stats();
 
 #if defined(PLATFORM_LINUX)
   static bool readProcStat();
 #endif
 
-  static uint64_t getCurrentMemoryUsage();
+  static uint64_t get_current_memory_usage();
 
 #if defined(PLATFORM_LINUX)
   static uint64_t readMemoryUsageCgroup();
@@ -89,18 +89,18 @@ class CgroupUtil {
 #endif
 
 #if defined(PLATFORM_MACOS)
-  static uint64_t getMacOSMemoryUsage();
+  static uint64_t get_mac_os_memory_usage();
 #endif
 
-  static uint64_t extractMemoryValue(const std::string &line);
-  static double calculateCpuUsage();
+  static uint64_t extract_memory_value(const std::string &line);
+  static double calculate_cpu_usage();
 
 #if defined(PLATFORM_LINUX)
   static double calculateLinuxCpuUsage();
 #endif
 
 #if defined(PLATFORM_MACOS)
-  static double calculateMacOSCpuUsage();
+  static double calculate_mac_os_cpu_usage();
 #endif
 };
 

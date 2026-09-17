@@ -170,7 +170,7 @@ class InvertedSearchResult
   }
 
 
-  void AND(const InvertedSearchResult &other) {
+  void AND(const InvertedSearchResult &other) {  // NOLINT(readability-identifier-naming): set-algebra op; 'and' is a keyword
     if (!bitmap_ || !other.bitmap_) {
       destroy_bitmap();
     } else {
@@ -179,7 +179,7 @@ class InvertedSearchResult
   }
 
 
-  void OR(const InvertedSearchResult &other) {
+  void OR(const InvertedSearchResult &other) {  // NOLINT(readability-identifier-naming): set-algebra op; 'or' is a keyword
     if (!other.bitmap_) {
       return;
     }
