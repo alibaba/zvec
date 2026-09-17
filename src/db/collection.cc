@@ -21,7 +21,6 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
-#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <variant>
@@ -314,7 +313,6 @@ class CollectionImpl : public Collection {
     MetricType metric{MetricType::L2};
     std::vector<FastQuerySegment> segments;
     core_interface::Index::Pointer raw_index;
-    core_interface::Index::Pointer raw_reference_index;
     core_interface::BaseIndexQueryParam::Pointer engine_query_param;
     core_interface::BaseIndexQueryParam::Pointer default_engine_query_param;
     core_interface::RefinerParam::Pointer refiner_param;
@@ -1879,6 +1877,7 @@ Result<CollectionImpl::FastQueryState> CollectionImpl::resolve_fast_query(
                          : IndexType::UNDEFINED;
   cache.metric = metric;
   const auto segments = get_all_segments();
+  if (segments.empty()) return cache;
   cache.segments.reserve(segments.size());
   for (const auto &seg : segments) {
     CombinedVectorColumnIndexer::Ptr indexer;
@@ -1910,8 +1909,12 @@ Result<CollectionImpl::FastQueryState> CollectionImpl::resolve_fast_query(
       if (primary) {
         cache.raw_index = primary->debug_get_index();
         auto reference = entry.indexer->reference_indexer();
-        if (reference) {
-          cache.raw_reference_index = reference->debug_get_index();
+        auto reference_index =
+            reference ? reference->debug_get_index() : nullptr;
+        if (reference_index) {
+          cache.refiner_param =
+              std::make_shared<core_interface::RefinerParam>();
+          cache.refiner_param->reference_index = std::move(reference_index);
         }
       }
     }
@@ -1927,102 +1930,16 @@ Result<CollectionImpl::FastQueryState> CollectionImpl::resolve_fast_query(
   if (!engine_qp) return tl::make_unexpected(engine_qp.error());
   cache.engine_query_param = std::move(engine_qp.value());
   cache.default_engine_query_param = cache.engine_query_param->clone();
-  if (cache.raw_reference_index) {
-    cache.refiner_param = std::make_shared<core_interface::RefinerParam>();
-    cache.refiner_param->reference_index = cache.raw_reference_index;
-  }
   return cache;
 }
 
-namespace {
-template <typename DbParam, typename EngineParam, typename Update>
-bool UpdateFastQueryParam(const QueryParams::Ptr &params,
-                          core_interface::BaseIndexQueryParam *engine,
-                          const core_interface::BaseIndexQueryParam *defaults,
-                          Update update) {
-  const auto *p = dynamic_cast<const DbParam *>(params.get());
-  if (params && !p) return false;
-  if (auto *e = dynamic_cast<EngineParam *>(engine)) {
-    update(p, e, static_cast<const EngineParam *>(defaults));
-  }
-  return true;
-}
-}  // namespace
-
 Status CollectionImpl::update_fast_query_params(
     FastQueryState &state, const QueryParams::Ptr &params) const {
-  if (params && params->type() != state.index_type) {
-    return Status::InvalidArgument(
-        "fast query: query parameter type does not match the field index");
-  }
   auto *engine = state.engine_query_param.get();
-  const auto *defaults = state.default_engine_query_param.get();
-  bool valid = false;
-  switch (state.index_type) {
-    case IndexType::VAMANA:
-      valid = UpdateFastQueryParam<VamanaQueryParams,
-                                   core_interface::VamanaQueryParam>(
-          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
-            e->ef_search = p ? p->ef_search() : d->ef_search;
-            e->prefetch_offset = p ? p->prefetch_offset() : d->prefetch_offset;
-            e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
-          });
-      break;
-    case IndexType::HNSW:
-      valid =
-          UpdateFastQueryParam<HnswQueryParams, core_interface::HNSWQueryParam>(
-              params, engine, defaults,
-              [](const auto *p, auto *e, const auto *d) {
-                e->ef_search = p ? p->ef() : d->ef_search;
-                e->prefetch_offset =
-                    p ? p->prefetch_offset() : d->prefetch_offset;
-                e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
-              });
-      break;
-    case IndexType::HNSW_RABITQ:
-      valid = UpdateFastQueryParam<HnswRabitqQueryParams,
-                                   core_interface::HNSWRabitqQueryParam>(
-          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
-            e->ef_search = p ? p->ef() : d->ef_search;
-          });
-      break;
-    case IndexType::IVF:
-      valid =
-          UpdateFastQueryParam<IVFQueryParams, core_interface::IVFQueryParam>(
-              params, engine, defaults,
-              [](const auto *p, auto *e, const auto *d) {
-                e->nprobe = p ? p->nprobe() : d->nprobe;
-              });
-      break;
-    case IndexType::IVF_RABITQ:
-      valid = UpdateFastQueryParam<IvfRabitqQueryParams,
-                                   core_interface::IVFRabitqQueryParam>(
-          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
-            e->nprobe = p ? p->nprobe() : d->nprobe;
-          });
-      break;
-    case IndexType::DISKANN:
-      valid = UpdateFastQueryParam<DiskAnnQueryParams,
-                                   core_interface::DiskAnnQueryParam>(
-          params, engine, defaults, [](const auto *p, auto *e, const auto *d) {
-            e->list_size = p ? p->list_size() : d->list_size;
-          });
-      break;
-    case IndexType::FLAT:
-      valid =
-          UpdateFastQueryParam<FlatQueryParams, core_interface::FlatQueryParam>(
-              params, engine, defaults,
-              [](const auto *, auto *, const auto *) {});
-      break;
-    default:
-      break;
-  }
-  if (!valid)
-    return Status::InvalidArgument(
-        "fast query: unsupported query parameter type");
+  auto status = ProximaEngineHelper::update_engine_query_param(
+      state.index_type, params, engine, state.default_engine_query_param.get());
+  CHECK_RETURN_STATUS(status);
   if (engine) {
-    engine->radius = params ? params->radius() : defaults->radius;
-    engine->is_linear = params ? params->is_linear() : defaults->is_linear;
     engine->refiner_param =
         params && params->is_using_refiner() ? state.refiner_param : nullptr;
     if (engine->refiner_param) {
@@ -2067,7 +1984,7 @@ Result<FastQueryResult> CollectionImpl::fast_query(
   }
   const bool refine = query_params && query_params->is_using_refiner();
   if (state.raw_index && state.engine_query_param &&
-      (!refine || state.raw_reference_index)) {
+      (!refine || state.refiner_param)) {
     state.engine_query_param->topk = static_cast<uint32_t>(topk);
     core_interface::DenseVector dense_query{query_vector};
     core_interface::VectorData query_data{dense_query};
@@ -2084,19 +2001,15 @@ Result<FastQueryResult> CollectionImpl::fast_query(
     return out;
   }
 
-  const auto &cache = state;
-
-  const int search_topk = topk;
-
-  const MetricType metric = cache.metric;
+  const MetricType metric = state.metric;
   auto better = [metric](float a, float b) {
     return metric == MetricType::IP ? a > b : a < b;
   };
 
   vector_column_params::QueryParams qp;
-  qp.topk = static_cast<uint32_t>(search_topk);
-  qp.data_type = cache.data_type;
-  qp.dimension = cache.dimension;
+  qp.topk = static_cast<uint32_t>(topk);
+  qp.data_type = state.data_type;
+  qp.dimension = state.dimension;
   qp.query_params = query_params;
 
   vector_column_params::VectorData vector_data;
@@ -2113,8 +2026,7 @@ Result<FastQueryResult> CollectionImpl::fast_query(
     IndexResults::Ptr results = std::move(res.value());
 
     std::vector<int> indices;
-    indices.reserve(search_topk);
-    const size_t score_begin = out->scores.size();
+    indices.reserve(topk);
     for (auto it = results->create_iterator(); it->valid(); it->next()) {
       indices.push_back(static_cast<int>(it->doc_id()));
       out->scores.push_back(it->score());
@@ -2123,14 +2035,7 @@ Result<FastQueryResult> CollectionImpl::fast_query(
       return Status::OK();
     }
 
-    std::vector<int64_t> ids;
-    auto s = entry.segment->get_global_doc_ids(indices, ids);
-    if (!s.ok()) {
-      out->scores.resize(score_begin);
-      return s;
-    }
-    out->ids.insert(out->ids.end(), ids.begin(), ids.end());
-    return Status::OK();
+    return entry.segment->get_global_doc_ids(indices, out->ids);
   };
 
   auto finish = [topk, return_scores](FastQueryResult out) {
@@ -2144,20 +2049,16 @@ Result<FastQueryResult> CollectionImpl::fast_query(
     return out;
   };
 
-  if (cache.segments.size() == 1) {
+  if (state.segments.size() == 1) {
     FastQueryResult out;
-    auto s = search_one(cache.segments[0], &out);
+    auto s = search_one(state.segments[0], &out);
     CHECK_RETURN_STATUS_EXPECTED(s);
-    if (static_cast<int>(out.ids.size()) > topk) {
-      out.ids.resize(topk);
-      out.scores.resize(topk);
-    }
     return finish(std::move(out));
   }
 
   std::vector<std::pair<float, int64_t>> candidates;
-  candidates.reserve(static_cast<size_t>(search_topk) * cache.segments.size());
-  for (const auto &entry : cache.segments) {
+  candidates.reserve(static_cast<size_t>(topk) * state.segments.size());
+  for (const auto &entry : state.segments) {
     FastQueryResult seg_out;
     auto s = search_one(entry, &seg_out);
     CHECK_RETURN_STATUS_EXPECTED(s);
