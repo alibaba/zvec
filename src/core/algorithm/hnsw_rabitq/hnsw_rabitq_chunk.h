@@ -89,10 +89,10 @@ class HnswRabitqChunkBroker {
     return stg_;
   }
 
- private:
   HnswRabitqChunkBroker(const HnswRabitqChunkBroker &) = delete;
   HnswRabitqChunkBroker &operator=(const HnswRabitqChunkBroker &) = delete;
 
+ private:
   struct HnswChunkMeta {
     HnswChunkMeta() {
       memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));

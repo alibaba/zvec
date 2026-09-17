@@ -3888,13 +3888,13 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
     }
     ASSERT_TRUE(holder->emplace(i, vec));
   }
-  std::shared_ptr<IndexMeta> index_meta_ptr_;
-  index_meta_ptr_.reset(
-      new (std::nothrow) IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
-  index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
+  std::shared_ptr<IndexMeta> index_meta_ptr;
+  index_meta_ptr.reset(new (std::nothrow)
+                           IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
+  index_meta_ptr->set_metric("SquaredEuclidean", 0, Params());
 
   RabitqConverter converter;
-  converter.init(*index_meta_ptr_, Params());
+  converter.init(*index_meta_ptr, Params());
   ASSERT_EQ(converter.train(holder), 0);
   std::shared_ptr<IndexReformer> index_reformer;
   ASSERT_EQ(converter.to_reformer(&index_reformer), 0);
@@ -3937,7 +3937,7 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
   RabitqConverter converter2;
   Params converter2_params;
   converter2_params.set(PARAM_RABITQ_TOTAL_BITS, 2u);
-  converter2.init(*index_meta_ptr_, converter2_params);
+  converter2.init(*index_meta_ptr, converter2_params);
   ASSERT_EQ(converter2.train(holder), 0);
   std::shared_ptr<IndexReformer> index_reformer2;
   ASSERT_EQ(converter2.to_reformer(&index_reformer2), 0);

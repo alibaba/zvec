@@ -23,7 +23,7 @@ namespace core {
 HnswRabitqStreamerEntity::HnswRabitqStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {}
 
-HnswRabitqStreamerEntity::~HnswRabitqStreamerEntity() {}
+HnswRabitqStreamerEntity::~HnswRabitqStreamerEntity() = default;
 
 int HnswRabitqStreamerEntity::init(size_t max_doc_cnt) {
   if (std::pow(scaling_factor(), kMaxGraphLayers) < max_doc_cnt) {

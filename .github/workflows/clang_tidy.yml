@@ -91,7 +91,17 @@ jobs:
           selected = []
           skipped = []
 
+          # Auto-generated code is exempt from clang-tidy and must not be edited.
+          generated_dir_markers = (
+              "src/db/sqlengine/antlr/gen/",
+              "src/db/index/column/fts_column/gen/",
+          )
+
           for rel_path in changed:
+              norm_rel = rel_path.replace(os.sep, "/")
+              if any(marker in norm_rel for marker in generated_dir_markers):
+                  skipped.append(f"{rel_path} (generated file, exempt from clang-tidy)")
+                  continue
               abs_path = os.path.normpath(str((cwd / rel_path).resolve()))
               if abs_path in compile_entries:
                   selected.append(rel_path)

@@ -34,6 +34,7 @@ struct CosineDistanceBatch {
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
+    // NOLINTNEXTLINE(bugprone-sizeof-expression): intentional byte-width ratio
     constexpr size_t extra_dim = sizeof(float) / sizeof(ValueType);
     size_t data_dim = dim - extra_dim;
 
