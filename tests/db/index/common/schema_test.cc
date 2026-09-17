@@ -999,9 +999,6 @@ TEST(CollectionSchemaTest, Validate) {
     for (const auto &name : invalid_names) {
       CollectionSchema c(name, {field});
       s = c.validate();
-      if (!s.ok()) {
-        std::cout << "Invalid name: " << name << std::endl;
-      }
       ASSERT_FALSE(s.ok());
       ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
     }
