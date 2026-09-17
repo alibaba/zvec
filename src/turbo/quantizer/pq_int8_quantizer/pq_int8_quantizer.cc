@@ -22,8 +22,6 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
-#include <turbo/preprocessor/opq_rotator/opq_rotator.h>
-#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 
@@ -145,30 +143,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
-  // Optional OPQ rotation: the codebook trains in the rotated space and all
-  // encode/query paths apply the same rotation.
-  preprocessor_.reset();
-  std::string rotate_type;
-  params.get("rotate_type", &rotate_type);
-  if (!rotate_type.empty() && rotate_type != "none") {
-    if (rotate_type != "opq") {
-      return kErrUnsupported;
-    }
-    // Rotation is a pure fp32 transform; fp16 codebooks would need a lossy
-    // round trip on every path, so reject the combination outright.
-    if (input_data_type_ != DataType::kFp32) {
-      return kErrUnsupported;
-    }
-    params.get("opq_iter", &opq_iter_);
-    params.get("opq_pq_iter", &opq_pq_iter_);
-    if (opq_iter_ == 0 || opq_pq_iter_ == 0) {
-      return kErrInvalidArgument;
-    }
-    preprocessor_ = OpqRotator::create(static_cast<int>(original_dim_));
-    if (!preprocessor_) {
-      return kErrInvalidArgument;
-    }
-  }
+  int opq_ret = opq_.init(original_dim_, input_data_type_, params);
+  if (opq_ret != 0) return opq_ret;
 
   if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean" &&
       meta_.metric_name() != "Cosine") {
@@ -327,35 +303,15 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
     }
   }
 
-  // OPQ alternating loop: step 2 (fix rotation -> codebook) is
-  // train_all_chunks(); step 1 (fix codebook -> rotation) is the
-  // preprocessor's two-input train().
-  if (preprocessor_ && num > 0) {
-    const float *base = reinterpret_cast<const float *>(all_data.data());
-    const size_t total = num * original_dim_;
-    std::vector<float> x(base, base + total);  // original space, pre-rotation
-    std::vector<float> x_hat(total);
-    float prev_mse = 0.0f;
-
-    for (uint32_t it = 0; it < opq_iter_; ++it) {
-      rotate_batch(x.data(), num, all_data.data(), data_stride);
-      train_all_chunks(all_data.data(), num, data_stride, opq_pq_iter_);
-      build_centroid_ptrs_cache();
-      float mse = encode_reconstruct_batch(
-          reinterpret_cast<const float *>(all_data.data()), num, x_hat.data());
-      LOG_INFO("PqInt8Quantizer OPQ round %u/%u: reconstruction mse=%f", it + 1,
-               opq_iter_, mse);
-      if (it > 0 && (mse >= prev_mse ||
-                     (prev_mse - mse) <= prev_mse * kOpqMinImprovement)) {
-        break;
-      }
-      prev_mse = mse;
-      preprocessor_->train(x.data(), x_hat.data(), num, 0);
-    }
-
-    // Rotate with the final matrix so the codebook trained below matches it.
-    rotate_batch(x.data(), num, all_data.data(), data_stride);
-  }
+  opq_.train(
+      all_data.data(), num, "PqInt8Quantizer",
+      [&](uint32_t max_iters) {
+        train_all_chunks(all_data.data(), num, data_stride, max_iters);
+        build_centroid_ptrs_cache();
+      },
+      [this](const float *rotated, size_t count, float *x_hat) {
+        return encode_reconstruct_batch(rotated, count, x_hat);
+      });
 
   train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters);
 
@@ -414,52 +370,9 @@ void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
 float PqInt8Quantizer::encode_reconstruct_batch(const float *rotated,
                                                 size_t num,
                                                 float *x_hat) const {
-  float dists[kNumCentroids];
-  double sum_err = 0.0;
-
-  for (size_t i = 0; i < num; ++i) {
-    const float *vec = rotated + i * original_dim_;
-    float *out = x_hat + i * original_dim_;
-    for (uint32_t m = 0; m < num_chunk_; ++m) {
-      const size_t d = chunk_dim(m);
-      const size_t offset = chunk_offsets_[m];
-      const void *sub_vec = vec + offset;
-      const auto &centroid_ptrs = centroid_ptrs_cache_[m];
-      // Same L2 argmin as quantize_data(); const_cast: kernel is read-only.
-      l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
-                   kNumCentroids, d, dists, nullptr);
-      float best_dist = std::numeric_limits<float>::infinity();
-      uint32_t best_idx = 0;
-      for (uint32_t j = 0; j < kNumCentroids; ++j) {
-        if (dists[j] < best_dist) {
-          best_dist = dists[j];
-          best_idx = j;
-        }
-      }
-      std::memcpy(out + offset, centroid_ptrs[best_idx], d * sizeof(float));
-      sum_err += best_dist;
-    }
-  }
-  return static_cast<float>(sum_err / static_cast<double>(num));
-}
-
-void PqInt8Quantizer::rotate_batch(const float *src, size_t num, void *dst,
-                                   size_t dst_stride) const {
-  uint8_t *out = reinterpret_cast<uint8_t *>(dst);
-  for (size_t i = 0; i < num; ++i) {
-    preprocessor_->apply(src + i * original_dim_,
-                         reinterpret_cast<float *>(out + i * dst_stride));
-  }
-}
-
-const void *PqInt8Quantizer::apply_rotation(const void *vec,
-                                            std::vector<float> *buf) const {
-  if (!preprocessor_) {
-    return vec;
-  }
-  buf->resize(original_dim_);
-  preprocessor_->apply(reinterpret_cast<const float *>(vec), buf->data());
-  return buf->data();
+  return pq_reconstruct_batch<kNumCentroids>(
+      rotated, num, original_dim_, centroid_ptrs_cache_, l2_batch_fn_,
+      [this](size_t m) { return chunk_dim(m); }, x_hat);
 }
 
 void PqInt8Quantizer::build_centroid_ptrs_cache() {
@@ -569,7 +482,7 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 
   // OPQ: rotate last, mirroring train().
   std::vector<float> rotated_vec_storage;
-  vec = apply_rotation(vec, &rotated_vec_storage);
+  vec = opq_.apply(vec, &rotated_vec_storage);
 
   // Encode with L2-only batch distance (search-metric independent),
   // fusing argmin into the distance loop.
@@ -656,7 +569,7 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
 
   // OPQ: rotate last, exactly as quantize_data() does.
   std::vector<float> rotated_query_storage;
-  query = apply_rotation(query, &rotated_query_storage);
+  query = opq_.apply(query, &rotated_query_storage);
 
   // LUT[m][j] = distance(q_m, c_m[j]) via the metric-aware batch_fn_.
   // L2/Cosine: ||q_m - c_m[j]||^2   IP: -dot(q_m, c_m[j]).
@@ -807,9 +720,9 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
       //! Rotation is orthogonal, so L2 decomposition holds in the rotated
       //! space.  OPQ is gated to fp32 in init(), hence the constexpr branch.
       if constexpr (std::is_same_v<T, float>) {
-        if (preprocessor_) {
+        if (opq_.enabled()) {
           rotated.resize(original_dim_);
-          preprocessor_->apply(buf.data(), rotated.data());
+          opq_.rotate(buf.data(), rotated.data());
           std::memcpy(buf.data(), rotated.data(),
                       original_dim_ * sizeof(float));
         }
@@ -923,7 +836,7 @@ int PqInt8Quantizer::quantize_precomputed_query(const void *query,
   //! Rotation closes the preprocessing chain here as well, keeping this path
   //! in lockstep with quantize_query().
   std::vector<float> rotated_query_storage;
-  prep = apply_rotation(prep, &rotated_query_storage);
+  prep = opq_.apply(prep, &rotated_query_storage);
 
   //! term3 LUT: -2<q^m, c_m[j]>.  The IP kernel returns the negated inner
   //! product, i.e. dists[j] = -<q^m, c_m[j]>, so LUT = 2 * dists.  The
@@ -1012,9 +925,9 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   }
 
   // Undo the rotation first: codes live in the rotated space.
-  if (preprocessor_) {
+  if (opq_.enabled()) {
     std::vector<float> rotated(result, result + original_dim_);
-    preprocessor_->apply_inverse(rotated.data(), result);
+    opq_.rotate_inverse(rotated.data(), result);
   }
 
   // Undo zero-mean centering: add the centroid back FIRST (centering was
@@ -1099,16 +1012,13 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   payload.num_centroids = kNumCentroids;
   payload.use_zero_mean = use_zero_mean_ ? 1 : 0;
   payload.input_data_type = static_cast<uint8_t>(input_data_type_);
-  payload.rotate_type =
-      preprocessor_ ? static_cast<uint8_t>(RotateType::kOpq) : uint8_t{0};
+  payload.rotate_type = opq_.rotate_type();
 
   // The rotator blob is self-describing (RotatorSerHeader + matrix), so the
   // payload only needs the type tag to know whether one follows.
   std::string preprocessor_blob;
-  if (preprocessor_) {
-    int rc = preprocessor_->serialize(&preprocessor_blob);
-    if (rc != 0) return rc;
-  }
+  int opq_ret = opq_.serialize(&preprocessor_blob);
+  if (opq_ret != 0) return opq_ret;
 
   size_t centroids_bytes = centroids_.size();
   size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
@@ -1262,24 +1172,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
     std::memcpy(centroid_.data(), ptr, centroid_bytes);
     ptr += centroid_bytes;
   }
-  // Restore the rotation matrix; the blob carries its own header.
-  if (payload.rotate_type != 0) {
-    if (payload.rotate_type != static_cast<uint8_t>(RotateType::kOpq)) {
-      return kErrUnsupported;
-    }
-    const size_t consumed =
-        static_cast<size_t>(ptr - reinterpret_cast<const char *>(data));
-    if (consumed >= len) return kErrInvalidArgument;
-    preprocessor_ = OpqRotator::from_serialized(
-        ptr, static_cast<size_t>(preprocessor_bytes));
-    if (!preprocessor_ ||
-        preprocessor_->in_dim() != static_cast<int>(original_dim_)) {
-      preprocessor_.reset();
-      return kErrInvalidArgument;
-    }
-  } else {
-    preprocessor_.reset();
-  }
+  int opq_ret = opq_.deserialize(payload.rotate_type, original_dim_, ptr,
+                                 static_cast<size_t>(preprocessor_bytes));
+  if (opq_ret != 0) return opq_ret;
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
   dist_table_.clear();
