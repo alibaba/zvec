@@ -103,9 +103,9 @@ Status validate_field_name(std::string_view name) {
         "Invalid schema: field name must not be empty");
   }
   if (name.size() > kMaxFieldNameBytes) {
-    return Status::InvalidArgument("Invalid schema: field name exceeds ",
-                                   kMaxFieldNameBytes, " bytes (got ",
-                                   name.size(), ")");
+    return Status::InvalidArgument("Invalid schema: field[", format_name(name),
+                                   "] exceeds ", kMaxFieldNameBytes,
+                                   " bytes (got ", name.size(), ")");
   }
   for (unsigned char byte : name) {
     if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||

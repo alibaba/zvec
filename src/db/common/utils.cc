@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "utils.h"
+#include <utf8proc.h>
 #include <algorithm>
 
 
@@ -28,8 +29,34 @@ std::string format_name(std::string_view value) {
   auto length = std::min(value.size(), kMaxPreviewBytes);
   std::string preview;
   preview.reserve(length);
-  for (size_t i = 0; i < length; ++i) {
+  size_t i = 0;
+  while (i < length) {
     auto byte = static_cast<unsigned char>(value[i]);
+    if (byte >= 0x80) {
+      utf8proc_int32_t codepoint;
+      auto bytes = utf8proc_iterate(
+          reinterpret_cast<const utf8proc_uint8_t *>(value.data() + i),
+          static_cast<utf8proc_ssize_t>(std::min(value.size() - i, size_t{4})),
+          &codepoint);
+      if (bytes > 0) {
+        auto codepoint_bytes = static_cast<size_t>(bytes);
+        if (i + codepoint_bytes > length) {
+          break;
+        }
+        switch (utf8proc_category(codepoint)) {
+          case UTF8PROC_CATEGORY_CC:
+          case UTF8PROC_CATEGORY_CF:
+          case UTF8PROC_CATEGORY_CN:
+          case UTF8PROC_CATEGORY_ZL:
+          case UTF8PROC_CATEGORY_ZP:
+            break;
+          default:
+            preview.append(value.data() + i, codepoint_bytes);
+            i += codepoint_bytes;
+            continue;
+        }
+      }
+    }
     switch (byte) {
       case '\0':
         preview += "\\0";
@@ -59,8 +86,9 @@ std::string format_name(std::string_view value) {
         }
         break;
     }
+    ++i;
   }
-  if (length < value.size()) {
+  if (i < value.size()) {
     preview += "...";
   }
   return preview;

@@ -201,6 +201,8 @@ TEST(IdentifierValidationTest, Utf8ErrorsIncludeEscapedAndBoundedPreviews) {
                   prefix + "[order\\n\\[123\\]] contains a newline");
     ExpectInvalid(validator.validate("order\xff"),
                   prefix + "[order\\xFF] is not valid UTF-8");
+    ExpectInvalid(validator.validate(u8"订单\n"),
+                  prefix + u8"[订单\\n] contains a newline");
     ExpectInvalid(
         validator.validate(std::string(40, 'a') + "\n"),
         prefix + "[" + std::string(32, 'a') + "...] contains a newline");
@@ -226,9 +228,11 @@ TEST(IdentifierValidationTest, RetainsTheFieldAsciiCharacterSet) {
                   .ok());
   EXPECT_TRUE(validate_field_name(std::string(kMaxFieldNameBytes, 'a')).ok());
   ExpectInvalid(validate_field_name(std::string(kMaxFieldNameBytes + 1, 'a')),
-                "Invalid schema: field name exceeds 64 bytes (got 65)");
+                "Invalid schema: field[" + std::string(32, 'a') +
+                    "...] exceeds 64 bytes (got 65)");
   ExpectInvalid(validate_field_name(std::string(10000, 'a')),
-                "Invalid schema: field name exceeds 64 bytes (got 10000)");
+                "Invalid schema: field[" + std::string(32, 'a') +
+                    "...] exceeds 64 bytes (got 10000)");
 }
 
 TEST(IdentifierValidationTest, RejectsExactInternalFieldNames) {
@@ -252,7 +256,24 @@ TEST(IdentifierValidationTest, SharedErrorPreviewIsEscapedAndBounded) {
   EXPECT_EQ(format_name(""), "");
   EXPECT_EQ(format_name(std::string("a\0\n\r\t[]\\", 8)),
             "a\\0\\n\\r\\t\\[\\]\\\\");
-  EXPECT_EQ(format_name(u8"中"), "\\xE4\\xB8\\xAD");
+  EXPECT_EQ(format_name(u8"中文€😀e\u0301"), u8"中文€😀e\u0301");
+  EXPECT_EQ(format_name(u8"\u0085\u2028\u2029\u202E"),
+            "\\xC2\\x85\\xE2\\x80\\xA8\\xE2\\x80\\xA9\\xE2\\x80\\xAE");
+  EXPECT_EQ(format_name(std::string(u8"中") + "\xff\xe4\xb8"),
+            u8"中\\xFF\\xE4\\xB8");
+  EXPECT_EQ(format_name(std::string("\xff") + u8"中"), u8"\\xFF中");
+  for (const std::string character : {u8"é", u8"中", u8"😀"}) {
+    auto prefix = std::string(32 - character.size(), 'x');
+    EXPECT_EQ(format_name(prefix + character), prefix + character);
+    EXPECT_EQ(format_name(prefix + character + "tail"),
+              prefix + character + "...");
+    EXPECT_EQ(format_name(prefix + "x" + character), prefix + "x...");
+  }
+  EXPECT_EQ(format_name(std::string(30, 'x') + "\xe4\xb8"),
+            std::string(30, 'x') + "\\xE4\\xB8");
+  EXPECT_EQ(format_name(std::string(31, 'x') + "\xc2"
+                                               "a"),
+            std::string(31, 'x') + "\\xC2...");
   EXPECT_EQ(format_name(std::string(10000, '\xff')),
             Repeat("\\xFF", 32) + "...");
   EXPECT_EQ(format_name(std::string(10000, 'x')), std::string(32, 'x') + "...");
@@ -268,7 +289,7 @@ TEST(IdentifierValidationTest,
       validate_field_name("a.b"),
       "Invalid schema: field[a.b] contains an unsupported character" + rule);
   ExpectInvalid(validate_field_name(u8"中"),
-                "Invalid schema: field[\\xE4\\xB8\\xAD] contains a non-ASCII "
+                "Invalid schema: field[中] contains a non-ASCII "
                 "character" +
                     rule);
   ExpectInvalid(
