@@ -371,12 +371,14 @@ TEST(DiskAnnBufferPoolFileReaderTest, RejectsNonPageAlignedRequests) {
   ASSERT_EQ(pool->init(), 0);
   BufferPoolAlignedFileReader reader(pool);
 
+  ASSERT_EQ(reader.open_from_pool(file.path()), 0);
   void *output = allocate_aligned(512);
   ASSERT_NE(output, nullptr);
   std::vector<AlignedRead> requests;
   requests.emplace_back(512, 512, output);
   IOContext unused{};
   EXPECT_EQ(reader.read(requests, unused), IndexError_InvalidArgument);
+  EXPECT_EQ(unused, nullptr);
   std::free(output);
 }
 
