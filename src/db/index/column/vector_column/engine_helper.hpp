@@ -101,7 +101,11 @@ class ProximaEngineHelper {
       core_interface::BaseIndexQueryParam *engine,
       const core_interface::BaseIndexQueryParam *defaults, Update update) {
     const auto *p = dynamic_cast<const DbParam *>(params.get());
-    if (params && !p) return false;
+    if (params && !p) {
+      // Flat fallback consumes only common fields, so base QueryParams is
+      // sufficient even when it carries the original graph index type.
+      return dynamic_cast<core_interface::FlatQueryParam *>(engine) != nullptr;
+    }
     if (auto *e = dynamic_cast<EngineParam *>(engine)) {
       update(p, e, static_cast<const EngineParam *>(defaults));
     }

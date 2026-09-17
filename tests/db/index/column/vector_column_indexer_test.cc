@@ -95,6 +95,33 @@ TEST(VectorColumnIndexerTest, ReusedQueryParametersAndFlatFallback) {
 }
 
 
+TEST(VectorColumnIndexerTest, BaseQueryParametersForFlatFallback) {
+  FieldSchema field("vector", DataType::VECTOR_FP32, 32, false,
+                    std::make_shared<FlatIndexParams>(MetricType::L2));
+  for (auto type : {IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::VAMANA,
+                    IndexType::IVF, IndexType::IVF_RABITQ, IndexType::DISKANN}) {
+    SCOPED_TRACE(static_cast<int>(type));
+    vector_column_params::QueryParams query;
+    query.topk = 7;
+    query.query_params = std::make_shared<QueryParams>(type);
+    query.query_params->set_radius(1.25f);
+    query.query_params->set_is_linear(true);
+    auto result =
+        ProximaEngineHelper::convert_to_engine_query_param(field, query);
+    ASSERT_TRUE(result) << result.error().message();
+    ASSERT_NE(nullptr,
+              dynamic_cast<core_interface::FlatQueryParam *>(result->get()));
+    EXPECT_EQ(7U, result.value()->topk);
+    EXPECT_FLOAT_EQ(1.25f, result.value()->radius);
+    EXPECT_TRUE(result.value()->is_linear);
+    // Validation without a Flat fallback still requires the concrete type.
+    EXPECT_FALSE(ProximaEngineHelper::update_engine_query_param(
+                     type, query.query_params, nullptr, nullptr)
+                     .ok());
+  }
+}
+
+
 std::string print_dense_vector(const void *vector, size_t dim,
                                DataType data_type) {
   std::stringstream ss;
