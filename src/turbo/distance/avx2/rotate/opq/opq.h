@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/sqlengine/analyzer/query_info.h"
+#pragma once
 
-namespace zvec::sqlengine {
+#include <cstddef>
 
-class SimpleRewriter {
- public:
-  SimpleRewriter() = default;
+namespace zvec::turbo::avx2 {
 
-  //! Rewrite query_info->search_cond and simplify tree
-  void rewrite(QueryInfo *query_info, const CollectionSchema &schema);
-};
+//! Dense matrix-vector product rotation (AVX2): out = R * in.
+//! ctx points to the dim x dim row-major rotation matrix R.
+void opq_rotate_avx2(const float *in, float *out, size_t in_dim, size_t out_dim,
+                     void *ctx);
 
-}  // namespace zvec::sqlengine
+//! Inverse rotation (AVX2): out = R^T * in (R is orthogonal).
+//! ctx points to the dim x dim row-major rotation matrix R.
+void opq_unrotate_avx2(const float *in, float *out, size_t in_dim,
+                       size_t out_dim, void *ctx);
+
+}  // namespace zvec::turbo::avx2

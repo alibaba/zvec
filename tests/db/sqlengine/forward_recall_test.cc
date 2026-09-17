@@ -474,6 +474,44 @@ TEST_F(ForwardRecallTest, StrNotIn) {
   }
 }
 
+TEST_F(ForwardRecallTest, NullableNotEqualConjunctionExcludesNull) {
+  SearchQuery query;
+  query.output_fields_ = {"id", "optional_age"};
+  query.topk_ = 200;
+  query.filter_ = "optional_age != 1 and optional_age != 2";
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  auto docs = ret.value();
+  ASSERT_EQ(docs.size(), query.topk_);
+  for (const auto &doc : docs) {
+    auto age = doc->get<uint32_t>("optional_age");
+    ASSERT_TRUE(age.has_value()) << doc->pk();
+    EXPECT_NE(age.value(), 1u);
+    EXPECT_NE(age.value(), 2u);
+  }
+}
+
+TEST_F(ForwardRecallTest, NullableNotInExcludesNull) {
+  SearchQuery query;
+  query.output_fields_ = {"id", "optional_age"};
+  query.topk_ = 200;
+  query.filter_ = "optional_age not in (1, 2)";
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  auto docs = ret.value();
+  ASSERT_EQ(docs.size(), query.topk_);
+  for (const auto &doc : docs) {
+    auto age = doc->get<uint32_t>("optional_age");
+    ASSERT_TRUE(age.has_value()) << doc->pk();
+    EXPECT_NE(age.value(), 1u);
+    EXPECT_NE(age.value(), 2u);
+  }
+}
+
 TEST_F(ForwardRecallTest, StrLike) {
   SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
