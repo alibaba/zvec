@@ -645,7 +645,10 @@ int FlatContiguousStreamerEntity::search_by_p_keys_fast(
     preprocess(buffer.data(), meta().dimension());
     batch_query = buffer.data();
   }
-  if (const auto &batch = batch_distance(); batch) {
+  if (quantizer()) {
+    quantizer()->calc_distance_dp_query_batch(
+        ptrs.data(), static_cast<int>(count), query, distances.data());
+  } else if (const auto &batch = batch_distance(); batch) {
     batch(ptrs.data(), batch_query, count, meta().dimension(), distances.data(),
           has_extras ? extras.data() : nullptr);
   } else {

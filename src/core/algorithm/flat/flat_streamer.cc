@@ -455,7 +455,7 @@ int FlatStreamer<BATCH_SIZE>::search_by_p_keys_fast(
     float *output_scores, size_t topk, const IndexQueryMeta &qmeta,
     Context::UPointer &context) const {
   if (!query || !output_ids || topk == 0 || !context ||
-      !metric_->is_matched(meta_, qmeta)) {
+      (!quantizer_ && !metric_->is_matched(meta_, qmeta))) {
     return IndexError_InvalidArgument;
   }
   auto *flat_context =
