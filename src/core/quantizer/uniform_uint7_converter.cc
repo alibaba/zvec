@@ -258,7 +258,11 @@ class UniformUint7Converter : public IndexConverter {
       }
 
       bool is_valid() const override {
-        return front_iter_->is_valid();
+        return this->status() == 0 && front_iter_->is_valid();
+      }
+
+      int status() const override {
+        return status_ != 0 ? status_ : front_iter_->status();
       }
 
       uint64_t key() const override {
@@ -272,10 +276,15 @@ class UniformUint7Converter : public IndexConverter {
 
      private:
       void encode_record() {
-        if (!front_iter_->is_valid()) {
+        if (!this->is_valid()) {
           return;
         }
         const float *vec = reinterpret_cast<const float *>(front_iter_->data());
+        status_ = front_iter_->status();
+        if (vec == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
         int8_t *out = buffer_.data();
         const float scale = owner_->scale_;
         const float bias = owner_->bias_;
@@ -297,6 +306,7 @@ class UniformUint7Converter : public IndexConverter {
       const UniformUint7Holder *owner_{nullptr};
       std::vector<int8_t> buffer_{};
       IndexHolder::Iterator::Pointer front_iter_{};
+      int status_{0};
     };
 
     UniformUint7Holder(IndexHolder::Pointer front, size_t original_dim,

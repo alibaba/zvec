@@ -43,6 +43,9 @@ int MaterializeMergedInput(const MergedProviderIndexHolder::Pointer &source,
   }
   for (; iter->is_valid(); iter->next()) {
     const void *data = iter->data();
+    if (iter->status() != 0) {
+      return iter->status();
+    }
     if (source->status() != 0) {
       return source->status();
     }
@@ -51,9 +54,16 @@ int MaterializeMergedInput(const MergedProviderIndexHolder::Pointer &source,
     }
     ailego::NumericalVector<T> vector(source->dimension());
     std::memcpy(vector.data(), data, source->element_size());
-    if (!snapshot->emplace(iter->key(), std::move(vector))) {
+    const uint64_t key = iter->key();
+    if (iter->status() != 0) {
+      return iter->status();
+    }
+    if (!snapshot->emplace(key, std::move(vector))) {
       return IndexError_Mismatch;
     }
+  }
+  if (iter->status() != 0) {
+    return iter->status();
   }
   if (source->status() != 0) {
     return source->status();
@@ -278,9 +288,11 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
                        [](int item) { return item == 0; });
   };
 
-  if (!check_results(read_results)) {
+  const auto read_error = std::find_if(read_results.begin(), read_results.end(),
+                                       [](int item) { return item != 0; });
+  if (read_error != read_results.end()) {
     LOG_ERROR("Get vector from entities failed");
-    return IndexError_Runtime;
+    return *read_error;
   }
 
   if (!check_results(add_results)) {
@@ -376,17 +388,27 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
   }
 
   while (iterator->is_valid()) {
+    if (iterator->status() != 0) {
+      return iterator->status();
+    }
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
       LOG_DEBUG("read_vec cancelled.");
       return 0;
     }
-    if (filter(iterator->key() + (uint64_t)id_offset)) {
+    const uint64_t key = iterator->key();
+    if (iterator->status() != 0) {
+      return iterator->status();
+    }
+    if (filter(key + (uint64_t)id_offset)) {
       (*stats_.mutable_filtered_count())++;
       iterator->next();
       continue;
     }
 
     const void *vector_data = iterator->data();
+    if (iterator->status() != 0) {
+      return iterator->status();
+    }
     if (!vector_data) {
       LOG_ERROR("Failed to read source vector, index=%zu key=%zu",
                 source_streamer_index, static_cast<size_t>(iterator->key()));
@@ -432,7 +454,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     }
     iterator->next();
   }
-  return 0;
+  return iterator->status();
 }
 
 void MixedStreamerReducer::add_vec(int *result) {

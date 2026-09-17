@@ -331,7 +331,10 @@ class UniformUint4Converter : public IndexConverter {
         return buffer_.data();
       }
       bool is_valid() const override {
-        return front_->is_valid();
+        return this->status() == 0 && front_->is_valid();
+      }
+      int status() const override {
+        return status_ != 0 ? status_ : front_->status();
       }
       uint64_t key() const override {
         return front_->key();
@@ -343,12 +346,18 @@ class UniformUint4Converter : public IndexConverter {
 
      private:
       void Encode() {
-        if (!front_->is_valid()) return;
+        if (!this->is_valid()) return;
+        const void *source = front_->data();
+        status_ = front_->status();
+        if (source == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
         const float *input = nullptr;
         if (owner_->source_type_ == IndexMeta::DataType::DT_FP32) {
-          input = static_cast<const float *>(front_->data());
+          input = static_cast<const float *>(source);
         } else {
-          DecodeSource(front_->data(), owner_->source_type_,
+          DecodeSource(source, owner_->source_type_,
                        owner_->original_dimension_, &decoded_);
           input = decoded_.data();
         }
@@ -367,6 +376,7 @@ class UniformUint4Converter : public IndexConverter {
       std::vector<uint8_t> buffer_{};
       std::vector<float> decoded_{};
       IndexHolder::Iterator::Pointer front_{};
+      int status_{0};
     };
 
     UniformUint4Holder(IndexHolder::Pointer front, size_t original_dimension,

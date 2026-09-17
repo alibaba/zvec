@@ -114,25 +114,59 @@ class TwoPassIndexHolder : public IndexHolder {
 
     //! Retrieve pointer of data
     const void *data() const override {
-      return front_iter_->data();
+      if (status() != 0) {
+        return nullptr;
+      }
+      const void *result = front_iter_->data();
+      holder_->status_ = front_iter_->status();
+      if (!result && holder_->status_ == 0) {
+        holder_->status_ = IndexError_ReadData;
+      }
+      return holder_->status_ == 0 ? result : nullptr;
     }
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      if (status() != 0) {
+        return false;
+      }
+      const bool valid = front_iter_->is_valid();
+      holder_->status_ = front_iter_->status();
+      return holder_->status_ == 0 && valid;
+    }
+
+    int status() const override {
+      if (holder_->status_ == 0) {
+        holder_->status_ = front_iter_->status();
+      }
+      return holder_->status_;
     }
 
     //! Retrieve primary key
     uint64_t key() const override {
-      return front_iter_->key();
+      const uint64_t result = front_iter_->key();
+      (void)status();
+      return result;
     }
 
     //! Next iterator
     void next() override {
+      if (!is_valid()) {
+        return;
+      }
+      const uint64_t record_key = key();
+      if (status() != 0) {
+        return;
+      }
+      const void *record_data = data();
+      if (status() != 0) {
+        return;
+      }
       holder_->features_.emplace_back(
-          front_iter_->key(), std::string((const char *)front_iter_->data(),
-                                          holder_->front_->element_size()));
+          record_key, std::string(static_cast<const char *>(record_data),
+                                  holder_->front_->element_size()));
       front_iter_->next();
+      (void)status();
     }
 
    private:
@@ -160,7 +194,12 @@ class TwoPassIndexHolder : public IndexHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return (features_iter_ != holder_->features_.end());
+      return holder_->status_ == 0 &&
+             features_iter_ != holder_->features_.end();
+    }
+
+    int status() const override {
+      return holder_->status_;
     }
 
     //! Retrieve primary key
@@ -218,10 +257,12 @@ class TwoPassIndexHolder : public IndexHolder {
     ++pass_;
     if (pass_ == 1) {
       IndexHolder::Iterator::Pointer iter = front_->create_iterator();
-      return iter ? IndexHolder::Iterator::Pointer(
-                        new TwoPassIndexHolder::FirstPassIterator(
-                            this, std::move(iter)))
-                  : IndexHolder::Iterator::Pointer();
+      if (!iter) {
+        status_ = IndexError_NoMemory;
+        return nullptr;
+      }
+      return IndexHolder::Iterator::Pointer(
+          new TwoPassIndexHolder::FirstPassIterator(this, std::move(iter)));
     } else if (pass_ == 2) {
       return IndexHolder::Iterator::Pointer(
           new TwoPassIndexHolder::SecondPassIterator(this));
@@ -236,6 +277,7 @@ class TwoPassIndexHolder : public IndexHolder {
   //! Members
   IndexHolder::Pointer front_{};
   std::list<std::pair<uint64_t, std::string>> features_{};
+  int status_{0};
   size_t pass_{0};
   IndexMeta::DataType data_type_{IndexMeta::DataType::DT_UNDEFINED};
   size_t dimension_;

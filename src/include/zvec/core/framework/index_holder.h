@@ -47,6 +47,13 @@ struct IndexHolder {
     //! Test if the iterator is valid
     virtual bool is_valid() const = 0;
 
+    //! Sticky iteration error; zero also denotes normal end of iteration.
+    //! Consumers must check after iteration and before using a key or data
+    //! that may require I/O. Wrapping iterators must preserve source errors.
+    virtual int status() const {
+      return 0;
+    }
+
     //! Retrieve primary key
     virtual uint64_t key() const = 0;
 

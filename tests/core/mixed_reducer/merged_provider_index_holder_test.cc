@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -285,6 +286,88 @@ IndexStreamer::Pointer MakeStreamer(
   return MakeStreamer(docs, std::make_shared<ProviderLifetimeStats>());
 }
 
+enum class IteratorFailureOperation { kValidity, kKey, kData };
+
+struct IteratorReadFailure {
+  IteratorFailureOperation operation{IteratorFailureOperation::kValidity};
+  size_t ordinal{0};
+  bool enabled{true};
+};
+
+class FailingIteratorProvider final
+    : public MultiPassIndexProvider<IndexMeta::DataType::DT_FP32> {
+ public:
+  FailingIteratorProvider(std::shared_ptr<IteratorReadFailure> failure,
+                          size_t count)
+      : MultiPassIndexProvider(kDimension), failure_(std::move(failure)) {
+    for (size_t i = 0; i < count; ++i) {
+      ailego::NumericalVector<float> vector(kDimension);
+      vector[0] = static_cast<float>(i);
+      vector[1] = static_cast<float>(i) + 0.5F;
+      EXPECT_TRUE(this->emplace(i, std::move(vector)));
+    }
+  }
+
+  IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<FailingIterator>(
+        MultiPassIndexProvider::create_iterator(), failure_);
+  }
+
+ private:
+  class FailingIterator final : public IndexHolder::Iterator {
+   public:
+    FailingIterator(IndexHolder::Iterator::Pointer delegate,
+                    std::shared_ptr<IteratorReadFailure> failure)
+        : delegate_(std::move(delegate)), failure_(std::move(failure)) {}
+
+    bool is_valid() const override {
+      return !failed(IteratorFailureOperation::kValidity) &&
+             delegate_->is_valid();
+    }
+    const void *data() const override {
+      return failed(IteratorFailureOperation::kData) ? nullptr
+                                                     : delegate_->data();
+    }
+    uint64_t key() const override {
+      return failed(IteratorFailureOperation::kKey)
+                 ? std::numeric_limits<uint64_t>::max()
+                 : delegate_->key();
+    }
+    void next() override {
+      delegate_->next();
+      ++ordinal_;
+    }
+    int status() const override {
+      return status_;
+    }
+
+   private:
+    bool failed(IteratorFailureOperation operation) const {
+      if (failure_->enabled && failure_->operation == operation &&
+          failure_->ordinal == ordinal_) {
+        status_ = IndexError_ReadData;
+      }
+      return status_ != 0;
+    }
+
+    IndexHolder::Iterator::Pointer delegate_;
+    std::shared_ptr<IteratorReadFailure> failure_;
+    size_t ordinal_{0};
+    mutable int status_{0};
+  };
+
+  std::shared_ptr<IteratorReadFailure> failure_;
+};
+
+IndexStreamer::Pointer MakeFailingIteratorStreamer(
+    const std::shared_ptr<IteratorReadFailure> &failure, size_t count) {
+  return std::make_shared<TestStreamer>(
+      [failure, count](size_t) {
+        return std::make_shared<FailingIteratorProvider>(failure, count);
+      },
+      std::make_shared<ProviderLifetimeStats>());
+}
+
 IndexStreamer::Pointer MakeBlockStreamer(
     const std::vector<std::pair<uint64_t, float>> &docs,
     const std::shared_ptr<BlockReadStats> &stats,
@@ -322,6 +405,138 @@ std::vector<std::pair<uint64_t, float>> ReadAll(
     iter->next();
   }
   return docs;
+}
+
+TEST(MergedProviderIndexHolderTest, PlanningRejectsMappingErrorsBeforeFilter) {
+  for (auto operation :
+       {IteratorFailureOperation::kValidity, IteratorFailureOperation::kKey}) {
+    for (size_t failed_ordinal : {0U, 4096U}) {
+      SCOPED_TRACE(static_cast<int>(operation));
+      SCOPED_TRACE(failed_ordinal);
+      auto failure = std::make_shared<IteratorReadFailure>();
+      failure->operation = operation;
+      failure->ordinal = failed_ordinal;
+      MergedProviderIndexHolder holder(
+          IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+          {MakeSource(MakeFailingIteratorStreamer(failure, 4098))});
+      size_t filter_calls = 0;
+      IndexFilter filter;
+      filter.set([&](uint64_t) {
+        ++filter_calls;
+        return true;
+      });
+      EXPECT_EQ(IndexError_ReadData, holder.init(filter));
+      EXPECT_EQ(IndexError_ReadData, holder.status());
+      EXPECT_EQ(failed_ordinal, filter_calls);
+      EXPECT_EQ(nullptr, holder.create_iterator());
+    }
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, PlanningPreservesVectorReadError) {
+  auto failure = std::make_shared<IteratorReadFailure>();
+  failure->operation = IteratorFailureOperation::kData;
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {MakeSource(MakeFailingIteratorStreamer(failure, 3))});
+  EXPECT_EQ(IndexError_ReadData, holder.init({}));
+  EXPECT_EQ(IndexError_ReadData, holder.status());
+}
+
+TEST(MergedProviderIndexHolderTest, SequentialPassPreservesIteratorReadError) {
+  for (auto operation :
+       {IteratorFailureOperation::kValidity, IteratorFailureOperation::kData}) {
+    for (size_t failed_ordinal : {0U, 2U}) {
+      SCOPED_TRACE(static_cast<int>(operation));
+      SCOPED_TRACE(failed_ordinal);
+      auto failure = std::make_shared<IteratorReadFailure>();
+      failure->operation = operation;
+      failure->ordinal = failed_ordinal;
+      failure->enabled = false;
+      MergedProviderIndexHolder holder(
+          IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+          {MakeSource(MakeFailingIteratorStreamer(failure, 3))});
+      ASSERT_EQ(0, holder.init({}));
+      failure->enabled = true;
+      auto iter = holder.create_iterator();
+      ASSERT_NE(nullptr, iter);
+      size_t read_count = 0;
+      for (; iter->is_valid(); iter->next()) {
+        (void)iter->data();
+        if (iter->status() != 0) {
+          break;
+        }
+        ++read_count;
+      }
+      EXPECT_EQ(failed_ordinal, read_count);
+      EXPECT_EQ(IndexError_ReadData, iter->status());
+      EXPECT_EQ(IndexError_ReadData, holder.status());
+      EXPECT_FALSE(iter->is_valid());
+    }
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, OrdinalKeyPassPreservesIteratorReadError) {
+  for (auto operation :
+       {IteratorFailureOperation::kValidity, IteratorFailureOperation::kKey}) {
+    for (size_t failed_ordinal : {0U, 2U}) {
+      SCOPED_TRACE(static_cast<int>(operation));
+      SCOPED_TRACE(failed_ordinal);
+      auto failure = std::make_shared<IteratorReadFailure>();
+      failure->operation = operation;
+      failure->ordinal = failed_ordinal;
+      failure->enabled = false;
+      MergedProviderIndexHolder holder(
+          IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+          {MakeSource(MakeFailingIteratorStreamer(failure, 3))});
+      ASSERT_EQ(0, holder.init({}));
+      failure->enabled = true;
+      OrdinalAccessHolder::Reader::Pointer reader;
+      EXPECT_EQ(IndexError_ReadData, holder.create_ordinal_reader(&reader));
+      EXPECT_EQ(nullptr, reader);
+      EXPECT_EQ(IndexError_ReadData, holder.status());
+    }
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, StreamerMergePreservesIteratorReadError) {
+  for (auto operation :
+       {IteratorFailureOperation::kValidity, IteratorFailureOperation::kKey,
+        IteratorFailureOperation::kData}) {
+    for (size_t failed_ordinal : {0U, 2U}) {
+      SCOPED_TRACE(static_cast<int>(operation));
+      SCOPED_TRACE(failed_ordinal);
+      auto failure = std::make_shared<IteratorReadFailure>();
+      failure->operation = operation;
+      failure->ordinal = failed_ordinal;
+      auto source = MakeFailingIteratorStreamer(failure, 3);
+      auto target = MakeStreamer({});
+      ailego::ThreadPool pool(1, false);
+      MixedStreamerReducer reducer;
+      ailego::Params params;
+      params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+      ASSERT_EQ(0, reducer.init(params));
+      reducer.set_thread_pool(&pool);
+      ASSERT_EQ(0,
+                reducer.set_target_streamer_wiht_info(
+                    nullptr, target, nullptr, nullptr,
+                    IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
+      ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+      size_t filter_calls = 0;
+      IndexFilter filter;
+      filter.set([&](uint64_t key) {
+        ++filter_calls;
+        return operation != IteratorFailureOperation::kData ||
+               key < failed_ordinal;
+      });
+      EXPECT_EQ(IndexError_ReadData, reducer.reduce(filter));
+      EXPECT_EQ(failed_ordinal +
+                    (operation == IteratorFailureOperation::kData ? 1U : 0U),
+                filter_calls);
+      // A failed read must not publish the target as ready for dumping.
+      EXPECT_EQ(IndexError_NoReady, reducer.dump(nullptr));
+    }
+  }
 }
 
 class ReadFailureReformer : public IndexReformer {

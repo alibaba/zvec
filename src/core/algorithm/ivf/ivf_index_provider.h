@@ -14,6 +14,7 @@
 #pragma once
 
 #include <algorithm>
+#include <new>
 #include <numeric>
 #include <vector>
 #include <zvec/core/framework/index_searcher.h>
@@ -90,28 +91,49 @@ class IVFIndexProvider : public IndexProvider {
     //! the caller need to keep a copy of it before iterator to next vector
     const void *data() const override {
       size_t local_id = current_local_id();
-      return local_id < count_ ? entity_->get_vector(local_id) : nullptr;
+      if (local_id >= count_) {
+        return nullptr;
+      }
+      const void *result = entity_->get_vector(local_id);
+      if (!result) {
+        status_ = IndexError_ReadData;
+      }
+      return result;
     }
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return pos_ < count_ && (!use_mapping_ || ensure_mapping_chunk());
+      return status_ == 0 && pos_ < count_ &&
+             (!use_mapping_ || ensure_mapping_chunk());
+    }
+
+    int status() const override {
+      return status_;
     }
 
     //! Retrieve primary key
     uint64_t key() const override {
       size_t local_id = current_local_id();
-      return local_id < count_ ? entity_->get_key(local_id) : kInvalidKey;
+      if (local_id >= count_) {
+        return kInvalidKey;
+      }
+      const uint64_t result = entity_->get_key(local_id);
+      if (result == kInvalidKey) {
+        status_ = IndexError_ReadData;
+      }
+      return result;
     }
 
     //! Next iterator
     void next() override {
-      ++pos_;
+      if (status_ == 0 && pos_ < count_) {
+        ++pos_;
+      }
     }
 
    private:
     bool ensure_mapping_chunk() const {
-      if (mapping_error_) {
+      if (status_ != 0 || pos_ >= count_) {
         return false;
       }
       if (pos_ >= mapping_chunk_begin_ &&
@@ -121,18 +143,32 @@ class IVFIndexProvider : public IndexProvider {
       mapping_chunk_begin_ = pos_;
       const size_t chunk_count =
           std::min(kMappingChunkEntries, count_ - mapping_chunk_begin_);
-      mapping_chunk_.resize(chunk_count);
+      try {
+        mapping_chunk_.resize(chunk_count);
+      } catch (const std::bad_alloc &) {
+        status_ = IndexError_NoMemory;
+        return false;
+      }
       if (entity_->get_key_order_mapping(mapping_chunk_begin_,
                                          mapping_chunk_.data(),
                                          chunk_count) != chunk_count) {
         mapping_chunk_.clear();
-        mapping_error_ = true;
+        status_ = IndexError_ReadData;
+        return false;
+      }
+      if (std::any_of(mapping_chunk_.begin(), mapping_chunk_.end(),
+                      [this](uint32_t id) { return id >= count_; })) {
+        mapping_chunk_.clear();
+        status_ = IndexError_InvalidFormat;
         return false;
       }
       return true;
     }
 
     size_t current_local_id() const {
+      if (status_ != 0 || pos_ >= count_) {
+        return count_;
+      }
       if (!use_mapping_) {
         return fallback_[pos_];
       }
@@ -146,7 +182,7 @@ class IVFIndexProvider : public IndexProvider {
     static constexpr size_t kMappingChunkEntries = 4096;
     IVFEntity::Pointer entity_;
     bool use_mapping_{false};
-    mutable bool mapping_error_{false};
+    mutable int status_{0};
     mutable std::vector<uint32_t> mapping_chunk_;
     mutable size_t mapping_chunk_begin_{0};
     std::vector<size_t> fallback_;  // used only if mapping_ unavailable
