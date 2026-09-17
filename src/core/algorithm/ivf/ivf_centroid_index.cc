@@ -15,6 +15,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
+#include "quantizer/distance_quantizer.h"
 
 namespace zvec {
 namespace core {
@@ -582,14 +583,20 @@ int IVFCentroidIndex::load(const IndexStorage::Pointer &container,
 
   auto searcher_params = meta_.searcher_params();
   searcher_params.merge(searcher_params_);
-  ret = searcher_->init(searcher_params);
+  auto distance_quantizer = CreateDistanceQuantizer(meta_);
+  if (distance_quantizer) {
+    ret = searcher_->init(searcher_params, distance_quantizer);
+    if (ret == IndexError_NotImplemented)
+      ret = searcher_->init(searcher_params);
+  } else {
+    ret = searcher_->init(searcher_params);
+  }
   ivf_check_with_msg(ret, "Failed to initialize searcher %s",
                      searcher_class_.c_str());
 
   IndexMetric::Pointer metric;
   if (index_building_) {
-    // The searcher index metric should specified in building process,
-    // otherwise the query_metric will be used in searching
+    // Build assignment uses the index metric rather than its query metric.
     metric = IndexFactory::CreateMetric(meta_.metric_name());
     ivf_assert_with_msg(metric, IndexError_NoExist,
                         "Failed to create metric %s",

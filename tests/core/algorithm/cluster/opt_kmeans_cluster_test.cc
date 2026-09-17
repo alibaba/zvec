@@ -17,6 +17,8 @@
 #include <ailego/algorithm/kmeans.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
+#include "cluster/cluster_params.h"
+#include "cluster/turbo_kmeans_context.h"
 #include "zvec/core/framework/index_framework.h"
 
 using namespace zvec::core;
@@ -499,4 +501,120 @@ TEST(OptKmeansCluster, InnerProduct) {
 
   ASSERT_EQ(0, cluster->classify(threads, centroids));
   ASSERT_EQ(0, cluster->label(threads, centroids, &labels));
+}
+
+namespace {
+template <typename T>
+void CheckTurboTraining(IndexMeta::DataType type, const std::string &name,
+                        const std::string &metric_name, bool seeded) {
+  SCOPED_TRACE(name + " " + metric_name + " " + std::to_string(sizeof(T)));
+  // 35 centers and 105 features exercise full 32-vector blocks plus both tails.
+  constexpr uint32_t dim = 37, centers = 35, count = centers * 3;
+  IndexMeta meta;
+  meta.set_meta(type, dim);
+  meta.set_metric(metric_name, 0, Params());
+  auto features = std::make_shared<CompactIndexFeatures>(meta);
+  IndexCluster::CentroidList initial;
+  for (uint32_t i = 0; i < count; ++i) {
+    std::vector<T> vec(dim, static_cast<T>(0.0f));
+    vec[i % centers] = static_cast<T>(1.0f);
+    features->emplace(vec.data());
+    if (i < centers && seeded) {
+      IndexCluster::Centroid centroid;
+      centroid.set_feature(vec.data(), dim * sizeof(T));
+      initial.push_back(std::move(centroid));
+    }
+  }
+  // Supported distances use Turbo without a cluster configuration flag.
+  Params params;
+  params.set(GENERAL_CLUSTER_COUNT, centers);
+  params.set(GENERAL_THREAD_COUNT, 2U);
+  params.set(OPTKMEANS_CLUSTER_MAX_ITERATIONS, 8U);
+  auto cluster = IndexFactory::CreateCluster(name);
+  ASSERT_NE(nullptr, cluster);
+  ASSERT_EQ(0, cluster->init(meta, params));
+  ASSERT_EQ(0, cluster->mount(features));
+  auto centroids = initial;
+  auto threads = std::make_shared<SingleQueueIndexThreads>(2U, false);
+  ASSERT_EQ(0, cluster->cluster(threads, centroids));
+  ASSERT_EQ(centers, centroids.size());
+  std::vector<uint32_t> labels;
+  ASSERT_EQ(0, cluster->label(threads, centroids, &labels));
+  ASSERT_EQ(count, labels.size());
+  for (uint32_t i = 0; i < count; ++i) {
+    EXPECT_EQ(labels[i % centers], labels[i]);
+    ASSERT_LT(labels[i], centroids.size());
+    const auto score = [&](size_t c) {
+      const auto *center = reinterpret_cast<const T *>(centroids[c].feature());
+      float value = 0;
+      for (uint32_t d = 0; d < dim; ++d) {
+        const float x = (d == i % centers ? 1.0f : 0.0f);
+        const float y = center[d];
+        value += metric_name == "InnerProduct" ? -x * y : (x - y) * (x - y);
+      }
+      return value;
+    };
+    const float selected = score(labels[i]);
+    ASSERT_TRUE(std::isfinite(selected));
+    for (uint32_t j = 0; j < centers; ++j) {
+      // Empty clusters can have NaN coordinates after random initialization.
+      if (centroids[j].follows()) EXPECT_LE(selected, score(j) + 1e-4f);
+      if (seeded && i % centers != j) EXPECT_NE(labels[i], labels[j]);
+    }
+  }
+  size_t total = 0;
+  for (const auto &centroid : centroids) {
+    total += centroid.follows();
+    EXPECT_TRUE(std::isfinite(centroid.score()));
+    if (seeded) {
+      EXPECT_EQ(3U, centroid.follows());
+      EXPECT_NEAR(metric_name == "InnerProduct" ? -3.0f : 0.0f,
+                  centroid.score(), 1e-4f);
+    }
+  }
+  EXPECT_EQ(count, total);
+}
+}  // namespace
+
+TEST(OptKmeansCluster, DefaultTurboSeededTraining) {
+  for (const auto *metric : {"SquaredEuclidean", "InnerProduct"}) {
+    CheckTurboTraining<float>(IndexMeta::DT_FP32, "OptKmeansCluster", metric,
+                              true);
+    CheckTurboTraining<Float16>(IndexMeta::DT_FP16, "OptKmeansCluster", metric,
+                                true);
+  }
+}
+TEST(OptKmeansCluster, DefaultTurboKmc2Initialization) {
+  for (const auto *metric : {"SquaredEuclidean", "InnerProduct"}) {
+    CheckTurboTraining<float>(IndexMeta::DT_FP32, "OptKmeansCluster", metric,
+                              false);
+    CheckTurboTraining<Float16>(IndexMeta::DT_FP16, "OptKmeansCluster", metric,
+                                false);
+  }
+}
+TEST(OptKmeansCluster, DefaultTurboLinearSeekerTraining) {
+  CheckTurboTraining<float>(IndexMeta::DT_FP32, "KmeansCluster",
+                            "SquaredEuclidean", true);
+  CheckTurboTraining<Float16>(IndexMeta::DT_FP16, "KmeansCluster",
+                              "SquaredEuclidean", true);
+}
+
+namespace {
+template <typename T>
+void CheckQuantizerDimensionChanges() {
+  for (size_t dim : {7U, 37U, 7U}) {
+    std::vector<T> a(dim, static_cast<T>(2.0f));
+    std::vector<T> b(dim, static_cast<T>(3.0f));
+    float score;
+    TurboKmeansContext<T>::Distance(a.data(), b.data(), dim, &score);
+    EXPECT_FLOAT_EQ(static_cast<float>(dim), score);
+    TurboKmeansContext<T, true>::Distance(a.data(), b.data(), dim, &score);
+    EXPECT_FLOAT_EQ(-6.0f * dim, score);
+  }
+}
+}  // namespace
+
+TEST(OptKmeansCluster, DistanceQuantizerTracksTrainingDimension) {
+  CheckQuantizerDimensionChanges<float>();
+  CheckQuantizerDimensionChanges<Float16>();
 }

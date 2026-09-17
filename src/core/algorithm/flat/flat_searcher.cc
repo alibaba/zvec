@@ -101,7 +101,22 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
   }
 
   column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
-  distance_matrix_.initialize(*measure_);
+  if (quantizer_) {
+    const auto &code_meta = quantizer_->meta();
+    const bool floating = code_meta.data_type() == IndexMeta::DT_FP32 ||
+                          code_meta.data_type() == IndexMeta::DT_FP16;
+    if (!floating || code_meta.data_type() != meta_.data_type() ||
+        code_meta.metric_name() != meta_.metric_name() ||
+        quantizer_->quantized_datapoint_vector_length() !=
+            meta_.element_size() ||
+        quantizer_->quantized_query_vector_length() != meta_.element_size()) {
+      LOG_ERROR("Flat distance quantizer does not match stored vectors");
+      return IndexError_Mismatch;
+    }
+    distance_matrix_.initialize(quantizer_);
+  } else {
+    distance_matrix_.initialize(*measure_);
+  }
 
   if (column_major_order_) {
     if (!distance_matrix_.is_valid()) {

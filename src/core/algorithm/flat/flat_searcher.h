@@ -31,10 +31,20 @@ class FlatSearcher : public IndexSearcher {
 
   //! Initialize Searcher
   int init(const ailego::Params &index_params) override {
+    quantizer_.reset();
     params_ = index_params;
     read_block_size_ = FLAT_DEFAULT_READ_BLOCK_SIZE;
     index_params.get(PARAM_FLAT_READ_BLOCK_SIZE, &read_block_size_);
     return 0;
+  }
+
+  // The caller supplies vectors/queries in the quantizer's encoded layout.
+  // Query conversion remains the responsibility of IndexFlow/the IVF reformer.
+  int init(const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override {
+    int ret = init(params);
+    if (ret == 0) quantizer_ = quantizer;
+    return ret;
   }
 
   //! Cleanup Searcher
@@ -47,6 +57,7 @@ class FlatSearcher : public IndexSearcher {
 
   //! Unload index
   int unload(void) override {
+    distance_matrix_ = {};
     container_ = nullptr;
     measure_ = nullptr;
     features_segment_ = nullptr;
@@ -170,6 +181,7 @@ class FlatSearcher : public IndexSearcher {
   IndexMeta meta_{};
   IndexStorage::Pointer container_{};
   IndexMetric::Pointer measure_{};
+  turbo::Quantizer::Pointer quantizer_{};
   ailego::Params params_{};
   IndexStorage::Segment::Pointer features_segment_{};
   mutable std::vector<uint32_t> mapping_{};

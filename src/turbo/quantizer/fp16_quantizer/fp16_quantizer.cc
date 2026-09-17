@@ -23,8 +23,7 @@
 namespace zvec {
 namespace turbo {
 
-int Fp16Quantizer::init(const IndexMeta &meta,
-                        const ailego::Params & /*params*/) {
+int Fp16Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_ = meta;
 
   meta_.set_meta(IndexMeta::DataType::DT_FP16, meta.dimension());
@@ -37,9 +36,15 @@ int Fp16Quantizer::init(const IndexMeta &meta,
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
+  // Training and legacy raw FP16 centers require FP32 L2 accumulation.
+  // This changes arithmetic only; the encoded representation is unchanged.
+  const auto family = metric_name == "SquaredEuclidean" &&
+                              params.get_as_bool("fp32_accumulation")
+                          ? QuantizeType::kRaw
+                          : QuantizeType::kFp16;
   auto kernels =
       get_distance_kernels(metric_from_name(metric_name), DataType::kFp16,
-                           QuantizeType::kFp16, CpuArchType::kAuto);
+                           family, CpuArchType::kAuto);
   if (!kernels.dist || !kernels.batch) {
     LOG_ERROR("Unsupported metric %s for FP16 quantizer", metric_name.c_str());
     return kErrUnsupported;

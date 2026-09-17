@@ -17,6 +17,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "cluster_params.h"
+#include "turbo_kmeans_context.h"
 
 namespace zvec {
 namespace core {
@@ -154,6 +155,14 @@ void OptKmeansAlgorithm::update_params(const ailego::Params &params) {
 }
 
 int OptKmeansAlgorithm::init_distance_func() {
+  auto quantizer = CreateDistanceQuantizer(meta_);
+  if (quantizer) {
+    distance_func_ = [quantizer](const void *m, const void *q, size_t,
+                                 float *out) {
+      *out = quantizer->calc_distance_dp_dp(m, q);
+    };
+    return 0;
+  }
   IndexMetric::Pointer metric_{};
   metric_ = IndexFactory::CreateMetric(meta_.metric_name());
   if (!metric_) {
@@ -484,7 +493,7 @@ int OptKmeansAlgorithm::cleanup(void) {
 
 /*! Numerical K-Means cluster algorithm
  */
-template <typename T>
+template <typename T, typename Context = ailego::NumericalKmeansContext<T>>
 class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
  public:
   //! Type of value
@@ -507,13 +516,13 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
  protected:
   void update_centroids(
       IndexCluster::CentroidList &cents,
-      const ailego::NumericalKmeans<T, IndexThreads> &algorithm);
+      const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm);
 };
 
-template <typename T>
-void NumericalKmeansAlgorithm<T>::update_centroids(
+template <typename T, typename Context>
+void NumericalKmeansAlgorithm<T, Context>::update_centroids(
     IndexCluster::CentroidList &cents,
-    const ailego::NumericalKmeans<T, IndexThreads> &algorithm) {
+    const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm) {
   this->init_centroids(algorithm.centroids().count(), &cents);
   for (size_t i = 0; i < cents.size(); ++i) {
     IndexCluster::Centroid *centroid = &(cents.at(i));
@@ -524,9 +533,9 @@ void NumericalKmeansAlgorithm<T>::update_centroids(
   }
 }
 
-template <typename T>
-int NumericalKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
-                                         IndexCluster::CentroidList &cents) {
+template <typename T, typename Context>
+int NumericalKmeansAlgorithm<T, Context>::cluster(
+    IndexThreads::Pointer threads, IndexCluster::CentroidList &cents) {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -554,8 +563,8 @@ int NumericalKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
     LOG_ERROR("The count of cluster is unknown.");
     return IndexError_NoReady;
   }
-  ailego::NumericalKmeans<T, IndexThreads> algorithm(centroid_count,
-                                                     meta_.dimension());
+  ailego::NumericalKmeans<T, IndexThreads, Context> algorithm(
+      centroid_count, meta_.dimension());
 
   // mount features into algorithm
   auto features_count = features_->count();
@@ -577,7 +586,7 @@ int NumericalKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
     }
   } else {
     ailego::Kmc2CentroidsGenerator<
-        ailego::NumericalKmeans<ValueType, IndexThreads>, IndexThreads>
+        ailego::NumericalKmeans<ValueType, IndexThreads, Context>, IndexThreads>
         g;
     g.set_chain_length(markov_chain_length_);
     g.set_assumption_free(assumption_free_);
@@ -751,7 +760,8 @@ int NibbleKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
 
 /*! Numerical K-Means cluster algorithm
  */
-template <typename T>
+template <typename T,
+          typename Context = ailego::NumericalInnerProductKmeansContext<T>>
 class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
  public:
   //! Type of value
@@ -774,13 +784,15 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
  protected:
   void update_centroids(
       IndexCluster::CentroidList &cents,
-      const ailego::NumericalInnerProductKmeans<T, IndexThreads> &algorithm);
+      const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
+          &algorithm);
 };
 
-template <typename T>
-void NumericalInnerProductKmeansAlgorithm<T>::update_centroids(
+template <typename T, typename Context>
+void NumericalInnerProductKmeansAlgorithm<T, Context>::update_centroids(
     IndexCluster::CentroidList &cents,
-    const ailego::NumericalInnerProductKmeans<T, IndexThreads> &algorithm) {
+    const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
+        &algorithm) {
   this->init_centroids(algorithm.centroids().count(), &cents);
   for (size_t i = 0; i < cents.size(); ++i) {
     IndexCluster::Centroid *centroid = &(cents.at(i));
@@ -791,8 +803,8 @@ void NumericalInnerProductKmeansAlgorithm<T>::update_centroids(
   }
 }
 
-template <typename T>
-int NumericalInnerProductKmeansAlgorithm<T>::cluster(
+template <typename T, typename Context>
+int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster(
     IndexThreads::Pointer threads, IndexCluster::CentroidList &cents) {
   ailego::ElapsedTime stamp;
 
@@ -821,7 +833,7 @@ int NumericalInnerProductKmeansAlgorithm<T>::cluster(
     LOG_ERROR("The count of cluster is unknown.");
     return IndexError_NoReady;
   }
-  ailego::NumericalInnerProductKmeans<T, IndexThreads> algorithm(
+  ailego::NumericalInnerProductKmeans<T, IndexThreads, Context> algorithm(
       centroid_count, meta_.dimension(), true);
 
   // mount features into algorithm
@@ -844,7 +856,7 @@ int NumericalInnerProductKmeansAlgorithm<T>::cluster(
     }
   } else {
     ailego::Kmc2CentroidsGenerator<
-        ailego::NumericalInnerProductKmeans<ValueType, IndexThreads>,
+        ailego::NumericalInnerProductKmeans<ValueType, IndexThreads, Context>,
         IndexThreads>
         g;
     g.set_chain_length(markov_chain_length_);
@@ -1110,6 +1122,30 @@ int OptKmeansCluster::mount(IndexFeatures::Pointer feats) {
 int OptKmeansCluster::init(const IndexMeta &meta,
                            const ailego::Params &params) {
   auto type_ = meta.data_type();
+
+  const bool inner_product = meta.metric_name() == "InnerProduct";
+  if ((inner_product || meta.metric_name() == "SquaredEuclidean") &&
+      (type_ == IndexMeta::DataType::DT_FP32 ||
+       type_ == IndexMeta::DataType::DT_FP16)) {
+    if (type_ == IndexMeta::DataType::DT_FP32) {
+      if (inner_product) {
+        algorithm_ = std::make_shared<NumericalInnerProductKmeansAlgorithm<
+            float, TurboKmeansContext<float, true>>>();
+      } else {
+        algorithm_ = std::make_shared<
+            NumericalKmeansAlgorithm<float, TurboKmeansContext<float>>>();
+      }
+    } else {
+      if (inner_product) {
+        algorithm_ = std::make_shared<NumericalInnerProductKmeansAlgorithm<
+            ailego::Float16, TurboKmeansContext<ailego::Float16, true>>>();
+      } else {
+        algorithm_ = std::make_shared<NumericalKmeansAlgorithm<
+            ailego::Float16, TurboKmeansContext<ailego::Float16>>>();
+      }
+    }
+    return algorithm_->init(meta, params);
+  }
 
   if (meta.metric_name() == "InnerProduct") {
     switch (type_) {
