@@ -32,10 +32,10 @@ inline const char *IntelIntrinsics() {
 }
 
 inline void MatrixTranspose(float *dst, const float *src, size_t m, size_t n) {
-  for (size_t n = 0; n < n * m; n++) {
-    size_t i = n / n;
-    size_t j = n % n;
-    dst[n] = src[m * j + i];
+  for (size_t idx = 0; idx < n * m; idx++) {
+    size_t i = idx / n;
+    size_t j = idx % n;
+    dst[idx] = src[m * j + i];
   }
 }
 

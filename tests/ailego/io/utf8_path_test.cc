@@ -200,7 +200,7 @@ TEST_F(Utf8PathTest, NoGarbledNames_FindFirstFile) {
   std::string child_file = kJapanese + ".dat";
   std::string full_dir = FileHelper::PathJoin(parent, child_dir);
   std::string full_file = FileHelper::PathJoin(parent, child_file);
-  ScheduleCleanup(parent);
+  schedule_cleanup(parent);
 
   ASSERT_TRUE(FileHelper::MakePath(full_dir.c_str()));
   {
@@ -248,7 +248,7 @@ TEST_F(Utf8PathTest, NoGarbledNames_DirCmd) {
   std::string child = kChinese;
   std::string full = FileHelper::PathJoin(parent, child);
   std::string tmpfile = "utf8_test_dir_cmd_output.txt";
-  ScheduleCleanup(parent);
+  schedule_cleanup(parent);
 
   ASSERT_TRUE(FileHelper::MakePath(full.c_str()));
 
