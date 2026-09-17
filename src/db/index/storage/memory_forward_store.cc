@@ -105,7 +105,7 @@ arrow::Status MemForwardStore::append_doc_to_builder(
   // user id(pk)
   auto uid_builder =
       dynamic_cast<arrow::StringBuilder *>(rb_builder->GetField(1));
-  ARROW_RETURN_NOT_OK(uid_builder->Append(doc.pk()));
+  ARROW_RETURN_NOT_OK(uid_builder->Append(doc.pk_ref()));
 
   // other fields
   for (size_t idx = 2; idx < fields.size(); ++idx) {

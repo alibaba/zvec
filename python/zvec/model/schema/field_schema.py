@@ -28,6 +28,8 @@ from zvec.model.param import (
 )
 from zvec.typing import DataType
 
+from .._validation import explain_utf8_conversion_error, format_name_for_error
+
 __all__ = [
     "FieldSchema",
     "VectorSchema",
@@ -104,28 +106,32 @@ class FieldSchema:
     ):
         if name is None or not isinstance(name, str):
             raise ValueError(
-                f"schema validate failed: field name must be str, got {type(name).__name__}"
+                f"Invalid schema: field name must be str, got {type(name).__name__}"
             )
 
         if data_type not in SUPPORT_SCALAR_DATA_TYPE:
             raise ValueError(
-                f"schema validate failed: scalar_field's data_type must be one of "
+                f"Invalid schema: scalar_field's data_type must be one of "
                 f"{', '.join(str(dt) for dt in SUPPORT_SCALAR_DATA_TYPE)}, "
-                f"but field[{name}]'s data_type is {data_type}"
+                f"but field[{format_name_for_error(name)}]'s data_type is {data_type}"
             )
 
-        self._cpp_obj = _FieldSchema(
-            name=name,
-            data_type=data_type,
-            dimension=0,
-            nullable=nullable,
-            index_param=index_param,
-        )
+        try:
+            self._cpp_obj = _FieldSchema(
+                name=name,
+                data_type=data_type,
+                dimension=0,
+                nullable=nullable,
+                index_param=index_param,
+            )
+        except TypeError:
+            explain_utf8_conversion_error(name, "Invalid schema: field name")
+            raise
 
     @classmethod
     def _from_core(cls, core_field_schema: _FieldSchema):
         if core_field_schema is None:
-            raise ValueError("schema validate failed: field schema is None")
+            raise ValueError("Invalid schema: field schema is None")
         inst = cls.__new__(cls)
         inst._cpp_obj = core_field_schema
         return inst
@@ -229,29 +235,33 @@ class VectorSchema:
     ):
         if name is None or not isinstance(name, str):
             raise ValueError(
-                f"schema validate failed: field name must be str, got {type(name).__name__}"
+                f"Invalid schema: field name must be str, got {type(name).__name__}"
             )
 
         if not isinstance(dimension, int) or dimension < 0:
-            raise ValueError("schema validate failed: vector's dimension must be >= 0")
+            raise ValueError("Invalid schema: vector's dimension must be >= 0")
 
         if data_type not in SUPPORT_VECTOR_DATA_TYPE:
             raise ValueError(
-                f"schema validate failed: vector's data_type must be one of "
+                f"Invalid schema: vector's data_type must be one of "
                 f"{', '.join(str(dt) for dt in SUPPORT_VECTOR_DATA_TYPE)}, "
-                f"but field[{name}]'s data_type is {data_type}"
+                f"but field[{format_name_for_error(name)}]'s data_type is {data_type}"
             )
 
         if index_param is None:
             index_param = FlatIndexParam()
 
-        self._cpp_obj = _FieldSchema(
-            name=name,
-            data_type=data_type,
-            dimension=dimension,
-            nullable=False,
-            index_param=index_param,
-        )
+        try:
+            self._cpp_obj = _FieldSchema(
+                name=name,
+                data_type=data_type,
+                dimension=dimension,
+                nullable=False,
+                index_param=index_param,
+            )
+        except TypeError:
+            explain_utf8_conversion_error(name, "Invalid schema: field name")
+            raise
 
     @classmethod
     def _from_core(cls, core_field_schema: _FieldSchema):

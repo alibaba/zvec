@@ -11,17 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 #pragma once
 
-#include <string>
+#include <cstddef>
 #include <string_view>
-
+#include <zvec/db/status.h>
 
 namespace zvec {
 
-std::string indent(int level);
+inline constexpr size_t kMaxDocumentIdBytes = 1024;
+inline constexpr size_t kMaxCollectionNameBytes = 256;
+inline constexpr size_t kMaxFieldNameBytes = 64;
 
-// Format a name for clearer display.
-std::string format_name(std::string_view value);
+Status validate_document_id(std::string_view id);
+Status validate_collection_name(std::string_view name);
+Status validate_field_name(std::string_view name);
 
 }  // namespace zvec

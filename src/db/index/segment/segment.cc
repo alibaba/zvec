@@ -915,7 +915,7 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   }
 
   // write idmap
-  auto s = id_map_->upsert(doc.pk(), g_doc_id);
+  auto s = id_map_->upsert(doc.pk_ref(), g_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // write forward
@@ -952,7 +952,7 @@ Status SegmentImpl::internal_update(Doc &doc) {
 
 Status SegmentImpl::internal_upsert(Doc &doc) {
   uint64_t g_doc_id;
-  bool exist = id_map_->has(doc.pk(), &g_doc_id);
+  bool exist = id_map_->has(doc.pk_ref(), &g_doc_id);
   if (exist) {
     delete_store_->mark_deleted(g_doc_id);
   }
@@ -961,15 +961,15 @@ Status SegmentImpl::internal_upsert(Doc &doc) {
 
 Status SegmentImpl::internal_delete(const Doc &doc) {
   delete_store_->mark_deleted(doc.doc_id());
-  id_map_->remove(doc.pk());
+  id_map_->remove(doc.pk_ref());
   return Status::OK();
 }
 
 Status SegmentImpl::insert(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
 
-  if (id_map_ && id_map_->has(doc.pk())) {
-    return Status::AlreadyExists("insert failed: doc_id[", doc.pk(),
+  if (id_map_ && id_map_->has(doc.pk_ref())) {
+    return Status::AlreadyExists("insert failed: doc_id[", doc.pk_ref(),
                                  "] already exists in collection");
   }
 
@@ -985,8 +985,8 @@ Status SegmentImpl::insert(Doc &doc) {
 Status SegmentImpl::update(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
   uint64_t g_doc_id;
-  if (!id_map_->has(doc.pk(), &g_doc_id)) {
-    return Status::NotFound("update failed: doc_id[", doc.pk(),
+  if (!id_map_->has(doc.pk_ref(), &g_doc_id)) {
+    return Status::NotFound("update failed: doc_id[", doc.pk_ref(),
                             "] not found in collection");
   }
 
@@ -4430,10 +4430,10 @@ Status SegmentImpl::append_wal(const Doc &doc) {
   auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
   if (ret != 0) {
     LOG_ERROR("WAL append failed: segment[%d], pk[%s], operator[%d], ret[%d]",
-              id(), doc.pk().c_str(), static_cast<int>(doc.get_operator()),
+              id(), doc.pk_ref().c_str(), static_cast<int>(doc.get_operator()),
               ret);
     return Status::InternalError("Failed to append WAL: segment[", id(),
-                                 "], pk[", doc.pk(), "], operator[",
+                                 "], pk[", doc.pk_ref(), "], operator[",
                                  static_cast<int>(doc.get_operator()),
                                  "], ret[", ret, "]");
   }
