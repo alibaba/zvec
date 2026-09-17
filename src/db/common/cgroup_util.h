@@ -78,14 +78,14 @@ class CgroupUtil {
   static void initialize_cpu_stats();
 
 #if defined(PLATFORM_LINUX)
-  static bool readProcStat();
+  static bool read_proc_stat();
 #endif
 
   static uint64_t get_current_memory_usage();
 
 #if defined(PLATFORM_LINUX)
-  static uint64_t readMemoryUsageCgroup();
-  static uint64_t readMemoryUsageProc();
+  static uint64_t read_memory_usage_cgroup();
+  static uint64_t read_memory_usage_proc();
 #endif
 
 #if defined(PLATFORM_MACOS)
@@ -96,7 +96,7 @@ class CgroupUtil {
   static double calculate_cpu_usage();
 
 #if defined(PLATFORM_LINUX)
-  static double calculateLinuxCpuUsage();
+  static double calculate_linux_cpu_usage();
 #endif
 
 #if defined(PLATFORM_MACOS)

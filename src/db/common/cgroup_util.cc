@@ -256,12 +256,12 @@ bool CgroupUtil::read_memory_cgroup() {
 void CgroupUtil::initialize_cpu_stats() {
   last_cpu_check_ = std::chrono::steady_clock::now();
 #if defined(PLATFORM_LINUX)
-  readProcStat();
+  read_proc_stat();
 #endif
 }
 
 #if defined(PLATFORM_LINUX)
-bool CgroupUtil::readProcStat() {
+bool CgroupUtil::read_proc_stat() {
   std::ifstream file("/proc/stat");
   if (!file.is_open()) {
     return false;
@@ -297,13 +297,13 @@ bool CgroupUtil::readProcStat() {
 uint64_t CgroupUtil::get_current_memory_usage() {
 #if defined(PLATFORM_LINUX)
   // cgroup
-  uint64_t usage = readMemoryUsageCgroup();
+  uint64_t usage = read_memory_usage_cgroup();
   if (usage > 0) {
     return usage;
   }
 
   // back to /proc/meminfo
-  return readMemoryUsageProc();
+  return read_memory_usage_proc();
 #elif defined(PLATFORM_MACOS)
   return get_mac_os_memory_usage();
 #elif defined(PLATFORM_WINDOWS)
@@ -319,7 +319,7 @@ uint64_t CgroupUtil::get_current_memory_usage() {
 }
 
 #if defined(PLATFORM_LINUX)
-uint64_t CgroupUtil::readMemoryUsageCgroup() {
+uint64_t CgroupUtil::read_memory_usage_cgroup() {
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/memory.current");
   if (file.is_open()) {
@@ -341,7 +341,7 @@ uint64_t CgroupUtil::readMemoryUsageCgroup() {
   return 0;
 }
 
-uint64_t CgroupUtil::readMemoryUsageProc() {
+uint64_t CgroupUtil::read_memory_usage_proc() {
   std::ifstream file("/proc/meminfo");
   if (!file.is_open()) {
     return 0;
@@ -356,15 +356,15 @@ uint64_t CgroupUtil::readMemoryUsageProc() {
 
   while (std::getline(file, line)) {
     if (line.find("MemTotal:") == 0) {
-      total_mem = extractMemoryValue(line);
+      total_mem = extract_memory_value(line);
     } else if (line.find("MemFree:") == 0) {
-      free_mem = extractMemoryValue(line);
+      free_mem = extract_memory_value(line);
     } else if (line.find("MemAvailable:") == 0) {
-      available_mem = extractMemoryValue(line);
+      available_mem = extract_memory_value(line);
     } else if (line.find("Buffers:") == 0) {
-      buffers = extractMemoryValue(line);
+      buffers = extract_memory_value(line);
     } else if (line.find("Cached:") == 0) {
-      cached = extractMemoryValue(line);
+      cached = extract_memory_value(line);
     }
   }
 
@@ -428,7 +428,7 @@ uint64_t CgroupUtil::extract_memory_value(const std::string &line) {
 
 double CgroupUtil::calculate_cpu_usage() {
 #if defined(PLATFORM_LINUX)
-  return calculateLinuxCpuUsage();
+  return calculate_linux_cpu_usage();
 #elif defined(PLATFORM_MACOS)
   return calculate_mac_os_cpu_usage();
 #else
@@ -437,8 +437,8 @@ double CgroupUtil::calculate_cpu_usage() {
 }
 
 #if defined(PLATFORM_LINUX)
-double CgroupUtil::calculateLinuxCpuUsage() {
-  if (!readProcStat()) {
+double CgroupUtil::calculate_linux_cpu_usage() {
+  if (!read_proc_stat()) {
     return 0.0;
   }
 

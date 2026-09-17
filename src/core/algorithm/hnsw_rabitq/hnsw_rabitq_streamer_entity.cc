@@ -305,7 +305,7 @@ int HnswRabitqStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
 int HnswRabitqStreamerEntity::open(IndexStorage::Pointer stg,
                                    uint64_t max_index_size, bool check_crc) {
   std::lock_guard<std::mutex> lock(mutex_);
-  bool huge_page = stg->isHugePage();
+  bool huge_page = stg->is_huge_page();
   LOG_DEBUG("huge_page: %d", (int)huge_page);
   int ret = init_chunk_params(max_index_size, huge_page);
   if (ailego_unlikely(ret != 0)) {
