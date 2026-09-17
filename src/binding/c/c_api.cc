@@ -26,7 +26,6 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -101,9 +100,6 @@
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,       \
                    std::string(msg) + ": " + e.what()); \
     return nullptr;                                     \
-  } catch (const std::invalid_argument &e) {           \
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, e.what()); \
-    return nullptr;                                     \
   } catch (const std::exception &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,           \
                    std::string(msg) + ": " + e.what()); \
@@ -122,9 +118,6 @@
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,       \
                    std::string(msg) + ": " + e.what()); \
     return ZVEC_ERROR_RESOURCE_EXHAUSTED;               \
-  } catch (const std::invalid_argument &e) {           \
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, e.what()); \
-    return ZVEC_ERROR_INVALID_ARGUMENT;                 \
   } catch (const std::exception &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,           \
                    std::string(msg) + ": " + e.what()); \
@@ -142,9 +135,6 @@
   } catch (const std::bad_alloc &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,       \
                    std::string(msg) + ": " + e.what()); \
-    return (error_val);                                 \
-  } catch (const std::invalid_argument &e) {           \
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, e.what()); \
     return (error_val);                                 \
   } catch (const std::exception &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,           \
@@ -3195,8 +3185,7 @@ static zvec::Result<std::vector<zvec::Doc>> convert_zvec_docs_to_internal(
   for (size_t i = 0; i < doc_count; ++i) {
     if (!zvec_docs[i]) {
       return tl::make_unexpected(zvec::Status::InvalidArgument(
-          "Invalid doc: document must not be null (document at index ", i,
-          ")"));
+          "Invalid doc: document must not be null"));
     }
   }
   std::vector<zvec::Doc> docs;

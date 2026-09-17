@@ -1267,7 +1267,7 @@ void test_batch_validation_errors(void) {
     zvec_doc_set_pk(valid_doc, "valid_before_error");
     zvec_doc_set_pk(invalid_doc, "\xff");
     const zvec_doc_t *invalid_inputs[] = {NULL, invalid_doc};
-    const char *reasons[] = {"document must not be null",
+    const char *reasons[] = {"Invalid doc: document must not be null",
                              "id[\\xFF] is not valid UTF-8"};
     for (size_t i = 0; i < 2; ++i) {
       const zvec_doc_t *docs[] = {valid_doc, invalid_inputs[i]};
@@ -1279,7 +1279,10 @@ void test_batch_validation_errors(void) {
         TEST_ASSERT(error_count == 2);
         check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
         if (i == 0) {
-          check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "document at index 1");
+          zvec_error_details_t details = {0};
+          TEST_ASSERT(zvec_get_last_error_details(&details) == ZVEC_OK);
+          TEST_ASSERT(details.message &&
+                      strcmp(details.message, reasons[i]) == 0);
         }
 
         zvec_write_result_t *results = (zvec_write_result_t *)(uintptr_t)1;
@@ -1290,6 +1293,12 @@ void test_batch_validation_errors(void) {
         TEST_ASSERT(results == NULL);
         TEST_ASSERT(result_count == 0);
         check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
+        if (i == 0) {
+          zvec_error_details_t details = {0};
+          TEST_ASSERT(zvec_get_last_error_details(&details) == ZVEC_OK);
+          TEST_ASSERT(details.message &&
+                      strcmp(details.message, reasons[i]) == 0);
+        }
       }
     }
     const char *ids[] = {"valid_before_error"};

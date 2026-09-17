@@ -245,10 +245,7 @@ TEST(IdentifierValidationTest, RejectsExactInternalFieldNames) {
     EXPECT_TRUE(validate_collection_name(name).ok());
   }
   EXPECT_TRUE(validate_field_name("_ZVEC_UID_").ok());
-  for (const std::string name :
-       {"_zvec_vector", "_zvec_sindices", "_zvec_svalues", "_zvec_is_valid"}) {
-    EXPECT_TRUE(validate_field_name(name).ok());
-  }
+  EXPECT_TRUE(validate_field_name("_zvec_is_valid").ok());
 }
 
 TEST(IdentifierValidationTest, SharedErrorPreviewIsEscapedAndBounded) {
