@@ -18,6 +18,47 @@ from zvec import (
 from zvec.typing import DataType, MetricType, QuantizeType
 
 
+@pytest.mark.parametrize(
+    "index_type", [zvec.FlatIndexParam, HnswIndexParam, VamanaIndexParam]
+)
+def test_empty_collection(tmp_path, index_type):
+    schema = CollectionSchema(
+        name="empty_fast_query",
+        vectors=[
+            VectorSchema("vector", DataType.VECTOR_FP32, 32, index_param=index_type())
+        ],
+    )
+    path = str(tmp_path / "empty")
+    writer = zvec.create_and_open(path, schema)
+    writer.close()
+    reader = zvec.open(path, CollectionOption(read_only=True))
+    vector = np.zeros(32, dtype=np.float32)
+    try:
+        assert reader.query(Query("vector", vector=vector), topk=3) == []
+        for topk in (3, 0, 1):
+            ids, scores = reader.fast_query(
+                "vector", vector, topk=topk, return_scores=True
+            )
+            np.testing.assert_array_equal(ids, np.full(topk, -1, dtype=np.int64))
+            assert scores.shape == (topk,)
+            assert np.all(np.isnan(scores))
+            np.testing.assert_array_equal(
+                ids, reader.fast_query("vector", vector, topk=topk)
+            )
+        # Empty state must still validate the field, vector and parameter type.
+        with pytest.raises(ValueError, match="dense vector field"):
+            reader.fast_query("missing", vector)
+        with pytest.raises(ValueError, match="dtype|dimension"):
+            reader.fast_query("vector", vector[:-1])
+        wrong_param = (
+            HnswQueryParam() if index_type is not HnswIndexParam else VamanaQueryParam()
+        )
+        with pytest.raises(ValueError, match="parameter type"):
+            reader.fast_query("vector", vector, wrong_param)
+    finally:
+        reader.close()
+
+
 @pytest.fixture(
     params=[(128, False), (1200, False), (1200, True)],
     ids=["brute_fallback", "vamana_graph", "hnsw_graph"],
@@ -444,3 +485,86 @@ def test_fast_query_index_and_metric_dispatch(tmp_path, index_kind, metric):
                 )
     finally:
         reader.close()
+
+
+@pytest.mark.parametrize("index_kind", ["vamana", "hnsw"])
+@pytest.mark.parametrize(
+    "quantizer",
+    [
+        zvec.QuantizeType.UNIFORM_UINT4,
+        zvec.QuantizeType.UNIFORM_UINT7,
+        zvec.QuantizeType.UNIFORM_UINT8,
+    ],
+)
+def test_uniform_raw_fallback(tmp_path, index_kind, quantizer):
+    vectors = np.random.default_rng(945).normal(size=(130, 32)).astype(np.float32)
+    options = dict(
+        metric_type=zvec.MetricType.L2,
+        quantize_type=quantizer,
+        flat_data_type=zvec.DataType.VECTOR_FP16,
+        use_flat_contiguous_memory=True,
+    )
+    if index_kind == "vamana":
+        index = zvec.VamanaIndexParam(max_degree=16, search_list_size=64, **options)
+        param_type = zvec.VamanaQueryParam
+    else:
+        index = zvec.HnswIndexParam(m=16, ef_construction=64, **options)
+        param_type = zvec.HnswQueryParam
+    schema = zvec.CollectionSchema(
+        name="uniform_fallback",
+        vectors=[
+            zvec.VectorSchema(
+                "vector", zvec.DataType.VECTOR_FP32, 32, index_param=index
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    writer = zvec.create_and_open(path, schema)
+    assert all(
+        s.ok()
+        for s in writer.insert(
+            [
+                zvec.Doc(id=str(i), vectors={"vector": vectors[i].tolist()})
+                for i in range(128)
+            ]
+        )
+    )
+    writer.close()
+    for phase in ("untrained", "optimized", "new_writes"):
+        if phase != "untrained":
+            writer = zvec.open(path)
+            if phase == "optimized":
+                writer.optimize()
+            else:
+                assert all(
+                    s.ok()
+                    for s in writer.insert(
+                        [
+                            zvec.Doc(id=str(i), vectors={"vector": vectors[i].tolist()})
+                            for i in (128, 129)
+                        ]
+                    )
+                )
+            writer.close()
+        reader = zvec.open(path, zvec.CollectionOption(read_only=True))
+        try:
+            for refine in (False, True):
+                param = param_type(is_using_refiner=refine)
+                query = vectors[128] if phase == "new_writes" else vectors[17]
+                docs = reader.query(
+                    zvec.Query("vector", vector=query, param=param), topk=10
+                )
+                ids, scores = reader.fast_query(
+                    "vector", query, param, return_scores=True
+                )
+                np.testing.assert_array_equal(ids, [int(d.id) for d in docs])
+                np.testing.assert_allclose(
+                    scores, [d.score for d in docs], rtol=2e-5, atol=2e-5
+                )
+                np.testing.assert_array_equal(
+                    ids, reader.fast_query("vector", query, param)
+                )
+                if phase == "new_writes":
+                    assert ids[0] == 128
+        finally:
+            reader.close()
