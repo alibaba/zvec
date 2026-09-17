@@ -715,7 +715,9 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
       return core::IndexError_Runtime;
     }
   }
-  int ret = target_builder_->train(target_holder);
+  auto threads =
+      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
+  int ret = target_builder_->train(threads, target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();
   }
@@ -723,7 +725,7 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
     LOG_ERROR("Failed to train target builder, ret=%d", ret);
     return ret;
   }
-  ret = target_builder_->build(target_holder);
+  ret = target_builder_->build(std::move(threads), target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();
   }

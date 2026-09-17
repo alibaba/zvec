@@ -353,14 +353,20 @@ class ReadFailureReformer : public IndexReformer {
 class RetainingTestBuilder : public IndexBuilder {
  public:
   explicit RetainingTestBuilder(
-      const std::string &name = "SnapshotTestBuilder") {
+      const std::string &name = "SnapshotTestBuilder",
+      ailego::ThreadPool *expected_pool = nullptr)
+      : expected_pool_(expected_pool) {
     set_name(name);
   }
-  int train(IndexThreads::Pointer, IndexHolder::Pointer) override {
+  int train(IndexThreads::Pointer threads, IndexHolder::Pointer) override {
     ++train_calls;
+    train_thread_count = threads ? threads->count() : 0;
+    train_used_expected_pool = UsesExpectedPool(threads);
     return 0;
   }
-  int build(IndexThreads::Pointer, IndexHolder::Pointer input) override {
+  int build(IndexThreads::Pointer threads, IndexHolder::Pointer input) override {
+    build_thread_count = threads ? threads->count() : 0;
+    build_used_expected_pool = UsesExpectedPool(threads);
     holder = std::move(input);
     return 0;
   }
@@ -373,9 +379,28 @@ class RetainingTestBuilder : public IndexBuilder {
   }
 
   size_t train_calls{0};
+  size_t train_thread_count{0};
+  size_t build_thread_count{0};
+  bool train_used_expected_pool{false};
+  bool build_used_expected_pool{false};
   IndexHolder::Pointer holder;
 
  private:
+  bool UsesExpectedPool(const IndexThreads::Pointer &threads) const {
+    if (!threads || !expected_pool_) {
+      return false;
+    }
+    std::atomic<bool> used{false};
+    auto group = threads->make_group();
+    group->submit(ailego::Closure::New([&]() {
+      used.store(expected_pool_->indexof_this() >= 0,
+                 std::memory_order_relaxed);
+    }));
+    group->wait_finish();
+    return used.load(std::memory_order_relaxed);
+  }
+
+  ailego::ThreadPool *expected_pool_{nullptr};
   Stats stats_;
 };
 
@@ -480,6 +505,34 @@ TEST(MergedProviderIndexHolderTest,
   EXPECT_EQ(IndexError_ReadData, reducer.reduce({}));
   EXPECT_EQ(0u, builder->train_calls);
   EXPECT_EQ(nullptr, builder->holder);
+}
+
+TEST(MergedProviderIndexHolderTest,
+     IvfBuilderUsesProviderBackedInputAndReducerThreadPool) {
+  auto source = MakeStreamer({{0, 0.0F}, {1, 1.0F}});
+  ailego::ThreadPool pool(2, false);
+  auto builder =
+      std::make_shared<RetainingTestBuilder>("IVFBuilder", &pool);
+  MixedStreamerReducer reducer;
+  ailego::Params params;
+  params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+  ASSERT_EQ(0, reducer.init(params));
+  reducer.set_thread_pool(&pool);
+  ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
+                   builder, source, nullptr, nullptr,
+                   IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
+  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+  ASSERT_EQ(0, reducer.reduce({}));
+  EXPECT_EQ(pool.count(), builder->train_thread_count);
+  EXPECT_EQ(pool.count(), builder->build_thread_count);
+  EXPECT_TRUE(builder->train_used_expected_pool);
+  EXPECT_TRUE(builder->build_used_expected_pool);
+  ASSERT_NE(nullptr, builder->holder);
+  auto *merged =
+      dynamic_cast<MergedProviderIndexHolder *>(builder->holder.get());
+  ASSERT_NE(nullptr, merged);
+  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 0.0F}, {1, 1.0F}}),
+            ReadAll(merged));
 }
 
 TEST(MergedProviderIndexHolderTest, PlainTurboFp32KeepsOrdinalReads) {
