@@ -1878,10 +1878,10 @@ int main(int argc, char *argv[]) {
   auto config_common = config_node["SearcherCommon"];
 
   map<string, int> log_level_map = {{"debug", Logger::LEVEL_DEBUG},
-                                {"info", Logger::LEVEL_INFO},
-                                {"warn", Logger::LEVEL_WARN},
-                                {"error", Logger::LEVEL_ERROR},
-                                {"fatal", Logger::LEVEL_FATAL}};
+                                    {"info", Logger::LEVEL_INFO},
+                                    {"warn", Logger::LEVEL_WARN},
+                                    {"error", Logger::LEVEL_ERROR},
+                                    {"fatal", Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";

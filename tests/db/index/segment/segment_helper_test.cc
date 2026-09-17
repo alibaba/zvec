@@ -271,8 +271,7 @@ TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
   for (int i = 0; i < seg_count; i++) {
     auto seg = test::TestHelper::CreateSegmentWithDoc(
         col_path, *schema, i, i * doc_count_per_seg, id_map, delete_store,
-        version_manager, seg_options, i * doc_count_per_seg,
-        doc_count_per_seg);
+        version_manager, seg_options, i * doc_count_per_seg, doc_count_per_seg);
     ASSERT_TRUE(seg != nullptr);
     ASSERT_TRUE(seg->flush().ok());
     input_segs.push_back(seg);

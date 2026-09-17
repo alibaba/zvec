@@ -1160,10 +1160,10 @@ class BufferStorage : public IndexStorage {
   }
 
   int parse_segment(size_t offset, uint64_t header_start_offset,
-                   IndexFormat::MetaHeader *chain_header,
-                   const IndexFormat::MetaFooter &footer,
-                   uint32_t &out_segment_ids_offset,
-                   std::unique_ptr<char[]> &segment_buffer) {
+                    IndexFormat::MetaHeader *chain_header,
+                    const IndexFormat::MetaFooter &footer,
+                    uint32_t &out_segment_ids_offset,
+                    std::unique_ptr<char[]> &segment_buffer) {
     segment_buffer = std::make_unique<char[]>(footer.segments_meta_size);
     if (buffer_pool_handle_->get_meta(offset, footer.segments_meta_size,
                                       segment_buffer.get()) != 0) {
@@ -1274,7 +1274,7 @@ class BufferStorage : public IndexStorage {
       std::unique_ptr<char[]> segment_buffer;
       ret =
           parse_segment(segment_start_offset, header_start_offset, chain_header,
-                       footer, segment_ids_offset, segment_buffer);
+                        footer, segment_ids_offset, segment_buffer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));

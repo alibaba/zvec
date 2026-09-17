@@ -83,7 +83,7 @@ class BufferPoolTest : public ::testing::Test {
                                                       kVectorPageSize));
   }
   void init_vec_pool(size_t capacity_pages, size_t file_pages,
-                   bool writable = false) {
+                     bool writable = false) {
     ASSERT_EQ(0, MemoryLimitPool::get_instance().init(
                      capacity_pages * kVectorPageSize +
                      VecBufferPool::metadata_bytes_for_page_count(file_pages,
@@ -469,7 +469,7 @@ TEST_F(BufferPoolTest, ResidentOnlyAcquirePreservesTransitionStates) {
 TEST_F(BufferPoolTest, DataCorrectUnderEviction) {
   const size_t num_pages = 64;
   init_vec_pool(/*capacity_pages=*/16,
-              /*file_pages=*/num_pages);  // 4x smaller than working set
+                /*file_pages=*/num_pages);  // 4x smaller than working set
   std::string file = new_file(num_pages);
 
   VecBufferPool pool(file, /*writable=*/false);
@@ -1606,7 +1606,7 @@ constexpr size_t kManualEvictionCapacityPages = 2;
 
 TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                /*entry_num=*/1);
+                  /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1641,7 +1641,7 @@ TEST_F(BufferPoolTest, ProtectedPageAgesThroughProbationBeforeEviction) {
 
 TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                /*entry_num=*/1);
+                  /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1673,7 +1673,7 @@ TEST_F(BufferPoolTest, EvictedHotPageGetsProtectedGhostAdmission) {
 
 TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                /*entry_num=*/1);
+                  /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1715,7 +1715,7 @@ TEST_F(BufferPoolTest, UnusedGhostAdmissionDoesNotRenewItself) {
 
 TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
   init_table_pool(/*capacity_pages=*/kManualEvictionCapacityPages,
-                /*entry_num=*/1);
+                  /*entry_num=*/1);
   VectorPageTable table;
   ASSERT_TRUE(table.init(/*entry_num=*/1));
 
@@ -1810,7 +1810,7 @@ TEST_F(BufferPoolTest, WritablePoolDoesNotAdaptReadPriority) {
 TEST_F(BufferPoolTest, WritablePrefetchUsesClaimedLoadPath) {
   constexpr size_t kPageCount = 2;
   init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/kPageCount,
-              /*writable=*/true);
+                /*writable=*/true);
   std::string file = new_file(kPageCount);
 
   VecBufferPool pool(file, /*writable=*/true);

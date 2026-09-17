@@ -307,10 +307,10 @@ class SegmentImpl : public Segment,
   // Helper functions for Insert/Update/Upsert/Delete
   template <typename ValueType>
   Status insert_scalar(InvertedColumnIndexer::Ptr &indexer, const Doc &doc,
-                      const FieldSchema::Ptr &field);
+                       const FieldSchema::Ptr &field);
   template <typename ValueType>
   Status insert_vector(VectorColumnIndexer::Ptr &indexer, const Doc &doc,
-                      const FieldSchema::Ptr &field);
+                       const FieldSchema::Ptr &field);
 
   Status insert_scalar_indexer(Doc &doc);
   Status insert_fts_indexer(Doc &doc);

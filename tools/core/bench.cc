@@ -817,11 +817,12 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["IndexCommon"];
 
-  map<string, int> log_level_map = {{"debug", zvec::ailego::Logger::LEVEL_DEBUG},
-                                {"info", zvec::ailego::Logger::LEVEL_INFO},
-                                {"warn", zvec::ailego::Logger::LEVEL_WARN},
-                                {"error", zvec::ailego::Logger::LEVEL_ERROR},
-                                {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {
+      {"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+      {"info", zvec::ailego::Logger::LEVEL_INFO},
+      {"warn", zvec::ailego::Logger::LEVEL_WARN},
+      {"error", zvec::ailego::Logger::LEVEL_ERROR},
+      {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
