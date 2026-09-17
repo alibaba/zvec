@@ -156,13 +156,11 @@ class Segment {
 
   virtual Status update(Doc &doc) = 0;
 
-  virtual Status Delete(
-      const std::string &pk) = 0;  // NOLINT(readability-identifier-naming):
-                                   // 'delete' is a keyword
+  // NOLINTNEXTLINE(readability-identifier-naming): 'delete' is a keyword
+  virtual Status Delete(const std::string &pk) = 0;
 
-  virtual Status Delete(
-      uint64_t g_doc_id) = 0;  // NOLINT(readability-identifier-naming):
-                               // 'delete' is a keyword
+  // NOLINTNEXTLINE(readability-identifier-naming): 'delete' is a keyword
+  virtual Status Delete(uint64_t g_doc_id) = 0;
 
   virtual Doc::Ptr fetch(uint64_t g_doc_id,
                          const std::optional<std::vector<std::string>>

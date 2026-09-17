@@ -170,9 +170,9 @@ class InvertedSearchResult
   }
 
 
-  void AND(const InvertedSearchResult
-               &other) {  // NOLINT(readability-identifier-naming): set-algebra
-                          // op; 'and' is a keyword
+  // Set-algebra op; 'and' is a C++ keyword so the method keeps an upper name.
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  void AND(const InvertedSearchResult &other) {
     if (!bitmap_ || !other.bitmap_) {
       destroy_bitmap();
     } else {
@@ -181,9 +181,9 @@ class InvertedSearchResult
   }
 
 
-  void OR(const InvertedSearchResult
-              &other) {  // NOLINT(readability-identifier-naming):
-                         // set-algebra op; 'or' is a keyword
+  // Set-algebra op; 'or' is a C++ keyword so the method keeps an upper name.
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  void OR(const InvertedSearchResult &other) {
     if (!other.bitmap_) {
       return;
     }
