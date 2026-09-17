@@ -80,7 +80,7 @@ class CollectionTest : public ::testing::Test {
     ailego::FileHelper::RemoveDirectory("demo");
   }
 
-  CollectionSchema MakeSchema(const std::string &name = "x",
+  CollectionSchema make_schema(const std::string &name = "x",
                               const std::string &field = "value") {
     CollectionSchema schema(name);
     EXPECT_TRUE(schema
@@ -90,20 +90,20 @@ class CollectionTest : public ::testing::Test {
     return schema;
   }
 
-  void Create(const CollectionSchema &schema) {
+  void create(const CollectionSchema &schema) {
     auto result = Collection::CreateAndOpen(col_path, schema, options_);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     collection_ = std::move(result).value();
   }
 
-  void Reopen() {
+  void reopen() {
     collection_.reset();
     auto result = Collection::Open(col_path, options_);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     collection_ = std::move(result).value();
   }
 
-  Doc MakeDoc(const std::string &id, int32_t value,
+  Doc make_doc(const std::string &id, int32_t value,
               const std::string &field = "value") {
     Doc doc;
     doc.set_pk(id);
@@ -111,7 +111,7 @@ class CollectionTest : public ::testing::Test {
     return doc;
   }
 
-  void ExpectWrite(const Result<WriteResults> &result, size_t count) {
+  void expect_write(const Result<WriteResults> &result, size_t count) {
     ASSERT_TRUE(result.has_value()) << result.error().message();
     ASSERT_EQ(result.value().size(), count);
     for (const auto &status : result.value()) {
@@ -119,7 +119,7 @@ class CollectionTest : public ::testing::Test {
     }
   }
 
-  void ExpectValue(const std::string &id, int32_t expected,
+  void expect_value(const std::string &id, int32_t expected,
                    const std::string &field = "value") {
     auto result = collection_->fetch({id});
     ASSERT_TRUE(result.has_value()) << result.error().message();
@@ -389,16 +389,16 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_NameBoundaries) {
   for (const auto &name : std::vector<std::string>{
            "x", "xy", u8"集", std::string(253, 'n') + u8"集"}) {
     SCOPED_TRACE(name);
-    ASSERT_NO_FATAL_FAILURE(Create(MakeSchema(name)));
-    std::vector<Doc> docs{MakeDoc("id", 1)};
-    ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+    ASSERT_NO_FATAL_FAILURE(create(make_schema(name)));
+    std::vector<Doc> docs{make_doc("id", 1)};
+    ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
     auto status = collection_->flush();
     ASSERT_TRUE(status.ok()) << status.message();
-    ASSERT_NO_FATAL_FAILURE(Reopen());
+    ASSERT_NO_FATAL_FAILURE(reopen());
     auto schema = collection_->schema();
     ASSERT_TRUE(schema.has_value()) << schema.error().message();
     EXPECT_EQ(schema.value().name(), name);
-    ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 1));
+    ASSERT_NO_FATAL_FAILURE(expect_value("id", 1));
     status = collection_->destroy();
     ASSERT_TRUE(status.ok()) << status.message();
     collection_.reset();
@@ -407,7 +407,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_NameBoundaries) {
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_InvalidSchema) {
   auto result = Collection::CreateAndOpen(
-      col_path, MakeSchema("x", "_zvec_uid_"), options_);
+      col_path, make_schema("x", "_zvec_uid_"), options_);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
   EXPECT_NE(result.error().message().find("is reserved"), std::string::npos);
@@ -602,14 +602,14 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_MultiThread) {
 }
 
 TEST_F(CollectionTest, Feature_Write_InvalidIdRejectsWholeBatch) {
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema()));
-  std::vector<Doc> initial{MakeDoc("existing", 1)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(initial), 1));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema()));
+  std::vector<Doc> initial{make_doc("existing", 1)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(initial), 1));
   for (int operation = 0; operation < 3; ++operation) {
     SCOPED_TRACE(operation);
     const std::string first_id = operation == 0 ? "new:id" : "existing";
-    std::vector<Doc> batch{MakeDoc(first_id, 99),
-                           MakeDoc(std::string("bad\0id", 6), 100)};
+    std::vector<Doc> batch{make_doc(first_id, 99),
+                           make_doc(std::string("bad\0id", 6), 100)};
     auto result = operation == 0   ? collection_->insert(batch)
                   : operation == 1 ? collection_->update(batch)
                                    : collection_->upsert(batch);
@@ -620,14 +620,14 @@ TEST_F(CollectionTest, Feature_Write_InvalidIdRejectsWholeBatch) {
               std::string::npos);
     EXPECT_NE(result.error().message().find("id[bad\\0id]"), std::string::npos);
     EXPECT_EQ(result.error().message().find("offset"), std::string::npos);
-    ASSERT_NO_FATAL_FAILURE(ExpectValue("existing", 1));
+    ASSERT_NO_FATAL_FAILURE(expect_value("existing", 1));
     auto missing = collection_->fetch({"new:id"});
     ASSERT_TRUE(missing.has_value()) << missing.error().message();
     ASSERT_EQ(missing.value().size(), 1u);
     EXPECT_EQ(missing.value().at("new:id"), nullptr);
   }
-  ASSERT_NO_FATAL_FAILURE(Reopen());
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("existing", 1));
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  ASSERT_NO_FATAL_FAILURE(expect_value("existing", 1));
   EXPECT_EQ(collection_->stats().value().doc_count, 1u);
 }
 
@@ -666,7 +666,7 @@ TEST_F(CollectionTest, Feature_Write_Batch_Validate) {
 
 TEST_F(CollectionTest, Feature_Write_Utf8IdsAndReopen) {
   const std::string name = u8"测试 集合/v1";
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema(name)));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema(name)));
   const std::vector<std::string> ids = {
       "user:123",  "https://example.com/document/42",
       u8"订单-😀", std::string(1021, 'i') + u8"中",
@@ -676,19 +676,19 @@ TEST_F(CollectionTest, Feature_Write_Utf8IdsAndReopen) {
       "DOC"};
   std::vector<Doc> docs;
   for (size_t i = 0; i < ids.size(); ++i) {
-    docs.push_back(MakeDoc(ids[i], static_cast<int32_t>(i)));
+    docs.push_back(make_doc(ids[i], static_cast<int32_t>(i)));
   }
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), docs.size()));
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), docs.size()));
 
-  std::vector<Doc> updates{MakeDoc(ids[0], 100)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->update(updates), 1));
-  std::vector<Doc> upserts{MakeDoc(ids[3], 103), MakeDoc(u8"新增:文档", 200)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->upsert(upserts), 2));
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->delete_({ids[1]}), 1));
+  std::vector<Doc> updates{make_doc(ids[0], 100)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->update(updates), 1));
+  std::vector<Doc> upserts{make_doc(ids[3], 103), make_doc(u8"新增:文档", 200)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->upsert(upserts), 2));
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->delete_({ids[1]}), 1));
 
   auto flush_status = collection_->flush();
   ASSERT_TRUE(flush_status.ok()) << flush_status.message();
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(reopen());
   auto schema = collection_->schema();
   ASSERT_TRUE(schema.has_value()) << schema.error().message();
   EXPECT_EQ(schema.value().name(), name);
@@ -699,9 +699,9 @@ TEST_F(CollectionTest, Feature_Write_Utf8IdsAndReopen) {
     int32_t expected = static_cast<int32_t>(i);
     if (i == 0) expected = 100;
     if (i == 3) expected = 103;
-    ASSERT_NO_FATAL_FAILURE(ExpectValue(ids[i], expected));
+    ASSERT_NO_FATAL_FAILURE(expect_value(ids[i], expected));
   }
-  ASSERT_NO_FATAL_FAILURE(ExpectValue(u8"新增:文档", 200));
+  ASSERT_NO_FATAL_FAILURE(expect_value(u8"新增:文档", 200));
   auto deleted = collection_->fetch({ids[1]});
   ASSERT_TRUE(deleted.has_value()) << deleted.error().message();
   ASSERT_EQ(deleted.value().size(), 1u);
@@ -1761,7 +1761,7 @@ TEST_F(CollectionTest, Feature_Update_Empty) {
 }
 
 TEST_F(CollectionTest, Feature_FetchAndDelete_InvalidIdsRemainMissing) {
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema()));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema()));
   // These are invalid for a new document, but lookup must retain its existing
   // missing-key behavior rather than introducing input validation errors.
   const std::vector<std::string> absent_ids{"", std::string("bad\0id", 6),
@@ -4608,7 +4608,7 @@ TEST_F(CollectionTest, Feature_Query_MaximumLengthFieldNames) {
     const std::string scalar = "s" + std::string(63, 'a');
     const std::string second_scalar = scalar.substr(0, 63) + "b";
     const std::string vector = "v" + std::string(63, 'b');
-    auto schema = MakeSchema("x", scalar);
+    auto schema = make_schema("x", scalar);
     ASSERT_TRUE(schema
                     .add_field(std::make_shared<FieldSchema>(
                         second_scalar, DataType::INT32, false))
@@ -4618,13 +4618,13 @@ TEST_F(CollectionTest, Feature_Query_MaximumLengthFieldNames) {
                         vector, DataType::VECTOR_FP32, 4, false,
                         std::make_shared<FlatIndexParams>(MetricType::L2)))
                     .ok());
-    ASSERT_NO_FATAL_FAILURE(Create(schema));
+    ASSERT_NO_FATAL_FAILURE(create(schema));
     const std::vector<float> values{1.0f, 2.0f, 3.0f, 4.0f};
-    Doc doc = MakeDoc(u8"文档:1", 42, scalar);
+    Doc doc = make_doc(u8"文档:1", 42, scalar);
     ASSERT_TRUE(doc.set<int32_t>(second_scalar, 7));
     ASSERT_TRUE(doc.set<std::vector<float>>(vector, values));
     std::vector<Doc> docs{doc};
-    ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+    ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
     auto status = collection_->flush();
     ASSERT_TRUE(status.ok()) << status.message();
     status = collection_->create_index(scalar,
@@ -4636,7 +4636,7 @@ TEST_F(CollectionTest, Feature_Query_MaximumLengthFieldNames) {
     status = collection_->create_index(second_scalar,
                                        std::make_shared<InvertIndexParams>());
     ASSERT_TRUE(status.ok()) << status.message();
-    ASSERT_NO_FATAL_FAILURE(Reopen());
+    ASSERT_NO_FATAL_FAILURE(reopen());
 
     // Fetch supplies the query vector, covering lookup by a newly allowed ID.
     auto fetched = collection_->fetch({doc.pk()});
@@ -5476,7 +5476,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 TEST_F(CollectionTest, Feature_GroupByQuery) {}
 
 TEST_F(CollectionTest, Feature_ColumnDDL_DuplicateNamesKeepData) {
-  auto schema = MakeSchema();
+  auto schema = make_schema();
   ASSERT_TRUE(schema
                   .add_field(std::make_shared<FieldSchema>(
                       "other", DataType::INT32, true))
@@ -5485,10 +5485,10 @@ TEST_F(CollectionTest, Feature_ColumnDDL_DuplicateNamesKeepData) {
                   .add_field(std::make_shared<FieldSchema>(
                       "embedding", DataType::VECTOR_FP32, 4, true))
                   .ok());
-  ASSERT_NO_FATAL_FAILURE(Create(schema));
-  std::vector<Doc> docs{MakeDoc("id", 42)};
+  ASSERT_NO_FATAL_FAILURE(create(schema));
+  std::vector<Doc> docs{make_doc("id", 42)};
   ASSERT_TRUE(docs[0].set<std::vector<float>>("embedding", {1, 2, 3, 4}));
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
   const auto before = collection_->schema().value();
   for (const std::string name : {"other", "embedding"}) {
     SCOPED_TRACE(name);
@@ -5503,17 +5503,17 @@ TEST_F(CollectionTest, Feature_ColumnDDL_DuplicateNamesKeepData) {
     EXPECT_EQ(status.code(), StatusCode::ALREADY_EXISTS);
     EXPECT_NE(status.message().find("already exists"), std::string::npos);
     EXPECT_EQ(collection_->schema().value(), before);
-    ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+    ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
   }
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(reopen());
   EXPECT_EQ(collection_->schema().value(), before);
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
 }
 
 TEST_F(CollectionTest, Feature_ColumnDDL_ReservedNamesKeepData) {
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema()));
-  std::vector<Doc> docs{MakeDoc("id", 42)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema()));
+  std::vector<Doc> docs{make_doc("id", 42)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
   const auto before = collection_->schema().value();
   const std::string name = "_zvec_uid_";
   auto status = collection_->add_column(
@@ -5528,10 +5528,10 @@ TEST_F(CollectionTest, Feature_ColumnDDL_ReservedNamesKeepData) {
   EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   EXPECT_NE(status.message().find("is reserved"), std::string::npos);
   EXPECT_EQ(collection_->schema().value(), before);
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
+  ASSERT_NO_FATAL_FAILURE(reopen());
   EXPECT_EQ(collection_->schema().value(), before);
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
 }
 
 TEST_F(CollectionTest, Feature_ColumnDDL_FieldCountLimits) {
@@ -5542,7 +5542,7 @@ TEST_F(CollectionTest, Feature_ColumnDDL_FieldCountLimits) {
                         "f" + std::to_string(i), DataType::INT32, true))
                     .ok());
   }
-  ASSERT_NO_FATAL_FAILURE(Create(schema));
+  ASSERT_NO_FATAL_FAILURE(create(schema));
   auto status = collection_->add_column(
       std::make_shared<FieldSchema>("excess", DataType::INT32, true), "");
   EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
@@ -5553,22 +5553,22 @@ TEST_F(CollectionTest, Feature_ColumnDDL_FieldCountLimits) {
   ASSERT_TRUE(status.ok()) << status.message();
   collection_.reset();
 
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema()));
-  std::vector<Doc> docs{MakeDoc("id", 42)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema()));
+  std::vector<Doc> docs{make_doc("id", 42)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
   status = collection_->drop_column("value");
   EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   EXPECT_NE(status.message().find("last field"), std::string::npos);
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
+  ASSERT_NO_FATAL_FAILURE(reopen());
   EXPECT_TRUE(collection_->schema().value().has_field("value"));
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
 }
 
 TEST_F(CollectionTest, Feature_ColumnDDL_CopiesCallerSchema) {
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema()));
-  std::vector<Doc> initial{MakeDoc("original", 1)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(initial), 1));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema()));
+  std::vector<Doc> initial{make_doc("original", 1)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(initial), 1));
   auto added = std::make_shared<FieldSchema>("extra", DataType::INT32, true);
   auto status = collection_->add_column(added, "");
   ASSERT_TRUE(status.ok()) << status.message();
@@ -5581,10 +5581,10 @@ TEST_F(CollectionTest, Feature_ColumnDDL_CopiesCallerSchema) {
   EXPECT_EQ(current.get_field("extra")->data_type(), DataType::INT32);
   EXPECT_TRUE(current.get_field("extra")->nullable());
   EXPECT_FALSE(current.has_field("bad name"));
-  Doc doc = MakeDoc("new", 2);
+  Doc doc = make_doc("new", 2);
   ASSERT_TRUE(doc.set<int32_t>("extra", 7));
   std::vector<Doc> docs{doc};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
 
   auto altered = std::make_shared<FieldSchema>("extra", DataType::INT64, true);
   status = collection_->alter_column("extra", "", altered);
@@ -5595,9 +5595,9 @@ TEST_F(CollectionTest, Feature_ColumnDDL_CopiesCallerSchema) {
   ASSERT_TRUE(current.has_field("extra"));
   EXPECT_EQ(current.get_field("extra")->data_type(), DataType::INT64);
   EXPECT_FALSE(current.has_field("another bad name"));
-  ASSERT_NO_FATAL_FAILURE(Reopen());
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("original", 1));
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("new", 2));
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  ASSERT_NO_FATAL_FAILURE(expect_value("original", 1));
+  ASSERT_NO_FATAL_FAILURE(expect_value("new", 2));
   auto fetched = collection_->fetch({"new"});
   ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
   ASSERT_NE(fetched.value().at("new"), nullptr);
@@ -5828,9 +5828,9 @@ TEST_F(CollectionTest, Feature_DropColumn_General) {
 }
 
 TEST_F(CollectionTest, Feature_AlterColumn_InvalidNameKeepsData) {
-  ASSERT_NO_FATAL_FAILURE(Create(MakeSchema()));
-  std::vector<Doc> docs{MakeDoc("id", 42)};
-  ASSERT_NO_FATAL_FAILURE(ExpectWrite(collection_->insert(docs), 1));
+  ASSERT_NO_FATAL_FAILURE(create(make_schema()));
+  std::vector<Doc> docs{make_doc("id", 42)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
   const auto before = collection_->schema().value();
   for (const auto &name : std::vector<std::string>{
            "user name", "../value", u8"字段", std::string(65, 'f')}) {
@@ -5840,19 +5840,19 @@ TEST_F(CollectionTest, Feature_AlterColumn_InvalidNameKeepsData) {
     EXPECT_EQ(status.message().find("Invalid schema:"), 0u);
     EXPECT_EQ(status.message().find("offset"), std::string::npos);
     EXPECT_EQ(collection_->schema().value(), before);
-    ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+    ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
   }
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(reopen());
   EXPECT_EQ(collection_->schema().value(), before);
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42));
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42));
 
   const std::string renamed(64, 'r');
   auto status = collection_->alter_column("value", renamed);
   ASSERT_TRUE(status.ok()) << status.message();
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(reopen());
   EXPECT_FALSE(collection_->schema().value().has_field("value"));
   EXPECT_TRUE(collection_->schema().value().has_field(renamed));
-  ASSERT_NO_FATAL_FAILURE(ExpectValue("id", 42, renamed));
+  ASSERT_NO_FATAL_FAILURE(expect_value("id", 42, renamed));
 }
 
 TEST_F(CollectionTest, Feature_AlterColumn_General) {

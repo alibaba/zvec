@@ -64,7 +64,7 @@ void ExecuteProcess(const std::string &start, const std::string &end,
 
 #ifdef _WIN32
   // 1. Build the command line string with quotes to handle paths with spaces
-  std::string cmd_str = data_generator_bin_ + " --path " + dir_path_ +
+  std::string cmd_str = data_generator_bin + " --path " + dir_path +
                         " --start " + start + " --end " + end + " --op " + op +
                         " --version " + version;
 
@@ -182,7 +182,7 @@ TEST_F(CrashRecoveryTest, Utf8AndLongIdsRecoverFromUnflushedWal) {
           std::_Exit(1);
         }
         auto created =
-            Collection::CreateAndOpen(dir_path_, schema, CollectionOptions{});
+            Collection::CreateAndOpen(dir_path, schema, CollectionOptions{});
         if (!created.has_value()) std::_Exit(2);
         auto collection = std::move(created).value();
         std::vector<Doc> docs;
@@ -201,7 +201,7 @@ TEST_F(CrashRecoveryTest, Utf8AndLongIdsRecoverFromUnflushedWal) {
       },
       ::testing::ExitedWithCode(0), "");
 
-  auto opened = Collection::Open(dir_path_, CollectionOptions{});
+  auto opened = Collection::Open(dir_path, CollectionOptions{});
   ASSERT_TRUE(opened.has_value()) << opened.error().message();
   auto collection = std::move(opened).value();
   EXPECT_EQ(collection->schema().value().name(), u8"恢复 集合");
@@ -218,7 +218,7 @@ TEST_F(CrashRecoveryTest, Utf8AndLongIdsRecoverFromUnflushedWal) {
   auto status = collection->flush();
   ASSERT_TRUE(status.ok()) << status.message();
   collection.reset();
-  auto reopened = Collection::Open(dir_path_, CollectionOptions{});
+  auto reopened = Collection::Open(dir_path, CollectionOptions{});
   ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
   EXPECT_EQ(reopened.value()->stats().value().doc_count, ids.size());
 }
