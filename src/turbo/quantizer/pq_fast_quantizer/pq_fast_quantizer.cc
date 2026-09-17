@@ -151,6 +151,7 @@ int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   // Optional OPQ rotation: the codebook trains in the rotated space and all
   // encode/query paths apply the same rotation.
+  preprocessor_.reset();
   std::string rotate_type;
   params.get("rotate_type", &rotate_type);
   if (!rotate_type.empty() && rotate_type != "none") {
@@ -438,9 +439,9 @@ float PqFastQuantizer::encode_reconstruct_batch(const float *rotated,
       // Same L2 argmin as quantize_data(); const_cast: kernel is read-only.
       l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
                    kNumCentroids, sub_dim_, dists, nullptr);
-      float best_dist = dists[0];
+      float best_dist = std::numeric_limits<float>::infinity();
       uint32_t best_idx = 0;
-      for (uint32_t j = 1; j < kNumCentroids; ++j) {
+      for (uint32_t j = 0; j < kNumCentroids; ++j) {
         if (dists[j] < best_dist) {
           best_dist = dists[j];
           best_idx = j;

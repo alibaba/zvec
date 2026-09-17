@@ -147,6 +147,7 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   // Optional OPQ rotation: the codebook trains in the rotated space and all
   // encode/query paths apply the same rotation.
+  preprocessor_.reset();
   std::string rotate_type;
   params.get("rotate_type", &rotate_type);
   if (!rotate_type.empty() && rotate_type != "none") {
