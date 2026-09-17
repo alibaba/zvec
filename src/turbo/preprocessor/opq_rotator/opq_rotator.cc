@@ -62,6 +62,12 @@ OpqRotator::Pointer OpqRotator::create(int dim, uint64_t seed) {
   return r;
 }
 
+OpqRotator::Pointer OpqRotator::from_serialized(const void *data, size_t len) {
+  Pointer r(new OpqRotator());
+  if (r->deserialize(data, len) != 0) return nullptr;
+  return r;
+}
+
 // OPQ step 1: fixed codebook -> rotation matrix.  data/ctx are packed fp32
 // (x, x_hat) pairs; stride must be 0.
 void OpqRotator::train(const void *data, void *ctx, size_t num, size_t stride) {

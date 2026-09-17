@@ -13,15 +13,58 @@
 // limitations under the License.
 
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <vector>
 #include <gtest/gtest.h>
+#include "preprocessor/opq_rotator/opq_rotator.h"
 #include "zvec/turbo/turbo.h"
 
 namespace {
 
 using zvec::turbo::CpuArchType;
 using zvec::turbo::RotateType;
+
+TEST(OpqRotator, FromSerializedRestoresStoredMatrix) {
+  zvec::turbo::RotatorSerHeader header{};
+  header.magic = zvec::turbo::kRotatorMagic;
+  header.version = zvec::turbo::kRotatorSerVersion;
+  header.rotator_type = static_cast<uint16_t>(RotateType::kOpq);
+  header.in_dim = 2;
+  header.out_dim = 2;
+  const float matrix[] = {0, -1, 1, 0};
+  header.payload_size = sizeof(matrix);
+  std::string blob(reinterpret_cast<const char *>(&header), sizeof(header));
+  blob.append(reinterpret_cast<const char *>(matrix), sizeof(matrix));
+
+  auto rotator =
+      zvec::turbo::OpqRotator::from_serialized(blob.data(), blob.size());
+  ASSERT_TRUE(rotator);
+  EXPECT_EQ(2, rotator->in_dim());
+  const float input[] = {2, 3};
+  float rotated[2];
+  rotator->apply(input, rotated);
+  EXPECT_FLOAT_EQ(-3, rotated[0]);
+  EXPECT_FLOAT_EQ(2, rotated[1]);
+  float restored[2];
+  rotator->apply_inverse(rotated, restored);
+  EXPECT_FLOAT_EQ(input[0], restored[0]);
+  EXPECT_FLOAT_EQ(input[1], restored[1]);
+  std::string saved;
+  ASSERT_EQ(0, rotator->serialize(&saved));
+  EXPECT_EQ(blob, saved);
+
+  EXPECT_EQ(nullptr, zvec::turbo::OpqRotator::from_serialized(blob.data(),
+                                                              blob.size() - 1));
+  header.out_dim = 3;
+  std::memcpy(&blob[0], &header, sizeof(header));
+  EXPECT_EQ(nullptr,
+            zvec::turbo::OpqRotator::from_serialized(blob.data(), blob.size()));
+}
+
+TEST(OpqRotator, FromSerializedRejectsEmptyInput) {
+  EXPECT_EQ(nullptr, zvec::turbo::OpqRotator::from_serialized(nullptr, 0));
+}
 
 // Dense GEMV equivalence: the ISA kernels must match the scalar kernel
 // element-wise for any square matrix (orthogonality is irrelevant to the

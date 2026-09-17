@@ -37,6 +37,10 @@ class OpqRotator : public Preprocessor {
   //! apply() is valid even before the first fit().
   static Pointer create(int dim, uint64_t seed = 42);
 
+  //! Restore a saved matrix without generating a random one first.
+  //! Returns nullptr if the serialized rotator is invalid.
+  static Pointer from_serialized(const void *data, size_t len);
+
   //! \p x      original-space training matrix, num x dim, packed.
   //! \p x_hat  codebook reconstruction of the same vectors in the ROTATED
   //!           space, num x dim, packed.

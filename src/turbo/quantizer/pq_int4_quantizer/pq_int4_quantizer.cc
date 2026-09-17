@@ -1193,11 +1193,8 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
     const size_t consumed =
         static_cast<size_t>(ptr - reinterpret_cast<const char *>(data));
     if (consumed >= len) return kErrInvalidArgument;
-    // Construction is ours (the payload told us the type); parsing the blob
-    // is the preprocessor's job, and its deserialize() fully validates it.
-    preprocessor_ = OpqRotator::create(static_cast<int>(original_dim_));
+    preprocessor_ = OpqRotator::from_serialized(ptr, len - consumed);
     if (!preprocessor_ ||
-        preprocessor_->deserialize(ptr, len - consumed) != 0 ||
         preprocessor_->in_dim() != static_cast<int>(original_dim_)) {
       preprocessor_.reset();
       return kErrInvalidArgument;
