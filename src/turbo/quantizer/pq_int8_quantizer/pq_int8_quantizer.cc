@@ -1112,9 +1112,8 @@ int PqInt8Quantizer::serialize(std::string *out) const {
 
   size_t centroids_bytes = centroids_.size();
   size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
-  const uint64_t payload_bytes =
-      uint64_t{sizeof(payload)} + centroids_bytes + centroid_bytes +
-      preprocessor_blob.size();
+  const uint64_t payload_bytes = uint64_t{sizeof(payload)} + centroids_bytes +
+                                 centroid_bytes + preprocessor_blob.size();
   if (payload_bytes > std::numeric_limits<uint32_t>::max()) {
     return kErrUnsupported;
   }
@@ -1220,9 +1219,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
             static_cast<uint32_t>(std::numeric_limits<int>::max())) {
       return kErrUnsupported;
     }
-    preprocessor_bytes = sizeof(RotatorSerHeader) +
-                         uint64_t{payload.original_dim} * payload.original_dim *
-                             sizeof(float);
+    preprocessor_bytes =
+        sizeof(RotatorSerHeader) +
+        uint64_t{payload.original_dim} * payload.original_dim * sizeof(float);
     if (preprocessor_bytes > std::numeric_limits<uint32_t>::max()) {
       return kErrUnsupported;
     }
@@ -1238,8 +1237,8 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   const uint64_t centroid_bytes64 =
       payload.use_zero_mean ? uint64_t{payload.original_dim} * sizeof(float)
                             : 0;
-  const uint64_t payload_bytes =
-      sizeof(payload) + centroids_bytes64 + centroid_bytes64 + preprocessor_bytes;
+  const uint64_t payload_bytes = sizeof(payload) + centroids_bytes64 +
+                                 centroid_bytes64 + preprocessor_bytes;
   if (hdr.payload_size != payload_bytes ||
       len - sizeof(QuantizerSerHeader) < payload_bytes) {
     return kErrUnsupported;
@@ -1275,8 +1274,8 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
     // is the preprocessor's job, and its deserialize() fully validates it.
     preprocessor_ = OpqRotator::create(static_cast<int>(original_dim_));
     if (!preprocessor_ ||
-        preprocessor_->deserialize(ptr, static_cast<size_t>(preprocessor_bytes)) !=
-            0 ||
+        preprocessor_->deserialize(
+            ptr, static_cast<size_t>(preprocessor_bytes)) != 0 ||
         preprocessor_->in_dim() != static_cast<int>(original_dim_)) {
       preprocessor_.reset();
       return kErrInvalidArgument;
