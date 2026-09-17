@@ -34,14 +34,15 @@ bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
 }
 
 // A multipass training view over merge sources. Decode through each source's
-// existing reformer, just as the merge reducer does. This lets global
-// quantizers train from FP16/UINT8 Flat references without materializing an
-// additional full-dataset FP32 copy or adding input types to the quantizers.
+// existing quantizer or reformer, just as the merge reducer does. This lets
+// global quantizers train from FP16/UINT8 Flat references without materializing
+// an additional full-dataset FP32 copy or adding input types to the quantizers.
 class MergeSourceIndexHolder final : public core::IndexHolder {
  public:
   struct Source {
     core::IndexHolder::Pointer holder;
     core::IndexReformer::Pointer reformer;
+    std::shared_ptr<turbo::Quantizer> quantizer;
     core::IndexQueryMeta stored_meta;
   };
 
@@ -87,9 +88,12 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
         owner_->error_ = core::IndexError_ReadData;
         return;
       }
-      if (source_->reformer) {
-        const int ret =
-            source_->reformer->revert(data_, source_->stored_meta, &decoded_);
+      if (source_->quantizer || source_->reformer) {
+        const int ret = source_->quantizer
+                            ? source_->quantizer->dequantize(
+                                  data_, source_->stored_meta, &decoded_)
+                            : source_->reformer->revert(
+                                  data_, source_->stored_meta, &decoded_);
         if (ret != 0) {
           owner_->error_ = ret;
           return;
@@ -1421,18 +1425,26 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
               input_vector_meta_.data_type() ||
           index->input_vector_meta_.dimension() !=
               input_vector_meta_.dimension() ||
-          (!index->reformer_ &&
+          (!index->reformer_ && !index->turbo_quantizer_ &&
            (provider->data_type() != input_vector_meta_.data_type() ||
             provider->dimension() != input_vector_meta_.dimension() ||
             provider->element_size() != input_vector_meta_.element_size()))) {
         LOG_ERROR("Merge-source vector type mismatch");
         return core::IndexError_Mismatch;
       }
-      // Use the actual stored metadata, including packed quantizer dimensions.
-      core::IndexQueryMeta stored_meta(provider->data_type(),
-                                       provider->dimension());
-      sources.push_back(
-          {std::move(provider), index->reformer_, std::move(stored_meta)});
+      // Preserve the stored layout, including packed dimensions and norm tails.
+      const auto &meta = index->streamer_->meta();
+      core::IndexQueryMeta stored_meta{
+          meta.meta_type(),
+          provider->data_type(),
+          meta.unit_size(),
+          static_cast<uint32_t>(provider->dimension()),
+          index->turbo_quantizer_
+              ? static_cast<uint32_t>(index->turbo_quantizer_->type())
+              : 0,
+          meta.extra_meta_size()};
+      sources.push_back({std::move(provider), index->reformer_,
+                         index->turbo_quantizer_, std::move(stored_meta)});
     }
     auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
                                                            input_vector_meta_);

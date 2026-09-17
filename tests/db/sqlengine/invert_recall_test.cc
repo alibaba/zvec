@@ -16,6 +16,7 @@
 #include <memory>
 #include <gtest/gtest.h>
 #include "db/sqlengine/sqlengine.h"
+#include "db/sqlengine/sqlengine_impl.h"
 #include "zvec/db/schema.h"
 #include "recall_base.h"
 
@@ -289,6 +290,72 @@ TEST_F(InvertRecallTest, StrNotIn) {
     } else {
       i += 1;
     }
+  }
+}
+
+TEST_F(InvertRecallTest, NullableNotEqualConjunctionExcludesNull) {
+  SearchQuery query;
+  query.output_fields_ = {"id", "invert_optional_age"};
+  query.topk_ = 200;
+  query.filter_ = "invert_optional_age != 1 and invert_optional_age != 2";
+
+  auto probe_engine =
+      std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
+  auto info =
+      probe_engine->build_query_info(collection_schema_, query, nullptr);
+  ASSERT_TRUE(info.has_value()) << info.error().c_str();
+  EXPECT_EQ(info.value()->filter_cond(), nullptr) << info.value()->to_string();
+  ASSERT_NE(info.value()->invert_cond(), nullptr) << info.value()->to_string();
+  EXPECT_EQ(info.value()->invert_cond()->op(), QueryNodeOp::Q_IN)
+      << info.value()->to_string();
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  auto docs = ret.value();
+  ASSERT_EQ(docs.size(), query.topk_);
+  for (const auto &doc : docs) {
+    auto age = doc->get<uint32_t>("invert_optional_age");
+    ASSERT_TRUE(age.has_value()) << doc->pk();
+    EXPECT_NE(age.value(), 1u);
+    EXPECT_NE(age.value(), 2u);
+  }
+}
+
+TEST_F(InvertRecallTest, NullableNotInExcludesNull) {
+  SearchQuery query;
+  query.output_fields_ = {"id", "invert_optional_age"};
+  query.topk_ = 200;
+  query.filter_ = "invert_optional_age not in (1, 2)";
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  auto docs = ret.value();
+  ASSERT_EQ(docs.size(), query.topk_);
+  for (const auto &doc : docs) {
+    auto age = doc->get<uint32_t>("invert_optional_age");
+    ASSERT_TRUE(age.has_value()) << doc->pk();
+    EXPECT_NE(age.value(), 1u);
+    EXPECT_NE(age.value(), 2u);
+  }
+}
+
+TEST_F(InvertRecallTest, NullableNotEqualExcludesNull) {
+  SearchQuery query;
+  query.output_fields_ = {"id", "invert_optional_age"};
+  query.topk_ = 200;
+  query.filter_ = "invert_optional_age != 1";
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
+  auto docs = ret.value();
+  ASSERT_EQ(docs.size(), query.topk_);
+  for (const auto &doc : docs) {
+    auto age = doc->get<uint32_t>("invert_optional_age");
+    ASSERT_TRUE(age.has_value()) << doc->pk();
+    EXPECT_NE(age.value(), 1u);
   }
 }
 
