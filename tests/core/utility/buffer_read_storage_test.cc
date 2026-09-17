@@ -21,6 +21,7 @@
 #include <thread>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "utility/utility_params.h"
@@ -80,7 +81,9 @@ TEST_F(BufferReadStorageTest, NoneDefersPagePopulationUntilFirstRead) {
 
   auto &pool = ailego::MemoryLimitPool::get_instance();
   EXPECT_EQ(0u, pool.stats().page_used);
-  EXPECT_NE(nullptr, storage->vec_buffer_pool());
+  ASSERT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_TRUE(storage->vec_buffer_pool()->cache_enabled());
+  EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
@@ -163,13 +166,16 @@ TEST_F(BufferReadStorageTest, PoolSmallerThanOnePageFallsBackToBypass) {
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
-  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+  ASSERT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
+  EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
   std::string actual(payload_.size(), '\0');
   ASSERT_EQ(actual.size(), segment->fetch(0, actual.data(), actual.size()));
   EXPECT_EQ(payload_, actual);
+  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
@@ -180,6 +186,9 @@ TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
+  ASSERT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
+  EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
@@ -187,6 +196,7 @@ TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
   ASSERT_EQ(64u, segment->read(0, block, 64));
   EXPECT_EQ(0, std::memcmp(payload_.data(), block.data(), 64));
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
+  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, CachePressureFallsBackToOwnedRead) {

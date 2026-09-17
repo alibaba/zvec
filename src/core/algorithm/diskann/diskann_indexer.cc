@@ -171,8 +171,14 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
       return IndexError_Unsupported;
     }
     storage_ = storage;
-    reader_ = std::make_shared<BufferPoolAlignedFileReader>(std::move(pool));
-    reader_->open(file_path);
+    auto buffer_reader =
+        std::make_shared<BufferPoolAlignedFileReader>(std::move(pool));
+    ret = buffer_reader->open_from_pool(file_path);
+    if (ret != 0) {
+      LOG_ERROR("Failed to capture DiskAnn buffer file, ret=%d", ret);
+      return ret;
+    }
+    reader_ = std::move(buffer_reader);
   } else {
     reader_.reset(new PlatformAlignedFileReader());
 #if defined(_WIN32) || defined(_WIN64)

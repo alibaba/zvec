@@ -732,7 +732,7 @@ class BufferReadStorage : public IndexStorage {
   }
 
   std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool() const override {
-    return cache_enabled_ ? buffer_pool_ : nullptr;
+    return buffer_pool_;
   }
 
   //! Path of the opened index file (diagnostics / backend consistency).

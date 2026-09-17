@@ -30,6 +30,7 @@
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/ailego/logger/logger.h>
 #if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
 #include <zvec/ailego/utility/file_helper.h>
 #endif
 #if defined(__APPLE__) || defined(__MACH__)
@@ -772,18 +773,37 @@ BufferPoolAlignedFileReader::BufferPoolAlignedFileReader(
 BufferPoolAlignedFileReader::~BufferPoolAlignedFileReader() = default;
 
 void BufferPoolAlignedFileReader::open(const std::string &fname) {
-  bypass_reader_.open(fname);
+  (void)open_from_pool(fname);
+}
+
+int BufferPoolAlignedFileReader::open_from_pool(const std::string &fname) {
+  opened_ = false;
+  bypass_reader_.close();
+  if (!pool_) {
+    return IndexError_InvalidArgument;
+  }
+#if defined(_WIN32) || defined(_WIN64)
+  const auto handle =
+      reinterpret_cast<HANDLE>(_get_osfhandle(pool_->file_descriptor()));
+  const int ret = bypass_reader_.open_from_handle(fname, handle);
+#else
+  const int ret =
+      bypass_reader_.open_from_handle(fname, pool_->file_descriptor());
+#endif
+  opened_ = ret == 0;
+  return ret;
 }
 
 void BufferPoolAlignedFileReader::close() {
+  opened_ = false;
   bypass_reader_.close();
   pool_.reset();
 }
 
 int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
                                       IOContext &ctx, bool /*async*/) {
-  if (!pool_) {
-    LOG_ERROR("BufferPoolAlignedFileReader: buffer pool is not available");
+  if (!pool_ || !opened_) {
+    LOG_ERROR("BufferPoolAlignedFileReader: backing file is not open");
     return IndexError_Runtime;
   }
   if (read_reqs.empty()) {
@@ -827,6 +847,22 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         return IndexError_InvalidLength;
       }
       total_pages += pages;
+    }
+
+    // A pool may own the file without a page table when even metadata plus
+    // one page exceeds its budget. Keep batched direct I/O in this case and
+    // never enter page-cache operations that require initialized entries.
+    if (!pool_->cache_enabled()) {
+      if (ctx == nullptr && setup_io_ctx(ctx) != 0) {
+        return IndexError_Runtime;
+      }
+      const int ret = bypass_reader_.read(read_reqs, ctx);
+      if (ret == 0) {
+        for (const AlignedRead &req : read_reqs) {
+          pool_->record_bypass_read(static_cast<size_t>(req.len));
+        }
+      }
+      return ret;
     }
 
     std::vector<UniquePage> unique_pages;

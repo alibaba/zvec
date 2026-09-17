@@ -238,6 +238,9 @@ class BufferPoolAlignedFileReader : public AlignedFileReader {
   ~BufferPoolAlignedFileReader() override;
 
   void open(const std::string &fname) override;
+  //! Capture the pool's file, not a potentially replaced pathname. Also works
+  //! when the pool cannot reserve page-table memory and uses bypass-only I/O.
+  int open_from_pool(const std::string &fname);
   void close() override;
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false) override;
@@ -254,6 +257,7 @@ class BufferPoolAlignedFileReader : public AlignedFileReader {
  private:
   std::shared_ptr<ailego::VecBufferPool> pool_;
   PlatformAlignedFileReader bypass_reader_;
+  bool opened_{false};
 };
 
 }  // namespace core
