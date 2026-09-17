@@ -23,6 +23,7 @@
 #include <tuple>
 #include <unordered_set>
 #include <vector>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 
 namespace zvec {
@@ -116,13 +117,14 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     return IndexError_InvalidFormat;
   }
 
+  auto pool = storage->vec_buffer_pool();
   auto cached_file = storage->file();
 #if defined(_WIN32) || defined(_WIN64)
   // Windows DiskAnn must be able to close the single buffered handle before
   // opening its unbuffered IOCP handles.  FileReadStorage's
   // alone_file_handle mode gives every Segment an independent handle, which
   // cannot be closed through IndexStorage and may be retained by the caller.
-  if (!cached_file) {
+  if (!pool && !cached_file) {
     LOG_ERROR(
         "DiskAnn on Windows requires FileReadStorage with "
         "proxima.file.read_storage.alone_file_handle disabled");
@@ -158,79 +160,96 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
 
   const auto file_path = storage->file_path();
   int ret = 0;
-  reader_.reset(new PlatformAlignedFileReader());
-#if defined(_WIN32) || defined(_WIN64)
-  // Drop every Segment reference created by entity.load() before checking the
-  // File control block. Without an external alias, only cached_file and the
-  // FileReadStorage itself remain as owners.
-  entity.release_storage();
-  vector_segment.reset();
-  if (cached_file.use_count() != 2) {
-    LOG_ERROR(
-        "DiskAnn on Windows cannot load while the caller retains the "
-        "FileReadStorage file or one of its segments");
-    return IndexError_InvalidArgument;
-  }
-
-  // Capture the exact file object that supplied the in-memory metadata before
-  // releasing FileReadStorage. Reopening file_path after cleanup could bind
-  // graph reads to a replacement file while PQ/keys still belong to the old
-  // one.
-  ret = static_cast<WindowsAlignedFileReader *>(reader_.get())
-            ->open_from_handle(file_path, cached_file->native_handle());
-#else
-  if (cached_file) {
-    // POSIX atomic replacement leaves an open descriptor bound to the old
-    // inode. Capture an independent descriptor before cleanup so graph reads
-    // use the same file object that supplied the in-memory metadata.
-    ret = static_cast<LinuxAlignedFileReader *>(reader_.get())
-              ->open_from_handle(file_path, cached_file->native_handle());
-  } else {
-    // Preserve support for FileReadStorage's alone_file_handle mode. Its
-    // Segment abstraction does not expose a descriptor, so retain the
-    // origin/main ordering and bind the path before releasing the storage.
+  if (pool) {
+    if (ailego::kVectorPageSize < DiskAnnUtil::kSectorSize ||
+        ailego::kVectorPageSize % DiskAnnUtil::kSectorSize != 0) {
+      LOG_ERROR(
+          "DiskAnn BufferPool page size is incompatible with the sector "
+          "size: page_size=%zu sector_size=%zu",
+          ailego::kVectorPageSize,
+          static_cast<size_t>(DiskAnnUtil::kSectorSize));
+      return IndexError_Unsupported;
+    }
+    storage_ = storage;
+    reader_ = std::make_shared<BufferPoolAlignedFileReader>(std::move(pool));
     reader_->open(file_path);
-  }
-#endif
-  if (ret != 0) {
-    LOG_ERROR("Failed to capture DiskAnn index file, ret=%d", ret);
-    return ret;
-  }
+  } else {
+    reader_.reset(new PlatformAlignedFileReader());
+#if defined(_WIN32) || defined(_WIN64)
+    // Drop every Segment reference created by entity.load() before checking the
+    // File control block. Without an external alias, only cached_file and the
+    // FileReadStorage itself remain as owners.
+    entity.release_storage();
+    vector_segment.reset();
+    if (cached_file.use_count() != 2) {
+      LOG_ERROR(
+          "DiskAnn on Windows cannot load while the caller retains the "
+          "FileReadStorage file or one of its segments");
+      return IndexError_InvalidArgument;
+    }
 
-  ret = storage->cleanup();
-#if !defined(_WIN32) && !defined(_WIN64)
-  entity.release_storage();
-  vector_segment.reset();
+    // Capture the exact file object that supplied the in-memory metadata before
+    // releasing FileReadStorage. Reopening file_path after cleanup could bind
+    // graph reads to a replacement file while PQ/keys still belong to the old
+    // one.
+    ret = static_cast<WindowsAlignedFileReader *>(reader_.get())
+              ->open_from_handle(file_path, cached_file->native_handle());
+#else
+    if (cached_file) {
+      // POSIX atomic replacement leaves an open descriptor bound to the old
+      // inode. Capture an independent descriptor before cleanup so graph reads
+      // use the same file object that supplied the in-memory metadata.
+      ret = static_cast<LinuxAlignedFileReader *>(reader_.get())
+                ->open_from_handle(file_path, cached_file->native_handle());
+    } else {
+      // Preserve support for FileReadStorage's alone_file_handle mode. Its
+      // Segment abstraction does not expose a descriptor, so retain the
+      // origin/main ordering and bind the path before releasing the storage.
+      reader_->open(file_path);
+    }
 #endif
-  storage.reset();
-  if (ret != 0) {
-    reader_->close();
-    LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
-    return ret;
-  }
+    if (ret != 0) {
+      LOG_ERROR("Failed to capture DiskAnn index file, ret=%d", ret);
+      return ret;
+    }
+
+    ret = storage->cleanup();
+#if !defined(_WIN32) && !defined(_WIN64)
+    entity.release_storage();
+    vector_segment.reset();
+#endif
+    storage.reset();
+    if (ret != 0) {
+      reader_->close();
+      LOG_ERROR("Failed to release DiskAnn index storage, ret=%d", ret);
+      return ret;
+    }
 
 #if defined(_WIN32) || defined(_WIN64)
-  // Windows cannot keep an ordinary buffered alias to this file object beside
-  // DiskAnn's unbuffered handles without a severe random-read regression. The
-  // preflight check above avoids consuming the storage on an ordinary
-  // ownership error. Check again after cleanup so an unexpected remaining
-  // owner cannot make the successful load retain a buffered handle.
-  if (cached_file.use_count() != 1) {
-    reader_->close();
-    LOG_ERROR(
-        "DiskAnn on Windows cannot load while the caller retains the "
-        "FileReadStorage file or one of its segments");
-    return IndexError_InvalidArgument;
-  }
+    // Windows cannot keep an ordinary buffered alias to this file object beside
+    // DiskAnn's unbuffered handles without a severe random-read regression. The
+    // preflight check above avoids consuming the storage on an ordinary
+    // ownership error. Check again after cleanup so an unexpected remaining
+    // owner cannot make the successful load retain a buffered handle.
+    if (cached_file.use_count() != 1) {
+      reader_->close();
+      LOG_ERROR(
+          "DiskAnn on Windows cannot load while the caller retains the "
+          "FileReadStorage file or one of its segments");
+      return IndexError_InvalidArgument;
+    }
 #endif
-  // Releasing the last internal reference closes the buffered source handle.
-  // POSIX caller-owned aliases remain valid; Windows has rejected them above.
-  cached_file.reset();
+    // Releasing the last internal reference closes the buffered source handle.
+    // POSIX caller-owned aliases remain valid; Windows has rejected them above.
+    cached_file.reset();
+  }
 
-  ret = setup_io_ctx(init_ctx_);
-  if (ret != 0) {
-    LOG_ERROR("setup io ctx error");
-    return ret;
+  if (reader_->requires_io_context()) {
+    ret = setup_io_ctx(init_ctx_);
+    if (ret != 0) {
+      LOG_ERROR("setup io ctx error");
+      return ret;
+    }
   }
 
   disk_bytes_per_point_ = meta_.element_size();

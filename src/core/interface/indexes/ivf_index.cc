@@ -18,6 +18,7 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "utility/utility_params.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
@@ -92,21 +93,23 @@ int IVFIndex::open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      // NOTE: IVF index is dumped via FileDumper (plain binary file), which is
-      // not compatible with BufferStorage's IndexFormat layout (header/footer
-      // chain). Until IVF gains a BufferStorage-aware dump path, fall back to
-      // MMapFileReadStorage so the freshly-dumped file can be reopened.
-      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+      // IVF is immutable after training and FileDumper already emits the
+      // IndexFormat consumed by BufferReadStorage. Keep construction on the
+      // FileDumper path and use the bounded page cache after dump/reopen.
+      // Opening an index must not prewarm the entire file or displace other
+      // collections' cached pages. Populate the cache on demand instead.
+      storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
+                         core::BUFFER_READ_STORAGE_WARMUP_NONE);
+      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR(
-            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
+        LOG_ERROR("Failed to create BufferReadStorage for IVF");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
         LOG_ERROR(
-            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
-            "path: %s, err: %s",
+            "Failed to init BufferReadStorage for IVF, path: %s, "
+            "err: %s",
             file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }

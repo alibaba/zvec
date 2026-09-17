@@ -43,6 +43,7 @@
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>
 #endif
+#include <memory>
 #include <string>
 #include <vector>
 #include <zvec/ailego/io/io_backend.h>
@@ -50,6 +51,9 @@
 #include "diskann_util.h"
 
 namespace zvec {
+namespace ailego {
+class VecBufferPool;
+}
 namespace core {
 
 // IoBackend holds the selected backend for each thread. On Linux it also owns
@@ -148,6 +152,10 @@ class AlignedFileReader {
   // POSIX backends keep their process-local queue resources for reuse; Windows
   // overrides this to close private file and completion-port handles.
   virtual void release_io_ctx(IOContext &ctx) = 0;
+
+  virtual bool requires_io_context() const {
+    return true;
+  }
 };
 
 // POSIX reader implementation. Linux selects io_uring, libaio, or pread;
@@ -222,6 +230,31 @@ using PlatformAlignedFileReader = WindowsAlignedFileReader;
 #else
 using PlatformAlignedFileReader = LinuxAlignedFileReader;
 #endif
+
+class BufferPoolAlignedFileReader : public AlignedFileReader {
+ public:
+  explicit BufferPoolAlignedFileReader(
+      std::shared_ptr<ailego::VecBufferPool> pool);
+  ~BufferPoolAlignedFileReader() override;
+
+  void open(const std::string &fname) override;
+  void close() override;
+  int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
+           bool async = false) override;
+  int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
+             IOContext &ctx) override;
+  int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
+                    std::vector<uint32_t> &completed_indices) override;
+  void release_io_ctx(IOContext &ctx) override;
+
+  bool requires_io_context() const override {
+    return false;
+  }
+
+ private:
+  std::shared_ptr<ailego::VecBufferPool> pool_;
+  PlatformAlignedFileReader bypass_reader_;
+};
 
 }  // namespace core
 }  // namespace zvec

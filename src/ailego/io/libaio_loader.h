@@ -54,8 +54,12 @@ typedef int (*aio_getevents_fn)(io_context_t ctx, long min_nr, long nr,
 class LibAioLoader {
  public:
   static LibAioLoader &Instance() {
-    static LibAioLoader instance;
-    return instance;
+    // Global thread pools may join workers during static destruction, after
+    // this loader would be destroyed. Their thread-local AIO contexts still
+    // need io_destroy(), so retain the loader and library until process exit.
+    // Individual AIO contexts must still be destroyed by their owners.
+    static LibAioLoader *const instance = new LibAioLoader();
+    return *instance;
   }
 
   // Load (or confirm already loaded) libaio.  Returns true on success.
