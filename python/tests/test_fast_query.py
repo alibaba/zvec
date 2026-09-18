@@ -505,7 +505,19 @@ def test_fast_query_index_and_metric_dispatch(tmp_path, index_kind, metric):
         writer.close()
     reader = zvec.open(path, CollectionOption(read_only=True))
     try:
-        for param in (query_param, None, query_param):
+        params = [query_param, None, query_param]
+        if index_kind in ("hnsw", "vamana"):
+            # Exercise call-local refiner parameters through both direct L2/IP
+            # search and the cosine fallback, interleaved with defaults.
+            params.extend(
+                [
+                    type(query_param)(is_using_refiner=True, scale_factor=1.5),
+                    None,
+                    type(query_param)(is_using_refiner=True, scale_factor=4.0),
+                    query_param,
+                ]
+            )
+        for param in params:
             for row in (12, 41):
                 query = np.ascontiguousarray(vectors[row] + np.float32(0.021))
                 docs = reader.query(Query("vector", vector=query, param=param), topk=10)

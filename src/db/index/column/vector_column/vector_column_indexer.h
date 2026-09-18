@@ -86,7 +86,8 @@ class VectorColumnIndexer {
   // Writes IDs and optional scores into topk-sized caller-owned buffers.
   Status SearchFast(const vector_column_params::VectorData &vector_data,
                     const vector_column_params::QueryParams &query_params,
-                    int64_t *output_ids, float *output_scores);
+                    int64_t *output_ids, float *output_scores,
+                    const VectorColumnIndexer *reference_indexer = nullptr);
   // Result<std::vector<IndexResults::Ptr>> BatchSearch(
   //     const VectorDataset &vector_data,
   //     const  vector_column_params::QueryParams &query_params);
