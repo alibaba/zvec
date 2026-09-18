@@ -418,9 +418,9 @@ ailego::JsonObject VamanaIndexParam::serialize_to_json_object(
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
   }
-  if (!omit_empty_value || two_pass_build) {
-    json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
-  }
+  // Preserve an explicit false even when omitting empty values: new indexes
+  // default to two-pass construction.
+  json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
   return json_obj;
 }
 

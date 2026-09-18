@@ -193,7 +193,7 @@ class VamanaStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
-  bool two_pass_build_enabled_{false};
+  bool two_pass_build_enabled_{true};
   std::atomic<bool> build_finalized_{false};
 
   ailego::SharedMutex shared_mutex_{};
