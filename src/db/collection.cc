@@ -51,6 +51,7 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/identifier_validation.h"
 #include "db/index/common/index_filter.h"
+#include "db/index/common/query_validation.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
@@ -1896,6 +1897,9 @@ Result<FastQueryResult> CollectionImpl::fast_query(
         Status::InvalidArgument("fast query requires a read-only collection"));
   }
 
+  const auto topk_status = validate_query_topk(topk);
+  CHECK_RETURN_STATUS_EXPECTED(topk_status);
+
   const auto field = fast_query_fields_.find(field_name);
   if (field == fast_query_fields_.end()) {
     return tl::make_unexpected(Status::InvalidArgument(
@@ -1909,13 +1913,13 @@ Result<FastQueryResult> CollectionImpl::fast_query(
     return tl::make_unexpected(
         Status::InvalidArgument("fast query: query_vector is null"));
   }
-  if (topk <= 0) return FastQueryResult{};
   if ((query_data_type != DataType::UNDEFINED || query_dimension != 0) &&
       (query_data_type != field_schema->data_type() ||
        query_dimension != field_schema->dimension())) {
     return tl::make_unexpected(Status::InvalidArgument(
         "query vector dtype or dimension does not match the field"));
   }
+  if (topk == 0) return FastQueryResult{};
 
   const auto &segments = read_only_segments_;
   const auto &indexers = field->second.indexers;
