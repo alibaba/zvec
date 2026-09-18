@@ -157,7 +157,9 @@ class FtsColumnIndexer {
    *  no longer contains these CFs at all.
    *
    *  Idempotent: terms whose postings are already in BitPacked format are
-   *  skipped, so re-running after a partial-failure dump is safe.
+   *  skipped, so re-running after a partial-failure dump is safe. A durable
+   *  completion marker lets retries skip conversion after side CF cleanup
+   *  has started, including after reopening the index.
    *
    *  Must be called after flush() so that the BM25 scorer used by encode()
    *  sees the up-to-date segment statistics.
@@ -165,6 +167,10 @@ class FtsColumnIndexer {
    *  \return Result<void> on success, or Status on failure
    */
   Result<void> convert_postings_to_bitpacked();
+
+  // Read the persistent conversion marker; missing side CFs are not proof
+  // that conversion completed successfully.
+  Result<bool> conversion_complete() const;
 
   uint64_t total_docs() const {
     return total_docs_.load(std::memory_order_relaxed);

@@ -71,6 +71,11 @@ inline std::string make_total_tokens_key(const std::string &field_name) {
   return field_name + "_total_tokens";
 }
 
+// Per-field seal state lives outside the side CFs that sealing removes.
+inline std::string make_conversion_complete_key(const std::string &field_name) {
+  return field_name + "_conversion_complete";
+}
+
 // uint64 big-endian encoding for stat values.
 inline std::string encode_uint64_value(uint64_t value) {
   std::string out(sizeof(uint64_t), '\0');

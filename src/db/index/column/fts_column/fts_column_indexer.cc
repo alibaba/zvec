@@ -611,6 +611,11 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
         "FtsColumnIndexer::insert: not opened. field=", field_name_));
   }
 
+  if (cf_dropped_.load(std::memory_order_acquire)) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::insert: field is sealed. field=", field_name_));
+  }
+
   // Tokenize
   std::vector<Token> tokens = tokenizer_pipeline_->process(text);
   const uint32_t doc_len = static_cast<uint32_t>(tokens.size());
@@ -730,8 +735,49 @@ Result<void> FtsColumnIndexer::flush() {
 // BitPacked conversion (called by MutableSegment::dump_fts_column_indexers)
 // ============================================================
 
+Result<bool> FtsColumnIndexer::conversion_complete() const {
+  if (!ctx_ || !stat_cf_) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::conversion_complete: not opened. field=",
+        field_name_));
+  }
+  std::string value;
+  auto status =
+      ctx_->db_->Get(ctx_->read_opts_, stat_cf_,
+                     make_conversion_complete_key(field_name_), &value);
+  if (status.IsNotFound()) {
+    return false;
+  }
+  if (!status.ok() || value != "1") {
+    return tl::make_unexpected(
+        Status::InternalError("FtsColumnIndexer::conversion_complete: invalid "
+                              "marker or read failed. field=",
+                              field_name_, " status=", status.ToString()));
+  }
+  return true;
+}
+
 Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
   // safe access check
+
+  auto completed = conversion_complete();
+  if (!completed) {
+    return tl::make_unexpected(completed.error());
+  }
+  if (*completed) {
+    // A previous marker flush may have failed while leaving the Put visible
+    // in memory. Retry that flush before allowing the caller to drop side CFs.
+    rocksdb::FlushOptions options;
+    options.wait = true;
+    auto status = ctx_->db_->Flush(options, stat_cf_);
+    if (!status.ok()) {
+      return tl::make_unexpected(Status::InternalError(
+          "FtsColumnIndexer: flush conversion marker failed. field=",
+          field_name_, " status=", status.ToString()));
+    }
+    reset_side_cfs();
+    return {};
+  }
 
   if (!postings_cf_ || !term_freq_cf_ || !doc_len_cf_ || !scorer_) {
     return tl::make_unexpected(Status::InternalError(
@@ -873,6 +919,21 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
         field_name_, " status=", flush_status.ToString()));
   }
 
+  // Persist completion before any destructive cleanup. Recovery can then
+  // resume sealing even when only some side CFs survived. Flushing stat_cf
+  // also preserves the BM25 statistics written by flush().
+  auto marker_status =
+      ctx_->db_->Put(ctx_->write_opts_, stat_cf_,
+                     make_conversion_complete_key(field_name_), "1");
+  if (marker_status.ok()) {
+    marker_status = ctx_->db_->Flush(flush_options, stat_cf_);
+  }
+  if (!marker_status.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer: persist conversion marker failed. field=",
+        field_name_, " status=", marker_status.ToString()));
+  }
+
   // ---------------------------------------------------------------
   // 3) Clear $TF / $DOC_LEN / $MAX_TF CFs via DeleteRange.
   //
@@ -894,6 +955,9 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
           {"$DOC_LEN", doc_len_cf_.load()},
           {"$MAX_TF", max_tf_cf_.load()},
       };
+  // The durable marker makes this field immutable even if cleanup fails.
+  // Keep local handles for cleanup while preventing further mutable writes.
+  reset_side_cfs();
   for (const auto &[cf_name, cf] : cfs_to_clear) {
     if (cf == nullptr) {
       continue;

@@ -104,6 +104,14 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
                                    ret.error().message());
     }
 
+    auto completed = indexer->conversion_complete();
+    if (!completed) {
+      return completed.error();
+    }
+    if (*completed) {
+      // A sealed field remains immutable even if cleanup was interrupted.
+      indexer->reset_side_cfs();
+    }
     indexers_[name] = indexer;
   }
 
@@ -134,7 +142,6 @@ Status FtsIndexer::flush() {
 
 Status FtsIndexer::close() {
   indexers_.clear();
-  converted_fields_.clear();
   if (fts_ctx_) {
     auto s = fts_ctx_->close();
     fts_ctx_.reset();
@@ -219,7 +226,6 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
   auto it = indexers_.find(field_name);
   if (it != indexers_.end()) {
     indexers_.erase(it);
-    converted_fields_.erase(field_name);
   }
 
   // Drop all CFs belonging to this field.
@@ -232,6 +238,19 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
   // Remove per-field stat keys.
   auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
   if (stat_cf) {
+    // A recreated field must not inherit a durable marker from its predecessor.
+    auto marker_status =
+        fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
+                              fts::make_conversion_complete_key(field_name));
+    if (marker_status.ok()) {
+      rocksdb::FlushOptions options;
+      options.wait = true;
+      marker_status = fts_ctx_->db_->Flush(options, stat_cf);
+    }
+    if (!marker_status.ok()) {
+      return Status::InternalError("delete conversion marker failed: ",
+                                   marker_status.ToString());
+    }
     auto rs = fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
                                     fts::make_total_docs_key(field_name));
     if (!rs.ok()) {
@@ -284,13 +303,10 @@ Status FtsIndexer::seal(const std::string &field_name) {
                                  " ", ret.error().message());
   }
 
-  if (converted_fields_.count(field_name) == 0) {
-    ret = indexer->convert_postings_to_bitpacked();
-    if (!ret.has_value()) {
-      return Status::InternalError("FtsIndexer::seal convert failed: ",
-                                   field_name, " ", ret.error().message());
-    }
-    converted_fields_.insert(field_name);
+  ret = indexer->convert_postings_to_bitpacked();
+  if (!ret.has_value()) {
+    return Status::InternalError("FtsIndexer::seal convert failed: ",
+                                 field_name, " ", ret.error().message());
   }
 
   indexer->reset_side_cfs();
@@ -315,15 +331,11 @@ Status FtsIndexer::seal_all() {
 
   // Convert all postings to bitpacked format.
   for (const auto &[name, indexer] : indexers_) {
-    if (converted_fields_.count(name) != 0) {
-      continue;
-    }
     auto ret = indexer->convert_postings_to_bitpacked();
     if (!ret.has_value()) {
       return Status::InternalError("FtsIndexer::seal_all convert failed: ",
                                    name, " ", ret.error().message());
     }
-    converted_fields_.insert(name);
   }
 
   // Reset side CFs and drop them.
