@@ -59,7 +59,7 @@ class MemForwardStore : public BaseForwardStore {
 
   /// Open the store
   /// \return 0 on success, non-zero on failure
-  Status Open() override;
+  Status open() override;
 
   /// Insert a document into the store
   /// \param doc The document to insert
@@ -123,23 +123,23 @@ class MemForwardStore : public BaseForwardStore {
  private:
   /// Create a RecordBatchBuilder for this store
   /// \return A new RecordBatchBuilder
-  RecordBatchBuilderPtr createBuilder();
+  RecordBatchBuilderPtr create_builder();
 
   /// Convert internal data to a RecordBatch
   /// \return A Result containing the RecordBatch or an error status
-  arrow::Result<RecordBatchPtr> convertToRecordBatch();
+  arrow::Result<RecordBatchPtr> convert_to_record_batch();
 
   /// Convert internal data to a Table
   /// \param columns The list of column names to include
   /// \param indices The list of row indices to include
   /// \return A Result containing the Table or an error status
-  arrow::Result<TablePtr> convertToTable(
+  arrow::Result<TablePtr> convert_to_table(
       const std::vector<std::string> &columns, const std::vector<int> &indices);
 
   /// Convert internal data to a RecordBatchBuilder
   /// \param builder The builder to populate
   /// \return arrow::Status indicating success or failure
-  arrow::Status convertToBuilder(RecordBatchBuilderPtr &builder);
+  arrow::Status convert_to_builder(RecordBatchBuilderPtr &builder);
 
   /// Append a single document to a builder
   /// \param doc The document to append

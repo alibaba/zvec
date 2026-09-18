@@ -35,7 +35,7 @@ class ChunkBroker {
  public:
   typedef std::shared_ptr<ChunkBroker> Pointer;
 
-  enum CHUNK_TYPE {
+  enum ChunkType {
     CHUNK_TYPE_HEADER = 1,
     CHUNK_TYPE_META = 2,
     CHUNK_TYPE_NODE = 3,

@@ -331,48 +331,48 @@ TEST_F(HnswStreamerTest, TestKnnSearch) {
     streamer->add_impl(i, vec.data(), qmeta, ctx);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   for (size_t i = 0; i < cnt; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -381,7 +381,7 @@ TEST_F(HnswStreamerTest, TestKnnSearch) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
   // // EXPECT_GT(cost, 2.0f);
 }
 
@@ -424,46 +424,46 @@ TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
   }
   streamer->flush(0UL);
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  int queryCnt = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  int query_cnt = 0;
   NumericalVector<float> vec(dim);
   for (size_t i = 0; i < cnt; i += 10) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
-    queryCnt++;
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
+    query_cnt++;
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / queryCnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / query_cnt;
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
 }
 
 TEST_F(HnswStreamerTest, TestBuildFromProviderWithMismatchedMeta) {
@@ -520,45 +520,45 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderWithMismatchedMeta) {
   }
   streamer->flush(0UL);
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 100;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  int queryCnt = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  int query_cnt = 0;
   for (size_t i = 0; i < cnt; i += 10) {
     for (size_t j = 0; j < dim; ++j) {
       fp16_vec[j] = ailego::FloatHelper::ToFP16(i * scale);
     }
-    ASSERT_EQ(0, streamer->search_impl(fp16_vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, streamer->search_bf_impl(fp16_vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_impl(fp16_vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, streamer->search_bf_impl(fp16_vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
-    queryCnt++;
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
+    query_cnt++;
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / queryCnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / query_cnt;
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
 }
 
 TEST_F(HnswStreamerTest, TestBuildFromProviderWithDifferentMetric) {
@@ -604,46 +604,46 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderWithDifferentMetric) {
   }
   streamer->flush(0UL);
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 100;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  int queryCnt = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  int query_cnt = 0;
   NumericalVector<float> query(dim);
   for (size_t i = 0; i < cnt; i += 10) {
     for (size_t j = 0; j < dim; ++j) {
       query[j] = i;
     }
-    ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
-    queryCnt++;
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
+    query_cnt++;
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / queryCnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / query_cnt;
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
 }
 
 TEST_F(HnswStreamerTest, TestBuildFromProviderAddWithId) {
@@ -690,45 +690,45 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderAddWithId) {
   }
   streamer->flush(0UL);
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 100;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  int queryCnt = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  int query_cnt = 0;
   for (size_t i = 0; i < cnt; i += 10) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
-    queryCnt++;
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
+    query_cnt++;
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / queryCnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / query_cnt;
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
 }
 
 TEST_F(HnswStreamerTest, TestBuildFromProviderMissingKey) {
@@ -788,17 +788,17 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderMissingKey) {
   EXPECT_EQ(1UL, streamer->stats().discarded_count());
 
   // the rejected vector must not appear in brute force results
-  auto linearCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
   size_t topk = 10;
-  linearCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
   for (size_t j = 0; j < dim; ++j) {
     vec[j] = missing_key;
   }
-  ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-  auto &linearResult = linearCtx->result();
-  ASSERT_EQ(topk, linearResult.size());
+  ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
+  auto &linear_result = linear_ctx->result();
+  ASSERT_EQ(topk, linear_result.size());
   for (size_t k = 0; k < topk; ++k) {
-    EXPECT_NE(missing_key, linearResult[k].key());
+    EXPECT_NE(missing_key, linear_result[k].key());
   }
 }
 
@@ -848,8 +848,8 @@ TEST_F(HnswStreamerTest, TestAddAndSearch) {
   NumericalVector<float> vec(dim);
   size_t cnt = 20000U;
   auto ctx = streamer->create_context();
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   for (size_t i = 0; i < cnt; i++) {
@@ -862,45 +862,45 @@ TEST_F(HnswStreamerTest, TestAddAndSearch) {
   // streamer->print_debug_info();
 
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   for (size_t i = 0; i < cnt; i += 100) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -909,7 +909,7 @@ TEST_F(HnswStreamerTest, TestAddAndSearch) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -1002,52 +1002,52 @@ TEST_F(HnswStreamerTest, TestKnnSearchRandomData) {
     streamer->add_impl(i + cnt, vec.data(), qmeta, ctx);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 100;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   cnt = 500;
   for (size_t i = 0; i < cnt; i += 1) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     }
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
-    knnTotalTime += t3 - t2;
-    linearTotalTime += t2 - t1;
+    knn_total_time += t3 - t2;
+    linear_total_time += t2 - t1;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
 
-    topk1Hits += linearResult[0].key() == knnResult[0].key();
+    topk1_hits += linear_result[0].key() == knn_result[0].key();
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
 
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -1056,7 +1056,7 @@ TEST_F(HnswStreamerTest, TestKnnSearchRandomData) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.50f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 5.0f);
 }
 
@@ -1081,8 +1081,8 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, storage2->init(stg_params));
   ASSERT_EQ(0, storage2->open(dir_ + "TessOpenAndClose2", true));
   ASSERT_EQ(0, streamer->init(meta, params));
-  auto checkIter = [](size_t base, size_t total,
-                      IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t base, size_t total,
+                       IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -1101,9 +1101,9 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
     ASSERT_EQ(cnt, total);
   };
 
-  size_t testCnt = 200;
+  size_t test_cnt = 200;
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-  for (size_t i = 0; i < testCnt; i += 2) {
+  for (size_t i = 0; i < test_cnt; i += 2) {
     float v1 = (float)i;
     ASSERT_EQ(0, streamer->open(storage1));
     auto ctx = streamer->create_context();
@@ -1113,7 +1113,7 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
       vec1[d] = v1;
     }
     ASSERT_EQ(0, streamer->add_impl(i, vec1.data(), qmeta, ctx));
-    checkIter(0, i / 2 + 1, streamer);
+    check_iter(0, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
 
@@ -1126,7 +1126,7 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
     ctx = streamer->create_context();
     ASSERT_TRUE(!!ctx);
     ASSERT_EQ(0, streamer->add_impl(i + 1, vec2.data(), qmeta, ctx));
-    checkIter(1, i / 2 + 1, streamer);
+    check_iter(1, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
   }
@@ -1143,8 +1143,8 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, streamer2->init(meta, params));
   ASSERT_EQ(0, streamer2->open(storage2));
 
-  checkIter(0, testCnt / 2, streamer1);
-  checkIter(1, testCnt / 2, streamer2);
+  check_iter(0, test_cnt / 2, streamer1);
+  check_iter(1, test_cnt / 2, streamer2);
 }
 
 TEST_F(HnswStreamerTest, TestCreateIterator) {
@@ -1164,7 +1164,7 @@ TEST_F(HnswStreamerTest, TestCreateIterator) {
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto checkIter = [](size_t total, IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t total, IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -1191,13 +1191,13 @@ TEST_F(HnswStreamerTest, TestCreateIterator) {
       vec[j] = i;
     }
     streamer->add_impl(i, vec.data(), qmeta, ctx);
-    checkIter(i + 1, streamer);
+    check_iter(i + 1, streamer);
   }
 
   streamer->flush(0UL);
   streamer->close();
   ASSERT_EQ(0, streamer->open(storage));
-  checkIter(cnt, streamer);
+  check_iter(cnt, streamer);
 
   // check getVector
   auto provider = streamer->create_provider();
@@ -1237,7 +1237,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto checkIter = [](size_t total, IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t total, IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -1264,7 +1264,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
       vec[j] = i;
     }
     streamer->add_impl(i, vec.data(), qmeta, ctx);
-    checkIter(i + 1, streamer);
+    check_iter(i + 1, streamer);
   }
 
   streamer->flush(0UL);
@@ -1276,7 +1276,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
   ASSERT_EQ(0, storage->init(stg_params));
   ASSERT_EQ(0, storage->open(dir_ + "TestForceFlush", true));
   ASSERT_EQ(0, streamer->open(storage));
-  checkIter(cnt, streamer);
+  check_iter(cnt, streamer);
 
   // check getVector
   auto provider = streamer->create_provider();
@@ -1313,23 +1313,23 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
   ASSERT_EQ(0, storage->open(dir_ + "TessKnnMultiThread", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-    size_t succAdd = 0;
+    size_t succ_add = 0;
     auto ctx = streamer->create_context();
-    for (size_t i = 0; i < addCnt; i++) {
+    for (size_t i = 0; i < add_cnt; i++) {
       for (size_t j = 0; j < dim; ++j) {
-        vec[j] = (float)i + baseKey;
+        vec[j] = (float)i + base_key;
       }
-      succAdd += !streamer->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, vec.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
-  auto t2 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t3 = std::async(std::launch::async, addVector, 2000, 1000);
-  auto t1 = std::async(std::launch::async, addVector, 0, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t3 = std::async(std::launch::async, add_vector, 2000, 1000);
+  auto t1 = std::async(std::launch::async, add_vector, 0, 1000);
   ASSERT_EQ(1000U, t1.get());
   ASSERT_EQ(1000U, t2.get());
   ASSERT_EQ(1000U, t3.get());
@@ -1360,32 +1360,32 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
   // ====== multi thread search
   size_t topk = 100;
   size_t cnt = 3000;
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     NumericalVector<float> vec(dim);
-    auto linearCtx = streamer->create_context();
-    auto linearByPkeysCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto linear_by_pkeys_ctx = streamer->create_context();
     auto ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-    linearCtx->set_topk(topk);
-    linearByPkeysCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    linear_by_pkeys_ctx->set_topk(topk);
     ctx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i += 1) {
       for (size_t j = 0; j < dim; ++j) {
         vec[j] = i + 0.1f;
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
-      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
-                                                      linearByPkeysCtx));
+                                                      linear_by_pkeys_ctx));
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
-      auto &r2 = linearCtx->result();
+      auto &r2 = linear_ctx->result();
       ASSERT_EQ(topk, r2.size());
       ASSERT_EQ(i, r2[0].key());
-      auto &r3 = linearByPkeysCtx->result();
+      auto &r3 = linear_by_pkeys_ctx->result();
       ASSERT_EQ(std::min(topk, p_keys[0].size()), r3.size());
 #if 0
             printf("linear: %zd => %zd %zd %zd %zd %zd\n", i, r2[0].key,
@@ -1394,21 +1394,21 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
                    r1[2].key, r1[3].key, r1[4].key);
 #endif
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
           if (r2[j].key() == r1[k].key()) {
-            totalHits++;
+            total_hits++;
             break;
           }
         }
       }
     }
     // printf("%f\n", totalHits * 1.0f / totalCnts);
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
-  auto s3 = std::async(std::launch::async, knnSearch);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
+  auto s3 = std::async(std::launch::async, knn_search);
   s1.wait();
   s2.wait();
   s3.wait();
@@ -1439,49 +1439,49 @@ TEST_F(HnswStreamerTest, TestKnnConcurrentAddAndSearch) {
   ASSERT_EQ(0, storage->open(dir_ + "TessKnnConcurrentAddAndSearch", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
     auto ctx = streamer->create_context();
-    size_t succAdd = 0;
-    for (size_t i = 0; i < addCnt; i++) {
+    size_t succ_add = 0;
+    for (size_t i = 0; i < add_cnt; i++) {
       for (size_t j = 0; j < dim; ++j) {
-        vec[j] = (float)i + baseKey;
+        vec[j] = (float)i + base_key;
       }
-      succAdd += !streamer->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, vec.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
 
   // ====== multi thread search
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     size_t topk = 100;
     size_t cnt = 3000;
     NumericalVector<float> vec(dim);
-    auto linearCtx = streamer->create_context();
-    auto linearByPKeysCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto linear_by_p_keys_ctx = streamer->create_context();
     auto ctx = streamer->create_context();
-    linearCtx->set_topk(topk);
-    linearByPKeysCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    linear_by_p_keys_ctx->set_topk(topk);
     ctx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
     for (size_t i = 0; i < cnt; i += 1) {
       for (size_t j = 0; j < dim; ++j) {
         vec[j] = i + 0.1f;
       }
       ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
-      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
       ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(vec.data(), p_keys, qmeta,
-                                                      linearByPKeysCtx));
+                                                      linear_by_p_keys_ctx));
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
-      auto &r2 = linearCtx->result();
+      auto &r2 = linear_ctx->result();
       ASSERT_EQ(topk, r2.size());
-      auto &r3 = linearByPKeysCtx->result();
+      auto &r3 = linear_by_p_keys_ctx->result();
       ASSERT_EQ(std::min(topk, p_keys[0].size()), r3.size());
 // ASSERT_EQ(i, r2[0].key);
 #if 0
@@ -1491,24 +1491,24 @@ TEST_F(HnswStreamerTest, TestKnnConcurrentAddAndSearch) {
                    r1[2].key, r1[3].key, r1[4].key);
 #endif
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
           if (r2[j].key() == r1[k].key()) {
-            totalHits++;
+            total_hits++;
             break;
           }
         }
       }
     }
     //        printf("%f\n", totalHits * 1.0f / totalCnts);
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto t0 = std::async(std::launch::async, addVector, 0, 1000);
+  auto t0 = std::async(std::launch::async, add_vector, 0, 1000);
   ASSERT_EQ(1000, t0.get());
-  auto t1 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t2 = std::async(std::launch::async, addVector, 2000, 1000);
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
+  auto t1 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 2000, 1000);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
   ASSERT_EQ(1000, t1.get());
   ASSERT_EQ(1000, t2.get());
   s1.wait();
@@ -1654,13 +1654,13 @@ TEST_F(HnswStreamerTest, TestFilter) {
   ASSERT_EQ(101, results[1].key());
   ASSERT_EQ(99, results[2].key());
 
-  auto filterFunc = [](uint64_t key) {
+  auto filter_func = [](uint64_t key) {
     if (key == 100UL || key == 101UL) {
       return true;
     }
     return false;
   };
-  ctx->set_filter(filterFunc);
+  ctx->set_filter(filter_func);
 
   // after set filter
   ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
@@ -1719,10 +1719,10 @@ TEST_F(HnswStreamerTest, TestMaxIndexSize) {
   }
 
   NumericalVector<float> vec(dim);
-  size_t writeCnt1 = 10000;
+  size_t write_cnt1 = 10000;
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   auto ctx = streamer->create_context();
-  for (size_t i = 0; i < writeCnt1; i++) {
+  for (size_t i = 0; i < write_cnt1; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i;
     }
@@ -1732,8 +1732,8 @@ TEST_F(HnswStreamerTest, TestMaxIndexSize) {
   size_t rss1 = 0;
   ailego::MemoryHelper::SelfUsage(&vsz1, &rss1);
   size_t increment1 = rss1 - rss0;
-  ASSERT_GT(writeCnt1 * 128 * 4 + writeCnt1 * 100 * 4, increment1 * 0.8f);
-  ASSERT_LT(writeCnt1 * 128 * 4 + writeCnt1 * 100 * 4, increment1 * 1.2f);
+  ASSERT_GT(write_cnt1 * 128 * 4 + write_cnt1 * 100 * 4, increment1 * 0.8f);
+  ASSERT_LT(write_cnt1 * 128 * 4 + write_cnt1 * 100 * 4, increment1 * 1.2f);
 
   streamer->flush(0UL);
   streamer.reset();
@@ -1798,17 +1798,17 @@ TEST_F(HnswStreamerTest, TestIndexSizeQuota) {
   ASSERT_EQ(0, streamer->init(meta, params));
   ASSERT_EQ(0, streamer->open(storage));
   NumericalVector<float> vec(dim);
-  size_t writeCnt1 = 850;
+  size_t write_cnt1 = 850;
   int ret = 0;
   auto ctx = streamer->create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-  for (size_t i = 0; i < writeCnt1; i++) {
+  for (size_t i = 0; i < write_cnt1; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i;
     }
-    int iRet = streamer->add_impl(i, vec.data(), qmeta, ctx);
-    if (iRet != 0) {
-      ret = iRet;
+    int i_ret = streamer->add_impl(i, vec.data(), qmeta, ctx);
+    if (i_ret != 0) {
+      ret = i_ret;
     }
   }
   ASSERT_EQ(IndexError_IndexFull, ret);
@@ -1969,10 +1969,10 @@ TEST_F(HnswStreamerTest, TestCheckStats) {
   ASSERT_EQ(0u, stats.index_size() % ailego::MemoryHelper::PageSize());
   ASSERT_EQ(0U, stats.dumped_size());
   ASSERT_EQ(0U, stats.check_point());
-  auto createTime = stats.create_time();
-  auto updateTime = stats.update_time();
-  ASSERT_GT(createTime, 0UL);
-  ASSERT_EQ(createTime, updateTime);
+  auto create_time = stats.create_time();
+  auto update_time = stats.update_time();
+  ASSERT_GT(create_time, 0UL);
+  ASSERT_EQ(create_time, update_time);
 
   NumericalVector<float> vec(dim);
   auto ctx = streamer->create_context();
@@ -1996,8 +1996,8 @@ TEST_F(HnswStreamerTest, TestCheckStats) {
   ASSERT_GT(size3, size2);
   LOG_INFO("size1=%zu size2=%zu size3=%zu", size1, size2, size3);
 
-  uint64_t checkPoint = 23423UL;
-  streamer->flush(checkPoint);
+  uint64_t check_point = 23423UL;
+  streamer->flush(check_point);
   size_t size4 = stats.index_size();
   ASSERT_EQ(size3, size4);
   auto stats1 = streamer->stats();
@@ -2007,11 +2007,11 @@ TEST_F(HnswStreamerTest, TestCheckStats) {
   ASSERT_EQ(0U, stats1.discarded_count());
   ASSERT_GT(stats1.index_size(), 0U);
   ASSERT_EQ(0U, stats1.dumped_size());
-  ASSERT_EQ(checkPoint, stats1.check_point());
-  auto createTime1 = stats1.create_time();
-  auto updateTime1 = stats1.update_time();
-  ASSERT_GE(updateTime1, createTime1);
-  ASSERT_EQ(createTime, createTime1);
+  ASSERT_EQ(check_point, stats1.check_point());
+  auto create_time1 = stats1.create_time();
+  auto update_time1 = stats1.update_time();
+  ASSERT_GE(update_time1, create_time1);
+  ASSERT_EQ(create_time, create_time1);
   streamer->close();
 
   ASSERT_EQ(0, streamer->open(storage));
@@ -2025,14 +2025,14 @@ TEST_F(HnswStreamerTest, TestCheckStats) {
   ASSERT_EQ(0U, stats2.discarded_count());
   ASSERT_GT(stats1.index_size(), 0);
   ASSERT_EQ(0U, stats2.dumped_size());
-  ASSERT_EQ(checkPoint, stats2.check_point());
-  auto createTime2 = stats2.create_time();
-  auto updateTime2 = stats2.update_time();
-  ASSERT_EQ(createTime2, createTime1);
-  ASSERT_GE(updateTime2, updateTime1);
+  ASSERT_EQ(check_point, stats2.check_point());
+  auto create_time2 = stats2.create_time();
+  auto update_time2 = stats2.update_time();
+  ASSERT_EQ(create_time2, create_time1);
+  ASSERT_GE(update_time2, update_time1);
 
   sleep(1);
-  streamer->flush(checkPoint + 1);
+  streamer->flush(check_point + 1);
   ASSERT_NE(0, streamer->add_impl(0U, vec.data(), qmeta, ctx));
   auto &stats3 = streamer->stats();
   ASSERT_EQ(2U, stats3.revision_id());
@@ -2041,11 +2041,11 @@ TEST_F(HnswStreamerTest, TestCheckStats) {
   ASSERT_EQ(1U, stats3.discarded_count());
   ASSERT_EQ(stats2.index_size(), stats3.index_size());
   ASSERT_EQ(0U, stats3.dumped_size());
-  ASSERT_EQ(checkPoint + 1, stats3.check_point());
-  auto createTime3 = stats3.create_time();
-  auto updateTime3 = stats3.update_time();
-  ASSERT_EQ(createTime3, createTime1);
-  ASSERT_GT(updateTime3, updateTime2);
+  ASSERT_EQ(check_point + 1, stats3.check_point());
+  auto create_time3 = stats3.create_time();
+  auto update_time3 = stats3.update_time();
+  ASSERT_EQ(create_time3, create_time1);
+  ASSERT_GT(update_time3, update_time2);
 
   auto dpath = dir_ + "dumpIndex";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
@@ -2157,7 +2157,7 @@ TEST_F(HnswStreamerTest, TestDumpIndexAndAdd) {
   ASSERT_NE(nullptr, ctx);
   int code = 0;
   std::atomic<bool> async_started{false};
-  auto addVector = [&](int a, int b, bool signal_start) {
+  auto add_vector = [&](int a, int b, bool signal_start) {
     int success = 0;
     if (signal_start) {
       async_started.store(true, std::memory_order_release);
@@ -2178,8 +2178,8 @@ TEST_F(HnswStreamerTest, TestDumpIndexAndAdd) {
     }
     std::cout << "addVector: " << success << " success" << std::endl;
   };
-  addVector(0, 2000, false);
-  auto t2 = std::async(std::launch::async, addVector, 2000, 3000, true);
+  add_vector(0, 2000, false);
+  auto t2 = std::async(std::launch::async, add_vector, 2000, 3000, true);
   auto path1 = dir_ + "dumpIndex1";
   auto dumper1 = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper1, nullptr);
@@ -2509,24 +2509,24 @@ TEST_F(HnswStreamerTest, TestBruteForceSetupInContext) {
   }
 
   size_t topk = 200;
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
   bool set_bf_threshold = false;
   bool use_update = false;
 
   for (size_t i = 0; i < cnt; i++) {
-    auto linearCtx = streamer->create_context();
-    auto knnCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto knn_ctx = streamer->create_context();
 
-    ASSERT_TRUE(!!linearCtx);
-    ASSERT_TRUE(!!linearCtx);
+    ASSERT_TRUE(!!linear_ctx);
+    ASSERT_TRUE(!!linear_ctx);
 
-    linearCtx->set_topk(topk);
-    knnCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    knn_ctx->set_topk(topk);
 
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
@@ -2535,53 +2535,53 @@ TEST_F(HnswStreamerTest, TestBruteForceSetupInContext) {
 
     if (set_bf_threshold) {
       if (use_update) {
-        ailego::Params streamerParamsExtra;
+        ailego::Params streamer_params_extra;
 
-        streamerParamsExtra.set("proxima.hnsw.streamer.brute_force_threshold",
-                                cnt);
-        knnCtx->update(streamerParamsExtra);
+        streamer_params_extra.set("proxima.hnsw.streamer.brute_force_threshold",
+                                  cnt);
+        knn_ctx->update(streamer_params_extra);
       } else {
-        knnCtx->set_bruteforce_threshold(cnt);
+        knn_ctx->set_bruteforce_threshold(cnt);
       }
 
       use_update = !use_update;
     }
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
 
     auto t2 = ailego::Realtime::MicroSeconds();
 
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
     // auto t3 = ailego::Realtime::MicroSeconds();
 
     if (set_bf_threshold) {
-      linearTotalTime += t2 - t1;
+      linear_total_time += t2 - t1;
     } else {
-      knnTotalTime += t2 - t1;
+      knn_total_time += t2 - t1;
     }
 
     set_bf_threshold = !set_bf_threshold;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -2590,7 +2590,7 @@ TEST_F(HnswStreamerTest, TestBruteForceSetupInContext) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -2655,16 +2655,16 @@ TEST_F(HnswStreamerTest, TestKnnSearchCosine) {
   }
 
   size_t query_cnt = 200U;
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
 
   for (size_t i = 0; i < query_cnt; i++) {
@@ -2681,39 +2681,39 @@ TEST_F(HnswStreamerTest, TestKnnSearchCosine) {
     ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &new_query, &new_meta));
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
-              streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
+              streamer->search_bf_impl(new_query.data(), new_meta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
     // On platforms without SIMD (e.g., RISC-V), scalar FP rounding
     // differences may cause adjacent vectors with near-identical cosine
     // distances to swap in ranking. Allow top-1 to be within +/-1.
-    EXPECT_LE(std::abs(static_cast<int64_t>(linearResult[0].key()) -
+    EXPECT_LE(std::abs(static_cast<int64_t>(linear_result[0].key()) -
                        static_cast<int64_t>(i)),
               1);
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / query_cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / query_cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -2722,7 +2722,7 @@ TEST_F(HnswStreamerTest, TestKnnSearchCosine) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.90f);
+  EXPECT_GT(topk1_recall, 0.90f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -2772,42 +2772,42 @@ TEST_F(HnswStreamerTest, TestFetchVector) {
     ASSERT_FLOAT_EQ(vector_value, i);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
+  knn_ctx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
   for (size_t i = 0; i < query_cnt; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i;
     }
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
-    ASSERT_NE(knnResult[0].vector(), nullptr);
-    float vector_value = *((float *)(knnResult[0].vector()));
+    ASSERT_NE(knn_result[0].vector(), nullptr);
+    float vector_value = *((float *)(knn_result[0].vector()));
     ASSERT_FLOAT_EQ(vector_value, i);
   }
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 }
 
 TEST_F(HnswStreamerTest, TestFetchVectorCosine) {
@@ -2886,17 +2886,17 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosine) {
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
-  linearCtx->set_fetch_vector(true);
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
+  linear_ctx->set_fetch_vector(true);
+  knn_ctx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
   for (size_t i = 0; i < query_cnt; i++) {
     float add_on = i * 10;
     for (size_t j = 0; j < dim; ++j) {
@@ -2911,39 +2911,39 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosine) {
     ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &new_query, &new_meta));
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
-              streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
+              streamer->search_bf_impl(new_query.data(), new_meta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
     // On platforms without SIMD (e.g., RISC-V), scalar FP rounding
     // differences may cause adjacent vectors with near-identical cosine
     // distances to swap in ranking. Allow top-1 to be within +/-1.
-    EXPECT_LE(std::abs(static_cast<int64_t>(linearResult[0].key()) -
+    EXPECT_LE(std::abs(static_cast<int64_t>(linear_result[0].key()) -
                        static_cast<int64_t>(i)),
               1);
 
-    ASSERT_NE(knnResult[0].vector(), nullptr);
+    ASSERT_NE(knn_result[0].vector(), nullptr);
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linear_result[0].vector(), new_meta, &denormalized_vec);
 
-    float expected_add_on = linearResult[0].key() * 10;
+    float expected_add_on = linear_result[0].key() * 10;
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
     EXPECT_NEAR(vector_value, fixed_value + expected_add_on, epsilon);
   }
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 }
 
 TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
@@ -3031,17 +3031,17 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
     EXPECT_NEAR(expected_vec_float, vector_value_float, epsilon);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
-  linearCtx->set_fetch_vector(true);
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
+  linear_ctx->set_fetch_vector(true);
+  knn_ctx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
   size_t topk = 30;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
 
   for (size_t i = 0; i < query_cnt; i++) {
     auto &vec = vecs[i];
@@ -3051,27 +3051,27 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
     ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &new_query, &new_meta));
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
-              streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
+              streamer->search_bf_impl(new_query.data(), new_meta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
-    ASSERT_NE(knnResult[0].vector(), nullptr);
+    ASSERT_NE(knn_result[0].vector(), nullptr);
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(uint16_t));
-    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linear_result[0].vector(), new_meta, &denormalized_vec);
 
     uint16_t expected_vec_value = vec[dim - 1];
     uint16_t vector_value =
@@ -3083,8 +3083,8 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
     EXPECT_NEAR(expected_vec_float, vector_value_float, epsilon);
   }
 
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 }
 
 TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
@@ -3170,17 +3170,17 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
     EXPECT_NEAR(expected_vec_value, vector_value, epsilon);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
-  linearCtx->set_fetch_vector(true);
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
+  linear_ctx->set_fetch_vector(true);
+  knn_ctx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
   size_t topk = 30;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
 
   for (size_t i = 0; i < query_cnt; i++) {
     auto &vec = vecs[i];
@@ -3190,27 +3190,27 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
     ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &new_query, &new_meta));
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
-              streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
+              streamer->search_bf_impl(new_query.data(), new_meta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
-    ASSERT_NE(knnResult[0].vector(), nullptr);
+    ASSERT_NE(knn_result[0].vector(), nullptr);
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linear_result[0].vector(), new_meta, &denormalized_vec);
 
     float expected_vec_value = vec[dim - 1];
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
@@ -3218,8 +3218,8 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
     EXPECT_NEAR(expected_vec_value, vector_value, epsilon);
   }
 
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 }
 
 TEST_F(HnswStreamerTest, TestFetchVectorCosineInt8Converter) {
@@ -3299,17 +3299,17 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt8Converter) {
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
   }
 
-  auto linearCtx = streamer->create_context();
-  linearCtx->set_fetch_vector(true);
-  auto knnCtx = streamer->create_context();
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = streamer->create_context();
+  linear_ctx->set_fetch_vector(true);
+  auto knn_ctx = streamer->create_context();
+  knn_ctx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
   for (size_t i = 0; i < query_cnt; i++) {
     float add_on = i * 10;
     for (size_t j = 0; j < dim; ++j) {
@@ -3324,35 +3324,35 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt8Converter) {
     ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &new_query, &new_meta));
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
-              streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
+              streamer->search_bf_impl(new_query.data(), new_meta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
-    ASSERT_NE(knnResult[0].vector(), nullptr);
-    ASSERT_NE(linearResult[0].vector(), nullptr);
+    ASSERT_NE(knn_result[0].vector(), nullptr);
+    ASSERT_NE(linear_result[0].vector(), nullptr);
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linear_result[0].vector(), new_meta, &denormalized_vec);
 
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
   }
 
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 }
 
 TEST_F(HnswStreamerTest, TestFetchVectorCosineInt4Converter) {
@@ -3432,17 +3432,17 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt4Converter) {
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
-  linearCtx->set_fetch_vector(true);
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
+  linear_ctx->set_fetch_vector(true);
+  knn_ctx->set_fetch_vector(true);
 
   size_t query_cnt = 100U;
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
   for (size_t i = 0; i < query_cnt; i++) {
     float add_on = i * 10;
     for (size_t j = 0; j < dim; ++j) {
@@ -3457,34 +3457,34 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt4Converter) {
     ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &new_query, &new_meta));
 
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(new_query.data(), new_meta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
     ASSERT_EQ(0,
-              streamer->search_bf_impl(new_query.data(), new_meta, linearCtx));
+              streamer->search_bf_impl(new_query.data(), new_meta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
-    ASSERT_NE(knnResult[0].vector(), nullptr);
+    ASSERT_NE(knn_result[0].vector(), nullptr);
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linear_result[0].vector(), new_meta, &denormalized_vec);
 
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
   }
 
-  std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
-  std::cout << "linearTotalTime: " << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime: " << knn_total_time << std::endl;
+  std::cout << "linearTotalTime: " << linear_total_time << std::endl;
 }
 
 TEST_F(HnswStreamerTest, TestRnnSearch) {
@@ -3740,7 +3740,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
   size_t group_topk = 20;
   uint64_t total_time = 0;
 
-  auto groupbyFunc = [](uint64_t key) {
+  auto groupby_func = [](uint64_t key) {
     uint32_t group_id = key / 10 % 10;
     // std::cout << "key: " << key << ", group id: " << group_id << std::endl;
     return std::string("g_") + std::to_string(group_id);
@@ -3749,7 +3749,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
   size_t group_num = 5;
 
   ctx->set_group_params(group_num, group_topk);
-  ctx->set_group_by(groupbyFunc);
+  ctx->set_group_by(groupby_func);
 
   size_t query_value = cnt / 2;
   for (size_t j = 0; j < dim; ++j) {
@@ -3782,7 +3782,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
   }
 
   // do linear search by p_keys test
-  auto groupbyFuncLinear = [](uint64_t key) {
+  auto groupby_func_linear = [](uint64_t key) {
     uint32_t group_id = key % 10;
 
     return std::string("g_") + std::to_string(group_id);
@@ -3791,7 +3791,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
   auto linear_pk_ctx = streamer->create_context();
 
   linear_pk_ctx->set_group_params(group_num, group_topk);
-  linear_pk_ctx->set_group_by(groupbyFuncLinear);
+  linear_pk_ctx->set_group_by(groupby_func_linear);
 
   std::vector<std::vector<uint64_t>> p_keys;
   p_keys.resize(1);
@@ -3855,7 +3855,7 @@ TEST_F(HnswStreamerTest, TestGroupNotEnoughNum) {
   size_t group_topk = 20;
   uint64_t total_time = 0;
 
-  auto groupbyFunc = [](uint64_t key) {
+  auto groupby_func = [](uint64_t key) {
     uint32_t group_id = key / 10 % 10;
     // std::cout << "key: " << key << ", group id: " << group_id << std::endl;
     return std::string("g_") + std::to_string(group_id);
@@ -3863,7 +3863,7 @@ TEST_F(HnswStreamerTest, TestGroupNotEnoughNum) {
 
   size_t group_num = 12;
   ctx->set_group_params(group_num, group_topk);
-  ctx->set_group_by(groupbyFunc);
+  ctx->set_group_by(groupby_func);
 
   size_t query_value = cnt / 2;
   for (size_t j = 0; j < dim; ++j) {
@@ -3932,7 +3932,7 @@ TEST_F(HnswStreamerTest, TestGroupInBruteforceSearch) {
   size_t group_topk = 20;
   uint64_t total_time = 0;
 
-  auto groupbyFunc = [](uint64_t key) {
+  auto groupby_func = [](uint64_t key) {
     uint32_t group_id = key / 10 % 10;
     // std::cout << "key: " << key << ", group id: " << group_id << std::endl;
     return std::string("g_") + std::to_string(group_id);
@@ -3940,7 +3940,7 @@ TEST_F(HnswStreamerTest, TestGroupInBruteforceSearch) {
 
   size_t group_num = 5;
   ctx->set_group_params(group_num, group_topk);
-  ctx->set_group_by(groupbyFunc);
+  ctx->set_group_by(groupby_func);
 
   size_t query_value = cnt / 2;
   for (size_t j = 0; j < dim; ++j) {
@@ -3994,8 +3994,8 @@ TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
   NumericalVector<float> vec(dim);
   size_t cnt = 20000U;
   auto ctx = streamer->create_context();
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   for (size_t i = 0; i < cnt; i += 4) {
@@ -4015,65 +4015,65 @@ TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
   // streamer->print_debug_info();
 
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   for (size_t i = 0; i < cnt / 10; i += 2) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
     auto t1 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
     auto t2 = ailego::Realtime::MicroSeconds();
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
     auto t3 = ailego::Realtime::MicroSeconds();
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
 
     for (size_t j = 0; j < topk; ++j) {
-      ASSERT_NE(linearResult[j].key(), kInvalidKey);
-      ASSERT_NE(linearResult[j].index(), kInvalidKey);
-      auto linearVec = static_cast<const float *>(
-          streamer->get_vector_by_id(linearResult[j].index()));
+      ASSERT_NE(linear_result[j].key(), kInvalidKey);
+      ASSERT_NE(linear_result[j].index(), kInvalidKey);
+      auto linear_vec = static_cast<const float *>(
+          streamer->get_vector_by_id(linear_result[j].index()));
 
       for (size_t z = 0; z < dim; ++z) {
-        ASSERT_FLOAT_EQ(linearVec[z], linearResult[j].index());
+        ASSERT_FLOAT_EQ(linear_vec[z], linear_result[j].index());
       }
     }
     for (size_t j = 0; j < topk; ++j) {
-      ASSERT_NE(knnResult[j].key(), kInvalidKey);
-      ASSERT_NE(knnResult[j].index(), kInvalidKey);
-      auto knnVec = static_cast<const float *>(
-          streamer->get_vector_by_id(knnResult[j].index()));
+      ASSERT_NE(knn_result[j].key(), kInvalidKey);
+      ASSERT_NE(knn_result[j].index(), kInvalidKey);
+      auto knn_vec = static_cast<const float *>(
+          streamer->get_vector_by_id(knn_result[j].index()));
       for (size_t z = 0; z < dim; ++z) {
-        ASSERT_FLOAT_EQ(knnVec[z], knnResult[j].index());
+        ASSERT_FLOAT_EQ(knn_vec[z], knn_result[j].index());
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -4082,7 +4082,7 @@ TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -4138,34 +4138,34 @@ TEST_F(HnswStreamerTest, TestContiguousMemorySearch) {
   size_t topk = 50;
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-  auto linearCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
+  auto linear_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
   for (size_t i = 0; i < cnt; i++) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = static_cast<float>(i) + 0.1f;
     }
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
+  float recall = total_hits * 1.0f / total_cnts;
   EXPECT_GT(recall, 0.90f);
 }
 
@@ -4199,23 +4199,23 @@ TEST_F(HnswStreamerTest, TestContiguousMultiThreadSearch) {
     ASSERT_EQ(0, builder->init(meta, build_params));
     ASSERT_EQ(0, builder->open(storage));
 
-    auto addVector = [&builder](int baseKey, size_t addCnt) {
+    auto add_vector = [&builder](int base_key, size_t add_cnt) {
       NumericalVector<float> vec(dim_mt);
       IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim_mt);
-      size_t succAdd = 0;
+      size_t succ_add = 0;
       auto ctx = builder->create_context();
-      for (size_t i = 0; i < addCnt; i++) {
+      for (size_t i = 0; i < add_cnt; i++) {
         for (size_t j = 0; j < dim_mt; ++j) {
-          vec[j] = static_cast<float>(i + baseKey);
+          vec[j] = static_cast<float>(i + base_key);
         }
-        succAdd += !builder->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+        succ_add += !builder->add_impl(base_key + i, vec.data(), qmeta, ctx);
       }
       builder->flush(0UL);
-      return succAdd;
+      return succ_add;
     };
-    auto t1 = std::async(std::launch::async, addVector, 0, 1000);
-    auto t2 = std::async(std::launch::async, addVector, 1000, 1000);
-    auto t3 = std::async(std::launch::async, addVector, 2000, 1000);
+    auto t1 = std::async(std::launch::async, add_vector, 0, 1000);
+    auto t2 = std::async(std::launch::async, add_vector, 1000, 1000);
+    auto t3 = std::async(std::launch::async, add_vector, 2000, 1000);
     ASSERT_EQ(1000U, t1.get());
     ASSERT_EQ(1000U, t2.get());
     ASSERT_EQ(1000U, t3.get());
@@ -4256,41 +4256,41 @@ TEST_F(HnswStreamerTest, TestContiguousMultiThreadSearch) {
   // Multi-thread search on contiguous memory
   size_t topk = 100;
   size_t cnt = 3000;
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     NumericalVector<float> vec(dim_mt);
-    auto linearCtx = searcher->create_context();
-    auto knnCtx = searcher->create_context();
+    auto linear_ctx = searcher->create_context();
+    auto knn_ctx = searcher->create_context();
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim_mt);
-    linearCtx->set_topk(topk);
-    knnCtx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    linear_ctx->set_topk(topk);
+    knn_ctx->set_topk(topk);
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i += 1) {
       for (size_t j = 0; j < dim_mt; ++j) {
         vec[j] = static_cast<float>(i) + 0.1f;
       }
-      ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-      ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
-      auto &knnResult = knnCtx->result();
-      ASSERT_EQ(topk, knnResult.size());
-      auto &linearResult = linearCtx->result();
-      ASSERT_EQ(topk, linearResult.size());
-      ASSERT_EQ(i, linearResult[0].key());
+      ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+      ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
+      auto &knn_result = knn_ctx->result();
+      ASSERT_EQ(topk, knn_result.size());
+      auto &linear_result = linear_ctx->result();
+      ASSERT_EQ(topk, linear_result.size());
+      ASSERT_EQ(i, linear_result[0].key());
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
-          if (linearResult[j].key() == knnResult[k].key()) {
-            totalHits++;
+          if (linear_result[j].key() == knn_result[k].key()) {
+            total_hits++;
             break;
           }
         }
       }
     }
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
-  auto s3 = std::async(std::launch::async, knnSearch);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
+  auto s3 = std::async(std::launch::async, knn_search);
   s1.wait();
   s2.wait();
   s3.wait();
@@ -4375,10 +4375,10 @@ TEST_F(HnswStreamerTest, TestInt8WithRotate) {
   ASSERT_EQ(0, reformer2->load(storage2));
 
   // Search: verify knn results are non-empty
-  auto knnCtx = streamer2->create_context();
-  knnCtx->set_topk(kTopk);
-  auto linearCtx = streamer2->create_context();
-  linearCtx->set_topk(kTopk);
+  auto knn_ctx = streamer2->create_context();
+  knn_ctx->set_topk(kTopk);
+  auto linear_ctx = streamer2->create_context();
+  linear_ctx->set_topk(kTopk);
 
   NumericalVector<float> query(kTestDim);
   for (size_t j = 0; j < kTestDim; ++j) query[j] = dist(gen);
@@ -4387,12 +4387,12 @@ TEST_F(HnswStreamerTest, TestInt8WithRotate) {
   IndexQueryMeta new_qmeta;
   ASSERT_EQ(0,
             reformer2->transform(query.data(), qmeta, &new_query, &new_qmeta));
-  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knnCtx));
+  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knn_ctx));
   ASSERT_EQ(0,
-            streamer2->search_bf_impl(new_query.data(), new_qmeta, linearCtx));
+            streamer2->search_bf_impl(new_query.data(), new_qmeta, linear_ctx));
 
-  EXPECT_EQ(kTopk, knnCtx->result().size());
-  EXPECT_EQ(kTopk, linearCtx->result().size());
+  EXPECT_EQ(kTopk, knn_ctx->result().size());
+  EXPECT_EQ(kTopk, linear_ctx->result().size());
 }
 
 TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
@@ -4450,51 +4450,51 @@ TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
   ailego::Params stg_params;
 
   // === Build index A: from original (with provider) ===
-  IndexStreamer::Pointer streamerA =
+  IndexStreamer::Pointer streamer_a =
       IndexFactory::CreateStreamer("HnswStreamer");
-  ASSERT_TRUE(streamerA != nullptr);
-  ASSERT_EQ(0, streamerA->set_provider(provider, fp32_meta));
+  ASSERT_TRUE(streamer_a != nullptr);
+  ASSERT_EQ(0, streamer_a->set_provider(provider, fp32_meta));
 
-  auto storageA = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_EQ(0, storageA->init(stg_params));
-  ASSERT_EQ(0, storageA->open(dir_ + "compare_from_original.index", true));
-  ASSERT_EQ(0, streamerA->init(fp16_meta, params));
-  ASSERT_EQ(0, streamerA->open(storageA));
+  auto storage_a = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage_a->init(stg_params));
+  ASSERT_EQ(0, storage_a->open(dir_ + "compare_from_original.index", true));
+  ASSERT_EQ(0, streamer_a->init(fp16_meta, params));
+  ASSERT_EQ(0, streamer_a->open(storage_a));
 
-  auto ctxA = streamerA->create_context();
+  auto ctx_a = streamer_a->create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dim);
   for (size_t i = 0; i < cnt; i++) {
-    ASSERT_EQ(0, streamerA->add_impl(i, stored[i].data(), qmeta, ctxA));
+    ASSERT_EQ(0, streamer_a->add_impl(i, stored[i].data(), qmeta, ctx_a));
   }
-  streamerA->flush(0UL);
+  streamer_a->flush(0UL);
 
   // === Build index B: baseline (no provider) ===
-  IndexStreamer::Pointer streamerB =
+  IndexStreamer::Pointer streamer_b =
       IndexFactory::CreateStreamer("HnswStreamer");
-  ASSERT_TRUE(streamerB != nullptr);
+  ASSERT_TRUE(streamer_b != nullptr);
 
-  auto storageB = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_EQ(0, storageB->init(stg_params));
-  ASSERT_EQ(0, storageB->open(dir_ + "compare_baseline.index", true));
-  ASSERT_EQ(0, streamerB->init(fp16_meta, params));
-  ASSERT_EQ(0, streamerB->open(storageB));
+  auto storage_b = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage_b->init(stg_params));
+  ASSERT_EQ(0, storage_b->open(dir_ + "compare_baseline.index", true));
+  ASSERT_EQ(0, streamer_b->init(fp16_meta, params));
+  ASSERT_EQ(0, streamer_b->open(storage_b));
 
-  auto ctxB = streamerB->create_context();
+  auto ctx_b = streamer_b->create_context();
   for (size_t i = 0; i < cnt; i++) {
-    ASSERT_EQ(0, streamerB->add_impl(i, stored[i].data(), qmeta, ctxB));
+    ASSERT_EQ(0, streamer_b->add_impl(i, stored[i].data(), qmeta, ctx_b));
   }
-  streamerB->flush(0UL);
+  streamer_b->flush(0UL);
 
   // === Search and compare ===
-  size_t queryCnt = 0;
-  int totalHitsA = 0, totalHitsB = 0;
-  int totalCnts = 0;
-  int topk1HitsA = 0, topk1HitsB = 0;
+  size_t query_cnt = 0;
+  int total_hits_a = 0, total_hits_b = 0;
+  int total_cnts = 0;
+  int topk1_hits_a = 0, topk1_hits_b = 0;
 
-  auto knnCtxA = streamerA->create_context();
-  auto knnCtxB = streamerB->create_context();
-  knnCtxA->set_topk(topk);
-  knnCtxB->set_topk(topk);
+  auto knn_ctx_a = streamer_a->create_context();
+  auto knn_ctx_b = streamer_b->create_context();
+  knn_ctx_a->set_topk(topk);
+  knn_ctx_b->set_topk(topk);
 
   //! queries are the original vectors perturbed a little, so the answer is
   //! not simply the query itself
@@ -4507,29 +4507,29 @@ TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
     queries.push_back(std::move(q));
   }
 
-  std::vector<std::vector<uint64_t>> resultsA;
-  std::vector<std::vector<uint64_t>> resultsB;
+  std::vector<std::vector<uint64_t>> results_a;
+  std::vector<std::vector<uint64_t>> results_b;
   NumericalVector<uint16_t> fp16_query(dim);
   for (auto &q : queries) {
     for (size_t j = 0; j < dim; ++j) {
       fp16_query[j] = ailego::FloatHelper::ToFP16(q[j]);
     }
 
-    ASSERT_EQ(0, streamerA->search_impl(fp16_query.data(), qmeta, knnCtxA));
-    auto &resA = knnCtxA->result();
-    ASSERT_EQ(topk, resA.size());
-    std::vector<uint64_t> keysA(topk);
-    for (size_t k = 0; k < topk; ++k) keysA[k] = resA[k].key();
-    resultsA.push_back(std::move(keysA));
+    ASSERT_EQ(0, streamer_a->search_impl(fp16_query.data(), qmeta, knn_ctx_a));
+    auto &res_a = knn_ctx_a->result();
+    ASSERT_EQ(topk, res_a.size());
+    std::vector<uint64_t> keys_a(topk);
+    for (size_t k = 0; k < topk; ++k) keys_a[k] = res_a[k].key();
+    results_a.push_back(std::move(keys_a));
 
-    ASSERT_EQ(0, streamerB->search_impl(fp16_query.data(), qmeta, knnCtxB));
-    auto &resB = knnCtxB->result();
-    ASSERT_EQ(topk, resB.size());
-    std::vector<uint64_t> keysB(topk);
-    for (size_t k = 0; k < topk; ++k) keysB[k] = resB[k].key();
-    resultsB.push_back(std::move(keysB));
+    ASSERT_EQ(0, streamer_b->search_impl(fp16_query.data(), qmeta, knn_ctx_b));
+    auto &res_b = knn_ctx_b->result();
+    ASSERT_EQ(topk, res_b.size());
+    std::vector<uint64_t> keys_b(topk);
+    for (size_t k = 0; k < topk; ++k) keys_b[k] = res_b[k].key();
+    results_b.push_back(std::move(keys_b));
 
-    queryCnt++;
+    query_cnt++;
   }
 
   //! exhaustive ground truth in the original FP32 space
@@ -4550,27 +4550,27 @@ TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
     for (size_t k = 0; k < topk; ++k) {
       gt.insert(dists[k].second);
     }
-    topk1HitsA += (resultsA[qi][0] == dists[0].second);
-    topk1HitsB += (resultsB[qi][0] == dists[0].second);
+    topk1_hits_a += (results_a[qi][0] == dists[0].second);
+    topk1_hits_b += (results_b[qi][0] == dists[0].second);
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
-      totalHitsA += gt.count(resultsA[qi][k]) > 0;
-      totalHitsB += gt.count(resultsB[qi][k]) > 0;
+      total_cnts++;
+      total_hits_a += gt.count(results_a[qi][k]) > 0;
+      total_hits_b += gt.count(results_b[qi][k]) > 0;
     }
   }
 
-  float recallA = totalHitsA * 1.0f / totalCnts;
-  float recallB = totalHitsB * 1.0f / totalCnts;
-  float topk1RecallA = topk1HitsA * 1.0f / queryCnt;
-  float topk1RecallB = topk1HitsB * 1.0f / queryCnt;
+  float recall_a = total_hits_a * 1.0f / total_cnts;
+  float recall_b = total_hits_b * 1.0f / total_cnts;
+  float topk1_recall_a = topk1_hits_a * 1.0f / query_cnt;
+  float topk1_recall_b = topk1_hits_b * 1.0f / query_cnt;
 
   printf("\n=== From-Original vs Baseline Comparison ===\n");
-  printf("From-Original: Recall@%zu=%.4f, Recall@1=%.4f\n", topk, recallA,
-         topk1RecallA);
-  printf("Baseline:      Recall@%zu=%.4f, Recall@1=%.4f\n", topk, recallB,
-         topk1RecallB);
+  printf("From-Original: Recall@%zu=%.4f, Recall@1=%.4f\n", topk, recall_a,
+         topk1_recall_a);
+  printf("Baseline:      Recall@%zu=%.4f, Recall@1=%.4f\n", topk, recall_b,
+         topk1_recall_b);
   printf("Delta (From-Original - Baseline): Recall@%zu=%+.4f, Recall@1=%+.4f\n",
-         topk, recallA - recallB, topk1RecallA - topk1RecallB);
+         topk, recall_a - recall_b, topk1_recall_a - topk1_recall_b);
   printf("============================================\n");
 
   //! Both graphs must be functional. Note that building from the original
@@ -4578,10 +4578,10 @@ TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
   //! on the stored FP16 vectors, so a graph optimized for FP32 distances
   //! can even be slightly off. See bench/REPORT.md for measurements on a
   //! real dataset
-  EXPECT_GT(recallA, 0.90f);
-  EXPECT_GT(recallB, 0.90f);
-  EXPECT_GT(topk1RecallA, 0.90f);
-  EXPECT_GT(topk1RecallB, 0.90f);
+  EXPECT_GT(recall_a, 0.90f);
+  EXPECT_GT(recall_b, 0.90f);
+  EXPECT_GT(topk1_recall_a, 0.90f);
+  EXPECT_GT(topk1_recall_b, 0.90f);
 }
 
 }  // namespace core

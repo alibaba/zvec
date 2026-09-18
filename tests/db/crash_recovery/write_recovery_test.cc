@@ -14,8 +14,12 @@
 
 
 #include <csignal>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <thread>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
@@ -37,10 +41,10 @@ typedef HANDLE pid_t;
 namespace zvec {
 
 
-static std::string data_generator_bin_;
-const std::string collection_name_{"write_recovery_test"};
-const std::string dir_path_{"write_recovery_test_db"};
-const zvec::CollectionOptions options_{false, true, 256 * 1024};
+static std::string data_generator_bin;
+const std::string collection_name{"write_recovery_test"};
+const std::string dir_path{"write_recovery_test_db"};
+const zvec::CollectionOptions options{false, true, 256 * 1024};
 
 
 static std::string LocateDataGenerator() {
@@ -60,7 +64,7 @@ void ExecuteProcess(const std::string &start, const std::string &end,
 
 #ifdef _WIN32
   // 1. Build the command line string with quotes to handle paths with spaces
-  std::string cmd_str = data_generator_bin_ + " --path " + dir_path_ +
+  std::string cmd_str = data_generator_bin + " --path " + dir_path +
                         " --start " + start + " --end " + end + " --op " + op +
                         " --version " + version;
 
@@ -103,9 +107,9 @@ void ExecuteProcess(const std::string &start, const std::string &end,
 
   if (pid == 0) {  // Child process
     // Use a vector to manage arguments cleanly
-    std::vector<const char *> args = {data_generator_bin_.c_str(),
+    std::vector<const char *> args = {data_generator_bin.c_str(),
                                       "--path",
-                                      dir_path_.c_str(),
+                                      dir_path.c_str(),
                                       "--start",
                                       start.c_str(),
                                       "--end",
@@ -152,7 +156,7 @@ class CrashRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
     zvec::test_util::RemoveTestPath("./write_recovery_test_db");
-    ASSERT_NO_THROW(data_generator_bin_ = LocateDataGenerator());
+    ASSERT_NO_THROW(data_generator_bin = LocateDataGenerator());
   }
 
   void TearDown() override {
@@ -161,17 +165,75 @@ class CrashRecoveryTest : public ::testing::Test {
 };
 
 
+TEST_F(CrashRecoveryTest, Utf8AndLongIdsRecoverFromUnflushedWal) {
+  const std::vector<std::string> ids{u8"订单:😀",
+                                     std::string(1021, 'x') + u8"中", " doc ",
+                                     u8"café", u8"cafe\u0301"};
+  // Re-exec the child before starting collection threads. Exit without stack
+  // unwinding so Collection destruction cannot flush the writing segment.
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  ASSERT_EXIT(
+      {
+        CollectionSchema schema(u8"恢复 集合");
+        if (!schema
+                 .add_field(std::make_shared<FieldSchema>(
+                     "value", DataType::INT32, false))
+                 .ok()) {
+          std::_Exit(1);
+        }
+        auto created =
+            Collection::CreateAndOpen(dir_path, schema, CollectionOptions{});
+        if (!created.has_value()) std::_Exit(2);
+        auto collection = std::move(created).value();
+        std::vector<Doc> docs;
+        for (size_t i = 0; i < ids.size(); ++i) {
+          Doc doc;
+          doc.set_pk(ids[i]);
+          doc.set<int32_t>("value", static_cast<int32_t>(i));
+          docs.push_back(std::move(doc));
+        }
+        auto inserted = collection->insert(docs);
+        if (!inserted.has_value()) std::_Exit(3);
+        for (const auto &status : inserted.value()) {
+          if (!status.ok()) std::_Exit(4);
+        }
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  auto opened = Collection::Open(dir_path, CollectionOptions{});
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  auto collection = std::move(opened).value();
+  EXPECT_EQ(collection->schema().value().name(), u8"恢复 集合");
+  auto fetched = collection->fetch(ids);
+  ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
+  ASSERT_EQ(fetched.value().size(), ids.size());
+  for (size_t i = 0; i < ids.size(); ++i) {
+    const auto found = fetched.value().find(ids[i]);
+    ASSERT_NE(found, fetched.value().end());
+    ASSERT_NE(found->second, nullptr);
+    EXPECT_EQ(found->second->pk_ref(), ids[i]);
+    EXPECT_EQ(found->second->get<int32_t>("value"), static_cast<int32_t>(i));
+  }
+  auto status = collection->flush();
+  ASSERT_TRUE(status.ok()) << status.message();
+  collection.reset();
+  auto reopened = Collection::Open(dir_path, CollectionOptions{});
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  EXPECT_EQ(reopened.value()->stats().value().doc_count, ids.size());
+}
+
 TEST_F(CrashRecoveryTest, BasicInsertAndReopen) {
   {
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
   }
 
   RunGenerator("0", "5000", "insert", "0");
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value());
   auto collection = result.value();
   ASSERT_EQ(collection->stats().value().doc_count, 5000)
@@ -181,8 +243,8 @@ TEST_F(CrashRecoveryTest, BasicInsertAndReopen) {
 
 TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
   {
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
@@ -190,7 +252,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
 
   RunGeneratorAndCrash("0", "10000", "insert", "0", 5);
 
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
@@ -220,8 +282,8 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
 
 TEST_F(CrashRecoveryTest, OptimizeAfterCrashRecoveryPersistsReplayedData) {
   {
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
   }
 
@@ -229,7 +291,7 @@ TEST_F(CrashRecoveryTest, OptimizeAfterCrashRecoveryPersistsReplayedData) {
 
   uint64_t recovered_doc_count = 0;
   {
-    auto result = Collection::Open(dir_path_, options_);
+    auto result = Collection::Open(dir_path, options);
     ASSERT_TRUE(result.has_value())
         << "Failed to reopen collection after crash recovery";
     auto collection = result.value();
@@ -243,7 +305,7 @@ TEST_F(CrashRecoveryTest, OptimizeAfterCrashRecoveryPersistsReplayedData) {
     ASSERT_EQ(collection->stats().value().doc_count, recovered_doc_count);
   }
 
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value())
       << "Failed to reopen collection after optimizing recovered data";
   ASSERT_EQ(result.value()->stats().value().doc_count, recovered_doc_count)
@@ -253,8 +315,8 @@ TEST_F(CrashRecoveryTest, OptimizeAfterCrashRecoveryPersistsReplayedData) {
 
 TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
   {
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
@@ -262,7 +324,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
 
   RunGenerator("0", "5000", "insert", "0");
   {
-    auto result = Collection::Open(dir_path_, options_);
+    auto result = Collection::Open(dir_path, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     ASSERT_EQ(collection->stats().value().doc_count, 5000)
@@ -271,7 +333,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
 
   RunGeneratorAndCrash("4500", "20000", "upsert", "1", 5);
 
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
@@ -306,8 +368,8 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
 
 TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
   {
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
@@ -315,7 +377,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
 
   RunGenerator("0", "18000", "upsert", "0");
   {
-    auto result = Collection::Open(dir_path_, options_);
+    auto result = Collection::Open(dir_path, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     ASSERT_EQ(collection->stats().value().doc_count, 18000)
@@ -324,7 +386,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
 
   RunGeneratorAndCrash("3000", "15000", "update", "3", 4);
 
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
@@ -394,8 +456,8 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
 
 TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
   {
-    auto schema = CreateTestSchema(collection_name_);
-    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    auto schema = CreateTestSchema(collection_name);
+    auto result = Collection::CreateAndOpen(dir_path, *schema, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
@@ -403,7 +465,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
 
   RunGenerator("0", "18000", "insert", "0");
   {
-    auto result = Collection::Open(dir_path_, options_);
+    auto result = Collection::Open(dir_path, options);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     ASSERT_EQ(collection->stats().value().doc_count, 18000)
@@ -412,7 +474,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
 
   RunGeneratorAndCrash("3000", "15000", "delete", "0", 4);
 
-  auto result = Collection::Open(dir_path_, options_);
+  auto result = Collection::Open(dir_path, options);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();

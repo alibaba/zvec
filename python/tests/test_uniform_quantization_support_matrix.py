@@ -49,7 +49,7 @@ def test_uniform_rejects_unsupported_field_types(
             )
         ],
     )
-    with pytest.raises(ValueError, match="schema validate failed:.*quantiz"):
+    with pytest.raises(ValueError, match="Invalid schema:.*quantiz"):
         collection = zvec.create_and_open(str(tmp_path / "collection"), schema=schema)
         collection.close()
 

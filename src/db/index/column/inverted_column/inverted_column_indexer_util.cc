@@ -21,7 +21,7 @@ namespace zvec {
 
 
 InvertedColumnIndexer::~InvertedColumnIndexer() {
-  LOG_INFO("Closed %s", ID().c_str());
+  LOG_INFO("Closed %s", id().c_str());
 }
 
 
@@ -41,14 +41,14 @@ Status InvertedColumnIndexer::open() {
 
   cf_terms_ = ctx_.get_cf(cf_name_terms());
   if (!cf_terms_) {
-    LOG_ERROR("Failed to get cf_terms for %s", ID().c_str());
+    LOG_ERROR("Failed to get cf_terms for %s", id().c_str());
     return Status::InternalError();
   }
 
   if (field_.is_array_type()) {
     cf_array_len_ = ctx_.get_cf(cf_name_array_len());
     if (!cf_array_len_) {
-      LOG_ERROR("Failed to get cf_array_len for %s", ID().c_str());
+      LOG_ERROR("Failed to get cf_array_len for %s", id().c_str());
       return Status::InternalError();
     }
   }
@@ -56,23 +56,23 @@ Status InvertedColumnIndexer::open() {
   if (enable_range_optimization_) {
     cf_ranges_ = ctx_.get_cf(cf_name_ranges());
     if (!cf_ranges_) {
-      LOG_ERROR("Failed to get cf_ranges for %s", ID().c_str());
+      LOG_ERROR("Failed to get cf_ranges for %s", id().c_str());
       return Status::InternalError();
     }
     cf_cdf_ = ctx_.get_cf(cf_name_cdf());
     if (!cf_cdf_) {
-      LOG_ERROR("Failed to get cf_cdf for %s", ID().c_str());
+      LOG_ERROR("Failed to get cf_cdf for %s", id().c_str());
       return Status::InternalError();
     }
     s = ctx_.db_->Get(ctx_.read_opts_, cf_cdf_, field_.name(), &value);
     if (s.ok()) {
       doc_range_stat_ = SegmentDocRangeStat::Create(value);
       if (!doc_range_stat_) {
-        LOG_ERROR("Failed to create doc range stats from %s", ID().c_str());
+        LOG_ERROR("Failed to create doc range stats from %s", id().c_str());
         return Status::InternalError();
       }
     } else if (s.code() != rocksdb::Status::kNotFound) {
-      LOG_ERROR("Failed to retrieve cdf from %s", ID().c_str());
+      LOG_ERROR("Failed to retrieve cdf from %s", id().c_str());
       return Status::InternalError();
     }
   }
@@ -80,7 +80,7 @@ Status InvertedColumnIndexer::open() {
   if (enable_extended_wildcard_) {
     cf_reversed_terms_ = ctx_.get_cf(cf_name_reversed_terms());
     if (!cf_reversed_terms_) {
-      LOG_ERROR("Failed to get cf_reversed_terms for %s", ID().c_str());
+      LOG_ERROR("Failed to get cf_reversed_terms for %s", id().c_str());
       return Status::InternalError();
     }
   }
@@ -92,11 +92,11 @@ Status InvertedColumnIndexer::open() {
       max_id_ = std::stoul(value);
     } catch (const std::exception &e) {
       LOG_ERROR("Failed to parse max id from %s for %s, exception[%s]",
-                value.c_str(), ID().c_str(), e.what());
+                value.c_str(), id().c_str(), e.what());
       return Status::InternalError();
     }
   } else if (s.code() != rocksdb::Status::kNotFound) {
-    LOG_ERROR("Failed to retrieve max id from %s", ID().c_str());
+    LOG_ERROR("Failed to retrieve max id from %s", id().c_str());
     return Status::InternalError();
   }
 
@@ -104,11 +104,11 @@ Status InvertedColumnIndexer::open() {
   s = ctx_.db_->Get(ctx_.read_opts_, key_null(), &value);
   if (s.ok()) {
     if (auto status = null_bitmap_.deserialize(value); !status.ok()) {
-      LOG_ERROR("Failed to deserialize null bitmap from %s", ID().c_str());
+      LOG_ERROR("Failed to deserialize null bitmap from %s", id().c_str());
       return status;
     }
   } else if (s.code() != rocksdb::Status::kNotFound) {
-    LOG_ERROR("Failed to retrieve null bitmap from %s", ID().c_str());
+    LOG_ERROR("Failed to retrieve null bitmap from %s", id().c_str());
     return Status::InternalError();
   }
 
@@ -120,11 +120,11 @@ Status InvertedColumnIndexer::open() {
   } else if (s.code() == rocksdb::Status::kNotFound) {
     sealed_ = false;
   } else {
-    LOG_ERROR("Failed to retrieve indexer state from %s", ID().c_str());
+    LOG_ERROR("Failed to retrieve indexer state from %s", id().c_str());
     return Status::InternalError();
   }
 
-  LOG_INFO("Opened %s", ID().c_str());
+  LOG_INFO("Opened %s", id().c_str());
   return Status::OK();
 }
 
@@ -148,9 +148,9 @@ Status InvertedColumnIndexer::drop_storage() {
   rocksdb::Status rs;
   AILEGO_DEFER([&]() {
     if (s.ok()) {
-      LOG_INFO("Dropped storage of %s", ID().c_str());
+      LOG_INFO("Dropped storage of %s", id().c_str());
     } else {
-      LOG_ERROR("Failed to drop storage of %s", ID().c_str());
+      LOG_ERROR("Failed to drop storage of %s", id().c_str());
     }
   });
 
@@ -168,7 +168,7 @@ Status InvertedColumnIndexer::drop_storage() {
     }
     rs = ctx_.db_->Delete(ctx_.write_opts_, cf_cdf_, field_.name());
     if (!rs.ok()) {
-      LOG_ERROR("Failed to delete cdf of %s", ID().c_str());
+      LOG_ERROR("Failed to delete cdf of %s", id().c_str());
       s = Status::InternalError();
       return s;
     }
@@ -181,21 +181,21 @@ Status InvertedColumnIndexer::drop_storage() {
 
   rs = ctx_.db_->Delete(ctx_.write_opts_, key_max_id());
   if (!rs.ok()) {
-    LOG_ERROR("Failed to delete max_id of %s", ID().c_str());
+    LOG_ERROR("Failed to delete max_id of %s", id().c_str());
     s = Status::InternalError();
     return s;
   }
 
   rs = ctx_.db_->Delete(ctx_.write_opts_, key_null());
   if (!rs.ok()) {
-    LOG_ERROR("Failed to delete null bitmap of %s", ID().c_str());
+    LOG_ERROR("Failed to delete null bitmap of %s", id().c_str());
     s = Status::InternalError();
     return s;
   }
 
   rs = ctx_.db_->Delete(ctx_.write_opts_, key_sealed());
   if (!rs.ok()) {
-    LOG_ERROR("Failed to delete indexer state of %s", ID().c_str());
+    LOG_ERROR("Failed to delete indexer state of %s", id().c_str());
     s = Status::InternalError();
     return s;
   }

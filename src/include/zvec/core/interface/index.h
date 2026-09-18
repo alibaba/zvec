@@ -217,17 +217,17 @@ class ZVEC_CORE_API Index {
  protected:
   friend class IndexFactory;
   Index() = default;
-  int Init(const BaseIndexParam &param);
+  int init(const BaseIndexParam &param);
 
 
  protected:
-  int ParseMetricName(const BaseIndexParam &param);
-  int CreateAndInitMetric(const BaseIndexParam &param);
-  virtual int CreateAndInitConverterReformer(const QuantizerParam &param,
-                                             const BaseIndexParam &index_param);
-  int InitConverterReformer(const std::string &converter_name,
-                            const ailego::Params &converter_params = {});
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) = 0;
+  int parse_metric_name(const BaseIndexParam &param);
+  int create_and_init_metric(const BaseIndexParam &param);
+  virtual int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param);
+  int init_converter_reformer(const std::string &converter_name,
+                              const ailego::Params &converter_params = {});
+  virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
 
  protected:
   bool init_context();
@@ -276,9 +276,9 @@ class ZVEC_CORE_API FlatIndex : public Index {
            StorageOptions storage_options) override;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
-  int CreateAndInitConverterReformer(
+  int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
 
   int _prepare_for_search(const VectorData &query,
@@ -287,18 +287,18 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
  private:
   //! Initialize the selected quantizer and synchronize encoding metadata.
-  int CreateAndInitTurboQuantizer(const std::string &name,
-                                  const ailego::Params &params);
+  int create_and_init_turbo_quantizer(const std::string &name,
+                                      const ailego::Params &params);
 
   //! Rebuild the legacy converter/reformer/metric/streamer pipeline,
   //! dropping the turbo quantizer.
-  int FallbackToLegacyPipeline();
+  int fallback_to_legacy_pipeline();
 
   //! Create the legacy converter/reformer for combinations the turbo
   //! quantizers cannot express (including the flat storage_data_type
   //! converters).
-  int CreateAndInitLegacyConverterReformer(const QuantizerParam &param,
-                                           const BaseIndexParam &index_param);
+  int create_and_init_legacy_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param);
 
   FlatIndexParam param_{};
 };
@@ -308,9 +308,9 @@ class ZVEC_CORE_API IVFIndex : public Index {
   IVFIndex() = default;
 
  protected:
-  int CreateAndInitConverterReformer(
+  int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _dense_search(const VectorData &query,
                     const BaseIndexQueryParam::Pointer &search_param,
@@ -332,18 +332,18 @@ class ZVEC_CORE_API IVFIndex : public Index {
                    VectorDataBuffer *vector_data_buffer) override;
   int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
-  int GenerateHolder();
+  int generate_holder();
 
  private:
-  int LoadStreamer();
-  int RestoreLegacyPipeline();
+  int load_streamer();
+  int restore_legacy_pipeline();
 
   std::shared_ptr<zvec::turbo::Quantizer> ivf_quantizer_{};
 
   enum class BuildStage { kCollecting, kTrained, kBuilt, kDumped };
 
-  int ResetBuilder();
-  int DumpAndOpen();
+  int reset_builder();
+  int dump_and_open();
 
   BuildStage build_stage_{BuildStage::kCollecting};
   IVFIndexParam param_{};
@@ -373,7 +373,7 @@ class ZVEC_CORE_API HNSWIndex : public Index {
                          SearchResult *result) override;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -394,7 +394,7 @@ class ZVEC_CORE_API VamanaIndex : public Index {
             const MergeOptions &options = {}) override;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -411,7 +411,7 @@ class ZVEC_CORE_API HNSWRabitqIndex : public Index {
   HNSWRabitqIndex() = default;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -428,7 +428,7 @@ class ZVEC_CORE_API IVFRabitqIndex : public Index {
   IVFRabitqIndex() = default;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -442,7 +442,7 @@ class ZVEC_CORE_API IVFRabitqIndex : public Index {
                    VectorDataBuffer *vector_data_buffer) override;
   int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
-  int GenerateHolder();
+  int generate_holder();
 
  private:
   IVFRabitqIndexParam param_{};
@@ -457,7 +457,7 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
   DiskAnnIndex() = default;
 
  protected:
-  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -474,7 +474,7 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
                    VectorDataBuffer *vector_data_buffer) override;
   int merge(const std::vector<Index::Pointer> &indexes,
             const IndexFilter &filter, const MergeOptions &options) override;
-  int GenerateHolder();
+  int generate_holder();
 
  private:
   DiskAnnIndexParam param_{};

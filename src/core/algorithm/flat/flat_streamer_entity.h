@@ -313,7 +313,7 @@ class FlatStreamerEntity {
   }
 
   //! Rejust the segment size as to aligned by page size
-  void AdjustSegmentSize(StreamerLinearMeta *mt) {
+  void adjust_segment_size(StreamerLinearMeta *mt) {
     if (mt->segment_size < mt->header.block_size) {
       mt->segment_size = mt->header.block_size;
     }

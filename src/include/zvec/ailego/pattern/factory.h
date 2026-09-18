@@ -108,7 +108,7 @@ class Factory {
 
  protected:
   //! Constructor
-  Factory() : map_() {}
+  Factory() = default;
 
   //! Retrieve the singleton factory.
   //!

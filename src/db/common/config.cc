@@ -31,10 +31,10 @@ static void ExitLogHandler() {
 }
 
 GlobalConfig::ConfigData::ConfigData()
-    : memory_limit_bytes(CgroupUtil::getMemoryLimit() *
+    : memory_limit_bytes(CgroupUtil::get_memory_limit() *
                          DEFAULT_MEMORY_LIMIT_RATIO),
       log_config(std::make_shared<ConsoleLogConfig>()),
-      query_thread_count(CgroupUtil::getCpuLimit()),
+      query_thread_count(CgroupUtil::get_cpu_limit()),
       query_thread_binding(false),
       invert_to_forward_scan_ratio(0.9),
       brute_force_by_keys_ratio(0.1),
@@ -49,9 +49,9 @@ Status GlobalConfig::validate(const ConfigData &config) const {
                                    MIN_MEMORY_LIMIT_BYTES);
   }
 
-  if (config.memory_limit_bytes > CgroupUtil::getMemoryLimit()) {
+  if (config.memory_limit_bytes > CgroupUtil::get_memory_limit()) {
     return Status::InvalidArgument("memory_limit_bytes must be less than ",
-                                   CgroupUtil::getMemoryLimit());
+                                   CgroupUtil::get_memory_limit());
   }
 
   // Validate query thread count

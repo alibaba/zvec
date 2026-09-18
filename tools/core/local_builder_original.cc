@@ -1421,19 +1421,20 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_root["BuilderCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", zvec::ailego::Logger::LEVEL_DEBUG},
-                                {"info", zvec::ailego::Logger::LEVEL_INFO},
-                                {"warn", zvec::ailego::Logger::LEVEL_WARN},
-                                {"error", zvec::ailego::Logger::LEVEL_ERROR},
-                                {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {
+      {"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+      {"info", zvec::ailego::Logger::LEVEL_INFO},
+      {"warn", zvec::ailego::Logger::LEVEL_WARN},
+      {"error", zvec::ailego::Logger::LEVEL_ERROR},
+      {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
 
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
 
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
-  if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
   }
 
   RetrievalMode retrieval_mode{RM_DENSE};

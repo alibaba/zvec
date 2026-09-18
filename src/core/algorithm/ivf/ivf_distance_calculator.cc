@@ -29,7 +29,7 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
     return;
   }
   row_distance_ = metric->distance();
-  distanceXx1_ = metric->distance_matrix(block_vec_cnt, 1);
+  distance_xx1 = metric->distance_matrix(block_vec_cnt, 1);
   distances_.resize(33);
   for (size_t b = 32; b != 0; b /= 2) {
     distances_[b] = metric->distance_matrix(block_vec_cnt, b);
@@ -38,7 +38,7 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
 
 IVFDistanceCalculator::~IVFDistanceCalculator() {
   row_distance_ = nullptr;
-  distanceXx1_ = nullptr;
+  distance_xx1 = nullptr;
   distances_.clear();
 }
 

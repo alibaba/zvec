@@ -73,7 +73,7 @@ int HNSWIndex::search_with_source(
   return Index::search(query, search_param, result);
 }
 
-int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const HNSWIndexParam &>(param);
 
   // valid

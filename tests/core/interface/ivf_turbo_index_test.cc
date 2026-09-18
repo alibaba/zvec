@@ -78,7 +78,7 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
     test_util::RemoveTestFiles(path_ + ".merged");
   }
 
-  IVFIndexParam::Pointer Param(QuantizerType quantizer) const {
+  IVFIndexParam::Pointer param(QuantizerType quantizer) const {
     return IVFIndexParamBuilder()
         .with_metric_type(std::get<1>(GetParam()))
         .with_data_type(DataType::DT_FP32)
@@ -89,7 +89,7 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
         .build();
   }
 
-  void Populate(Index *index) const {
+  void populate(Index *index) const {
     for (uint32_t i = 0; i < kCount; ++i) {
       ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors_[i].data()}}, i));
     }
@@ -97,7 +97,7 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
     EXPECT_EQ(kCount, index->get_doc_count());
   }
 
-  std::string Decoded(uint32_t id) const {
+  std::string decoded_vector(uint32_t id) const {
     core::IndexQueryMeta encoded_meta;
     std::string encoded;
     std::string decoded;
@@ -110,7 +110,7 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
     return decoded;
   }
 
-  std::vector<float> ExpectedScores(
+  std::vector<float> expected_scores(
       const std::vector<std::vector<float>> &vectors,
       turbo::Quantizer::Pointer quantizer, const float *query) const {
     std::vector<float> distances;
@@ -129,10 +129,10 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
     return distances;
   }
 
-  std::vector<std::pair<uint64_t, float>> CheckSearchAndFetch(
+  std::vector<std::pair<uint64_t, float>> check_search_and_fetch(
       Index *index) const {
     const auto *query = vectors_[7].data();
-    const auto expected = ExpectedScores(vectors_, quantizer_, query);
+    const auto expected = expected_scores(vectors_, quantizer_, query);
     auto params = IVFQueryParamBuilder()
                       .with_topk(kTopK)
                       .with_nprobe(4)
@@ -152,7 +152,7 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
       rows.emplace_back(doc.key(), doc.score());
       EXPECT_NEAR(expected[i], doc.score(),
                   1e-4f * std::max(1.0f, std::abs(expected[i])));
-      const auto decoded = Decoded(static_cast<uint32_t>(doc.key()));
+      const auto decoded = decoded_vector(static_cast<uint32_t>(doc.key()));
       const void *vector = result.reverted_vector_list_.empty()
                                ? doc.vector()
                                : result.reverted_vector_list_[i].data();
@@ -175,35 +175,35 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
 
 TEST_P(IVFTurboIndexTest, AddTrainSearchFetchAndReopenWithDefaultQuantizer) {
   auto index =
-      IndexFactory::CreateAndInitIndex(*Param(std::get<0>(GetParam())));
+      IndexFactory::CreateAndInitIndex(*param(std::get<0>(GetParam())));
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(0, index->open(path_, {StorageOptions::StorageType::kMMAP, true}));
-  Populate(index.get());
-  auto before = CheckSearchAndFetch(index.get());
+  populate(index.get());
+  auto before = check_search_and_fetch(index.get());
   ASSERT_EQ(0, index->close());
   index.reset();
 
   // The on-disk quantizer must override the default FP32 configuration.
   auto reopened =
-      IndexFactory::CreateAndInitIndex(*Param(QuantizerType::kNone));
+      IndexFactory::CreateAndInitIndex(*param(QuantizerType::kNone));
   ASSERT_NE(nullptr, reopened);
   ASSERT_EQ(0,
             reopened->open(path_, {StorageOptions::StorageType::kMMAP, false}));
-  EXPECT_EQ(before, CheckSearchAndFetch(reopened.get()));
+  EXPECT_EQ(before, check_search_and_fetch(reopened.get()));
   ASSERT_EQ(0, reopened->close());
   ASSERT_EQ(0,
             reopened->open(path_, {StorageOptions::StorageType::kMMAP, false}));
-  EXPECT_EQ(before, CheckSearchAndFetch(reopened.get()));
+  EXPECT_EQ(before, check_search_and_fetch(reopened.get()));
   ASSERT_EQ(0, reopened->close());
 }
 
 TEST_P(IVFTurboIndexTest, MergeDecodesSourceVectorsBeforeRebuilding) {
   auto source =
-      IndexFactory::CreateAndInitIndex(*Param(std::get<0>(GetParam())));
+      IndexFactory::CreateAndInitIndex(*param(std::get<0>(GetParam())));
   ASSERT_NE(nullptr, source);
   ASSERT_EQ(0, source->open(path_, {StorageOptions::StorageType::kMMAP, true}));
-  Populate(source.get());
-  auto target = IndexFactory::CreateAndInitIndex(*Param(QuantizerType::kNone));
+  populate(source.get());
+  auto target = IndexFactory::CreateAndInitIndex(*param(QuantizerType::kNone));
   ASSERT_NE(nullptr, target);
   ASSERT_EQ(0, target->open(path_ + ".merged",
                             {StorageOptions::StorageType::kMMAP, true}));
@@ -215,7 +215,7 @@ TEST_P(IVFTurboIndexTest, MergeDecodesSourceVectorsBeforeRebuilding) {
   std::vector<std::vector<float>> merged_vectors;
   for (uint32_t i = 0; i < kCount; ++i) {
     if (i != 7) {
-      auto decoded = Decoded(i);
+      auto decoded = decoded_vector(i);
       merged_vectors.emplace_back(kDimension);
       std::memcpy(merged_vectors.back().data(), decoded.data(), decoded.size());
     }
@@ -226,7 +226,7 @@ TEST_P(IVFTurboIndexTest, MergeDecodesSourceVectorsBeforeRebuilding) {
   meta.set_meta(core::IndexMeta::DT_FP32, kDimension);
   meta.set_metric(MetricName(std::get<1>(GetParam())), 0, ailego::Params());
   ASSERT_EQ(0, fp32->init(meta, ailego::Params()));
-  auto expected = ExpectedScores(merged_vectors, fp32, vectors_[7].data());
+  auto expected = expected_scores(merged_vectors, fp32, vectors_[7].data());
   SearchResult result;
   ASSERT_EQ(0,
             target->search(
@@ -304,14 +304,14 @@ TEST(IVFTurboCompatibility, ReopensLegacyFp32File) {
 // Force the old public pipeline to produce a genuine converter-based artifact.
 class LegacyIVFIndexForTest : public IVFIndex {
  public:
-  int InitLegacy(const BaseIndexParam &param) {
-    return Init(param);
+  int init_legacy(const BaseIndexParam &param) {
+    return init(param);
   }
 
  protected:
-  int CreateAndInitConverterReformer(const QuantizerParam &quantizer,
-                                     const BaseIndexParam &param) override {
-    return Index::CreateAndInitConverterReformer(quantizer, param);
+  int create_and_init_converter_reformer(const QuantizerParam &quantizer,
+                                         const BaseIndexParam &param) override {
+    return Index::create_and_init_converter_reformer(quantizer, param);
   }
 };
 
@@ -344,7 +344,7 @@ TEST(IVFTurboCompatibility, ReopensLegacyInt8AndMergesWithTurbo) {
   }
 
   auto legacy_writer = std::make_shared<LegacyIVFIndexForTest>();
-  ASSERT_EQ(0, legacy_writer->InitLegacy(*param));
+  ASSERT_EQ(0, legacy_writer->init_legacy(*param));
   Index::Pointer old_index = legacy_writer;
   ASSERT_EQ(0, old_index->open(legacy_path,
                                {StorageOptions::StorageType::kMMAP, true}));

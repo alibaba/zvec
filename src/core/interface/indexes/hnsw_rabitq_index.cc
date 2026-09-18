@@ -25,7 +25,7 @@
 
 namespace zvec::core_interface {
 
-int HNSWRabitqIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int HNSWRabitqIndex::create_and_init_streamer(const BaseIndexParam &param) {
 #if !RABITQ_SUPPORTED
   (void)param;
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");

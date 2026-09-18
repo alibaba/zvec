@@ -64,8 +64,8 @@ std::string ReadIndexBytesForTest(const std::string &path) {
 
 class TestableIVFIndex : public IVFIndex {
  public:
-  int CreateAndInitStreamerForTest(const BaseIndexParam &param) {
-    return CreateAndInitStreamer(param);
+  int create_and_init_streamer_for_test(const BaseIndexParam &param) {
+    return create_and_init_streamer(param);
   }
 
   const zvec::ailego::Params &proxima_index_params() const {
@@ -75,14 +75,14 @@ class TestableIVFIndex : public IVFIndex {
 
 class TestableHNSWIndex : public HNSWIndex {
  public:
-  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+  int get_coarse_search_topk(const BaseIndexQueryParam::Pointer &param) {
     return _get_coarse_search_topk(param);
   }
 };
 
 class TestableVamanaIndex : public VamanaIndex {
  public:
-  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+  int get_coarse_search_topk(const BaseIndexQueryParam::Pointer &param) {
     return _get_coarse_search_topk(param);
   }
 };
@@ -108,12 +108,12 @@ TEST(IndexInterface, GraphRefineKeepsLegacyDefaultCandidateCount) {
   TestableHNSWIndex hnsw;
   TestableVamanaIndex vamana;
 
-  EXPECT_EQ(kHnswEf, hnsw.GetCoarseSearchTopk(hnsw_param));
-  EXPECT_EQ(kVamanaEf, vamana.GetCoarseSearchTopk(vamana_param));
+  EXPECT_EQ(kHnswEf, hnsw.get_coarse_search_topk(hnsw_param));
+  EXPECT_EQ(kVamanaEf, vamana.get_coarse_search_topk(vamana_param));
 
   refiner->scale_factor_ = 2.0f;
-  EXPECT_EQ(kTopk * 2, hnsw.GetCoarseSearchTopk(hnsw_param));
-  EXPECT_EQ(kTopk * 2, vamana.GetCoarseSearchTopk(vamana_param));
+  EXPECT_EQ(kTopk * 2, hnsw.get_coarse_search_topk(hnsw_param));
+  EXPECT_EQ(kTopk * 2, vamana.get_coarse_search_topk(vamana_param));
 }
 
 TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
@@ -126,7 +126,7 @@ TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
                    .with_n_iters(37)
                    .build();
 
-  ASSERT_EQ(0, index.CreateAndInitStreamerForTest(*param));
+  ASSERT_EQ(0, index.create_and_init_streamer_for_test(*param));
 
   zvec::ailego::Params cluster_params;
   ASSERT_TRUE(index.proxima_index_params().get(
@@ -254,11 +254,11 @@ TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
 
 class ReformerInspectableHNSWIndex : public HNSWIndex {
  public:
-  int InitForTest(const BaseIndexParam &param) {
-    return Init(param);
+  int init_for_test(const BaseIndexParam &param) {
+    return init(param);
   }
 
-  int TransformForTest(const std::vector<float> &query) const {
+  int transform_for_test(const std::vector<float> &query) const {
     if (!reformer_) {
       return zvec::core::IndexError_Uninitialized;
     }
@@ -501,14 +501,14 @@ TEST(IndexInterface, ReopenRestoresUniformReformer) {
             .with_quantizer_param(QuantizerParam(test_case.quantizer_type))
             .build();
     ReformerInspectableHNSWIndex index;
-    ASSERT_EQ(0, index.InitForTest(*param));
+    ASSERT_EQ(0, index.init_for_test(*param));
 
     const std::vector<float> query(kDimension, 1.0f);
-    ASSERT_NE(0, index.TransformForTest(query));
+    ASSERT_NE(0, index.transform_for_test(query));
     ASSERT_EQ(0, index.open(test_case.index_name,
                             {StorageOptions::StorageType::kMMAP,
                              /*create_new=*/false, /*read_only=*/true}));
-    EXPECT_EQ(0, index.TransformForTest(query));
+    EXPECT_EQ(0, index.transform_for_test(query));
     ASSERT_EQ(0, index.close());
 
     zvec::test_util::RemoveTestFiles(test_case.index_name);
@@ -1504,7 +1504,7 @@ class InspectableIVFIndex : public IVFIndex {
   int initialize(const BaseIndexParam &param, uint32_t train_sample_count = 0) {
     proxima_index_params_.set(zvec::core::PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT,
                               train_sample_count);
-    return Init(param);
+    return init(param);
   }
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
     return builder_;
@@ -1528,9 +1528,9 @@ class InspectableIVFIndex : public IVFIndex {
 // though new FP32-input IVF indexes now select Turbo posting quantizers.
 class InspectableLegacyIVFIndex : public InspectableIVFIndex {
  protected:
-  int CreateAndInitConverterReformer(
+  int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override {
-    return Index::CreateAndInitConverterReformer(param, index_param);
+    return Index::create_and_init_converter_reformer(param, index_param);
   }
 };
 
@@ -3901,13 +3901,13 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
     }
     ASSERT_TRUE(holder->emplace(i, vec));
   }
-  std::shared_ptr<IndexMeta> index_meta_ptr_;
-  index_meta_ptr_.reset(
-      new (std::nothrow) IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
-  index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
+  std::shared_ptr<IndexMeta> index_meta_ptr;
+  index_meta_ptr.reset(new (std::nothrow)
+                           IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
+  index_meta_ptr->set_metric("SquaredEuclidean", 0, Params());
 
   RabitqConverter converter;
-  converter.init(*index_meta_ptr_, Params());
+  converter.init(*index_meta_ptr, Params());
   ASSERT_EQ(converter.train(holder), 0);
   std::shared_ptr<IndexReformer> index_reformer;
   ASSERT_EQ(converter.to_reformer(&index_reformer), 0);
@@ -3950,7 +3950,7 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
   RabitqConverter converter2;
   Params converter2_params;
   converter2_params.set(PARAM_RABITQ_TOTAL_BITS, 2u);
-  converter2.init(*index_meta_ptr_, converter2_params);
+  converter2.init(*index_meta_ptr, converter2_params);
   ASSERT_EQ(converter2.train(holder), 0);
   std::shared_ptr<IndexReformer> index_reformer2;
   ASSERT_EQ(converter2.to_reformer(&index_reformer2), 0);

@@ -408,23 +408,23 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
 
-  ASSERT_TRUE(!!linearCtx);
-  ASSERT_TRUE(!!linearByPKeysCtx);
-  ASSERT_TRUE(!!knnCtx);
+  ASSERT_TRUE(!!linear_ctx);
+  ASSERT_TRUE(!!linear_by_p_keys_ctx);
+  ASSERT_TRUE(!!knn_ctx);
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   size_t topk = 200;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  linearCtx->set_topk(topk);
-  linearByPKeysCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  linear_ctx->set_topk(topk);
+  linear_by_p_keys_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   auto *diskann_searcher = dynamic_cast<DiskAnnSearcher *>(searcher.get());
   ASSERT_NE(diskann_searcher, nullptr);
@@ -446,12 +446,12 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   size_t release_count = batch_counting_reader->release_count();
   ASSERT_EQ(0, searcher->search_impl(batch_queries.data(), qmeta,
-                                     kBatchQueryCount, knnCtx));
+                                     kBatchQueryCount, knn_ctx));
   EXPECT_EQ(release_count + 1, batch_counting_reader->release_count());
 
   release_count = batch_counting_reader->release_count();
   ASSERT_EQ(0, searcher->search_bf_impl(batch_queries.data(), qmeta,
-                                        kBatchQueryCount, linearCtx));
+                                        kBatchQueryCount, linear_ctx));
   EXPECT_EQ(release_count + 1, batch_counting_reader->release_count());
 
   std::vector<std::vector<uint64_t>> batch_p_keys(kBatchQueryCount,
@@ -459,7 +459,7 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   release_count = batch_counting_reader->release_count();
   ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(
                    batch_queries.data(), batch_p_keys, qmeta, kBatchQueryCount,
-                   linearByPKeysCtx));
+                   linear_by_p_keys_ctx));
   EXPECT_EQ(release_count + 1, batch_counting_reader->release_count());
 
   // do linear search test
@@ -468,18 +468,18 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
     for (size_t i = 0; i < dim; ++i) {
       query[i] = 3.1f;
     }
-    ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, linearCtx));
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(3UL, linearResult[0].key());
-    ASSERT_EQ(4UL, linearResult[1].key());
-    ASSERT_EQ(2UL, linearResult[2].key());
-    ASSERT_EQ(5UL, linearResult[3].key());
-    ASSERT_EQ(1UL, linearResult[4].key());
-    ASSERT_EQ(6UL, linearResult[5].key());
-    ASSERT_EQ(0UL, linearResult[6].key());
-    ASSERT_EQ(7UL, linearResult[7].key());
+    ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, linear_ctx));
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(3UL, linear_result[0].key());
+    ASSERT_EQ(4UL, linear_result[1].key());
+    ASSERT_EQ(2UL, linear_result[2].key());
+    ASSERT_EQ(5UL, linear_result[3].key());
+    ASSERT_EQ(1UL, linear_result[4].key());
+    ASSERT_EQ(6UL, linear_result[5].key());
+    ASSERT_EQ(0UL, linear_result[6].key());
+    ASSERT_EQ(7UL, linear_result[7].key());
     for (size_t i = 8; i < topk; ++i) {
-      ASSERT_EQ(i, linearResult[i].key());
+      ASSERT_EQ(i, linear_result[i].key());
     }
   }
 
@@ -494,17 +494,17 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
     }
 
     ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(query, p_keys, qmeta,
-                                                    linearByPKeysCtx));
-    auto &linearByPKeysResult = linearByPKeysCtx->result();
-    ASSERT_EQ(8, linearByPKeysResult.size());
-    ASSERT_EQ(3UL, linearByPKeysResult[0].key());
-    ASSERT_EQ(2UL, linearByPKeysResult[1].key());
-    ASSERT_EQ(1UL, linearByPKeysResult[2].key());
-    ASSERT_EQ(0UL, linearByPKeysResult[3].key());
-    ASSERT_EQ(8UL, linearByPKeysResult[4].key());
-    ASSERT_EQ(9UL, linearByPKeysResult[5].key());
-    ASSERT_EQ(10UL, linearByPKeysResult[6].key());
-    ASSERT_EQ(11UL, linearByPKeysResult[7].key());
+                                                    linear_by_p_keys_ctx));
+    auto &linear_by_p_keys_result = linear_by_p_keys_ctx->result();
+    ASSERT_EQ(8, linear_by_p_keys_result.size());
+    ASSERT_EQ(3UL, linear_by_p_keys_result[0].key());
+    ASSERT_EQ(2UL, linear_by_p_keys_result[1].key());
+    ASSERT_EQ(1UL, linear_by_p_keys_result[2].key());
+    ASSERT_EQ(0UL, linear_by_p_keys_result[3].key());
+    ASSERT_EQ(8UL, linear_by_p_keys_result[4].key());
+    ASSERT_EQ(9UL, linear_by_p_keys_result[5].key());
+    ASSERT_EQ(10UL, linear_by_p_keys_result[6].key());
+    ASSERT_EQ(11UL, linear_by_p_keys_result[7].key());
   }
 
   size_t step = 500;
@@ -512,33 +512,33 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
+    auto &knn_result = knn_ctx->result();
     // TODO: check
-    topk1Hits += i == knnResult[0].key();
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
 
-  float recall = totalHits * step * step * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * step * 1.0f / doc_cnt;
+  float recall = total_hits * step * step * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * step * 1.0f / doc_cnt;
 
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 
   // A context created by the streamer must carry the streamer's magic so it
   // can be reused instead of being recreated on every search.
@@ -597,12 +597,12 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   // mismatch must be rejected before either searcher touches the input.
   IndexQueryMeta wrong_type(IndexMeta::DataType::DT_FP16, dim);
   EXPECT_EQ(IndexError_Mismatch,
-            searcher->search_impl(vec.data(), wrong_type, knnCtx));
+            searcher->search_impl(vec.data(), wrong_type, knn_ctx));
   EXPECT_EQ(IndexError_Mismatch,
             streamer->search_impl(vec.data(), wrong_type, streamer_ctx));
   IndexQueryMeta wrong_dimension(IndexMeta::DataType::DT_FP32, dim - 1);
   EXPECT_EQ(IndexError_Mismatch,
-            searcher->search_bf_impl(vec.data(), wrong_dimension, linearCtx));
+            searcher->search_bf_impl(vec.data(), wrong_dimension, linear_ctx));
 
   // Group parameters without a grouping callback are invalid instead of a
   // successful search with an empty result.
@@ -621,7 +621,7 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   ASSERT_EQ(0, searcher->unload());
   EXPECT_EQ(nullptr, searcher->create_context());
   EXPECT_EQ(IndexError_NoReady,
-            searcher->search_impl(vec.data(), qmeta, knnCtx));
+            searcher->search_impl(vec.data(), qmeta, knn_ctx));
 }
 
 TEST_F(DiskAnnSearcherTest, TestNodeCache) {
@@ -704,56 +704,56 @@ TEST_F(DiskAnnSearcherTest, TestNodeCache) {
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
 
-  ASSERT_TRUE(!!linearCtx);
-  ASSERT_TRUE(!!linearByPKeysCtx);
-  ASSERT_TRUE(!!knnCtx);
+  ASSERT_TRUE(!!linear_ctx);
+  ASSERT_TRUE(!!linear_by_p_keys_ctx);
+  ASSERT_TRUE(!!knn_ctx);
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   size_t topk = 200;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  linearCtx->set_topk(topk);
-  linearByPKeysCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  linear_ctx->set_topk(topk);
+  linear_by_p_keys_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   size_t step = 500;
   for (size_t i = 0; i < doc_cnt; i += step) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
+    auto &knn_result = knn_ctx->result();
     // TODO: check
-    topk1Hits += i == knnResult[0].key();
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
 
-  float recall = totalHits * step * step * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * step * 1.0f / doc_cnt;
+  float recall = total_hits * step * step * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * step * 1.0f / doc_cnt;
 
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 }
 
 TEST_F(DiskAnnSearcherTest, TestFilter) {
@@ -817,21 +817,21 @@ TEST_F(DiskAnnSearcherTest, TestFilter) {
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
 
-  ASSERT_TRUE(!!linearCtx);
-  ASSERT_TRUE(!!linearByPKeysCtx);
-  ASSERT_TRUE(!!knnCtx);
+  ASSERT_TRUE(!!linear_ctx);
+  ASSERT_TRUE(!!linear_by_p_keys_ctx);
+  ASSERT_TRUE(!!knn_ctx);
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
 
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  linearByPKeysCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  linear_by_p_keys_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   size_t key = 50;
   for (size_t j = 0; j < dim; ++j) {
@@ -840,23 +840,23 @@ TEST_F(DiskAnnSearcherTest, TestFilter) {
 
   // no filter
   {
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(50UL, linearResult[0].key());
-    ASSERT_EQ(51UL, linearResult[1].key());
-    ASSERT_EQ(49UL, linearResult[2].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(50UL, linear_result[0].key());
+    ASSERT_EQ(51UL, linear_result[1].key());
+    ASSERT_EQ(49UL, linear_result[2].key());
   }
 
   // with filter
   {
-    auto filterFunc = [](uint64_t key) {
+    auto filter_func = [](uint64_t key) {
       if (key == 50UL || key == 51UL || key == 49UL) {
         return true;
       }
@@ -864,30 +864,30 @@ TEST_F(DiskAnnSearcherTest, TestFilter) {
     };
 
 
-    knnCtx->set_filter(filterFunc);
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    knn_ctx->set_filter(filter_func);
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
     std::unordered_set<uint64_t> knn_keys;
-    for (const auto &result : knnResult) {
+    for (const auto &result : knn_result) {
       ASSERT_TRUE(knn_keys.emplace(result.key()).second);
       EXPECT_NE(50UL, result.key());
       EXPECT_NE(51UL, result.key());
       EXPECT_NE(49UL, result.key());
     }
 
-    linearCtx->set_filter(filterFunc);
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    linear_ctx->set_filter(filter_func);
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(52UL, linearResult[0].key());
-    ASSERT_EQ(48UL, linearResult[1].key());
-    ASSERT_EQ(53UL, linearResult[2].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(52UL, linear_result[0].key());
+    ASSERT_EQ(48UL, linear_result[1].key());
+    ASSERT_EQ(53UL, linear_result[2].key());
 
     size_t hit_count = 0;
-    for (const auto &result : linearResult) {
+    for (const auto &result : linear_result) {
       hit_count += knn_keys.count(result.key());
     }
     const float recall = static_cast<float>(hit_count) / topk;
@@ -959,7 +959,7 @@ TEST_F(DiskAnnSearcherTest, TestGroup) {
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   size_t group_topk = 20;
 
-  auto groupbyFunc = [](uint64_t key) {
+  auto groupby_func = [](uint64_t key) {
     uint32_t group_id = key / 10 % 10;
 
     // std::cout << "key: " << key << ", group id: " << group_id << std::endl;
@@ -970,7 +970,7 @@ TEST_F(DiskAnnSearcherTest, TestGroup) {
   size_t group_num = 5;
 
   ctx->set_group_params(group_num, group_topk);
-  ctx->set_group_by(groupbyFunc);
+  ctx->set_group_by(groupby_func);
 
   size_t query_value = doc_cnt / 2;
   for (size_t j = 0; j < dim; ++j) {
@@ -993,7 +993,7 @@ TEST_F(DiskAnnSearcherTest, TestGroup) {
     std::cout << "Group ID: " << group_id << std::endl;
 
     for (uint32_t j = 0; j < result.size(); ++j) {
-      EXPECT_EQ(group_id, groupbyFunc(result[j].key()));
+      EXPECT_EQ(group_id, groupby_func(result[j].key()));
       std::cout << "\tKey: " << result[j].key() << std::fixed
                 << std::setprecision(3) << ", Score: " << result[j].score()
                 << std::endl;
@@ -1022,19 +1022,19 @@ TEST_F(DiskAnnSearcherTest, TestGroup) {
   // scans, rather than grouping only the global top-k afterward.
   auto linear_ctx = searcher->create_context();
   linear_ctx->set_group_params(group_num, group_topk);
-  linear_ctx->set_group_by(groupbyFunc);
+  linear_ctx->set_group_by(groupby_func);
   ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
   const auto &linear_group_result = linear_ctx->group_result();
   ASSERT_EQ(group_num, linear_group_result.size());
   for (const auto &group : linear_group_result) {
     ASSERT_EQ(group_topk, group.docs().size());
     for (const auto &doc : group.docs()) {
-      EXPECT_EQ(group.group_id(), groupbyFunc(doc.key()));
+      EXPECT_EQ(group.group_id(), groupby_func(doc.key()));
     }
   }
 
   // do linear search by p_keys test
-  auto groupbyFuncLinear = [](uint64_t key) {
+  auto groupby_func_linear = [](uint64_t key) {
     uint32_t group_id = key % 10;
 
     return std::string("g_") + std::to_string(group_id);
@@ -1043,7 +1043,7 @@ TEST_F(DiskAnnSearcherTest, TestGroup) {
   auto linear_pk_ctx = searcher->create_context();
 
   linear_pk_ctx->set_group_params(group_num, group_topk);
-  linear_pk_ctx->set_group_by(groupbyFuncLinear);
+  linear_pk_ctx->set_group_by(groupby_func_linear);
 
   std::vector<std::vector<uint64_t>> p_keys;
   p_keys.resize(1);
@@ -1131,20 +1131,20 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
 
   size_t query_cnt = 20U;
-  auto linearCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
   auto *diskann_search_context =
-      dynamic_cast<DiskAnnContext *>(linearCtx.get());
+      dynamic_cast<DiskAnnContext *>(linear_ctx.get());
   ASSERT_NE(diskann_search_context, nullptr);
   EXPECT_EQ(static_cast<size_t>(DiskAnnUtil::kMaxSectorReadNum) *
                 DiskAnnUtil::kSectorSize,
             diskann_search_context->sector_buffer_size());
-  knnCtx->set_fetch_vector(true);
+  knn_ctx->set_fetch_vector(true);
 
   for (size_t i = 0; i < doc_cnt; i += doc_cnt / 10) {
     std::string vec_value;
-    ASSERT_EQ(0, searcher->get_vector(key_for_id(i), linearCtx, vec_value));
+    ASSERT_EQ(0, searcher->get_vector(key_for_id(i), linear_ctx, vec_value));
 
     ASSERT_GE(vec_value.size(), sizeof(float));
     float vector_value = 0.0f;
@@ -1153,8 +1153,8 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   }
 
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
 
@@ -1164,30 +1164,30 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
       vec[j] = i;
     }
 
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(key_for_id(i), linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(key_for_id(i), linear_result[0].key());
 
-    const auto &vector_string = knnResult[0].vector_string();
+    const auto &vector_string = knn_result[0].vector_string();
     ASSERT_GE(vector_string.size(), sizeof(float));
     // DiskAnn is approximate, so the first KNN result is not guaranteed to
     // be the exact query vector on every graph build. Verify that the fetched
     // payload belongs to the returned key instead.
     std::string expected_vector;
-    ASSERT_EQ(0, searcher->get_vector(knnResult[0].key(), linearCtx,
+    ASSERT_EQ(0, searcher->get_vector(knn_result[0].key(), linear_ctx,
                                       expected_vector));
     ASSERT_EQ(vector_string, expected_vector);
   }
 
   std::string missing_vector;
   EXPECT_EQ(IndexError_NoExist,
-            searcher->get_vector(42, linearCtx, missing_vector));
+            searcher->get_vector(42, linear_ctx, missing_vector));
   EXPECT_TRUE(missing_vector.empty());
 
   // A DiskAnn provider reads through the aligned index reader rather than a
@@ -1367,7 +1367,7 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
                             DiskAnnCacheTestPeer::reader(diskann_searcher)));
   std::string vector_after_failure;
   EXPECT_EQ(IndexError_Runtime,
-            searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,
+            searcher->get_vector(key_for_id(doc_cnt - 1), linear_ctx,
                                  vector_after_failure));
   EXPECT_TRUE(vector_after_failure.empty());
 }
@@ -1588,23 +1588,23 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
 
-  ASSERT_TRUE(!!linearCtx);
-  ASSERT_TRUE(!!linearByPKeysCtx);
-  ASSERT_TRUE(!!knnCtx);
+  ASSERT_TRUE(!!linear_ctx);
+  ASSERT_TRUE(!!linear_by_p_keys_ctx);
+  ASSERT_TRUE(!!knn_ctx);
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   size_t topk = 200;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  linearCtx->set_topk(topk);
-  linearByPKeysCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  linear_ctx->set_topk(topk);
+  linear_by_p_keys_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   // do linear search test
   {
@@ -1612,18 +1612,18 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
     for (size_t i = 0; i < dim; ++i) {
       query[i] = 3.1f;
     }
-    ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, linearCtx));
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(3UL, linearResult[0].key());
-    ASSERT_EQ(4UL, linearResult[1].key());
-    ASSERT_EQ(2UL, linearResult[2].key());
-    ASSERT_EQ(5UL, linearResult[3].key());
-    ASSERT_EQ(1UL, linearResult[4].key());
-    ASSERT_EQ(6UL, linearResult[5].key());
-    ASSERT_EQ(0UL, linearResult[6].key());
-    ASSERT_EQ(7UL, linearResult[7].key());
+    ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, linear_ctx));
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(3UL, linear_result[0].key());
+    ASSERT_EQ(4UL, linear_result[1].key());
+    ASSERT_EQ(2UL, linear_result[2].key());
+    ASSERT_EQ(5UL, linear_result[3].key());
+    ASSERT_EQ(1UL, linear_result[4].key());
+    ASSERT_EQ(6UL, linear_result[5].key());
+    ASSERT_EQ(0UL, linear_result[6].key());
+    ASSERT_EQ(7UL, linear_result[7].key());
     for (size_t i = 8; i < topk; ++i) {
-      ASSERT_EQ(i, linearResult[i].key());
+      ASSERT_EQ(i, linear_result[i].key());
     }
   }
 
@@ -1638,17 +1638,17 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
     }
 
     ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(query, p_keys, qmeta,
-                                                    linearByPKeysCtx));
-    auto &linearByPKeysResult = linearByPKeysCtx->result();
-    ASSERT_EQ(8, linearByPKeysResult.size());
-    ASSERT_EQ(3UL, linearByPKeysResult[0].key());
-    ASSERT_EQ(2UL, linearByPKeysResult[1].key());
-    ASSERT_EQ(1UL, linearByPKeysResult[2].key());
-    ASSERT_EQ(0UL, linearByPKeysResult[3].key());
-    ASSERT_EQ(8UL, linearByPKeysResult[4].key());
-    ASSERT_EQ(9UL, linearByPKeysResult[5].key());
-    ASSERT_EQ(10UL, linearByPKeysResult[6].key());
-    ASSERT_EQ(11UL, linearByPKeysResult[7].key());
+                                                    linear_by_p_keys_ctx));
+    auto &linear_by_p_keys_result = linear_by_p_keys_ctx->result();
+    ASSERT_EQ(8, linear_by_p_keys_result.size());
+    ASSERT_EQ(3UL, linear_by_p_keys_result[0].key());
+    ASSERT_EQ(2UL, linear_by_p_keys_result[1].key());
+    ASSERT_EQ(1UL, linear_by_p_keys_result[2].key());
+    ASSERT_EQ(0UL, linear_by_p_keys_result[3].key());
+    ASSERT_EQ(8UL, linear_by_p_keys_result[4].key());
+    ASSERT_EQ(9UL, linear_by_p_keys_result[5].key());
+    ASSERT_EQ(10UL, linear_by_p_keys_result[6].key());
+    ASSERT_EQ(11UL, linear_by_p_keys_result[7].key());
   }
 
   size_t step = 500;
@@ -1656,32 +1656,32 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
 
-  float recall = totalHits * step * step * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * step * 1.0f / doc_cnt;
+  float recall = total_hits * step * step * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * step * 1.0f / doc_cnt;
 
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 
   // A context created by the streamer must carry the streamer's magic so it
   // can be reused instead of being recreated on every search.
@@ -1732,12 +1732,12 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
   // mismatch must be rejected before either searcher touches the input.
   IndexQueryMeta wrong_type(IndexMeta::DataType::DT_FP16, dim);
   EXPECT_EQ(IndexError_Mismatch,
-            searcher->search_impl(vec.data(), wrong_type, knnCtx));
+            searcher->search_impl(vec.data(), wrong_type, knn_ctx));
   EXPECT_EQ(IndexError_Mismatch,
             streamer->search_impl(vec.data(), wrong_type, streamer_ctx));
   IndexQueryMeta wrong_dimension(IndexMeta::DataType::DT_FP32, dim - 1);
   EXPECT_EQ(IndexError_Mismatch,
-            searcher->search_bf_impl(vec.data(), wrong_dimension, linearCtx));
+            searcher->search_bf_impl(vec.data(), wrong_dimension, linear_ctx));
 
   // Group parameters without a grouping callback are invalid instead of a
   // successful search with an empty result.
@@ -1765,7 +1765,7 @@ TEST_F(DiskAnnSearcherTest, TestGeneralTurbo) {
   ASSERT_EQ(0, searcher->unload());
   EXPECT_EQ(nullptr, searcher->create_context());
   EXPECT_EQ(IndexError_NoReady,
-            searcher->search_impl(vec.data(), qmeta, knnCtx));
+            searcher->search_impl(vec.data(), qmeta, knn_ctx));
 }
 
 TEST_F(DiskAnnSearcherTest, TestNodeCacheTurbo) {
@@ -1831,55 +1831,55 @@ TEST_F(DiskAnnSearcherTest, TestNodeCacheTurbo) {
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
 
-  ASSERT_TRUE(!!linearCtx);
-  ASSERT_TRUE(!!linearByPKeysCtx);
-  ASSERT_TRUE(!!knnCtx);
+  ASSERT_TRUE(!!linear_ctx);
+  ASSERT_TRUE(!!linear_by_p_keys_ctx);
+  ASSERT_TRUE(!!knn_ctx);
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   size_t topk = 200;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
-  linearCtx->set_topk(topk);
-  linearByPKeysCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
+  linear_ctx->set_topk(topk);
+  linear_by_p_keys_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   size_t step = 500;
   for (size_t i = 0; i < doc_cnt; i += step) {
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = i + 0.1f;
     }
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
 
-  float recall = totalHits * step * step * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * step * 1.0f / doc_cnt;
+  float recall = total_hits * step * step * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * step * 1.0f / doc_cnt;
 
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
 }
 
 TEST_F(DiskAnnSearcherTest, TestFilterTurbo) {
@@ -1945,21 +1945,21 @@ TEST_F(DiskAnnSearcherTest, TestFilterTurbo) {
   auto ctx = searcher->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
+  auto linear_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
 
-  ASSERT_TRUE(!!linearCtx);
-  ASSERT_TRUE(!!linearByPKeysCtx);
-  ASSERT_TRUE(!!knnCtx);
+  ASSERT_TRUE(!!linear_ctx);
+  ASSERT_TRUE(!!linear_by_p_keys_ctx);
+  ASSERT_TRUE(!!knn_ctx);
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
 
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  linearByPKeysCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  linear_by_p_keys_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   size_t key = 50;
   for (size_t j = 0; j < dim; ++j) {
@@ -1968,23 +1968,23 @@ TEST_F(DiskAnnSearcherTest, TestFilterTurbo) {
 
   // no filter
   {
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(50UL, linearResult[0].key());
-    ASSERT_EQ(51UL, linearResult[1].key());
-    ASSERT_EQ(49UL, linearResult[2].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(50UL, linear_result[0].key());
+    ASSERT_EQ(51UL, linear_result[1].key());
+    ASSERT_EQ(49UL, linear_result[2].key());
   }
 
   // with filter
   {
-    auto filterFunc = [](uint64_t key) {
+    auto filter_func = [](uint64_t key) {
       if (key == 50UL || key == 51UL || key == 49UL) {
         return true;
       }
@@ -1992,30 +1992,30 @@ TEST_F(DiskAnnSearcherTest, TestFilterTurbo) {
     };
 
 
-    knnCtx->set_filter(filterFunc);
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    knn_ctx->set_filter(filter_func);
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
     std::unordered_set<uint64_t> knn_keys;
-    for (const auto &result : knnResult) {
+    for (const auto &result : knn_result) {
       ASSERT_TRUE(knn_keys.emplace(result.key()).second);
       EXPECT_NE(50UL, result.key());
       EXPECT_NE(51UL, result.key());
       EXPECT_NE(49UL, result.key());
     }
 
-    linearCtx->set_filter(filterFunc);
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    linear_ctx->set_filter(filter_func);
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(52UL, linearResult[0].key());
-    ASSERT_EQ(48UL, linearResult[1].key());
-    ASSERT_EQ(53UL, linearResult[2].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(52UL, linear_result[0].key());
+    ASSERT_EQ(48UL, linear_result[1].key());
+    ASSERT_EQ(53UL, linear_result[2].key());
 
     size_t hit_count = 0;
-    for (const auto &result : linearResult) {
+    for (const auto &result : linear_result) {
       hit_count += knn_keys.count(result.key());
     }
     const float recall = static_cast<float>(hit_count) / topk;
@@ -2089,7 +2089,7 @@ TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
   size_t group_topk = 20;
 
-  auto groupbyFunc = [](uint64_t key) {
+  auto groupby_func = [](uint64_t key) {
     uint32_t group_id = key / 10 % 10;
 
     return std::string("g_") + std::to_string(group_id);
@@ -2098,7 +2098,7 @@ TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
   size_t group_num = 5;
 
   ctx->set_group_params(group_num, group_topk);
-  ctx->set_group_by(groupbyFunc);
+  ctx->set_group_by(groupby_func);
 
   size_t query_value = doc_cnt / 2;
   for (size_t j = 0; j < dim; ++j) {
@@ -2120,7 +2120,7 @@ TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
     ASSERT_LE(result.size(), group_topk);
 
     for (uint32_t j = 0; j < result.size(); ++j) {
-      EXPECT_EQ(group_id, groupbyFunc(result[j].key()));
+      EXPECT_EQ(group_id, groupby_func(result[j].key()));
     }
   }
 
@@ -2146,19 +2146,19 @@ TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
   // scans, rather than grouping only the global top-k afterward.
   auto linear_ctx = searcher->create_context();
   linear_ctx->set_group_params(group_num, group_topk);
-  linear_ctx->set_group_by(groupbyFunc);
+  linear_ctx->set_group_by(groupby_func);
   ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
   const auto &linear_group_result = linear_ctx->group_result();
   ASSERT_EQ(group_num, linear_group_result.size());
   for (const auto &group : linear_group_result) {
     ASSERT_EQ(group_topk, group.docs().size());
     for (const auto &doc : group.docs()) {
-      EXPECT_EQ(group.group_id(), groupbyFunc(doc.key()));
+      EXPECT_EQ(group.group_id(), groupby_func(doc.key()));
     }
   }
 
   // do linear search by p_keys test
-  auto groupbyFuncLinear = [](uint64_t key) {
+  auto groupby_func_linear = [](uint64_t key) {
     uint32_t group_id = key % 10;
 
     return std::string("g_") + std::to_string(group_id);
@@ -2167,7 +2167,7 @@ TEST_F(DiskAnnSearcherTest, TestGroupTurbo) {
   auto linear_pk_ctx = searcher->create_context();
 
   linear_pk_ctx->set_group_params(group_num, group_topk);
-  linear_pk_ctx->set_group_by(groupbyFuncLinear);
+  linear_pk_ctx->set_group_by(groupby_func_linear);
 
   std::vector<std::vector<uint64_t>> p_keys;
   p_keys.resize(1);
@@ -2248,14 +2248,14 @@ TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
   ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
 
   size_t query_cnt = 20U;
-  auto linearCtx = searcher->create_context();
-  auto knnCtx = searcher->create_context();
-  auto linearByPKeysCtx = searcher->create_context();
-  knnCtx->set_fetch_vector(true);
+  auto linear_ctx = searcher->create_context();
+  auto knn_ctx = searcher->create_context();
+  auto linear_by_p_keys_ctx = searcher->create_context();
+  knn_ctx->set_fetch_vector(true);
 
   for (size_t i = 0; i < doc_cnt; i += doc_cnt / 10) {
     std::string vec_value;
-    ASSERT_EQ(0, searcher->get_vector(key_for_id(i), linearCtx, vec_value));
+    ASSERT_EQ(0, searcher->get_vector(key_for_id(i), linear_ctx, vec_value));
 
     ASSERT_GE(vec_value.size(), sizeof(float));
     float vector_value = 0.0f;
@@ -2264,8 +2264,8 @@ TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
   }
 
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
 
@@ -2275,30 +2275,30 @@ TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
       vec[j] = i;
     }
 
-    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(key_for_id(i), linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(key_for_id(i), linear_result[0].key());
 
-    const auto &vector_string = knnResult[0].vector_string();
+    const auto &vector_string = knn_result[0].vector_string();
     ASSERT_GE(vector_string.size(), sizeof(float));
     // DiskAnn is approximate, so the first KNN result is not guaranteed to
     // be the exact query vector on every graph build. Verify that the fetched
     // payload belongs to the returned key instead.
     std::string expected_vector;
-    ASSERT_EQ(0, searcher->get_vector(knnResult[0].key(), linearCtx,
+    ASSERT_EQ(0, searcher->get_vector(knn_result[0].key(), linear_ctx,
                                       expected_vector));
     ASSERT_EQ(vector_string, expected_vector);
   }
 
   std::string missing_vector;
   EXPECT_EQ(IndexError_NoExist,
-            searcher->get_vector(42, linearCtx, missing_vector));
+            searcher->get_vector(42, linear_ctx, missing_vector));
   EXPECT_TRUE(missing_vector.empty());
 
   // Cached nodes keep their coordinates and adjacency lists in separate
@@ -2338,7 +2338,7 @@ TEST_F(DiskAnnSearcherTest, TestFetchVectorTurbo) {
                             DiskAnnCacheTestPeer::reader(diskann_searcher)));
   std::string vector_after_failure;
   EXPECT_EQ(IndexError_Runtime,
-            searcher->get_vector(key_for_id(doc_cnt - 1), linearCtx,
+            searcher->get_vector(key_for_id(doc_cnt - 1), linear_ctx,
                                  vector_after_failure));
   EXPECT_TRUE(vector_after_failure.empty());
 }

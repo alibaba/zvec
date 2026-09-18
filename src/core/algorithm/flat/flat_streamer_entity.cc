@@ -840,7 +840,7 @@ int FlatStreamerEntity::init_storage(IndexStorage::Pointer storage) {
   meta_.header.index_meta_size = str.size();
   meta_.header.linear_list_count = 1;
 
-  AdjustSegmentSize(&meta_);
+  adjust_segment_size(&meta_);
 
   LOG_DEBUG(
       "Create Streamer Index, VecSize=%u, BlockSize=%u SegmentSize=%u "
@@ -906,7 +906,7 @@ int FlatStreamerEntity::init_storage(IndexStorage::Pointer storage) {
 }
 
 int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
-  AdjustSegmentSize(&meta_);
+  adjust_segment_size(&meta_);
 
   // Load Meta Segment
   auto segment = storage->get(FLAT_LINEAR_META_SEG_ID);

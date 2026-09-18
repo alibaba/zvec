@@ -77,7 +77,7 @@ class IVFDistanceCalculator {
  protected:
   IndexMetric::Pointer metric_ptr_{};
   IndexMetric::MatrixDistance row_distance_{nullptr};
-  IndexMetric::MatrixDistance distanceXx1_{nullptr};
+  IndexMetric::MatrixDistance distance_xx1{nullptr};
   std::vector<IndexMetric::MatrixDistance> distances_{};
 
   size_t element_size_{0};
@@ -138,7 +138,7 @@ void IVFDistanceCalculator::query_features_distance(const void *query,
                                                     float *distances) {
   if (column_major_order_) {
     if (fnum == block_vec_cnt_) {
-      distanceXx1_(feature, query, dimension_, distances);
+      distance_xx1(feature, query, dimension_, distances);
     } else {
       this->row_major_distance(query, feature, fnum, distances);
     }
@@ -154,7 +154,7 @@ void IVFDistanceCalculator::query_features_distance(const void *query,
                                                     float *distances) {
   if (column_major) {
     ailego_assert_with(fnum == block_vec_cnt_, "Invalid Block");
-    distanceXx1_(feature, query, dimension_, distances);
+    distance_xx1(feature, query, dimension_, distances);
   } else {
     this->row_major_distance(query, feature, fnum, distances);
   }

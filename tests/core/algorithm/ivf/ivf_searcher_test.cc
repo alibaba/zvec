@@ -2865,8 +2865,8 @@ TEST_F(IVFSearcherTest, TestProvider) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -2955,8 +2955,8 @@ TEST_F(IVFSearcherTest, TestProviderInt8) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -3041,8 +3041,8 @@ TEST_F(IVFSearcherTest, TestSearcherReuse) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path1, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -3068,7 +3068,7 @@ TEST_F(IVFSearcherTest, TestSearcherReuse) {
 
   auto container2 = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container2->open(path2, false));
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  ASSERT_EQ(0, searcher->init(searcher_params));
   ASSERT_EQ(0, searcher->load(container2, IndexMetric::Pointer()));
 
   auto provider2 = searcher->create_provider();
@@ -3118,8 +3118,8 @@ TEST_F(IVFSearcherTest, TestInt8QuantizerWithL2) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -3983,7 +3983,7 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
     ailego::File::RemovePath(path_ + ".missing");
   }
 
-  ailego::Params SearchParams() const {
+  ailego::Params search_params() const {
     ailego::Params params;
     params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
     params.set(PARAM_IVF_SEARCHER_NPROBE, 4U);
@@ -3992,7 +3992,7 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
     return params;
   }
 
-  IndexStorage::Pointer OpenStorage(const char *name) {
+  IndexStorage::Pointer open_storage(const char *name) {
     auto storage = IndexFactory::CreateStorage(name);
     EXPECT_NE(nullptr, storage);
     if (!storage) {
@@ -4003,8 +4003,8 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
     return storage;
   }
 
-  void CheckResult(const IndexDocumentList &result, const float *query,
-                   bool filtered) const {
+  void check_result(const IndexDocumentList &result, const float *query,
+                    bool filtered) const {
     std::vector<std::pair<uint64_t, float>> expected;
     for (size_t i = 0; i < codes_.size(); ++i) {
       if (filtered && Key(i) % 2 == 0) {
@@ -4038,7 +4038,7 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
   }
 
   template <class Searcher>
-  void CheckSearches(Searcher *searcher) const {
+  void check_searches(Searcher *searcher) const {
     const auto original_queries = queries_;
     const IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kDimension);
     auto context = searcher->create_context();
@@ -4048,26 +4048,26 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
       context->set_filter(
           [filtered](uint64_t key) { return filtered && key % 2 == 0; });
       ASSERT_EQ(0, searcher->search_bf_impl(queries_.data(), qmeta, context));
-      CheckResult(context->result(0), queries_.data(), filtered);
+      check_result(context->result(0), queries_.data(), filtered);
       ASSERT_EQ(0, searcher->search_impl(queries_.data(), qmeta, context));
-      CheckResult(context->result(0), queries_.data(), filtered);
+      check_result(context->result(0), queries_.data(), filtered);
       ASSERT_EQ(0, searcher->search_bf_impl(queries_.data(), qmeta, kQueryCount,
                                             context));
       for (uint32_t q = 0; q < kQueryCount; ++q) {
-        CheckResult(context->result(q), queries_.data() + q * kDimension,
-                    filtered);
+        check_result(context->result(q), queries_.data() + q * kDimension,
+                     filtered);
       }
       ASSERT_EQ(0, searcher->search_impl(queries_.data(), qmeta, kQueryCount,
                                          context));
       for (uint32_t q = 0; q < kQueryCount; ++q) {
-        CheckResult(context->result(q), queries_.data() + q * kDimension,
-                    filtered);
+        check_result(context->result(q), queries_.data() + q * kDimension,
+                     filtered);
       }
     }
     EXPECT_EQ(original_queries, queries_);
   }
 
-  void CheckDecodedProvider(IndexProvider::Pointer provider) const {
+  void check_decoded_provider(IndexProvider::Pointer provider) const {
     ASSERT_NE(nullptr, provider);
     EXPECT_EQ(kVectorCount, provider->count());
     EXPECT_EQ(IndexMeta::DataType::DT_FP32, provider->data_type());
@@ -4107,16 +4107,16 @@ TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
   // it from the dedicated persisted metadata and serialized state.
   for (const char *storage_name : {"FileReadStorage", "MMapFileReadStorage"}) {
     SCOPED_TRACE(storage_name);
-    auto storage = OpenStorage(storage_name);
+    auto storage = open_storage(storage_name);
     ASSERT_NE(nullptr, storage);
     IVFSearcher searcher;
-    ASSERT_EQ(0, searcher.init(SearchParams()));
+    ASSERT_EQ(0, searcher.init(search_params()));
     ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
     ASSERT_NE(nullptr, searcher.quantizer());
     EXPECT_EQ(kDimension, searcher.meta().dimension());
     EXPECT_EQ(IndexMeta::DataType::DT_FP32, searcher.meta().data_type());
-    CheckDecodedProvider(searcher.create_provider());
-    CheckSearches(&searcher);
+    check_decoded_provider(searcher.create_provider());
+    check_searches(&searcher);
     auto retained_context = searcher.create_context();
     ASSERT_NE(nullptr, retained_context);
     retained_context->set_topk(kTopK);
@@ -4127,17 +4127,17 @@ TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
     ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
     ASSERT_EQ(0,
               searcher.search_impl(queries_.data(), qmeta, retained_context));
-    CheckResult(retained_context->result(0), queries_.data(), false);
+    check_result(retained_context->result(0), queries_.data(), false);
     ASSERT_EQ(0, searcher.unload());
   }
 
-  auto storage = OpenStorage("MMapFileReadStorage");
+  auto storage = open_storage("MMapFileReadStorage");
   ASSERT_NE(nullptr, storage);
   IVFStreamer streamer;
-  ASSERT_EQ(0, streamer.init(meta_, SearchParams()));
+  ASSERT_EQ(0, streamer.init(meta_, search_params()));
   ASSERT_EQ(0, streamer.open(storage));
   ASSERT_NE(nullptr, streamer.quantizer());
-  CheckDecodedProvider(streamer.create_provider());
+  check_decoded_provider(streamer.create_provider());
   for (size_t i = 0; i < codes_.size(); ++i) {
     IndexStorage::MemoryBlock block;
     ASSERT_EQ(0,
@@ -4145,7 +4145,7 @@ TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
     ASSERT_NE(nullptr, block.data());
     EXPECT_EQ(0, std::memcmp(codes_[i].data(), block.data(), codes_[i].size()));
   }
-  CheckSearches(&streamer);
+  check_searches(&streamer);
   ASSERT_EQ(0, streamer.close());
 
   if (quantizer_->require_train()) {
@@ -4154,10 +4154,10 @@ TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
     ASSERT_EQ(0, missing_state->init(ailego::Params()));
     ASSERT_EQ(0, missing_state->open(path_ + ".missing", false));
     IVFSearcher searcher;
-    ASSERT_EQ(0, searcher.init(SearchParams()));
+    ASSERT_EQ(0, searcher.init(search_params()));
     EXPECT_NE(0, searcher.load(missing_state, IndexMetric::Pointer()));
     IVFStreamer missing_streamer;
-    ASSERT_EQ(0, missing_streamer.init(meta_, SearchParams()));
+    ASSERT_EQ(0, missing_streamer.init(meta_, search_params()));
     EXPECT_NE(0, missing_streamer.open(missing_state));
   }
 }

@@ -102,7 +102,7 @@ class HnswRabitqAlgorithm {
                                 level_t level, node_id_t link_id,
                                 ResultRecord dist, TopkHeap &update_heap);
 
- private:
+ public:
   HnswRabitqAlgorithm(const HnswRabitqAlgorithm &) = delete;
   HnswRabitqAlgorithm &operator=(const HnswRabitqAlgorithm &) = delete;
 

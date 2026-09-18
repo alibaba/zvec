@@ -24,7 +24,7 @@
 
 namespace zvec::core_interface {
 
-int IVFIndex::CreateAndInitConverterReformer(
+int IVFIndex::create_and_init_converter_reformer(
     const QuantizerParam &param, const BaseIndexParam &index_param) {
   // Clustering and centroid selection use the input vectors. Only the
   // inverted lists are encoded, after their centroid assignments are known.
@@ -33,7 +33,7 @@ int IVFIndex::CreateAndInitConverterReformer(
       (index_param.metric_type != MetricType::kL2sq &&
        index_param.metric_type != MetricType::kInnerProduct &&
        index_param.metric_type != MetricType::kCosine)) {
-    return Index::CreateAndInitConverterReformer(param, index_param);
+    return Index::create_and_init_converter_reformer(param, index_param);
   }
   const char *name = nullptr;
   switch (param.type) {
@@ -50,7 +50,7 @@ int IVFIndex::CreateAndInitConverterReformer(
       name = "Int4Quantizer";
       break;
     default:
-      return Index::CreateAndInitConverterReformer(param, index_param);
+      return Index::create_and_init_converter_reformer(param, index_param);
   }
   proxima_index_meta_.set_quantizer(name, 0, ailego::Params{});
   ivf_quantizer_ = core::IndexFactory::CreateQuantizer(name);
@@ -60,7 +60,7 @@ int IVFIndex::CreateAndInitConverterReformer(
   return ivf_quantizer_->init(proxima_index_meta_, ailego::Params{});
 }
 
-int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("IVF Index not support sparse vector");
     return core::IndexError_InvalidArgument;
@@ -111,31 +111,31 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   return 0;
 }
 
-int IVFIndex::RestoreLegacyPipeline() {
+int IVFIndex::restore_legacy_pipeline() {
   ivf_quantizer_.reset();
   converter_.reset();
   reformer_.reset();
   proxima_index_meta_ = IndexMeta{};
   proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
-  int ret = ParseMetricName(param_);
+  int ret = parse_metric_name(param_);
   if (ret != 0) return ret;
   const auto quantizer_param =
       param_.quantizer_param ? *param_.quantizer_param : QuantizerParam{};
-  ret = Index::CreateAndInitConverterReformer(quantizer_param, param_);
+  ret = Index::create_and_init_converter_reformer(quantizer_param, param_);
   if (ret != 0) return ret;
-  ret = CreateAndInitMetric(param_);
+  ret = create_and_init_metric(param_);
   if (ret != 0) return ret;
-  return CreateAndInitStreamer(param_);
+  return create_and_init_streamer(param_);
 }
 
-int IVFIndex::LoadStreamer() {
+int IVFIndex::load_streamer() {
   IndexMeta persisted_meta;
   int ret = core::IndexHelper::DeserializeFromStorage(storage_.get(),
                                                       &persisted_meta);
   if (ret != 0) return ret;
   if (persisted_meta.quantizer_name().empty()) {
     if (ivf_quantizer_) {
-      ret = RestoreLegacyPipeline();
+      ret = restore_legacy_pipeline();
       if (ret != 0) return ret;
     }
   } else {
@@ -150,7 +150,7 @@ int IVFIndex::LoadStreamer() {
     converter_.reset();
     reformer_.reset();
     proxima_index_meta_ = persisted_meta;
-    ret = CreateAndInitMetric(param_);
+    ret = create_and_init_metric(param_);
     if (ret != 0) return ret;
   }
   // close() cleans up the streamer; reinitialize it before each load so
@@ -222,7 +222,7 @@ int IVFIndex::open(const std::string &file_path,
                 core::IndexError::What(ret));
       return core::IndexError_Runtime;
     }
-    ret = LoadStreamer();
+    ret = load_streamer();
     if (ret != 0) return ret;
     is_trained_ = true;
   }
@@ -230,7 +230,7 @@ int IVFIndex::open(const std::string &file_path,
   return 0;
 }
 
-int IVFIndex::GenerateHolder() {
+int IVFIndex::generate_holder() {
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
                               converter_, &holder_);
 }
@@ -265,7 +265,7 @@ int IVFIndex::train() {
   }
   if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (build_stage_ == BuildStage::kCollecting) {
-    int ret = GenerateHolder();
+    int ret = generate_holder();
     if (ret != 0) {
       return ret;
     }
@@ -282,10 +282,10 @@ int IVFIndex::train() {
     }
     build_stage_ = BuildStage::kBuilt;
   }
-  return DumpAndOpen();
+  return dump_and_open();
 }
 
-int IVFIndex::ResetBuilder() {
+int IVFIndex::reset_builder() {
   auto next_builder = core::IndexFactory::CreateBuilder("IVFBuilder");
   if (!next_builder) {
     return core::IndexError_NoExist;
@@ -300,7 +300,7 @@ int IVFIndex::ResetBuilder() {
   return 0;
 }
 
-int IVFIndex::DumpAndOpen() {
+int IVFIndex::dump_and_open() {
   if (build_stage_ == BuildStage::kBuilt) {
     auto dumper = core::IndexFactory::CreateDumper("FileDumper");
     if (!dumper) {
@@ -331,7 +331,7 @@ int IVFIndex::DumpAndOpen() {
 
     // Release the full builder state before opening the persisted index.
     // If opening fails, retry only open: the replacement builder is empty.
-    ret = ResetBuilder();
+    ret = reset_builder();
     if (ret != 0) {
       return ret;
     }
@@ -352,7 +352,7 @@ int IVFIndex::DumpAndOpen() {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
-  ret = LoadStreamer();
+  ret = load_streamer();
   if (ret != 0) return ret;
   is_trained_ = true;
   // Only the reformer is needed after the persisted index is ready. Destroy
@@ -459,7 +459,7 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
   }
   // A new merge (including a retry) rebuilds from its explicit inputs. Do not
   // reuse a partially trained builder or silently resume different inputs.
-  int ret = ResetBuilder();
+  int ret = reset_builder();
   if (ret != 0) {
     return ret;
   }
@@ -472,6 +472,6 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
   // Index::merge marks the reduce phase complete. IVF is not usable until
   // dump/open finishes; train() may resume that phase if it fails.
   is_trained_ = false;
-  return DumpAndOpen();
+  return dump_and_open();
 }
 }  // namespace zvec::core_interface

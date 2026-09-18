@@ -14,7 +14,6 @@
 #pragma once
 
 #include <cstdint>
-#include <regex>
 #include <string>
 
 namespace zvec {
@@ -32,6 +31,10 @@ const std::string GLOBAL_DOC_ID = "_zvec_g_doc_id_";
 
 const std::string USER_ID = "_zvec_uid_";
 
+const std::string FIELD_SCORE = "_zvec_score";
+
+const std::string FIELD_GROUP_ID = "_zvec_group_id";
+
 const int kSparseMaxDimSize = 16384;
 
 const int64_t kMaxRecordBatchNumRows = 4096;
@@ -39,12 +42,6 @@ const int64_t kMaxRecordBatchNumRows = 4096;
 constexpr uint32_t MAX_ARRAY_FIELD_LEN = 32;
 
 const float COMPACT_DELETE_RATIO_THRESHOLD = 0.3f;
-
-const std::regex COLLECTION_NAME_REGEX("^[a-zA-Z0-9_-]{3,64}$");
-
-const std::regex FIELD_NAME_REGEX("^[a-zA-Z0-9_-]{1,32}$");
-
-const std::regex DOC_PK_REGEX("^[a-zA-Z0-9_!@#$%+=.-]{1,64}$");
 
 constexpr uint32_t kMaxDenseDimSize = 20000;
 

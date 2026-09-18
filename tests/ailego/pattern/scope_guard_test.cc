@@ -67,22 +67,22 @@ TEST(ScopeGuard, StaticFunction) {
 
 class ClassB {
  public:
-  virtual void MemberProcess0() const {
+  virtual void member_process0() const {
     printf("ScopeGuard: Member Function 0\n");
     ++count;
   }
 
-  virtual void MemberProcess1(int val) {
+  virtual void member_process1(int val) {
     printf("ScopeGuard: Member Function %d\n", val);
     ++count;
   }
 
-  virtual void MemberProcess2(long val) const volatile {
+  virtual void member_process2(long val) const volatile {
     printf("ScopeGuard: Member Function %ld\n", val);
     ++count;
   }
 
-  virtual void MemberProcess3(size_t val) volatile {
+  virtual void member_process3(size_t val) volatile {
     printf("ScopeGuard: Member Function %zu\n", val);
     ++count;
   }
@@ -94,9 +94,9 @@ int ClassB::count{0};
 
 TEST(ScopeGuard, MemberFunction) {
   ClassB bb;
-  auto a = ailego::ScopeGuard::Make(&bb, &ClassB::MemberProcess0);
-  auto b = ailego::ScopeGuard::Make(&bb, &ClassB::MemberProcess1, 2);
-  AILEGO_DEFER(&bb, &ClassB::MemberProcess2, 3);
-  AILEGO_DEFER(&bb, &ClassB::MemberProcess3, 4);
+  auto a = ailego::ScopeGuard::Make(&bb, &ClassB::member_process0);
+  auto b = ailego::ScopeGuard::Make(&bb, &ClassB::member_process1, 2);
+  AILEGO_DEFER(&bb, &ClassB::member_process2, 3);
+  AILEGO_DEFER(&bb, &ClassB::member_process3, 4);
   EXPECT_EQ(0, ClassB::count);
 }

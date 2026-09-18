@@ -27,7 +27,7 @@ namespace zvec {
 
 MmapForwardStore::MmapForwardStore(const std::string &uri) : file_path_(uri) {}
 
-Status MmapForwardStore::Open() {
+Status MmapForwardStore::open() {
   std::string uri = file_path_;
   auto status = CreateRandomAccessFileByUri(uri, &file_, &file_path_);
   if (!status.ok()) {
@@ -38,7 +38,7 @@ Status MmapForwardStore::Open() {
   format_ = InferFileFormat(file_path_);
   switch (format_) {
     case FileFormat::PARQUET: {
-      status = OpenParquet(file_);
+      status = open_parquet(file_);
       if (!status.ok()) {
         LOG_ERROR("Failed to open parquet file: %s : %s", file_path_.c_str(),
                   status.ToString().c_str());
@@ -47,7 +47,7 @@ Status MmapForwardStore::Open() {
       break;
     }
     case FileFormat::IPC: {
-      status = OpenIPC(file_);
+      status = open_ipc(file_);
       if (!status.ok()) {
         LOG_ERROR("Failed to open ipc file: %s : %s", file_path_.c_str(),
                   status.ToString().c_str());
@@ -63,7 +63,7 @@ Status MmapForwardStore::Open() {
   return Status::OK();
 }
 
-arrow::Status MmapForwardStore::OpenParquet(
+arrow::Status MmapForwardStore::open_parquet(
     const std::shared_ptr<arrow::io::RandomAccessFile> &file) {
   auto parquet_file_reader = parquet::ParquetFileReader::Open(file);
   ARROW_RETURN_NOT_OK(parquet::arrow::FileReader::Make(
@@ -93,7 +93,7 @@ arrow::Status MmapForwardStore::OpenParquet(
   return arrow::Status::OK();
 }
 
-arrow::Status MmapForwardStore::OpenIPC(
+arrow::Status MmapForwardStore::open_ipc(
     const std::shared_ptr<arrow::io::RandomAccessFile> &file) {
   std::shared_ptr<arrow::ipc::RecordBatchFileReader> reader;
   arrow::Result<std::shared_ptr<arrow::ipc::RecordBatchFileReader>> result =
@@ -159,7 +159,7 @@ bool MmapForwardStore::validate(const std::vector<std::string> &columns) const {
   return true;
 }
 
-RecordBatchReaderPtr MmapForwardStore::ScanParquet(
+RecordBatchReaderPtr MmapForwardStore::scan_parquet(
     const std::vector<std::string> &columns) {
   // Create a new parquet reader for scanning
   std::unique_ptr<parquet::arrow::FileReader> parquet_reader;
@@ -177,7 +177,7 @@ RecordBatchReaderPtr MmapForwardStore::ScanParquet(
   return rb_reader;
 }
 
-RecordBatchReaderPtr MmapForwardStore::ScanIPC(
+RecordBatchReaderPtr MmapForwardStore::scan_ipc(
     const std::vector<std::string> &columns) {
   std::vector<int> col_indices;
   for (auto &column : columns) {
@@ -197,8 +197,8 @@ RecordBatchReaderPtr MmapForwardStore::ScanIPC(
   return std::make_shared<arrow::TableBatchReader>(sub_table);
 }
 
-TablePtr MmapForwardStore::FetchParquet(const std::vector<std::string> &columns,
-                                        const std::vector<int> &indices) {
+TablePtr MmapForwardStore::fetch_parquet(
+    const std::vector<std::string> &columns, const std::vector<int> &indices) {
   bool need_local_doc_id = false;
   std::vector<int> col_indices;
   std::vector<int> data_column_positions;
@@ -223,8 +223,8 @@ TablePtr MmapForwardStore::FetchParquet(const std::vector<std::string> &columns,
   int output_row = 0;
   for (int global_row : indices) {
     if (global_row < 0 || global_row >= num_rows_) return nullptr;
-    int rg_id = FindRowGroupForRow(global_row);
-    int64_t offset = GetRowGroupOffset(rg_id);
+    int rg_id = find_row_group_for_row(global_row);
+    int64_t offset = get_row_group_offset(rg_id);
     uint64_t local_in_rg = global_row - offset;
     rg_to_local[rg_id].emplace_back(output_row, local_in_rg);
     if (need_local_doc_id) {
@@ -348,7 +348,7 @@ TablePtr MmapForwardStore::FetchParquet(const std::vector<std::string> &columns,
                             static_cast<int64_t>(indices.size()));
 }
 
-ExecBatchPtr MmapForwardStore::FetchParquet(
+ExecBatchPtr MmapForwardStore::fetch_parquet(
     const std::vector<std::string> &columns, int index) {
   std::vector<int> col_indices;
   for (const auto &col : columns) {
@@ -357,8 +357,8 @@ ExecBatchPtr MmapForwardStore::FetchParquet(
     col_indices.push_back(idx);
   }
 
-  int rg_id = FindRowGroupForRow(index);
-  int64_t offset = GetRowGroupOffset(rg_id);
+  int rg_id = find_row_group_for_row(index);
+  int64_t offset = get_row_group_offset(rg_id);
   uint64_t local_in_rg = index - offset;
 
   std::shared_ptr<arrow::Table> rg_table;
@@ -381,15 +381,15 @@ ExecBatchPtr MmapForwardStore::FetchParquet(
   return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
 }
 
-TablePtr MmapForwardStore::FetchIPC(const std::vector<std::string> &columns,
-                                    const std::vector<int> &indices) {
+TablePtr MmapForwardStore::fetch_ipc(const std::vector<std::string> &columns,
+                                     const std::vector<int> &indices) {
   std::vector<std::pair<int64_t, int64_t>> indices_in_table;
   auto chunked_array = table_->column(0);
   for (const auto &target_index : indices) {
     int target_chunk_index = -1;
     int64_t offset_in_chunk = -1;
-    if (FindTargetChunk(target_index, chunked_array->num_chunks(),
-                        &target_chunk_index, &offset_in_chunk)) {
+    if (find_target_chunk(target_index, chunked_array->num_chunks(),
+                          &target_chunk_index, &offset_in_chunk)) {
       indices_in_table.emplace_back(target_chunk_index, offset_in_chunk);
     } else {
       LOG_ERROR("Failed to find target chunk for index %d", target_index);
@@ -441,8 +441,8 @@ TablePtr MmapForwardStore::FetchIPC(const std::vector<std::string> &columns,
   return arrow::Table::Make(result_schema, result_columns, indices.size());
 }
 
-ExecBatchPtr MmapForwardStore::FetchIPC(const std::vector<std::string> &columns,
-                                        int index) {
+ExecBatchPtr MmapForwardStore::fetch_ipc(
+    const std::vector<std::string> &columns, int index) {
   // Extract scalars
   std::vector<arrow::Datum> scalars;
   scalars.reserve(columns.size());
@@ -463,7 +463,7 @@ ExecBatchPtr MmapForwardStore::FetchIPC(const std::vector<std::string> &columns,
   return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
 }
 
-int MmapForwardStore::FindRowGroupForRow(int64_t row) {
+int MmapForwardStore::find_row_group_for_row(int64_t row) {
   auto it = std::upper_bound(row_group_offsets_.begin(),
                              row_group_offsets_.end(), row);
   if (it == row_group_offsets_.begin()) {
@@ -472,13 +472,13 @@ int MmapForwardStore::FindRowGroupForRow(int64_t row) {
   return static_cast<int>(std::distance(row_group_offsets_.begin(), it) - 1);
 }
 
-int64_t MmapForwardStore::GetRowGroupOffset(int rg_id) {
+int64_t MmapForwardStore::get_row_group_offset(int rg_id) {
   return row_group_offsets_[rg_id];
 }
 
-bool MmapForwardStore::FindTargetChunk(int target_index, int num_chunks,
-                                       int *target_chunk_index,
-                                       int64_t *offset_in_chunk) {
+bool MmapForwardStore::find_target_chunk(int target_index, int num_chunks,
+                                         int *target_chunk_index,
+                                         int64_t *offset_in_chunk) {
   if (target_index < 0 || target_index >= num_rows_) {
     return false;
   }
@@ -533,9 +533,9 @@ TablePtr MmapForwardStore::fetch(const std::vector<std::string> &columns,
   }
 
   if (format_ == FileFormat::PARQUET) {
-    return FetchParquet(columns, indices);
+    return fetch_parquet(columns, indices);
   } else {
-    return FetchIPC(columns, indices);
+    return fetch_ipc(columns, indices);
   }
 }
 
@@ -551,9 +551,9 @@ ExecBatchPtr MmapForwardStore::fetch(const std::vector<std::string> &columns,
   }
 
   if (format_ == FileFormat::PARQUET) {
-    return FetchParquet(columns, index);
+    return fetch_parquet(columns, index);
   } else {
-    return FetchIPC(columns, index);
+    return fetch_ipc(columns, index);
   }
 }
 
@@ -564,9 +564,9 @@ RecordBatchReaderPtr MmapForwardStore::scan(
   }
 
   if (format_ == FileFormat::PARQUET) {
-    return ScanParquet(columns);
+    return scan_parquet(columns);
   } else {
-    return ScanIPC(columns);
+    return scan_ipc(columns);
   }
 }
 

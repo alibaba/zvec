@@ -30,7 +30,7 @@
 
 namespace zvec::sqlengine {
 
-const std::map<NodeOp, QueryNodeOp> QueryAnalyzer::opMap_ = {
+const std::map<NodeOp, QueryNodeOp> QueryAnalyzer::opMap = {
     {NodeOp::T_AND, QueryNodeOp::Q_AND},
     {NodeOp::T_OR, QueryNodeOp::Q_OR},
     {NodeOp::T_EQ, QueryNodeOp::Q_EQ},
@@ -504,8 +504,8 @@ QueryNode::Ptr QueryAnalyzer::create_querynode_from_node(const Node::Ptr &node,
 }
 
 QueryNodeOp QueryAnalyzer::nodeop_2_query_nodeop(NodeOp op) {
-  auto iter = opMap_.find(op);
-  if (iter == opMap_.end()) {
+  auto iter = opMap.find(op);
+  if (iter == opMap.end()) {
     return QueryNodeOp::Q_NONE;
   }
   return iter->second;

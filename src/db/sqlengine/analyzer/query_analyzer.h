@@ -52,7 +52,7 @@ class QueryAnalyzer {
                                  QueryInfo *query_info, QueryNode *filter_cond);
 
  private:
-  static const std::map<NodeOp, QueryNodeOp> opMap_;
+  static const std::map<NodeOp, QueryNodeOp> opMap;
   static const int DEFAULT_TOPN = 20;
   static const size_t kMaxNumOfFilters = 4096;
 };

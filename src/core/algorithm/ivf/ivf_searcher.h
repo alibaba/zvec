@@ -78,7 +78,7 @@ class IVFSearcher : public IndexSearcher {
 
   //! The entity binds and quantizes raw queries itself when a Turbo
   //! quantizer is restored from the index.
-  bool owns_query_quantization(void) const override {
+  bool owns_query_quantization() const override {
     return quantizer_ != nullptr;
   }
 

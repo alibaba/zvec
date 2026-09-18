@@ -101,7 +101,7 @@ Status materialize_window(DocIterator::Impl *impl, int64_t begin, int64_t end) {
       }
       for (int64_t i = 0; i < num_rows; i++) {
         auto fetched =
-            indexer->Fetch(static_cast<uint32_t>(row_ids->Value(begin + i)));
+            indexer->fetch(static_cast<uint32_t>(row_ids->Value(begin + i)));
         if (!fetched.has_value()) {
           // Docs without a value for a vector field are accepted by insert
           // (the write path only warns and skips them, regardless of the

@@ -711,10 +711,10 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
       return ret;
     }
   }
-  return this->IndexBuild(std::move(target_holder));
+  return this->index_build(std::move(target_holder));
 }
 
-int MixedStreamerReducer::IndexBuild(IndexHolder::Pointer target_holder) {
+int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
   if (target_builder_converter_) {
     int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
                                                       target_holder);
@@ -730,7 +730,9 @@ int MixedStreamerReducer::IndexBuild(IndexHolder::Pointer target_holder) {
       return core::IndexError_Runtime;
     }
   }
-  int ret = target_builder_->train(target_holder);
+  auto threads =
+      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
+  int ret = target_builder_->train(threads, target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();
   }
@@ -738,7 +740,7 @@ int MixedStreamerReducer::IndexBuild(IndexHolder::Pointer target_holder) {
     LOG_ERROR("Failed to train target builder, ret=%d", ret);
     return ret;
   }
-  ret = target_builder_->build(target_holder);
+  ret = target_builder_->build(std::move(threads), target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();
   }
