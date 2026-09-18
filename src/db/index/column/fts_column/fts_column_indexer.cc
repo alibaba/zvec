@@ -22,8 +22,8 @@
 #include <rocksdb/write_batch.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
-#include "db/common/typedef.h"
 #include "db/common/constants.h"
+#include "db/common/typedef.h"
 #include "iterator/fts_candidate_iterator.h"
 #include "iterator/fts_conjunction_iterator.h"
 #include "iterator/fts_disjunction_iterator.h"
