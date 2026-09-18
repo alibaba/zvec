@@ -366,17 +366,32 @@ RecordBatchReaderPtr BufferPoolForwardStore::scan(
 
   // Create a new parquet reader for scanning
   std::unique_ptr<parquet::arrow::FileReader> parquet_reader;
-  auto parquet_file_reader = parquet::ParquetFileReader::Open(file_);
-  auto status = parquet::arrow::FileReader::Make(arrow::default_memory_pool(),
-                                                 std::move(parquet_file_reader),
-                                                 &parquet_reader);
+  // A cache miss may fall back to streaming. Do not prefetch an entire column
+  // chunk before returning its first batch.
+  parquet::ReaderProperties read_properties;
+  read_properties.enable_buffered_stream();
+  read_properties.set_buffer_size(64 * 1024);
+  auto parquet_file_reader =
+      parquet::ParquetFileReader::Open(file_, read_properties);
+  parquet::ArrowReaderProperties arrow_properties;
+  arrow_properties.set_pre_buffer(false);
+  arrow_properties.set_batch_size(8192);
+  auto status = parquet::arrow::FileReader::Make(
+      arrow::default_memory_pool(), std::move(parquet_file_reader),
+      arrow_properties, &parquet_reader);
   if (!status.ok()) {
     LOG_ERROR("Failed to create parquet reader: %s", status.message().c_str());
     return nullptr;
   }
 
-  return std::make_shared<ParquetRecordBatchReader>(parquet_reader, columns,
-                                                    physic_schema_, file_path_);
+  // Segment initialization copies docids into its own array. Caching the full
+  // decoded column here adds a redundant copy and makes opening depend on cache
+  // admission. Keep this sequential scan independent of the pool capacity.
+  const bool with_cache =
+      columns.size() != 1 || columns.front() != GLOBAL_DOC_ID;
+  return std::make_shared<ParquetRecordBatchReader>(
+      parquet_reader, columns, physic_schema_, file_path_, with_cache,
+      /*stream_uncached=*/true);
 }
 
 }  // namespace zvec

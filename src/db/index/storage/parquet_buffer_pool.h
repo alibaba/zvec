@@ -43,10 +43,14 @@ struct ParquetBufferID {
 
 struct ParquetBufferIDHash {
   size_t operator()(const ParquetBufferID &buffer_id) const {
-    size_t hash = std::hash<int>{}(1);
-    hash = hash ^ (std::hash<uint64_t>{}(buffer_id.file_id));
-    hash = hash * 31 + std::hash<int>{}(buffer_id.column);
-    hash = hash * 31 + std::hash<int>{}(buffer_id.row_group);
+    size_t hash = std::hash<std::string>{}(buffer_id.filename);
+    const auto combine = [&hash](size_t value) {
+      hash ^= value + 0x9e3779b9U + (hash << 6) + (hash >> 2);
+    };
+    combine(std::hash<uint64_t>{}(buffer_id.file_id));
+    combine(std::hash<int64_t>{}(buffer_id.mtime));
+    combine(std::hash<int>{}(buffer_id.column));
+    combine(std::hash<int>{}(buffer_id.row_group));
     return hash;
   }
 };
@@ -102,9 +106,8 @@ class ParquetBufferContextHandle {
 
   ~ParquetBufferContextHandle();
 
-  std::shared_ptr<arrow::ChunkedArray> data() {
-    return arrow_;
-  }
+  //! Return an Arrow view whose buffers retain the cache pin.
+  std::shared_ptr<arrow::ChunkedArray> data() const;
 
  private:
   ParquetBufferID buffer_id_;
@@ -128,6 +131,8 @@ class ParquetBufferPool {
   ParquetBufferPool &operator=(ParquetBufferPool &&) = delete;
 
  private:
+  static constexpr size_t kMaxConcurrentLoads = 4;
+
   friend class ParquetBufferContextHandle;
 
   using Cache =
@@ -135,7 +140,8 @@ class ParquetBufferPool {
                             detail::ParquetBufferLoader, ParquetBufferIDHash,
                             ParquetBufferIDEqual>;
 
-  ParquetBufferPool() = default;
+  ParquetBufferPool()
+      : cache_(detail::ParquetBufferLoader{}, kMaxConcurrentLoads) {}
 
   std::shared_ptr<arrow::ChunkedArray> retain(ParquetBufferID buffer_id);
 

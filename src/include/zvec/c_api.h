@@ -592,18 +592,19 @@ ZVEC_EXPORT zvec_config_data_t *ZVEC_CALL zvec_config_data_create(void);
 ZVEC_EXPORT void ZVEC_CALL zvec_config_data_destroy(zvec_config_data_t *config);
 
 /**
- * @brief Set memory limit in configuration data
+ * @brief Set the process-wide managed cache budget in configuration data
  * @param config Configuration data pointer
- * @param memory_limit_bytes Memory limit in bytes
+ * @param memory_limit_bytes Managed cache budget in bytes; not a hard RSS
+ * limit
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_config_data_set_memory_limit(
     zvec_config_data_t *config, uint64_t memory_limit_bytes);
 
 /**
- * @brief Get memory limit from configuration data
+ * @brief Get the process-wide managed cache budget from configuration data
  * @param config Configuration data pointer
- * @return uint64_t Memory limit in bytes
+ * @return uint64_t Managed cache budget in bytes
  */
 ZVEC_EXPORT uint64_t ZVEC_CALL
 zvec_config_data_get_memory_limit(const zvec_config_data_t *config);

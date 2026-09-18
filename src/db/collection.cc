@@ -1118,10 +1118,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
         if (current_live_doc_count + seg_live_doc_count >
             max_doc_count_per_segment) {
           // Compaction physically removes deleted rows.
-          task = SegmentTask::CreateCompactTask(
-              CompactTask{path_, schema, current_group,
-                          allocate_segment_id_for_tmp_segment(), filter,
-                          !options_.enable_mmap_, concurrency});
+          task = SegmentTask::CreateCompactTask(CompactTask{
+              path_, schema, current_group,
+              allocate_segment_id_for_tmp_segment(), filter,
+              !options_.enable_mmap_, options_.enable_mmap_, concurrency});
         }
       } else {
         if (current_physical_doc_count + seg_physical_doc_count >
@@ -1133,10 +1133,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
             // Merge segments while preserving deleted rows.
-            task = SegmentTask::CreateCompactTask(
-                CompactTask{path_, schema, current_group,
-                            allocate_segment_id_for_tmp_segment(), nullptr,
-                            !options_.enable_mmap_, concurrency});
+            task = SegmentTask::CreateCompactTask(CompactTask{
+                path_, schema, current_group,
+                allocate_segment_id_for_tmp_segment(), nullptr,
+                !options_.enable_mmap_, options_.enable_mmap_, concurrency});
           }
         }
       }
@@ -1165,7 +1165,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
           purge_deleted_docs ? filter : nullptr, !options_.enable_mmap_,
-          concurrency});
+          options_.enable_mmap_, concurrency});
     }
     tasks.push_back(task);
   }
@@ -1936,7 +1936,12 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
   // Single-segment queries have no segment-level fanout; multi-segment queries
   // already use the query pool per sub-query.
   if (segments.size() == 1) {
-    auto group = GlobalResource::Instance().query_thread_pool()->make_group();
+    auto *pool = GlobalResource::Instance().query_thread_pool();
+    if (pool == nullptr) {
+      return tl::make_unexpected(
+          Status::InternalError("Query thread pool initialization failed"));
+    }
+    auto group = pool->make_group();
     for (size_t i = 0; i < pending_queries.size(); ++i) {
       group->execute(
           [&, i]() { results[i] = execute_query(pending_queries[i]); });
