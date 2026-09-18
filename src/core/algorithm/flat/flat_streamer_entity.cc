@@ -775,6 +775,45 @@ int FlatStreamerEntity::get_vector_by_key(
   return 0;
 }
 
+int FlatStreamerEntity::get_vectors_by_key(
+    const uint64_t *keys, uint32_t count,
+    std::vector<IndexStorage::MemoryBlock> &blocks) const {
+  std::vector<VectorLocation> locations(count);
+  key_info_map_lock_->lock_shared();
+  if (use_key_info_map_) {
+    for (uint32_t i = 0; i < count; ++i) {
+      auto iterator = key_info_map_.find(keys[i]);
+      if (iterator == key_info_map_.end()) {
+        key_info_map_lock_->unlock_shared();
+        return -1;
+      }
+      locations[i] = iterator->second;
+    }
+  } else {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (keys[i] >= withid_key_info_map_.size()) {
+        key_info_map_lock_->unlock_shared();
+        return -1;
+      }
+      locations[i] = withid_key_info_map_[keys[i]];
+    }
+  }
+  key_info_map_lock_->unlock_shared();
+
+  blocks.resize(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const VectorLocation &loc = locations[i];
+    auto segment = this->get_segment(loc.segment_id);
+    if (!segment ||
+        segment->read(loc.offset, blocks[i], index_meta_.element_size()) !=
+            index_meta_.element_size()) {
+      LOG_ERROR("Failed to read segment, size=%u", index_meta_.element_size());
+      return -1;
+    }
+  }
+  return 0;
+}
+
 IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
   auto entity = this->clone();
   if (!entity) {

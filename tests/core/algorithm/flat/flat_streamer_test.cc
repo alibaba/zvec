@@ -186,6 +186,19 @@ TEST_F(FlatStreamerTest, TestAddVector) {
     }
   }
 
+  std::vector<uint64_t> keys{3, 127, 999};
+  std::vector<IndexStorage::MemoryBlock> blocks;
+  ASSERT_EQ(0, provider->get_vectors(
+                   keys.data(), static_cast<uint32_t>(keys.size()), blocks));
+  ASSERT_EQ(keys.size(), blocks.size());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    const float *data = static_cast<const float *>(blocks[i].data());
+    ASSERT_NE(nullptr, data);
+    for (size_t j = 0; j < dim; ++j) {
+      ASSERT_FLOAT_EQ(data[j], keys[i]);
+    }
+  }
+
   streamer->flush(0UL);
   streamer.reset();
 }
