@@ -63,6 +63,24 @@ cc_binary(
 )
 set_target_properties(collection_optimizer PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
+cc_binary(
+    NAME checkpoint_recovery_worker
+    LIBS ${CRASH_RECOVERY_COMMON_LIBS}
+    SRCS checkpoint_recovery_worker.cc
+    INCS .. ../../src
+    LDFLAGS ${APPLE_FRAMEWORK_LIBS}
+)
+set_target_properties(checkpoint_recovery_worker PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+cc_binary(
+    NAME storage_fault_worker
+    LIBS ${CRASH_RECOVERY_COMMON_LIBS}
+    SRCS storage_fault_worker.cc
+    INCS .. ../../src
+    LDFLAGS ${APPLE_FRAMEWORK_LIBS}
+)
+set_target_properties(storage_fault_worker PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
 
 # Build test executables
 file(GLOB ALL_TEST_SRCS *_test.cc)
@@ -77,6 +95,10 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     )
     add_dependencies(${CC_TARGET} data_generator)
     add_dependencies(${CC_TARGET} collection_optimizer)
+    if(CC_TARGET STREQUAL "checkpoint_recovery_test")
+        add_dependencies(${CC_TARGET} checkpoint_recovery_worker)
+        set_tests_properties(${CC_TARGET} PROPERTIES TIMEOUT 300)
+    endif()
     set_tests_properties(${CC_TARGET} PROPERTIES
         ENVIRONMENT "TEST_BINARY_DIR=${PROJECT_BINARY_DIR}"
     )
