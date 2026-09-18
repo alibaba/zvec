@@ -217,14 +217,16 @@ void CheckEncodedSearcher(const char *metric_name,
   auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
   ASSERT_NE(nullptr, legacy);
   ASSERT_NE(nullptr, searcher);
-  auto quantizer = CreateDistanceQuantizer(meta);
-  ASSERT_NE(nullptr, quantizer);
   ASSERT_EQ(0, legacy->init(ailego::Params()));
-  ASSERT_EQ(0, searcher->init(ailego::Params(), quantizer));
-  quantizer.reset();  // The searcher owns the distance provider's lifetime.
   ASSERT_FALSE(searcher->owns_query_quantization());
   ASSERT_EQ(0, legacy->load(row_storage, nullptr));
   for (size_t reopen = 0; reopen < 2; ++reopen) {
+    auto quantizer = CreateDistanceQuantizer(meta);
+    ASSERT_NE(nullptr, quantizer);
+    std::weak_ptr<turbo::Quantizer> weak_quantizer = quantizer;
+    ASSERT_EQ(0, searcher->init(ailego::Params(), quantizer));
+    quantizer.reset();  // The searcher owns the distance provider's lifetime.
+    EXPECT_FALSE(weak_quantizer.expired());
     ASSERT_EQ(0, searcher->load(storage, nullptr));
     auto reference = legacy->create_context();
     auto actual = searcher->create_context();
@@ -252,7 +254,9 @@ void CheckEncodedSearcher(const char *metric_name,
         }
       }
     }
-    ASSERT_EQ(0, searcher->unload());
+    actual.reset();
+    ASSERT_EQ(0, reopen == 0 ? searcher->unload() : searcher->cleanup());
+    EXPECT_TRUE(weak_quantizer.expired());
   }
   IndexMeta wrong = meta;
   wrong.set_meta(Type, dim + 1);

@@ -60,6 +60,7 @@ class FlatSearcher : public IndexSearcher {
   //! Unload index
   int unload() override {
     distance_matrix_ = {};
+    quantizer_.reset();
     container_ = nullptr;
     measure_ = nullptr;
     legacy_quantizer_layout_ = false;
