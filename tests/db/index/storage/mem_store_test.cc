@@ -81,7 +81,7 @@ class MemStoreTest : public testing::Test {
     schema_ = GetCollectionSchema();
     store_ = std::make_shared<MemForwardStore>(schema_, "./scalar.block.0",
                                                FileFormat::IPC);
-    EXPECT_TRUE(store_->Open().ok());
+    EXPECT_TRUE(store_->open().ok());
   }
 
   void TearDown() override {
@@ -100,12 +100,12 @@ class MemStoreTest : public testing::Test {
 TEST_F(MemStoreTest, ConstructorTest) {
   auto schema = GetCollectionSchema();
   MemForwardStore store(schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store.Open().ok());
+  EXPECT_TRUE(store.open().ok());
 }
 
 // Test open method
 TEST_F(MemStoreTest, OpenTest) {
-  EXPECT_TRUE(store_->Open().ok());
+  EXPECT_TRUE(store_->open().ok());
 }
 
 // Test insert method with valid data
@@ -136,7 +136,7 @@ TEST_F(MemStoreTest, InsertNullableData) {
                               "id", DataType::UINT64, true, nullptr)));
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   uint64_t doc_id = 0;
   Doc doc = CreateDoc(doc_id);
@@ -158,13 +158,13 @@ TEST_F(MemStoreTest, convertToBuilder) {
   uint64_t doc_id = 0;
   Doc doc = CreateDoc(doc_id);
   EXPECT_EQ(store_->insert(doc), Status::OK());
-  auto rb_builder = store_->createBuilder();
-  auto result = store_->convertToBuilder(rb_builder);
+  auto rb_builder = store_->create_builder();
+  auto result = store_->convert_to_builder(rb_builder);
   EXPECT_TRUE(result.ok());
   EXPECT_EQ(store_->num_rows(), 1);
 
   // re convert to builder
-  result = store_->convertToBuilder(rb_builder);
+  result = store_->convert_to_builder(rb_builder);
   EXPECT_TRUE(result.ok());
   EXPECT_EQ(store_->num_rows(), 1);
 }
@@ -177,7 +177,7 @@ TEST_F(MemStoreTest, convertToBuilderWithNullableData) {
                               "id", DataType::UINT64, true, nullptr)));
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   for (size_t i = 0; i < 10; i++) {
     uint64_t doc_id = 0;
@@ -188,8 +188,8 @@ TEST_F(MemStoreTest, convertToBuilderWithNullableData) {
     EXPECT_EQ(store->insert(doc), Status::OK());
   }
 
-  auto rb_builder = store_->createBuilder();
-  auto result = store_->convertToBuilder(rb_builder);
+  auto rb_builder = store_->create_builder();
+  auto result = store_->convert_to_builder(rb_builder);
   EXPECT_TRUE(result.ok());
 
   EXPECT_EQ(store->num_rows(), 10);
@@ -201,14 +201,14 @@ TEST_F(MemStoreTest, ConvertToRecordBatch) {
   Doc doc = CreateDoc(doc_id);
   EXPECT_EQ(store_->insert(doc), Status::OK());
 
-  auto result = store_->convertToRecordBatch();
+  auto result = store_->convert_to_record_batch();
   EXPECT_TRUE(result.ok());
   EXPECT_NE(result.ValueOrDie(), nullptr);
   auto rb = result.ValueOrDie();
   EXPECT_EQ(rb->num_rows(), 1);
 
   // re convert to record batch
-  result = store_->convertToRecordBatch();
+  result = store_->convert_to_record_batch();
   EXPECT_TRUE(result.ok());
   EXPECT_NE(result.ValueOrDie(), nullptr);
   rb = result.ValueOrDie();
@@ -223,7 +223,7 @@ TEST_F(MemStoreTest, ConvertToTable) {
 
   std::vector<std::string> columns = {};
 
-  auto result = store_->convertToTable(columns, {});
+  auto result = store_->convert_to_table(columns, {});
   EXPECT_TRUE(result.ok());
   EXPECT_NE(result.ValueOrDie(), nullptr);
   auto table = result.ValueOrDie();
@@ -231,7 +231,7 @@ TEST_F(MemStoreTest, ConvertToTable) {
   EXPECT_EQ(table->num_columns(), 2 + 4);
 
   // re convert to table
-  result = store_->convertToTable(columns, {});
+  result = store_->convert_to_table(columns, {});
   EXPECT_TRUE(result.ok());
   EXPECT_NE(result.ValueOrDie(), nullptr);
   table = result.ValueOrDie();
@@ -247,7 +247,7 @@ TEST_F(MemStoreTest, ConvertToTableWithColumnFiltering) {
 
   std::vector<std::string> columns = {"id", "name"};
 
-  auto result = store_->convertToTable(columns, {});
+  auto result = store_->convert_to_table(columns, {});
   EXPECT_TRUE(result.ok());
   EXPECT_NE(result.ValueOrDie(), nullptr);
   auto table = result.ValueOrDie();
@@ -255,7 +255,7 @@ TEST_F(MemStoreTest, ConvertToTableWithColumnFiltering) {
   EXPECT_EQ(table->num_columns(), 2);
 
   // re convert to table
-  result = store_->convertToTable(columns, {});
+  result = store_->convert_to_table(columns, {});
   EXPECT_TRUE(result.ok());
   EXPECT_NE(result.ValueOrDie(), nullptr);
   table = result.ValueOrDie();
@@ -275,7 +275,7 @@ TEST_F(MemStoreTest, ConvertToTableWithIndexFiltering) {
   std::vector<std::string> columns = {};
   std::vector<int> indices = {0, 2, 4};  // Select specific rows
 
-  auto result = store_->convertToTable(columns, indices);
+  auto result = store_->convert_to_table(columns, indices);
   EXPECT_TRUE(result.ok());
 
   auto table = result.ValueOrDie();
@@ -309,7 +309,7 @@ TEST_F(MemStoreTest, FetchWithMoreData) {
   auto schema = GetCollectionSchema();
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   for (size_t i = 0; i < 200; i++) {
     uint64_t doc_id = 0;
@@ -360,7 +360,7 @@ TEST_F(MemStoreTest, FetchOneFieldWithNullable) {
                               "id", DataType::UINT64, true, nullptr)));
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   for (size_t i = 0; i < 10; i++) {
     uint64_t doc_id = 0;
@@ -597,7 +597,7 @@ TEST_F(MemStoreTest, FetchSingleRowWithNullableData) {
                               "id", DataType::UINT64, true, nullptr)));
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   uint64_t doc_id = 0;
   Doc doc = CreateDoc(doc_id);
@@ -659,7 +659,7 @@ TEST_F(MemStoreTest, ScanWithMoreData) {
   auto schema = GetCollectionSchema();
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   for (size_t i = 0; i < 200; i++) {
     uint64_t doc_id = 0;
@@ -831,7 +831,7 @@ TEST_F(MemStoreTest, EmptySchema) {
   auto empty_store = std::make_unique<MemForwardStore>(
       empty_schema, "./scalar.block.0", FileFormat::IPC);
 
-  EXPECT_TRUE(empty_store->Open().ok());
+  EXPECT_TRUE(empty_store->open().ok());
 }
 
 arrow::Result<std::shared_ptr<arrow::Table>> ReadArrowIPCFile(
@@ -859,8 +859,8 @@ arrow::Result<std::shared_ptr<arrow::Table>> ReadArrowIPCFile(
 }
 
 TEST_F(MemStoreTest, Flush) {
-  size_t MAX_DOC = 10010;
-  for (size_t i = 0; i < MAX_DOC; i++) {
+  size_t max_doc = 10010;
+  for (size_t i = 0; i < max_doc; i++) {
     EXPECT_EQ(store_->insert(CreateDoc(i)), Status::OK());
   }
   EXPECT_EQ(store_->flush(), Status::OK());
@@ -871,7 +871,7 @@ TEST_F(MemStoreTest, Flush) {
       << "Failed to read Arrow IPC file: " << read_result.status().ToString();
 
   auto table = read_result.ValueOrDie();
-  EXPECT_EQ(table->num_rows(), MAX_DOC);
+  EXPECT_EQ(table->num_rows(), max_doc);
   EXPECT_EQ(table->num_columns(), 2 + 4);
 
   auto column_names = table->ColumnNames();
@@ -887,18 +887,18 @@ TEST_F(MemStoreTest, Flush) {
 
 
 TEST_F(MemStoreTest, ReFlush) {
-  size_t MAX_DOC = 10010;
-  for (size_t i = 0; i < MAX_DOC; i++) {
+  size_t max_doc = 10010;
+  for (size_t i = 0; i < max_doc; i++) {
     EXPECT_EQ(store_->insert(CreateDoc(i)), Status::OK());
   }
   EXPECT_EQ(store_->flush(), Status::OK());
 
-  for (size_t i = MAX_DOC; i < MAX_DOC + 10; i++) {
+  for (size_t i = max_doc; i < max_doc + 10; i++) {
     EXPECT_EQ(store_->insert(CreateDoc(i)), Status::OK());
   }
   EXPECT_EQ(store_->flush(), Status::OK());
 
-  for (size_t i = MAX_DOC + 10; i < MAX_DOC + 20; i++) {
+  for (size_t i = max_doc + 10; i < max_doc + 20; i++) {
     EXPECT_EQ(store_->insert(CreateDoc(i)), Status::OK());
   }
   EXPECT_EQ(store_->flush(), Status::OK());
@@ -910,7 +910,7 @@ TEST_F(MemStoreTest, ReFlush) {
       << "Failed to read Arrow IPC file: " << read_result.status().ToString();
 
   auto table = read_result.ValueOrDie();
-  EXPECT_EQ(table->num_rows(), MAX_DOC + 20);
+  EXPECT_EQ(table->num_rows(), max_doc + 20);
   EXPECT_EQ(table->num_columns(), 2 + 4);
 
   auto column_names = table->ColumnNames();
@@ -928,13 +928,13 @@ TEST_F(MemStoreTest, ReFlush) {
 TEST_F(MemStoreTest, MaxCacheBytesLimit) {
   uint32_t max_cache_rows = 105;
   uint32_t max_buffer_size = 260 * 100 * 100;
-  uint32_t max_cache_size_ = max_buffer_size / 100;
+  uint32_t max_cache_size = max_buffer_size / 100;
   std::vector<int> batch_num_rows;
 
   auto schema = GetCollectionSchema();
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       schema, "./scalar.block.0", FileFormat::IPC, max_buffer_size);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   // Insert more documents than cache limit
   uint32_t cur_doc_total_bytes = 0;
@@ -944,7 +944,7 @@ TEST_F(MemStoreTest, MaxCacheBytesLimit) {
     EXPECT_EQ(store->insert(doc), Status::OK());
     cur_doc_total_bytes += doc.memory_usage();
     cur_batch_num_row++;
-    if (cur_doc_total_bytes >= max_cache_size_) {
+    if (cur_doc_total_bytes >= max_cache_size) {
       batch_num_rows.push_back(cur_batch_num_row);
       cur_doc_total_bytes = 0;
       cur_batch_num_row = 0;
@@ -985,7 +985,7 @@ TEST_F(MemStoreTest, AllDataType) {
 
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       all_type_schema, "./scalar.block.0", FileFormat::IPC, 64 * 1024 * 1024);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   // Insert more documents than cache limit
   for (uint64_t i = 0; i < max_cache_rows; ++i) {
@@ -1050,7 +1050,7 @@ TEST_F(MemStoreTest, General) {
   auto collection_schema = GetCollectionSchema();
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       collection_schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   size_t MAX_DOC = 1000000;
 
@@ -1166,7 +1166,7 @@ TEST(MemStoreOpenTest, OpenReportsErrorWhenWriterCreationFails) {
   // ChunkedFileWriter::Open returns nullptr.
   auto store = std::make_shared<MemForwardStore>(
       schema, "/nonexistent_zvec_dir_xyz/scalar.block.0", FileFormat::IPC);
-  auto status = store->Open();
+  auto status = store->open();
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(store->writer_, nullptr);
 }

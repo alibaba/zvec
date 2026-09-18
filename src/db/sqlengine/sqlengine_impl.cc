@@ -521,7 +521,7 @@ Status record_batch_to_doc_list(
       doc_id_array != nullptr) {
     fill_doc_id(doc_id_array, doc_it);
   }
-  if (auto score_array = record_batch.GetColumnByName(kFieldScore);
+  if (auto score_array = record_batch.GetColumnByName(FIELD_SCORE);
       score_array != nullptr) {
     fill_doc_score(score_array, doc_it);
   }
@@ -597,10 +597,10 @@ Result<GroupResults> SQLEngineImpl::fill_group_by_result(
     if (!status.ok()) {
       return tl::make_unexpected(status);
     }
-    auto group_id_array = record_batch->GetColumnByName(kFieldGroupId);
+    auto group_id_array = record_batch->GetColumnByName(FIELD_GROUP_ID);
     if (!group_id_array) {
       return tl::make_unexpected(Status::InternalError(
-          "Column not found in record batch: [", kFieldGroupId, "]"));
+          "Column not found in record batch: [", FIELD_GROUP_ID, "]"));
     }
     arrow::StringArray *typed_arr =
         static_cast<arrow::StringArray *>(group_id_array.get());

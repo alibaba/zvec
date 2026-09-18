@@ -15,8 +15,8 @@
 #pragma once
 
 #include <cstddef>
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 typedef void (*DistanceBatchQueryPreprocessFunc)(void *query, size_t dim);
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch

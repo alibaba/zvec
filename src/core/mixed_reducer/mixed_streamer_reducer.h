@@ -71,7 +71,7 @@ class MixedStreamerReducer : public IndexStreamerReducer {
                       const uint32_t id_offset, uint32_t *next_id);
   void add_sparse_vec(int *result);
 
-  int IndexBuild(IndexHolder::Pointer target_holder);
+  int index_build(IndexHolder::Pointer target_holder);
 
   //! Retrieve statistics
   const Stats &stats() const override {

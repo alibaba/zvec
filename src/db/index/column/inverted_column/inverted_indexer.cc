@@ -64,7 +64,7 @@ Status InvertedIndexer::open(bool create_dir_if_missing, bool read_only) {
   }
 
   if (!s.ok()) {
-    LOG_ERROR("Failed to open %s", ID().c_str());
+    LOG_ERROR("Failed to open %s", id().c_str());
     return s;
   }
 
@@ -79,7 +79,7 @@ Status InvertedIndexer::open(bool create_dir_if_missing, bool read_only) {
     indexers_.emplace(field.name(), std::move(column_indexer));
   }
 
-  LOG_INFO("Opened %s", ID().c_str());
+  LOG_INFO("Opened %s", id().c_str());
   return s;
 }
 
@@ -90,16 +90,16 @@ Status InvertedIndexer::flush() {
       continue;
     }
     if (!indexer->flush_special_values().ok()) {
-      LOG_ERROR("Failed to flush %s", indexer->ID().c_str());
+      LOG_ERROR("Failed to flush %s", indexer->id().c_str());
       return Status::InternalError();
     }
   }
 
   auto s = rocksdb_context_.flush();
   if (s.ok()) {
-    LOG_INFO("Flushed %s", ID().c_str());
+    LOG_INFO("Flushed %s", id().c_str());
   } else {
-    LOG_ERROR("Failed to flush %s", ID().c_str());
+    LOG_ERROR("Failed to flush %s", id().c_str());
   }
   return s;
 }
@@ -109,16 +109,16 @@ Status InvertedIndexer::create_snapshot(const std::string &snapshot_dir) {
   Status s;
   if (!rocksdb_context_.read_only()) {
     if (s = flush(); !s.ok()) {
-      LOG_ERROR("Failed to flush %s during creating a snapshot", ID().c_str());
+      LOG_ERROR("Failed to flush %s during creating a snapshot", id().c_str());
       return s;
     }
   }
 
   if (s = rocksdb_context_.create_checkpoint(snapshot_dir); s.ok()) {
-    LOG_INFO("Created snapshot[%s] of %s", snapshot_dir.c_str(), ID().c_str());
+    LOG_INFO("Created snapshot[%s] of %s", snapshot_dir.c_str(), id().c_str());
   } else {
     LOG_ERROR("Failed to create snapshot[%s] of %s", snapshot_dir.c_str(),
-              ID().c_str());
+              id().c_str());
   }
   return s;
 }
@@ -131,19 +131,19 @@ Status InvertedIndexer::seal() {
       continue;
     }
     if (s = indexer->seal(); !s.ok()) {
-      LOG_ERROR("Failed to seal %s", indexer->ID().c_str());
+      LOG_ERROR("Failed to seal %s", indexer->id().c_str());
     }
   }
 
   if (s = flush(); !s.ok()) {
-    LOG_ERROR("Failed to flush %s during sealing", ID().c_str());
+    LOG_ERROR("Failed to flush %s during sealing", id().c_str());
     return s;
   }
 
   if (s = rocksdb_context_.compact(); s.ok()) {
-    LOG_INFO("Sealed %s", ID().c_str());
+    LOG_INFO("Sealed %s", id().c_str());
   } else {
-    LOG_ERROR("Failed to compact %s during sealing", ID().c_str());
+    LOG_ERROR("Failed to compact %s during sealing", id().c_str());
   }
   return s;
 }
@@ -159,7 +159,7 @@ Status InvertedIndexer::create_column_indexer(const FieldSchema &field) {
                          });
   if (it != fields_.end()) {
     LOG_ERROR("InvertedColumnIndexer[%s] already exists in %s",
-              field.name().c_str(), ID().c_str());
+              field.name().c_str(), id().c_str());
     return Status::InvalidArgument();
   }
   auto params =
@@ -173,7 +173,7 @@ Status InvertedIndexer::create_column_indexer(const FieldSchema &field) {
   AILEGO_DEFER([&]() {
     if (s.ok()) {
       LOG_INFO("Created a new InvertedColumnIndexer[%s] in %s",
-               field.name().c_str(), ID().c_str());
+               field.name().c_str(), id().c_str());
     } else {
       if (cf_terms_created) {
         rocksdb_context_.drop_cf(field.name() + INVERT_SUFFIX_TERMS);
@@ -188,7 +188,7 @@ Status InvertedIndexer::create_column_indexer(const FieldSchema &field) {
         rocksdb_context_.drop_cf(field.name() + INVERT_SUFFIX_REVERSED_TERMS);
       }
       LOG_ERROR("Failed to create InvertedColumnIndexer[%s] in %s",
-                field.name().c_str(), ID().c_str());
+                field.name().c_str(), id().c_str());
     }
   });
 
@@ -244,24 +244,24 @@ Status InvertedIndexer::remove_column_indexer(const std::string &field_name) {
   auto column_indexer = (*this)[field_name];
   if (it == fields_.end() && !column_indexer) {
     LOG_ERROR("InvertedColumnIndexer[%s] doesn't exists in %s",
-              field_name.c_str(), ID().c_str());
+              field_name.c_str(), id().c_str());
     return Status::NotFound();
   }
   if (it == fields_.end() || !column_indexer) {
-    LOG_ERROR("%s is in corrupted state", ID().c_str());
+    LOG_ERROR("%s is in corrupted state", id().c_str());
     return Status::InternalError();
   }
 
   if (auto s = column_indexer->drop_storage(); !s.ok()) {
     LOG_ERROR("Failed to remove InvertedColumnIndexer[%s] in %s",
-              field_name.c_str(), ID().c_str());
+              field_name.c_str(), id().c_str());
     return s;
   }
 
   fields_.erase(it);
   indexers_.erase(field_name);
   LOG_INFO("Removed InvertedColumnIndexer[%s] in %s", field_name.c_str(),
-           ID().c_str());
+           id().c_str());
   return Status::OK();
 }
 

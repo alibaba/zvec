@@ -82,6 +82,9 @@ class LibAioLoader {
   aio_submit_fn io_submit;
   aio_getevents_fn io_getevents;
 
+  LibAioLoader(const LibAioLoader &) = delete;
+  LibAioLoader &operator=(const LibAioLoader &) = delete;
+
  private:
   LibAioLoader()
       : io_setup(nullptr),
@@ -94,9 +97,6 @@ class LibAioLoader {
       dlclose(handle_);
     }
   }
-
-  LibAioLoader(const LibAioLoader &) = delete;
-  LibAioLoader &operator=(const LibAioLoader &) = delete;
 
   void try_load() {
     // On Ubuntu 24.04 the libaio package was renamed with the t64 suffix

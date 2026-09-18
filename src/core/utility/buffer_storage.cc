@@ -1105,7 +1105,7 @@ class BufferStorage : public IndexStorage {
                 error.what());
       return IndexError_OpenFile;
     }
-    int ret = ParseToMapping();
+    int ret = parse_to_mapping();
     if (ret != 0) {
       this->close_index();
       return ret;
@@ -1141,7 +1141,7 @@ class BufferStorage : public IndexStorage {
   }
 
   // Called from single-threaded open or under AllShardsExclusiveLatch.
-  int ParseHeader(size_t offset, IndexFormat::MetaHeader *out) {
+  int parse_header(size_t offset, IndexFormat::MetaHeader *out) {
     constexpr size_t kHeaderSize = sizeof(IndexFormat::MetaHeader);
     if (buffer_pool_handle_->get_meta(offset, kHeaderSize,
                                       reinterpret_cast<char *>(out)) != 0) {
@@ -1160,7 +1160,7 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseFooter(size_t offset, IndexFormat::MetaFooter *footer) {
+  int parse_footer(size_t offset, IndexFormat::MetaFooter *footer) {
     if (buffer_pool_handle_->get_meta(offset, sizeof(*footer),
                                       reinterpret_cast<char *>(footer)) != 0) {
       LOG_ERROR("Get segment footer failed.");
@@ -1178,11 +1178,11 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseSegment(size_t offset, uint64_t header_start_offset,
-                   IndexFormat::MetaHeader *chain_header,
-                   const IndexFormat::MetaFooter &footer,
-                   uint32_t &out_segment_ids_offset,
-                   std::unique_ptr<char[]> &segment_buffer) {
+  int parse_segment(size_t offset, uint64_t header_start_offset,
+                    IndexFormat::MetaHeader *chain_header,
+                    const IndexFormat::MetaFooter &footer,
+                    uint32_t &out_segment_ids_offset,
+                    std::unique_ptr<char[]> &segment_buffer) {
     segment_buffer = std::make_unique<char[]>(footer.segments_meta_size);
     if (buffer_pool_handle_->get_meta(offset, footer.segments_meta_size,
                                       segment_buffer.get()) != 0) {
@@ -1238,13 +1238,13 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseToMapping() {
+  int parse_to_mapping() {
     uint64_t header_start_offset = 0;
     while (true) {
       int ret;
       auto header = std::make_unique<IndexFormat::MetaHeader>();
       IndexFormat::MetaHeader *chain_header = header.get();
-      ret = ParseHeader(header_start_offset, chain_header);
+      ret = parse_header(header_start_offset, chain_header);
       if (ret != 0) {
         LOG_ERROR("Failed to parse header, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -1279,7 +1279,7 @@ class BufferStorage : public IndexStorage {
         return IndexError_InvalidValue;
       }
       IndexFormat::MetaFooter footer{};
-      ret = ParseFooter(footer_offset, &footer);
+      ret = parse_footer(footer_offset, &footer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse footer, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -1292,8 +1292,8 @@ class BufferStorage : public IndexStorage {
       uint32_t segment_ids_offset = footer.segments_meta_size;
       std::unique_ptr<char[]> segment_buffer;
       ret =
-          ParseSegment(segment_start_offset, header_start_offset, chain_header,
-                       footer, segment_ids_offset, segment_buffer);
+          parse_segment(segment_start_offset, header_start_offset, chain_header,
+                        footer, segment_ids_offset, segment_buffer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));

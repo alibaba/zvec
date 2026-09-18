@@ -109,7 +109,7 @@ enum class QuantizerType {
 
 struct ZVEC_CORE_API SerializableBase {
   std::string serialize_to_json(bool omit_empty_value = false) const {
-    return zvec::ailego::JsonValue(SerializeToJsonObject(omit_empty_value))
+    return zvec::ailego::JsonValue(serialize_to_json_object(omit_empty_value))
         .as_json_string()
         .as_stl_string();
   }
@@ -119,13 +119,13 @@ struct ZVEC_CORE_API SerializableBase {
     if (!json_value.parse(json_str)) {
       return false;
     }
-    return DeserializeFromJsonObject(json_value.as_object());
+    return deserialize_from_json_object(json_value.as_object());
   }
 
  protected:
-  virtual ailego::JsonObject SerializeToJsonObject(
+  virtual ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const = 0;
-  virtual bool DeserializeFromJsonObject(
+  virtual bool deserialize_from_json_object(
       const ailego::JsonObject &json_obj) = 0;
 };
 
@@ -152,10 +152,11 @@ struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
 
  protected:
   friend class BaseIndexParam;
-  ailego::JsonObject SerializeToJsonObject(
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
 };
 
 //! Product-Quantization specific params
@@ -175,10 +176,11 @@ struct PqQuantizerParam : public QuantizerParam {
 
  protected:
   friend class BaseIndexParam;
-  ailego::JsonObject SerializeToJsonObject(
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
 };
 
 // preprocessor
@@ -289,8 +291,8 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   ~IVFQueryParam() override;
 
   int nprobe = 10;
-  std::shared_ptr<BaseIndexQueryParam> l1QueryParam = nullptr;
-  std::shared_ptr<BaseIndexQueryParam> l2QueryParam = nullptr;
+  std::shared_ptr<BaseIndexQueryParam> l1_query_param = nullptr;
+  std::shared_ptr<BaseIndexQueryParam> l2_query_param = nullptr;
 
   using Pointer = std::shared_ptr<IVFQueryParam>;
 
@@ -353,8 +355,9 @@ class ZVEC_CORE_API BaseIndexParam : public SerializableBase {
   //
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 
@@ -368,8 +371,9 @@ struct ZVEC_CORE_API FlatIndexParam : public BaseIndexParam {
   DataType storage_data_type = DataType::DT_UNDEFINED;
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 
@@ -377,17 +381,17 @@ struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<IVFIndexParam>;
   int nlist = 1024;
   int niters = 10;
-  std::shared_ptr<BaseIndexParam> l1Index = nullptr;
-  std::shared_ptr<BaseIndexParam> l2Index = nullptr;
+  std::shared_ptr<BaseIndexParam> l1_index = nullptr;
+  std::shared_ptr<BaseIndexParam> l2_index = nullptr;
   bool use_soar = false;
 
   // Constructors with delegation
   IVFIndexParam();
-  IVFIndexParam(int nlist, int niters, std::shared_ptr<BaseIndexParam> l1Index,
-                std::shared_ptr<BaseIndexParam> l2Index);
+  IVFIndexParam(int nlist, int niters, std::shared_ptr<BaseIndexParam> l1_index,
+                std::shared_ptr<BaseIndexParam> l2_index);
   IVFIndexParam(MetricType metric, int dim, int nlist, int niters,
-                std::shared_ptr<BaseIndexParam> l1Index,
-                std::shared_ptr<BaseIndexParam> l2Index);
+                std::shared_ptr<BaseIndexParam> l1_index,
+                std::shared_ptr<BaseIndexParam> l2_index);
   IVFIndexParam(const IVFIndexParam &);
   IVFIndexParam(IVFIndexParam &&);
   IVFIndexParam &operator=(const IVFIndexParam &);
@@ -427,8 +431,9 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
         ef_construction(ef_construction) {}
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 
@@ -458,8 +463,9 @@ struct ZVEC_CORE_API VamanaIndexParam : public BaseIndexParam {
         alpha(alpha) {}
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 
@@ -501,8 +507,9 @@ struct ZVEC_CORE_API HNSWRabitqIndexParam : public BaseIndexParam {
   ~HNSWRabitqIndexParam() override;
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 
@@ -526,8 +533,9 @@ struct ZVEC_CORE_API IVFRabitqIndexParam : public BaseIndexParam {
   ~IVFRabitqIndexParam() override;
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 
@@ -564,8 +572,9 @@ struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {
         pq_chunk_num(pq_chunk_num) {}
 
  protected:
-  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
-  ailego::JsonObject SerializeToJsonObject(
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };
 

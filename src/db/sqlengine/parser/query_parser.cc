@@ -17,11 +17,11 @@
 namespace zvec::sqlengine {
 
 SQLInfo::Ptr QueryParser::parse(const std::string &query) {
-  ZVecSQLParser se_sql_parser_;
+  ZVecSQLParser se_sql_parser;
 
-  SQLInfo::Ptr sql_info = se_sql_parser_.parse(query);
+  SQLInfo::Ptr sql_info = se_sql_parser.parse(query);
   if (sql_info == nullptr) {
-    err_msg_ = se_sql_parser_.err_msg();
+    err_msg_ = se_sql_parser.err_msg();
     return nullptr;
   }
 

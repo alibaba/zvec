@@ -20,12 +20,12 @@
 namespace zvec::sqlengine {
 
 template <typename NodeOp, typename Node>
-class Generic_Node {
+class GenericNode {
  public:
   using Ptr = std::shared_ptr<Node>;
 
-  Generic_Node(NodeOp m_op);
-  virtual ~Generic_Node() = default;
+  GenericNode(NodeOp m_op);
+  virtual ~GenericNode() = default;
 
   void set_left(Ptr m_left);
   void set_right(Ptr m_right);
@@ -41,8 +41,8 @@ class Generic_Node {
   Node *right_node() const {
     return right_.get();
   }
-  void set_parent(Generic_Node *m_parent);
-  Generic_Node *parent();
+  void set_parent(GenericNode *m_parent);
+  GenericNode *parent();
 
   virtual NodeOp op() const {
     return op_;
@@ -56,34 +56,34 @@ class Generic_Node {
   NodeOp op_;
   Ptr left_{nullptr};
   Ptr right_{nullptr};
-  Generic_Node *parent_{nullptr};
+  GenericNode *parent_{nullptr};
 };
 
 template <typename NodeOp, typename Node>
-Generic_Node<NodeOp, Node>::Generic_Node(NodeOp m_op) {
+GenericNode<NodeOp, Node>::GenericNode(NodeOp m_op) {
   op_ = m_op;
 }
 
 template <typename NodeOp, typename Node>
-void Generic_Node<NodeOp, Node>::set_left(Ptr m_left) {
+void GenericNode<NodeOp, Node>::set_left(Ptr m_left) {
   left_ = std::move(m_left);
   if (left_ != nullptr) {
     left_->set_parent(this);
   }
 }
 template <typename NodeOp, typename Node>
-void Generic_Node<NodeOp, Node>::set_right(Ptr m_right) {
+void GenericNode<NodeOp, Node>::set_right(Ptr m_right) {
   right_ = std::move(m_right);
   if (right_ != nullptr) {
     right_->set_parent(this);
   }
 }
 template <typename NodeOp, typename Node>
-void Generic_Node<NodeOp, Node>::set_parent(Generic_Node<NodeOp, Node> *value) {
+void GenericNode<NodeOp, Node>::set_parent(GenericNode<NodeOp, Node> *value) {
   this->parent_ = value;
 }
 template <typename NodeOp, typename Node>
-Generic_Node<NodeOp, Node> *Generic_Node<NodeOp, Node>::parent() {
+GenericNode<NodeOp, Node> *GenericNode<NodeOp, Node>::parent() {
   return parent_;
 }
 

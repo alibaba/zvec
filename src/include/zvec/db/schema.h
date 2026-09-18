@@ -408,6 +408,9 @@ class ZVEC_API CollectionSchema {
  private:
   void copy_fields(const FieldSchemaPtrList &fields) {
     for (auto &field : fields) {
+      if (!field) {
+        continue;
+      }
       auto c = std::make_shared<FieldSchema>(*field);
       fields_.push_back(c);
       fields_map_[field->name()] = c;

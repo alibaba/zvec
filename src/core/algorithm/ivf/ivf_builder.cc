@@ -496,7 +496,7 @@ int IVFBuilder::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-int IVFBuilder::CheckAndUpdateMajorOrder(IndexMeta &meta) {
+int IVFBuilder::check_and_update_major_order(IndexMeta &meta) {
   const std::string &metric_name = meta.metric_name();
   auto metric = IndexFactory::CreateMetric(metric_name);
   if (!metric) {
@@ -752,7 +752,7 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
       source_reader_->reset();
     }
   });
-  int ret = CheckAndUpdateMajorOrder(quantized_meta_);
+  int ret = check_and_update_major_order(quantized_meta_);
   ivf_check_error_code(ret);
 
   IVFDumper::Pointer ivf_dumper = std::make_shared<IVFDumper>(

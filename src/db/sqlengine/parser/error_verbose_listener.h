@@ -26,17 +26,17 @@ using namespace antlr4;
 class ErrorVerboseListener : BaseErrorListener {
  public:
   ErrorVerboseListener() = default;
-  ~ErrorVerboseListener() = default;
+  ~ErrorVerboseListener() override = default;
 
-  void syntaxError(Recognizer *recognizer, Token *offendingSymbol, size_t line,
-                   size_t charPositionInLine, const std::string &msg,
-                   std::exception_ptr e) {
+  void syntaxError(Recognizer *recognizer, Token *offending_symbol, size_t line,
+                   size_t char_position_in_line, const std::string &msg,
+                   std::exception_ptr e) override {
     UNUSED(recognizer);
-    UNUSED(offendingSymbol);
+    UNUSED(offending_symbol);
     UNUSED(e);
 
-    err_msg_ = std::to_string(line) + " " + std::to_string(charPositionInLine) +
-               " " + msg;
+    err_msg_ = std::to_string(line) + " " +
+               std::to_string(char_position_in_line) + " " + msg;
     return;
   }
 

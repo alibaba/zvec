@@ -35,10 +35,10 @@ class Parser {
   Parser(const std::string &expr, const std::shared_ptr<arrow::Schema> &schema)
       : expr_(expr), pos_(0), schema_(schema) {}
 
-  arrow::Result<Expression> Parse() {
-    SkipWhitespace();
-    ARROW_ASSIGN_OR_RAISE(auto e, ParseExpression());
-    SkipWhitespace();
+  arrow::Result<Expression> parse() {
+    skip_whitespace();
+    ARROW_ASSIGN_OR_RAISE(auto e, parse_expression());
+    skip_whitespace();
     if ((size_t)pos_ < expr_.size()) {
       return arrow::Status::Invalid("Unexpected character at position ", pos_,
                                     ": ", expr_[pos_]);
@@ -51,22 +51,22 @@ class Parser {
   int pos_;
   std::shared_ptr<arrow::Schema> schema_;
 
-  void SkipWhitespace() {
+  void skip_whitespace() {
     while ((size_t)pos_ < expr_.size() && std::isspace(expr_[pos_])) {
       ++pos_;
     }
   }
 
-  arrow::Result<Expression> ParseExpression() {
-    SkipWhitespace();
-    ARROW_ASSIGN_OR_RAISE(auto left, ParseTerm());
-    SkipWhitespace();
+  arrow::Result<Expression> parse_expression() {
+    skip_whitespace();
+    ARROW_ASSIGN_OR_RAISE(auto left, parse_term());
+    skip_whitespace();
     while ((size_t)pos_ < expr_.size() &&
            (expr_[pos_] == '+' || expr_[pos_] == '-')) {
       char op = expr_[pos_++];
-      SkipWhitespace();
-      ARROW_ASSIGN_OR_RAISE(auto right, ParseTerm());
-      SkipWhitespace();
+      skip_whitespace();
+      ARROW_ASSIGN_OR_RAISE(auto right, parse_term());
+      skip_whitespace();
       auto func = (op == '+') ? "add" : "subtract";
       left = call(std::string(func), {left, right});
     }
@@ -74,17 +74,17 @@ class Parser {
     return left;
   }
 
-  arrow::Result<Expression> ParseTerm() {
-    SkipWhitespace();
-    ARROW_ASSIGN_OR_RAISE(auto left, ParseFactor());
-    SkipWhitespace();
+  arrow::Result<Expression> parse_term() {
+    skip_whitespace();
+    ARROW_ASSIGN_OR_RAISE(auto left, parse_factor());
+    skip_whitespace();
 
     while ((size_t)pos_ < expr_.size() &&
            (expr_[pos_] == '*' || expr_[pos_] == '/')) {
       char op = expr_[pos_++];
-      SkipWhitespace();
-      ARROW_ASSIGN_OR_RAISE(auto right, ParseFactor());
-      SkipWhitespace();
+      skip_whitespace();
+      ARROW_ASSIGN_OR_RAISE(auto right, parse_factor());
+      skip_whitespace();
       auto func = (op == '*') ? "multiply" : "divide";
       left = call(std::string(func), {left, right});
     }
@@ -92,8 +92,8 @@ class Parser {
     return left;
   }
 
-  arrow::Result<Expression> ParseFactor() {
-    SkipWhitespace();
+  arrow::Result<Expression> parse_factor() {
+    skip_whitespace();
 
     if ((size_t)pos_ >= expr_.size()) {
       return arrow::Status::Invalid("Unexpected end of expression.");
@@ -104,47 +104,47 @@ class Parser {
     // Parenthetical expression
     if (c == '(') {
       ++pos_;
-      SkipWhitespace();
-      ARROW_ASSIGN_OR_RAISE(auto inner, ParseExpression());
-      SkipWhitespace();
+      skip_whitespace();
+      ARROW_ASSIGN_OR_RAISE(auto inner, parse_expression());
+      skip_whitespace();
       if ((size_t)pos_ >= expr_.size() || expr_[pos_] != ')') {
         return arrow::Status::Invalid("Mismatched parentheses.");
       }
       ++pos_;
-      SkipWhitespace();
+      skip_whitespace();
       return inner;
     }
 
     // Unary minus operator
     if (c == '-') {
       ++pos_;  // Skip the minus sign
-      SkipWhitespace();
-      ARROW_ASSIGN_OR_RAISE(auto operand, ParseFactor());
+      skip_whitespace();
+      ARROW_ASSIGN_OR_RAISE(auto operand, parse_factor());
       return call("negate", {operand});
     }
 
     // Unary plus operator (optional support)
     if (c == '+') {
       ++pos_;  // Skip the plus sign
-      SkipWhitespace();
-      return ParseFactor();
+      skip_whitespace();
+      return parse_factor();
     }
 
     // Numeric literal (integer or floating point)
     if (std::isdigit(c)) {
-      return ParseNumber();
+      return parse_number();
     }
 
     // Column name (starts with letter or _)
     if (std::isalpha(c) || c == '_') {
-      return ParseColumnName();
+      return parse_column_name();
     }
 
     return arrow::Status::Invalid("Unexpected character: '", std::string(1, c),
                                   "'");
   }
 
-  arrow::Result<Expression> ParseNumber() {
+  arrow::Result<Expression> parse_number() {
     int start = pos_;
     bool has_dot = false;
     bool has_exponent = false;
@@ -194,7 +194,7 @@ class Parser {
     return arrow::Status::Invalid("Failed to parse number: ", num_str);
   }
 
-  arrow::Result<Expression> ParseColumnName() {
+  arrow::Result<Expression> parse_column_name() {
     int start = pos_;
     while ((size_t)pos_ < expr_.size()) {
       char c = expr_[pos_];
@@ -346,7 +346,7 @@ arrow::Result<Expression> CheckSupportedArithmeticExpression(
 arrow::Result<Expression> ParseToExpression(
     const std::string &sql_expr, const std::shared_ptr<arrow::Schema> &schema) {
   Parser parser(sql_expr, schema);
-  return parser.Parse();
+  return parser.parse();
 }
 
 }  // namespace zvec

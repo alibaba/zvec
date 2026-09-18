@@ -64,7 +64,7 @@ Index::Pointer IndexFactory::CreateAndInitIndex(const BaseIndexParam &param) {
     LOG_ERROR("Failed to create index");
     return nullptr;
   }
-  if (0 != ptr->Init(param)) {
+  if (0 != ptr->init(param)) {
     LOG_ERROR("Failed to init index");
     return nullptr;
   }

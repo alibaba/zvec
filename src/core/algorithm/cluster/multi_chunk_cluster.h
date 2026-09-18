@@ -146,18 +146,19 @@ class MultiChunkNumericalAlgorithm : public MultiChunkClusterAlgorithm {
   MultiChunkNumericalAlgorithm() = default;
 
   //! Destructor
-  ~MultiChunkNumericalAlgorithm() = default;
+  ~MultiChunkNumericalAlgorithm() override = default;
 
  protected:
   //! cluster thread
   void do_cluster(size_t idx, size_t chunk_step,
                   IndexCluster::CentroidList *cents,
-                  std::atomic<size_t> *finished);
+                  std::atomic<size_t> *finished) override;
 
   //! label thread
   void do_label(size_t idx, size_t step,
                 const IndexCluster::CentroidList &cents,
-                std::vector<uint32_t> *out, std::atomic<size_t> *finished);
+                std::vector<uint32_t> *out,
+                std::atomic<size_t> *finished) override;
 };
 
 //! cluster thread
@@ -295,18 +296,19 @@ class MultiChunkNumericalInnerProductAlgorithm
   MultiChunkNumericalInnerProductAlgorithm() = default;
 
   //! Destructor
-  ~MultiChunkNumericalInnerProductAlgorithm() = default;
+  ~MultiChunkNumericalInnerProductAlgorithm() override = default;
 
  protected:
   //! cluster thread
   void do_cluster(size_t idx, size_t chunk_step,
                   IndexCluster::CentroidList *cents,
-                  std::atomic<size_t> *finished);
+                  std::atomic<size_t> *finished) override;
 
   //! label thread
   void do_label(size_t idx, size_t chunk_step,
                 const IndexCluster::CentroidList &cents,
-                std::vector<uint32_t> *out, std::atomic<size_t> *finished);
+                std::vector<uint32_t> *out,
+                std::atomic<size_t> *finished) override;
 };
 
 //! cluster thread
@@ -428,7 +430,7 @@ void MultiChunkNumericalInnerProductAlgorithm<T>::do_label(
 //! MultiChunkCluster
 class MultiChunkCluster {
  public:
-  std::shared_ptr<MultiChunkCluster> Pointer;
+  std::shared_ptr<MultiChunkCluster> pointer;
 
   //! Constructor
   MultiChunkCluster() = default;
