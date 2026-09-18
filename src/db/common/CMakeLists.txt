@@ -9,6 +9,7 @@ cc_library(
             zvec_ailego
             roaring
             rocksdb
+            utf8proc
     INCS .
     VERSION "${PROXIMA_ZVEC_VERSION}"
 )

@@ -43,15 +43,15 @@ class IpcChunkedWriter : public ChunkedFileWriter {
         out_file_(std::move(out_file)),
         writer_(std::move(writer)) {}
 
-  arrow::Status Write(const arrow::RecordBatch &batch) override {
+  arrow::Status write(const arrow::RecordBatch &batch) override {
     return writer_->WriteRecordBatch(batch);
   }
 
-  arrow::Status Write(const arrow::Table &table) override {
+  arrow::Status write(const arrow::Table &table) override {
     return writer_->WriteTable(table);
   }
 
-  arrow::Status Close() override {
+  arrow::Status close() override {
     ARROW_RETURN_NOT_OK(writer_->Close());
     return out_file_->Close();
   }
@@ -88,15 +88,15 @@ class ParquetChunkedWriter : public ChunkedFileWriter {
         out_file_(std::move(out_file)),
         writer_(std::move(writer)) {}
 
-  arrow::Status Write(const arrow::RecordBatch &batch) override {
+  arrow::Status write(const arrow::RecordBatch &batch) override {
     return writer_->WriteRecordBatch(batch);
   }
 
-  arrow::Status Write(const arrow::Table &table) override {
+  arrow::Status write(const arrow::Table &table) override {
     return writer_->WriteTable(table);
   }
 
-  arrow::Status Close() override {
+  arrow::Status close() override {
     ARROW_RETURN_NOT_OK(writer_->Close());
     return out_file_->Close();
   }

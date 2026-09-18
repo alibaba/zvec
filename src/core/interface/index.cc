@@ -57,11 +57,24 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
     }
 
     bool is_valid() const override {
-      return owner_->error_ == 0 && source_iter_ && source_iter_->is_valid();
+      if (owner_->error_ != 0 || !source_iter_) {
+        return false;
+      }
+      const bool valid = source_iter_->is_valid();
+      owner_->error_ = source_iter_->status();
+      return owner_->error_ == 0 && valid;
+    }
+
+    int status() const override {
+      return owner_->error_;
     }
 
     uint64_t key() const override {
-      return source_iter_->key();
+      const uint64_t result = source_iter_->key();
+      if (owner_->error_ == 0) {
+        owner_->error_ = source_iter_->status();
+      }
+      return result;
     }
 
     void next() override {
@@ -74,6 +87,10 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
       data_ = nullptr;
       if (owner_->error_ != 0) return;
       while (!source_iter_ || !source_iter_->is_valid()) {
+        if (source_iter_ && source_iter_->status() != 0) {
+          owner_->error_ = source_iter_->status();
+          return;
+        }
         source_iter_.reset();
         if (source_index_ >= owner_->sources_.size()) return;
         source_ = &owner_->sources_[source_index_++];
@@ -83,7 +100,16 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
           return;
         }
       }
+      if (source_iter_->status() != 0) {
+        owner_->error_ = source_iter_->status();
+        return;
+      }
       data_ = source_iter_->data();
+      if (source_iter_->status() != 0) {
+        owner_->error_ = source_iter_->status();
+        data_ = nullptr;
+        return;
+      }
       if (!data_) {
         owner_->error_ = core::IndexError_ReadData;
         return;
@@ -183,14 +209,14 @@ int CreateReformerFromConverterMeta(
 // eliminate the pre-alloc of the context pool
 thread_local static std::array<core::IndexContext::Pointer,
                                (magic_enum::enum_count<IndexType>() - 1) * 2>
-    _context_list;
+    context_list;
 
 
 bool Index::init_context() {
   context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
                    static_cast<size_t>(is_sparse_);
-  if (_context_list[context_index_] == nullptr) {
-    if ((_context_list[context_index_] = streamer_->create_context()) ==
+  if (context_list[context_index_] == nullptr) {
+    if ((context_list[context_index_] = streamer_->create_context()) ==
         nullptr) {
       LOG_ERROR("Failed to create context");
       return false;
@@ -201,7 +227,7 @@ bool Index::init_context() {
 
 core::IndexContext::Pointer &Index::acquire_context() {
   init_context();
-  return _context_list[context_index_];
+  return context_list[context_index_];
 }
 
 int Index::train() {
@@ -235,7 +261,7 @@ core::IndexProvider::Pointer Index::create_index_provider() const {
   return streamer_->create_provider();
 }
 
-int Index::ParseMetricName(const BaseIndexParam &param) {
+int Index::parse_metric_name(const BaseIndexParam &param) {
   std::string metric_name;
   if (is_sparse_) {
     // only inner product is supported for sparse index
@@ -275,7 +301,7 @@ int Index::ParseMetricName(const BaseIndexParam &param) {
   return 0;
 }
 
-int Index::CreateAndInitMetric(const BaseIndexParam & /*param*/) {
+int Index::create_and_init_metric(const BaseIndexParam & /*param*/) {
   auto &metric_name = proxima_index_meta_.metric_name();
 
   metric_ = core::IndexFactory::CreateMetric(metric_name);
@@ -297,8 +323,8 @@ int Index::CreateAndInitMetric(const BaseIndexParam & /*param*/) {
   return core::IndexError_Success;
 }
 
-int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
-                                          const BaseIndexParam &index_param) {
+int Index::create_and_init_converter_reformer(
+    const QuantizerParam &param, const BaseIndexParam &index_param) {
   ailego::Params converter_params;
   std::string converter_name;
   if (is_sparse_) {
@@ -396,11 +422,11 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
     }
   }
 
-  return InitConverterReformer(converter_name, converter_params);
+  return init_converter_reformer(converter_name, converter_params);
 }
 
-int Index::InitConverterReformer(const std::string &converter_name,
-                                 const ailego::Params &converter_params) {
+int Index::init_converter_reformer(const std::string &converter_name,
+                                   const ailego::Params &converter_params) {
   proxima_index_meta_.set_converter(converter_name, 0, converter_params);
   converter_ = core::IndexFactory::CreateConverter(converter_name);
   if (converter_ == nullptr ||
@@ -428,7 +454,7 @@ int Index::InitConverterReformer(const std::string &converter_name,
   return core::IndexError_Success;
 }
 
-int Index::Init(const BaseIndexParam &param) {
+int Index::init(const BaseIndexParam &param) {
   param_ = param;  // will lose the original type info
 
   is_sparse_ = param.is_sparse;
@@ -446,7 +472,7 @@ int Index::Init(const BaseIndexParam &param) {
 
   // when quantizer=int8/int4, the converter.init() will change the metric to
   // QuantizedInteger with params
-  if (ParseMetricName(param) != 0) {
+  if (parse_metric_name(param) != 0) {
     LOG_ERROR("Failed to parse metric name");
     return core::IndexError_Runtime;
   }
@@ -455,20 +481,20 @@ int Index::Init(const BaseIndexParam &param) {
   const auto quantizer_param = param.quantizer_param
                                    ? param.quantizer_param
                                    : std::make_shared<QuantizerParam>();
-  if (CreateAndInitConverterReformer(*quantizer_param, param) != 0) {
+  if (create_and_init_converter_reformer(*quantizer_param, param) != 0) {
     LOG_ERROR("Failed to create and init converter");
     return core::IndexError_Runtime;
   }
 
   // must after quantizer handled. e.g., cosine doesn't support int8 quantizer
   if (turbo_quantizer_ == nullptr) {
-    if (CreateAndInitMetric(param) != 0) {
+    if (create_and_init_metric(param) != 0) {
       LOG_ERROR("Failed to create and init metric");
       return core::IndexError_Runtime;
     }
   }
 
-  if (CreateAndInitStreamer(param) != 0) {
+  if (create_and_init_streamer(param) != 0) {
     LOG_ERROR("Failed to create and init streamer");
     return core::IndexError_Runtime;
   }
@@ -610,6 +636,14 @@ int Index::close() {
   if (ailego_unlikely(streamer_->cleanup() != 0)) {
     LOG_ERROR("Failed to cleanup streamer");
     return core::IndexError_Runtime;
+  }
+  // Contexts are cached per index type in thread-local storage. IVF contexts
+  // own cloned storage segments, so leaving the current thread's context in
+  // the cache after Close would keep the buffer pool (and its metadata/pages)
+  // alive until another IVF search or thread exit.
+  if (context_index_ < context_list.size()) {
+    context_list[context_index_].reset();
+    context_index_ = std::numeric_limits<size_t>::max();
   }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");

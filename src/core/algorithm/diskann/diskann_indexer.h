@@ -58,6 +58,10 @@ class DiskAnnIndexer {
   int get_vector(diskann_id_t id, IndexContext::Pointer &context,
                  std::string &vector);
 
+  bool requires_io_context() const {
+    return reader_ && reader_->requires_io_context();
+  }
+
   diskann_key_t get_key(diskann_id_t id) const;
   diskann_id_t get_id(diskann_key_t key) const;
 
@@ -95,6 +99,7 @@ class DiskAnnIndexer {
   int cached_beam_search_impl(DiskAnnContext *ctx);
 
   DiskAnnEntity::Pointer entity_{};
+  IndexStorage::Pointer storage_{};
 
   IndexMeta meta_;
 

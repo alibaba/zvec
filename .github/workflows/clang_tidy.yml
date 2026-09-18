@@ -91,7 +91,17 @@ jobs:
           selected = []
           skipped = []
 
+          # Auto-generated code is exempt from clang-tidy and must not be edited.
+          generated_dir_markers = (
+              "src/db/sqlengine/antlr/gen/",
+              "src/db/index/column/fts_column/gen/",
+          )
+
           for rel_path in changed:
+              norm_rel = rel_path.replace(os.sep, "/")
+              if any(marker in norm_rel for marker in generated_dir_markers):
+                  skipped.append(f"{rel_path} (generated file, exempt from clang-tidy)")
+                  continue
               abs_path = os.path.normpath(str((cwd / rel_path).resolve()))
               if abs_path in compile_entries:
                   selected.append(rel_path)
@@ -176,12 +186,26 @@ jobs:
           failed=0
           for f in "$log_dir"/*.log; do
             [ -e "$f" ] || break
-            failed=1
             src=$(head -1 "$f")
-            echo ""
-            echo "::group::clang-tidy errors: $src"
-            tail -n +2 "$f"
-            echo "::endgroup::"
+            # Diagnostics originating in generated headers (antlr/gen,
+            # fts_column/gen) can leak in via #include from non-generated main
+            # files. Those files are exempt and must not be edited, so drop such
+            # blocks; a log only counts as a failure if real diagnostics remain.
+            body=$(tail -n +2 "$f" | awk '
+              /^[^[:space:]].*:[0-9]+:[0-9]+: (warning|error|note):/ {
+                path = $0
+                sub(/:[0-9]+:[0-9]+:.*/, "", path)
+                skip = (path ~ /(antlr\/gen\/|fts_column\/gen\/)/) ? 1 : 0
+              }
+              { if (!skip) print }
+            ')
+            if printf '%s\n' "$body" | grep -qE ': (warning|error):'; then
+              failed=1
+              echo ""
+              echo "::group::clang-tidy errors: $src"
+              printf '%s\n' "$body"
+              echo "::endgroup::"
+            fi
           done
 
           rm -rf "$log_dir"

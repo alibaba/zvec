@@ -55,7 +55,7 @@ class TrivialIndexBundle : public IndexBundle {
   typedef std::shared_ptr<TrivialIndexBundle> Pointer;
 
   //! Retrieve index buffer via key
-  virtual ailego::BlobWrap get(const std::string &key) const {
+  ailego::BlobWrap get(const std::string &key) const override {
     auto iter = map_.find(key);
     if (iter != map_.end()) {
       return iter->second;
@@ -64,17 +64,17 @@ class TrivialIndexBundle : public IndexBundle {
   }
 
   //! Test if the key is exist
-  virtual bool has(const std::string &key) const {
+  bool has(const std::string &key) const override {
     return (map_.find(key) != map_.end());
   }
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all() const {
+  std::map<std::string, ailego::BlobWrap> all() const override {
     return map_;
   }
 
   //! Retrieve the count of indexes
-  virtual size_t count() const {
+  size_t count() const override {
     return map_.size();
   }
 
@@ -110,7 +110,7 @@ class MemoryIndexBundle : public IndexBundle {
   typedef std::shared_ptr<MemoryIndexBundle> Pointer;
 
   //! Retrieve index buffer via key
-  virtual ailego::BlobWrap get(const std::string &key) const {
+  ailego::BlobWrap get(const std::string &key) const override {
     auto iter = map_.find(key);
     if (iter != map_.end()) {
       return ailego::BlobWrap(iter->second.data(), iter->second.size());
@@ -119,12 +119,12 @@ class MemoryIndexBundle : public IndexBundle {
   }
 
   //! Test if the key is exist
-  virtual bool has(const std::string &key) const {
+  bool has(const std::string &key) const override {
     return (map_.find(key) != map_.end());
   }
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all() const {
+  std::map<std::string, ailego::BlobWrap> all() const override {
     std::map<std::string, ailego::BlobWrap> result;
     for (const auto &it : map_) {
       result.emplace(it.first,
@@ -134,7 +134,7 @@ class MemoryIndexBundle : public IndexBundle {
   }
 
   //! Retrieve the count of indexes
-  virtual size_t count() const {
+  size_t count() const override {
     return map_.size();
   }
 
@@ -180,7 +180,7 @@ class MMapFileIndexBundle : public IndexBundle {
   typedef std::shared_ptr<MMapFileIndexBundle> Pointer;
 
   //! Retrieve index buffer via key
-  virtual ailego::BlobWrap get(const std::string &key) const {
+  ailego::BlobWrap get(const std::string &key) const override {
     auto iter = map_.find(key);
     if (iter != map_.end()) {
       return ailego::BlobWrap(iter->second.region(), iter->second.size());
@@ -189,12 +189,12 @@ class MMapFileIndexBundle : public IndexBundle {
   }
 
   //! Test if the key is exist
-  virtual bool has(const std::string &key) const {
+  bool has(const std::string &key) const override {
     return (map_.find(key) != map_.end());
   }
 
   //! Retrieve all
-  virtual std::map<std::string, ailego::BlobWrap> all() const {
+  std::map<std::string, ailego::BlobWrap> all() const override {
     std::map<std::string, ailego::BlobWrap> result;
     for (const auto &it : map_) {
       result.emplace(it.first,
@@ -204,7 +204,7 @@ class MMapFileIndexBundle : public IndexBundle {
   }
 
   //! Retrieve the count of indexes
-  virtual size_t count() const {
+  size_t count() const override {
     return map_.size();
   }
 

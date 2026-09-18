@@ -35,16 +35,16 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/storage/wal/wal_file.h"
-#include "segment_test_fixture.h"
 #include "utils/utils.h"
 #include "zvec/db/options.h"
+#include "segment_test_fixture.h"
 
 using namespace zvec;
 
 TEST_P(SegmentTest, EmptySchema) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 0);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
   EXPECT_EQ(segment->id(), 0);
 
@@ -56,8 +56,8 @@ TEST_P(SegmentTest, General) {
   options_.max_buffer_size_ = 1 * 1024;
 
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 25);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 25);
   ASSERT_TRUE(segment != nullptr);
 
   auto combined_reader = segment->scan({LOCAL_ROW_ID, "id", "name", "age"});
@@ -106,13 +106,13 @@ TEST_P(SegmentTest, General) {
 
 TEST_P(SegmentTest, InsertMoreData) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 0);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
 
-  uint64_t MAX_DOC = 1000;
+  uint64_t max_doc = 1000;
   auto start = std::chrono::system_clock::now();
-  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, MAX_DOC);
+  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, max_doc);
   auto end = std::chrono::system_clock::now();
   auto cost = std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
                   .count();
@@ -128,7 +128,7 @@ TEST_P(SegmentTest, InsertMoreData) {
     total_doc += batch->num_rows();
   }
 
-  EXPECT_EQ(total_doc, MAX_DOC);
+  EXPECT_EQ(total_doc, max_doc);
 }
 
 TEST_P(SegmentTest, InsertScalarTypes) {
@@ -137,14 +137,14 @@ TEST_P(SegmentTest, InsertScalarTypes) {
 
   auto invert_params = std::make_shared<InvertIndexParams>(false);
   schema_->add_field(std::make_shared<FieldSchema>("binary", DataType::BINARY,
-                                                  false, invert_params));
+                                                   false, invert_params));
 
   schema_->add_field(std::make_shared<FieldSchema>(
       "array_binary", DataType::ARRAY_BINARY, false, invert_params));
 
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 }
 
@@ -167,8 +167,8 @@ TEST_P(SegmentTest, InsertVectorTypes) {
   {
     Version v = version_manager_->get_current_version();
     auto result =
-        Segment::Open(col_path_, *tmp_schema, *v.writing_segment_meta(), id_map_,
-                      delete_store_, version_manager_, options_);
+        Segment::Open(col_path_, *tmp_schema, *v.writing_segment_meta(),
+                      id_map_, delete_store_, version_manager_, options_);
     ASSERT_TRUE(result.has_value());
     auto segment = result.value();
 
@@ -179,11 +179,11 @@ TEST_P(SegmentTest, InsertVectorTypes) {
 
 TEST_P(SegmentTest, FetchByGlobalDocID) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 1);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 1);
   ASSERT_TRUE(segment != nullptr);
 
-  auto ret_doc = segment->Fetch(0);
+  auto ret_doc = segment->fetch(0);
   EXPECT_TRUE(ret_doc != nullptr);
   EXPECT_EQ(ret_doc->doc_id(), 0);
   EXPECT_EQ(ret_doc->pk(), "pk_0");
@@ -192,8 +192,8 @@ TEST_P(SegmentTest, FetchByGlobalDocID) {
 TEST_P(SegmentTest, FetchSingleRow) {
   int doc_count = 10;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   auto func = [&](int index) -> void {
@@ -219,8 +219,8 @@ TEST_P(SegmentTest, FetchSingleRowWithPersistStore) {
   int doc_count = 1000;
   {
     auto segment = test::TestHelper::CreateSegmentWithDoc(
-        col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-        0, doc_count);
+        col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+        options_, 0, doc_count);
     ASSERT_TRUE(segment != nullptr);
   }
 
@@ -229,9 +229,9 @@ TEST_P(SegmentTest, FetchSingleRowWithPersistStore) {
     Version v = version_manager_->get_current_version();
     SegmentOptions open_options;
     open_options.read_only_ = false;
-    auto result = Segment::Open(col_path_, *schema_, *v.writing_segment_meta(),
-                                id_map_, delete_store_, version_manager_,
-                                open_options);
+    auto result =
+        Segment::Open(col_path_, *schema_, *v.writing_segment_meta(), id_map_,
+                      delete_store_, version_manager_, open_options);
     ASSERT_TRUE(result.has_value());
     auto segment = result.value();
 
@@ -259,8 +259,8 @@ TEST_P(SegmentTest, FetchSingleRowWithPersistStore) {
 
 TEST_P(SegmentTest, FetchSingleRowWithUserID) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({USER_ID, "id", "name"}, 2);
@@ -276,8 +276,8 @@ TEST_P(SegmentTest, FetchSingleRowWithUserID) {
 
 TEST_P(SegmentTest, FetchSingleRowWithGlobalDocID) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({GLOBAL_DOC_ID, "id", "name"}, 4);
@@ -293,8 +293,8 @@ TEST_P(SegmentTest, FetchSingleRowWithGlobalDocID) {
 
 TEST_P(SegmentTest, FetchSingleRowWithNegativeIndex) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({"id", "name"}, -1);
@@ -303,8 +303,8 @@ TEST_P(SegmentTest, FetchSingleRowWithNegativeIndex) {
 
 TEST_P(SegmentTest, FetchSingleRowWithOutOfRangeIndex) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({"id", "name"}, 15);
@@ -313,8 +313,8 @@ TEST_P(SegmentTest, FetchSingleRowWithOutOfRangeIndex) {
 
 TEST_P(SegmentTest, FetchSingleRowWithInvalidColumn) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({"id", "invalid_column"}, 0);
@@ -323,8 +323,8 @@ TEST_P(SegmentTest, FetchSingleRowWithInvalidColumn) {
 
 TEST_P(SegmentTest, FetchSingleRowWithEmptyColumns) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({}, 0);
@@ -333,8 +333,8 @@ TEST_P(SegmentTest, FetchSingleRowWithEmptyColumns) {
 
 TEST_P(SegmentTest, FetchSingleRowFromEmptySegment) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 0);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({"id", "name"}, 0);
@@ -343,8 +343,8 @@ TEST_P(SegmentTest, FetchSingleRowFromEmptySegment) {
 
 TEST_P(SegmentTest, FetchSingleRowWithBinaryFields) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   ExecBatchPtr batch = segment->fetch({"binary", "array_binary"}, 1);
@@ -368,8 +368,8 @@ TEST_P(SegmentTest, Recover) {
   int doc_count = 100;
   {
     auto segment = test::TestHelper::CreateSegmentWithDoc(
-        col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-        0, doc_count);
+        col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+        options_, 0, doc_count);
     ASSERT_TRUE(segment != nullptr);
   }
 
@@ -378,17 +378,17 @@ TEST_P(SegmentTest, Recover) {
     Version v = version_manager_->get_current_version();
     auto writing_block_id =
         v.writing_segment_meta()->writing_forward_block_->id();
-    auto wal_file = FileHelper::MakeWalPath(col_path_, 0, writing_block_id);
+    auto wal_path = FileHelper::MakeWalPath(col_path_, 0, writing_block_id);
     WalOptions wal_option{0, true};
-    WalFilePtr wal_file_;
-    WalFile::CreateAndOpen(wal_file, wal_option, &wal_file_);
-    ASSERT_TRUE(wal_file_ != nullptr);
+    WalFilePtr wal_file;
+    WalFile::CreateAndOpen(wal_path, wal_option, &wal_file);
+    ASSERT_TRUE(wal_file != nullptr);
 
     for (int i = doc_count; i < doc_count + 100; i++) {
       Doc doc = test::TestHelper::CreateDoc(i, *schema_);
       doc.set_operator(Operator::INSERT);
       std::vector<uint8_t> buf = doc.serialize();
-      auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
+      auto ret = wal_file->append(std::string(buf.begin(), buf.end()));
       ASSERT_EQ(ret, 0);
     }
 
@@ -397,7 +397,7 @@ TEST_P(SegmentTest, Recover) {
       doc.set_doc_id(i);  // global doc id
       doc.set_operator(Operator::UPDATE);
       std::vector<uint8_t> buf = doc.serialize();
-      auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
+      auto ret = wal_file->append(std::string(buf.begin(), buf.end()));
       ASSERT_EQ(ret, 0);
     }
 
@@ -405,7 +405,7 @@ TEST_P(SegmentTest, Recover) {
       Doc doc = test::TestHelper::CreateDoc(i, *schema_);
       doc.set_operator(Operator::UPSERT);
       std::vector<uint8_t> buf = doc.serialize();
-      auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
+      auto ret = wal_file->append(std::string(buf.begin(), buf.end()));
       ASSERT_EQ(ret, 0);
     }
 
@@ -414,7 +414,7 @@ TEST_P(SegmentTest, Recover) {
       doc.set_doc_id(i + 300);  // global doc id
       doc.set_operator(Operator::DELETE);
       std::vector<uint8_t> buf = doc.serialize();
-      auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
+      auto ret = wal_file->append(std::string(buf.begin(), buf.end()));
       ASSERT_EQ(ret, 0);
     }
   }
@@ -424,9 +424,9 @@ TEST_P(SegmentTest, Recover) {
     Version v = version_manager_->get_current_version();
     SegmentOptions open_options;
     open_options.read_only_ = false;
-    auto result = Segment::Open(col_path_, *schema_, *v.writing_segment_meta(),
-                                id_map_, delete_store_, version_manager_,
-                                open_options);
+    auto result =
+        Segment::Open(col_path_, *schema_, *v.writing_segment_meta(), id_map_,
+                      delete_store_, version_manager_, open_options);
     ASSERT_TRUE(result.has_value());
     auto segment = result.value();
 
@@ -452,8 +452,8 @@ TEST_P(SegmentTest, Recover) {
 
 TEST_P(SegmentTest, UpdateDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   // before update
@@ -466,7 +466,7 @@ TEST_P(SegmentTest, UpdateDoc) {
   update_doc.set<uint32_t>("age", 99);
 
   // Update the document
-  auto status = segment->Update(update_doc);
+  auto status = segment->update(update_doc);
   EXPECT_TRUE(status.ok()) << "Update failed: " << status.message();
 
   // after update
@@ -475,7 +475,7 @@ TEST_P(SegmentTest, UpdateDoc) {
 
   // Fetch the updated document and verify changes
   // Note: The parameter here is the internal global_doc_id, not user-specified
-  auto ret_doc = segment->Fetch(10);
+  auto ret_doc = segment->fetch(10);
   EXPECT_TRUE(ret_doc != nullptr);
   EXPECT_EQ(ret_doc->get<std::string>("name"), "updated_name");
   EXPECT_EQ(ret_doc->get<uint32_t>("age"), 99);
@@ -484,8 +484,8 @@ TEST_P(SegmentTest, UpdateDoc) {
 TEST_P(SegmentTest, UpdateDocBatch) {
   int doc_count = 10;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
   // before update
   uint64_t count = segment->doc_count(delete_store_->make_filter());
@@ -495,7 +495,7 @@ TEST_P(SegmentTest, UpdateDocBatch) {
   for (int i = 0; i < doc_count; i++) {
     Doc update_doc = test::TestHelper::CreateDoc(i, *schema_);
     // Update the document
-    auto status = segment->Update(update_doc);
+    auto status = segment->update(update_doc);
     EXPECT_TRUE(status.ok()) << "Update failed: " << status.message();
   }
 
@@ -505,7 +505,7 @@ TEST_P(SegmentTest, UpdateDocBatch) {
 
   // Fetch the updated document and verify changes
   // Note: The parameter here is the internal global_doc_id, not user-specified
-  auto ret_doc = segment->Fetch(doc_count * 2 - 1);
+  auto ret_doc = segment->fetch(doc_count * 2 - 1);
   EXPECT_TRUE(ret_doc != nullptr);
   EXPECT_EQ(ret_doc->get<std::string>("name"),
             "value_" + std::to_string(doc_count - 1));
@@ -513,8 +513,8 @@ TEST_P(SegmentTest, UpdateDocBatch) {
 
 TEST_P(SegmentTest, DeleteDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   // before update
@@ -541,8 +541,8 @@ TEST_P(SegmentTest, DeleteDoc) {
 TEST_P(SegmentTest, DeleteBatch) {
   int doc_count = 10;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   // before update
@@ -562,8 +562,8 @@ TEST_P(SegmentTest, DeleteBatch) {
 
 TEST_P(SegmentTest, UpsertDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   // before update
@@ -573,7 +573,7 @@ TEST_P(SegmentTest, UpsertDoc) {
   // Upsert an existing document
   Doc upsert_doc1 = test::TestHelper::CreateDoc(3, *schema_);
   upsert_doc1.set<std::string>("name", "upserted_name");
-  auto status = segment->Upsert(upsert_doc1);
+  auto status = segment->upsert(upsert_doc1);
   EXPECT_TRUE(status.ok()) << "Upsert existing doc failed: "
                            << status.message();
 
@@ -581,21 +581,21 @@ TEST_P(SegmentTest, UpsertDoc) {
   EXPECT_EQ(count, 5);
 
   // Verify the update
-  auto ret_doc = segment->Fetch(5);
+  auto ret_doc = segment->fetch(5);
   EXPECT_TRUE(ret_doc != nullptr);
   EXPECT_EQ(ret_doc->get<std::string>("name"), "upserted_name");
 
   // Upsert a new document
   Doc upsert_doc2 = test::TestHelper::CreateDoc(6, *schema_);
   upsert_doc2.set<std::string>("name", "new_upserted_doc");
-  status = segment->Upsert(upsert_doc2);
+  status = segment->upsert(upsert_doc2);
   EXPECT_TRUE(status.ok()) << "Upsert new doc failed: " << status.message();
 
   count = segment->doc_count(delete_store_->make_filter());
   EXPECT_EQ(count, 6);
 
   // Verify the new document was inserted
-  ret_doc = segment->Fetch(6);
+  ret_doc = segment->fetch(6);
   EXPECT_TRUE(ret_doc != nullptr);
   EXPECT_EQ(ret_doc->get<std::string>("name"), "new_upserted_doc");
 }
@@ -603,8 +603,8 @@ TEST_P(SegmentTest, UpsertDoc) {
 TEST_P(SegmentTest, UpsertDocBatch) {
   int doc_count = 10;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   // before update
@@ -615,7 +615,7 @@ TEST_P(SegmentTest, UpsertDocBatch) {
     // Upsert existing document
     Doc upsert_doc1 = test::TestHelper::CreateDoc(i, *schema_);
     upsert_doc1.set<std::string>("name", "upserted_name" + std::to_string(i));
-    auto status = segment->Upsert(upsert_doc1);
+    auto status = segment->upsert(upsert_doc1);
     EXPECT_TRUE(status.ok())
         << "Upsert existing doc failed: " << status.message();
 
@@ -623,7 +623,7 @@ TEST_P(SegmentTest, UpsertDocBatch) {
     Doc upsert_doc2 = test::TestHelper::CreateDoc(doc_count + i, *schema_);
     upsert_doc2.set<std::string>("name",
                                  "new_upserted_doc" + std::to_string(i));
-    status = segment->Upsert(upsert_doc2);
+    status = segment->upsert(upsert_doc2);
     EXPECT_TRUE(status.ok()) << "Upsert new doc failed: " << status.message();
   }
 
@@ -633,13 +633,13 @@ TEST_P(SegmentTest, UpsertDocBatch) {
   int incr_idx = 0;
   for (int i = doc_count; i < doc_count + doc_count * 2; i += 2) {
     // Verify the update
-    auto ret_doc = segment->Fetch(i);
+    auto ret_doc = segment->fetch(i);
     EXPECT_TRUE(ret_doc != nullptr);
     EXPECT_EQ(ret_doc->get<std::string>("name"),
               "upserted_name" + std::to_string(incr_idx));
 
     // Verify the new document was inserted
-    ret_doc = segment->Fetch(i + 1);
+    ret_doc = segment->fetch(i + 1);
     EXPECT_EQ(ret_doc->get<std::string>("name"),
               "new_upserted_doc" + std::to_string(incr_idx));
     incr_idx++;
@@ -648,8 +648,8 @@ TEST_P(SegmentTest, UpsertDocBatch) {
 
 TEST_P(SegmentTest, Flush) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 100);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 100);
   ASSERT_TRUE(segment != nullptr);
 
   // Flush the segment
@@ -659,8 +659,8 @@ TEST_P(SegmentTest, Flush) {
 
 TEST_P(SegmentTest, FlushAfterInsert) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 100);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 100);
   ASSERT_TRUE(segment != nullptr);
 
   // Flush the segment
@@ -672,7 +672,7 @@ TEST_P(SegmentTest, FlushAfterInsert) {
   ASSERT_EQ(segment->doc_count(), 150);
 
   for (int i = 0; i < 150; i++) {
-    auto ret_doc = segment->Fetch(i);
+    auto ret_doc = segment->fetch(i);
     EXPECT_TRUE(ret_doc != nullptr);
 
     Doc verify_doc = test::TestHelper::CreateDoc(i, *schema_);
@@ -686,8 +686,8 @@ TEST_P(SegmentTest, FlushAfterInsert) {
 
 TEST_P(SegmentTest, Dump) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 100);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 100);
   ASSERT_TRUE(segment != nullptr);
 
   // Dump the segment
@@ -701,8 +701,8 @@ TEST_P(SegmentTest, Dump) {
 
 TEST_P(SegmentTest, DocCount) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 50);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 50);
   ASSERT_TRUE(segment != nullptr);
 
   // Get document count
@@ -760,23 +760,23 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexer) {
   options_.max_buffer_size_ = 10 * 1024;
 
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 0);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
 
 
-  uint64_t MAX_DOC = 1000;
-  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, MAX_DOC);
+  uint64_t max_doc = 1000;
+  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, max_doc);
 
   Doc new_doc = test::TestHelper::CreateDoc(1000, *schema_);
-  auto status = segment->Insert(new_doc);
+  auto status = segment->insert(new_doc);
   ASSERT_TRUE(status.ok());
 
   auto combined_indexer = segment->get_combined_vector_indexer("dense_fp32");
   ASSERT_TRUE(combined_indexer != nullptr);
 
   // fetch
-  auto fetched_data = combined_indexer->Fetch(1000);
+  auto fetched_data = combined_indexer->fetch(1000);
   ASSERT_TRUE(fetched_data);
   const float *dense_vector = reinterpret_cast<const float *>(
       std::get<vector_column_params::DenseVectorBuffer>(
@@ -799,7 +799,7 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexer) {
   query_params.topk = 10;
   query_params.filter = nullptr;
   query_params.fetch_vector = false;
-  auto results = combined_indexer->Search(query, query_params);
+  auto results = combined_indexer->search(query, query_params);
   ASSERT_TRUE(results.has_value());
 
   auto vector_results =
@@ -830,11 +830,11 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
   ASSERT_TRUE(segment != nullptr);
 
 
-  uint64_t MAX_DOC = 1000;
-  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, MAX_DOC);
+  uint64_t max_doc = 1000;
+  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, max_doc);
 
   Doc new_doc = test::TestHelper::CreateDoc(1000, *schema_);
-  auto status = segment->Insert(new_doc);
+  auto status = segment->insert(new_doc);
   ASSERT_TRUE(status.ok());
 
   auto combined_indexer =
@@ -842,7 +842,7 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
   ASSERT_TRUE(combined_indexer != nullptr);
 
   // fetch
-  auto fetched_data = combined_indexer->Fetch(1000);
+  auto fetched_data = combined_indexer->fetch(1000);
   ASSERT_TRUE(fetched_data);
   const float *dense_vector = reinterpret_cast<const float *>(
       std::get<vector_column_params::DenseVectorBuffer>(
@@ -869,7 +869,7 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
       std::make_shared<zvec::QueryParams>(IndexType::HNSW);
   query_params.query_params->set_is_using_refiner(true);
 
-  auto results = combined_indexer->Search(query, query_params);
+  auto results = combined_indexer->search(query, query_params);
   ASSERT_TRUE(results.has_value());
 
   auto vector_results =
@@ -898,8 +898,8 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
   ASSERT_TRUE(segment != nullptr);
 
 
-  uint64_t MAX_DOC = 1000;
-  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, MAX_DOC);
+  uint64_t max_doc = 1000;
+  test::TestHelper::SegmentInsertDoc(segment, *schema_, 0, max_doc);
 
   auto combined_indexer = segment->get_combined_vector_indexer("dense_fp32");
   ASSERT_TRUE(combined_indexer != nullptr);
@@ -922,7 +922,7 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
       std::make_shared<zvec::QueryParams>(IndexType::HNSW);
   query_params.bf_pks = bf_pks;
 
-  auto results = combined_indexer->Search(query, query_params);
+  auto results = combined_indexer->search(query, query_params);
   ASSERT_TRUE(results.has_value());
 
   auto vector_results =
@@ -947,8 +947,8 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
 
 TEST_P(SegmentTest, ConcurrentInsertOperations) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 0);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
 
   const int num_threads = 4;
@@ -961,7 +961,7 @@ TEST_P(SegmentTest, ConcurrentInsertOperations) {
       for (int i = 0; i < docs_per_thread; ++i) {
         int doc_id = t * docs_per_thread + i;
         Doc doc = test::TestHelper::CreateDoc(doc_id, *schema_);
-        auto status = segment->Insert(doc);
+        auto status = segment->insert(doc);
         EXPECT_TRUE(status.ok())
             << "Thread " << t << " insert failed for doc " << doc_id;
       }
@@ -980,8 +980,8 @@ TEST_P(SegmentTest, ConcurrentInsertOperations) {
 
 TEST_P(SegmentTest, ConcurrentMixedOperations) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 100);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 100);
   ASSERT_TRUE(segment != nullptr);
 
   std::vector<std::thread> threads;
@@ -990,7 +990,7 @@ TEST_P(SegmentTest, ConcurrentMixedOperations) {
   threads.emplace_back([&]() {
     for (int i = 100; i < 120; ++i) {
       Doc doc = test::TestHelper::CreateDoc(i, *schema_);
-      auto status = segment->Insert(doc);
+      auto status = segment->insert(doc);
       EXPECT_TRUE(status.ok() || status.code() == StatusCode::ALREADY_EXISTS);
     }
   });
@@ -1000,7 +1000,7 @@ TEST_P(SegmentTest, ConcurrentMixedOperations) {
     for (int i = 0; i < 50; i += 5) {
       Doc doc = test::TestHelper::CreateDoc(i, *schema_);
       doc.set<std::string>("name", "updated_concurrent_" + std::to_string(i));
-      auto status = segment->Update(doc);
+      auto status = segment->update(doc);
       EXPECT_TRUE(status.ok() || status.code() == StatusCode::NOT_FOUND);
     }
   });
@@ -1022,12 +1022,12 @@ TEST_P(SegmentTest, ConcurrentMixedOperations) {
 // corner cases
 TEST_P(SegmentTest, DuplicateInsert) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 0);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
 
   Doc doc1 = test::TestHelper::CreateDoc(0, *schema_);
-  auto status1 = segment->Insert(doc1);
+  auto status1 = segment->insert(doc1);
   EXPECT_TRUE(status1.ok()) << "First insert failed: " << status1.message();
 
   auto meta = segment->meta();
@@ -1037,22 +1037,22 @@ TEST_P(SegmentTest, DuplicateInsert) {
   EXPECT_EQ(mem_block.min_doc_id_, 0);
   EXPECT_EQ(mem_block.max_doc_id_, 0);
 
-  auto doc = segment->Fetch(0);
+  auto doc = segment->fetch(0);
   EXPECT_TRUE(doc != nullptr);
   EXPECT_EQ(*doc, doc1);
 
-  auto status2 = segment->Insert(doc1);
+  auto status2 = segment->insert(doc1);
   EXPECT_FALSE(status2.ok()) << "Duplicate insert should fail";
 
-  auto fetched_doc = segment->Fetch(0);
+  auto fetched_doc = segment->fetch(0);
   ASSERT_TRUE(fetched_doc != nullptr);
   EXPECT_NE(fetched_doc->get<std::string>("name").value(), "duplicate_name");
 }
 
 TEST_P(SegmentTest, DuplicateDelete) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   auto status1 = segment->Delete("pk_2");
@@ -1068,8 +1068,8 @@ TEST_P(SegmentTest, DuplicateDelete) {
 
 TEST_P(SegmentTest, DeleteNonExistentDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   auto status1 = segment->Delete("pk_999");
@@ -1078,27 +1078,27 @@ TEST_P(SegmentTest, DeleteNonExistentDoc) {
 
 TEST_P(SegmentTest, UpdateNonExistentDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   Doc doc = test::TestHelper::CreateDoc(999, *schema_);
   doc.set<std::string>("name", "non_existent_doc");
 
-  auto status = segment->Update(doc);
+  auto status = segment->update(doc);
   EXPECT_FALSE(status.ok()) << "Update non-existent doc should fail";
 }
 
 TEST_P(SegmentTest, UpsertNonExistentDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   Doc doc = test::TestHelper::CreateDoc(999, *schema_);
   doc.set<std::string>("name", "new_upserted_doc");
 
-  auto status = segment->Upsert(doc);
+  auto status = segment->upsert(doc);
   EXPECT_TRUE(status.ok()) << "Upsert non-existent doc should succeed: "
                            << status.message();
 
@@ -1109,8 +1109,8 @@ TEST_P(SegmentTest, UpsertNonExistentDoc) {
 
 TEST_P(SegmentTest, ScanWithEmptyColumns) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   auto reader = segment->scan({});
@@ -1119,8 +1119,8 @@ TEST_P(SegmentTest, ScanWithEmptyColumns) {
 
 TEST_P(SegmentTest, ScanWithInvalidColumns) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   // Try to scan with invalid column name
@@ -1130,18 +1130,18 @@ TEST_P(SegmentTest, ScanWithInvalidColumns) {
 
 TEST_P(SegmentTest, FetchNonExistentDoc) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
-  auto doc = segment->Fetch(999);
+  auto doc = segment->fetch(999);
   EXPECT_TRUE(doc == nullptr) << "Fetch non-existent doc should return nullptr";
 }
 
 TEST_P(SegmentTest, FetchWithInvalidSegmentDocIDs) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   std::vector<int> invalid_segment_doc_ids = {999, 1000};
@@ -1152,8 +1152,8 @@ TEST_P(SegmentTest, FetchWithInvalidSegmentDocIDs) {
 
 TEST_P(SegmentTest, FetchWithInvalidColumns) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 10);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
   ASSERT_TRUE(segment != nullptr);
 
   // Try to fetch with invalid column name
@@ -1166,20 +1166,20 @@ TEST_P(SegmentTest, InsertEmptyDocWithNullableSchema) {
   auto nullable_schema = test::TestHelper::CreateNormalSchema(true, col_name_);
 
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *nullable_schema, 0, 0, id_map_, delete_store_, version_manager_,
-      options_, 0, 0);
+      col_path_, *nullable_schema, 0, 0, id_map_, delete_store_,
+      version_manager_, options_, 0, 0);
   ASSERT_TRUE(segment != nullptr);
 
   Doc empty_doc;
   empty_doc.set_pk("pk_empty");
-  auto status = segment->Insert(empty_doc);
+  auto status = segment->insert(empty_doc);
   EXPECT_TRUE(status.ok());
 }
 
 TEST_P(SegmentTest, MultipleDuplicateDeletes) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, 5);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 5);
   ASSERT_TRUE(segment != nullptr);
 
   auto status1 = segment->Delete("pk_1");
@@ -1202,8 +1202,8 @@ TEST_P(SegmentTest, FetchWithTwoVectorFields) {
 
   int doc_count = 1000;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
   segment.reset();
   version_manager_.reset();
@@ -1248,7 +1248,7 @@ TEST_P(SegmentTest, FetchWithTwoVectorFields) {
 
   for (int i = 0; i < doc_count + incr_doc_count; i++) {
     auto expect_doc = test::TestHelper::CreateDoc(i, *schema_);
-    auto ret_doc = segment->Fetch(i);
+    auto ret_doc = segment->fetch(i);
     if (*ret_doc != expect_doc) {
       std::cout << "   ret_doc: " << ret_doc->to_string() << std::endl;
       std::cout << "expect_doc: " << expect_doc.to_string() << std::endl;
@@ -1262,8 +1262,8 @@ TEST_P(SegmentTest, FetchPerf) {
   int doc_count = 1000;
   options_.max_buffer_size_ = 100 * 1024;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   segment->dump();
@@ -1367,8 +1367,8 @@ TEST_P(SegmentTest, AddColumn) {
   options_.max_buffer_size_ = 10 * 1024 * 1024;
   int doc_count = 1000;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   auto s = segment->add_column(
@@ -1487,7 +1487,7 @@ TEST_P(SegmentTest, AddColumn) {
     auto check_doc = [&](int doc_count) {
       for (int i = 0; i < doc_count; i++) {
         auto expect_doc = test::TestHelper::CreateDoc(i, new_schema);
-        auto doc = segment->Fetch(i);
+        auto doc = segment->fetch(i);
         ASSERT_EQ(doc->pk(), expect_doc.pk());
 
         // column in same persist block
@@ -1600,8 +1600,8 @@ TEST_P(SegmentTest, AddNullableColumnWithoutExpressionMultiBlock) {
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   segment->dump();
@@ -1674,9 +1674,8 @@ TEST_P(SegmentTest, AddNullableColumnWithoutExpressionMultiBlock) {
     auto field_schema =
         std::make_shared<FieldSchema>(nullable_col_name, data_type, true);
     s = segment->add_column(field_schema, "", AddColumnOptions());
-    ASSERT_TRUE(s.ok())
-        << "Failed to add nullable column " << nullable_col_name << ": "
-        << s.message();
+    ASSERT_TRUE(s.ok()) << "Failed to add nullable column " << nullable_col_name
+                        << ": " << s.message();
 
     auto combined_reader =
         segment->scan({"id", "name", "age", nullable_col_name});
@@ -1699,8 +1698,8 @@ TEST_P(SegmentTest, AddColumnWithExpressionMultiBlock) {
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   segment->dump();
@@ -1807,8 +1806,8 @@ TEST_P(SegmentTest, AlterColumnMultiBlock) {
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   segment->dump();
@@ -1891,8 +1890,8 @@ TEST_P(SegmentTest, DropColumnMultiBlock) {
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   segment->dump();
@@ -1978,8 +1977,8 @@ TEST_P(SegmentTest, AddNullableThenAlterDropMultiBlock) {
   options_.max_buffer_size_ = 1 * 1024;
   int doc_count = 100;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   segment->dump();
@@ -2087,8 +2086,8 @@ TEST_P(SegmentTest, AlterColumn) {
   // create segment
   int doc_count = 1000;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   auto s = segment->alter_column(
@@ -2203,8 +2202,8 @@ TEST_P(SegmentTest, DropColumn) {
   // create segment
   int doc_count = 1000;
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_, options_,
-      0, doc_count);
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
 
   auto s = segment->drop_column("int32");

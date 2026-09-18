@@ -16,23 +16,12 @@
 #include <random>
 #include <unordered_set>
 #include <vector>
-#include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
 
-class BlockHeap : public testing::Test {
- protected:
-  void SetUp() override {
-#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || \
-    defined(_M_IX86)
-    if (!zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-      GTEST_SKIP() << "BlockHeap's x86 path requires AVX2";
-    }
-#endif
-  }
-};
+using zvec::core::BlockHeap;
 
-TEST_F(BlockHeap, PopExposesNextUnexpandedCandidate) {
-  zvec::core::BlockHeap pool;
+TEST(BlockHeap, PopExposesNextUnexpandedCandidate) {
+  BlockHeap pool;
   pool.reset(4, 4);
 
   const float distances[] = {30.0f, 10.0f, 40.0f, 20.0f};
@@ -51,8 +40,8 @@ TEST_F(BlockHeap, PopExposesNextUnexpandedCandidate) {
   EXPECT_FALSE(pool.has_next());
 }
 
-TEST_F(BlockHeap, RewindIsVisibleThroughNextCandidate) {
-  zvec::core::BlockHeap pool;
+TEST(BlockHeap, RewindIsVisibleThroughNextCandidate) {
+  BlockHeap pool;
   pool.reset(4, 2);
 
   const float initial_distances[] = {10.0f, 20.0f};
@@ -71,8 +60,8 @@ TEST_F(BlockHeap, RewindIsVisibleThroughNextCandidate) {
   EXPECT_EQ(20u, next);
 }
 
-TEST_F(BlockHeap, ExistingPopInterfaceIsPreserved) {
-  zvec::core::BlockHeap pool;
+TEST(BlockHeap, ExistingPopInterfaceIsPreserved) {
+  BlockHeap pool;
   pool.reset(2, 2);
 
   const float distances[] = {2.0f, 1.0f};
@@ -84,8 +73,8 @@ TEST_F(BlockHeap, ExistingPopInterfaceIsPreserved) {
   EXPECT_FALSE(pool.has_next());
 }
 
-TEST_F(BlockHeap, MixedPopInterfacesSkipCheckedEntriesAfterRewind) {
-  zvec::core::BlockHeap pool;
+TEST(BlockHeap, MixedPopInterfacesSkipCheckedEntriesAfterRewind) {
+  BlockHeap pool;
   pool.reset(5, 4);
   const float distances[] = {1.0f, 2.0f, 3.0f, 4.0f};
   const uint32_t ids[] = {1, 2, 3, 4};
@@ -107,8 +96,8 @@ TEST_F(BlockHeap, MixedPopInterfacesSkipCheckedEntriesAfterRewind) {
   EXPECT_FALSE(pool.has_next());
 }
 
-TEST_F(BlockHeap, NewPopMatchesLegacyAcrossTruncationRewindAndReset) {
-  zvec::core::BlockHeap legacy, rich;
+TEST(BlockHeap, NewPopMatchesLegacyAcrossTruncationRewindAndReset) {
+  BlockHeap legacy, rich;
   std::mt19937 rng(701);
   for (int capacity : {1, 2, 7, 8, 16, 33}) {
     SCOPED_TRACE(capacity);

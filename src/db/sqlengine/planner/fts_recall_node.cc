@@ -32,7 +32,7 @@ FtsRecallNode::FtsRecallNode(Segment::Ptr segment, QueryInfo::Ptr query_info,
   auto table = segment_->fetch(fetched_columns_, std::vector<int>{});
   // Append BM25 score column so downstream fill_doc_score() surfaces it to
   // the Python Doc.score, matching the vector-recall path.
-  schema_ = Util::append_field(*table->schema(), kFieldScore, arrow::float32());
+  schema_ = Util::append_field(*table->schema(), FIELD_SCORE, arrow::float32());
 }
 
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
@@ -94,7 +94,7 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
     }
     auto record_batch = std::move(batch.ValueUnsafe());
     auto with_score =
-        record_batch->AddColumn(record_batch->num_columns(), kFieldScore,
+        record_batch->AddColumn(record_batch->num_columns(), FIELD_SCORE,
                                 score_array.MoveValueUnsafe());
     if (!with_score.ok()) {
       return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(

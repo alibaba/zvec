@@ -59,42 +59,42 @@ struct CubePolicy {
 template <typename T>
 struct SmallCubePolicy : public CubePolicy {
   //! Assign `src` to `dst`
-  void assign(const void *src, void **dst) {
+  void assign(const void *src, void **dst) override {
     new (dst) T(*reinterpret_cast<const T *>(src));
   }
 
   //! Cleanup value
-  void cleanup(void **val) {
+  void cleanup(void **val) override {
     reinterpret_cast<T *>(val)->~T();
   }
 
   //! Clone value of `src` to `dst`
-  void clone(void *const *src, void **dst) {
+  void clone(void *const *src, void **dst) override {
     new (dst) T(*reinterpret_cast<const T *>(src));
   }
 
   //! Move `src` to `dst`
-  void move(void *src, void **dst) {
+  void move(void *src, void **dst) override {
     new (dst) T(std::move(*reinterpret_cast<T *>(src)));
   }
 
   //! Retrieve size
-  size_t size() const {
+  size_t size() const override {
     return sizeof(T);
   }
 
   //! Retrieve type information
-  const std::type_info &type() const {
+  const std::type_info &type() const override {
     return typeid(T);
   }
 
   //! Retrieve value
-  void *value(void **src) {
+  void *value(void **src) override {
     return reinterpret_cast<void *>(src);
   }
 
   //! Retrieve value
-  const void *value(void *const *src) const {
+  const void *value(void *const *src) const override {
     return reinterpret_cast<const void *>(src);
   }
 };
@@ -104,42 +104,42 @@ struct SmallCubePolicy : public CubePolicy {
 template <typename T>
 struct LargeCubePolicy : public CubePolicy {
   //! Assign `src` to `dst`
-  void assign(const void *src, void **dst) {
+  void assign(const void *src, void **dst) override {
     *dst = new T(*reinterpret_cast<const T *>(src));
   }
 
   //! Cleanup value
-  void cleanup(void **val) {
+  void cleanup(void **val) override {
     delete (reinterpret_cast<T *>(*val));
   }
 
   //! Clone value of `src` to `dst`
-  void clone(void *const *src, void **dst) {
+  void clone(void *const *src, void **dst) override {
     *dst = new T(**reinterpret_cast<T *const *>(src));
   }
 
   //! Move `src` to `dst`
-  void move(void *src, void **dst) {
+  void move(void *src, void **dst) override {
     *dst = new T(std::move(*reinterpret_cast<T *>(src)));
   }
 
   //! Retrieve size
-  size_t size() const {
+  size_t size() const override {
     return sizeof(T);
   }
 
   //! Retrieve type information
-  const std::type_info &type() const {
+  const std::type_info &type() const override {
     return typeid(T);
   }
 
   //! Retrieve value
-  void *value(void **src) {
+  void *value(void **src) override {
     return *src;
   }
 
   //! Retrieve value
-  const void *value(void *const *src) const {
+  const void *value(void *const *src) const override {
     return *src;
   }
 };

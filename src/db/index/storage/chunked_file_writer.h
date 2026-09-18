@@ -31,11 +31,11 @@ class ChunkedFileWriter {
       const std::string &file_path,
       const std::shared_ptr<arrow::Schema> &schema, FileFormat format);
 
-  virtual arrow::Status Write(const arrow::RecordBatch &batch) = 0;
+  virtual arrow::Status write(const arrow::RecordBatch &batch) = 0;
 
-  virtual arrow::Status Write(const arrow::Table &table) = 0;
+  virtual arrow::Status write(const arrow::Table &table) = 0;
 
-  virtual arrow::Status Close() = 0;
+  virtual arrow::Status close() = 0;
 
   virtual ~ChunkedFileWriter() = default;  // LCOV_EXCL_BR_LINE
 

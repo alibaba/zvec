@@ -2856,8 +2856,8 @@ TEST_F(IVFSearcherTest, TestProvider) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -2946,8 +2946,8 @@ TEST_F(IVFSearcherTest, TestProviderInt8) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -3032,8 +3032,8 @@ TEST_F(IVFSearcherTest, TestSearcherReuse) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path1, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));
@@ -3059,7 +3059,7 @@ TEST_F(IVFSearcherTest, TestSearcherReuse) {
 
   auto container2 = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container2->open(path2, false));
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  ASSERT_EQ(0, searcher->init(searcher_params));
   ASSERT_EQ(0, searcher->load(container2, IndexMetric::Pointer()));
 
   auto provider2 = searcher->create_provider();
@@ -3109,8 +3109,8 @@ TEST_F(IVFSearcherTest, TestInt8QuantizerWithL2) {
   // test searcher
   IndexSearcher::Pointer searcher = IndexFactory::CreateSearcher("IVFSearcher");
   ASSERT_NE(searcher, nullptr);
-  Params searcherParams;
-  ASSERT_EQ(0, searcher->init(searcherParams));
+  Params searcher_params;
+  ASSERT_EQ(0, searcher->init(searcher_params));
   auto container = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_EQ(0, container->open(path, false));
   ASSERT_EQ(0, searcher->load(container, IndexMetric::Pointer()));

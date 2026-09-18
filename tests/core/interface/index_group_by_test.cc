@@ -240,11 +240,11 @@ BaseIndexQueryParam::Pointer DiskAnnQuery(bool fetch_vector = false,
 
 class GroupByInterfaceTest : public ::testing::Test {
  protected:
-  void RunOk(const GroupByCase &test_case) {
+  void run_ok(const GroupByCase &test_case) {
     Run(test_case, /*expect_error=*/false);
   }
 
-  void RunRejected(const GroupByCase &test_case) {
+  void run_rejected(const GroupByCase &test_case) {
     Run(test_case, /*expect_error=*/true);
   }
 
@@ -261,14 +261,15 @@ class GroupByInterfaceTest : public ::testing::Test {
     zvec::test_util::RemoveTestFiles(index_name + "*");
     zvec::test_util::RemoveTestFiles(source_index_name + "*");
 
-    auto source = IndexFactory::CreateAndInitIndex(*FlatSourceParam(test_case));
+    auto source =
+        IndexFactory::CreateAndInitIndex(*flat_source_param(test_case));
     ASSERT_NE(nullptr, source) << test_case.name;
     ASSERT_EQ(0, source->open(source_index_name,
                               {StorageOptions::StorageType::kMMAP, true}))
         << test_case.name;
 
     for (uint32_t i = 0; i < kNumDocs; ++i) {
-      AddDoc(source, i, test_case);
+      add_doc(source, i, test_case);
     }
     ASSERT_EQ(0, source->train()) << test_case.name;
 
@@ -291,7 +292,7 @@ class GroupByInterfaceTest : public ::testing::Test {
       query_param->refiner_param->scale_factor_ = 1.0f;
       query_param->refiner_param->reference_index = source;
     }
-    auto query = MakeQuery(test_case);
+    auto query = make_query(test_case);
 
     SearchResult result;
     const int ret = index->search(query.data, query_param, &result);
@@ -303,7 +304,7 @@ class GroupByInterfaceTest : public ::testing::Test {
       }
     } else {
       ASSERT_EQ(0, ret) << test_case.name;
-      AssertGroupedResult(result, query_param, test_case);
+      assert_grouped_result(result, query_param, test_case);
     }
 
     ASSERT_EQ(0, index->close()) << test_case.name;
@@ -312,15 +313,15 @@ class GroupByInterfaceTest : public ::testing::Test {
     zvec::test_util::RemoveTestFiles(source_index_name + "*");
   }
 
-  BaseIndexParam::Pointer FlatSourceParam(const GroupByCase &test_case) {
+  BaseIndexParam::Pointer flat_source_param(const GroupByCase &test_case) {
     if (test_case.is_sparse) {
       return SparseFlatParam();
     }
     return DenseFlatParam(test_case.dimension);
   }
 
-  void AddDoc(const Index::Pointer &index, uint32_t key,
-              const GroupByCase &test_case) {
+  void add_doc(const Index::Pointer &index, uint32_t key,
+               const GroupByCase &test_case) {
     std::vector<float> values(test_case.dimension, static_cast<float>(key));
     if (test_case.is_sparse) {
       std::vector<uint32_t> indices(test_case.dimension);
@@ -334,7 +335,7 @@ class GroupByInterfaceTest : public ::testing::Test {
     ASSERT_EQ(0, index->add(data, key)) << key;
   }
 
-  QueryHolder MakeQuery(const GroupByCase &test_case) {
+  QueryHolder make_query(const GroupByCase &test_case) {
     QueryHolder holder;
     holder.values.assign(test_case.dimension, 1.0f);
     if (test_case.is_sparse) {
@@ -348,9 +349,9 @@ class GroupByInterfaceTest : public ::testing::Test {
     return holder;
   }
 
-  void AssertGroupedResult(const SearchResult &result,
-                           const BaseIndexQueryParam::Pointer &query_param,
-                           const GroupByCase &test_case) {
+  void assert_grouped_result(const SearchResult &result,
+                             const BaseIndexQueryParam::Pointer &query_param,
+                             const GroupByCase &test_case) {
     ASSERT_TRUE(result.doc_list_.empty());
     ASSERT_EQ(kNumGroups, result.group_doc_list_.size());
 
@@ -386,14 +387,15 @@ class GroupByInterfaceTest : public ::testing::Test {
       return;
     }
     if (test_case.is_sparse) {
-      AssertSparseVectorsFetched(result, test_case.dimension);
+      assert_sparse_vectors_fetched(result, test_case.dimension);
     } else {
-      AssertDenseVectorsFetched(result, test_case.dimension, test_case.name);
+      assert_dense_vectors_fetched(result, test_case.dimension, test_case.name);
     }
   }
 
-  void AssertDenseVectorsFetched(const SearchResult &result, uint32_t dimension,
-                                 const std::string &case_name = "") {
+  void assert_dense_vectors_fetched(const SearchResult &result,
+                                    uint32_t dimension,
+                                    const std::string &case_name = "") {
     const bool has_reverted = !result.group_reverted_vector_list_.empty();
     if (has_reverted) {
       ASSERT_EQ(result.group_doc_list_.size(),
@@ -431,8 +433,8 @@ class GroupByInterfaceTest : public ::testing::Test {
     }
   }
 
-  void AssertSparseVectorsFetched(const SearchResult &result,
-                                  uint32_t dimension) {
+  void assert_sparse_vectors_fetched(const SearchResult &result,
+                                     uint32_t dimension) {
     const bool has_reverted =
         !result.group_reverted_sparse_values_list_.empty();
     if (has_reverted) {
@@ -530,7 +532,7 @@ TEST_F(GroupByInterfaceTest, Dense) {
   };
 
   for (const auto &test_case : cases) {
-    RunOk(test_case);
+    run_ok(test_case);
   }
 }
 
@@ -552,7 +554,7 @@ TEST_F(GroupByInterfaceTest, Sparse) {
   };
 
   for (const auto &test_case : cases) {
-    RunOk(test_case);
+    run_ok(test_case);
   }
 }
 
@@ -615,7 +617,7 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
   };
 
   for (const auto &test_case : cases) {
-    RunRejected(test_case);
+    run_rejected(test_case);
   }
 }
 

@@ -60,7 +60,11 @@ class RawUint8Holder : public IndexHolder {
     }
 
     bool is_valid() const override {
-      return front_iterator_->is_valid();
+      return this->status() == 0 && front_iterator_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iterator_->status();
     }
 
     uint64_t key() const override {
@@ -74,16 +78,22 @@ class RawUint8Holder : public IndexHolder {
 
    private:
     void transform_record() {
-      if (front_iterator_->is_valid()) {
-        owner_->convert_func_(
-            static_cast<const float *>(front_iterator_->data()), buffer_.size(),
-            buffer_.data());
+      if (this->is_valid()) {
+        const auto *source =
+            static_cast<const float *>(front_iterator_->data());
+        status_ = front_iterator_->status();
+        if (source == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
+        owner_->convert_func_(source, buffer_.size(), buffer_.data());
       }
     }
 
     const RawUint8Holder *owner_{nullptr};
     std::vector<uint8_t> buffer_{};
     IndexHolder::Iterator::Pointer front_iterator_{};
+    int status_{0};
   };
 
   RawUint8Holder(IndexHolder::Pointer holder, turbo::ConvertFunc convert_func)

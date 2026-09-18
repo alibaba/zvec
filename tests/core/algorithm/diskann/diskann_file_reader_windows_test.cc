@@ -24,6 +24,7 @@
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
@@ -257,6 +258,106 @@ class ScopedCurrentDirectory {
 };
 
 }  // namespace
+
+TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
+  namespace ailego = zvec::ailego;
+  const size_t native_page_size = ailego::kVectorPageSize;
+  ASSERT_GE(native_page_size, kPageSize);
+  ASSERT_EQ(native_page_size % kPageSize, 0U);
+  const size_t native_page_count = kPageSize * kPageCount / native_page_size;
+  ASSERT_GE(native_page_count, 2U);
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  ASSERT_EQ(
+      memory_pool.init(native_page_size +
+                       ailego::VecBufferPool::metadata_bytes_for_page_count(
+                           native_page_count)),
+      0);
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_EQ(pool->init(), 0);
+  ailego::block_id_t pinned_page = 0;
+  ASSERT_NE(pool->acquire_buffer(pinned_page, 10), nullptr);
+
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(reader.open_from_pool(file.path()), 0);
+  AlignedBuffer output = make_aligned_buffer(2 * kPageSize);
+  ASSERT_NE(output, nullptr);
+  const size_t offset = native_page_size - kPageSize;
+  std::vector<AlignedRead> requests{{offset, 2 * kPageSize, output.get()}};
+  const auto before = pool->stats();
+  IOContext ctx = nullptr;
+  EXPECT_EQ(reader.read(requests, ctx), 0);
+  EXPECT_TRUE(verify_page(output.get(), offset / kPageSize));
+  EXPECT_TRUE(
+      verify_page(output.get() + kPageSize, native_page_size / kPageSize));
+  const auto after = pool->stats();
+  EXPECT_EQ(after.bypass_bytes - before.bypass_bytes, kPageSize);
+  pool->release_pages(&pinned_page, 1);
+  reader.release_io_ctx(ctx);
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  reader.close();
+  pool.reset();
+  EXPECT_EQ(memory_pool.used(), 0U);
+  EXPECT_EQ(memory_pool.metadata_used(), 0U);
+}
+
+TEST(DiskAnnFileReaderWindowsTest, BufferPoolWithoutPageTableUsesBypassOnly) {
+  namespace ailego = zvec::ailego;
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  ASSERT_EQ(memory_pool.init(1), 0);
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_FALSE(pool->cache_enabled());
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(reader.open_from_pool(file.path()), 0);
+  AlignedBuffer output = make_aligned_buffer(2 * kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{{7 * kPageSize, kPageSize, output.get()},
+                                    {0, kPageSize, output.get() + kPageSize}};
+  IOContext ctx = nullptr;
+  EXPECT_EQ(reader.read(requests, ctx), 0);
+  EXPECT_TRUE(verify_page(output.get(), 7));
+  EXPECT_TRUE(verify_page(output.get() + kPageSize, 0));
+  EXPECT_EQ(pool->stats().bypass_bytes, 2 * kPageSize);
+  EXPECT_EQ(pool->stats().page_table_metadata_bytes, 0U);
+  EXPECT_EQ(memory_pool.used(), 0U);
+  EXPECT_EQ(memory_pool.metadata_used(), 0U);
+  reader.release_io_ctx(ctx);
+  EXPECT_EQ(destroy_io_ctx(ctx), 0);
+  reader.close();
+}
+
+TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadBeforeOpenReturnsError) {
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+  auto pool = std::make_shared<zvec::ailego::VecBufferPool>(file.path(), false);
+  BufferPoolAlignedFileReader reader(pool);
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{{0, kPageSize, output.get()}};
+  IOContext ctx = nullptr;
+  EXPECT_NE(reader.read(requests, ctx), 0);
+  EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(DiskAnnFileReaderWindowsTest, BufferPoolRejectsMissingPool) {
+  BufferPoolAlignedFileReader reader(nullptr);
+  EXPECT_NE(reader.open_from_pool("missing"), 0);
+  AlignedBuffer output = make_aligned_buffer(kPageSize);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{{0, kPageSize, output.get()}};
+  IOContext ctx = nullptr;
+  EXPECT_NE(reader.read(requests, ctx), 0);
+  PendingBatch batch;
+  EXPECT_NE(reader.submit(batch, requests, ctx), 0);
+  EXPECT_EQ(batch.n_submitted, 0U);
+  EXPECT_EQ(ctx, nullptr);
+}
 
 TEST(DiskAnnFileReaderWindowsTest, OpenKeepsStableHandleUnbuffered) {
   TemporaryFile file;

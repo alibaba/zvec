@@ -73,7 +73,7 @@ class DiskAnnIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator() {
+    ~Iterator() override {
       if (file_.is_open()) {
         file_.close();
       }

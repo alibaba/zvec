@@ -242,7 +242,7 @@ class FtsRocksdbReducerTest : public ::testing::Test {
     zvec::FileHelper::RemoveDirectory(kTestDir);
   }
 
-  std::unique_ptr<FtsColumnIndexer> MakeSrc0Indexer() {
+  std::unique_ptr<FtsColumnIndexer> make_src0_indexer() {
     auto field_meta = MakeWhitespaceFieldMeta(kFieldName);
     auto indexer = std::make_unique<FtsColumnIndexer>();
     EXPECT_TRUE(indexer
@@ -254,7 +254,7 @@ class FtsRocksdbReducerTest : public ::testing::Test {
   }
 
   // Create and open a FtsColumnIndexer for src1 (doc_ids start at offset)
-  std::unique_ptr<FtsColumnIndexer> MakeSrc1Indexer() {
+  std::unique_ptr<FtsColumnIndexer> make_src1_indexer() {
     auto field_meta = MakeWhitespaceFieldMeta(kFieldName);
     auto indexer = std::make_unique<FtsColumnIndexer>();
     EXPECT_TRUE(indexer
@@ -267,7 +267,7 @@ class FtsRocksdbReducerTest : public ::testing::Test {
 
   // Open a FtsColumnIndexer (read-only) on the merged destination store.
   // Side CFs are nullptr — immutable/reducer stores no longer contain them.
-  std::unique_ptr<FtsColumnIndexer> MakeDstReader() {
+  std::unique_ptr<FtsColumnIndexer> make_dst_reader() {
     auto reader = std::make_unique<FtsColumnIndexer>();
     EXPECT_TRUE(reader
                     ->open_reader(kFieldName, &dst_db_, dst_postings_,
@@ -279,7 +279,7 @@ class FtsRocksdbReducerTest : public ::testing::Test {
   }
 
   // Initialize a reducer targeting the destination store
-  FtsRocksdbReducer MakeReducer() {
+  FtsRocksdbReducer make_reducer() {
     FtsRocksdbReducer reducer;
     EXPECT_TRUE(reducer
                     .init(kFieldName, &dst_db_, dst_postings_, dst_positions_,
@@ -334,7 +334,7 @@ TEST_F(FtsRocksdbReducerTest, FeedFailsBeforeInit) {
 }
 
 TEST_F(FtsRocksdbReducerTest, FeedAcceptsGapBetweenGlobalDocIdRanges) {
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   EXPECT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
@@ -348,7 +348,7 @@ TEST_F(FtsRocksdbReducerTest, FeedAcceptsGapBetweenGlobalDocIdRanges) {
 }
 
 TEST_F(FtsRocksdbReducerTest, FeedFailsWithOverlappingGlobalDocIdRanges) {
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   EXPECT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
@@ -363,12 +363,12 @@ TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
   // Empty segments (doc_count == 0) silently contribute nothing — the
   // surrounding non-empty segments still get their ordering validated
   // against each other, as if the empty one wasn't there.
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "hello world"}, {1, "foo"}, {2, "bar"}});
-  auto indexer1 = MakeSrc1Indexer();
+  auto indexer1 = make_src1_indexer();
   InsertDocs(indexer1.get(), {{0, "baz"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
@@ -391,7 +391,7 @@ TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
 
   ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   EXPECT_EQ(results.size(), 1u);
@@ -409,18 +409,18 @@ TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
 
 TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeNoDeletes) {
   // Segment 0: doc_ids 0..2
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(),
              {{0, "hello world"}, {1, "hello foo"}, {2, "bar"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
   ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // Verify: search "hello" should return doc_ids 0 and 1
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   EXPECT_EQ(results.size(), 2u);
@@ -447,11 +447,11 @@ TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeNoDeletes) {
 
 TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeWithDeletes) {
   // Segment 0: doc_ids 0..2
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(),
              {{0, "hello world"}, {1, "hello foo"}, {2, "bar"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
@@ -460,7 +460,7 @@ TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeWithDeletes) {
   // doc_ids; surviving global {1,2} get dense ranks {0,1}.
   ASSERT_TRUE(reducer.reduce(DeleteFilter({0})).has_value());
 
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
 
   // "hello" survived in global doc 1 → dense doc_id 0.
@@ -480,15 +480,15 @@ TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeWithDeletes) {
 
 TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDocIdRemapping) {
   // Segment 0: GLOBAL doc_ids 0..2
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(),
              {{0, "hello world"}, {1, "hello baz"}, {2, "foo bar"}});
 
   // Segment 1: GLOBAL doc_ids 3..3 (stored as LOCAL 0 in src1 RocksDB)
-  auto indexer1 = MakeSrc1Indexer();
+  auto indexer1 = make_src1_indexer();
   InsertDocs(indexer1.get(), {{0, "hello qux"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
@@ -503,7 +503,7 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDocIdRemapping) {
   // Dst segment starts at GLOBAL doc_id 0 (covers 0..3); reader returns
   // GLOBAL doc_ids by adding start_doc_id back to local doc_ids stored in
   // the merged dst RocksDB.
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
 
   // "hello" appears in global doc_ids 0, 1 (seg0) and 3 (seg1)
@@ -540,14 +540,14 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDocIdRemapping) {
 
 TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDeleteFromSecondSegment) {
   // Segment 0: GLOBAL doc_ids 0..1
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "hello world"}, {1, "foo bar"}});
 
   // Segment 1: GLOBAL doc_ids 2..3 (stored as LOCAL 0..1 in src1 RocksDB)
-  auto indexer1 = MakeSrc1Indexer();
+  auto indexer1 = make_src1_indexer();
   InsertDocs(indexer1.get(), {{0, "hello baz"}, {1, "qux"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 1);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
@@ -561,7 +561,7 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDeleteFromSecondSegment) {
   // input scan order are global {0, 1, 3}, getting dense ranks {0, 1, 2}.
   ASSERT_TRUE(reducer.reduce(DeleteFilter({2})).has_value());
 
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
 
   // "hello" survived in global doc 0 → dense rank 0.
@@ -581,17 +581,17 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDeleteFromSecondSegment) {
 // ============================================================
 
 TEST_F(FtsRocksdbReducerTest, MergedResultsHavePositiveScores) {
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(),
              {{0, "hello world"}, {1, "hello foo"}, {2, "bar baz"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
   ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   ASSERT_EQ(results.size(), 2u);
@@ -607,7 +607,7 @@ TEST_F(FtsRocksdbReducerTest, MergedResultsHavePositiveScores) {
 // ============================================================
 
 TEST_F(FtsRocksdbReducerTest, ReduceFailsBeforeFeed) {
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   EXPECT_FALSE(reducer.reduce(NoDeleteFilter()).has_value());
 }
 
@@ -616,9 +616,9 @@ TEST_F(FtsRocksdbReducerTest, ReduceFailsBeforeFeed) {
 // ============================================================
 
 TEST_F(FtsRocksdbReducerTest, CleanupResetsState) {
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "hello"}, {1, "world"}});
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 1);
@@ -636,11 +636,11 @@ TEST_F(FtsRocksdbReducerTest, CleanupResetsState) {
 // ============================================================
 
 TEST_F(FtsRocksdbReducerTest, ReduceProducesBitPackedFormat) {
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(),
              {{0, "hello world"}, {1, "hello foo"}, {2, "bar baz"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
@@ -679,14 +679,14 @@ TEST_F(FtsRocksdbReducerTest, ReduceProducesBitPackedFormat) {
 
 TEST_F(FtsRocksdbReducerTest, TwoSegmentMergeBitPackedCorrectness) {
   // Segment 0: GLOBAL doc_ids 0..1
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "hello world"}, {1, "foo bar"}});
 
   // Segment 1: GLOBAL doc_ids 2..3 (stored as LOCAL 0..1 in src1 RocksDB)
-  auto indexer1 = MakeSrc1Indexer();
+  auto indexer1 = make_src1_indexer();
   InsertDocs(indexer1.get(), {{0, "hello baz"}, {1, "qux"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 1);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
@@ -715,7 +715,7 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentMergeBitPackedCorrectness) {
   EXPECT_EQ(iter.next_doc(), fts::BitPackedPostingIterator::NO_MORE_DOCS);
 
   // Verify search still works correctly via FtsColumnIndexer
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   EXPECT_EQ(results.size(), 2u);
@@ -738,7 +738,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
 
   // Mid0: reduce src0 -> mid0 (produces BitPacked postings)
   {
-    auto indexer0 = MakeSrc0Indexer();
+    auto indexer0 = make_src0_indexer();
     InsertDocs(indexer0.get(),
                {{0, "hello world"}, {1, "hello foo"}, {2, "bar"}});
 
@@ -772,7 +772,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
 
   // Mid1: reduce src1 -> mid1 (produces BitPacked postings)
   {
-    auto indexer1 = MakeSrc1Indexer();
+    auto indexer1 = make_src1_indexer();
     InsertDocs(indexer1.get(), {{0, "hello baz"}, {1, "qux bar"}});
 
     RocksdbContext mid1_db;
@@ -814,7 +814,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
   auto *mid0_positions = mid0_db.get_cf(kPositionsCf);
   auto *mid1_postings = mid1_db.get_cf(kPostingsCf);
   auto *mid1_positions = mid1_db.get_cf(kPositionsCf);
-  FtsRocksdbReducer final_reducer = MakeReducer();
+  FtsRocksdbReducer final_reducer = make_reducer();
   // mid0 has doc_ids 0..2, mid1 has doc_ids 3..4
   ASSERT_TRUE(
       final_reducer
@@ -862,7 +862,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
   EXPECT_EQ(bar_iter.next_doc(), fts::BitPackedPostingIterator::NO_MORE_DOCS);
 
   // Verify search via FtsColumnIndexer still works
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   EXPECT_EQ(results.size(), 3u);
@@ -892,7 +892,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
 TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
   // ----- src0: insert + flush + convert (the helper already calls convert)
   // -----
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {
                                  {0, "hello world"},
                                  {1, "hello foo"},
@@ -922,7 +922,7 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
   }
 
   // ----- src1: insert + flush + convert -----
-  auto indexer1 = MakeSrc1Indexer();
+  auto indexer1 = make_src1_indexer();
   InsertDocs(indexer1.get(), {
                                  {0, "hello qux"},
                                  {1, "qux quux"},
@@ -930,7 +930,7 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
 
   // ----- Reduce -----
   // src0 covers GLOBAL [0, 2], src1 covers GLOBAL [3, 4] (consecutive).
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   ASSERT_TRUE(reducer
                   .feed(MakeSegmentStats(0, 2), &src0_db_, src0_postings_,
                         src0_positions_)
@@ -945,7 +945,7 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
   // After reduce, dst postings get re-written to BitPacked again by the
   // reducer's existing convert_postings_to_bitpacked step, so this exercises
   // the full BitPacked-in / BitPacked-out path.
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
 
   // "hello" appears in src0 doc 0 (global 0), src0 doc 1 (global 1),
   // src1 doc 0 (global 3) -> 3 hits.
@@ -981,7 +981,7 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
 TEST_F(FtsRocksdbReducerTest, ReduceWithDroppedSideCFsProducesBitPacked) {
   // InsertDocs() converts postings. Explicitly drop side CFs afterward,
   // matching the sealing path before reduction.
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "alpha beta gamma"},
                               {1, "alpha alpha gamma"},
                               {2, "delta epsilon"}});
@@ -994,7 +994,7 @@ TEST_F(FtsRocksdbReducerTest, ReduceWithDroppedSideCFsProducesBitPacked) {
     EXPECT_EQ(src0_db_.get_cf(name), nullptr);
   }
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   ASSERT_TRUE(reducer
                   .feed(MakeSegmentStats(0, 2), &src0_db_, src0_postings_,
                         src0_positions_)
@@ -1038,7 +1038,7 @@ TEST_F(FtsRocksdbReducerTest, ReduceWithDroppedSideCFsProducesBitPacked) {
 
   // dst no longer has side CFs ($TF/$MAX_TF/$DOC_LEN) — they are dropped
   // at dump time. Verify search still works end-to-end.
-  auto reader = MakeDstReader();
+  auto reader = make_dst_reader();
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_str_ok(*reader, "alpha", 10, &results));
   EXPECT_EQ(results.size(), 2u);
@@ -1054,14 +1054,14 @@ TEST_F(FtsRocksdbReducerTest, ReduceWithDroppedSideCFsProducesBitPacked) {
 
 TEST_F(FtsRocksdbReducerTest, MultiSegmentBM25StatsAreAccumulatedCorrectly) {
   // src0: 2 docs, doc_len 3 + 2 = 5 tokens
-  auto indexer0 = MakeSrc0Indexer();
+  auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "alpha beta gamma"}, {1, "alpha beta"}});
 
   // src1: 2 docs, doc_len 4 + 1 = 5 tokens
-  auto indexer1 = MakeSrc1Indexer();
+  auto indexer1 = make_src1_indexer();
   InsertDocs(indexer1.get(), {{0, "alpha gamma delta epsilon"}, {1, "alpha"}});
 
-  FtsRocksdbReducer reducer = MakeReducer();
+  FtsRocksdbReducer reducer = make_reducer();
   ASSERT_TRUE(reducer
                   .feed(MakeSegmentStats(0, 1), &src0_db_, src0_postings_,
                         src0_positions_)

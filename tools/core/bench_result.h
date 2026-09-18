@@ -59,14 +59,14 @@ class BenchResult {
 #ifdef _MSC_VER
     start_ = std::chrono::steady_clock::now();
 #else
-    gettimeofday(&start_, NULL);
+    gettimeofday(&start_, nullptr);
 #endif
   }
   void mark_end() {
 #ifdef _MSC_VER
     end_ = std::chrono::steady_clock::now();
 #else
-    gettimeofday(&end_, NULL);
+    gettimeofday(&end_, nullptr);
 #endif
   }
   long get_duration_by_ms() {

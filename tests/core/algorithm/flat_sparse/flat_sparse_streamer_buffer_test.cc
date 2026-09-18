@@ -145,23 +145,23 @@ TEST_F(FlatSparseStreamerTest, TestGeneral) {
   ASSERT_EQ(0, read_storage->open(dir_ + "Test/FlatSparseSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
 
-  auto linearCtx = read_streamer->create_context();
-  ASSERT_TRUE(!!linearCtx);
+  auto linear_ctx = read_streamer->create_context();
+  ASSERT_TRUE(!!linear_ctx);
 
-  auto knnCtx = read_streamer->create_context();
-  ASSERT_TRUE(!!knnCtx);
+  auto knn_ctx = read_streamer->create_context();
+  ASSERT_TRUE(!!knn_ctx);
 
   // streamer->print_debug_info();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
-  uint64_t knnTotalTime = 0;
-  uint64_t linearTotalTime = 0;
+  uint64_t knn_total_time = 0;
+  uint64_t linear_total_time = 0;
 
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
   for (size_t i = 0; i < cnt; i += 100) {
     const auto &sparse_indices = sparse_indices_list[i];
@@ -171,45 +171,45 @@ TEST_F(FlatSparseStreamerTest, TestGeneral) {
 
     ASSERT_EQ(
         0, read_streamer->search_impl(sparse_dim_count, sparse_indices.data(),
-                                      sparse_vec.data(), qmeta, knnCtx));
+                                      sparse_vec.data(), qmeta, knn_ctx));
 
     auto t2 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0, read_streamer->search_bf_impl(
                      sparse_dim_count, sparse_indices.data(), sparse_vec.data(),
-                     qmeta, linearCtx));
+                     qmeta, linear_ctx));
 
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
     // std::cout << "i: " << i << std::endl;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 
-  std::cout << "knnTotalTime=" << knnTotalTime
-            << " linearTotalTime=" << linearTotalTime << std::endl;
+  std::cout << "knnTotalTime=" << knn_total_time
+            << " linearTotalTime=" << linear_total_time << std::endl;
 
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -218,7 +218,7 @@ TEST_F(FlatSparseStreamerTest, TestGeneral) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
 }
 
