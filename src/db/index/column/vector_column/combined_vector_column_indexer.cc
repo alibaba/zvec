@@ -414,7 +414,7 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
                                query_params.topk);
 }
 
-Status CombinedVectorColumnIndexer::SearchFast(
+Status CombinedVectorColumnIndexer::search_fast(
     const vector_column_params::VectorData &vector_data,
     const vector_column_params::QueryParams &query_params, int64_t *output_ids,
     float *output_scores) {
@@ -430,12 +430,12 @@ Status CombinedVectorColumnIndexer::SearchFast(
       }
       reference_indexer = normal_indexers_[0].get();
     }
-    return indexers_[0]->SearchFast(vector_data, query_params, output_ids,
-                                    output_scores, reference_indexer);
+    return indexers_[0]->search_fast(vector_data, query_params, output_ids,
+                                     output_scores, reference_indexer);
   }
 
   // Reuse Search's offset/filter/refiner handling for composite segments.
-  auto result = Search(vector_data, query_params);
+  auto result = search(vector_data, query_params);
   if (!result) return result.error();
   size_t count = 0;
   for (auto it = result.value()->create_iterator();
