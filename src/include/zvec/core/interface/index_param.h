@@ -445,7 +445,7 @@ struct ZVEC_CORE_API VamanaIndexParam : public BaseIndexParam {
   int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
   bool saturate_graph = kDefaultVamanaSaturateGraph;
   bool use_contiguous_memory = false;
-  bool two_pass_build = false;
+  bool two_pass_build = true;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 

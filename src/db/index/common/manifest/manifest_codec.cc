@@ -533,6 +533,8 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   bool saturate_graph = false;
   bool use_contiguous_memory = false;
   bool use_id_map = false;
+  // The wire format omits false. Preserve explicitly disabled and legacy
+  // indexes rather than applying the default for newly created indexes.
   bool two_pass_build = false;
   bool use_flat_contiguous_memory = false;
   DataType flat_data_type = DataType::VECTOR_FP32;
