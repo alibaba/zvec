@@ -302,7 +302,7 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   //! Called only in searching procedure per context, so no need to lock
-  void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
+  void sync_chunks(ChunkBroker::ChunkType type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
       return;

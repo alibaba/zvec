@@ -26,7 +26,7 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   using Pointer = std::shared_ptr<DiskAnnBuilderEntity>;
 
   DiskAnnBuilderEntity() = default;
-  virtual ~DiskAnnBuilderEntity() = default;
+  ~DiskAnnBuilderEntity() override = default;
 
  public:
   void clear();

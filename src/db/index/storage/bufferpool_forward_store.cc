@@ -32,7 +32,7 @@ namespace zvec {
 BufferPoolForwardStore::BufferPoolForwardStore(const std::string &uri)
     : file_path_(uri) {}
 
-Status BufferPoolForwardStore::Open() {
+Status BufferPoolForwardStore::open() {
   std::string uri = file_path_;
   auto status = CreateRandomAccessFileByUri(uri, &file_, &file_path_);
   if (!status.ok()) {
@@ -41,7 +41,7 @@ Status BufferPoolForwardStore::Open() {
   }
   auto format = InferFileFormat(file_path_);
   if (format == FileFormat::PARQUET) {
-    status = OpenParquet(file_);
+    status = open_parquet(file_);
     if (!status.ok()) {
       return Status::InternalError("Failed to open parquet file: ", file_path_,
                                    " : ", status.ToString());
@@ -51,7 +51,7 @@ Status BufferPoolForwardStore::Open() {
   }
   return Status::OK();
 }
-arrow::Status BufferPoolForwardStore::OpenParquet(
+arrow::Status BufferPoolForwardStore::open_parquet(
     const std::shared_ptr<arrow::io::RandomAccessFile> &file) {
   auto parquet_file_reader = parquet::ParquetFileReader::Open(file);
   ARROW_RETURN_NOT_OK(parquet::arrow::FileReader::Make(
@@ -102,7 +102,7 @@ bool BufferPoolForwardStore::validate(
   return true;
 }
 
-int BufferPoolForwardStore::FindRowGroupForRow(int64_t row) {
+int BufferPoolForwardStore::find_row_group_for_row(int64_t row) {
   auto it = std::upper_bound(row_group_offsets_.begin(),
                              row_group_offsets_.end(), row);
   if (it == row_group_offsets_.begin()) {
@@ -111,7 +111,7 @@ int BufferPoolForwardStore::FindRowGroupForRow(int64_t row) {
   return static_cast<int>(std::distance(row_group_offsets_.begin(), it) - 1);
 }
 
-int64_t BufferPoolForwardStore::GetRowGroupOffset(int rg_id) {
+int64_t BufferPoolForwardStore::get_row_group_offset(int rg_id) {
   if (rg_id < 0 || rg_id >= static_cast<int>(row_group_offsets_.size())) {
     LOG_ERROR("Invalid row group id: %d, max: %zu", rg_id,
               row_group_offsets_.size());
@@ -169,8 +169,8 @@ TablePtr BufferPoolForwardStore::fetch(const std::vector<std::string> &columns,
                 static_cast<long long>(num_rows_));
       return nullptr;
     }
-    int rg_id = FindRowGroupForRow(global_row);
-    int64_t offset = GetRowGroupOffset(rg_id);
+    int rg_id = find_row_group_for_row(global_row);
+    int64_t offset = get_row_group_offset(rg_id);
     if (offset == -1) {
       LOG_ERROR("Failed to get row group offset for row: %d", global_row);
       return nullptr;
@@ -311,8 +311,8 @@ ExecBatchPtr BufferPoolForwardStore::fetch(
     col_indices.push_back(idx);
   }
 
-  int rg_id = FindRowGroupForRow(index);
-  int64_t offset = GetRowGroupOffset(rg_id);
+  int rg_id = find_row_group_for_row(index);
+  int64_t offset = get_row_group_offset(rg_id);
 
   std::vector<arrow::Datum> scalars;
   for (size_t i = 0; i < col_indices.size(); ++i) {

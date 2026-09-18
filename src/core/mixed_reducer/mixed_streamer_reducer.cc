@@ -697,10 +697,10 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
       return ret;
     }
   }
-  return this->IndexBuild(std::move(target_holder));
+  return this->index_build(std::move(target_holder));
 }
 
-int MixedStreamerReducer::IndexBuild(IndexHolder::Pointer target_holder) {
+int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
   if (target_builder_converter_) {
     int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
                                                       target_holder);

@@ -25,7 +25,7 @@ class InspectableDiskAnn : public DiskAnnIndex {
  public:
   int initialize(const BaseIndexParam &param) {
     proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_THREAD_COUNT, 2U);
-    return Init(param);
+    return init(param);
   }
   std::weak_ptr<core::IndexBuilder> builder() const {
     return builder_;

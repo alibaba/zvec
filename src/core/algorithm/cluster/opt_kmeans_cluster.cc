@@ -222,18 +222,18 @@ void OptKmeansAlgorithm::update_params(const ailego::Params &params) {
 }
 
 int OptKmeansAlgorithm::init_distance_func() {
-  IndexMetric::Pointer metric_{};
-  metric_ = IndexFactory::CreateMetric(meta_.metric_name());
-  if (!metric_) {
+  IndexMetric::Pointer metric{};
+  metric = IndexFactory::CreateMetric(meta_.metric_name());
+  if (!metric) {
     LOG_ERROR("Create Metric %s failed.", meta_.metric_name().c_str());
     return IndexError_Unsupported;
   }
-  int ret = metric_->init(meta_, meta_.metric_params());
+  int ret = metric->init(meta_, meta_.metric_params());
   if (ret != 0) {
     LOG_ERROR("IndexMetric init failed wit ret %d.", ret);
     return ret;
   }
-  distance_func_ = metric_->distance_matrix(1, 1);
+  distance_func_ = metric->distance_matrix(1, 1);
   if (!distance_func_) {
     LOG_ERROR("DistanceMatrix function is nullptr.");
     return IndexError_Unsupported;
@@ -449,8 +449,8 @@ int OptKmeansAlgorithm::mount(IndexFeatures::Pointer feats) {
 }
 
 int OptKmeansAlgorithm::check_dimension() const {
-  auto type_ = meta_.data_type();
-  switch (type_) {
+  auto type = meta_.data_type();
+  switch (type) {
     case IndexMeta::DataType::DT_INT4:
       if (meta_.dimension() % 8 != 0) {
         LOG_ERROR(
@@ -1204,10 +1204,10 @@ int OptKmeansCluster::mount(IndexFeatures::Pointer feats) {
 
 int OptKmeansCluster::init(const IndexMeta &meta,
                            const ailego::Params &params) {
-  auto type_ = meta.data_type();
+  auto type = meta.data_type();
 
   if (meta.metric_name() == "InnerProduct") {
-    switch (type_) {
+    switch (type) {
       case IndexMeta::DataType::DT_FP16: {
         algorithm_.reset(
             new (std::nothrow)
@@ -1240,12 +1240,12 @@ int OptKmeansCluster::init(const IndexMeta &meta,
         break;
       }
       default: {
-        LOG_ERROR("Unsupported feature types %d.", type_);
+        LOG_ERROR("Unsupported feature types %d.", type);
         return IndexError_Mismatch;
       }
     }
   } else {
-    switch (type_) {
+    switch (type) {
       case IndexMeta::DataType::DT_FP16: {
         algorithm_.reset(new (std::nothrow)
                              NumericalKmeansAlgorithm<ailego::Float16>);
@@ -1272,7 +1272,7 @@ int OptKmeansCluster::init(const IndexMeta &meta,
         break;
       }
       default: {
-        LOG_ERROR("Unsupported feature types %d.", type_);
+        LOG_ERROR("Unsupported feature types %d.", type);
         return IndexError_Mismatch;
       }
     }

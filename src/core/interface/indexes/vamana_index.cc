@@ -41,7 +41,7 @@ int VamanaIndex::merge(const std::vector<Index::Pointer> &indexes,
   return ret;
 }
 
-int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int VamanaIndex::create_and_init_streamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const VamanaIndexParam &>(param);
 
   // Validate parameters

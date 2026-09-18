@@ -21,7 +21,7 @@
 #include <zvec/ailego/utility/type_helper.h>
 #include "inner_product_distance_batch.h"
 
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 
 template <typename T, size_t BatchSize, size_t PrefetchStep, typename = void>
@@ -34,11 +34,12 @@ struct CosineDistanceBatch {
   static inline void ComputeBatch(const ValueType **vecs,
                                   const ValueType *query, size_t num_vecs,
                                   size_t dim, float *results) {
+    // NOLINTNEXTLINE(bugprone-sizeof-expression): intentional byte-width ratio
     constexpr size_t extra_dim = sizeof(float) / sizeof(ValueType);
-    size_t _dim = dim - extra_dim;
+    size_t data_dim = dim - extra_dim;
 
     InnerProductDistanceBatch<ValueType, BatchSize, PrefetchStep>::ComputeBatch(
-        vecs, query, num_vecs, _dim, results);
+        vecs, query, num_vecs, data_dim, results);
 
     for (size_t i = 0; i < num_vecs; ++i) {
       results[i] = 1 - results[i];
@@ -55,4 +56,4 @@ struct CosineDistanceBatch {
 };
 
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch

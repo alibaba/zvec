@@ -26,7 +26,7 @@ namespace zvec::core_interface {
 
 #if !DISKANN_SUPPORTED
 
-int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
   (void)param;
   LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
@@ -40,7 +40,7 @@ int DiskAnnIndex::open(const std::string &file_path,
   return core::IndexError_Unsupported;
 }
 
-int DiskAnnIndex::GenerateHolder() {
+int DiskAnnIndex::generate_holder() {
   LOG_ERROR("DiskAnn is not supported on this platform");
   return core::IndexError_Unsupported;
 }
@@ -87,7 +87,7 @@ int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
 
 #else
 
-int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("Failed to create streamer. Sparse is not Supported.");
     return core::IndexError_Unsupported;
@@ -181,7 +181,7 @@ int DiskAnnIndex::open(const std::string &file_path,
   return 0;
 }
 
-int DiskAnnIndex::GenerateHolder() {
+int DiskAnnIndex::generate_holder() {
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
                               converter_, &holder_);
 }
@@ -211,9 +211,9 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
 int DiskAnnIndex::train() {
   if (is_trained_) return 0;
   if (build_stage_ == BuildStage::kCollecting) {
-    int ret = ResetBuilder();
+    int ret = reset_builder();
     if (ret != 0) return ret;
-    ret = GenerateHolder();
+    ret = generate_holder();
     if (ret != 0) return ret;
     ret = builder_->train(holder_);
     if (ret != 0) return ret;
@@ -229,10 +229,10 @@ int DiskAnnIndex::train() {
     }
     build_stage_ = BuildStage::kBuilt;
   }
-  return DumpAndOpen();
+  return dump_and_open();
 }
 
-int DiskAnnIndex::ResetBuilder() {
+int DiskAnnIndex::reset_builder() {
   auto next = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   if (!next) return core::IndexError_NoExist;
   int ret = next->init(converter_ ? converter_->meta() : proxima_index_meta_,
@@ -242,7 +242,7 @@ int DiskAnnIndex::ResetBuilder() {
   return 0;
 }
 
-int DiskAnnIndex::DumpAndOpen() {
+int DiskAnnIndex::dump_and_open() {
   if (build_stage_ == BuildStage::kBuilt) {
     auto dumper = core::IndexFactory::CreateDumper("FileDumper");
     if (!dumper) return core::IndexError_NoExist;
@@ -260,7 +260,7 @@ int DiskAnnIndex::DumpAndOpen() {
     ret = dumper->close();
     if (ret != 0) return ret;
     dumper.reset();
-    ret = ResetBuilder();
+    ret = reset_builder();
     if (ret != 0) return ret;
     build_stage_ = BuildStage::kDumped;
   } else if (build_stage_ != BuildStage::kDumped) {
@@ -350,14 +350,14 @@ int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
                         const MergeOptions &options) {
   if (indexes.empty()) return 0;
   if (is_trained_) return core::IndexError_Unsupported;
-  int ret = ResetBuilder();
+  int ret = reset_builder();
   if (ret != 0) return ret;
   build_stage_ = BuildStage::kCollecting;
   ret = Index::merge(indexes, filter, options);
   if (ret != 0) return ret;
   build_stage_ = BuildStage::kBuilt;
   is_trained_ = false;
-  return DumpAndOpen();
+  return dump_and_open();
 }
 
 #endif  // DISKANN_SUPPORTED

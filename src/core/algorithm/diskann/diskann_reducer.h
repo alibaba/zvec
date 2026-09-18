@@ -76,9 +76,9 @@ class DiskAnnReducer : public IndexReducer {
   Stats stats_{};
   State state_{STATE_UNINITED};
 
-  const std::string kDiskAnnBuilderName{"DiskAnnBuilder"};
-  const std::string kReducerFileName{"diskann.reducer.builder."};
-  const std::string kHolderFileName{"diskann.reducer.holder."};
+  const std::string k_disk_ann_builder_name{"DiskAnnBuilder"};
+  const std::string k_reducer_file_name{"diskann.reducer.builder."};
+  const std::string k_holder_file_name{"diskann.reducer.holder."};
 };
 
 }  // namespace core

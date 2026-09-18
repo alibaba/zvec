@@ -51,7 +51,7 @@ class ExternalCache : public EvictableBlockOwner {
     BlockEvictionQueue::get_instance().set_valid(this);
   }
 
-  ~ExternalCache() {
+  ~ExternalCache() override {
     BlockEvictionQueue::get_instance().set_invalid(this);
     std::unique_lock<std::shared_mutex> lock(mutex_);
     for (auto &item : table_) {

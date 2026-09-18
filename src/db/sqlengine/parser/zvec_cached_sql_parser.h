@@ -24,7 +24,7 @@ namespace zvec::sqlengine {
 class ZVecCachedSQLParser : public ZVecParser {
  public:
   ZVecCachedSQLParser(uint32_t cache_count);
-  ~ZVecCachedSQLParser();
+  ~ZVecCachedSQLParser() override;
 
   SQLInfo::Ptr parse(const std::string &query,
                      bool need_formatted_tree = false) override;
@@ -44,8 +44,8 @@ class ZVecCachedSQLParser : public ZVecParser {
  private:
   static std::unordered_map<std::string, SQLInfo::Ptr> sql_info_map_;
   static std::unordered_map<std::string, Node::Ptr> filter_map_;
-  static uint32_t Hit;
-  static uint32_t Miss;
+  static uint32_t hit;
+  static uint32_t miss;
   inline static std::shared_mutex shared_mutex_;
 
  private:

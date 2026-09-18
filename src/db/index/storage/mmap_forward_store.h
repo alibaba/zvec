@@ -50,7 +50,7 @@ class MmapForwardStore : public BaseForwardStore {
   MmapForwardStore(const std::string &uri);
   virtual ~MmapForwardStore() = default;
 
-  Status Open() override;
+  Status open() override;
 
   /// Fetch specific columns and row indices from the data source
   /// \param columns The list of column names to fetch
@@ -92,60 +92,61 @@ class MmapForwardStore : public BaseForwardStore {
   /// Open a parquet file and initialize metadata
   /// \param file The RandomAccessFile to read from
   /// \return arrow::Status indicating success or failure
-  arrow::Status OpenParquet(
+  arrow::Status open_parquet(
       const std::shared_ptr<arrow::io::RandomAccessFile> &file);
 
   /// Open an IPC file and initialize metadata
   /// \param file The RandomAccessFile to read from
   /// \return arrow::Status indicating success or failure
-  arrow::Status OpenIPC(
+  arrow::Status open_ipc(
       const std::shared_ptr<arrow::io::RandomAccessFile> &file);
 
   /// Fetch data from a parquet file
   /// \param columns The list of column names to fetch
   /// \param indices The list of row indices to fetch
   /// \return A table containing the requested data or nullptr on failure
-  TablePtr FetchParquet(const std::vector<std::string> &columns,
-                        const std::vector<int> &indices);
+  TablePtr fetch_parquet(const std::vector<std::string> &columns,
+                         const std::vector<int> &indices);
 
   /// Fetch specific columns and a single row index from parquet file
   /// \param columns The list of column names to fetch
   /// \param index The row index to fetch
   /// \return An ExecBatch containing the requested data or nullptr on failure
-  ExecBatchPtr FetchParquet(const std::vector<std::string> &columns, int index);
+  ExecBatchPtr fetch_parquet(const std::vector<std::string> &columns,
+                             int index);
 
   /// Fetch data from an IPC file
   /// \param columns The list of column names to fetch
   /// \param indices The list of row indices to fetch
   /// \return A table containing the requested data or nullptr on failure
-  TablePtr FetchIPC(const std::vector<std::string> &columns,
-                    const std::vector<int> &indices);
+  TablePtr fetch_ipc(const std::vector<std::string> &columns,
+                     const std::vector<int> &indices);
 
   /// Fetch specific columns and a single row index from IPC file
   /// \param columns The list of column names to fetch
   /// \param index The row index to fetch
   /// \return An ExecBatch containing the requested data or nullptr on failure
-  ExecBatchPtr FetchIPC(const std::vector<std::string> &columns, int index);
+  ExecBatchPtr fetch_ipc(const std::vector<std::string> &columns, int index);
 
   /// Scan data from a parquet file
   /// \param columns The list of column names to scan
   /// \return A RecordBatchReader for streaming the data or nullptr on failure
-  RecordBatchReaderPtr ScanParquet(const std::vector<std::string> &columns);
+  RecordBatchReaderPtr scan_parquet(const std::vector<std::string> &columns);
 
   /// Scan data from an IPC file
   /// \param columns The list of column names to scan
   /// \return A RecordBatchReader for streaming the data or nullptr on failure
-  RecordBatchReaderPtr ScanIPC(const std::vector<std::string> &columns);
+  RecordBatchReaderPtr scan_ipc(const std::vector<std::string> &columns);
 
   /// Find which row group contains a given row
   /// \param row The row index to locate
   /// \return The row group ID containing the row
-  int FindRowGroupForRow(int64_t row);
+  int find_row_group_for_row(int64_t row);
 
   /// Get the row offset for a given row group
   /// \param rg_id The row group ID
   /// \return The row offset of the row group, or -1 on error
-  int64_t GetRowGroupOffset(int rg_id);
+  int64_t get_row_group_offset(int rg_id);
 
   /// Find the chunk that contains a target row index using binary search
   /// \param target_index The row index to locate
@@ -155,8 +156,8 @@ class MmapForwardStore : public BaseForwardStore {
   /// \param offset_in_chunk Output parameter for the offset within the found
   /// chunk
   /// \return true if the target chunk was found, false otherwise
-  bool FindTargetChunk(int target_index, int num_chunks,
-                       int *target_chunk_index, int64_t *offset_in_chunk);
+  bool find_target_chunk(int target_index, int num_chunks,
+                         int *target_chunk_index, int64_t *offset_in_chunk);
 
  private:
   /// Format of the file being accessed

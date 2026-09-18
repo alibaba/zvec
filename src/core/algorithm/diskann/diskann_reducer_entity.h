@@ -31,7 +31,7 @@ class DiskAnnReducerEntity : public DiskAnnEntity {
 
  public:
   DiskAnnReducerEntity() = default;
-  virtual ~DiskAnnReducerEntity() = default;
+  ~DiskAnnReducerEntity() override = default;
 
   int load(const IndexStorage::Pointer &container, bool check_crc);
   int load_segments(bool check_crc);

@@ -73,7 +73,7 @@ TEST(VectorColumnIndexerTest, General) {
 
     // 2. open
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     {
       // can't use `DenseVector{std::vector<float>{1.0f, 2.0f, 3.0f}.data()}}`,
@@ -83,14 +83,14 @@ TEST(VectorColumnIndexerTest, General) {
       // 3. add data
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{vector.data()}};
-      ASSERT_TRUE(indexer->Insert(data, kDocId).ok());
+      ASSERT_TRUE(indexer->insert(data, kDocId).ok());
     }
 
     {
       auto vector = std::vector<float>{1.0f, 2000.0f, 3.0f, 0};
       // 1 * 1 + 2 * 2000 + 3 * 3 = 12006
       ASSERT_TRUE(indexer
-                      ->Insert(
+                      ->insert(
                           vector_column_params::VectorData{
                               vector_column_params::DenseVector{vector.data()}},
                           kDocId + 10)
@@ -101,7 +101,7 @@ TEST(VectorColumnIndexerTest, General) {
       auto vector = std::vector<float>{1.0f, 0, 3.0f, 0};
       // 1 * 1 + 2 * 0 + 3 * 3 = 10
       ASSERT_TRUE(indexer
-                      ->Insert(
+                      ->insert(
                           vector_column_params::VectorData{
                               vector_column_params::DenseVector{vector.data()}},
                           kDocId + 10)
@@ -109,7 +109,7 @@ TEST(VectorColumnIndexerTest, General) {
     }
 
     // 5. fetch
-    auto fetched_data = indexer->Fetch(kDocId);
+    auto fetched_data = indexer->fetch(kDocId);
     ASSERT_TRUE(fetched_data);
     const float *dense_vector = reinterpret_cast<const float *>(
         std::get<vector_column_params::DenseVectorBuffer>(
@@ -129,7 +129,7 @@ TEST(VectorColumnIndexerTest, General) {
     indexer_query_params.filter = nullptr;
     indexer_query_params.fetch_vector = true;
     indexer_query_params.query_params = query_params;
-    auto results = indexer->Search(query, indexer_query_params);
+    auto results = indexer->search(query, indexer_query_params);
     ASSERT_TRUE(results.has_value());
 
     auto vector_results =
@@ -170,7 +170,7 @@ TEST(VectorColumnIndexerTest, General) {
       ASSERT_TRUE(vector_results->reverted_sparse_values_list().empty());
     }
 
-    indexer->Close();
+    indexer->close();
 
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
@@ -224,7 +224,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
 
     // 2. open
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     {
       // can't use `DenseVector{std::vector<float>{1.0f, 2.0f, 3.0f}.data()}}`,
@@ -238,7 +238,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
       // 3. add data
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{vector.data()}};
-      ASSERT_TRUE(indexer->Insert(data, kDocId).ok());
+      ASSERT_TRUE(indexer->insert(data, kDocId).ok());
     }
 
     {
@@ -249,7 +249,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
       auto vector = buffer;
       // 1 * 1 + 2 * 2000 + 3 * 3 = 12006
       ASSERT_TRUE(indexer
-                      ->Insert(
+                      ->insert(
                           vector_column_params::VectorData{
                               vector_column_params::DenseVector{vector.data()}},
                           kDocId + 10)
@@ -264,7 +264,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
       auto vector = buffer;
       // 1 * 1 + 2 * 0 + 3 * 3 = 10
       ASSERT_TRUE(indexer
-                      ->Insert(
+                      ->insert(
                           vector_column_params::VectorData{
                               vector_column_params::DenseVector{vector.data()}},
                           kDocId + 10)
@@ -272,7 +272,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
     }
     // 5. fetch
     {
-      auto fetched_data = indexer->Fetch(kDocId);
+      auto fetched_data = indexer->fetch(kDocId);
       ASSERT_TRUE(fetched_data);
       const uint16_t *dense_vector = reinterpret_cast<const uint16_t *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -284,7 +284,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
       ASSERT_NEAR(ailego::FloatHelper::ToFP32(dense_vector[3]), 0, 0.1);
     }
     {
-      auto fetched_data = indexer->Fetch(kDocId + 10);
+      auto fetched_data = indexer->fetch(kDocId + 10);
       ASSERT_TRUE(fetched_data);
       const uint16_t *dense_vector = reinterpret_cast<const uint16_t *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -310,7 +310,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
     indexer_query_params.filter = nullptr;
     indexer_query_params.fetch_vector = true;
     indexer_query_params.query_params = query_params;
-    auto results = indexer->Search(query, indexer_query_params);
+    auto results = indexer->search(query, indexer_query_params);
     ASSERT_TRUE(results.has_value());
 
     auto vector_results =
@@ -351,7 +351,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
       ASSERT_TRUE(vector_results->reverted_sparse_values_list().empty());
     }
 
-    indexer->Close();
+    indexer->close();
 
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
@@ -379,7 +379,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
 
     // 2. open
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     {
       // can't use `DenseVector{std::vector<float>{1.0f, 2.0f, 3.0f}.data()}}`,
@@ -389,14 +389,14 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
       // 3. add data
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{vector.data()}};
-      ASSERT_TRUE(indexer->Insert(data, kDocId).ok());
+      ASSERT_TRUE(indexer->insert(data, kDocId).ok());
     }
 
     {
       auto vector = std::vector<uint8_t>{1, 200, 3, 0};
       // 1 * 1 + 2 * 2000 + 3 * 3 = 12006
       ASSERT_TRUE(indexer
-                      ->Insert(
+                      ->insert(
                           vector_column_params::VectorData{
                               vector_column_params::DenseVector{vector.data()}},
                           kDocId + 10)
@@ -407,7 +407,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
       auto vector = std::vector<uint8_t>{1, 0, 3, 0};
       // 1 * 1 + 2 * 0 + 3 * 3 = 10
       ASSERT_TRUE(indexer
-                      ->Insert(
+                      ->insert(
                           vector_column_params::VectorData{
                               vector_column_params::DenseVector{vector.data()}},
                           kDocId + 10)
@@ -415,7 +415,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
     }
     // 5. fetch
     {
-      auto fetched_data = indexer->Fetch(kDocId);
+      auto fetched_data = indexer->fetch(kDocId);
       ASSERT_TRUE(fetched_data);
       const uint8_t *dense_vector = reinterpret_cast<const uint8_t *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -427,7 +427,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
       ASSERT_NEAR(dense_vector[3], 0, 0.1);
     }
     {
-      auto fetched_data = indexer->Fetch(kDocId + 10);
+      auto fetched_data = indexer->fetch(kDocId + 10);
       ASSERT_TRUE(fetched_data);
       const uint8_t *dense_vector = reinterpret_cast<const uint8_t *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -448,7 +448,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
     indexer_query_params.filter = nullptr;
     indexer_query_params.fetch_vector = true;
     indexer_query_params.query_params = query_params;
-    auto results = indexer->Search(query, indexer_query_params);
+    auto results = indexer->search(query, indexer_query_params);
     ASSERT_TRUE(results.has_value());
 
     auto vector_results =
@@ -489,7 +489,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
       ASSERT_TRUE(vector_results->reverted_sparse_values_list().empty());
     }
 
-    indexer->Close();
+    indexer->close();
 
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
@@ -516,7 +516,7 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
     ASSERT_TRUE(indexer);
 
     // open
-    if (auto ret = indexer->Open(vector_column_params::ReadOptions{true, true});
+    if (auto ret = indexer->open(vector_column_params::ReadOptions{true, true});
         !ret.ok()) {
       std::cout << ret.message() << std::endl;
       ASSERT_TRUE(false);
@@ -531,10 +531,10 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
     vector_column_params::SparseVector vector{kSparseCount, indices.data(),
                                               values.data()};
     ASSERT_TRUE(
-        indexer->Insert(vector_column_params::VectorData{vector}, kDocId).ok());
+        indexer->insert(vector_column_params::VectorData{vector}, kDocId).ok());
 
     // fetch
-    auto fetched_data = indexer->Fetch(kDocId);
+    auto fetched_data = indexer->fetch(kDocId);
     ASSERT_TRUE(fetched_data.has_value());
     auto fetched_sparse_vector =
         std::get<vector_column_params::SparseVectorBuffer>(
@@ -556,7 +556,7 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
     query_params.topk = 10;
     query_params.filter = nullptr;
     query_params.fetch_vector = true;
-    auto results = indexer->Search(query, query_params);
+    auto results = indexer->search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
     auto vector_results =
@@ -599,7 +599,7 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
       }
     }
 
-    indexer->Close();
+    indexer->close();
 
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
@@ -626,7 +626,7 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
     ASSERT_TRUE(indexer);
 
     // open
-    if (auto ret = indexer->Open(vector_column_params::ReadOptions{true, true});
+    if (auto ret = indexer->open(vector_column_params::ReadOptions{true, true});
         !ret.ok()) {
       std::cout << ret.message() << std::endl;
       ASSERT_TRUE(false);
@@ -645,10 +645,10 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
     vector_column_params::SparseVector vector{kSparseCount, indices.data(),
                                               values.data()};
     ASSERT_TRUE(
-        indexer->Insert(vector_column_params::VectorData{vector}, kDocId).ok());
+        indexer->insert(vector_column_params::VectorData{vector}, kDocId).ok());
 
     // fetch
-    auto fetched_data = indexer->Fetch(kDocId);
+    auto fetched_data = indexer->fetch(kDocId);
     ASSERT_TRUE(fetched_data.has_value());
     auto fetched_sparse_vector =
         std::get<vector_column_params::SparseVectorBuffer>(
@@ -670,7 +670,7 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
     query_params.topk = 10;
     query_params.filter = nullptr;
     query_params.fetch_vector = true;
-    auto results = indexer->Search(query, query_params);
+    auto results = indexer->search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
     auto vector_results =
@@ -713,7 +713,7 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
       }
     }
 
-    indexer->Close();
+    indexer->close();
 
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
@@ -738,7 +738,7 @@ TEST(VectorColumnIndexerTest, Merge) {
         index_name, FieldSchema("test", DataType::VECTOR_FP32, kDimension,
                                 false, index_params));
     if (indexer == nullptr ||
-        !indexer->Open(vector_column_params::ReadOptions{true, true}).ok()) {
+        !indexer->open(vector_column_params::ReadOptions{true, true}).ok()) {
       return nullptr;
     }
     return indexer;
@@ -757,15 +757,15 @@ TEST(VectorColumnIndexerTest, Merge) {
     vector[2] = 123.0f;
     auto vector_data = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector.data()}};
-    ASSERT_TRUE(indexer1->Insert(vector_data, 0).ok());
+    ASSERT_TRUE(indexer1->insert(vector_data, 0).ok());
 
     vector[1] = 2.0f;
-    ASSERT_TRUE(indexer2->Insert(vector_data, 0).ok());
+    ASSERT_TRUE(indexer2->insert(vector_data, 0).ok());
     vector[1] = 3.0f;
-    ASSERT_TRUE(indexer2->Insert(vector_data, 1).ok());
+    ASSERT_TRUE(indexer2->insert(vector_data, 1).ok());
 
     {
-      auto fetched_data = indexer1->Fetch(0);
+      auto fetched_data = indexer1->fetch(0);
       ASSERT_TRUE(fetched_data.has_value());
       const float *fetched_vector = reinterpret_cast<const float *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -775,7 +775,7 @@ TEST(VectorColumnIndexerTest, Merge) {
       ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
     }
     {
-      auto fetched_data = indexer2->Fetch(0);
+      auto fetched_data = indexer2->fetch(0);
       ASSERT_TRUE(fetched_data.has_value());
       const float *fetched_vector = reinterpret_cast<const float *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -785,7 +785,7 @@ TEST(VectorColumnIndexerTest, Merge) {
       ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
     }
     {
-      auto fetched_data = indexer2->Fetch(1);
+      auto fetched_data = indexer2->fetch(1);
       ASSERT_TRUE(fetched_data.has_value());
       const float *fetched_vector = reinterpret_cast<const float *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -798,9 +798,9 @@ TEST(VectorColumnIndexerTest, Merge) {
     {  // test reduce
       auto indexer3 = create_indexer_func(param3, index_name + "3");
       ASSERT_NE(nullptr, indexer3);
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, nullptr).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, nullptr).ok());
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         const float *fetched_vector = reinterpret_cast<const float *>(
             std::get<vector_column_params::DenseVectorBuffer>(
@@ -810,7 +810,7 @@ TEST(VectorColumnIndexerTest, Merge) {
         ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
       }
       {
-        auto fetched_data = indexer3->Fetch(1);
+        auto fetched_data = indexer3->fetch(1);
         ASSERT_TRUE(fetched_data.has_value());
         const float *fetched_vector = reinterpret_cast<const float *>(
             std::get<vector_column_params::DenseVectorBuffer>(
@@ -819,7 +819,7 @@ TEST(VectorColumnIndexerTest, Merge) {
         ASSERT_NEAR(2.0f, fetched_vector[1], 0.1);
         ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
       }
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
 
@@ -828,11 +828,11 @@ TEST(VectorColumnIndexerTest, Merge) {
       ASSERT_NE(nullptr, indexer3);
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter).ok());
       // 0.0 -> x ; 1.0 -> 0 ; 1.1 -> 1
       ASSERT_TRUE(indexer3->doc_count() == 2);
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         const float *fetched_vector = reinterpret_cast<const float *>(
             std::get<vector_column_params::DenseVectorBuffer>(
@@ -850,7 +850,7 @@ TEST(VectorColumnIndexerTest, Merge) {
         query_params.topk = 10;
         query_params.filter = nullptr;
         query_params.fetch_vector = true;
-        auto results = indexer2->Search(query, query_params);
+        auto results = indexer2->search(query, query_params);
         ASSERT_TRUE(results.has_value());
         auto vector_results =
             dynamic_cast<VectorIndexResults *>(results.value().get());
@@ -894,7 +894,7 @@ TEST(VectorColumnIndexerTest, Merge) {
         }
       }
 
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
 
@@ -903,10 +903,10 @@ TEST(VectorColumnIndexerTest, Merge) {
       ASSERT_NE(nullptr, indexer3);
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter, {3}).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter, {3}).ok());
 
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         const float *fetched_vector = reinterpret_cast<const float *>(
             std::get<vector_column_params::DenseVectorBuffer>(
@@ -915,13 +915,13 @@ TEST(VectorColumnIndexerTest, Merge) {
         ASSERT_NEAR(2.0f, fetched_vector[1], 0.1);
         ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
       }
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
 
 
-    indexer1->Close();
-    indexer2->Close();
+    indexer1->close();
+    indexer2->close();
     del_index_file_func(index_name + "1");
     del_index_file_func(index_name + "2");
   };
@@ -1006,7 +1006,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
         index_name,
         FieldSchema("test", DataType::SPARSE_VECTOR_FP32, false, index_params));
     if (indexer == nullptr ||
-        !indexer->Open(vector_column_params::ReadOptions{true, true}).ok()) {
+        !indexer->open(vector_column_params::ReadOptions{true, true}).ok()) {
       return nullptr;
     }
     return indexer;
@@ -1029,15 +1029,15 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
     vector_column_params::SparseVector vector{kSparseCount, indices.data(),
                                               values.data()};
     auto vector_data = vector_column_params::VectorData{vector};
-    ASSERT_TRUE(indexer1->Insert(vector_data, 0).ok());
+    ASSERT_TRUE(indexer1->insert(vector_data, 0).ok());
 
     values[1] = 2.0f;
-    ASSERT_TRUE(indexer2->Insert(vector_data, 0).ok());
+    ASSERT_TRUE(indexer2->insert(vector_data, 0).ok());
     values[1] = 3.0f;
-    ASSERT_TRUE(indexer2->Insert(vector_data, 1).ok());
+    ASSERT_TRUE(indexer2->insert(vector_data, 1).ok());
 
     {
-      auto fetched_data = indexer1->Fetch(0);
+      auto fetched_data = indexer1->fetch(0);
       ASSERT_TRUE(fetched_data.has_value());
       auto fetched_sparse_vector =
           std::get<vector_column_params::SparseVectorBuffer>(
@@ -1058,7 +1058,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
       ASSERT_EQ(2.0f, fetched_values[2]);
     }
     {
-      auto fetched_data = indexer2->Fetch(0);
+      auto fetched_data = indexer2->fetch(0);
       ASSERT_TRUE(fetched_data.has_value());
       auto fetched_sparse_vector =
           std::get<vector_column_params::SparseVectorBuffer>(
@@ -1079,7 +1079,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
       ASSERT_EQ(2.0f, fetched_values[2]);
     }
     {
-      auto fetched_data = indexer2->Fetch(1);
+      auto fetched_data = indexer2->fetch(1);
       ASSERT_TRUE(fetched_data.has_value());
       auto fetched_sparse_vector =
           std::get<vector_column_params::SparseVectorBuffer>(
@@ -1103,9 +1103,9 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
     {  // test reduce
       auto indexer3 = create_indexer_func(param3, index_name + "3");
       ASSERT_NE(nullptr, indexer3);
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, nullptr).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, nullptr).ok());
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         auto fetched_sparse_vector =
             std::get<vector_column_params::SparseVectorBuffer>(
@@ -1126,7 +1126,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
         ASSERT_EQ(2.0f, fetched_values[2]);
       }
       {
-        auto fetched_data = indexer3->Fetch(1);
+        auto fetched_data = indexer3->fetch(1);
         ASSERT_TRUE(fetched_data.has_value());
         auto fetched_sparse_vector =
             std::get<vector_column_params::SparseVectorBuffer>(
@@ -1146,7 +1146,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
         ASSERT_EQ(2.0f, fetched_values[1]);
         ASSERT_EQ(2.0f, fetched_values[2]);
       }
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
 
@@ -1155,9 +1155,9 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
       ASSERT_NE(nullptr, indexer3);
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter).ok());
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         auto fetched_sparse_vector =
             std::get<vector_column_params::SparseVectorBuffer>(
@@ -1177,7 +1177,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
         ASSERT_EQ(2.0f, fetched_values[1]);
         ASSERT_EQ(2.0f, fetched_values[2]);
       }
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
 
@@ -1186,9 +1186,9 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
       ASSERT_NE(nullptr, indexer3);
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter, {3}).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter, {3}).ok());
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         auto fetched_sparse_vector =
             std::get<vector_column_params::SparseVectorBuffer>(
@@ -1208,13 +1208,13 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
         ASSERT_EQ(2.0f, fetched_values[1]);
         ASSERT_EQ(2.0f, fetched_values[2]);
       }
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
 
 
-    indexer1->Close();
-    indexer2->Close();
+    indexer1->close();
+    indexer2->close();
     del_index_file_func(index_name + "1");
     del_index_file_func(index_name + "2");
   };
@@ -1281,7 +1281,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
 
     // 2. open
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     auto vector1 = std::vector<float>{1.0f, 2.0f, 3.0f};
     auto vector2 = std::vector<float>{4.0f, 5.0f, 6.0f};
@@ -1289,11 +1289,11 @@ TEST(VectorColumnIndexerTest, BfPks) {
     // 3. add data
     auto data1 = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector1.data()}};
-    ASSERT_TRUE(indexer->Insert(data1, 1).ok());
+    ASSERT_TRUE(indexer->insert(data1, 1).ok());
 
     auto data2 = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector2.data()}};
-    ASSERT_TRUE(indexer->Insert(data2, 2).ok());
+    ASSERT_TRUE(indexer->insert(data2, 2).ok());
 
     {
       auto bf_pks = std::vector<uint64_t>{1};
@@ -1305,7 +1305,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
       query_params.filter = nullptr;
       query_params.fetch_vector = true;
       query_params.bf_pks = {bf_pks};
-      auto results = indexer->Search(query, query_params);
+      auto results = indexer->search(query, query_params);
       ASSERT_TRUE(results.has_value());
 
       auto vector_results =
@@ -1334,7 +1334,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
       query_params.filter = nullptr;
       query_params.fetch_vector = true;
       query_params.bf_pks = {bf_pks};
-      auto results = indexer->Search(query, query_params);
+      auto results = indexer->search(query, query_params);
       ASSERT_TRUE(results.has_value());
 
       auto vector_results =
@@ -1363,7 +1363,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
       query_params.filter = nullptr;
       query_params.fetch_vector = true;
       query_params.bf_pks = {bf_pks};
-      auto results = indexer->Search(query, query_params);
+      auto results = indexer->search(query, query_params);
       ASSERT_TRUE(results.has_value());
 
       auto vector_results =
@@ -1382,7 +1382,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
       }
     }
 
-    indexer->Close();
+    indexer->close();
 
     zvec::test_util::RemoveTestFiles(index_file_path);
   };
@@ -1580,7 +1580,7 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
         FieldSchema("test", data_type, kDim, false, index_params));
     ASSERT_TRUE(indexer);
 
-    if (auto ret = indexer->Open(vector_column_params::ReadOptions{true, true});
+    if (auto ret = indexer->open(vector_column_params::ReadOptions{true, true});
         !ret.ok()) {
       LOG_ERROR("Failed to open indexer: %s", ret.message().c_str());
       return;
@@ -1592,12 +1592,12 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
       // print_dense_vector(buffer.data.data(), kDim, data_type);
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{buffer.data.data()}};
-      ASSERT_TRUE(indexer->Insert(data, i).ok());
+      ASSERT_TRUE(indexer->insert(data, i).ok());
     }
 
     // fetch
     for (int i = 0; i < kCount; ++i) {
-      auto fetched_data = indexer->Fetch(i);
+      auto fetched_data = indexer->fetch(i);
       ASSERT_TRUE(fetched_data);
       ASSERT_TRUE(compare_dense_vector(
           create_dense_vector(kDim, data_type, i, kCount, 0.1f),
@@ -1611,14 +1611,14 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
       auto buffer = create_dense_vector(kDim, data_type, i, kCount, 0.3f);
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{buffer.data.data()}};
-      auto _t = std::make_shared<zvec::HnswQueryParams>(100);
-      _t->set_is_linear(true);
+      auto t = std::make_shared<zvec::HnswQueryParams>(100);
+      t->set_is_linear(true);
       vector_column_params::QueryParams query_params;
       query_params.topk = kTopk;
       query_params.filter = nullptr;
       query_params.fetch_vector = true;
-      query_params.query_params = _t;
-      auto results = indexer->Search(data, query_params);
+      query_params.query_params = t;
+      auto results = indexer->search(data, query_params);
       ASSERT_TRUE(results.has_value());
       auto vector_results =
           dynamic_cast<VectorIndexResults *>(results.value().get());
@@ -1652,7 +1652,7 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
             fetched_vector.data, data_type));
       }
     }
-    indexer->Destroy();
+    indexer->destroy();
   };
 
   LOG_INFO("Test FlatIndexParams(MetricType::COSINE), VECTOR_FP32");
@@ -1801,20 +1801,20 @@ TEST(VectorColumnIndexerTest, Score) {
         FieldSchema("test", DataType::VECTOR_FP32, 3, false, index_params));
     ASSERT_TRUE(indexer);
 
-    if (auto ret = indexer->Open(vector_column_params::ReadOptions{true, true});
+    if (auto ret = indexer->open(vector_column_params::ReadOptions{true, true});
         !ret.ok()) {
       LOG_ERROR("Failed to open indexer: %s", ret.message().c_str());
       ASSERT_TRUE(false);
     }
 
     ASSERT_TRUE(indexer
-                    ->Insert(
+                    ->insert(
                         vector_column_params::VectorData{
                             vector_column_params::DenseVector{vector1.data()}},
                         kDocId1)
                     .ok());
     ASSERT_TRUE(indexer
-                    ->Insert(
+                    ->insert(
                         vector_column_params::VectorData{
                             vector_column_params::DenseVector{vector2.data()}},
                         kDocId2)
@@ -1826,13 +1826,13 @@ TEST(VectorColumnIndexerTest, Score) {
     query_params.topk = kTopk;
     query_params.filter = nullptr;
     query_params.fetch_vector = true;
-    auto results = indexer->Search(query, query_params);
+    auto results = indexer->search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
     check_score(dynamic_cast<VectorIndexResults *>(results.value().get()),
                 metric_type);
 
-    indexer->Destroy();
+    indexer->destroy();
   };
 
   auto sparse_func = [&](const std::shared_ptr<VectorIndexParams>
@@ -1843,7 +1843,7 @@ TEST(VectorColumnIndexerTest, Score) {
         FieldSchema("test", DataType::SPARSE_VECTOR_FP32, false, index_params));
     ASSERT_TRUE(indexer);
 
-    if (auto ret = indexer->Open(vector_column_params::ReadOptions{true, true});
+    if (auto ret = indexer->open(vector_column_params::ReadOptions{true, true});
         !ret.ok()) {
       LOG_ERROR("Failed to open indexer: %s", ret.message().c_str());
       ASSERT_TRUE(false);
@@ -1851,7 +1851,7 @@ TEST(VectorColumnIndexerTest, Score) {
 
     ASSERT_TRUE(
         indexer
-            ->Insert(
+            ->insert(
                 vector_column_params::VectorData{
                     vector_column_params::SparseVector{
                         3,
@@ -1861,7 +1861,7 @@ TEST(VectorColumnIndexerTest, Score) {
             .ok());
     ASSERT_TRUE(
         indexer
-            ->Insert(
+            ->insert(
                 vector_column_params::VectorData{
                     vector_column_params::SparseVector{
                         3,
@@ -1878,12 +1878,12 @@ TEST(VectorColumnIndexerTest, Score) {
     query_params.topk = 10;
     query_params.filter = nullptr;
     query_params.fetch_vector = true;
-    auto results = indexer->Search(query, query_params);
+    auto results = indexer->search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
     check_score(dynamic_cast<VectorIndexResults *>(results.value().get()),
                 metric_type);
-    indexer->Destroy();
+    indexer->destroy();
   };
 
   LOG_INFO("Test DenseVector, MetricType::IP");
@@ -1940,29 +1940,29 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     // Test Flush on unopened indexer
-    auto flush_result = indexer->Flush();
+    auto flush_result = indexer->flush();
     ASSERT_FALSE(flush_result.ok());
     ASSERT_EQ(flush_result.message(), "Index not opened");
 
     // Test Close on unopened indexer
-    auto close_result = indexer->Close();
+    auto close_result = indexer->close();
     ASSERT_FALSE(close_result.ok());
     ASSERT_EQ(close_result.message(), "Index not opened");
 
     // Test Destroy on unopened indexer
-    auto destroy_result = indexer->Destroy();
+    auto destroy_result = indexer->destroy();
     ASSERT_FALSE(destroy_result.ok());
     ASSERT_EQ(destroy_result.message(), "Index not opened");
 
     // Test Insert on unopened indexer
     auto data = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector.data()}};
-    auto insert_result = indexer->Insert(data, kDocId);
+    auto insert_result = indexer->insert(data, kDocId);
     ASSERT_FALSE(insert_result.ok());
     ASSERT_EQ(insert_result.message(), "Index not opened");
 
     // Test Fetch on unopened indexer
-    auto fetch_result = indexer->Fetch(kDocId);
+    auto fetch_result = indexer->fetch(kDocId);
     ASSERT_FALSE(fetch_result.has_value());
     ASSERT_EQ(fetch_result.error().message(), "Index not opened");
 
@@ -1973,12 +1973,12 @@ TEST(VectorColumnIndexerTest, Failure) {
     query_params.topk = 10;
     query_params.filter = nullptr;
     query_params.fetch_vector = false;
-    auto search_result = indexer->Search(query, query_params);
+    auto search_result = indexer->search(query, query_params);
     ASSERT_FALSE(search_result.has_value());
     ASSERT_EQ(search_result.error().message(), "Index not opened");
 
     // Test Merge on unopened indexer
-    auto merge_result = indexer->Merge({}, nullptr);
+    auto merge_result = indexer->merge({}, nullptr);
     ASSERT_FALSE(merge_result.ok());
     ASSERT_EQ(merge_result.message(), "Index not opened");
   }
@@ -1993,7 +1993,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     auto open_result =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_FALSE(open_result.ok());
     ASSERT_EQ(open_result.message(), "Engine name not supported");
   }
@@ -2007,7 +2007,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     auto open_result =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_FALSE(open_result.ok());
     ASSERT_EQ(open_result.message(), "field_schema.index_params nullptr");
   }
@@ -2024,7 +2024,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     auto open_result =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_FALSE(open_result.ok());
     ASSERT_EQ(open_result.message(),
               "failed to build index param: unsupported data type");
@@ -2040,7 +2040,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     auto open_result =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_FALSE(open_result.ok());
     ASSERT_EQ(open_result.message(),
               "failed to build index param: unsupported metric type");
@@ -2059,7 +2059,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     auto open_result =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_FALSE(open_result.ok());
     ASSERT_EQ(open_result.message(),
               "failed to build index param: unsupported quantize type");
@@ -2098,12 +2098,12 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     // Insert some data first
     auto data = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector.data()}};
-    ASSERT_TRUE(indexer->Insert(data, kDocId).ok());
+    ASSERT_TRUE(indexer->insert(data, kDocId).ok());
 
     // Test search with bf_pks size > 1
     auto query = vector_column_params::VectorData{
@@ -2116,12 +2116,12 @@ TEST(VectorColumnIndexerTest, Failure) {
     query_params.fetch_vector = false;
     query_params.bf_pks = {bf_pks1, bf_pks2};
 
-    auto search_result = indexer->Search(query, query_params);
+    auto search_result = indexer->search(query, query_params);
     ASSERT_FALSE(search_result.has_value());
     ASSERT_EQ(search_result.error().message(),
               "bf_pks size > 1 is not supported");
 
-    indexer->Destroy();
+    indexer->destroy();
   }
 
   // Test case 9: Invalid field schema for query param conversion
@@ -2132,7 +2132,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     ASSERT_FALSE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
   }
 
   // Test case 10: use_mmap = false
@@ -2144,14 +2144,14 @@ TEST(VectorColumnIndexerTest, Failure) {
                     std::make_shared<FlatIndexParams>(MetricType::IP)));
     ASSERT_TRUE(indexer);
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true, false})
+        indexer->open(vector_column_params::ReadOptions{true, true, false})
             .ok());
     // Insert some data first
     auto data = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector.data()}};
-    ASSERT_TRUE(indexer->Insert(data, kDocId).ok());
-    ASSERT_TRUE(indexer->Flush().ok());
-    ASSERT_TRUE(indexer->Close().ok());
+    ASSERT_TRUE(indexer->insert(data, kDocId).ok());
+    ASSERT_TRUE(indexer->flush().ok());
+    ASSERT_TRUE(indexer->close().ok());
     {
       auto indexer = std::make_shared<VectorColumnIndexer>(
           index_file_path,
@@ -2159,9 +2159,9 @@ TEST(VectorColumnIndexerTest, Failure) {
                       std::make_shared<FlatIndexParams>(MetricType::IP)));
       ASSERT_TRUE(indexer);
       auto open_result =
-          indexer->Open(vector_column_params::ReadOptions{false, false, true});
+          indexer->open(vector_column_params::ReadOptions{false, false, true});
       ASSERT_TRUE(open_result.ok());
-      indexer->Destroy();
+      indexer->destroy();
     }
   }
 
@@ -2175,16 +2175,16 @@ TEST(VectorColumnIndexerTest, Failure) {
 
     // First open should succeed
     auto open_result1 =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_TRUE(open_result1.ok());
 
     // Second open should fail
     auto open_result2 =
-        indexer->Open(vector_column_params::ReadOptions{true, true});
+        indexer->open(vector_column_params::ReadOptions{true, true});
     ASSERT_FALSE(open_result2.ok());
     ASSERT_EQ(open_result2.message(), "Index already opened");
 
-    indexer->Destroy();
+    indexer->destroy();
   }
 
   // Test case 12: Test doc_count() on unopened indexer
@@ -2208,13 +2208,13 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     // Merge with empty indexers list should succeed
-    auto merge_result = indexer->Merge({}, nullptr);
+    auto merge_result = indexer->merge({}, nullptr);
     ASSERT_TRUE(merge_result.ok());
 
-    indexer->Destroy();
+    indexer->destroy();
   }
 
   // Test case 14: Test Merge with same index file path (should be skipped)
@@ -2226,18 +2226,18 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer1);
 
     ASSERT_TRUE(
-        indexer1->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer1->open(vector_column_params::ReadOptions{true, true}).ok());
 
     // Insert some data
     auto data = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector.data()}};
-    ASSERT_TRUE(indexer1->Insert(data, kDocId).ok());
+    ASSERT_TRUE(indexer1->insert(data, kDocId).ok());
 
     // Merge with itself (same index file path) should succeed (skipped)
-    auto merge_result = indexer1->Merge({indexer1}, nullptr);
+    auto merge_result = indexer1->merge({indexer1}, nullptr);
     ASSERT_TRUE(merge_result.ok());
 
-    indexer1->Destroy();
+    indexer1->destroy();
   }
 
   // Test case 15: Test Fetch with non-existent doc_id
@@ -2249,15 +2249,15 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer);
 
     ASSERT_TRUE(
-        indexer->Open(vector_column_params::ReadOptions{true, true}).ok());
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
 
     // Fetch non-existent doc_id should fail
-    auto fetch_result = indexer->Fetch(99999);
+    auto fetch_result = indexer->fetch(99999);
     ASSERT_FALSE(fetch_result.has_value());
     ASSERT_EQ(fetch_result.error().message(),
               "Failed to fetch vector from index");
 
-    indexer->Destroy();
+    indexer->destroy();
   }
 
   // // Test case 16: Test Search with invalid query params (unsupported index
@@ -2329,7 +2329,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
         index_name, FieldSchema("test", DataType::VECTOR_FP32, kDimension,
                                 false, index_params));
     if (indexer == nullptr ||
-        !indexer->Open(vector_column_params::ReadOptions{true, true}).ok()) {
+        !indexer->open(vector_column_params::ReadOptions{true, true}).ok()) {
       return nullptr;
     }
     return indexer;
@@ -2348,15 +2348,15 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
     vector[2] = 123.0f;
     auto vector_data = vector_column_params::VectorData{
         vector_column_params::DenseVector{vector.data()}};
-    ASSERT_TRUE(indexer1->Insert(vector_data, 0).ok());
+    ASSERT_TRUE(indexer1->insert(vector_data, 0).ok());
 
     vector[1] = 2.0f;
-    ASSERT_TRUE(indexer2->Insert(vector_data, 0).ok());
+    ASSERT_TRUE(indexer2->insert(vector_data, 0).ok());
     vector[1] = 3.0f;
-    ASSERT_TRUE(indexer2->Insert(vector_data, 1).ok());
+    ASSERT_TRUE(indexer2->insert(vector_data, 1).ok());
 
     {
-      auto fetched_data = indexer1->Fetch(0);
+      auto fetched_data = indexer1->fetch(0);
       ASSERT_TRUE(fetched_data.has_value());
       const float *fetched_vector = reinterpret_cast<const float *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -2369,7 +2369,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
       ASSERT_TRUE(fetched_vector[2] - 123.0f < 1);
     }
     {
-      auto fetched_data = indexer2->Fetch(0);
+      auto fetched_data = indexer2->fetch(0);
       ASSERT_TRUE(fetched_data.has_value());
       const float *fetched_vector = reinterpret_cast<const float *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -2382,7 +2382,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
       ASSERT_TRUE(fetched_vector[2] - 123.0f < 1);
     }
     {
-      auto fetched_data = indexer2->Fetch(1);
+      auto fetched_data = indexer2->fetch(1);
       ASSERT_TRUE(fetched_data.has_value());
       const float *fetched_vector = reinterpret_cast<const float *>(
           std::get<vector_column_params::DenseVectorBuffer>(
@@ -2436,11 +2436,11 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
       ASSERT_NE(nullptr, indexer3);
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
-      ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter).ok());
+      ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter).ok());
       // 0.0 -> x ; 1.0 -> 0 ; 1.1 -> 1
       ASSERT_TRUE(indexer3->doc_count() == 2);
       {
-        auto fetched_data = indexer3->Fetch(0);
+        auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
         const float *fetched_vector = reinterpret_cast<const float *>(
             std::get<vector_column_params::DenseVectorBuffer>(
@@ -2462,7 +2462,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
         query_params.topk = 10;
         query_params.filter = nullptr;
         query_params.fetch_vector = true;
-        auto results = indexer2->Search(query, query_params);
+        auto results = indexer2->search(query, query_params);
         ASSERT_TRUE(results.has_value());
         auto vector_results =
             dynamic_cast<VectorIndexResults *>(results.value().get());
@@ -2508,7 +2508,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
         // ASSERT_TRUE(vector_results->docs()[0].key() == 1);
       }
 
-      indexer3->Close();
+      indexer3->close();
       del_index_file_func(index_name + "3");
     }
     //
@@ -2538,8 +2538,8 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
     // }
 
 
-    indexer1->Close();
-    indexer2->Close();
+    indexer1->close();
+    indexer2->close();
     del_index_file_func(index_name + "1");
     del_index_file_func(index_name + "2");
   };
@@ -2583,7 +2583,7 @@ TEST(VectorColumnIndexerTest, Refiner) {
         index_file_path,
         FieldSchema("test", data_type, kDim, false, index_params));
     if (indexer == nullptr ||
-        !indexer->Open(vector_column_params::ReadOptions{true, true}).ok()) {
+        !indexer->open(vector_column_params::ReadOptions{true, true}).ok()) {
       return nullptr;
     }
     return indexer;
@@ -2608,8 +2608,8 @@ TEST(VectorColumnIndexerTest, Refiner) {
       // print_dense_vector(buffer.data.data(), kDim, data_type);
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{buffer.data.data()}};
-      ASSERT_TRUE(indexer->Insert(data, i).ok());
-      ASSERT_TRUE(reference_indexer->Insert(data, i).ok());
+      ASSERT_TRUE(indexer->insert(data, i).ok());
+      ASSERT_TRUE(reference_indexer->insert(data, i).ok());
     }
 
     // query
@@ -2626,7 +2626,7 @@ TEST(VectorColumnIndexerTest, Refiner) {
       query_params.refiner_param =
           std::make_shared<vector_column_params::RefinerParam>(
               vector_column_params::RefinerParam{10, reference_indexer});
-      auto results = indexer->Search(data, query_params);
+      auto results = indexer->search(data, query_params);
       ASSERT_TRUE(results.has_value());
       auto vector_results =
           dynamic_cast<VectorIndexResults *>(results.value().get());
@@ -2637,7 +2637,7 @@ TEST(VectorColumnIndexerTest, Refiner) {
       LOG_INFO("query_vector:%s",
                print_dense_vector(buffer.data.data(), kDim, data_type).c_str());
     }
-    indexer->Destroy();
+    indexer->destroy();
   };
 
   LOG_INFO(

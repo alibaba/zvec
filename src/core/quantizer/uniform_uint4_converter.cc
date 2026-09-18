@@ -147,7 +147,7 @@ class UniformUint4Converter : public IndexConverter {
     const bool has_range = params.get(UNIFORM_UINT4_REFORMER_RANGE, &range_);
     if (has_minimum && has_range && range_ > 0.0f && std::isfinite(minimum_) &&
         std::isfinite(range_)) {
-      SetReformerParams();
+      set_reformer_params();
     }
     return 0;
   }
@@ -262,7 +262,7 @@ class UniformUint4Converter : public IndexConverter {
 
     if (!(range_ > 0.0f)) range_ = 1.0f;
     *stats_.mutable_trained_count() = record_count;
-    SetReformerParams();
+    set_reformer_params();
 
     ailego::Params converter_params = meta_.converter_params();
     converter_params.set(UNIFORM_UINT4_REFORMER_MINIMUM, minimum_);
@@ -306,7 +306,7 @@ class UniformUint4Converter : public IndexConverter {
   }
 
  private:
-  void SetReformerParams() {
+  void set_reformer_params() {
     ailego::Params reformer_params;
     reformer_params.set(UNIFORM_UINT4_REFORMER_MINIMUM, minimum_);
     reformer_params.set(UNIFORM_UINT4_REFORMER_RANGE, range_);
@@ -324,7 +324,7 @@ class UniformUint4Converter : public IndexConverter {
           : owner_(owner),
             buffer_(owner->encoded_dimension_, 0),
             front_(std::move(front)) {
-        Encode();
+        encode();
       }
 
       const void *data() const override {
@@ -338,11 +338,11 @@ class UniformUint4Converter : public IndexConverter {
       }
       void next() override {
         front_->next();
-        Encode();
+        encode();
       }
 
      private:
-      void Encode() {
+      void encode() {
         if (!front_->is_valid()) return;
         const float *input = nullptr;
         if (owner_->source_type_ == IndexMeta::DataType::DT_FP32) {
