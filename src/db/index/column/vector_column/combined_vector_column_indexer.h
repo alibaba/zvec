@@ -38,6 +38,12 @@ class CombinedVectorColumnIndexer {
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params);
 
+  // Dense top-k search without group-by, brute-force keys or vector fetching.
+  // Uses the same block/refiner handling; output buffers hold topk elements.
+  Status SearchFast(const vector_column_params::VectorData &vector_data,
+                    const vector_column_params::QueryParams &query_params,
+                    int64_t *output_ids, float *output_scores);
+
   virtual Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t segment_doc_id) const;
 
@@ -45,21 +51,6 @@ class CombinedVectorColumnIndexer {
   //! True when at least one backing vector indexer is available for search.
   bool has_searchable_indexers() const {
     return !indexers_.empty();
-  }
-
-  //! True when one block starts at segment row zero.
-  bool is_single_block() const {
-    return indexers_.size() == 1 && block_offsets_[0] == 0;
-  }
-
-  //! Primary block indexer (valid when ``is_single_block()``).
-  VectorColumnIndexer::Ptr primary_indexer() const {
-    return indexers_.empty() ? nullptr : indexers_[0];
-  }
-
-  //! Raw-vector reference block used by the primary index's refiner.
-  VectorColumnIndexer::Ptr reference_indexer() const {
-    return normal_indexers_.empty() ? nullptr : normal_indexers_[0];
   }
 
  protected:

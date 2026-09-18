@@ -213,22 +213,16 @@ thread_local static std::array<core::IndexContext::Pointer,
     context_list;
 
 
-bool Index::init_context() {
-  context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
-                   static_cast<size_t>(is_sparse_);
-  if (context_list[context_index_] == nullptr) {
-    if ((context_list[context_index_] = streamer_->create_context()) ==
-        nullptr) {
-      LOG_ERROR("Failed to create context");
-      return false;
-    }
-  }
-  return true;
-}
-
 core::IndexContext::Pointer &Index::acquire_context() {
-  init_context();
-  return context_list[context_index_];
+  const size_t context_index =
+      (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
+      static_cast<size_t>(is_sparse_);
+  auto &context = context_list[context_index];
+  if (!context) {
+    context = streamer_->create_context();
+    if (!context) LOG_ERROR("Failed to create context");
+  }
+  return context;
 }
 
 int Index::train() {
@@ -611,14 +605,17 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     }
   }
 
-  // TODO: context pool
-  if (!init_context()) {  // to validate if any error, will be overwritten
+  if (!acquire_context()) {
     LOG_ERROR("Failed to init context");
     return core::IndexError_Runtime;
   }
 
   is_open_ = true;
   is_read_only_ = storage_options.read_only;
+  // These streamer indexes use the no-op base train(). Finish that state
+  // transition before publication so concurrent first searches only read it.
+  // Builder-based indexes override open() and manage their own training.
+  is_trained_ = true;
   return 0;
 }
 
