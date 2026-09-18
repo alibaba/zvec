@@ -922,6 +922,73 @@ TEST(IndexInterface, BufferGeneral) {
        IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
 }
 
+TEST(IndexInterface, HnswBufferPoolSearchWithEviction) {
+  constexpr uint32_t kDimension = 768;
+  constexpr uint32_t kDocCount = 512;
+  constexpr size_t kBufferBudget = 1024 * 1024;
+  const std::string index_name{"test_hnsw_buffer_eviction.index"};
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto param = HNSWIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_ef_construction(100)
+                   .build();
+
+  {
+    auto write_index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, write_index);
+    ASSERT_EQ(0, write_index->open(index_name,
+                                   {StorageOptions::StorageType::kMMAP, true}));
+
+    std::vector<float> vector(kDimension);
+    VectorData vector_data;
+    for (uint32_t id = 0; id < kDocCount; ++id) {
+      std::fill(vector.begin(), vector.end(), static_cast<float>(id));
+      vector_data.vector = DenseVector{vector.data()};
+      ASSERT_EQ(0, write_index->add(vector_data, id));
+    }
+    ASSERT_EQ(0, write_index->flush());
+    ASSERT_EQ(0, write_index->close());
+  }
+
+  // A 768-D FP32 HNSW node is larger than 3 KiB, so this index is larger
+  // than the 1 MiB pool and many vector reads cross a 4 KiB page boundary.
+  ASSERT_EQ(0,
+            zvec::ailego::MemoryLimitPool::get_instance().init(kBufferBudget));
+  {
+    auto read_index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, read_index);
+    ASSERT_EQ(0, read_index->open(
+                     index_name,
+                     {StorageOptions::StorageType::kBufferPool, false, true}));
+    auto *hnsw_index = dynamic_cast<HNSWIndex *>(read_index.get());
+    ASSERT_NE(nullptr, hnsw_index);
+    ASSERT_EQ("buffer_pool", hnsw_index->storage_mode());
+
+    auto query_param =
+        HNSWQueryParamBuilder().with_topk(1).with_ef_search(100).build();
+    std::vector<float> query_vector(kDimension);
+    VectorData query;
+    for (uint32_t id : {0U, 63U, 127U, 255U, 383U, 511U}) {
+      std::fill(query_vector.begin(), query_vector.end(),
+                static_cast<float>(id));
+      query.vector = DenseVector{query_vector.data()};
+      SearchResult result;
+      ASSERT_EQ(0, read_index->search(query, query_param, &result));
+      ASSERT_EQ(1U, result.doc_list_.size());
+      ASSERT_EQ(id, result.doc_list_[0].key());
+    }
+    ASSERT_EQ(0, read_index->close());
+  }
+
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  ASSERT_EQ(
+      0, zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 * 1024));
+}
+
 TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
   constexpr uint32_t kDimension = 256;
   constexpr uint32_t kDocCount = 1024;

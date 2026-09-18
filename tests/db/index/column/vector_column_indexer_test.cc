@@ -2144,7 +2144,7 @@ TEST(VectorColumnIndexerTest, Failure) {
                     std::make_shared<FlatIndexParams>(MetricType::IP)));
     ASSERT_TRUE(indexer);
     ASSERT_TRUE(
-        indexer->open(vector_column_params::ReadOptions{true, true, false})
+        indexer->open(vector_column_params::ReadOptions{false, true, false})
             .ok());
     // Insert some data first
     auto data = vector_column_params::VectorData{
