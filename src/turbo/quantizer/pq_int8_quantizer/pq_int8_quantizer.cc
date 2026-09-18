@@ -24,6 +24,7 @@
 #include <ailego/math/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
+#include "quantizer/common/pq_training_samples.h"
 
 namespace zvec {
 namespace turbo {
@@ -233,39 +234,27 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
     return kErrUnsupported;
   }
 
-  size_t num = holder->count();
+  const size_t input_count = holder->count();
   const uint32_t elem_size = element_size();
-
-  // Collect all data into a contiguous byte buffer (original data type).
-  auto iter = holder->create_iterator();
-  std::vector<uint8_t> all_data(num * original_dim_ * elem_size);
-  size_t row = 0;
-  for (; iter->is_valid(); iter->next(), ++row) {
-    std::memcpy(all_data.data() + row * original_dim_ * elem_size, iter->data(),
-                original_dim_ * elem_size);
+  const size_t vec_bytes = static_cast<size_t>(original_dim_) * elem_size;
+  if (!input_count || holder->dimension() != original_dim_ ||
+      holder->element_size() != vec_bytes ||
+      holder->data_type() != (input_data_type_ == DataType::kFp16
+                                  ? IndexMeta::DataType::DT_FP16
+                                  : IndexMeta::DataType::DT_FP32)) {
+    return kErrUnsupported;
+  }
+  size_t num = std::min(input_count, static_cast<size_t>(kMaxTrainVectors));
+  if (num > std::numeric_limits<size_t>::max() / vec_bytes) {
+    return kErrUnsupported;
   }
 
-  // Subsample if the dataset exceeds the training limit (aligned with
-  // faiss/vsag: 256 centroids * 256 max_points_per_centroid ~= 65535).
-  if (num > kMaxTrainVectors) {
-    std::mt19937 rng(42);
-    // Fisher-Yates partial shuffle: randomly place kMaxTrainVectors vectors
-    // at the front of the buffer.
-    for (size_t i = 0; i < kMaxTrainVectors; ++i) {
-      std::uniform_int_distribution<size_t> dist(i, num - 1);
-      size_t j = dist(rng);
-      if (i != j) {
-        // Swap full vectors (dim-sized chunks in bytes).
-        size_t vec_bytes = original_dim_ * elem_size;
-        for (size_t b = 0; b < vec_bytes; ++b) {
-          std::swap(all_data[i * vec_bytes + b], all_data[j * vec_bytes + b]);
-        }
-      }
-    }
-    num = kMaxTrainVectors;
-    all_data.resize(num * original_dim_ * elem_size);
-    all_data.shrink_to_fit();
+  std::vector<uint8_t> all_data;
+  if (!CollectPqTrainingSamples(holder, kMaxTrainVectors, vec_bytes,
+                                &all_data)) {
+    return kErrUnsupported;
   }
+  holder.reset();
 
   size_t data_stride = original_dim_ * elem_size;
 

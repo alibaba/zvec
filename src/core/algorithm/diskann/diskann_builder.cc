@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
+#include "utility/prefix_index_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
 #include "diskann_util.h"
@@ -395,27 +396,10 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
     return ret;
   }
 
-  // Preserve the legacy trainer's bounded prefix sample. The turbo trainer
-  // collects its entire input before subsampling, so cap that input first.
-  IndexHolder::Pointer training_holder = holder_;
-  if (holder_->count() > max_train_sample_count_) {
-    auto iter = holder_->create_iterator();
-    if (!iter) {
-      LOG_ERROR("Create training iterator failed");
-      return IndexError_Runtime;
-    }
-    auto sample = std::make_shared<RandomAccessIndexHolder>(build_meta_);
-    sample->reserve(max_train_sample_count_);
-    for (; iter->is_valid() && sample->count() < max_train_sample_count_;
-         iter->next()) {
-      sample->emplace(iter->key(), iter->data());
-    }
-    if (sample->count() != max_train_sample_count_) {
-      LOG_ERROR("Training holder ended before the requested sample count");
-      return IndexError_Runtime;
-    }
-    training_holder = std::move(sample);
-  }
+  // Keep the legacy prefix and sample order without materializing a second
+  // training holder. The quantizer copies only its selected training rows.
+  IndexHolder::Pointer training_holder = std::make_shared<PrefixIndexHolder>(
+      holder_, max_train_sample_count_, build_meta_);
   ret = quantizer_->train(std::move(training_holder));
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
@@ -463,16 +447,21 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   const size_t elem_size = build_meta_.element_size();
   const size_t thread_count =
       threads ? std::max<size_t>(1, threads->count()) : 1;
-  constexpr size_t kEncodeBatchSize = 65536;
-  std::vector<uint8_t> block(kEncodeBatchSize * elem_size);
+  constexpr size_t kEncodeMemoryBudget = 4u * 1024u * 1024u;
+  const size_t batch_size =
+      std::min(num_vecs, std::max<size_t>(1, kEncodeMemoryBudget / elem_size));
+  std::vector<uint8_t> block(batch_size * elem_size);
 
   size_t id = 0;
   while (id < num_vecs) {
     size_t cur = 0;
-    for (; cur < kEncodeBatchSize && id + cur < num_vecs && iter->is_valid();
+    for (; cur < batch_size && id + cur < num_vecs && iter->is_valid();
          iter->next(), ++cur) {
       // The quantizer widens FP16 input internally — pass raw data directly.
-      std::memcpy(block.data() + cur * elem_size, iter->data(), elem_size);
+      const void *data = iter->data();
+      if (!data) return IndexError_ReadData;
+      if (iter->key() != entity_.get_key(id + cur)) return IndexError_Mismatch;
+      std::memcpy(block.data() + cur * elem_size, data, elem_size);
     }
     if (cur == 0) {
       break;
@@ -504,7 +493,7 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
     id += cur;
   }
 
-  if (id != num_vecs) {
+  if (id != num_vecs || iter->is_valid()) {
     LOG_ERROR("PQ generate: iterated %zu vectors, expected %zu", id, num_vecs);
     return IndexError_Runtime;
   }
@@ -649,6 +638,7 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
     return IndexError_InvalidArgument;
   }
 
+  if (!holder->is_matched(raw_meta_)) return IndexError_Mismatch;
   LOG_INFO("Begin DiskAnnBuilder::train");
 
   auto start_time = ailego::Monotime::MilliSeconds();
@@ -732,15 +722,21 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
+  if (!holder->is_matched(raw_meta_) || !holder->multipass() ||
+      holder->count() > std::numeric_limits<uint32_t>::max()) {
+    return IndexError_Mismatch;
+  }
   if (ailego_unlikely(holder->count() == 0)) {
     LOG_ERROR("Holder is empty");
     return IndexError_Runtime;
   }
 
   int ret = entity_.reserve_space(holder->count());
+  if (ret != 0) return ret;
 
   error_ = false;
   while (iter->is_valid()) {
+    if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
     ret = entity_.add_vector(iter->key(), iter->data());
     if (ailego_unlikely(ret != 0)) {
       return ret;
@@ -749,6 +745,8 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     iter->next();
   }
 
+  if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
+  iter.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");
@@ -769,6 +767,9 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return ret;
   }
 
+  // All graph workers have joined. Subsequent stages consume holder_, so
+  // release the full vector copy before allocating PQ buffers.
+  entity_.release_vectors();
   LOG_INFO("Start to generate quantized data");
   ret = generate_quantized_data(threads);
   if (ailego_unlikely(ret != 0)) {
@@ -804,9 +805,8 @@ int DiskAnnBuilder::dump(const IndexDumper::Pointer &dumper) {
 
   ret = entity_.dump(holder_, raw_meta_, dumper);
   if (ret != 0) {
-    LOG_ERROR("Index dump failed, ret: %u", ret);
-
-    return IndexError_Runtime;
+    LOG_ERROR("Index dump failed, ret: %d", ret);
+    return ret;
   }
 
   stats_.set_dumped_count(holder_->count());

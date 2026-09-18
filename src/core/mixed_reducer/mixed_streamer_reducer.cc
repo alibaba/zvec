@@ -671,10 +671,11 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
 
   AILEGO_DEFER([&]() { holder->set_stop_flag(nullptr); });
   IndexHolder::Pointer target_holder = holder;
-  // Only IVF has been adapted to propagate source read failures during dump.
+  // IVF and DiskAnn propagate source read failures during dump.
   // Other builders retain an owned multipass snapshot, as before, so their
   // dump paths never depend on a source provider or its deferred error state.
-  if (target_builder_->name() != "IVFBuilder") {
+  if (target_builder_->name() != "IVFBuilder" &&
+      target_builder_->name() != "DiskAnnBuilder") {
     switch (holder->data_type()) {
       case IndexMeta::DataType::DT_FP32:
         ret = MaterializeMergedInput<IndexMeta::DataType::DT_FP32, float>(
