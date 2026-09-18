@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <thread>
 #include <utility>
@@ -23,6 +24,58 @@
 #include "db/common/file_helper.h"
 
 using namespace zvec;
+
+TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
+  const std::string path = "test_fast_query_topk_bounds";
+  FileHelper::RemoveDirectory(path);
+  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  CollectionSchema schema("fast_topk_bounds");
+  schema.add_field(std::make_shared<FieldSchema>(
+      "vector", DataType::VECTOR_FP32, uint32_t{8}, false,
+      std::make_shared<FlatIndexParams>(MetricType::L2)));
+  auto created = Collection::CreateAndOpen(path, schema, CollectionOptions{});
+  ASSERT_TRUE(created);
+  ASSERT_TRUE(created.value()->close().ok());
+  auto opened = Collection::Open(path, CollectionOptions{true, true});
+  ASSERT_TRUE(opened);
+  auto reader = std::move(opened.value());
+  std::vector<float> vector(8, 0.0f);
+  SearchQuery query;
+  query.target_.field_name_ = "vector";
+  query.target_.set_vector(
+      std::string(reinterpret_cast<const char *>(vector.data()),
+                  vector.size() * sizeof(float)));
+  for (int topk : {-1, std::numeric_limits<int>::min(), 100001,
+                   std::numeric_limits<int>::max()}) {
+    query.topk_ = topk;
+    auto normal = reader->query(query);
+    auto fast = reader->fast_query("vector", vector.data(), nullptr, topk);
+    ASSERT_FALSE(normal);
+    ASSERT_FALSE(fast);
+    EXPECT_EQ(normal.error().code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(fast.error().code(), normal.error().code());
+    EXPECT_EQ(fast.error().message(), normal.error().message());
+  }
+  // Native query allows zero; the public Python API requires a positive int.
+  for (int topk : {0, 1, 100000}) {
+    query.topk_ = topk;
+    auto normal = reader->query(query);
+    auto fast = reader->fast_query("vector", vector.data(), nullptr, topk);
+    ASSERT_TRUE(normal);
+    ASSERT_TRUE(fast);
+    EXPECT_TRUE(normal->empty());
+    EXPECT_EQ(fast->ids.size(), static_cast<size_t>(topk));
+    for (auto id : fast->ids) EXPECT_EQ(id, -1);
+  }
+  // Zero must not bypass the supplied input metadata validation.
+  auto invalid = reader->fast_query("vector", vector.data(), nullptr, 0, false,
+                                    DataType::VECTOR_FP32, 7);
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().code(), StatusCode::INVALID_ARGUMENT);
+  ASSERT_TRUE(reader->close().ok());
+  reader.reset();
+  FileHelper::RemoveDirectory(path);
+}
 
 TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
   const std::string path = "test_fast_query_concurrent_fields";

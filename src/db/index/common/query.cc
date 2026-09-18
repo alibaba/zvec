@@ -16,6 +16,7 @@
 #include <zvec/db/query.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
+#include "db/index/common/query_validation.h"
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
@@ -179,27 +180,15 @@ Status QueryTarget::validate(const FieldSchema *schema,
         IndexTypeCodeBook::AsString(query_params->type()));
   }
   if (query_params && query_params->type() == IndexType::IVF_RABITQ) {
-    auto ivf_rabitq_params =
-        std::dynamic_pointer_cast<IvfRabitqQueryParams>(query_params);
-    if (!ivf_rabitq_params) {
-      return Status::InvalidArgument(
-          "Invalid query: IVF_RABITQ index requires IvfRabitqQueryParams");
-    }
-    if (ivf_rabitq_params->nprobe() <= 0) {
-      return Status::InvalidArgument(
-          "Invalid query: IVF_RABITQ nprobe must be greater than 0");
-    }
+    return validate_ivf_rabitq_query_params(query_params.get());
   }
   return Status::OK();
 }
 
 Status validate_topk_and_output_fields(
     int topk, const std::optional<std::vector<std::string>> &output_fields) {
-  if ((uint32_t)topk > kMaxQueryTopk) {
-    return Status::InvalidArgument("Invalid query: topk[", topk,
-                                   "] exceeds the maximum allowed value of ",
-                                   kMaxQueryTopk);
-  }
+  auto status = validate_query_topk(topk);
+  if (!status.ok()) return status;
   if (output_fields.has_value() &&
       output_fields->size() > kMaxOutputFieldSize) {
     return Status::InvalidArgument(

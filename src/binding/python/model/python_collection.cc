@@ -393,8 +393,28 @@ void ZVecPyCollection::bind_dql_methods(
       .def(
           "fast_query",
           [](const Collection &self, const std::string &field_name,
-             const py::array &vector, QueryParams *params, int topk,
+             const py::array &vector, QueryParams *params, py::handle topk_arg,
              bool return_scores) -> py::object {
+            // Match query's Python integer contract at the native boundary,
+            // without an extra Python validation call on every fast query.
+            if (!PyLong_Check(topk_arg.ptr()) || PyBool_Check(topk_arg.ptr())) {
+              throw py::value_error("topk must be a positive integer");
+            }
+            int overflow = 0;
+            const long value =
+                PyLong_AsLongAndOverflow(topk_arg.ptr(), &overflow);
+            if (value == -1 && PyErr_Occurred()) {
+              throw py::error_already_set();
+            }
+            if (overflow < 0 || (overflow == 0 && value <= 0)) {
+              throw py::value_error("topk must be a positive integer");
+            }
+            // As in query's native topk setter, positive values that cannot
+            // fit in a C++ int are type-conversion errors.
+            if (overflow > 0 || value > std::numeric_limits<int>::max()) {
+              throw py::type_error("topk is outside the C++ int range");
+            }
+            const int topk = static_cast<int>(value);
             const auto data_type = dense_query_data_type(vector);
             const auto dimension = static_cast<uint32_t>(vector.shape(0));
             // Python keeps the argument alive for this call. The DB reads it

@@ -38,7 +38,7 @@ def test_empty_collection(tmp_path, index_type):
     vector = np.zeros(32, dtype=np.float32)
     try:
         assert reader.query(Query("vector", vector=vector), topk=3) == []
-        for topk in (3, 0, 1):
+        for topk in (3, 1):
             ids, scores = reader.fast_query(
                 "vector", vector, topk=topk, return_scores=True
             )
@@ -58,6 +58,142 @@ def test_empty_collection(tmp_path, index_type):
         )
         with pytest.raises(ValueError, match="parameter type"):
             reader.fast_query("vector", vector, wrong_param)
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
+def test_fast_query_topk_contract(tmp_path, populated):
+    schema = CollectionSchema(
+        name="fast_topk_contract",
+        vectors=[
+            VectorSchema(
+                "vector",
+                DataType.VECTOR_FP32,
+                8,
+                index_param=zvec.FlatIndexParam(metric_type=MetricType.L2),
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    writer = zvec.create_and_open(path, schema)
+    try:
+        if populated:
+            assert all(
+                s.ok()
+                for s in writer.insert(
+                    [
+                        Doc(id=str(i), vectors={"vector": [float(i)] * 8})
+                        for i in range(2)
+                    ]
+                )
+            )
+    finally:
+        writer.close()
+    reader = zvec.open(path, CollectionOption(read_only=True))
+    vector = np.zeros(8, dtype=np.float32)
+    query = Query("vector", vector=vector)
+    try:
+        for topk in (0, -1, -(2**80), True, False, np.int64(3), 1.5, "3", None, 100001):
+            message = "maximum allowed" if topk == 100001 else "positive integer"
+            with pytest.raises(ValueError, match=message):
+                reader.query(query, topk=topk)
+            for scores in (False, True):
+                for target in (reader, reader._obj):
+                    with pytest.raises(ValueError, match=message):
+                        target.fast_query(
+                            "vector", vector, topk=topk, return_scores=scores
+                        )
+        for topk in (2**31, 2**80):
+            with pytest.raises(TypeError):
+                reader.query(query, topk=topk)
+            for target in (reader, reader._obj):
+                with pytest.raises(TypeError):
+                    target.fast_query("vector", vector, topk=topk)
+        # The inclusive upper bound is valid, including when fewer hits exist.
+        for topk in (1, 100000):
+            docs = reader.query(query, topk=topk)
+            ids, scores = reader.fast_query(
+                "vector", vector, topk=topk, return_scores=True
+            )
+            count = len(docs)
+            np.testing.assert_array_equal(ids[:count], [int(doc.id) for doc in docs])
+            np.testing.assert_allclose(scores[:count], [doc.score for doc in docs])
+            assert np.all(ids[count:] == -1)
+            assert np.all(np.isnan(scores[count:]))
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("state", ["empty", "unoptimized", "optimized"])
+def test_fast_query_ivf_rabitq_nprobe_contract(tmp_path, state):
+    schema = CollectionSchema(
+        name="fast_nprobe_contract",
+        vectors=[
+            VectorSchema(
+                "vector",
+                DataType.VECTOR_FP32,
+                128,
+                index_param=zvec.IvfRabitqIndexParam(
+                    metric_type=MetricType.L2,
+                    nlist=4,
+                    total_bits=4,
+                ),
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    try:
+        writer = zvec.create_and_open(path, schema)
+    except RuntimeError as exc:
+        if "not supported on this platform" in str(exc) or "RabitQ requires AVX" in str(
+            exc
+        ):
+            pytest.skip(str(exc))
+        raise
+    vectors = np.random.default_rng(957).normal(size=(512, 128)).astype(np.float32)
+    try:
+        if state != "empty":
+            assert all(
+                s.ok()
+                for s in writer.insert(
+                    [
+                        Doc(id=str(i), vectors={"vector": vector.tolist()})
+                        for i, vector in enumerate(vectors)
+                    ]
+                )
+            )
+        if state == "optimized":
+            writer.optimize()
+    finally:
+        writer.close()
+    reader = zvec.open(path, CollectionOption(read_only=True))
+    vector = np.ascontiguousarray(vectors[12] + np.float32(0.013))
+    try:
+        for nprobe in (-2147483648, -1, 0):
+            param = zvec.IvfRabitqQueryParam(nprobe=nprobe)
+            with pytest.raises(ValueError, match="nprobe must be greater than 0"):
+                reader.query(Query("vector", vector=vector, param=param))
+            for scores in (False, True):
+                # Exercise the native binding used directly by the ANN adapter.
+                for target in (reader, reader._obj):
+                    with pytest.raises(
+                        ValueError, match="nprobe must be greater than 0"
+                    ):
+                        target.fast_query("vector", vector, param, return_scores=scores)
+        for param in (
+            None,
+            zvec.IvfRabitqQueryParam(nprobe=1),
+            zvec.IvfRabitqQueryParam(nprobe=4),
+        ):
+            docs = reader.query(Query("vector", vector=vector, param=param))
+            ids, scores = reader.fast_query("vector", vector, param, return_scores=True)
+            count = len(docs)
+            np.testing.assert_array_equal(ids[:count], [int(doc.id) for doc in docs])
+            np.testing.assert_allclose(
+                scores[:count], [doc.score for doc in docs], rtol=2e-5, atol=2e-5
+            )
+            assert np.all(ids[count:] == -1)
     finally:
         reader.close()
 
@@ -196,12 +332,8 @@ def test_reused_inline_and_default_params_and_close(collection):
     raw = coll._obj
     saved_ids, saved_scores = ids.copy(), scores.copy()
     for topk in (0, -1):
-        empty_ids, empty_scores = coll.fast_query(
-            "vector", query, param, topk=topk, return_scores=True
-        )
-        assert empty_ids.shape == empty_scores.shape == (0,)
-        assert empty_ids.dtype == np.int64
-        assert empty_scores.dtype == np.float32
+        with pytest.raises(ValueError, match="topk must be a positive integer"):
+            coll.fast_query("vector", query, param, topk=topk, return_scores=True)
     coll.close()
     np.testing.assert_array_equal(ids, saved_ids)
     np.testing.assert_array_equal(scores, saved_scores)
