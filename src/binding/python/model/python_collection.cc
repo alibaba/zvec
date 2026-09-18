@@ -424,7 +424,7 @@ may be constructed inline or reused. Returns an owning int64 internal ID array,
 or (ids, float32 scores) with return_scores=True. Scores include refinement.
 Missing results are padded with ID -1 / score NaN. Refinement uses param.scale_factor
 with the same semantics as Collection.query.
-Calls to fast_query and collection.close must be serial.
+Parameters and execution state belong to each call, as with Collection.query.
 )doc")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {

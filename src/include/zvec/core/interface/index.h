@@ -249,7 +249,6 @@ class ZVEC_CORE_API Index {
   virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
 
  protected:
-  bool init_context();
   core::IndexContext::Pointer &acquire_context();
 
  protected:
@@ -271,7 +270,6 @@ class ZVEC_CORE_API Index {
   // converter_/reformer_/metric_ stay null.
   std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
-  size_t context_index_{std::numeric_limits<size_t>::max()};
   core::IndexStorage::Pointer storage_{};
 
   bool is_open_{false};

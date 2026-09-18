@@ -1,5 +1,8 @@
 """Advanced dense search: collection queries, scores, fallback and lifetime."""
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import numpy as np
 import pytest
 
@@ -185,7 +188,7 @@ def test_reused_inline_and_default_params_and_close(collection):
                 Query(field_name="vector", vector=query, param=param), topk=topk
             )
             np.testing.assert_array_equal(ids, [int(doc.id[4:]) for doc in docs])
-        # None must restore defaults after a customized query.
+        # A call with None uses defaults regardless of the preceding query.
         docs = coll.query(Query(field_name="vector", vector=query), topk=10)
         np.testing.assert_array_equal(
             coll.fast_query("vector", query), [int(doc.id[4:]) for doc in docs]
@@ -205,6 +208,39 @@ def test_reused_inline_and_default_params_and_close(collection):
     for obj in (coll, raw):
         with pytest.raises(ValueError, match="closed"):
             obj.fast_query("vector", query, param)
+
+
+def test_concurrent_calls_keep_query_parameters_local(collection):
+    coll, vectors, param_type = collection
+    queries = np.ascontiguousarray(vectors[[3, 17, 29, 41]] + 0.013)
+    params = [None]
+    for ef in (16, 64, 80):
+        settings = {"ef": ef} if param_type is HnswQueryParam else {"ef_search": ef}
+        params.append(param_type(**settings))
+    topks = [1, 21, 3, 10]
+    expected = []
+    for query, param, topk in zip(queries, params, topks):
+        docs = coll.query(Query("vector", vector=query, param=param), topk=topk)
+        expected.append(
+            ([int(doc.id[4:]) for doc in docs], [doc.score for doc in docs])
+        )
+
+    ready = Barrier(4)
+
+    def search(worker):
+        # Exercise the first calls concurrently, as well as repeated queries
+        # with different topk, defaults and graph search parameters.
+        ready.wait()
+        for repeat in range(40):
+            i = (worker + repeat) % len(queries)
+            ids, scores = coll.fast_query(
+                "vector", queries[i], params[i], topk=topks[i], return_scores=True
+            )
+            np.testing.assert_array_equal(ids, expected[i][0])
+            np.testing.assert_allclose(scores, expected[i][1], rtol=2e-5, atol=2e-5)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(search, range(4)))
 
 
 @pytest.mark.parametrize("compact", [False, True], ids=["delete_filter", "compacted"])
