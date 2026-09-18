@@ -1050,7 +1050,7 @@ TEST_F(MemStoreTest, General) {
   auto collection_schema = GetCollectionSchema();
   MemForwardStore::Ptr store = std::make_shared<MemForwardStore>(
       collection_schema, "./scalar.block.0", FileFormat::IPC);
-  EXPECT_TRUE(store->Open().ok());
+  EXPECT_TRUE(store->open().ok());
 
   size_t MAX_DOC = 1000000;
 

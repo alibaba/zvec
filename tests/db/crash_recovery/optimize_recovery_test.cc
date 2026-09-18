@@ -54,7 +54,7 @@ void ExecuteOptimizer(const std::string &path, int kill_after_seconds = -1) {
   bool should_crash = kill_after_seconds >= 0;
 
 #ifdef _WIN32
-  std::string cmd_str = optimizer_bin_ + " --path " + path;
+  std::string cmd_str = optimizer_bin + " --path " + path;
 
   STARTUPINFOA si = {sizeof(si)};
   PROCESS_INFORMATION pi;
