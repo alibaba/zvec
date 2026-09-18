@@ -944,13 +944,23 @@ TEST(SearchCondPipelineTest, FinalFilterLimitAppliesAfterRewrite) {
   EXPECT_EQ(info.invert_cond()->op(), QueryNodeOp::Q_IN);
 
   // Different operators prevent union, so the same count must be rejected.
-  QueryNode::Ptr unmerged;
+  level.clear();
   for (size_t i = 0; i < 4097; ++i) {
     auto rel = scalar_condition("number", "1");
     rel->set_op(QueryNodeOp::Q_GT);
-    unmerged =
-        unmerged ? logic_condition(QueryNodeOp::Q_AND, unmerged, rel) : rel;
+    level.push_back(rel);
   }
+  while (level.size() > 1) {
+    std::vector<QueryNode::Ptr> next;
+    for (size_t i = 0; i < level.size(); i += 2) {
+      next.push_back(
+          i + 1 == level.size()
+              ? level[i]
+              : logic_condition(QueryNodeOp::Q_AND, level[i], level[i + 1]));
+    }
+    level = std::move(next);
+  }
+  const auto &unmerged = level[0];
   SearchCondValidator second_validator(schema);
   ASSERT_TRUE(second_validator.validate(unmerged).ok());
   SearchCondBinder second_binder(schema);
