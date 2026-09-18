@@ -26,8 +26,10 @@ void CheckMatrices(IndexMeta::DataType type, const std::string &metric_name) {
   // Unequal batch widths catch output transposition; dimensions also exercise
   // SIMD tails and Cosine's stored norm, which must not contribute to distance.
   constexpr size_t logical_dim = 19;
+  // The FP32 norm occupies two FP16 elements or one FP32 element.
+  const size_t norm_elements = type == IndexMeta::DT_FP16 ? 2 : 1;
   const size_t dim =
-      logical_dim + (metric_name == "Cosine" ? sizeof(float) / sizeof(T) : 0);
+      logical_dim + (metric_name == "Cosine" ? norm_elements : 0);
   IndexMeta meta;
   meta.set_meta(type, dim);
   meta.set_metric(metric_name, 0, ailego::Params());
@@ -161,7 +163,9 @@ void CheckEncodedSearcher(const char *metric_name,
   SCOPED_TRACE(std::string(metric_name) + " type=" + std::to_string(Type) +
                " order=" + std::to_string(order));
   const bool cosine = std::string(metric_name) == "Cosine";
-  const size_t dim = 17 + (cosine ? sizeof(float) / sizeof(T) : 0);
+  // The FP32 norm occupies two FP16 elements or one FP32 element.
+  constexpr size_t norm_elements = Type == IndexMeta::DT_FP16 ? 2 : 1;
+  const size_t dim = 17 + (cosine ? norm_elements : 0);
   const std::string path = "flat_encoded_centers.index";
   struct Cleanup {
     std::string path;
