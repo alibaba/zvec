@@ -3048,7 +3048,7 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
     ASSERT_EQ(0, source->add(data, i));
   }
 
-  auto run_merge = [&](bool two_pass_build) {
+  auto run_merge = [&](bool two_pass_build, bool use_default = false) {
     remove_files(target_name);
     auto target_param = VamanaIndexParamBuilder()
                             .with_metric_type(MetricType::kL2sq)
@@ -3058,8 +3058,11 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
                             .with_max_degree(16)
                             .with_search_list_size(32)
                             .with_alpha(1.5f)
-                            .with_two_pass_build(two_pass_build)
                             .build();
+    ASSERT_TRUE(target_param->two_pass_build);
+    if (!use_default) {
+      target_param->two_pass_build = two_pass_build;
+    }
     auto target = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, target);
     ASSERT_EQ(0, target->open(target_name,
@@ -3121,10 +3124,25 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
 
   run_merge(false);
   run_merge(true);
+  run_merge(true, true);
 
   ASSERT_EQ(0, source->close());
   remove_files(source_name);
   remove_files(target_name);
+}
+
+TEST(IndexInterface, VamanaTwoPassSerialization) {
+  VamanaIndexParam param;
+  EXPECT_TRUE(param.two_pass_build);
+  for (bool two_pass_build : {false, true}) {
+    param.two_pass_build = two_pass_build;
+    for (bool omit_empty_value : {false, true}) {
+      const auto json = param.serialize_to_json(omit_empty_value);
+      VamanaIndexParam restored;
+      ASSERT_TRUE(restored.deserialize_from_json(json));
+      EXPECT_EQ(two_pass_build, restored.two_pass_build);
+    }
+  }
 }
 
 TEST(IndexInterface, Serialize) {

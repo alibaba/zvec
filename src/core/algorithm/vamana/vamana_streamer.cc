@@ -151,7 +151,7 @@ int VamanaStreamer::cleanup() {
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
-  two_pass_build_enabled_ = false;
+  two_pass_build_enabled_ = true;
   build_finalized_.store(false);
 
   return 0;
