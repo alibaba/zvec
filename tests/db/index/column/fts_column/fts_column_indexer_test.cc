@@ -14,6 +14,7 @@
 
 #include "db/index/column/fts_column/fts_column_indexer.h"
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -21,14 +22,17 @@
 #include <unordered_set>
 #include <vector>
 #include <gtest/gtest.h>
+#include <rocksdb/utilities/stackable_db.h>
 #include <zvec/db/config.h>
 #include <zvec/db/index_params.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/index_filter.h"
 // FtsQueryParams defined below
 #include "db/index/column/fts_column/fts_ast_rewriter.h"
+#include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 // meta.h not needed in zvec
 #include "db/common/constants.h"
@@ -1147,10 +1151,9 @@ TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedBasic) {
   EXPECT_EQ(std::get<2>(decoded[2]), 3u);
 }
 
-// After conversion the $TF / $DOC_LEN / $MAX_TF side CFs must be EMPTY: the
-// indexer DeleteRange's them once their content has been inlined into the
-// BitPacked posting list.  MutableSegment then drops the CFs entirely.
-TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedClearsSideCfs) {
+// Conversion preserves $TF / $DOC_LEN / $MAX_TF until FtsIndexer drops them.
+// A failed first drop must leave the inputs intact for another conversion.
+TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedPreservesSideCfs) {
   auto indexer = make_indexer("content");
   for (uint64_t doc_id = 0; doc_id < 5; ++doc_id) {
     EXPECT_TRUE(indexer->insert(doc_id, "alpha beta gamma").has_value());
@@ -1164,10 +1167,10 @@ TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedClearsSideCfs) {
 
   EXPECT_TRUE(indexer->convert_postings_to_bitpacked().has_value());
 
-  // Side CFs must be empty after conversion (DeleteRange'd by the indexer).
-  EXPECT_EQ(count_cf_entries(db_, term_freq_cf_), 0u);
-  EXPECT_EQ(count_cf_entries(db_, doc_len_cf_), 0u);
-  EXPECT_EQ(count_cf_entries(db_, max_tf_cf_), 0u);
+  // All auxiliary entries remain available until explicit CF removal.
+  EXPECT_EQ(count_cf_entries(db_, term_freq_cf_), 15u);
+  EXPECT_EQ(count_cf_entries(db_, doc_len_cf_), 5u);
+  EXPECT_EQ(count_cf_entries(db_, max_tf_cf_), 3u);
 
   // After reset_side_cfs, search should still work (BitPacked path).
   indexer->reset_side_cfs();
@@ -1918,3 +1921,377 @@ TEST_F(FtsStemmerIndexerTest, StemmerNoMatchAfterStemming) {
   EXPECT_TRUE(search_ok(*indexer, "nonexistent", 10, &results, pipeline));
   EXPECT_TRUE(results.empty());
 }
+
+#if GTEST_HAS_DEATH_TEST
+
+class FtsSealRecoveryDeathTest : public ::testing::TestWithParam<bool> {
+ protected:
+  void SetUp() override {
+    path_ = "./test_fts_seal_recovery_" + std::to_string(GetParam());
+    FileHelper::RemoveDirectory(path_);
+  }
+
+  void TearDown() override {
+    FileHelper::RemoveDirectory(path_);
+  }
+
+  std::string path_;
+};
+
+TEST_P(FtsSealRecoveryDeathTest, PostingsSurviveExitWithoutClose) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const bool seal_all = GetParam();
+  const std::vector<std::string> names =
+      seal_all ? std::vector<std::string>{"text", "title"}
+               : std::vector<std::string>{"text"};
+  FieldSchemaPtrList fields;
+  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+      merge_ops;
+  for (const auto &name : names) {
+    auto params = std::make_shared<zvec::FtsIndexParams>("whitespace");
+    fields.push_back(make_test_field_meta(name, params));
+    merge_ops[name] = std::make_shared<FtsPostingsMerge>();
+  }
+
+  // Re-exec the child instead of forking an initialized RocksDB thread pool.
+  // Exit after sealing, without destructors that would hide missing flushes.
+  ASSERT_EXIT(
+      {
+        auto indexer = FtsIndexer::CreateAndOpen(path_, fields, true);
+        if (!indexer) {
+          std::_Exit(1);
+        }
+        for (const auto &name : names) {
+          if (!indexer->insert(name, 0, "shared shared").ok() ||
+              !indexer->insert(name, 1, "shared").ok()) {
+            std::_Exit(2);
+          }
+        }
+        // Match SegmentImpl::dump(): flush the mutable representation first.
+        if (!indexer->flush().ok()) {
+          std::_Exit(3);
+        }
+        auto status = seal_all ? indexer->seal_all() : indexer->seal("text");
+        if (!status.ok()) {
+          std::_Exit(4);
+        }
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  RocksdbContext recovered;
+  ASSERT_TRUE(
+      recovered
+          .open(RocksdbContext::Args{path_, {}, nullptr, merge_ops, true}, true)
+          .ok());
+  for (const auto &name : names) {
+    auto *postings_cf = recovered.get_cf(name);
+    ASSERT_NE(postings_cf, nullptr);
+    EXPECT_EQ(recovered.get_cf(name + kFtsTfSuffix), nullptr);
+    EXPECT_EQ(recovered.get_cf(name + kFtsMaxTfSuffix), nullptr);
+    EXPECT_EQ(recovered.get_cf(name + kFtsDocLenSuffix), nullptr);
+    std::string raw;
+    ASSERT_TRUE(
+        recovered.db_->Get(recovered.read_opts_, postings_cf, "shared", &raw)
+            .ok());
+    ASSERT_TRUE(
+        BitPackedPostingList::is_bitpacked_format(raw.data(), raw.size()))
+        << "Sealed postings reverted to the mutable format after process exit";
+    BitPackedPostingIterator postings;
+    ASSERT_EQ(postings.open(raw.data(), raw.size()), 0);
+    EXPECT_EQ(postings.next_doc(), 0u);
+    EXPECT_EQ(postings.term_freq(), 2u);
+    EXPECT_EQ(postings.doc_len(), 2u);
+    EXPECT_EQ(postings.next_doc(), 1u);
+    EXPECT_EQ(postings.term_freq(), 1u);
+    EXPECT_EQ(postings.doc_len(), 1u);
+    EXPECT_EQ(postings.next_doc(), BitPackedPostingIterator::NO_MORE_DOCS);
+  }
+  EXPECT_TRUE(recovered.close().ok());
+}
+
+INSTANTIATE_TEST_SUITE_P(SealPaths, FtsSealRecoveryDeathTest,
+                         ::testing::Bool());
+
+#endif  // GTEST_HAS_DEATH_TEST
+
+namespace zvec {
+namespace {
+class FailDropDB : public rocksdb::StackableDB {
+ public:
+  FailDropDB(rocksdb::DB *db, int fail_at)
+      : rocksdb::StackableDB(db), fail_at_(fail_at) {}
+
+  rocksdb::Status DropColumnFamily(rocksdb::ColumnFamilyHandle *cf) override {
+    if (++attempts_ == fail_at_) {
+      failed_cf = cf->GetName();
+      return rocksdb::Status::IOError("injected column family drop failure");
+    }
+    return rocksdb::StackableDB::DropColumnFamily(cf);
+  }
+
+  std::string failed_cf;
+
+ private:
+  int fail_at_;
+  int attempts_{0};
+};
+}  // namespace
+
+class FtsSealRetryTest : public ::testing::TestWithParam<int> {
+ protected:
+  void verify_cleanup_retry(bool reopen);
+  void TearDown() override {
+    FileHelper::RemoveDirectory("./test_fts_seal_retry_" +
+                                std::to_string(GetParam()));
+  }
+
+  RocksdbContext &context(FtsIndexer &indexer) {
+    return *indexer.fts_ctx_;
+  }
+};
+
+void FtsSealRetryTest::verify_cleanup_retry(bool reopen) {
+  const int fail_at = GetParam();
+  const bool seal_all = fail_at > 0;
+  const std::string path = "./test_fts_seal_retry_" + std::to_string(fail_at);
+  FileHelper::RemoveDirectory(path);
+  const std::vector<std::string> names =
+      seal_all ? std::vector<std::string>{"text", "title"}
+               : std::vector<std::string>{"text"};
+  FieldSchemaPtrList fields;
+  for (const auto &name : names) {
+    fields.push_back(make_test_field_meta(
+        name, std::make_shared<zvec::FtsIndexParams>("whitespace")));
+  }
+  auto indexer = FtsIndexer::CreateAndOpen(path, fields, true);
+  ASSERT_NE(indexer, nullptr);
+  auto &initial_ctx = context(*indexer);
+  auto *fault = new FailDropDB(initial_ctx.db_.release(), std::abs(fail_at));
+  initial_ctx.db_.reset(fault);
+  for (const auto &name : names) {
+    ASSERT_TRUE(indexer->insert(name, 0, "shared shared").ok());
+    ASSERT_TRUE(indexer->insert(name, 1, "shared").ok());
+  }
+  const auto seal = [&]() {
+    return seal_all ? indexer->seal_all() : indexer->seal("text");
+  };
+  ASSERT_FALSE(seal().ok());
+  ASSERT_FALSE(fault->failed_cf.empty());
+  ASSERT_NE(initial_ctx.get_cf(fault->failed_cf), nullptr);
+  if (reopen) {
+    ASSERT_TRUE(indexer->close().ok());
+    indexer = FtsIndexer::CreateAndOpen(path, fields, false);
+    ASSERT_NE(indexer, nullptr);
+  }
+  auto &ctx = context(*indexer);
+  // Retry the dump after recovering the existing writing segment.
+  ASSERT_TRUE(indexer->flush().ok());
+  ASSERT_TRUE(seal().ok());
+  ASSERT_TRUE(seal().ok());
+  for (const auto &name : names) {
+    for (const auto &suffix :
+         {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+      EXPECT_EQ(ctx.get_cf(name + suffix), nullptr);
+    }
+    std::string raw;
+    ASSERT_TRUE(
+        ctx.db_->Get(ctx.read_opts_, ctx.get_cf(name), "shared", &raw).ok());
+    ASSERT_TRUE(
+        fts::BitPackedPostingList::is_bitpacked_format(raw.data(), raw.size()));
+    fts::BitPackedPostingIterator postings;
+    ASSERT_EQ(postings.open(raw.data(), raw.size()), 0);
+    EXPECT_EQ(postings.next_doc(), 0u);
+    EXPECT_EQ(postings.term_freq(), 2u);
+    EXPECT_EQ(postings.doc_len(), 2u);
+    EXPECT_EQ(postings.next_doc(), 1u);
+    EXPECT_EQ(postings.term_freq(), 1u);
+    EXPECT_EQ(postings.doc_len(), 1u);
+    EXPECT_EQ(postings.next_doc(), fts::BitPackedPostingIterator::NO_MORE_DOCS);
+  }
+  // Recreating the same field must not inherit the previous conversion state.
+  ASSERT_TRUE(indexer->remove_field_indexer("text").ok());
+  ASSERT_TRUE(indexer->create_field_indexer(*fields.front()).ok());
+  ASSERT_TRUE(indexer->insert("text", 0, "fresh fresh").ok());
+  ASSERT_TRUE(seal().ok());
+  std::string fresh;
+  ASSERT_TRUE(
+      ctx.db_->Get(ctx.read_opts_, ctx.get_cf("text"), "fresh", &fresh).ok());
+  EXPECT_TRUE(fts::BitPackedPostingList::is_bitpacked_format(fresh.data(),
+                                                             fresh.size()));
+  EXPECT_TRUE(indexer->close().ok());
+}
+
+TEST_P(FtsSealRetryTest, RetriesPendingColumnFamilyCleanup) {
+  verify_cleanup_retry(false);
+}
+
+TEST_P(FtsSealRetryTest, RetriesPendingCleanupAfterReopen) {
+  verify_cleanup_retry(true);
+}
+
+INSTANTIATE_TEST_SUITE_P(DropFailures, FtsSealRetryTest,
+                         ::testing::Values(-1, -2, -3, 1, 2, 3, 4, 5, 6));
+}  // namespace zvec
+
+namespace zvec {
+namespace {
+class FailSealStatsDB : public rocksdb::StackableDB {
+ public:
+  FailSealStatsDB(rocksdb::DB *db, bool fail_put)
+      : rocksdb::StackableDB(db), fail_put_(fail_put) {}
+  rocksdb::Status Put(const rocksdb::WriteOptions &options,
+                      rocksdb::ColumnFamilyHandle *cf,
+                      const rocksdb::Slice &key,
+                      const rocksdb::Slice &value) override {
+    if (fail_put_ && !failed_ &&
+        key.ToString().find("_total_docs") != std::string::npos) {
+      failed_ = true;
+      return rocksdb::Status::IOError("injected statistics write failure");
+    }
+    return rocksdb::StackableDB::Put(options, cf, key, value);
+  }
+  rocksdb::Status Flush(const rocksdb::FlushOptions &options,
+                        rocksdb::ColumnFamilyHandle *cf) override {
+    if (!fail_put_ && !failed_ && cf->GetName() == kFtsStatCfName) {
+      failed_ = true;
+      return rocksdb::Status::IOError("injected statistics flush failure");
+    }
+    return rocksdb::StackableDB::Flush(options, cf);
+  }
+  rocksdb::Status DeleteRange(const rocksdb::WriteOptions &options,
+                              rocksdb::ColumnFamilyHandle *cf,
+                              const rocksdb::Slice &begin,
+                              const rocksdb::Slice &end) override {
+    ++cleanup_calls;
+    return rocksdb::StackableDB::DeleteRange(options, cf, begin, end);
+  }
+  rocksdb::Status DropColumnFamily(rocksdb::ColumnFamilyHandle *cf) override {
+    ++cleanup_calls;
+    return rocksdb::StackableDB::DropColumnFamily(cf);
+  }
+  int cleanup_calls{0};
+
+ private:
+  bool fail_put_;
+  bool failed_{false};
+};
+}  // namespace
+
+TEST(FtsSealStatsTest, RejectsLegacyRoaringWithoutTermFrequencies) {
+  const std::string path = "./test_fts_legacy_missing_tf";
+  FileHelper::RemoveDirectory(path);
+  auto field = make_test_field_meta(
+      "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+  auto indexer = FtsIndexer::CreateAndOpen(path, {field}, true);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(indexer->insert("text", 0, "shared shared").ok());
+  ASSERT_TRUE(indexer->flush().ok());
+  // Model an old index whose auxiliary CF was removed before conversion
+  // became durable: reopening must not treat its Roaring postings as sealed.
+  auto *ctx = indexer->get("text")->ctx();
+  indexer->get("text")->reset_side_cfs();
+  ASSERT_TRUE(ctx->drop_cf(std::string("text") + kFtsTfSuffix).ok());
+  ASSERT_TRUE(indexer->close().ok());
+  indexer = FtsIndexer::CreateAndOpen(path, {field}, false);
+  ASSERT_NE(indexer, nullptr);
+  EXPECT_FALSE(indexer->seal_all().ok());
+  EXPECT_NE(indexer->get("text")->ctx()->get_cf(std::string("text") +
+                                                kFtsDocLenSuffix),
+            nullptr);
+  EXPECT_TRUE(indexer->close().ok());
+  FileHelper::RemoveDirectory(path);
+}
+
+TEST(FtsSealStatsTest, PersistenceFailureDoesNotDeleteSideData) {
+  for (bool fail_put : {false, true}) {
+    const std::string path = "./test_fts_stats_failure";
+    FileHelper::RemoveDirectory(path);
+    auto field = make_test_field_meta(
+        "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+    auto indexer = FtsIndexer::CreateAndOpen(path, {field}, true);
+    ASSERT_NE(indexer, nullptr);
+    ASSERT_TRUE(indexer->insert("text", 0, "shared shared").ok());
+    auto *ctx = indexer->get("text")->ctx();
+    auto *fault = new FailSealStatsDB(ctx->db_.release(), fail_put);
+    ctx->db_.reset(fault);
+    ASSERT_FALSE(indexer->seal_all().ok());
+    EXPECT_EQ(fault->cleanup_calls, 0);
+    for (const auto &suffix :
+         {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+      ASSERT_NE(ctx->get_cf(std::string("text") + suffix), nullptr);
+    }
+    ASSERT_TRUE(indexer->seal_all().ok());
+    ASSERT_TRUE(indexer->close().ok());
+    indexer = FtsIndexer::CreateAndOpen(path, {field}, false);
+    ASSERT_NE(indexer, nullptr);
+    EXPECT_TRUE(indexer->seal_all().ok());
+    EXPECT_TRUE(indexer->close().ok());
+    FileHelper::RemoveDirectory(path);
+  }
+}
+
+#if GTEST_HAS_DEATH_TEST
+namespace {
+class ExitDuringSealDB : public rocksdb::StackableDB {
+ public:
+  ExitDuringSealDB(rocksdb::DB *db, bool during_drop)
+      : rocksdb::StackableDB(db), during_drop_(during_drop) {}
+  rocksdb::Status DropColumnFamily(rocksdb::ColumnFamilyHandle *cf) override {
+    if (++drops_ == (during_drop_ ? 2 : 1)) std::_Exit(0);
+    return rocksdb::StackableDB::DropColumnFamily(cf);
+  }
+
+ private:
+  bool during_drop_;
+  int drops_{0};
+};
+}  // namespace
+class FtsSealCleanupDeathTest : public ::testing::TestWithParam<bool> {};
+TEST_P(FtsSealCleanupDeathTest, ResumeCleanupAfterProcessExit) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const std::string path =
+      "./test_fts_cleanup_exit_" + std::to_string(GetParam());
+  FileHelper::RemoveDirectory(path);
+  auto field = make_test_field_meta(
+      "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+  const bool during_drop = GetParam();
+  ASSERT_EXIT(
+      {
+        auto indexer = FtsIndexer::CreateAndOpen(path, {field}, true);
+        if (!indexer || !indexer->insert("text", 0, "shared shared").ok())
+          std::_Exit(1);
+        // Persist mutable data, as SegmentImpl::dump does before sealing.
+        if (!indexer->flush().ok()) std::_Exit(2);
+        auto *ctx = indexer->get("text")->ctx();
+        ctx->db_.reset(new ExitDuringSealDB(ctx->db_.release(), during_drop));
+        indexer->seal_all();
+        std::_Exit(3);
+      },
+      ::testing::ExitedWithCode(0), "");
+  auto recovered = FtsIndexer::CreateAndOpen(path, {field}, false);
+  ASSERT_NE(recovered, nullptr);
+  if (during_drop) {
+    EXPECT_FALSE(recovered->insert("text", 1, "unexpected").ok());
+  }
+  ASSERT_TRUE(recovered->seal_all().ok());
+  auto *ctx = recovered->get("text")->ctx();
+  for (const auto &suffix : {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
+    EXPECT_EQ(ctx->get_cf(std::string("text") + suffix), nullptr);
+  }
+  std::string raw;
+  ASSERT_TRUE(
+      ctx->db_->Get(ctx->read_opts_, ctx->get_cf("text"), "shared", &raw).ok());
+  fts::BitPackedPostingIterator postings;
+  ASSERT_EQ(postings.open(raw.data(), raw.size()), 0);
+  EXPECT_EQ(postings.next_doc(), 0u);
+  EXPECT_EQ(postings.term_freq(), 2u);
+  EXPECT_EQ(postings.doc_len(), 2u);
+  EXPECT_EQ(postings.next_doc(), fts::BitPackedPostingIterator::NO_MORE_DOCS);
+  EXPECT_TRUE(recovered->close().ok());
+  FileHelper::RemoveDirectory(path);
+}
+INSTANTIATE_TEST_SUITE_P(CleanupStages, FtsSealCleanupDeathTest,
+                         ::testing::Bool());
+#endif  // GTEST_HAS_DEATH_TEST
+}  // namespace zvec

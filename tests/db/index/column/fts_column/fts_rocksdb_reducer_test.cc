@@ -882,22 +882,12 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
 // time), so this scenario is no longer reachable in production.
 
 // ============================================================
-// Reducer over BitPacked-converted source segments with EMPTY side CFs
+// Reducer over BitPacked-converted source segments with retained side CFs
 // ============================================================
 //
-// After the post-2026 indexer change,
-// MutableSegment::dump_fts_column_indexers() invokes
-// FtsColumnIndexer::convert_postings_to_bitpacked(), which inlines
-// tf/doc_len/max_tf into the BitPacked posting list AND DeleteRange's the
-// $TF / $MAX_TF / $DOC_LEN side CFs.  By the time the reducer sees the
-// segment:
-//   - postings_cf : every value is BitPacked (magic 'BPKD')
-//   - term_freq_cf / max_tf_cf / doc_len_cf : empty (DeleteRange tombstones)
-//
-// The new reducer never reads the side CFs at all, so this test verifies
-// the end-to-end pipeline produces a queryable destination index whose
-// posting set matches the expected union — and that the empty side CFs
-// cause no errors or stat under-counts.
+// Conversion inlines tf/doc_len/max_tf into BitPacked postings and preserves
+// auxiliary data until FtsIndexer drops the CFs. The reducer never reads these
+// side CFs, so retained auxiliary entries must not affect merged results.
 
 TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
   // ----- src0: insert + flush + convert (the helper already calls convert)
@@ -909,8 +899,7 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
                                  {2, "bar baz"},
                              });
 
-  // Sanity: src0 postings are BitPacked AND the side CFs are empty (the
-  // indexer DeleteRange'd them as part of convert_postings_to_bitpacked()).
+  // Sanity: conversion produces BitPacked postings and retains side data.
   {
     std::string raw;
     ASSERT_TRUE(
@@ -921,15 +910,15 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
     auto it = std::unique_ptr<rocksdb::Iterator>(
         src0_db_.db_->NewIterator(src0_db_.read_opts_, src0_term_freq_));
     it->SeekToFirst();
-    EXPECT_FALSE(it->Valid());
+    EXPECT_TRUE(it->Valid());
     auto it2 = std::unique_ptr<rocksdb::Iterator>(
         src0_db_.db_->NewIterator(src0_db_.read_opts_, src0_doc_len_));
     it2->SeekToFirst();
-    EXPECT_FALSE(it2->Valid());
+    EXPECT_TRUE(it2->Valid());
     auto it3 = std::unique_ptr<rocksdb::Iterator>(
         src0_db_.db_->NewIterator(src0_db_.read_opts_, src0_max_tf_));
     it3->SeekToFirst();
-    EXPECT_FALSE(it3->Valid());
+    EXPECT_TRUE(it3->Valid());
   }
 
   // ----- src1: insert + flush + convert -----
@@ -982,35 +971,27 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
 }
 
 // ============================================================
-// Single-segment reduce when the source side CFs are completely empty:
+// Single-segment reduce when the source side CFs have been dropped:
 // the reducer must rely only on the BitPacked inline payloads (tf, doc_len)
 // for both the merged posting list and the destination stat_cf.  Any
 // regression that re-introduces a side-CF read would surface here as a
 // missing tf / doc_len / score.
 // ============================================================
 
-TEST_F(FtsRocksdbReducerTest, ReduceWithEmptySideCFsProducesBitPacked) {
-  // InsertDocs() already calls convert_postings_to_bitpacked(), so by the
-  // time we reach reduce() the src $TF / $MAX_TF / $DOC_LEN CFs are empty.
+TEST_F(FtsRocksdbReducerTest, ReduceWithDroppedSideCFsProducesBitPacked) {
+  // InsertDocs() converts postings. Explicitly drop side CFs afterward,
+  // matching the sealing path before reduction.
   auto indexer0 = make_src0_indexer();
   InsertDocs(indexer0.get(), {{0, "alpha beta gamma"},
                               {1, "alpha alpha gamma"},
                               {2, "delta epsilon"}});
 
-  // Sanity: side CFs are empty after convert (DeleteRange'd by the indexer).
-  {
-    auto it = std::unique_ptr<rocksdb::Iterator>(
-        src0_db_.db_->NewIterator(src0_db_.read_opts_, src0_term_freq_));
-    it->SeekToFirst();
-    EXPECT_FALSE(it->Valid());
-    auto it2 = std::unique_ptr<rocksdb::Iterator>(
-        src0_db_.db_->NewIterator(src0_db_.read_opts_, src0_doc_len_));
-    it2->SeekToFirst();
-    EXPECT_FALSE(it2->Valid());
-    auto it3 = std::unique_ptr<rocksdb::Iterator>(
-        src0_db_.db_->NewIterator(src0_db_.read_opts_, src0_max_tf_));
-    it3->SeekToFirst();
-    EXPECT_FALSE(it3->Valid());
+  // Auxiliary payloads must no longer be available to the reducer.
+  indexer0->reset_side_cfs();
+  for (auto *cf : {src0_term_freq_, src0_max_tf_, src0_doc_len_}) {
+    const auto name = cf->GetName();
+    ASSERT_TRUE(src0_db_.drop_cf(name).ok());
+    EXPECT_EQ(src0_db_.get_cf(name), nullptr);
   }
 
   FtsRocksdbReducer reducer = make_reducer();
