@@ -16,7 +16,9 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
+#include <string>
 #include <vector>
 #include <gtest/gtest.h>
 
@@ -107,16 +109,76 @@ class TestSegment : public IndexStorage::Segment {
   mutable size_t fetch_calls_{0};
 };
 
-class MappingEntity : public IVFEntity {
+class MappingStorage : public IndexStorage {
  public:
-  explicit MappingEntity(
-      const std::shared_ptr<TestSegment<uint32_t>> &mapping) {
-    meta_.set_meta(IndexMeta::DataType::DT_FP32, kDimension);
-    header_.total_vector_count = kVectorCount;
-    mapping_ = mapping;
+  int init(const zvec::ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return 0;
+  }
+  int open(const std::string &, bool) override {
+    return 0;
+  }
+  int flush() override {
+    return 0;
+  }
+  int close() override {
+    return 0;
+  }
+  int append(const std::string &, size_t) override {
+    return IndexError_NotImplemented;
+  }
+  void refresh(uint64_t) override {}
+  uint64_t check_point() const override {
+    return 0;
+  }
+  Segment::Pointer get(const std::string &id, int = -1) override {
+    const auto it = segments.find(id);
+    return it == segments.end() ? nullptr : it->second;
+  }
+  bool has(const std::string &id) const override {
+    return segments.find(id) != segments.end();
+  }
+  uint32_t magic() const override {
+    return 0;
+  }
+
+  std::map<std::string, Segment::Pointer> segments;
+};
+
+struct MappingProvider {
+  MappingProvider()
+      : mapping(std::make_shared<TestSegment<uint32_t>>(kVectorCount)),
+        entity(std::make_shared<IVFEntity>()) {
+    // IVFEntity contains a header with a flexible array member, so MSVC
+    // cannot use it as a base class. Load a real entity through its public
+    // storage interface instead of subclassing it to populate its fields.
+    auto storage = std::make_shared<MappingStorage>();
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+    std::string serialized_meta;
+    meta.serialize(&serialized_meta);
+
+    InvertedIndexHeader header{};
+    header.index_meta_size = static_cast<uint32_t>(serialized_meta.size());
+    header.header_size = sizeof(header) + header.index_meta_size;
+    header.total_vector_count = kVectorCount;
+    header.inverted_list_count = 1;
+    header.block_vector_count = kVectorCount;
+    header.block_size = kVectorCount * meta.element_size();
+    header.block_count = 1;
+    header.inverted_body_size = header.block_size;
+    auto header_segment =
+        std::make_shared<TestSegment<uint8_t>>(header.header_size);
+    std::memcpy(header_segment->values().data(), &header, sizeof(header));
+    std::memcpy(header_segment->values().data() + sizeof(header),
+                serialized_meta.data(), serialized_meta.size());
+
     auto keys = std::make_shared<TestSegment<uint64_t>>(kVectorCount);
     auto features =
         std::make_shared<TestSegment<float>>(kVectorCount * kDimension);
+    auto offsets = std::make_shared<TestSegment<uint8_t>>(
+        kVectorCount * sizeof(InvertedVecLocation));
     for (size_t id = 0; id < kVectorCount; ++id) {
       keys->values()[id] = kVectorCount - id;
       for (size_t column = 0; column < kDimension; ++column) {
@@ -124,21 +186,31 @@ class MappingEntity : public IVFEntity {
             static_cast<float>(kVectorCount - id);
       }
       mapping->values()[id] = static_cast<uint32_t>(kVectorCount - id - 1);
+      const InvertedVecLocation location(id * meta.element_size(), false);
+      std::memcpy(offsets->values().data() + id * sizeof(location), &location,
+                  sizeof(location));
     }
-    keys_ = std::move(keys);
-    features_ = std::move(features);
+    auto inverted_meta = std::make_shared<TestSegment<InvertedListMeta>>(1);
+    inverted_meta->values()[0].block_count = 1;
+    inverted_meta->values()[0].vector_count = kVectorCount;
+    storage->segments = {{IVF_INVERTED_HEADER_SEG_ID, header_segment},
+                         {IVF_INVERTED_BODY_SEG_ID, features},
+                         {IVF_INVERTED_META_SEG_ID, inverted_meta},
+                         {IVF_KEYS_SEG_ID, keys},
+                         {IVF_OFFSETS_SEG_ID, offsets},
+                         {IVF_MAPPING_SEG_ID, mapping},
+                         {IVF_FEATURES_SEG_ID, features}};
+
+    load_status = entity->load(storage);
+    if (load_status == 0) {
+      provider = std::make_shared<IVFIndexProvider>(entity->meta(), entity,
+                                                    "MappingProviderTest");
+    }
   }
-};
 
-struct MappingProvider {
-  MappingProvider()
-      : mapping(std::make_shared<TestSegment<uint32_t>>(kVectorCount)),
-        entity(std::make_shared<MappingEntity>(mapping)),
-        provider(std::make_shared<IVFIndexProvider>(entity->meta(), entity,
-                                                    "MappingProviderTest")) {}
-
+  int load_status{IndexError_Runtime};
   std::shared_ptr<TestSegment<uint32_t>> mapping;
-  std::shared_ptr<MappingEntity> entity;
+  IVFEntity::Pointer entity;
   IndexProvider::Pointer provider;
 };
 
@@ -150,6 +222,7 @@ TEST(IVFIndexProviderTest, MappingFetchFailuresAreStickyAndNotNormalEof) {
       SCOPED_TRACE(::testing::Message() << "failed_rank=" << failed_rank
                                         << " short_read=" << short_read);
       MappingProvider fixture;
+      ASSERT_EQ(fixture.load_status, 0);
       fixture.mapping->fail_at(failed_rank * sizeof(uint32_t), short_read);
       auto iter = fixture.provider->create_iterator();
       ASSERT_NE(iter, nullptr);
@@ -191,6 +264,7 @@ TEST(IVFIndexProviderTest, MappingFetchFailuresAreStickyAndNotNormalEof) {
 TEST(IVFIndexProviderTest,
      SortedIterationOwnsMappingChunksAndEndsWithoutError) {
   MappingProvider fixture;
+  ASSERT_EQ(fixture.load_status, 0);
   auto iter = fixture.provider->create_iterator();
   ASSERT_NE(iter, nullptr);
   ASSERT_TRUE(iter->is_valid());
@@ -221,6 +295,7 @@ TEST(IVFIndexProviderTest, InvalidMappingIdsHaveStickyFormatError) {
   for (size_t corrupt_rank : {size_t{0}, kMappingChunkEntries}) {
     SCOPED_TRACE(corrupt_rank);
     MappingProvider fixture;
+    ASSERT_EQ(fixture.load_status, 0);
     fixture.mapping->values()[corrupt_rank] = kVectorCount;
     auto iter = fixture.provider->create_iterator();
     ASSERT_NE(iter, nullptr);
