@@ -214,4 +214,25 @@ Result<IndexResults::Ptr> VectorColumnIndexer::search(
   return result;
 }
 
+Status VectorColumnIndexer::SearchFast(
+    const vector_column_params::VectorData &vector_data,
+    const vector_column_params::QueryParams &query_params, int64_t *output_ids,
+    float *output_scores) {
+  if (index == nullptr) {
+    return Status::InvalidArgument("Index not opened");
+  }
+  auto engine_vector_data =
+      ProximaEngineHelper::convert_to_engine_vector(vector_data, is_sparse_);
+  if (!engine_vector_data) return engine_vector_data.error();
+  auto engine_query_param = ProximaEngineHelper::convert_to_engine_query_param(
+      field_schema_, query_params);
+  if (!engine_query_param) return engine_query_param.error();
+  if (index->search_fast(engine_vector_data.value(),
+                         std::move(engine_query_param.value()), output_ids,
+                         output_scores) != 0) {
+    return Status::InternalError("Failed to search vector");
+  }
+  return Status::OK();
+}
+
 }  // namespace zvec

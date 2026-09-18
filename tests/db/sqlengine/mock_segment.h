@@ -312,9 +312,11 @@ class MockSegment : public Segment {
     return 0;
   }
 
-  Status get_global_doc_ids(const std::vector<int> &segment_doc_ids,
-                            std::vector<int64_t> &out) const override {
-    out.assign(segment_doc_ids.begin(), segment_doc_ids.end());
+  bool has_identity_doc_ids() const override {
+    return false;
+  }
+
+  Status get_global_doc_ids(std::vector<int64_t> &) const override {
     return Status::OK();
   }
 

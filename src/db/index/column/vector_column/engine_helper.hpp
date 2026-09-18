@@ -113,15 +113,17 @@ class ProximaEngineHelper {
   }
 
   template <typename EngineQueryParamType>
-  static Result<std::unique_ptr<EngineQueryParamType>>
+  static Result<std::shared_ptr<EngineQueryParamType>>
   _build_common_query_param(
       const vector_column_params::QueryParams &db_query_params) {
-    auto engine_query_param = std::make_unique<EngineQueryParamType>();
+    auto engine_query_param = std::make_shared<EngineQueryParamType>();
     engine_query_param->topk = db_query_params.topk;
     engine_query_param->fetch_vector = db_query_params.fetch_vector;
 
-    engine_query_param->filter =
-        convert_to_engine_filter(db_query_params.filter);
+    if (db_query_params.filter) {
+      engine_query_param->filter =
+          convert_to_engine_filter(db_query_params.filter);
+    }
 
     if (db_query_params.query_params) {
       auto status = update_engine_query_param(
@@ -237,7 +239,7 @@ class ProximaEngineHelper {
     return Status::OK();
   }
 
-  static Result<std::unique_ptr<core_interface::BaseIndexQueryParam>>
+  static Result<core_interface::BaseIndexQueryParam::Pointer>
   convert_to_engine_query_param(
       const FieldSchema &field_schema,
       const vector_column_params::QueryParams &query_params) {

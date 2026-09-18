@@ -521,8 +521,7 @@ class Collection:
 
         This advanced API requires a read-only collection. No preparation is
         required: parameters may be constructed inline or reused across calls.
-        Index references are cached internally; parameters are read each time.
-        Calls to ``fast_query`` and collection close must be serial.
+        Parameters are read each time; execution state belongs to each call.
 
         ``vector`` must be a contiguous 1D NumPy array matching the field's input
         dtype and dimension. The result is an owning int64 array. With

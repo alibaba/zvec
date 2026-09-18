@@ -14,6 +14,7 @@
 #include "combined_vector_column_indexer.h"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <unordered_map>
 
@@ -411,6 +412,49 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
   }
   return vector_results.finish(field_schema_.is_sparse_vector(), metric_type_,
                                query_params.topk);
+}
+
+Status CombinedVectorColumnIndexer::SearchFast(
+    const vector_column_params::VectorData &vector_data,
+    const vector_column_params::QueryParams &query_params, int64_t *output_ids,
+    float *output_scores) {
+  if (indexers_.size() == 1 && block_offsets_[0] == 0 &&
+      query_params.filter == nullptr) {
+    vector_column_params::QueryParams params;
+    params.data_type = query_params.data_type;
+    params.dimension = query_params.dimension;
+    params.topk = query_params.topk;
+    params.query_params = query_params.query_params;
+    if (params.query_params && params.query_params->is_using_refiner()) {
+      if (normal_indexers_.size() != indexers_.size()) {
+        return Status::InvalidArgument(
+            "normal indexers size[", normal_indexers_.size(),
+            "] not match indexers size[", indexers_.size(), "]");
+      }
+      params.refiner_param =
+          std::make_shared<vector_column_params::RefinerParam>(
+              vector_column_params::RefinerParam{
+                  params.query_params->scale_factor(), normal_indexers_[0]});
+    }
+    return indexers_[0]->SearchFast(vector_data, params, output_ids,
+                                    output_scores);
+  }
+
+  // Reuse Search's offset/filter/refiner handling for composite segments.
+  auto result = Search(vector_data, query_params);
+  if (!result) return result.error();
+  size_t count = 0;
+  for (auto it = result.value()->create_iterator();
+       it->valid() && count < query_params.topk; it->next(), ++count) {
+    output_ids[count] = static_cast<int64_t>(it->doc_id());
+    if (output_scores) output_scores[count] = it->score();
+  }
+  std::fill(output_ids + count, output_ids + query_params.topk, int64_t{-1});
+  if (output_scores) {
+    std::fill(output_scores + count, output_scores + query_params.topk,
+              std::numeric_limits<float>::quiet_NaN());
+  }
+  return Status::OK();
 }
 
 Result<vector_column_params::VectorDataBuffer>

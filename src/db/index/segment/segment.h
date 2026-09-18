@@ -76,11 +76,6 @@ class Segment {
   // Count documents visible to an optional global-doc-ID filter.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
-  // Validates whether block keys can be returned as global document IDs.
-  virtual bool has_identity_doc_ids() const {
-    return false;
-  }
-
   virtual bool has_record() = 0;
 
   // ---- Schema and index mutation -----------------------------------------
@@ -178,9 +173,12 @@ class Segment {
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
 
-  // Gather stable insertion ordinals without Arrow/user-ID materialization.
-  virtual Status get_global_doc_ids(const std::vector<int> &segment_doc_ids,
-                                    std::vector<int64_t> &out) const = 0;
+  // Valid only while the owning collection is open read-only. Computed by
+  // Open after recovery, before queries can run; not maintained for writes.
+  virtual bool has_identity_doc_ids() const = 0;
+
+  // Map segment row IDs to insertion ordinals in place; preserve -1 padding.
+  virtual Status get_global_doc_ids(std::vector<int64_t> &doc_ids) const = 0;
 
   // Keep Segment alive while consuming the returned reader.
   virtual RecordBatchReaderPtr scan(
