@@ -1964,8 +1964,8 @@ Result<FastQueryResult> CollectionImpl::fast_query(
     auto filter = segment->get_filter();
     params.filter = filter.get();
     auto status =
-        indexer->SearchFast(vector_data, params, out.ids.data(),
-                            out.scores.empty() ? nullptr : out.scores.data());
+        indexer->search_fast(vector_data, params, out.ids.data(),
+                             out.scores.empty() ? nullptr : out.scores.data());
     CHECK_RETURN_STATUS_EXPECTED(status);
     // The read-only collection contract makes this property immutable.
     if (!segment->has_identity_doc_ids()) {

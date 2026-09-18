@@ -98,8 +98,9 @@ TEST(VectorColumnIndexerTest, ReusedQueryParametersAndFlatFallback) {
 TEST(VectorColumnIndexerTest, BaseQueryParametersForFlatFallback) {
   FieldSchema field("vector", DataType::VECTOR_FP32, 32, false,
                     std::make_shared<FlatIndexParams>(MetricType::L2));
-  for (auto type : {IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::VAMANA,
-                    IndexType::IVF, IndexType::IVF_RABITQ, IndexType::DISKANN}) {
+  for (auto type :
+       {IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::VAMANA,
+        IndexType::IVF, IndexType::IVF_RABITQ, IndexType::DISKANN}) {
     SCOPED_TRACE(static_cast<int>(type));
     vector_column_params::QueryParams query;
     query.topk = 7;
