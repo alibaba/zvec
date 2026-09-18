@@ -104,12 +104,8 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
                                    ret.error().message());
     }
 
-    auto completed = indexer->conversion_complete();
-    if (!completed) {
-      return completed.error();
-    }
-    if (*completed) {
-      // A sealed field remains immutable even if cleanup was interrupted.
+    if (!term_freq_cf) {
+      // $TF is removed first when sealing; this field cannot accept writes.
       indexer->reset_side_cfs();
     }
     indexers_[name] = indexer;
@@ -238,19 +234,6 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
   // Remove per-field stat keys.
   auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
   if (stat_cf) {
-    // A recreated field must not inherit a durable marker from its predecessor.
-    auto marker_status =
-        fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
-                              fts::make_conversion_complete_key(field_name));
-    if (marker_status.ok()) {
-      rocksdb::FlushOptions options;
-      options.wait = true;
-      marker_status = fts_ctx_->db_->Flush(options, stat_cf);
-    }
-    if (!marker_status.ok()) {
-      return Status::InternalError("delete conversion marker failed: ",
-                                   marker_status.ToString());
-    }
     auto rs = fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
                                     fts::make_total_docs_key(field_name));
     if (!rs.ok()) {
@@ -309,6 +292,7 @@ Status FtsIndexer::seal(const std::string &field_name) {
                                  field_name, " ", ret.error().message());
   }
 
+  // Drop $TF first: its absence identifies completed conversion on recovery.
   indexer->reset_side_cfs();
   for (const auto &suffix : {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
     if (auto status = fts_ctx_->drop_cf(field_name + suffix); !status.ok()) {
@@ -338,7 +322,8 @@ Status FtsIndexer::seal_all() {
     }
   }
 
-  // Reset side CFs and drop them.
+  // Reset side CFs and drop them. For each field, $TF must be dropped first
+  // and any failure must stop cleanup, preserving the recovery invariant.
   for (const auto &[name, indexer] : indexers_) {
     indexer->reset_side_cfs();
   }

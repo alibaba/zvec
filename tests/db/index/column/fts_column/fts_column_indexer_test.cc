@@ -1151,10 +1151,9 @@ TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedBasic) {
   EXPECT_EQ(std::get<2>(decoded[2]), 3u);
 }
 
-// After conversion the $TF / $DOC_LEN / $MAX_TF side CFs must be EMPTY: the
-// indexer DeleteRange's them once their content has been inlined into the
-// BitPacked posting list.  MutableSegment then drops the CFs entirely.
-TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedClearsSideCfs) {
+// Conversion preserves $TF / $DOC_LEN / $MAX_TF until FtsIndexer drops them.
+// A failed first drop must leave the inputs intact for another conversion.
+TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedPreservesSideCfs) {
   auto indexer = make_indexer("content");
   for (uint64_t doc_id = 0; doc_id < 5; ++doc_id) {
     EXPECT_TRUE(indexer->insert(doc_id, "alpha beta gamma").has_value());
@@ -1168,10 +1167,10 @@ TEST_F(FtsColumnIndexerTest, ConvertPostingsToBitpackedClearsSideCfs) {
 
   EXPECT_TRUE(indexer->convert_postings_to_bitpacked().has_value());
 
-  // Side CFs must be empty after conversion (DeleteRange'd by the indexer).
-  EXPECT_EQ(count_cf_entries(db_, term_freq_cf_), 0u);
-  EXPECT_EQ(count_cf_entries(db_, doc_len_cf_), 0u);
-  EXPECT_EQ(count_cf_entries(db_, max_tf_cf_), 0u);
+  // All auxiliary entries remain available until explicit CF removal.
+  EXPECT_EQ(count_cf_entries(db_, term_freq_cf_), 15u);
+  EXPECT_EQ(count_cf_entries(db_, doc_len_cf_), 5u);
+  EXPECT_EQ(count_cf_entries(db_, max_tf_cf_), 3u);
 
   // After reset_side_cfs, search should still work (BitPacked path).
   indexer->reset_side_cfs();
@@ -2137,18 +2136,18 @@ INSTANTIATE_TEST_SUITE_P(DropFailures, FtsSealRetryTest,
 
 namespace zvec {
 namespace {
-class FailMarkerDB : public rocksdb::StackableDB {
+class FailSealStatsDB : public rocksdb::StackableDB {
  public:
-  FailMarkerDB(rocksdb::DB *db, bool fail_put)
+  FailSealStatsDB(rocksdb::DB *db, bool fail_put)
       : rocksdb::StackableDB(db), fail_put_(fail_put) {}
   rocksdb::Status Put(const rocksdb::WriteOptions &options,
                       rocksdb::ColumnFamilyHandle *cf,
                       const rocksdb::Slice &key,
                       const rocksdb::Slice &value) override {
     if (fail_put_ && !failed_ &&
-        key.ToString().find("_conversion_complete") != std::string::npos) {
+        key.ToString().find("_total_docs") != std::string::npos) {
       failed_ = true;
-      return rocksdb::Status::IOError("injected marker write failure");
+      return rocksdb::Status::IOError("injected statistics write failure");
     }
     return rocksdb::StackableDB::Put(options, cf, key, value);
   }
@@ -2156,7 +2155,7 @@ class FailMarkerDB : public rocksdb::StackableDB {
                         rocksdb::ColumnFamilyHandle *cf) override {
     if (!fail_put_ && !failed_ && cf->GetName() == kFtsStatCfName) {
       failed_ = true;
-      return rocksdb::Status::IOError("injected marker flush failure");
+      return rocksdb::Status::IOError("injected statistics flush failure");
     }
     return rocksdb::StackableDB::Flush(options, cf);
   }
@@ -2179,9 +2178,34 @@ class FailMarkerDB : public rocksdb::StackableDB {
 };
 }  // namespace
 
-TEST(FtsSealMarkerTest, PersistenceFailureDoesNotDeleteSideData) {
+TEST(FtsSealStatsTest, RejectsLegacyRoaringWithoutTermFrequencies) {
+  const std::string path = "./test_fts_legacy_missing_tf";
+  FileHelper::RemoveDirectory(path);
+  auto field = make_test_field_meta(
+      "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+  auto indexer = FtsIndexer::CreateAndOpen(path, {field}, true);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(indexer->insert("text", 0, "shared shared").ok());
+  ASSERT_TRUE(indexer->flush().ok());
+  // Model an old index whose auxiliary CF was removed before conversion
+  // became durable: reopening must not treat its Roaring postings as sealed.
+  auto *ctx = indexer->get("text")->ctx();
+  indexer->get("text")->reset_side_cfs();
+  ASSERT_TRUE(ctx->drop_cf(std::string("text") + kFtsTfSuffix).ok());
+  ASSERT_TRUE(indexer->close().ok());
+  indexer = FtsIndexer::CreateAndOpen(path, {field}, false);
+  ASSERT_NE(indexer, nullptr);
+  EXPECT_FALSE(indexer->seal_all().ok());
+  EXPECT_NE(indexer->get("text")->ctx()->get_cf(std::string("text") +
+                                                kFtsDocLenSuffix),
+            nullptr);
+  EXPECT_TRUE(indexer->close().ok());
+  FileHelper::RemoveDirectory(path);
+}
+
+TEST(FtsSealStatsTest, PersistenceFailureDoesNotDeleteSideData) {
   for (bool fail_put : {false, true}) {
-    const std::string path = "./test_fts_marker_failure";
+    const std::string path = "./test_fts_stats_failure";
     FileHelper::RemoveDirectory(path);
     auto field = make_test_field_meta(
         "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
@@ -2189,7 +2213,7 @@ TEST(FtsSealMarkerTest, PersistenceFailureDoesNotDeleteSideData) {
     ASSERT_NE(indexer, nullptr);
     ASSERT_TRUE(indexer->insert("text", 0, "shared shared").ok());
     auto *ctx = indexer->get("text")->ctx();
-    auto *fault = new FailMarkerDB(ctx->db_.release(), fail_put);
+    auto *fault = new FailSealStatsDB(ctx->db_.release(), fail_put);
     ctx->db_.reset(fault);
     ASSERT_FALSE(indexer->seal_all().ok());
     EXPECT_EQ(fault->cleanup_calls, 0);
@@ -2213,15 +2237,8 @@ class ExitDuringSealDB : public rocksdb::StackableDB {
  public:
   ExitDuringSealDB(rocksdb::DB *db, bool during_drop)
       : rocksdb::StackableDB(db), during_drop_(during_drop) {}
-  rocksdb::Status DeleteRange(const rocksdb::WriteOptions &options,
-                              rocksdb::ColumnFamilyHandle *cf,
-                              const rocksdb::Slice &begin,
-                              const rocksdb::Slice &end) override {
-    if (!during_drop_) std::_Exit(0);
-    return rocksdb::StackableDB::DeleteRange(options, cf, begin, end);
-  }
   rocksdb::Status DropColumnFamily(rocksdb::ColumnFamilyHandle *cf) override {
-    if (++drops_ == 2) std::_Exit(0);
+    if (++drops_ == (during_drop_ ? 2 : 1)) std::_Exit(0);
     return rocksdb::StackableDB::DropColumnFamily(cf);
   }
 
@@ -2230,11 +2247,11 @@ class ExitDuringSealDB : public rocksdb::StackableDB {
   int drops_{0};
 };
 }  // namespace
-class FtsSealMarkerDeathTest : public ::testing::TestWithParam<bool> {};
-TEST_P(FtsSealMarkerDeathTest, ResumeCleanupAfterProcessExit) {
+class FtsSealCleanupDeathTest : public ::testing::TestWithParam<bool> {};
+TEST_P(FtsSealCleanupDeathTest, ResumeCleanupAfterProcessExit) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   const std::string path =
-      "./test_fts_marker_exit_" + std::to_string(GetParam());
+      "./test_fts_cleanup_exit_" + std::to_string(GetParam());
   FileHelper::RemoveDirectory(path);
   auto field = make_test_field_meta(
       "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
@@ -2254,7 +2271,9 @@ TEST_P(FtsSealMarkerDeathTest, ResumeCleanupAfterProcessExit) {
       ::testing::ExitedWithCode(0), "");
   auto recovered = FtsIndexer::CreateAndOpen(path, {field}, false);
   ASSERT_NE(recovered, nullptr);
-  EXPECT_FALSE(recovered->insert("text", 1, "unexpected").ok());
+  if (during_drop) {
+    EXPECT_FALSE(recovered->insert("text", 1, "unexpected").ok());
+  }
   ASSERT_TRUE(recovered->seal_all().ok());
   auto *ctx = recovered->get("text")->ctx();
   for (const auto &suffix : {kFtsTfSuffix, kFtsMaxTfSuffix, kFtsDocLenSuffix}) {
@@ -2272,7 +2291,7 @@ TEST_P(FtsSealMarkerDeathTest, ResumeCleanupAfterProcessExit) {
   EXPECT_TRUE(recovered->close().ok());
   FileHelper::RemoveDirectory(path);
 }
-INSTANTIATE_TEST_SUITE_P(CleanupStages, FtsSealMarkerDeathTest,
+INSTANTIATE_TEST_SUITE_P(CleanupStages, FtsSealCleanupDeathTest,
                          ::testing::Bool());
 #endif  // GTEST_HAS_DEATH_TEST
 }  // namespace zvec
