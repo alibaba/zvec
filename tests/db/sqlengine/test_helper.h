@@ -51,7 +51,7 @@ inline Status InsertDoc(const Segment::Ptr &segment,
       create_total += create_cost;
 
       start = std::chrono::system_clock::now();
-      auto status = segment->Insert(new_doc);
+      auto status = segment->insert(new_doc);
       if (!status.ok()) {
         return status;
       }

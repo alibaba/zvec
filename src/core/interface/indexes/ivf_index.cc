@@ -18,11 +18,12 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "utility/utility_params.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
 
-int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("IVF Index not support sparse vector");
     return core::IndexError_InvalidArgument;
@@ -92,21 +93,23 @@ int IVFIndex::open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      // NOTE: IVF index is dumped via FileDumper (plain binary file), which is
-      // not compatible with BufferStorage's IndexFormat layout (header/footer
-      // chain). Until IVF gains a BufferStorage-aware dump path, fall back to
-      // MMapFileReadStorage so the freshly-dumped file can be reopened.
-      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+      // IVF is immutable after training and FileDumper already emits the
+      // IndexFormat consumed by BufferReadStorage. Keep construction on the
+      // FileDumper path and use the bounded page cache after dump/reopen.
+      // Opening an index must not prewarm the entire file or displace other
+      // collections' cached pages. Populate the cache on demand instead.
+      storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
+                         core::BUFFER_READ_STORAGE_WARMUP_NONE);
+      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR(
-            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
+        LOG_ERROR("Failed to create BufferReadStorage for IVF");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
         LOG_ERROR(
-            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
-            "path: %s, err: %s",
+            "Failed to init BufferReadStorage for IVF, path: %s, "
+            "err: %s",
             file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }
@@ -141,7 +144,7 @@ int IVFIndex::open(const std::string &file_path,
   return 0;
 }
 
-int IVFIndex::GenerateHolder() {
+int IVFIndex::generate_holder() {
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
                               converter_, &holder_);
 }
@@ -175,7 +178,7 @@ int IVFIndex::train() {
     return 0;
   }
   if (build_stage_ == BuildStage::kCollecting) {
-    int ret = GenerateHolder();
+    int ret = generate_holder();
     if (ret != 0) {
       return ret;
     }
@@ -192,10 +195,10 @@ int IVFIndex::train() {
     }
     build_stage_ = BuildStage::kBuilt;
   }
-  return DumpAndOpen();
+  return dump_and_open();
 }
 
-int IVFIndex::ResetBuilder() {
+int IVFIndex::reset_builder() {
   auto next_builder = core::IndexFactory::CreateBuilder("IVFBuilder");
   if (!next_builder) {
     return core::IndexError_NoExist;
@@ -210,7 +213,7 @@ int IVFIndex::ResetBuilder() {
   return 0;
 }
 
-int IVFIndex::DumpAndOpen() {
+int IVFIndex::dump_and_open() {
   if (build_stage_ == BuildStage::kBuilt) {
     auto dumper = core::IndexFactory::CreateDumper("FileDumper");
     if (!dumper) {
@@ -241,7 +244,7 @@ int IVFIndex::DumpAndOpen() {
 
     // Release the full builder state before opening the persisted index.
     // If opening fails, retry only open: the replacement builder is empty.
-    ret = ResetBuilder();
+    ret = reset_builder();
     if (ret != 0) {
       return ret;
     }
@@ -346,7 +349,7 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
   }
   // A new merge (including a retry) rebuilds from its explicit inputs. Do not
   // reuse a partially trained builder or silently resume different inputs.
-  int ret = ResetBuilder();
+  int ret = reset_builder();
   if (ret != 0) {
     return ret;
   }
@@ -359,6 +362,6 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
   // Index::merge marks the reduce phase complete. IVF is not usable until
   // dump/open finishes; train() may resume that phase if it fails.
   is_trained_ = false;
-  return DumpAndOpen();
+  return dump_and_open();
 }
 }  // namespace zvec::core_interface

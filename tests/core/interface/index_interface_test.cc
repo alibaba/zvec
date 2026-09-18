@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -22,8 +23,10 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <thread>
 #include <unordered_map>
 #include <utility>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include "tests/test_util.h"
@@ -32,6 +35,7 @@
 #include "zvec/core/framework/index_provider.h"
 #endif
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
@@ -64,8 +68,8 @@ std::string ReadIndexBytesForTest(const std::string &path) {
 
 class TestableIVFIndex : public IVFIndex {
  public:
-  int CreateAndInitStreamerForTest(const BaseIndexParam &param) {
-    return CreateAndInitStreamer(param);
+  int create_and_init_streamer_for_test(const BaseIndexParam &param) {
+    return create_and_init_streamer(param);
   }
 
   const zvec::ailego::Params &proxima_index_params() const {
@@ -75,14 +79,14 @@ class TestableIVFIndex : public IVFIndex {
 
 class TestableHNSWIndex : public HNSWIndex {
  public:
-  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+  int get_coarse_search_topk(const BaseIndexQueryParam::Pointer &param) {
     return _get_coarse_search_topk(param);
   }
 };
 
 class TestableVamanaIndex : public VamanaIndex {
  public:
-  int GetCoarseSearchTopk(const BaseIndexQueryParam::Pointer &param) {
+  int get_coarse_search_topk(const BaseIndexQueryParam::Pointer &param) {
     return _get_coarse_search_topk(param);
   }
 };
@@ -108,12 +112,12 @@ TEST(IndexInterface, GraphRefineKeepsLegacyDefaultCandidateCount) {
   TestableHNSWIndex hnsw;
   TestableVamanaIndex vamana;
 
-  EXPECT_EQ(kHnswEf, hnsw.GetCoarseSearchTopk(hnsw_param));
-  EXPECT_EQ(kVamanaEf, vamana.GetCoarseSearchTopk(vamana_param));
+  EXPECT_EQ(kHnswEf, hnsw.get_coarse_search_topk(hnsw_param));
+  EXPECT_EQ(kVamanaEf, vamana.get_coarse_search_topk(vamana_param));
 
   refiner->scale_factor_ = 2.0f;
-  EXPECT_EQ(kTopk * 2, hnsw.GetCoarseSearchTopk(hnsw_param));
-  EXPECT_EQ(kTopk * 2, vamana.GetCoarseSearchTopk(vamana_param));
+  EXPECT_EQ(kTopk * 2, hnsw.get_coarse_search_topk(hnsw_param));
+  EXPECT_EQ(kTopk * 2, vamana.get_coarse_search_topk(vamana_param));
 }
 
 TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
@@ -126,7 +130,7 @@ TEST(IndexInterface, IVFPropagatesIterationCountToClusterParams) {
                    .with_n_iters(37)
                    .build();
 
-  ASSERT_EQ(0, index.CreateAndInitStreamerForTest(*param));
+  ASSERT_EQ(0, index.create_and_init_streamer_for_test(*param));
 
   zvec::ailego::Params cluster_params;
   ASSERT_TRUE(index.proxima_index_params().get(
@@ -254,11 +258,11 @@ TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
 
 class ReformerInspectableHNSWIndex : public HNSWIndex {
  public:
-  int InitForTest(const BaseIndexParam &param) {
-    return Init(param);
+  int init_for_test(const BaseIndexParam &param) {
+    return init(param);
   }
 
-  int TransformForTest(const std::vector<float> &query) const {
+  int transform_for_test(const std::vector<float> &query) const {
     if (!reformer_) {
       return zvec::core::IndexError_Uninitialized;
     }
@@ -501,14 +505,14 @@ TEST(IndexInterface, ReopenRestoresUniformReformer) {
             .with_quantizer_param(QuantizerParam(test_case.quantizer_type))
             .build();
     ReformerInspectableHNSWIndex index;
-    ASSERT_EQ(0, index.InitForTest(*param));
+    ASSERT_EQ(0, index.init_for_test(*param));
 
     const std::vector<float> query(kDimension, 1.0f);
-    ASSERT_NE(0, index.TransformForTest(query));
+    ASSERT_NE(0, index.transform_for_test(query));
     ASSERT_EQ(0, index.open(test_case.index_name,
                             {StorageOptions::StorageType::kMMAP,
                              /*create_new=*/false, /*read_only=*/true}));
-    EXPECT_EQ(0, index.TransformForTest(query));
+    EXPECT_EQ(0, index.transform_for_test(query));
     ASSERT_EQ(0, index.close());
 
     zvec::test_util::RemoveTestFiles(test_case.index_name);
@@ -783,6 +787,11 @@ TEST(IndexInterface, BufferGeneral) {
 
   auto func = [&](const BaseIndexParam::Pointer &param,
                   const BaseIndexQueryParam::Pointer &query_param) {
+    const float value_tolerance =
+        param->quantizer_param &&
+                param->quantizer_param->type == QuantizerType::kInt4
+            ? 0.1f
+            : 1e-6f;
     std::string real_index_name = index_name;
     zvec::test_util::RemoveTestFiles(index_name + "*");
     auto write_index = IndexFactory::CreateAndInitIndex(*param);
@@ -797,6 +806,7 @@ TEST(IndexInterface, BufferGeneral) {
     VectorData vector_data;
     vector_data.vector = DenseVector{vector.data()};
     ASSERT_TRUE(0 == write_index->add(vector_data, 233));
+    ASSERT_TRUE(0 == write_index->train());
     write_index->close();
 
     auto read_index = IndexFactory::CreateAndInitIndex(*param);
@@ -810,7 +820,7 @@ TEST(IndexInterface, BufferGeneral) {
     read_index->search(query, query_param, &result);
     ASSERT_EQ(1, result.doc_list_.size());
     ASSERT_EQ(233, result.doc_list_[0].key());
-    ASSERT_FLOAT_EQ(5.0f, result.doc_list_[0].score());
+    ASSERT_NEAR(5.0f, result.doc_list_[0].score(), value_tolerance);
     if (query_param->fetch_vector) {
       auto &doc = result.doc_list_[0];
       if (result.reverted_vector_list_.size() != 0) {
@@ -818,12 +828,12 @@ TEST(IndexInterface, BufferGeneral) {
         ASSERT_EQ(1, result.reverted_vector_list_.size());
         auto reverted_vector = reinterpret_cast<const float *>(
             result.reverted_vector_list_[0].data());
-        ASSERT_FLOAT_EQ(1.0f, reverted_vector[1]);
-        ASSERT_FLOAT_EQ(2.0f, reverted_vector[2]);
+        ASSERT_NEAR(1.0f, reverted_vector[1], value_tolerance);
+        ASSERT_NEAR(2.0f, reverted_vector[2], value_tolerance);
       } else {
         auto vector = reinterpret_cast<const float *>(doc.vector());
-        ASSERT_FLOAT_EQ(1.0f, vector[1]);
-        ASSERT_FLOAT_EQ(2.0f, vector[2]);
+        ASSERT_NEAR(1.0f, vector[1], value_tolerance);
+        ASSERT_NEAR(2.0f, vector[2], value_tolerance);
       }
     }
 
@@ -834,8 +844,8 @@ TEST(IndexInterface, BufferGeneral) {
     float *fetched_vector = reinterpret_cast<float *>(
         std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
             .data.data());
-    ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
-    ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
+    ASSERT_NEAR(1.0f, fetched_vector[1], value_tolerance);
+    ASSERT_NEAR(2.0f, fetched_vector[2], value_tolerance);
     result.doc_list_.clear();
     read_index->close();
     zvec::test_util::RemoveTestFiles(index_name + "*");
@@ -884,8 +894,336 @@ TEST(IndexInterface, BufferGeneral) {
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
+  func(IVFIndexParamBuilder()
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_n_list(10)
+           .build(),
+       IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
+  func(IVFIndexParamBuilder()
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_n_list(10)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+           .build(),
+       IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
+  func(IVFIndexParamBuilder()
+           .with_metric_type(MetricType::kInnerProduct)
+           .with_data_type(DataType::DT_FP32)
+           .with_dimension(kDimension)
+           .with_is_sparse(false)
+           .with_n_list(10)
+           .with_quantizer_param(QuantizerParam(QuantizerType::kInt4))
+           .build(),
+       IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
 }
 
+TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
+  constexpr uint32_t kDimension = 256;
+  constexpr uint32_t kDocCount = 1024;
+  constexpr size_t kVectorBytes = kDimension * kDocCount * sizeof(float);
+  constexpr size_t kBufferBudget = 32UL * 1024UL * 1024UL;
+  const std::string index_name{"test_ivf_buffer_lazy_open.index"};
+  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = memory_pool.capacity();
+  ASSERT_EQ(0u, memory_pool.used());
+  auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
+    zvec::test_util::RemoveTestFiles(index_name + "*");
+    EXPECT_EQ(0u, memory_pool.used());
+    EXPECT_EQ(0, memory_pool.init(previous_capacity));
+  });
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  ASSERT_EQ(0, memory_pool.init(kBufferBudget));
+
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_n_list(8)
+                   .with_n_iters(4)
+                   .build();
+  auto verify_lazy_reads = [&](const Index::Pointer &index) {
+    const size_t open_page_bytes = memory_pool.stats().page_used;
+    ASSERT_GT(memory_pool.metadata_used(), 0u);
+    // Opening may read headers and centroids, but not all posting-list pages.
+    // The pool fits the entire index, so eviction cannot hide eager warmup.
+    ASSERT_LT(open_page_bytes, kVectorBytes / 2);
+
+    for (uint32_t id : {0U, 127U, 511U, 895U, 1023U}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, index->fetch(id, &fetched));
+      const auto &buffer = std::get<DenseVectorBuffer>(fetched.vector_buffer);
+      ASSERT_EQ(kDimension * sizeof(float), buffer.data.size());
+      const auto *values = reinterpret_cast<const float *>(buffer.data.data());
+      for (uint32_t dim = 0; dim < kDimension; ++dim) {
+        ASSERT_FLOAT_EQ(static_cast<float>(id), values[dim]);
+      }
+    }
+    EXPECT_GT(memory_pool.stats().page_used, open_page_bytes);
+
+    std::vector<float> vector(kDimension, 511.0f);
+    VectorData query{DenseVector{vector.data()}};
+    auto query_param =
+        IVFQueryParamBuilder().with_topk(1).with_nprobe(8).build();
+    SearchResult result;
+    ASSERT_EQ(0, index->search(query, query_param, &result));
+    ASSERT_EQ(1u, result.doc_list_.size());
+    EXPECT_EQ(511u, result.doc_list_[0].key());
+  };
+
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       /*create_new=*/true}));
+    std::vector<float> vector(kDimension);
+    for (uint32_t id = 0; id < kDocCount; ++id) {
+      std::fill(vector.begin(), vector.end(), static_cast<float>(id));
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, id));
+    }
+    // train() dumps the file and opens its read storage before returning.
+    ASSERT_EQ(0, index->train());
+    verify_lazy_reads(index);
+    ASSERT_EQ(0, index->close());
+  }
+  ASSERT_EQ(0u, memory_pool.used());
+
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(
+        0, index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                    /*create_new=*/false, /*read_only=*/true}));
+    verify_lazy_reads(index);
+    ASSERT_EQ(0, index->close());
+  }
+}
+
+TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
+  constexpr uint32_t kDimension = 768;
+  constexpr uint32_t kDocCount = 256;
+  // Enough for VecBufferPool metadata plus only a fraction of this index's
+  // data pages, so searches exercise real cache pressure rather than the
+  // bypass-only fallback.
+  constexpr size_t kBufferBudget = 1024 * 1024;
+  const std::string index_name{"test_ivf_buffer_eviction.index"};
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto param = IVFIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_is_sparse(false)
+                   .with_n_list(16)
+                   .with_n_iters(4)
+                   .build();
+
+  {
+    auto write_index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, write_index);
+    ASSERT_EQ(0, write_index->open(index_name,
+                                   {StorageOptions::StorageType::kMMAP, true}));
+
+    std::vector<float> vector(kDimension);
+    for (uint32_t id = 0; id < kDocCount; ++id) {
+      std::fill(vector.begin(), vector.end(), static_cast<float>(id));
+      VectorData vector_data{DenseVector{vector.data()}};
+      ASSERT_EQ(0, write_index->add(vector_data, id));
+    }
+    ASSERT_EQ(0, write_index->train());
+    ASSERT_EQ(0, write_index->close());
+  }
+
+  ASSERT_EQ(0,
+            zvec::ailego::MemoryLimitPool::get_instance().init(kBufferBudget));
+  auto read_index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, read_index);
+
+  // Load on a short-lived thread. Buffer-backed sub-indexes must own every
+  // pointer they retain after Open rather than referencing that thread's TLS.
+  int open_rc = -1;
+  std::thread opener([&]() {
+    open_rc = read_index->open(
+        index_name, {StorageOptions::StorageType::kBufferPool, false, true});
+  });
+  opener.join();
+  ASSERT_EQ(0, open_rc);
+
+  auto query_param = IVFQueryParamBuilder()
+                         .with_topk(1)
+                         .with_nprobe(16)
+                         .with_fetch_vector(true)
+                         .build();
+  auto search_one = [&](uint32_t id) {
+    std::vector<float> query_vector(kDimension, static_cast<float>(id));
+    VectorData query{DenseVector{query_vector.data()}};
+    SearchResult result;
+    if (read_index->search(query, query_param, &result) != 0 ||
+        result.doc_list_.size() != 1 || result.doc_list_[0].key() != id) {
+      return false;
+    }
+    auto vector = static_cast<const float *>(result.doc_list_[0].vector());
+    return vector != nullptr && vector[0] == static_cast<float>(id);
+  };
+
+  for (uint32_t id : {0U, 63U, 127U, 191U, 255U}) {
+    ASSERT_TRUE(search_one(id));
+  }
+
+  std::array<bool, 4> concurrent_ok{};
+  std::array<std::thread, 4> workers;
+  for (size_t i = 0; i < workers.size(); ++i) {
+    workers[i] = std::thread([&, i]() {
+      concurrent_ok[i] = search_one(static_cast<uint32_t>(i * 63));
+    });
+  }
+  for (auto &worker : workers) {
+    worker.join();
+  }
+  for (bool ok : concurrent_ok) {
+    ASSERT_TRUE(ok);
+  }
+
+  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  ASSERT_GT(memory_pool.metadata_used(), 0u);
+  ASSERT_GT(memory_pool.used(), memory_pool.metadata_used());
+
+  ASSERT_EQ(0, read_index->close());
+  read_index.reset();
+  ASSERT_EQ(0u, memory_pool.metadata_used());
+  ASSERT_EQ(0u, memory_pool.used());
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  ASSERT_EQ(0, memory_pool.init(100 * 1024 * 1024));
+}
+
+
+#if DISKANN_SUPPORTED
+TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
+  constexpr uint32_t kDimension = 64;
+  constexpr uint32_t kDocCount = 512;
+  constexpr size_t kFullBudget = 8UL * 1024UL * 1024UL;
+  const std::string index_name{"test_diskann_buffer_budgets.index"};
+  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = memory_pool.capacity();
+  ASSERT_EQ(0u, memory_pool.used());
+  auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
+    zvec::test_util::RemoveTestFiles(index_name + "*");
+    EXPECT_EQ(0u, memory_pool.used());
+    EXPECT_EQ(0, memory_pool.init(previous_capacity));
+  });
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+  ASSERT_EQ(0, memory_pool.init(kFullBudget));
+
+  std::mt19937 random(317);
+  std::uniform_real_distribution<float> uniform(-2.0f, 2.0f);
+  std::vector<float> values(kDocCount * kDimension);
+  for (float &value : values) {
+    value = uniform(random);
+  }
+  auto param = DiskAnnIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(kDimension)
+                   .with_max_degree(24)
+                   .with_list_size(64)
+                   .with_pq_chunk_num(8)
+                   .build();
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(
+        0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
+    for (uint32_t id = 0; id < kDocCount; ++id) {
+      ASSERT_EQ(
+          0, index->add(
+                 VectorData{DenseVector{values.data() + id * kDimension}}, id));
+    }
+    ASSERT_EQ(0, index->train());
+    ASSERT_EQ(0, index->close());
+  }
+
+  const size_t file_bytes = ReadIndexBytesForTest(index_name).size();
+  const size_t page_size = zvec::ailego::kVectorPageSize;
+  const size_t page_count = (file_bytes + page_size - 1) / page_size;
+  const size_t metadata_bytes =
+      zvec::ailego::VecBufferPool::metadata_bytes_for_page_count(page_count);
+  ASSERT_GT(file_bytes, 4 * page_size);
+  ASSERT_GT(metadata_bytes, 0u);
+
+  auto query_param = std::make_shared<DiskAnnQueryParam>();
+  query_param->topk = 10;
+  query_param->list_size = 64;
+  query_param->fetch_vector = true;
+  using Result = std::vector<std::pair<uint64_t, float>>;
+  std::array<Result, 8> baseline;
+  auto query = [&](const Index::Pointer &index, size_t number, Result *out) {
+    const auto id = static_cast<uint32_t>(number * 61);
+    SearchResult result;
+    ASSERT_EQ(0, index->search(
+                     VectorData{DenseVector{values.data() + id * kDimension}},
+                     query_param, &result));
+    ASSERT_EQ(10u, result.doc_list_.size());
+    out->clear();
+    for (const auto &doc : result.doc_list_) {
+      out->emplace_back(doc.key(), doc.score());
+      ASSERT_LT(doc.key(), kDocCount);
+      ASSERT_EQ(kDimension * sizeof(float), doc.vector_string().size());
+      EXPECT_EQ(0, std::memcmp(doc.vector_string().data(),
+                               values.data() + doc.key() * kDimension,
+                               kDimension * sizeof(float)));
+    }
+  };
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(index_name, {StorageOptions::StorageType::kMMAP,
+                                          false, true}));
+    for (size_t i = 0; i < baseline.size(); ++i) {
+      ASSERT_NO_FATAL_FAILURE(query(index, i, &baseline[i]));
+    }
+    ASSERT_EQ(0, index->close());
+  }
+
+  // Cover both bypass-only thresholds, then actual cache pressure and a pool
+  // large enough for the entire index. Every mode reads the same built file.
+  for (size_t budget : {page_size - 1, metadata_bytes + page_size - 1,
+                        metadata_bytes + 4 * page_size, kFullBudget}) {
+    SCOPED_TRACE(budget);
+    ASSERT_EQ(0u, memory_pool.used());
+    ASSERT_EQ(0, memory_pool.init(budget));
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, true}));
+    const bool cache_enabled = budget >= metadata_bytes + page_size;
+    EXPECT_EQ(cache_enabled ? metadata_bytes : 0u, memory_pool.metadata_used());
+    for (size_t repeat = 0; repeat < 2; ++repeat) {
+      for (size_t i = 0; i < baseline.size(); ++i) {
+        Result actual;
+        ASSERT_NO_FATAL_FAILURE(query(index, i, &actual));
+        EXPECT_EQ(baseline[i], actual);
+        if (cache_enabled) {
+          EXPECT_LE(memory_pool.stats().page_used, budget - metadata_bytes);
+        } else {
+          EXPECT_EQ(0u, memory_pool.metadata_used());
+          EXPECT_EQ(0u, memory_pool.stats().page_used);
+        }
+      }
+    }
+    ASSERT_EQ(0, index->close());
+    index.reset();
+    EXPECT_EQ(0u, memory_pool.metadata_used());
+    EXPECT_EQ(0u, memory_pool.stats().page_used);
+    EXPECT_EQ(0u, memory_pool.used());
+  }
+}
+#endif  // DISKANN_SUPPORTED
 
 TEST(IndexInterface, SparseGeneral) {
   constexpr uint32_t kSparseCount = 3;
@@ -1504,7 +1842,7 @@ class InspectableIVFIndex : public IVFIndex {
   int initialize(const BaseIndexParam &param, uint32_t train_sample_count = 0) {
     proxima_index_params_.set(zvec::core::PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT,
                               train_sample_count);
-    return Init(param);
+    return init(param);
   }
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
     return builder_;
@@ -3888,13 +4226,13 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
     }
     ASSERT_TRUE(holder->emplace(i, vec));
   }
-  std::shared_ptr<IndexMeta> index_meta_ptr_;
-  index_meta_ptr_.reset(
-      new (std::nothrow) IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
-  index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
+  std::shared_ptr<IndexMeta> index_meta_ptr;
+  index_meta_ptr.reset(new (std::nothrow)
+                           IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
+  index_meta_ptr->set_metric("SquaredEuclidean", 0, Params());
 
   RabitqConverter converter;
-  converter.init(*index_meta_ptr_, Params());
+  converter.init(*index_meta_ptr, Params());
   ASSERT_EQ(converter.train(holder), 0);
   std::shared_ptr<IndexReformer> index_reformer;
   ASSERT_EQ(converter.to_reformer(&index_reformer), 0);
@@ -3937,7 +4275,7 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
   RabitqConverter converter2;
   Params converter2_params;
   converter2_params.set(PARAM_RABITQ_TOTAL_BITS, 2u);
-  converter2.init(*index_meta_ptr_, converter2_params);
+  converter2.init(*index_meta_ptr, converter2_params);
   ASSERT_EQ(converter2.train(holder), 0);
   std::shared_ptr<IndexReformer> index_reformer2;
   ASSERT_EQ(converter2.to_reformer(&index_reformer2), 0);

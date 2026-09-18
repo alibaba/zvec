@@ -189,9 +189,11 @@ Result<cp::Expression> QueryPlanner::create_filter_node(
           "create array failed", array_res.status().ToString()));
     }
     if (op == QueryNodeOp::Q_IN) {
+      // Keep NULL inputs inconclusive so NOT IN cannot select them.
       auto in_filter = cp::call(
           "is_in", {std::move(left_exp)},
-          std::make_shared<cp::SetLookupOptions>(array_res.MoveValueUnsafe()));
+          std::make_shared<cp::SetLookupOptions>(
+              array_res.MoveValueUnsafe(), cp::SetLookupOptions::INCONCLUSIVE));
       if (list_node->exclude()) {
         return cp::not_(std::move(in_filter));
       }
@@ -444,7 +446,7 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
         "order_by",
         {std::move(node)},
         ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
-            kFieldScore, vector_is_reverse ? cp::SortOrder::Descending
+            FIELD_SCORE, vector_is_reverse ? cp::SortOrder::Descending
                                            : cp::SortOrder::Ascending}}}}};
   } else if (has_fts) {
     // FTS uses BM25 where higher score = more relevant. Per-segment results
@@ -453,7 +455,7 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
     node = ac::Declaration{"order_by",
                            {std::move(node)},
                            ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
-                               kFieldScore, cp::SortOrder::Descending}}}}};
+                               FIELD_SCORE, cp::SortOrder::Descending}}}}};
   }
 
   // group by need to collect all docs

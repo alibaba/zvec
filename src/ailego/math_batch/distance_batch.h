@@ -26,7 +26,7 @@ template <
     template <typename, size_t, size_t, typename = void> class DistanceType,
     typename ValueType, size_t BatchSize, size_t PrefetchStep, typename = void>
 struct BaseDistance {
-  static inline void _ComputeBatch(const ValueType **m, const ValueType *q,
+  static inline void compute_batch(const ValueType **m, const ValueType *q,
                                    size_t num, size_t dim, float *out) {
     for (size_t i = 0; i < num; ++i) {
       DistanceType<ValueType, 1, 1>::Compute(m[i], q, dim, out + i);
@@ -39,14 +39,14 @@ struct BaseDistance {
                                   const void ** /*extra_values*/) {
     if constexpr (std::is_same_v<DistanceType<ValueType, 1, 1>,
                                  CosineDistanceMatrix<ValueType, 1, 1>>) {
-      return DistanceBatch::CosineDistanceBatch<
+      return distance_batch::CosineDistanceBatch<
           ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
                                                             out);
     }
 
     if constexpr (std::is_same_v<DistanceType<ValueType, 1, 1>,
                                  EuclideanDistanceMatrix<ValueType, 1, 1>>) {
-      return DistanceBatch::EuclideanDistanceBatch<
+      return distance_batch::EuclideanDistanceBatch<
           ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
                                                             out);
     }
@@ -54,12 +54,12 @@ struct BaseDistance {
     if constexpr (std::is_same_v<
                       DistanceType<ValueType, 1, 1>,
                       SquaredEuclideanDistanceMatrix<ValueType, 1, 1>>) {
-      return DistanceBatch::SquaredEuclideanDistanceBatch<
+      return distance_batch::SquaredEuclideanDistanceBatch<
           ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim, out,
                                                             nullptr);
     }
 
-    _ComputeBatch(m, q, num, dim, out);
+    compute_batch(m, q, num, dim, out);
   }
 };
 

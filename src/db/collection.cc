@@ -42,9 +42,11 @@
 #include "db/common/global_resource.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
+#include "db/common/utils.h"
 #include "db/doc_iterator_internal.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
+#include "db/index/common/identifier_validation.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
@@ -1192,9 +1194,9 @@ Status CollectionImpl::validate(const std::string &column,
     if (field->data_type() < DataType::INT32 ||
         field->data_type() > DataType::DOUBLE) {
       return Status::InvalidArgument(
-          "Only support basic numeric data type [int32, int64, uint32, uint64, "
-          "float, double]: ",
-          field->to_string());
+          "Invalid schema: this operation requires a numeric field; field[",
+          field->name(), "] has type ",
+          DataTypeCodeBook::AsString(field->data_type()));
     }
     return Status::OK();
   };
@@ -1202,15 +1204,13 @@ Status CollectionImpl::validate(const std::string &column,
   switch (op) {
     case ColumnOp::ADD: {
       if (schema == nullptr) {
-        return Status::InvalidArgument("Column schema is null");
+        return Status::InvalidArgument(
+            "Invalid schema: field schema must not be null");
       }
 
-      if (schema->name().empty()) {
-        return Status::InvalidArgument("Column name is empty");
-      }
       if (schema_->has_field(schema->name())) {
-        return Status::InvalidArgument("column already exists: ",
-                                       schema->name());
+        return Status::InvalidArgument("Invalid schema: field[", schema->name(),
+                                       "] already exists");
       }
 
       auto s = schema->validate();
@@ -1219,26 +1219,34 @@ Status CollectionImpl::validate(const std::string &column,
       s = check_data_type(schema.get());
       CHECK_RETURN_STATUS(s);
 
-      if (expression.empty() && !schema->nullable()) {
+      if (schema_->forward_fields().size() >= kMaxScalarFieldSize) {
         return Status::InvalidArgument(
-            "Add column is not supported for non-nullable column: ",
-            schema->name());
+            "Invalid schema: cannot add field; collection already has ",
+            kMaxScalarFieldSize, " scalar fields");
+      }
+
+      if (expression.empty() && !schema->nullable()) {
+        return Status::InvalidArgument("Invalid schema: non-nullable field[",
+                                       schema->name(),
+                                       "] requires an expression when added");
       }
 
       break;
     }
     case ColumnOp::ALTER: {
       if (column.empty()) {
-        return Status::InvalidArgument("column name is empty");
+        return Status::InvalidArgument(
+            "Invalid schema: field name must not be empty");
       }
 
       if (!schema_->has_field(column)) {
-        return Status::InvalidArgument("column ", column, " not found");
+        return Status::InvalidArgument("Invalid schema: field[",
+                                       format_name(column), "] not found");
       }
 
       if (!rename.empty() && schema) {
         return Status::InvalidArgument(
-            "cannot specify both rename and new column schema");
+            "Invalid schema: cannot specify both rename and new column schema");
       }
 
       auto *old_field_schema = schema_->get_field(column);
@@ -1247,27 +1255,25 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (!rename.empty()) {
         // rename case
+        s = validate_field_name(rename);
+        CHECK_RETURN_STATUS(s);
         if (schema_->has_field(rename)) {
-          return Status::InvalidArgument("new column name ", rename,
-                                         " already exists");
+          return Status::InvalidArgument("Invalid schema: field[", rename,
+                                         "] already exists");
         }
       } else {
         // schema change case
         if (!schema) {
-          return Status::InvalidArgument("New column schema is null");
+          return Status::InvalidArgument(
+              "Invalid schema: field schema must not be null");
         }
 
         s = schema->validate();
         CHECK_RETURN_STATUS(s);
 
-        if (schema->name().empty()) {
-          return Status::InvalidArgument("new column schema name is empty");
-        }
-
         if (!schema->nullable() && old_field_schema->nullable()) {
           return Status::InvalidArgument(
-              "new column schema is not nullable, but old column schema is "
-              "nullable");
+              "Invalid schema: cannot make a nullable field non-nullable");
         }
 
         if (*old_field_schema == *schema) {
@@ -1283,7 +1289,13 @@ Status CollectionImpl::validate(const std::string &column,
     }
     case ColumnOp::DROP: {
       if (!schema_->has_field(column)) {
-        return Status::InvalidArgument("Column not exists: ", column);
+        return Status::InvalidArgument("Invalid schema: field[",
+                                       format_name(column), "] not found");
+      }
+
+      if (schema_->fields().size() <= 1) {
+        return Status::InvalidArgument(
+            "Invalid schema: cannot drop the last field in a collection");
       }
 
       auto *old_field_schema = schema_->get_field(column);
@@ -1311,15 +1323,16 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
-  // validate
-  auto s = validate("", column_schema, expression, "", ColumnOp::ADD);
+  auto field_copy =
+      column_schema ? std::make_shared<FieldSchema>(*column_schema) : nullptr;
+  auto s = validate("", field_copy, expression, "", ColumnOp::ADD);
   CHECK_RETURN_STATUS(s);
 
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
-  s = new_schema->add_field(column_schema);
+  s = new_schema->add_field(field_copy);
   CHECK_RETURN_STATUS(s);
 
   if (writing_segment_->has_record()) {
@@ -1330,7 +1343,7 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
   Version new_version = version_manager_->get_current_version();
 
   // add column on segment manager
-  s = segment_manager_->add_column(column_schema, expression,
+  s = segment_manager_->add_column(field_copy, expression,
                                    options.concurrency_);
   CHECK_RETURN_STATUS(s);
 
@@ -1465,25 +1478,23 @@ Status CollectionImpl::alter_column(const std::string &column_name,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
-  // validate
-  auto s =
-      validate(column_name, new_column_schema, "", rename, ColumnOp::ALTER);
+  auto field_copy = new_column_schema
+                        ? std::make_shared<FieldSchema>(*new_column_schema)
+                        : nullptr;
+  auto s = validate(column_name, field_copy, "", rename, ColumnOp::ALTER);
   CHECK_RETURN_STATUS(s);
 
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
-  std::shared_ptr<FieldSchema> new_field_schema{nullptr};
   if (!rename.empty()) {
-    new_field_schema =
+    field_copy =
         std::make_shared<FieldSchema>(*schema_->get_field(column_name));
-    new_field_schema->set_name(rename);
-  } else {
-    new_field_schema = std::make_shared<FieldSchema>(*new_column_schema);
+    field_copy->set_name(rename);
   }
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
-  s = new_schema->alter_field(column_name, new_field_schema);
+  s = new_schema->alter_field(column_name, field_copy);
   CHECK_RETURN_STATUS(s);
 
   if (writing_segment_->has_record()) {
@@ -1494,7 +1505,7 @@ Status CollectionImpl::alter_column(const std::string &column_name,
   Version new_version = version_manager_->get_current_version();
 
   // alter column on segment manager
-  s = segment_manager_->alter_column(column_name, new_field_schema,
+  s = segment_manager_->alter_column(column_name, field_copy,
                                      options.concurrency_);
   CHECK_RETURN_STATUS(s);
 
@@ -1557,7 +1568,7 @@ Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
   // Called from handle_update(), i.e. under write_impl()'s write_mtx_.
   auto segments = get_all_segments_unsafe();
   uint64_t doc_id;
-  bool has = id_map_->has(doc.pk(), &doc_id);
+  bool has = id_map_->has(doc.pk_ref(), &doc_id);
   if (!has) {
     return Status::NotFound("Document not found");
   }
@@ -1571,7 +1582,7 @@ Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
     return Status::InternalError("Segment not found");
   }
 
-  auto old_doc = segment->Fetch(doc_id, std::nullopt, true);
+  auto old_doc = segment->fetch(doc_id, std::nullopt, true);
   if (!old_doc) {
     LOG_WARN("doc_id: %zu fetch doc failed", (size_t)doc_id);
     return Status::InternalError("Fetch doc failed");
@@ -1581,7 +1592,7 @@ Status CollectionImpl::internal_fetch_by_doc(const Doc &doc,
 }
 
 Status CollectionImpl::handle_upsert(Doc &doc) {
-  return writing_segment_->Upsert(doc);
+  return writing_segment_->upsert(doc);
 }
 
 Status CollectionImpl::handle_update(Doc &doc) {
@@ -1590,11 +1601,11 @@ Status CollectionImpl::handle_update(Doc &doc) {
   CHECK_RETURN_STATUS(s);
 
   old_doc->merge(doc);
-  return writing_segment_->Update(*old_doc);
+  return writing_segment_->update(*old_doc);
 }
 
 Status CollectionImpl::handle_insert(Doc &doc) {
-  return writing_segment_->Insert(doc);
+  return writing_segment_->insert(doc);
 }
 
 Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
@@ -2011,7 +2022,7 @@ Result<DocPtrMap> CollectionImpl::fetch(
       results.insert({pk, nullptr});
       continue;
     }
-    results.insert({pk, segment->Fetch(doc_id, output_fields, include_vector)});
+    results.insert({pk, segment->fetch(doc_id, output_fields, include_vector)});
   }
 
   return results;

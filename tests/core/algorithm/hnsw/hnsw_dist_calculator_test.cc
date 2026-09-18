@@ -156,7 +156,7 @@ TEST(HnswDistCalculatorTest, ContextPassesInlineTailForSingleNodeBatch) {
 }
 
 TEST(HnswDistCalculatorTest, PassesNullWhenMetricHasNoExtraValues) {
-  InlineVectorHnswEntity entity({{}});
+  InlineVectorHnswEntity entity(std::vector<InlineVectorHnswEntity::Record>(1));
   auto metric = CreateMetric();
   ASSERT_NE(nullptr, metric);
 

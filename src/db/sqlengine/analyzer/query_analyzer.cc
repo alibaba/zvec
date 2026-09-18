@@ -30,7 +30,7 @@
 
 namespace zvec::sqlengine {
 
-const std::map<NodeOp, QueryNodeOp> QueryAnalyzer::opMap_ = {
+const std::map<NodeOp, QueryNodeOp> QueryAnalyzer::opMap = {
     {NodeOp::T_AND, QueryNodeOp::Q_AND},
     {NodeOp::T_OR, QueryNodeOp::Q_OR},
     {NodeOp::T_EQ, QueryNodeOp::Q_EQ},
@@ -94,9 +94,19 @@ Result<QueryInfo::Ptr> QueryAnalyzer::analyze(const CollectionSchema &schema,
 
   // condition check & decide index/filter condition
   if (query_info->search_cond() != nullptr) {
+    // Validate the original tree before rewriting so invalid predicates cannot
+    // be hidden by constant folding. Validation must not annotate or convert
+    // nodes because the normal analysis below owns those mutations.
+    SearchCondCheckWalker validator(schema,
+                                    SearchCondCheckWalker::Mode::VALIDATE_ONLY);
+    validator.traverse_cond_node(query_info->search_cond());
+    if (!validator.err_msg().empty()) {
+      return tl::make_unexpected(Status::NotSupported(validator.err_msg()));
+    }
+
     // rewrite query by  rule
     SimpleRewriter rewriter;
-    rewriter.rewrite(query_info.get());
+    rewriter.rewrite(query_info.get(), schema);
 
     SearchCondCheckWalker search_cond_check_walker(schema);
     search_cond_check_walker.traverse_cond_node(query_info->search_cond());
@@ -494,8 +504,8 @@ QueryNode::Ptr QueryAnalyzer::create_querynode_from_node(const Node::Ptr &node,
 }
 
 QueryNodeOp QueryAnalyzer::nodeop_2_query_nodeop(NodeOp op) {
-  auto iter = opMap_.find(op);
-  if (iter == opMap_.end()) {
+  auto iter = opMap.find(op);
+  if (iter == opMap.end()) {
     return QueryNodeOp::Q_NONE;
   }
   return iter->second;

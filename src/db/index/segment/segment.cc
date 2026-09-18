@@ -138,17 +138,17 @@ class SegmentImpl : public Segment,
 
   bool has_record() override;
 
-  Status Insert(Doc &doc) override;
+  Status insert(Doc &doc) override;
 
-  Status Update(Doc &doc) override;
+  Status update(Doc &doc) override;
 
-  Status Upsert(Doc &doc) override;
+  Status upsert(Doc &doc) override;
 
   Status Delete(const std::string &pk) override;
 
   Status Delete(uint64_t g_doc_id) override;
 
-  Doc::Ptr Fetch(uint64_t g_doc_id,
+  Doc::Ptr fetch(uint64_t g_doc_id,
                  const std::optional<std::vector<std::string>> &output_fields =
                      std::nullopt,
                  bool include_vector = true) override;
@@ -270,7 +270,7 @@ class SegmentImpl : public Segment,
 
  public:
   Status Open(const SegmentOptions &options);
-  Status Create(const SegmentOptions &options, uint64_t min_doc_id);
+  Status create(const SegmentOptions &options, uint64_t min_doc_id);
 
  private:
   Status close();
@@ -306,11 +306,11 @@ class SegmentImpl : public Segment,
 
   // Helper functions for Insert/Update/Upsert/Delete
   template <typename ValueType>
-  Status InsertScalar(InvertedColumnIndexer::Ptr &indexer, const Doc &doc,
-                      const FieldSchema::Ptr &field);
+  Status insert_scalar(InvertedColumnIndexer::Ptr &indexer, const Doc &doc,
+                       const FieldSchema::Ptr &field);
   template <typename ValueType>
-  Status InsertVector(VectorColumnIndexer::Ptr &indexer, const Doc &doc,
-                      const FieldSchema::Ptr &field);
+  Status insert_vector(VectorColumnIndexer::Ptr &indexer, const Doc &doc,
+                       const FieldSchema::Ptr &field);
 
   Status insert_scalar_indexer(Doc &doc);
   Status insert_fts_indexer(Doc &doc);
@@ -546,7 +546,7 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
   return Status::OK();
 }
 
-Status SegmentImpl::Create(const SegmentOptions &options, uint64_t min_doc_id) {
+Status SegmentImpl::create(const SegmentOptions &options, uint64_t min_doc_id) {
   options_ = options;
   filter_ =
       std::make_shared<SegmentIndexFilter>(delete_store_, shared_from_this());
@@ -589,22 +589,22 @@ Status SegmentImpl::close() {
   close_fts_indexers();
   for (const auto &[name, indexers] : vector_indexers_) {
     for (auto indexer : indexers) {
-      indexer->Close();
+      indexer->close();
     }
   }
   vector_indexers_.clear();
   for (const auto &[name, indexers] : quant_vector_indexers_) {
     for (auto indexer : indexers) {
-      indexer->Close();
+      indexer->close();
     }
   }
   quant_vector_indexers_.clear();
   for (auto [name, indexer] : memory_vector_indexers_) {
-    indexer->Close();
+    indexer->close();
   }
   memory_vector_indexers_.clear();
   for (auto [name, indexer] : quant_memory_vector_indexers_) {
-    indexer->Close();
+    indexer->close();
   }
   quant_memory_vector_indexers_.clear();
 
@@ -658,15 +658,15 @@ bool SegmentImpl::has_record() {
 }
 
 template <typename T>
-struct is_vector : std::false_type {};
+struct IsVector : std::false_type {};
 
 template <typename T, typename A>
-struct is_vector<std::vector<T, A>> : std::true_type {};
+struct IsVector<std::vector<T, A>> : std::true_type {};
 
 template <typename ValueType>
-Status SegmentImpl::InsertScalar(InvertedColumnIndexer::Ptr &indexer,
-                                 const Doc &doc,
-                                 const FieldSchema::Ptr &field) {
+Status SegmentImpl::insert_scalar(InvertedColumnIndexer::Ptr &indexer,
+                                  const Doc &doc,
+                                  const FieldSchema::Ptr &field) {
   auto value = doc.get<ValueType>(field->name());
   auto segment_doc_id = doc_ids_.size();
   if (value.has_value()) {
@@ -674,7 +674,7 @@ Status SegmentImpl::InsertScalar(InvertedColumnIndexer::Ptr &indexer,
       return indexer->insert(segment_doc_id, value.value());
     } else if constexpr (std::is_same_v<ValueType, std::vector<std::string>>) {
       return indexer->insert(segment_doc_id, value.value());
-    } else if constexpr (is_vector<ValueType>::value) {
+    } else if constexpr (IsVector<ValueType>::value) {
       const auto &vec = value.value();
       std::string value_str(
           reinterpret_cast<const char *>(vec.data()),
@@ -699,9 +699,9 @@ Status SegmentImpl::InsertScalar(InvertedColumnIndexer::Ptr &indexer,
 }
 
 template <typename ValueType>
-Status SegmentImpl::InsertVector(VectorColumnIndexer::Ptr &indexer,
-                                 const Doc &doc,
-                                 const FieldSchema::Ptr &field) {
+Status SegmentImpl::insert_vector(VectorColumnIndexer::Ptr &indexer,
+                                  const Doc &doc,
+                                  const FieldSchema::Ptr &field) {
   auto value = doc.get<ValueType>(field->name());
   if (value.has_value()) {
     vector_column_params::VectorData vector_data;
@@ -729,7 +729,7 @@ Status SegmentImpl::InsertVector(VectorColumnIndexer::Ptr &indexer,
     auto &mem_block_meta = segment_meta_->writing_forward_block().value();
     auto &block_doc_id = mem_block_meta.doc_count_;
 
-    return indexer->Insert(vector_data, block_doc_id);
+    return indexer->insert(vector_data, block_doc_id);
   } else {
     LOG_WARN("Field %s not found or is null for doc: %s", field->name().c_str(),
              doc.to_detail_string().c_str());
@@ -751,60 +751,60 @@ Status SegmentImpl::insert_scalar_indexer(Doc &doc) {
     auto data_type = field->data_type();
     switch (field->data_type()) {
       case DataType::BINARY: {
-        status = InsertScalar<std::string>(indexer, doc, field);
+        status = insert_scalar<std::string>(indexer, doc, field);
         break;
       }
       case DataType::STRING: {
-        status = InsertScalar<std::string>(indexer, doc, field);
+        status = insert_scalar<std::string>(indexer, doc, field);
         break;
       }
       case DataType::BOOL:
-        status = InsertScalar<bool>(indexer, doc, field);
+        status = insert_scalar<bool>(indexer, doc, field);
         break;
       case DataType::INT32:
-        status = InsertScalar<int32_t>(indexer, doc, field);
+        status = insert_scalar<int32_t>(indexer, doc, field);
         break;
       case DataType::INT64:
-        status = InsertScalar<int64_t>(indexer, doc, field);
+        status = insert_scalar<int64_t>(indexer, doc, field);
         break;
       case DataType::UINT32:
-        status = InsertScalar<uint32_t>(indexer, doc, field);
+        status = insert_scalar<uint32_t>(indexer, doc, field);
         break;
       case DataType::UINT64:
-        status = InsertScalar<uint64_t>(indexer, doc, field);
+        status = insert_scalar<uint64_t>(indexer, doc, field);
         break;
       case DataType::FLOAT:
-        status = InsertScalar<float>(indexer, doc, field);
+        status = insert_scalar<float>(indexer, doc, field);
         break;
       case DataType::DOUBLE:
-        status = InsertScalar<double>(indexer, doc, field);
+        status = insert_scalar<double>(indexer, doc, field);
         break;
       case DataType::ARRAY_BINARY:
-        status = InsertScalar<std::vector<std::string>>(indexer, doc, field);
+        status = insert_scalar<std::vector<std::string>>(indexer, doc, field);
         break;
       case DataType::ARRAY_STRING:
-        status = InsertScalar<std::vector<std::string>>(indexer, doc, field);
+        status = insert_scalar<std::vector<std::string>>(indexer, doc, field);
         break;
       case DataType::ARRAY_BOOL:
-        status = InsertScalar<std::vector<bool>>(indexer, doc, field);
+        status = insert_scalar<std::vector<bool>>(indexer, doc, field);
         break;
       case DataType::ARRAY_INT32:
-        status = InsertScalar<std::vector<int32_t>>(indexer, doc, field);
+        status = insert_scalar<std::vector<int32_t>>(indexer, doc, field);
         break;
       case DataType::ARRAY_INT64:
-        status = InsertScalar<std::vector<int64_t>>(indexer, doc, field);
+        status = insert_scalar<std::vector<int64_t>>(indexer, doc, field);
         break;
       case DataType::ARRAY_UINT32:
-        status = InsertScalar<std::vector<uint32_t>>(indexer, doc, field);
+        status = insert_scalar<std::vector<uint32_t>>(indexer, doc, field);
         break;
       case DataType::ARRAY_UINT64:
-        status = InsertScalar<std::vector<uint64_t>>(indexer, doc, field);
+        status = insert_scalar<std::vector<uint64_t>>(indexer, doc, field);
         break;
       case DataType::ARRAY_FLOAT:
-        status = InsertScalar<std::vector<float>>(indexer, doc, field);
+        status = insert_scalar<std::vector<float>>(indexer, doc, field);
         break;
       case DataType::ARRAY_DOUBLE:
-        status = InsertScalar<std::vector<double>>(indexer, doc, field);
+        status = insert_scalar<std::vector<double>>(indexer, doc, field);
         break;
       default:
         status = Status::InternalError("unsupport data type ",
@@ -853,36 +853,36 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
       auto data_type = field->data_type();
       switch (data_type) {
         case DataType::VECTOR_BINARY32:
-          status = InsertVector<std::vector<uint32_t>>(indexer, doc, field);
+          status = insert_vector<std::vector<uint32_t>>(indexer, doc, field);
           break;
         case DataType::VECTOR_BINARY64:
-          status = InsertVector<std::vector<uint64_t>>(indexer, doc, field);
+          status = insert_vector<std::vector<uint64_t>>(indexer, doc, field);
           break;
         case DataType::VECTOR_FP16:
-          status = InsertVector<std::vector<float16_t>>(indexer, doc, field);
+          status = insert_vector<std::vector<float16_t>>(indexer, doc, field);
           break;
         case DataType::VECTOR_FP32:
-          status = InsertVector<std::vector<float>>(indexer, doc, field);
+          status = insert_vector<std::vector<float>>(indexer, doc, field);
           break;
         case DataType::VECTOR_FP64:
-          status = InsertVector<std::vector<double>>(indexer, doc, field);
+          status = insert_vector<std::vector<double>>(indexer, doc, field);
           break;
         // case DataType::VECTOR_INT4:
         //   status = InsertVector<std::vector<int8_t>>(indexer, doc, field);
         //   break;
         case DataType::VECTOR_INT8:
-          status = InsertVector<std::vector<int8_t>>(indexer, doc, field);
+          status = insert_vector<std::vector<int8_t>>(indexer, doc, field);
           break;
         case DataType::VECTOR_INT16:
-          status = InsertVector<std::vector<int16_t>>(indexer, doc, field);
+          status = insert_vector<std::vector<int16_t>>(indexer, doc, field);
           break;
         case DataType::SPARSE_VECTOR_FP16:
-          status = InsertVector<
+          status = insert_vector<
               std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(
               indexer, doc, field);
           break;
         case DataType::SPARSE_VECTOR_FP32:
-          status = InsertVector<
+          status = insert_vector<
               std::pair<std::vector<uint32_t>, std::vector<float>>>(indexer,
                                                                     doc, field);
           break;
@@ -915,7 +915,7 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   }
 
   // write idmap
-  auto s = id_map_->upsert(doc.pk(), g_doc_id);
+  auto s = id_map_->upsert(doc.pk_ref(), g_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // write forward
@@ -952,7 +952,7 @@ Status SegmentImpl::internal_update(Doc &doc) {
 
 Status SegmentImpl::internal_upsert(Doc &doc) {
   uint64_t g_doc_id;
-  bool exist = id_map_->has(doc.pk(), &g_doc_id);
+  bool exist = id_map_->has(doc.pk_ref(), &g_doc_id);
   if (exist) {
     delete_store_->mark_deleted(g_doc_id);
   }
@@ -961,15 +961,15 @@ Status SegmentImpl::internal_upsert(Doc &doc) {
 
 Status SegmentImpl::internal_delete(const Doc &doc) {
   delete_store_->mark_deleted(doc.doc_id());
-  id_map_->remove(doc.pk());
+  id_map_->remove(doc.pk_ref());
   return Status::OK();
 }
 
-Status SegmentImpl::Insert(Doc &doc) {
+Status SegmentImpl::insert(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
 
-  if (id_map_ && id_map_->has(doc.pk())) {
-    return Status::AlreadyExists("insert failed: doc_id[", doc.pk(),
+  if (id_map_ && id_map_->has(doc.pk_ref())) {
+    return Status::AlreadyExists("insert failed: doc_id[", doc.pk_ref(),
                                  "] already exists in collection");
   }
 
@@ -982,11 +982,11 @@ Status SegmentImpl::Insert(Doc &doc) {
   return internal_insert(doc);
 }
 
-Status SegmentImpl::Update(Doc &doc) {
+Status SegmentImpl::update(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
   uint64_t g_doc_id;
-  if (!id_map_->has(doc.pk(), &g_doc_id)) {
-    return Status::NotFound("update failed: doc_id[", doc.pk(),
+  if (!id_map_->has(doc.pk_ref(), &g_doc_id)) {
+    return Status::NotFound("update failed: doc_id[", doc.pk_ref(),
                             "] not found in collection");
   }
 
@@ -1000,7 +1000,7 @@ Status SegmentImpl::Update(Doc &doc) {
   return internal_update(doc);
 }
 
-Status SegmentImpl::Upsert(Doc &doc) {
+Status SegmentImpl::upsert(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
 
   doc.set_operator(Operator::UPSERT);
@@ -1054,7 +1054,7 @@ Status SegmentImpl::Delete(uint64_t g_doc_id) {
 }
 
 
-Doc::Ptr SegmentImpl::Fetch(
+Doc::Ptr SegmentImpl::fetch(
     uint64_t g_doc_id,
     const std::optional<std::vector<std::string>> &output_fields,
     bool include_vector) {
@@ -1318,7 +1318,7 @@ Doc::Ptr SegmentImpl::Fetch(
           continue;
         }
         auto vector_indexer = vector_indexers[block_idx];
-        auto fetch_result = vector_indexer->Fetch(block_doc_id);
+        auto fetch_result = vector_indexer->fetch(block_doc_id);
         if (!fetch_result) {
           LOG_ERROR(
               "vector indexer fetch failed, block_doc_id: %d, block_idx: %d, "
@@ -1350,7 +1350,7 @@ Doc::Ptr SegmentImpl::Fetch(
         auto iter = memory_vector_indexers_.find(column_name);
         if (iter != memory_vector_indexers_.end()) {
           auto vector_indexer = iter->second;
-          auto fetch_result = vector_indexer->Fetch(block_doc_id);
+          auto fetch_result = vector_indexer->fetch(block_doc_id);
           if (!fetch_result.has_value()) {
             LOG_ERROR(
                 "vector indexer fetch failed, column: %s, doc_count: %lu, "
@@ -1533,7 +1533,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
 
   vector_column_params::ReadOptions options{options_.enable_mmap_, true};
 
-  auto s = vector_indexer->Open(options);
+  auto s = vector_indexer->open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
@@ -1544,9 +1544,9 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     merge_options.write_concurrency = concurrency;
   }
   // Keep tombstoned vectors: forward rows are unchanged.
-  s = vector_indexer->Merge(source_indexers, nullptr, merge_options);
+  s = vector_indexer->merge(source_indexers, nullptr, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  s = vector_indexer->Flush();
+  s = vector_indexer->flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return vector_indexer;
@@ -1789,11 +1789,11 @@ Status SegmentImpl::drop_vector_index(
       index_file_path, *field_with_default_index);
   vector_column_params::ReadOptions options{options_.enable_mmap_, true};
 
-  auto s = new_vector_indexer->Open(options);
+  auto s = new_vector_indexer->open(options);
   CHECK_RETURN_STATUS(s);
-  s = new_vector_indexer->Merge(vector_indexers_[column], nullptr);
+  s = new_vector_indexer->merge(vector_indexers_[column], nullptr);
   CHECK_RETURN_STATUS(s);
-  s = new_vector_indexer->Flush();
+  s = new_vector_indexer->flush();
   CHECK_RETURN_STATUS(s);
 
   (*vector_indexers)[column] = new_vector_indexer;
@@ -1835,7 +1835,7 @@ Status SegmentImpl::reload_vector_index(
       if (iter != vector_indexers.end()) {
         auto indexers = vector_indexers_[field->name()];
         for (auto indexer : indexers) {
-          auto s = indexer->Destroy();
+          auto s = indexer->destroy();
           CHECK_RETURN_STATUS(s);
         }
         vector_indexers_[field->name()] = {iter->second};
@@ -1844,7 +1844,7 @@ Status SegmentImpl::reload_vector_index(
       if (q_iter != quant_vector_indexers_.end()) {
         auto q_indexers = q_iter->second;
         for (auto q_indexer : q_indexers) {
-          auto s = q_indexer->Destroy();
+          auto s = q_indexer->destroy();
           CHECK_RETURN_STATUS(s);
         }
         quant_vector_indexers_.erase(q_iter);
@@ -1854,7 +1854,7 @@ Status SegmentImpl::reload_vector_index(
       if (iter != vector_indexers.end()) {
         auto indexers = vector_indexers_[field->name()];
         for (auto indexer : indexers) {
-          auto s = indexer->Destroy();
+          auto s = indexer->destroy();
           CHECK_RETURN_STATUS(s);
         }
         vector_indexers_[field->name()] = {iter->second};
@@ -1863,7 +1863,7 @@ Status SegmentImpl::reload_vector_index(
       if (q_iter != quant_vector_indexers.end()) {
         auto q_indexers = quant_vector_indexers_[field->name()];
         for (auto q_indexer : q_indexers) {
-          auto s = q_indexer->Destroy();
+          auto s = q_indexer->destroy();
           CHECK_RETURN_STATUS(s);
         }
         quant_vector_indexers_[field->name()] = {q_iter->second};
@@ -2200,7 +2200,7 @@ Status SegmentImpl::flush() {
   // flush vector indexer
   for (const auto &indexer : memory_vector_indexers_) {
     if (indexer.second) {
-      s = indexer.second->Flush();
+      s = indexer.second->flush();
       CHECK_RETURN_STATUS(s);
     }
   }
@@ -2208,7 +2208,7 @@ Status SegmentImpl::flush() {
   // flush quant vector indexer
   for (const auto &indexer : quant_memory_vector_indexers_) {
     if (indexer.second) {
-      s = indexer.second->Flush();
+      s = indexer.second->flush();
       CHECK_RETURN_STATUS(s);
     }
   }
@@ -3267,7 +3267,7 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
     } else {
       forward_store = std::make_shared<BufferPoolForwardStore>(forward_path);
     }
-    auto s = forward_store->Open();
+    auto s = forward_store->open();
     CHECK_RETURN_STATUS(s);
     persist_stores_.push_back(forward_store);
     segment_meta_->add_persisted_block(block);
@@ -3496,7 +3496,7 @@ Status SegmentImpl::alter_column(const std::string &column_name,
     } else {
       forward_store = std::make_shared<BufferPoolForwardStore>(forward_path);
     }
-    auto s = forward_store->Open();
+    auto s = forward_store->open();
     CHECK_RETURN_STATUS(s);
     persist_stores_.push_back(forward_store);
     segment_meta_->add_persisted_block(block);
@@ -3967,7 +3967,7 @@ Status SegmentImpl::load_persist_scalar_blocks() {
       } else {
         forward_store = std::make_shared<BufferPoolForwardStore>(forward_path);
       }
-      auto s = forward_store->Open();
+      auto s = forward_store->open();
       CHECK_RETURN_STATUS(s);
       persist_stores_.push_back(forward_store);
 
@@ -4102,7 +4102,7 @@ Status SegmentImpl::load_vector_index_blocks() {
 
       auto vector_indexer =
           std::make_shared<VectorColumnIndexer>(index_path, new_field_params);
-      auto s = vector_indexer->Open(vector_column_params::ReadOptions{
+      auto s = vector_indexer->open(vector_column_params::ReadOptions{
           options_.enable_mmap_, false, true});
       CHECK_RETURN_STATUS(s);
 
@@ -4155,7 +4155,7 @@ VectorColumnIndexer::Ptr SegmentImpl::create_vector_indexer(
   auto vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
   vector_column_params::ReadOptions options{true, true};
-  auto status = vector_indexer->Open(options);
+  auto status = vector_indexer->open(options);
   if (!status.ok()) {
     LOG_ERROR("Failed to open vector indexer for field: %s, err: %s",
               field.to_string().c_str(), status.message().c_str());
@@ -4195,7 +4195,7 @@ Status SegmentImpl::init_memory_components() {
       collection_schema_, mem_path,
       options_.enable_mmap_ ? FileFormat::IPC : FileFormat::PARQUET,
       options_.max_buffer_size_);
-  auto s = memory_store_->Open();
+  auto s = memory_store_->open();
   CHECK_RETURN_STATUS(s);
 
   // create and open memory vector indexer
@@ -4430,10 +4430,10 @@ Status SegmentImpl::append_wal(const Doc &doc) {
   auto ret = wal_file_->append(std::string(buf.begin(), buf.end()));
   if (ret != 0) {
     LOG_ERROR("WAL append failed: segment[%d], pk[%s], operator[%d], ret[%d]",
-              id(), doc.pk().c_str(), static_cast<int>(doc.get_operator()),
+              id(), doc.pk_ref().c_str(), static_cast<int>(doc.get_operator()),
               ret);
     return Status::InternalError("Failed to append WAL: segment[", id(),
-                                 "], pk[", doc.pk(), "], operator[",
+                                 "], pk[", doc.pk_ref(), "], operator[",
                                  static_cast<int>(doc.get_operator()),
                                  "], ret[", ret, "]");
   }
@@ -4464,7 +4464,7 @@ Status SegmentImpl::finish_memory_components() {
     persist_store =
         std::make_shared<BufferPoolForwardStore>(persist_forward_store_path);
   }
-  s = persist_store->Open();
+  s = persist_store->open();
   CHECK_RETURN_STATUS(s);
   persist_stores_.push_back(persist_store);
 
@@ -4572,7 +4572,7 @@ Result<Segment::Ptr> Segment::CreateAndOpen(
     }
   }
 
-  auto s = segment->Create(options, min_doc_id);
+  auto s = segment->create(options, min_doc_id);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return segment;

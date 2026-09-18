@@ -86,7 +86,7 @@ class DiskAnnBuilder : public IndexBuilder {
   }
 
  private:
-  enum BUILD_STATE {
+  enum BuildState {
     BUILD_STATE_INIT = 0,
     BUILD_STATE_INITED = 1,
     BUILD_STATE_TRAINED = 2,
@@ -115,7 +115,7 @@ class DiskAnnBuilder : public IndexBuilder {
   std::string codebook_prefix_{""};
   std::string index_path_prefix_{"./diskann"};
 
-  BUILD_STATE state_{BUILD_STATE_INIT};
+  BuildState state_{BUILD_STATE_INIT};
   Stats stats_;
 
   int errcode_{0};

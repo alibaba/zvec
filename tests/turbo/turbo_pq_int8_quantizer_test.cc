@@ -295,6 +295,52 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
   // and is not persisted.
 }
 
+TEST(PqInt8Quantizer, OpqSerializeDeserializeUniformAndNonUniformChunks) {
+  for (uint32_t dim : {8u, 9u}) {
+    SCOPED_TRACE(dim);
+    auto quantizer = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+    ASSERT_TRUE(quantizer);
+
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    Params params;
+    params.set("num_chunk", uint32_t{2});
+    params.set("rotate_type", std::string("opq"));
+    params.set("opq_iter", uint32_t{2});
+    params.set("opq_pq_iter", uint32_t{2});
+    params.set("thread_count", uint32_t{2});
+    ASSERT_EQ(0, quantizer->init(meta, params));
+
+    auto holder = make_random_holder(500, dim);
+    ASSERT_EQ(0, quantizer->train(holder));
+    std::string blob;
+    ASSERT_EQ(0, quantizer->serialize(&blob));
+
+    auto restored = make_pq_quantizer(dim, 2);
+    ASSERT_TRUE(restored);
+    ASSERT_EQ(0, restored->deserialize(blob));
+    std::string restored_blob;
+    ASSERT_EQ(0, restored->serialize(&restored_blob));
+    EXPECT_EQ(blob, restored_blob);
+
+    auto iter = holder->create_iterator();
+    ASSERT_TRUE(iter->is_valid());
+    std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
+    std::vector<uint8_t> restored_code(code.size());
+    quantizer->quantize_data(iter->data(), code.data());
+    restored->quantize_data(iter->data(), restored_code.data());
+    EXPECT_EQ(code, restored_code);
+
+    std::vector<float> lut(quantizer->quantized_query_vector_length() /
+                           sizeof(float));
+    quantizer->quantize_query(iter->data(), lut.data());
+    EXPECT_TRUE(std::isfinite(
+        quantizer->calc_distance_dp_query(code.data(), lut.data())));
+    EXPECT_NE(0, restored->deserialize(blob.data(), blob.size() - 1));
+  }
+}
+
 // Legacy indexes hand their codebook over through import_codebook(), so the
 // in-memory layout it expects stays pinned down: [chunk][cluster][chunk_dim].
 TEST(PqInt8Quantizer, ImportCodebook) {

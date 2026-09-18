@@ -110,7 +110,7 @@ int HnswRabitqChunkBroker::open(IndexStorage::Pointer stg,
     return IndexError_Duplicate;
   }
   stg_ = std::move(stg);
-  if (stg_->isHugePage()) {
+  if (stg_->is_huge_page()) {
     page_mask_ = ailego::MemoryHelper::HugePageSize() - 1;
   } else {
     page_mask_ = ailego::MemoryHelper::PageSize() - 1;

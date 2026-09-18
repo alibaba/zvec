@@ -85,10 +85,10 @@ class Bench {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -195,13 +195,13 @@ class Bench {
     bench_result_.mark_start();
     auto start_time = Monotime::MilliSeconds();
     for (size_t i = 0; i < threads_; ++i) {
-      pool_->execute(this, &Bench<T>::start_bench, flower, max_iter, &STOP_NOW);
+      pool_->execute(this, &Bench<T>::start_bench, flower, max_iter, &stop_now);
     }
 
     while (!pool_->is_finished()) {
       this_thread::sleep_for(chrono::milliseconds(1));
       if (Monotime::MilliSeconds() - start_time > bench_secs_ * 1000) {
-        STOP_NOW = true;
+        stop_now = true;
       }
     }
 
@@ -243,9 +243,9 @@ class Bench {
           return;
         }
 
-        auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+        auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
-        contexts_[thread_index]->set_filter(filterFunc);
+        contexts_[thread_index]->set_filter(filter_func);
       }
 
       // Do knn_search
@@ -363,11 +363,11 @@ class Bench {
   BenchResult bench_result_;
   RetrievalMode retrieval_mode_{RM_UNDEFINED};
   FilterMode filter_mode_{FM_NONE};
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 
 template <typename T>
-bool Bench<T>::STOP_NOW = false;
+bool Bench<T>::stop_now = false;
 
 //------------------------------------------------------------
 // Sparse Bench
@@ -397,10 +397,10 @@ class SparseBench {
   }
 
   static void stop(int signo) {
-    if (STOP_NOW) {
+    if (stop_now) {
       exit(signo);
     }
-    STOP_NOW = true;
+    stop_now = true;
     cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
          << flush;
   }
@@ -481,13 +481,13 @@ class SparseBench {
     auto start_time = Monotime::MilliSeconds();
     for (size_t i = 0; i < threads_; ++i) {
       pool_->execute(this, &SparseBench<T>::start_bench, flower, max_iter,
-                     &STOP_NOW);
+                     &stop_now);
     }
 
     while (!pool_->is_finished()) {
       this_thread::sleep_for(chrono::milliseconds(1));
       if (Monotime::MilliSeconds() - start_time > bench_secs_ * 1000) {
-        STOP_NOW = true;
+        stop_now = true;
       }
     }
 
@@ -523,9 +523,9 @@ class SparseBench {
           return;
         }
 
-        auto filterFunc = [&](uint64_t key) { return filter_cache.find(key); };
+        auto filter_func = [&](uint64_t key) { return filter_cache.find(key); };
 
-        contexts_[thread_index]->set_filter(filterFunc);
+        contexts_[thread_index]->set_filter(filter_func);
       }
 
       // Do knn_search
@@ -669,10 +669,10 @@ class SparseBench {
 
   FilterMode filter_mode_{FM_NONE};
   BenchResult bench_result_;
-  static bool STOP_NOW;
+  static bool stop_now;
 };
 template <typename T>
-bool SparseBench<T>::STOP_NOW = false;
+bool SparseBench<T>::stop_now = false;
 
 // do
 bool prepare_params(YAML::Node &&config_params, Params &params) {
@@ -878,17 +878,17 @@ int main(int argc, char *argv[]) {
   }
   auto config_common = config_node["SearcherCommon"];
 
-  map<string, int> LOG_LEVEL = {{"debug", Logger::LEVEL_DEBUG},
-                                {"info", Logger::LEVEL_INFO},
-                                {"warn", Logger::LEVEL_WARN},
-                                {"error", Logger::LEVEL_ERROR},
-                                {"fatal", Logger::LEVEL_FATAL}};
+  map<string, int> log_level_map = {{"debug", Logger::LEVEL_DEBUG},
+                                    {"info", Logger::LEVEL_INFO},
+                                    {"warn", Logger::LEVEL_WARN},
+                                    {"error", Logger::LEVEL_ERROR},
+                                    {"fatal", Logger::LEVEL_FATAL}};
   string log_level = config_common["LogLevel"]
                          ? config_common["LogLevel"].as<string>()
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
-  if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
   }
 
   // Calculate Bench

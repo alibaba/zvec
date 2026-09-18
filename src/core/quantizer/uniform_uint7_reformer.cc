@@ -41,7 +41,7 @@ class UniformUint7Reformer : public IndexReformer {
   //!
   //! Scale/bias are supplied through reformer params after converter training.
   int init(const ailego::Params &params) override {
-    Reset();
+    reset();
 
     float scale = 0.0f;
     float bias = 0.0f;
@@ -73,7 +73,7 @@ class UniformUint7Reformer : public IndexReformer {
 
   //! Cleanup Reformer
   int cleanup() override {
-    Reset();
+    reset();
     return 0;
   }
 
@@ -170,7 +170,7 @@ class UniformUint7Reformer : public IndexReformer {
   }
 
  private:
-  void Reset() {
+  void reset() {
     scale_ = 0.0f;
     bias_ = 0.0f;
     scale_reciprocal_sq_ = 1.0f;

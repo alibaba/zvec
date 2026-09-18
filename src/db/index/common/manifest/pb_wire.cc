@@ -18,26 +18,26 @@
 namespace zvec {
 namespace pbwire {
 
-bool Reader::Next() {
+bool Reader::next() {
   if (!ok_ || pos_ >= size_) {
     return false;
   }
   uint64_t tag = 0;
-  if (!ReadVarintRaw(&tag)) {
-    return Fail();
+  if (!read_varint_raw(&tag)) {
+    return fail();
   }
   field_ = static_cast<uint32_t>(tag >> 3);
   type_ = static_cast<WireType>(tag & 0x7);
   if (field_ == 0) {
-    return Fail();  // field number 0 is illegal
+    return fail();  // field number 0 is illegal
   }
 
   switch (type_) {
     case kVarint:
-      return ReadVarintRaw(&varint_) ? true : Fail();
+      return read_varint_raw(&varint_) ? true : fail();
     case kFixed64: {
       if (size_ - pos_ < 8) {
-        return Fail();
+        return fail();
       }
       uint64_t bits = 0;
       for (int i = 0; i < 8; ++i) {
@@ -50,7 +50,7 @@ bool Reader::Next() {
     }
     case kFixed32: {
       if (size_ - pos_ < 4) {
-        return Fail();
+        return fail();
       }
       uint32_t bits = 0;
       for (int i = 0; i < 4; ++i) {
@@ -63,22 +63,22 @@ bool Reader::Next() {
     }
     case kLenDelim: {
       uint64_t len = 0;
-      if (!ReadVarintRaw(&len)) {
-        return Fail();
+      if (!read_varint_raw(&len)) {
+        return fail();
       }
       if (len > size_ - pos_) {
-        return Fail();
+        return fail();
       }
       bytes_ = std::string_view(data_ + pos_, static_cast<size_t>(len));
       pos_ += static_cast<size_t>(len);
       return true;
     }
     default:
-      return Fail();  // groups and unknown wire types
+      return fail();  // groups and unknown wire types
   }
 }
 
-bool Reader::ReadVarintRaw(uint64_t *out) {
+bool Reader::read_varint_raw(uint64_t *out) {
   uint64_t result = 0;
   for (int shift = 0; shift < 64; shift += 7) {
     if (pos_ >= size_) {

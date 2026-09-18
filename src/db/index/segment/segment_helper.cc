@@ -748,7 +748,7 @@ Status SegmentHelper::ReduceVectorIndex(
       CHECK_RETURN_STATUS(s);
 
       if (vector_indexer != nullptr) {
-        s = vector_indexer->Close();
+        s = vector_indexer->close();
         CHECK_RETURN_STATUS(s);
       }
 
@@ -826,11 +826,11 @@ Status SegmentHelper::MergeWithOptionalReuse(
     if (FileHelper::CopyFile(first_indexer->index_file_path(),
                              output_index_path)) {
       // Open the copied file in-place (create_new=false).
-      s = vector_indexer->Open(vector_column_params::ReadOptions{true, false});
+      s = vector_indexer->open(vector_column_params::ReadOptions{true, false});
       CHECK_RETURN_STATUS(s);
 
       source_indexers.erase(source_indexers.begin());
-      s = vector_indexer->Merge(source_indexers, filter, merge_options);
+      s = vector_indexer->merge(source_indexers, filter, merge_options);
       CHECK_RETURN_STATUS(s);
       reused_base_index = true;
     } else {
@@ -841,19 +841,19 @@ Status SegmentHelper::MergeWithOptionalReuse(
   }
 
   if (!reused_base_index) {
-    s = vector_indexer->Open(vector_column_params::ReadOptions{true, true});
+    s = vector_indexer->open(vector_column_params::ReadOptions{true, true});
     CHECK_RETURN_STATUS(s);
 
-    s = vector_indexer->Merge(source_indexers, filter, merge_options);
+    s = vector_indexer->merge(source_indexers, filter, merge_options);
     CHECK_RETURN_STATUS(s);
   }
 
-  s = vector_indexer->Flush();
+  s = vector_indexer->flush();
   CHECK_RETURN_STATUS(s);
   if (merged_indexer != nullptr) {
     *merged_indexer = vector_indexer;
   } else {
-    s = vector_indexer->Close();
+    s = vector_indexer->close();
     CHECK_RETURN_STATUS(s);
   }
   return Status::OK();

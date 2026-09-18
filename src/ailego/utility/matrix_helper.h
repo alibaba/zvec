@@ -22,21 +22,21 @@ namespace ailego {
 struct MatrixHelper {
   //! Transpose a matrix
   template <typename T, size_t M>
-  static inline void Transpose(const void *src, size_t N, void *dst) {
+  static inline void Transpose(const void *src, size_t n, void *dst) {
     for (size_t i = 0; i < M; ++i) {
-      for (size_t j = 0; j < N; ++j) {
+      for (size_t j = 0; j < n; ++j) {
         *(reinterpret_cast<T *>(dst) + (j * M + i)) =
-            *(reinterpret_cast<const T *>(src) + (i * N + j));
+            *(reinterpret_cast<const T *>(src) + (i * n + j));
       }
     }
   }
 
   //! Reverse transpose a matrix
   template <typename T, size_t M>
-  static inline void ReverseTranspose(const void *src, size_t N, void *dst) {
-    for (size_t i = 0; i < N; ++i) {
+  static inline void ReverseTranspose(const void *src, size_t n, void *dst) {
+    for (size_t i = 0; i < n; ++i) {
       for (size_t j = 0; j < M; ++j) {
-        *(reinterpret_cast<T *>(dst) + (j * N + i)) =
+        *(reinterpret_cast<T *>(dst) + (j * n + i)) =
             *(reinterpret_cast<const T *>(src) + (i * M + j));
       }
     }
@@ -44,23 +44,23 @@ struct MatrixHelper {
 
   //! Transpose a matrix
   template <typename T>
-  static inline void Transpose(const void *src, size_t M, size_t N, void *dst) {
-    for (size_t i = 0; i < M; ++i) {
-      for (size_t j = 0; j < N; ++j) {
-        *(reinterpret_cast<T *>(dst) + (j * M + i)) =
-            *(reinterpret_cast<const T *>(src) + (i * N + j));
+  static inline void Transpose(const void *src, size_t m, size_t n, void *dst) {
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t j = 0; j < n; ++j) {
+        *(reinterpret_cast<T *>(dst) + (j * m + i)) =
+            *(reinterpret_cast<const T *>(src) + (i * n + j));
       }
     }
   }
 
   //! Reverse transpose a matrix
   template <typename T>
-  static inline void ReverseTranspose(const void *src, size_t M, size_t N,
+  static inline void ReverseTranspose(const void *src, size_t m, size_t n,
                                       void *dst) {
-    for (size_t i = 0; i < N; ++i) {
-      for (size_t j = 0; j < M; ++j) {
-        *(reinterpret_cast<T *>(dst) + (j * N + i)) =
-            *(reinterpret_cast<const T *>(src) + (i * M + j));
+    for (size_t i = 0; i < n; ++i) {
+      for (size_t j = 0; j < m; ++j) {
+        *(reinterpret_cast<T *>(dst) + (j * n + i)) =
+            *(reinterpret_cast<const T *>(src) + (i * m + j));
       }
     }
   }

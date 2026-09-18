@@ -52,6 +52,10 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          # The explicit statistics steps below are best-effort. Do not let
+          # the action's post-run statistics fail an otherwise successful job.
+          disable_annotations: true
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -99,6 +103,7 @@ jobs:
 
       - name: Show sccache statistics after pip install
         if: always()
+        continue-on-error: true
         run: sccache --show-stats
         shell: powershell
 
@@ -116,6 +121,7 @@ jobs:
 
       - name: Show sccache statistics after tests
         if: always()
+        continue-on-error: true
         run: sccache --show-stats
         shell: powershell
 
@@ -130,10 +136,14 @@ jobs:
           cd "$env:GITHUB_WORKSPACE\examples\c++"
           mkdir build
           cd build
+          # These small examples do not need a remote compiler cache. Clear
+          # both launchers so a cache outage cannot block their smoke tests.
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            -DCMAKE_C_COMPILER_LAUNCHER= `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build . --config Release --parallel $env:NPROC
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Copy zvec DLLs next to the example executables so Windows can find them.
           # CMake places DLLs in bin/ (RUNTIME output) and import libs in lib/.
@@ -162,11 +172,15 @@ jobs:
           }
 
           .\db-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\core-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\ailego-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: powershell
 
       - name: Show sccache statistics
         if: always()
+        continue-on-error: true
         run: sccache --show-stats
         shell: powershell

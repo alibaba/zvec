@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 #include <zvec/db/query_params.h>
 #include "db/sqlengine/common/generic_node.h"
@@ -56,7 +57,7 @@ enum class QueryNodeOp {
 };
 
 class QueryInfo;
-class QueryNode : public Generic_Node<QueryNodeOp, QueryNode> {
+class QueryNode : public GenericNode<QueryNodeOp, QueryNode> {
  public:
   using Ptr = std::shared_ptr<QueryNode>;
 
@@ -105,8 +106,8 @@ class QueryNode : public Generic_Node<QueryNodeOp, QueryNode> {
   };
 
  public:
-  QueryNode() : Generic_Node(QueryNodeOp::Q_NONE) {}
-  QueryNode(QueryNodeOp m_op) : Generic_Node(m_op) {
+  QueryNode() : GenericNode(QueryNodeOp::Q_NONE) {}
+  QueryNode(QueryNodeOp m_op) : GenericNode(m_op) {
     set_op(m_op);
   }
   ~QueryNode() override = default;
@@ -128,7 +129,7 @@ class QueryNode : public Generic_Node<QueryNodeOp, QueryNode> {
   virtual bool is_matched(const QueryNode &other) const;
 
   void set_op(QueryNodeOp value) override {
-    Generic_Node<QueryNodeOp, QueryNode>::set_op(value);
+    GenericNode<QueryNodeOp, QueryNode>::set_op(value);
     set_type_by_op();
   }
 
@@ -233,6 +234,9 @@ class QueryConstantNode : public QueryNode {
   QueryConstantNode(const std::string &m_value);
 
   std::string value();
+  std::string_view value_view() const {
+    return value_;
+  }
   std::string text() const override;
 
   void set_text(std::string new_val) override;

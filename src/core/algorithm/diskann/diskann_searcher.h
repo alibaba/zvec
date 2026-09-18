@@ -28,7 +28,7 @@ class DiskAnnSearcher : public IndexSearcher {
 
  public:
   DiskAnnSearcher();
-  ~DiskAnnSearcher();
+  ~DiskAnnSearcher() override;
 
   DiskAnnSearcher(const DiskAnnSearcher &) = delete;
   DiskAnnSearcher &operator=(const DiskAnnSearcher &) = delete;

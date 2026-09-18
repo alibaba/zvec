@@ -57,7 +57,7 @@ class DiskAnnContext : public IndexContext,
                  const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
   //! Destructor
-  virtual ~DiskAnnContext();
+  ~DiskAnnContext() override;
 
   //! Create a lightweight context for reading vectors by id.
   static Pointer create_fetch_context(const IndexMeta &meta,
@@ -67,7 +67,7 @@ class DiskAnnContext : public IndexContext,
  public:
   //! Init
   int init(ContextType type, uint32_t graph_degree, uint32_t pq_chunk_num,
-           uint32_t element_size);
+           uint32_t element_size, bool setup_io_context = true);
 
   //! Update context, the context may be shared by different searcher/streamer
   int update_context(ContextType type, const IndexMeta &meta,

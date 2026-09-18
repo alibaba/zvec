@@ -1087,9 +1087,9 @@ TEST(ManifestCodecGolden, UnknownFieldsAreIgnored) {
   std::string with_unknown = Golden(kGoldenSimple);
   {
     pbwire::Writer w(&with_unknown);
-    w.PutVarint(99, 12345);               // unknown varint field
-    w.PutMessage(100, std::string("x"));  // unknown length-delimited field
-    w.PutFloat(101, 2.5f);                // unknown fixed32 field
+    w.put_varint(99, 12345);               // unknown varint field
+    w.put_message(100, std::string("x"));  // unknown length-delimited field
+    w.put_float(101, 2.5f);                // unknown fixed32 field
   }
 
   ManifestData data;
@@ -1115,7 +1115,7 @@ TEST(ManifestCodecGolden, CorruptInputIsRejected) {
   std::string bad_len;
   {
     pbwire::Writer w(&bad_len);
-    w.PutMessage(2, std::string("payload"));
+    w.put_message(2, std::string("payload"));
   }
   bad_len[1] = static_cast<char>(0x7F);  // overlong length
   ManifestData data;
@@ -1139,7 +1139,7 @@ TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
     std::string buf;
     buf.push_back(static_cast<char>((1 << 3) | type));
     pbwire::Reader r(buf);
-    EXPECT_FALSE(r.Next());
+    EXPECT_FALSE(r.next());
     EXPECT_FALSE(r.ok());
   }
 }

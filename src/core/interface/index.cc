@@ -34,14 +34,15 @@ bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
 }
 
 // A multipass training view over merge sources. Decode through each source's
-// existing reformer, just as the merge reducer does. This lets global
-// quantizers train from FP16/UINT8 Flat references without materializing an
-// additional full-dataset FP32 copy or adding input types to the quantizers.
+// existing quantizer or reformer, just as the merge reducer does. This lets
+// global quantizers train from FP16/UINT8 Flat references without materializing
+// an additional full-dataset FP32 copy or adding input types to the quantizers.
 class MergeSourceIndexHolder final : public core::IndexHolder {
  public:
   struct Source {
     core::IndexHolder::Pointer holder;
     core::IndexReformer::Pointer reformer;
+    std::shared_ptr<turbo::Quantizer> quantizer;
     core::IndexQueryMeta stored_meta;
   };
 
@@ -56,11 +57,24 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
     }
 
     bool is_valid() const override {
-      return owner_->error_ == 0 && source_iter_ && source_iter_->is_valid();
+      if (owner_->error_ != 0 || !source_iter_) {
+        return false;
+      }
+      const bool valid = source_iter_->is_valid();
+      owner_->error_ = source_iter_->status();
+      return owner_->error_ == 0 && valid;
+    }
+
+    int status() const override {
+      return owner_->error_;
     }
 
     uint64_t key() const override {
-      return source_iter_->key();
+      const uint64_t result = source_iter_->key();
+      if (owner_->error_ == 0) {
+        owner_->error_ = source_iter_->status();
+      }
+      return result;
     }
 
     void next() override {
@@ -73,6 +87,10 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
       data_ = nullptr;
       if (owner_->error_ != 0) return;
       while (!source_iter_ || !source_iter_->is_valid()) {
+        if (source_iter_ && source_iter_->status() != 0) {
+          owner_->error_ = source_iter_->status();
+          return;
+        }
         source_iter_.reset();
         if (source_index_ >= owner_->sources_.size()) return;
         source_ = &owner_->sources_[source_index_++];
@@ -82,14 +100,26 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
           return;
         }
       }
+      if (source_iter_->status() != 0) {
+        owner_->error_ = source_iter_->status();
+        return;
+      }
       data_ = source_iter_->data();
+      if (source_iter_->status() != 0) {
+        owner_->error_ = source_iter_->status();
+        data_ = nullptr;
+        return;
+      }
       if (!data_) {
         owner_->error_ = core::IndexError_ReadData;
         return;
       }
-      if (source_->reformer) {
-        const int ret =
-            source_->reformer->revert(data_, source_->stored_meta, &decoded_);
+      if (source_->quantizer || source_->reformer) {
+        const int ret = source_->quantizer
+                            ? source_->quantizer->dequantize(
+                                  data_, source_->stored_meta, &decoded_)
+                            : source_->reformer->revert(
+                                  data_, source_->stored_meta, &decoded_);
         if (ret != 0) {
           owner_->error_ = ret;
           return;
@@ -179,14 +209,14 @@ int CreateReformerFromConverterMeta(
 // eliminate the pre-alloc of the context pool
 thread_local static std::array<core::IndexContext::Pointer,
                                (magic_enum::enum_count<IndexType>() - 1) * 2>
-    _context_list;
+    context_list;
 
 
 bool Index::init_context() {
   context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
                    static_cast<size_t>(is_sparse_);
-  if (_context_list[context_index_] == nullptr) {
-    if ((_context_list[context_index_] = streamer_->create_context()) ==
+  if (context_list[context_index_] == nullptr) {
+    if ((context_list[context_index_] = streamer_->create_context()) ==
         nullptr) {
       LOG_ERROR("Failed to create context");
       return false;
@@ -197,7 +227,7 @@ bool Index::init_context() {
 
 core::IndexContext::Pointer &Index::acquire_context() {
   init_context();
-  return _context_list[context_index_];
+  return context_list[context_index_];
 }
 
 int Index::train() {
@@ -231,7 +261,7 @@ core::IndexProvider::Pointer Index::create_index_provider() const {
   return streamer_->create_provider();
 }
 
-int Index::ParseMetricName(const BaseIndexParam &param) {
+int Index::parse_metric_name(const BaseIndexParam &param) {
   std::string metric_name;
   if (is_sparse_) {
     // only inner product is supported for sparse index
@@ -271,7 +301,7 @@ int Index::ParseMetricName(const BaseIndexParam &param) {
   return 0;
 }
 
-int Index::CreateAndInitMetric(const BaseIndexParam & /*param*/) {
+int Index::create_and_init_metric(const BaseIndexParam & /*param*/) {
   auto &metric_name = proxima_index_meta_.metric_name();
 
   metric_ = core::IndexFactory::CreateMetric(metric_name);
@@ -293,8 +323,8 @@ int Index::CreateAndInitMetric(const BaseIndexParam & /*param*/) {
   return core::IndexError_Success;
 }
 
-int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
-                                          const BaseIndexParam &index_param) {
+int Index::create_and_init_converter_reformer(
+    const QuantizerParam &param, const BaseIndexParam &index_param) {
   ailego::Params converter_params;
   std::string converter_name;
   if (is_sparse_) {
@@ -392,11 +422,11 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
     }
   }
 
-  return InitConverterReformer(converter_name, converter_params);
+  return init_converter_reformer(converter_name, converter_params);
 }
 
-int Index::InitConverterReformer(const std::string &converter_name,
-                                 const ailego::Params &converter_params) {
+int Index::init_converter_reformer(const std::string &converter_name,
+                                   const ailego::Params &converter_params) {
   proxima_index_meta_.set_converter(converter_name, 0, converter_params);
   converter_ = core::IndexFactory::CreateConverter(converter_name);
   if (converter_ == nullptr ||
@@ -424,7 +454,7 @@ int Index::InitConverterReformer(const std::string &converter_name,
   return core::IndexError_Success;
 }
 
-int Index::Init(const BaseIndexParam &param) {
+int Index::init(const BaseIndexParam &param) {
   param_ = param;  // will lose the original type info
 
   is_sparse_ = param.is_sparse;
@@ -442,7 +472,7 @@ int Index::Init(const BaseIndexParam &param) {
 
   // when quantizer=int8/int4, the converter.init() will change the metric to
   // QuantizedInteger with params
-  if (ParseMetricName(param) != 0) {
+  if (parse_metric_name(param) != 0) {
     LOG_ERROR("Failed to parse metric name");
     return core::IndexError_Runtime;
   }
@@ -451,20 +481,20 @@ int Index::Init(const BaseIndexParam &param) {
   const auto quantizer_param = param.quantizer_param
                                    ? param.quantizer_param
                                    : std::make_shared<QuantizerParam>();
-  if (CreateAndInitConverterReformer(*quantizer_param, param) != 0) {
+  if (create_and_init_converter_reformer(*quantizer_param, param) != 0) {
     LOG_ERROR("Failed to create and init converter");
     return core::IndexError_Runtime;
   }
 
   // must after quantizer handled. e.g., cosine doesn't support int8 quantizer
   if (turbo_quantizer_ == nullptr) {
-    if (CreateAndInitMetric(param) != 0) {
+    if (create_and_init_metric(param) != 0) {
       LOG_ERROR("Failed to create and init metric");
       return core::IndexError_Runtime;
     }
   }
 
-  if (CreateAndInitStreamer(param) != 0) {
+  if (create_and_init_streamer(param) != 0) {
     LOG_ERROR("Failed to create and init streamer");
     return core::IndexError_Runtime;
   }
@@ -606,6 +636,14 @@ int Index::close() {
   if (ailego_unlikely(streamer_->cleanup() != 0)) {
     LOG_ERROR("Failed to cleanup streamer");
     return core::IndexError_Runtime;
+  }
+  // Contexts are cached per index type in thread-local storage. IVF contexts
+  // own cloned storage segments, so leaving the current thread's context in
+  // the cache after Close would keep the buffer pool (and its metadata/pages)
+  // alive until another IVF search or thread exit.
+  if (context_index_ < context_list.size()) {
+    context_list[context_index_].reset();
+    context_index_ = std::numeric_limits<size_t>::max();
   }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");
@@ -1422,18 +1460,26 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
               input_vector_meta_.data_type() ||
           index->input_vector_meta_.dimension() !=
               input_vector_meta_.dimension() ||
-          (!index->reformer_ &&
+          (!index->reformer_ && !index->turbo_quantizer_ &&
            (provider->data_type() != input_vector_meta_.data_type() ||
             provider->dimension() != input_vector_meta_.dimension() ||
             provider->element_size() != input_vector_meta_.element_size()))) {
         LOG_ERROR("Merge-source vector type mismatch");
         return core::IndexError_Mismatch;
       }
-      // Use the actual stored metadata, including packed quantizer dimensions.
-      core::IndexQueryMeta stored_meta(provider->data_type(),
-                                       provider->dimension());
-      sources.push_back(
-          {std::move(provider), index->reformer_, std::move(stored_meta)});
+      // Preserve the stored layout, including packed dimensions and norm tails.
+      const auto &meta = index->streamer_->meta();
+      core::IndexQueryMeta stored_meta{
+          meta.meta_type(),
+          provider->data_type(),
+          meta.unit_size(),
+          static_cast<uint32_t>(provider->dimension()),
+          index->turbo_quantizer_
+              ? static_cast<uint32_t>(index->turbo_quantizer_->type())
+              : 0,
+          meta.extra_meta_size()};
+      sources.push_back({std::move(provider), index->reformer_,
+                         index->turbo_quantizer_, std::move(stored_meta)});
     }
     auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
                                                            input_vector_meta_);

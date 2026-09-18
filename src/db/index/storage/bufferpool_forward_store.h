@@ -43,7 +43,7 @@ class BufferPoolForwardStore
 
   virtual ~BufferPoolForwardStore() = default;
 
-  Status Open() override;
+  Status open() override;
 
   /// Fetch specific columns and row indices from the data source
   /// \param columns The list of column names to fetch
@@ -84,18 +84,18 @@ class BufferPoolForwardStore
   /// Open a parquet file and initialize metadata
   /// \param file The RandomAccessFile to read from
   /// \return arrow::Status indicating success or failure
-  arrow::Status OpenParquet(
+  arrow::Status open_parquet(
       const std::shared_ptr<arrow::io::RandomAccessFile> &file);
 
   /// Find which row group contains a given row
   /// \param row The row index to locate
   /// \return The row group ID containing the row
-  int FindRowGroupForRow(int64_t row);
+  int find_row_group_for_row(int64_t row);
 
   /// Get the row offset for a given row group
   /// \param rg_id The row group ID
   /// \return The row offset of the row group, or -1 on error
-  int64_t GetRowGroupOffset(int rg_id);
+  int64_t get_row_group_offset(int rg_id);
 
  private:
   /// Physical schema of the file

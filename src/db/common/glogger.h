@@ -39,7 +39,7 @@ class AppendLogger : public ailego::Logger {
  public:
   AppendLogger() = default;
 
-  ~AppendLogger() {
+  ~AppendLogger() override {
     this->cleanup();
   }
 

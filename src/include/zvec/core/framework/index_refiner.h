@@ -36,7 +36,7 @@ class IndexRefiner : public IndexModule {
   struct Context : public IndexContext {
    public:
     Context() = default;
-    ~Context() = default;
+    ~Context() override = default;
 
     virtual int set_contexts(IndexRunner::Context::Pointer base_ctx,
                              IndexRunner::Context::Pointer refine_ctx) = 0;

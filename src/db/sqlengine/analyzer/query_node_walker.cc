@@ -35,8 +35,9 @@ inline bool is_numeric_type(zvec::DataType data_type) {
           data_type <= zvec::DataType::DOUBLE);
 }
 
-SearchCondCheckWalker::SearchCondCheckWalker(const CollectionSchema &table_ptr)
-    : table_ptr_(table_ptr) {}
+SearchCondCheckWalker::SearchCondCheckWalker(const CollectionSchema &table_ptr,
+                                             Mode mode)
+    : table_ptr_(table_ptr), mode_(mode) {}
 
 ControlOp SearchCondCheckWalker::traverse_cond_node(
     const QueryNode::Ptr &query_node, bool or_ancestor) {
@@ -74,7 +75,7 @@ ControlOp SearchCondCheckWalker::access(const QueryNode::Ptr &query_node,
                                         bool or_ancestor) {
   // set all types of child node or ancestor if it does,
   // besides query_rel_node, mainly for logic node invert_subroot_node_
-  if (or_ancestor) {
+  if (mode_ == Mode::ANALYZE && or_ancestor) {
     query_node->set_or_ancestor();
   }
 
@@ -159,7 +160,9 @@ ControlOp SearchCondCheckWalker::access(const QueryNode::Ptr &query_node,
       return ControlOp::BREAK;
     }
     vector_rel_ = query_rel_node.get();
-    query_rel_node->set_vector();
+    if (mode_ == Mode::ANALYZE) {
+      query_rel_node->set_vector();
+    }
     // arrive here, it is a index condition.
     return ControlOp::CONTINUE;
   }
@@ -589,7 +592,9 @@ bool SearchCondCheckWalker::check_and_convert_value_type(
                                           &numeric_buf)) {
       return false;
     }
-    node->set_text(std::move(numeric_buf));
+    if (mode_ == Mode::ANALYZE) {
+      node->set_text(std::move(numeric_buf));
+    }
   }
 
   return true;
@@ -694,12 +699,16 @@ void SearchCondCheckWalker::add_forward_filter(QueryRelNode *query_rel_node,
                                                std::string forward_field_name) {
   forward_filter_field_names_.emplace_back(std::move(forward_field_name));
   filter_rels_.push_back(query_rel_node);
-  query_rel_node->set_forward();
+  if (mode_ == Mode::ANALYZE) {
+    query_rel_node->set_forward();
+  }
 }
 
 void SearchCondCheckWalker::add_invert_filter(QueryRelNode *query_rel_node) {
   invert_rels_.push_back(query_rel_node);
-  query_rel_node->set_invert();
+  if (mode_ == Mode::ANALYZE) {
+    query_rel_node->set_invert();
+  }
 }
 
 }  // namespace zvec::sqlengine

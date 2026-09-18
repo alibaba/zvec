@@ -23,7 +23,6 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
-#include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "common/fast_scan_common.h"
@@ -41,7 +40,8 @@ struct PqFastSerPayload {
   uint32_t num_centroids;  // always 16
   uint8_t use_zero_mean;
   uint8_t input_data_type;  // turbo DataType: kFp32=3, kFp16=2
-  uint8_t reserved[2];
+  uint8_t rotate_type;      // RotateType, 0 = no rotation (was reserved)
+  uint8_t reserved;
 };
 
 int PqFastQuantizer::setup_functions() {
@@ -147,6 +147,9 @@ int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
+  int opq_ret = opq_.init(original_dim_, input_data_type_, params);
+  if (opq_ret != 0) return opq_ret;
+
   // Zero-mean centering shifts the space, which breaks the IP LUT
   // decomposition -- keep it for L2 / Cosine (Cosine runs in normalized
   // space where L2 semantics apply).
@@ -182,7 +185,8 @@ void PqFastQuantizer::build_centroid_ptrs_cache() {
 
 template <typename T>
 void PqFastQuantizer::train_subquantizer(const T *data, size_t num,
-                                         size_t stride, size_t sub_idx) {
+                                         size_t stride, size_t sub_idx,
+                                         uint32_t max_iters) {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   uint8_t *centroids_m =
@@ -215,7 +219,7 @@ void PqFastQuantizer::train_subquantizer(const T *data, size_t num,
 
   // Lloyd iterations
   double cost = 0.0;
-  for (uint32_t iter = 0; iter < kMaxKmeansIters; ++iter) {
+  for (uint32_t iter = 0; iter < max_iters; ++iter) {
     double old_cost = cost;
     bool result = algorithm.cluster_once(*local_threads, &cost);
     if (!result) {
@@ -313,6 +317,32 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
+  opq_.train(
+      all_data.data(), num, "PqFastQuantizer",
+      [&](uint32_t max_iters) {
+        train_all_chunks(all_data.data(), num, data_stride, max_iters,
+                         thread_count);
+        build_centroid_ptrs_cache();
+      },
+      [this](const float *rotated, size_t count, float *x_hat) {
+        return encode_reconstruct_batch(rotated, count, x_hat);
+      });
+
+  train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters,
+                   thread_count);
+
+  // Pre-build centroid pointer cache for fast encode/search.
+  build_centroid_ptrs_cache();
+
+  // Pre-compute sub-centroid norms for the precomputed residual table.
+  compute_sub_centroid_norms();
+
+  return 0;
+}
+
+void PqFastQuantizer::train_all_chunks(const void *data, size_t num,
+                                       size_t stride, uint32_t max_iters,
+                                       int thread_count) {
   // Create thread pool.
   auto threads = std::make_shared<SingleQueueIndexThreads>(
       static_cast<uint32_t>(thread_count), false);
@@ -325,11 +355,12 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
   auto submit_training = [&](const auto *typed_data) {
     using T = std::remove_const_t<std::remove_pointer_t<decltype(typed_data)>>;
     for (size_t i = 0; i < pool_count; ++i) {
-      task_group->submit(ailego::Closure::New(
-          [this, typed_data, num, data_stride, i, pool_count, &finished]() {
+      task_group->submit(
+          ailego::Closure::New([this, typed_data, num, stride, i, pool_count,
+                                max_iters, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
-              train_subquantizer<T>(typed_data, num, data_stride, m);
+              train_subquantizer<T>(typed_data, num, stride, m, max_iters);
               finished++;
             }
           }));
@@ -338,23 +369,23 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
 
   switch (input_data_type_) {
     case DataType::kFp16:
-      submit_training(
-          reinterpret_cast<const ailego::Float16 *>(all_data.data()));
+      submit_training(reinterpret_cast<const ailego::Float16 *>(data));
       break;
     case DataType::kFp32:
-      submit_training(reinterpret_cast<const float *>(all_data.data()));
+      submit_training(reinterpret_cast<const float *>(data));
       break;
     default:
       break;
   }
   task_group->wait_finish();
+}
 
-  // Pre-build centroid pointer cache for fast encode/search.
-  build_centroid_ptrs_cache();
-
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-  return 0;
+float PqFastQuantizer::encode_reconstruct_batch(const float *rotated,
+                                                size_t num,
+                                                float *x_hat) const {
+  return pq_reconstruct_batch<kNumCentroids>(
+      rotated, num, original_dim_, centroid_ptrs_cache_, l2_batch_fn_,
+      [this](size_t) { return sub_dim_; }, x_hat);
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +439,10 @@ void PqFastQuantizer::quantize_data(const void *input, void *output) const {
     }
     vec = centered_vec_storage.data();
   }
+
+  // OPQ: rotate last, mirroring train().
+  std::vector<float> rotated_vec_storage;
+  vec = opq_.apply(vec, &rotated_vec_storage);
 
   // Zero the packed code buffer first: nibble packing ORs codes in, and an
   // odd num_chunk leaves the last byte's high nibble as the (zero) pad.
@@ -499,6 +534,10 @@ void PqFastQuantizer::compute_float_lut(const void *input, float *lut) const {
     }
     query = centered_query_storage.data();
   }
+
+  // OPQ: rotate last, as quantize_data() does.
+  std::vector<float> rotated_query_storage;
+  query = opq_.apply(query, &rotated_query_storage);
 
   // LUT[m][j] = distance(q_m, c_m[j]) via the metric-aware batch_fn_:
   // L2/Cosine: ||q_m - c_m[j]||^2   IP: -dot(q_m, c_m[j]).
@@ -637,11 +676,21 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
   float *tab = reinterpret_cast<float *>(&(*table)[0]);
 
   std::vector<float> buf(original_dim_);
+  std::vector<float> rotated;
   const float *src = reinterpret_cast<const float *>(centroids);
   float dists[kNumCentroids];
   for (size_t i = 0; i < centroid_num; ++i) {
     std::memcpy(buf.data(), src + i * original_dim_,
                 original_dim_ * sizeof(float));
+    //! Rotate the coarse centroid too: the rotation is orthogonal, so
+    //! ||q - c - r||^2 == ||Rq - Rc - Rr||^2 and the decomposition holds as
+    //! long as query, centroid and codebook all live in the rotated space.
+    //! Zero-mean is gated out above.
+    if (opq_.enabled()) {
+      rotated.resize(original_dim_);
+      opq_.rotate(buf.data(), rotated.data());
+      std::memcpy(buf.data(), rotated.data(), original_dim_ * sizeof(float));
+    }
     const uint8_t *buf_bytes = reinterpret_cast<const uint8_t *>(buf.data());
     const uint32_t elem_size = element_size();
     float *row = tab + i * row_floats;
@@ -750,6 +799,12 @@ int PqFastQuantizer::preprocess_query(const void *input, float *out) const {
   }
   if (use_zero_mean_) {
     subtract_center(out);
+  }
+  if (opq_.enabled()) {
+    std::vector<float> rotated(original_dim_);
+    opq_.rotate(out, rotated.data());
+    std::memcpy(out, rotated.data(),
+                static_cast<size_t>(original_dim_) * sizeof(float));
   }
   return 0;
 }
@@ -910,11 +965,19 @@ int PqFastQuantizer::serialize(std::string *out) const {
   payload.num_centroids = kNumCentroids;
   payload.use_zero_mean = use_zero_mean_ ? 1 : 0;
   payload.input_data_type = static_cast<uint8_t>(input_data_type_);
+  payload.rotate_type = opq_.rotate_type();
+
+  // The rotator blob is self-describing (RotatorSerHeader + matrix), so the
+  // payload only needs the type tag to know whether one follows.
+  std::string preprocessor_blob;
+  int opq_ret = opq_.serialize(&preprocessor_blob);
+  if (opq_ret != 0) return opq_ret;
 
   size_t centroids_bytes = centroids_.size();  // already byte buffer
   size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
   hdr.payload_size =
-      static_cast<uint32_t>(sizeof(payload) + centroids_bytes + centroid_bytes);
+      static_cast<uint32_t>(sizeof(payload) + centroids_bytes + centroid_bytes +
+                            preprocessor_blob.size());
 
   out->clear();
   out->append(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
@@ -926,6 +989,7 @@ int PqFastQuantizer::serialize(std::string *out) const {
     out->append(reinterpret_cast<const char *>(centroid_.data()),
                 centroid_bytes);
   }
+  out->append(preprocessor_blob);
   return 0;
 }
 
@@ -990,6 +1054,11 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
     std::memcpy(centroid_.data(), ptr, centroid_bytes);
     ptr += centroid_bytes;
   }
+
+  int opq_ret = opq_.deserialize(
+      payload.rotate_type, original_dim_, ptr,
+      len - static_cast<size_t>(ptr - reinterpret_cast<const char *>(data)));
+  if (opq_ret != 0) return opq_ret;
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {
