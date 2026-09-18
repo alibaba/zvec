@@ -22,6 +22,7 @@
 #include <zvec/db/status.h>
 #include "zvec/db/index_params.h"
 #include "zvec/db/type.h"
+#include "vector_column_indexer.h"
 #include "vector_column_params.h"
 
 
@@ -92,6 +93,68 @@ class ProximaEngineHelper {
           [filter](uint64_t id) { return filter->is_filtered(id); });
     }
     return engine_filter;
+  }
+
+  // Synchronous search with call-local parameters, shared by the direct
+  // read-only collection route and the general column-indexer route.
+  static Status search_fast(const VectorColumnIndexer &indexer,
+                            const core_interface::VectorData &vector_data,
+                            const QueryParams::Ptr &query_params, uint32_t topk,
+                            const IndexFilter *filter,
+                            const VectorColumnIndexer *reference_indexer,
+                            int64_t *output_ids, float *output_scores) {
+    auto *index = indexer.index.get();
+    if (!index) return Status::InvalidArgument("Index not opened");
+    auto search = [&](auto engine_query_param) -> Status {
+      engine_query_param.topk = topk;
+      if (query_params) {
+        auto status = ProximaEngineHelper::update_engine_query_param(
+            query_params->type(), query_params, &engine_query_param, nullptr);
+        if (!status.ok()) return status;
+      }
+      if (filter) {
+        engine_query_param.filter =
+            ProximaEngineHelper::convert_to_engine_filter(filter);
+      }
+      core_interface::RefinerParam refiner;
+      if (reference_indexer) {
+        refiner.scale_factor_ = query_params->scale_factor();
+        refiner.reference_index = core_interface::Index::Pointer(
+            core_interface::Index::Pointer{}, reference_indexer->index.get());
+        engine_query_param.refiner_param =
+            std::shared_ptr<core_interface::RefinerParam>(
+                std::shared_ptr<core_interface::RefinerParam>{}, &refiner);
+      }
+      // search_fast and its fallback are synchronous. Borrow call-local
+      // parameters without a control block; no mutable state is shared between
+      // queries, and both indexers remain owned by the caller throughout
+      // search.
+      const core_interface::BaseIndexQueryParam::Pointer params(
+          core_interface::BaseIndexQueryParam::Pointer{}, &engine_query_param);
+      if (index->search_fast(vector_data, params, output_ids, output_scores) !=
+          0) {
+        return Status::InternalError("Failed to search vector");
+      }
+      return Status::OK();
+    };
+    switch (indexer.field_schema_.index_type()) {
+      case IndexType::FLAT:
+        return search(core_interface::FlatQueryParam{});
+      case IndexType::HNSW:
+        return search(core_interface::HNSWQueryParam{});
+      case IndexType::HNSW_RABITQ:
+        return search(core_interface::HNSWRabitqQueryParam{});
+      case IndexType::IVF:
+        return search(core_interface::IVFQueryParam{});
+      case IndexType::IVF_RABITQ:
+        return search(core_interface::IVFRabitqQueryParam{});
+      case IndexType::DISKANN:
+        return search(core_interface::DiskAnnQueryParam{});
+      case IndexType::VAMANA:
+        return search(core_interface::VamanaQueryParam{});
+      default:
+        return Status::InvalidArgument("unsupported index type");
+    }
   }
 
  private:

@@ -14,6 +14,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <vector>
 #include "db/index/common/index_filter.h"
 #include "vector_column_indexer.h"
@@ -51,6 +52,15 @@ class CombinedVectorColumnIndexer {
   //! True when at least one backing vector indexer is available for search.
   bool has_searchable_indexers() const {
     return !indexers_.empty();
+  }
+
+  // Borrowed indexers for a single block with identity block-local IDs.
+  // Callers must retain this object and protect its index lifecycle.
+  std::pair<const VectorColumnIndexer *, const VectorColumnIndexer *>
+  single_block_indexers() const {
+    if (indexers_.size() != 1 || block_offsets_[0] != 0) return {};
+    return {indexers_[0].get(),
+            normal_indexers_.size() == 1 ? normal_indexers_[0].get() : nullptr};
   }
 
  protected:
