@@ -321,6 +321,10 @@ class CollectionImpl : public Collection {
     const FieldSchema *schema;
     // Same order as read_only_segments_; null means no index in that segment.
     std::vector<CombinedVectorColumnIndexer::Ptr> indexers;
+    // Borrowed from indexers, resolved only for immutable, unfiltered,
+    // single-segment/block collections with identity document IDs.
+    const VectorColumnIndexer *primary{nullptr};
+    const VectorColumnIndexer *reference{nullptr};
   };
 
   // Prepared during open and immutable until close. Queries hold
@@ -1866,6 +1870,16 @@ void CollectionImpl::prepare_fast_query() {
       }
       resolved.indexers.push_back(std::move(indexer));
     }
+    if (resolved.indexers.size() == 1 && resolved.indexers[0] &&
+        !read_only_segments_[0]->get_filter() &&
+        read_only_segments_[0]->has_identity_doc_ids()) {
+      const auto [primary, reference] =
+          resolved.indexers[0]->single_block_indexers();
+      if (primary) {
+        resolved.primary = primary;
+        resolved.reference = reference;
+      }
+    }
     fast_query_fields_.emplace(field->name(), std::move(resolved));
   }
 }
@@ -1888,13 +1902,8 @@ Result<FastQueryResult> CollectionImpl::fast_query(
         "fast search requires a dense vector field: ", field_name));
   }
   const auto *field_schema = field->second.schema;
-  const auto *index_params = dynamic_cast<const VectorIndexParams *>(
-      field_schema->index_params().get());
-  const IndexType index_type = field_schema->index_params()
-                                   ? field_schema->index_params()->type()
-                                   : IndexType::UNDEFINED;
   const auto param_status = ProximaEngineHelper::update_engine_query_param(
-      index_type, query_params, nullptr, nullptr);
+      field_schema->index_type(), query_params, nullptr, nullptr);
   CHECK_RETURN_STATUS_EXPECTED(param_status);
   if (query_vector == nullptr) {
     return tl::make_unexpected(
@@ -1910,8 +1919,26 @@ Result<FastQueryResult> CollectionImpl::fast_query(
 
   const auto &segments = read_only_segments_;
   const auto &indexers = field->second.indexers;
-  const MetricType metric =
-      index_params ? index_params->metric_type() : MetricType::L2;
+  FastQueryResult out;
+  out.ids.resize(static_cast<size_t>(topk), int64_t{-1});
+  // Segment merging needs scores even when the caller only requests IDs.
+  if (return_scores || segments.size() > 1) {
+    out.scores.resize(static_cast<size_t>(topk),
+                      std::numeric_limits<float>::quiet_NaN());
+  }
+  const bool refine = query_params && query_params->is_using_refiner();
+  if (field->second.primary && (!refine || field->second.reference)) {
+    const core_interface::VectorData vector{
+        core_interface::DenseVector{query_vector}};
+    const auto status = ProximaEngineHelper::search_fast(
+        *field->second.primary, vector, query_params,
+        static_cast<uint32_t>(topk), nullptr,
+        refine ? field->second.reference : nullptr, out.ids.data(),
+        out.scores.empty() ? nullptr : out.scores.data());
+    CHECK_RETURN_STATUS_EXPECTED(status);
+    return out;
+  }
+
   vector_column_params::QueryParams params;
   params.topk = static_cast<uint32_t>(topk);
   params.data_type = field_schema->data_type();
@@ -1920,13 +1947,6 @@ Result<FastQueryResult> CollectionImpl::fast_query(
   vector_column_params::VectorData vector_data;
   vector_data.vector = vector_column_params::DenseVector{query_vector};
 
-  FastQueryResult out;
-  out.ids.resize(static_cast<size_t>(topk), int64_t{-1});
-  // Segment merging needs scores even when the caller only requests IDs.
-  if (return_scores || segments.size() > 1) {
-    out.scores.resize(static_cast<size_t>(topk),
-                      std::numeric_limits<float>::quiet_NaN());
-  }
   std::vector<std::pair<float, int64_t>> candidates;
   if (segments.size() > 1) {
     candidates.reserve(static_cast<size_t>(topk) * segments.size());
@@ -1958,6 +1978,10 @@ Result<FastQueryResult> CollectionImpl::fast_query(
         "fast query: no searchable vector index for field ", field_name));
   }
 
+  const auto *index_params = dynamic_cast<const VectorIndexParams *>(
+      field_schema->index_params().get());
+  const MetricType metric =
+      index_params ? index_params->metric_type() : MetricType::L2;
   const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
   std::partial_sort(candidates.begin(), candidates.begin() + keep,
                     candidates.end(), [metric](const auto &a, const auto &b) {

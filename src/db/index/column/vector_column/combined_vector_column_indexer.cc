@@ -420,24 +420,18 @@ Status CombinedVectorColumnIndexer::SearchFast(
     float *output_scores) {
   if (indexers_.size() == 1 && block_offsets_[0] == 0 &&
       query_params.filter == nullptr) {
-    vector_column_params::QueryParams params;
-    params.data_type = query_params.data_type;
-    params.dimension = query_params.dimension;
-    params.topk = query_params.topk;
-    params.query_params = query_params.query_params;
-    if (params.query_params && params.query_params->is_using_refiner()) {
+    const VectorColumnIndexer *reference_indexer = nullptr;
+    if (query_params.query_params &&
+        query_params.query_params->is_using_refiner()) {
       if (normal_indexers_.size() != indexers_.size()) {
         return Status::InvalidArgument(
             "normal indexers size[", normal_indexers_.size(),
             "] not match indexers size[", indexers_.size(), "]");
       }
-      params.refiner_param =
-          std::make_shared<vector_column_params::RefinerParam>(
-              vector_column_params::RefinerParam{
-                  params.query_params->scale_factor(), normal_indexers_[0]});
+      reference_indexer = normal_indexers_[0].get();
     }
-    return indexers_[0]->SearchFast(vector_data, params, output_ids,
-                                    output_scores);
+    return indexers_[0]->SearchFast(vector_data, query_params, output_ids,
+                                    output_scores, reference_indexer);
   }
 
   // Reuse Search's offset/filter/refiner handling for composite segments.
