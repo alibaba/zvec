@@ -19,7 +19,9 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 #include <zvec/ailego/buffer/vector_page_table.h>
@@ -1047,7 +1049,11 @@ class BufferStorage : public IndexStorage {
   }
 
   std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool() const override {
-    return cache_enabled_ ? buffer_pool_ : nullptr;
+    return buffer_pool_;
+  }
+
+  std::string file_path() const override {
+    return file_name_;
   }
 
   //! Initialize storage
@@ -1067,7 +1073,6 @@ class BufferStorage : public IndexStorage {
 
   //! Open storage
   int open(const std::string &path, bool create_if_missing) override {
-    file_name_ = path;
     if (!ailego::File::IsExist(path) && create_if_missing) {
       size_t last_slash = path.rfind('/');
       if (last_slash != std::string::npos) {
@@ -1081,11 +1086,25 @@ class BufferStorage : public IndexStorage {
       }
     }
 
-    // create_if_missing also indicates write intent, matching MMapFileStorage.
-    buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
-        path, /*writable=*/create_if_missing);
-    buffer_pool_handle_ =
-        std::make_shared<ailego::VecBufferPoolHandle>(buffer_pool_);
+    try {
+      // Capture both owners before replacing the published state. In
+      // particular, a failed reopen must not change existing segments' pool.
+      // create_if_missing also indicates write intent, like MMapFileStorage.
+      auto candidate_pool = std::make_shared<ailego::VecBufferPool>(
+          path, /*writable=*/create_if_missing);
+      auto candidate_handle =
+          std::make_shared<ailego::VecBufferPoolHandle>(candidate_pool);
+      file_name_ = path;
+      buffer_pool_ = std::move(candidate_pool);
+      buffer_pool_handle_ = std::move(candidate_handle);
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR("Out of memory opening BufferStorage: %s", path.c_str());
+      return IndexError_NoMemory;
+    } catch (const std::runtime_error &error) {
+      LOG_ERROR("Failed to open BufferStorage file %s: %s", path.c_str(),
+                error.what());
+      return IndexError_OpenFile;
+    }
     int ret = parse_to_mapping();
     if (ret != 0) {
       this->close_index();

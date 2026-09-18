@@ -993,6 +993,18 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
 #endif
     throw std::runtime_error("Failed to stat file: " + filename);
   }
+#if !defined(_MSC_VER)
+  // Atomic replacement between the two opens must not mix metadata from one
+  // file with pages from another. Windows CRT opens prevent deletion while
+  // either descriptor is live; POSIX needs an explicit identity check.
+  struct stat meta_st;
+  if (fstat(meta_fd_, &meta_st) < 0 || st.st_dev != meta_st.st_dev ||
+      st.st_ino != meta_st.st_ino) {
+    ::close(fd_);
+    ::close(meta_fd_);
+    throw std::runtime_error("Backing file changed while opening: " + filename);
+  }
+#endif
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
 #if defined(__linux__) && !defined(__ANDROID__)

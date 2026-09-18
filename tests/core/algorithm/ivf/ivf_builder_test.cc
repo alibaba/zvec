@@ -16,10 +16,12 @@
 #include <cstring>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <vector>
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_streamer.h>
 
@@ -71,6 +73,225 @@ void IVFBuilderTest::prepare_index_holder(uint32_t base_key, uint32_t num) {
   }
 
   holder_.reset(holder);
+}
+
+enum class IteratorErrorOperation { kValidity, kKey, kData };
+
+class IteratorErrorHolder : public IndexHolder {
+ public:
+  IteratorErrorHolder(IndexHolder::Pointer delegate, size_t failed_ordinal,
+                      IteratorErrorOperation operation)
+      : delegate_(std::move(delegate)),
+        failed_ordinal_(failed_ordinal),
+        operation_(operation) {}
+
+  size_t count() const override {
+    return delegate_->count();
+  }
+  size_t dimension() const override {
+    return delegate_->dimension();
+  }
+  IndexMeta::DataType data_type() const override {
+    return delegate_->data_type();
+  }
+  size_t element_size() const override {
+    return delegate_->element_size();
+  }
+  bool multipass() const override {
+    return true;
+  }
+  IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<ErrorIterator>(delegate_->create_iterator(),
+                                           failed_ordinal_, operation_);
+  }
+
+ private:
+  class ErrorIterator : public IndexHolder::Iterator {
+   public:
+    ErrorIterator(IndexHolder::Iterator::Pointer delegate,
+                  size_t failed_ordinal, IteratorErrorOperation operation)
+        : delegate_(std::move(delegate)),
+          failed_ordinal_(failed_ordinal),
+          operation_(operation) {}
+
+    bool is_valid() const override {
+      return !failed(IteratorErrorOperation::kValidity) &&
+             delegate_->is_valid();
+    }
+    const void *data() const override {
+      return failed(IteratorErrorOperation::kData) ? nullptr
+                                                   : delegate_->data();
+    }
+    uint64_t key() const override {
+      return failed(IteratorErrorOperation::kKey)
+                 ? std::numeric_limits<uint64_t>::max()
+                 : delegate_->key();
+    }
+    void next() override {
+      ++ordinal_;
+      delegate_->next();
+    }
+    int status() const override {
+      return status_;
+    }
+
+   private:
+    bool failed(IteratorErrorOperation operation) const {
+      if (operation == operation_ && ordinal_ == failed_ordinal_) {
+        status_ = IndexError_ReadData;
+      }
+      return status_ != 0;
+    }
+    IndexHolder::Iterator::Pointer delegate_;
+    size_t failed_ordinal_;
+    IteratorErrorOperation operation_;
+    size_t ordinal_{0};
+    mutable int status_{0};
+  };
+
+  IndexHolder::Pointer delegate_;
+  size_t failed_ordinal_;
+  IteratorErrorOperation operation_;
+};
+
+class SinglePassIteratorErrorHolder : public IteratorErrorHolder {
+ public:
+  using IteratorErrorHolder::IteratorErrorHolder;
+
+  bool multipass() const override {
+    return false;
+  }
+};
+
+TEST_F(IVFBuilderTest, TwoPassHolderDoesNotExposePartialCacheAfterReadError) {
+  prepare_index_holder(0, 8);
+  for (auto operation :
+       {IteratorErrorOperation::kValidity, IteratorErrorOperation::kKey,
+        IteratorErrorOperation::kData}) {
+    for (size_t failed_ordinal : {0U, 3U}) {
+      SCOPED_TRACE(static_cast<int>(operation));
+      SCOPED_TRACE(failed_ordinal);
+      auto source = std::make_shared<SinglePassIteratorErrorHolder>(
+          holder_, failed_ordinal, operation);
+      auto two_pass = IndexHelper::MakeTwoPassHolder(source);
+      ASSERT_NE(nullptr, two_pass);
+      ASSERT_NE(source.get(), two_pass.get());
+      auto first = two_pass->create_iterator();
+      ASSERT_NE(nullptr, first);
+      size_t read_count = 0;
+      for (; first->is_valid(); first->next()) {
+        (void)first->key();
+        if (first->status() != 0) {
+          break;
+        }
+        (void)first->data();
+        if (first->status() != 0) {
+          break;
+        }
+        ++read_count;
+      }
+      EXPECT_EQ(failed_ordinal, read_count);
+      EXPECT_EQ(IndexError_ReadData, first->status());
+      first.reset();
+
+      auto second = two_pass->create_iterator();
+      ASSERT_NE(nullptr, second);
+      // The first pass may have cached a prefix, but it is not a valid input.
+      EXPECT_FALSE(second->is_valid());
+      EXPECT_EQ(IndexError_ReadData, second->status());
+    }
+  }
+}
+
+TEST_F(IVFBuilderTest, TwoPassHolderKeepsSuccessfulSecondPass) {
+  prepare_index_holder(0, 8);
+  auto source = std::make_shared<SinglePassIteratorErrorHolder>(
+      holder_, holder_->count() + 1, IteratorErrorOperation::kValidity);
+  auto two_pass = IndexHelper::MakeTwoPassHolder(source);
+  ASSERT_NE(nullptr, two_pass);
+  ASSERT_NE(source.get(), two_pass.get());
+  for (size_t pass = 0; pass < 2; ++pass) {
+    SCOPED_TRACE(pass);
+    auto iter = two_pass->create_iterator();
+    ASSERT_NE(nullptr, iter);
+    size_t read_count = 0;
+    for (; iter->is_valid(); iter->next()) {
+      EXPECT_EQ(read_count, iter->key());
+      const auto *data = static_cast<const float *>(iter->data());
+      ASSERT_NE(nullptr, data);
+      EXPECT_FLOAT_EQ(static_cast<float>(read_count), data[0]);
+      EXPECT_EQ(0, iter->status());
+      ++read_count;
+    }
+    EXPECT_EQ(holder_->count(), read_count);
+    EXPECT_EQ(0, iter->status());
+  }
+}
+
+TEST_F(IVFBuilderTest, MaterializationPreservesIteratorReadError) {
+  dimension_ = 16;
+  index_meta_.set_meta(IndexMeta::DataType::DT_FP32, dimension_);
+  params_.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+  prepare_index_holder(0, 128);
+  threads_ = std::make_shared<SingleQueueIndexThreads>(1, false);
+  for (auto operation :
+       {IteratorErrorOperation::kValidity, IteratorErrorOperation::kKey,
+        IteratorErrorOperation::kData}) {
+    for (size_t failed_ordinal : {0U, 65U}) {
+      SCOPED_TRACE(static_cast<int>(operation));
+      SCOPED_TRACE(failed_ordinal);
+      IVFBuilder builder;
+      ASSERT_EQ(0, builder.init(index_meta_, params_));
+      ASSERT_EQ(0, builder.train(threads_, holder_));
+      auto failing = std::make_shared<IteratorErrorHolder>(
+          holder_, failed_ordinal, operation);
+      ASSERT_EQ(IndexError_ReadData, builder.build(threads_, failing));
+      // The partial copy must not become a successfully built index.
+      EXPECT_EQ(IndexError_Runtime, builder.dump(nullptr));
+    }
+  }
+}
+
+TEST_F(IVFBuilderTest, ConvertedIteratorsPreserveSourceReadError) {
+  prepare_index_holder(0, 8);
+  for (const char *name : {"HalfFloatConverter", "CosineFp32Converter"}) {
+    for (auto operation :
+         {IteratorErrorOperation::kValidity, IteratorErrorOperation::kKey,
+          IteratorErrorOperation::kData}) {
+      for (size_t failed_ordinal : {0U, 3U}) {
+        SCOPED_TRACE(name);
+        SCOPED_TRACE(static_cast<int>(operation));
+        SCOPED_TRACE(failed_ordinal);
+        auto converter = IndexFactory::CreateConverter(name);
+        ASSERT_NE(nullptr, converter);
+        ASSERT_EQ(0, converter->init(index_meta_, Params{}));
+        auto failing = std::make_shared<IteratorErrorHolder>(
+            holder_, failed_ordinal, operation);
+        ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, failing));
+        auto converted = converter->result();
+        ASSERT_NE(nullptr, converted);
+        auto iter = converted->create_iterator();
+        ASSERT_NE(nullptr, iter);
+        size_t read_count = 0;
+        for (; iter->is_valid(); iter->next()) {
+          (void)iter->key();
+          if (iter->status() != 0) {
+            break;
+          }
+          ASSERT_NE(nullptr, iter->data());
+          if (iter->status() != 0) {
+            break;
+          }
+          ++read_count;
+        }
+        EXPECT_EQ(failed_ordinal, read_count);
+        EXPECT_EQ(IndexError_ReadData, iter->status());
+        iter->next();
+        EXPECT_FALSE(iter->is_valid());
+        EXPECT_EQ(IndexError_ReadData, iter->status());
+      }
+    }
+  }
 }
 
 // Defer execution until wait_finish() to exercise the worst case: producers

@@ -20,7 +20,7 @@ else()
 
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(FILTER ALL_TEST_SRCS EXCLUDE REGEX
-         "/diskann_file_reader_aio_test\\.cc$")
+         "/diskann_file_reader_aio_test\\.cc$|/diskann_libaio_lifetime_test\\.cc$")
   endif()
 endif()
 

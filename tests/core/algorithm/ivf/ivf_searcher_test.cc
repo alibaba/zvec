@@ -4103,9 +4103,10 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
 };
 
 TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
-  // No quantizer is injected: both storage implementations must reconstruct
+  // No quantizer is injected: all storage implementations must reconstruct
   // it from the dedicated persisted metadata and serialized state.
-  for (const char *storage_name : {"FileReadStorage", "MMapFileReadStorage"}) {
+  for (const char *storage_name :
+       {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
     SCOPED_TRACE(storage_name);
     auto storage = open_storage(storage_name);
     ASSERT_NE(nullptr, storage);

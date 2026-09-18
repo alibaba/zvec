@@ -357,108 +357,171 @@ inline IndexProvider::Pointer convert_holder_to_provider(
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_FP16>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const ailego::Float16 *data =
             static_cast<const ailego::Float16 *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<ailego::Float16> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(ailego::Float16));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_FP32: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const float *data = static_cast<const float *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<float> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(float));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_FP64: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_FP64>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const double *data = static_cast<const double *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<double> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(double));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_INT8: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_INT8>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const int8_t *data = static_cast<const int8_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<int8_t> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(int8_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_INT16: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_INT16>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const int16_t *data = static_cast<const int16_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         ailego::NumericalVector<int16_t> vec(dimension);
         std::memcpy(vec.data(), data, dimension * sizeof(int16_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_BINARY32: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_BINARY32>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const uint32_t *data = static_cast<const uint32_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         size_t binary_size = (dimension + 31) / 32;
         ailego::BinaryVector<uint32_t> vec(dimension);
         std::memcpy(vec.data(), data, binary_size * sizeof(uint32_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     case IndexMeta::DataType::DT_BINARY64: {
       auto provider = std::make_shared<
           MultiPassIndexProvider<IndexMeta::DataType::DT_BINARY64>>(dimension);
       auto iter = holder->create_iterator();
+      if (!iter) {
+        return nullptr;
+      }
       while (iter->is_valid()) {
         uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return nullptr;
+        }
         const uint64_t *data = static_cast<const uint64_t *>(iter->data());
+        if (!data || iter->status() != 0) {
+          return nullptr;
+        }
         size_t binary_size = (dimension + 63) / 64;
         ailego::BinaryVector<uint64_t> vec(dimension);
         std::memcpy(vec.data(), data, binary_size * sizeof(uint64_t));
         provider->emplace(key, std::move(vec));
         iter->next();
       }
-      return provider;
+      return iter->status() == 0 ? provider : nullptr;
     }
 
     default:

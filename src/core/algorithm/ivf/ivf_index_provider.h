@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 #include <numeric>
 #include <vector>
 #include <zvec/core/framework/index_searcher.h>
@@ -106,8 +107,8 @@ class IVFIndexProvider : public IndexProvider {
    public:
     SortedIterator(const IVFEntity::Pointer &entity) : entity_(entity) {
       count_ = entity_->vector_count();
-      mapping_ = entity_->get_key_order_mapping();
-      if (!mapping_) {
+      use_mapping_ = entity_->has_key_order_mapping();
+      if (!use_mapping_) {
         // Fallback: compute sorting if mapping segment is unavailable
         fallback_.resize(count_);
         std::iota(fallback_.begin(), fallback_.end(), size_t(0));
@@ -121,35 +122,104 @@ class IVFIndexProvider : public IndexProvider {
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
     const void *data() const override {
-      return DecodeVector(entity_, entity_->get_vector(current_local_id()),
-                          &vector_);
+      size_t local_id = current_local_id();
+      if (local_id >= count_) {
+        return nullptr;
+      }
+      const void *result =
+          DecodeVector(entity_, entity_->get_vector(local_id), &vector_);
+      if (!result) {
+        status_ = IndexError_ReadData;
+      }
+      return result;
     }
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return pos_ < count_;
+      return status_ == 0 && pos_ < count_ &&
+             (!use_mapping_ || ensure_mapping_chunk());
+    }
+
+    int status() const override {
+      return status_;
     }
 
     //! Retrieve primary key
     uint64_t key() const override {
-      return entity_->get_key(current_local_id());
+      size_t local_id = current_local_id();
+      if (local_id >= count_) {
+        return kInvalidKey;
+      }
+      const uint64_t result = entity_->get_key(local_id);
+      if (result == kInvalidKey) {
+        status_ = IndexError_ReadData;
+      }
+      return result;
     }
 
     //! Next iterator
     void next() override {
-      ++pos_;
+      if (status_ == 0 && pos_ < count_) {
+        ++pos_;
+      }
     }
 
    private:
+    bool ensure_mapping_chunk() const {
+      if (status_ != 0 || pos_ >= count_) {
+        return false;
+      }
+      if (pos_ >= mapping_chunk_begin_ &&
+          pos_ - mapping_chunk_begin_ < mapping_chunk_.size()) {
+        return true;
+      }
+      mapping_chunk_begin_ = pos_;
+      const size_t chunk_count =
+          std::min(kMappingChunkEntries, count_ - mapping_chunk_begin_);
+      try {
+        mapping_chunk_.resize(chunk_count);
+      } catch (const std::bad_alloc &) {
+        status_ = IndexError_NoMemory;
+        return false;
+      }
+      if (entity_->get_key_order_mapping(mapping_chunk_begin_,
+                                         mapping_chunk_.data(),
+                                         chunk_count) != chunk_count) {
+        mapping_chunk_.clear();
+        status_ = IndexError_ReadData;
+        return false;
+      }
+      if (std::any_of(mapping_chunk_.begin(), mapping_chunk_.end(),
+                      [this](uint32_t id) { return id >= count_; })) {
+        mapping_chunk_.clear();
+        status_ = IndexError_InvalidFormat;
+        return false;
+      }
+      return true;
+    }
+
     size_t current_local_id() const {
-      return mapping_ ? static_cast<size_t>(mapping_[pos_]) : fallback_[pos_];
+      if (status_ != 0 || pos_ >= count_) {
+        return count_;
+      }
+      if (!use_mapping_) {
+        return fallback_[pos_];
+      }
+      if (!ensure_mapping_chunk()) {
+        return count_;
+      }
+      return static_cast<size_t>(mapping_chunk_[pos_ - mapping_chunk_begin_]);
     }
 
     //! Members
+    static constexpr size_t kMappingChunkEntries = 4096;
     IVFEntity::Pointer entity_;
     mutable std::string vector_;
-    const uint32_t *mapping_{nullptr};  // points into mapping_ segment data
-    std::vector<size_t> fallback_;      // used only if mapping_ unavailable
+    bool use_mapping_{false};
+    mutable int status_{0};
+    mutable std::vector<uint32_t> mapping_chunk_;
+    mutable size_t mapping_chunk_begin_{0};
+    std::vector<size_t> fallback_;  // used only if mapping_ unavailable
     size_t count_{0};
     size_t pos_{0};
   };

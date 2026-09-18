@@ -57,11 +57,24 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
     }
 
     bool is_valid() const override {
-      return owner_->error_ == 0 && source_iter_ && source_iter_->is_valid();
+      if (owner_->error_ != 0 || !source_iter_) {
+        return false;
+      }
+      const bool valid = source_iter_->is_valid();
+      owner_->error_ = source_iter_->status();
+      return owner_->error_ == 0 && valid;
+    }
+
+    int status() const override {
+      return owner_->error_;
     }
 
     uint64_t key() const override {
-      return source_iter_->key();
+      const uint64_t result = source_iter_->key();
+      if (owner_->error_ == 0) {
+        owner_->error_ = source_iter_->status();
+      }
+      return result;
     }
 
     void next() override {
@@ -74,6 +87,10 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
       data_ = nullptr;
       if (owner_->error_ != 0) return;
       while (!source_iter_ || !source_iter_->is_valid()) {
+        if (source_iter_ && source_iter_->status() != 0) {
+          owner_->error_ = source_iter_->status();
+          return;
+        }
         source_iter_.reset();
         if (source_index_ >= owner_->sources_.size()) return;
         source_ = &owner_->sources_[source_index_++];
@@ -83,7 +100,16 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
           return;
         }
       }
+      if (source_iter_->status() != 0) {
+        owner_->error_ = source_iter_->status();
+        return;
+      }
       data_ = source_iter_->data();
+      if (source_iter_->status() != 0) {
+        owner_->error_ = source_iter_->status();
+        data_ = nullptr;
+        return;
+      }
       if (!data_) {
         owner_->error_ = core::IndexError_ReadData;
         return;
@@ -610,6 +636,14 @@ int Index::close() {
   if (ailego_unlikely(streamer_->cleanup() != 0)) {
     LOG_ERROR("Failed to cleanup streamer");
     return core::IndexError_Runtime;
+  }
+  // Contexts are cached per index type in thread-local storage. IVF contexts
+  // own cloned storage segments, so leaving the current thread's context in
+  // the cache after Close would keep the buffer pool (and its metadata/pages)
+  // alive until another IVF search or thread exit.
+  if (context_index_ < context_list.size()) {
+    context_list[context_index_].reset();
+    context_index_ = std::numeric_limits<size_t>::max();
   }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");

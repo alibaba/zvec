@@ -718,6 +718,18 @@ class ZVEC_AILEGO_API VecBufferPool {
     return file_size_;
   }
 
+  //! The backing file remains available when the budget cannot fit a cache.
+  bool cache_enabled() const {
+    return initialized_;
+  }
+
+  //! Borrow the page-data descriptor (a CRT descriptor on Windows). The pool
+  //! owns it: callers must not close it or change its flags, and must retain
+  //! the pool until they have captured their own handle to the same file.
+  int file_descriptor() const {
+    return fd_;
+  }
+
   //! Sequentially preload pages into the pool until pool is full.
   void warmup();
 

@@ -22,7 +22,9 @@
 #include <ailego/pattern/defer.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
 
@@ -69,6 +71,67 @@ class BufferStorageWriteTest : public ::testing::Test {
 
   std::string file_path_;
 };
+
+TEST_F(BufferStorageWriteTest, MissingFileReturnsErrorAndAllowsRetry) {
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  int result = 0;
+  ASSERT_NO_THROW(result = storage->open(file_path_, false));
+  EXPECT_EQ(IndexError_OpenFile, result);
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+  EXPECT_TRUE(storage->file_path().empty());
+
+  {
+    auto writer = open_writable();
+    ASSERT_NE(nullptr, writer);
+    ASSERT_EQ(0, writer->close());
+  }
+  ASSERT_EQ(0, storage->open(file_path_, false));
+  EXPECT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_EQ(file_path_, storage->file_path());
+  EXPECT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, FailedFileCapturePreservesPublishedState) {
+  const std::string expected = "original storage survives failed reopen";
+  {
+    auto writer = open_writable();
+    ASSERT_NE(nullptr, writer);
+    ASSERT_EQ(0, writer->append("payload", 4096));
+    auto segment = writer->get("payload");
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(expected.size(),
+              segment->write(0, expected.data(), expected.size()));
+    ASSERT_EQ(0, writer->flush());
+    ASSERT_EQ(0, writer->close());
+  }
+  auto storage = open_read_only();
+  ASSERT_NE(nullptr, storage);
+  auto published_pool = storage->vec_buffer_pool();
+  auto published_segment = storage->get("payload");
+  ASSERT_NE(nullptr, published_pool);
+  ASSERT_NE(nullptr, published_segment);
+  const std::string missing_path = file_path_ + ".missing";
+  ailego::File::Delete(missing_path);
+  int result = 0;
+  ASSERT_NO_THROW(result = storage->open(missing_path, false));
+  EXPECT_EQ(IndexError_OpenFile, result);
+  EXPECT_EQ(file_path_, storage->file_path());
+  EXPECT_EQ(published_pool, storage->vec_buffer_pool());
+  EXPECT_TRUE(storage->has("payload"));
+
+  std::string actual(expected.size(), '\0');
+  ASSERT_EQ(actual.size(),
+            published_segment->fetch(0, actual.data(), actual.size()));
+  EXPECT_EQ(expected, actual);
+  auto segment = storage->get("payload");
+  ASSERT_NE(nullptr, segment);
+  std::fill(actual.begin(), actual.end(), '\0');
+  ASSERT_EQ(actual.size(), segment->fetch(0, actual.data(), actual.size()));
+  EXPECT_EQ(expected, actual);
+  EXPECT_EQ(0, storage->close());
+}
 
 // ===== Basic Write Tests =====
 
@@ -1801,12 +1864,17 @@ TEST_F(BufferStorageWriteTest, CR_ReadOnlyMetadataPressureFallsBackToBypass) {
   {
     auto storage = open_read_only();
     ASSERT_TRUE(storage);
+    ASSERT_NE(nullptr, storage->vec_buffer_pool());
+    EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
+    EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
+    EXPECT_EQ(0u, pool.stats().metadata_used);
     auto seg = storage->get("seg1");
     ASSERT_TRUE(seg);
     IndexStorage::MemoryBlock block;
     ASSERT_EQ(expected.size(), seg->read(0, block, expected.size()));
     EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
     EXPECT_EQ(0, std::memcmp(expected.data(), block.data(), expected.size()));
+    EXPECT_EQ(0u, pool.stats().page_used);
     ASSERT_EQ(0, storage->close());
   }
   ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));

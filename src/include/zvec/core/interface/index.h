@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -252,7 +253,7 @@ class ZVEC_CORE_API Index {
   // converter_/reformer_/metric_ stay null.
   std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
-  size_t context_index_;
+  size_t context_index_{std::numeric_limits<size_t>::max()};
   core::IndexStorage::Pointer storage_{};
 
   bool is_open_{false};

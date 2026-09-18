@@ -21,6 +21,7 @@
 #include <thread>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "utility/utility_params.h"
@@ -56,7 +57,7 @@ class BufferReadStorageTest : public testing::Test {
     std::remove(file_path_.c_str());
   }
 
-  IndexStorage::Pointer CreateStorage(const std::string &warmup_mode) {
+  IndexStorage::Pointer create_storage(const std::string &warmup_mode) {
     auto storage = IndexFactory::CreateStorage("BufferReadStorage");
     EXPECT_NE(storage, nullptr);
     if (!storage) {
@@ -74,13 +75,15 @@ class BufferReadStorageTest : public testing::Test {
 };
 
 TEST_F(BufferReadStorageTest, NoneDefersPagePopulationUntilFirstRead) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
   auto &pool = ailego::MemoryLimitPool::get_instance();
   EXPECT_EQ(0u, pool.stats().page_used);
-  EXPECT_NE(nullptr, storage->vec_buffer_pool());
+  ASSERT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_TRUE(storage->vec_buffer_pool()->cache_enabled());
+  EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
@@ -91,7 +94,7 @@ TEST_F(BufferReadStorageTest, NoneDefersPagePopulationUntilFirstRead) {
 }
 
 TEST_F(BufferReadStorageTest, SequentialPreservesExistingWarmupBehavior) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
@@ -105,7 +108,7 @@ TEST_F(BufferReadStorageTest, SequentialPreservesExistingWarmupBehavior) {
 }
 
 TEST_F(BufferReadStorageTest, ResidentScatterReadReturnsPinnedPageSpans) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
@@ -130,7 +133,7 @@ TEST_F(BufferReadStorageTest, ResidentScatterReadReturnsPinnedPageSpans) {
 }
 
 TEST_F(BufferReadStorageTest, ColdScatterReadKeepsContiguousFallback) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
@@ -159,27 +162,33 @@ TEST_F(BufferReadStorageTest, PoolSmallerThanOnePageFallsBackToBypass) {
   const size_t kTooSmall = ailego::kVectorPageSize - 1;
   ASSERT_EQ(0, ailego::MemoryLimitPool::get_instance().init(kTooSmall));
 
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
-  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+  ASSERT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
+  EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
   std::string actual(payload_.size(), '\0');
   ASSERT_EQ(actual.size(), segment->fetch(0, actual.data(), actual.size()));
   EXPECT_EQ(payload_, actual);
+  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
   ASSERT_EQ(
       0, ailego::MemoryLimitPool::get_instance().init(ailego::kVectorPageSize));
 
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
+  ASSERT_NE(nullptr, storage->vec_buffer_pool());
+  EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
+  EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
@@ -187,10 +196,11 @@ TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
   ASSERT_EQ(64u, segment->read(0, block, 64));
   EXPECT_EQ(0, std::memcmp(payload_.data(), block.data(), 64));
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
+  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, CachePressureFallsBackToOwnedRead) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
@@ -212,7 +222,7 @@ TEST_F(BufferReadStorageTest, MemoryBlockKeepsPoolAliveAfterStorageClose) {
   IndexStorage::MemoryBlock block;
   IndexStorage::MemoryBlock copy;
   {
-    auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+    auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
     ASSERT_NE(storage, nullptr);
     ASSERT_EQ(0, storage->open(file_path_, false));
     auto segment = storage->get("payload");
@@ -234,7 +244,7 @@ TEST_F(BufferReadStorageTest, MemoryBlockKeepsPoolAliveAfterStorageClose) {
 }
 
 TEST_F(BufferReadStorageTest, BorrowedReadAvoidsOwningHandleOnResidentPage) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
@@ -253,7 +263,7 @@ TEST_F(BufferReadStorageTest, BorrowedReadAvoidsOwningHandleOnResidentPage) {
 }
 
 TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
@@ -287,7 +297,7 @@ TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
 }
 
 TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
@@ -323,7 +333,7 @@ TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
 }
 
 TEST_F(BufferReadStorageTest, MissingFileReturnsErrorWithoutThrowing) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
 
   const std::string missing_path = file_path_ + ".missing";
@@ -334,7 +344,7 @@ TEST_F(BufferReadStorageTest, MissingFileReturnsErrorWithoutThrowing) {
 }
 
 TEST_F(BufferReadStorageTest, FailedReopenPreservesPublishedState) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
@@ -365,7 +375,7 @@ TEST_F(BufferReadStorageTest, RejectsOutOfRangeContainerOffset) {
 }
 
 TEST_F(BufferReadStorageTest, RangeChecksDoNotOverflow) {
-  auto storage = CreateStorage(BUFFER_READ_STORAGE_WARMUP_NONE);
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
