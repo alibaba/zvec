@@ -272,8 +272,14 @@ class ProximaEngineHelper {
                 });
         break;
       case IndexType::IVF_RABITQ: {
-        const auto status = validate_ivf_rabitq_query_params(params.get());
-        if (!status.ok()) return status;
+        // An untrained IVF_RABITQ field can be backed by Flat.  In that case
+        // only the common query fields are consumed, and a base QueryParams is
+        // sufficient.  The collection/query validation path has already
+        // checked the logical field's concrete parameters.
+        if (dynamic_cast<core_interface::FlatQueryParam *>(engine) == nullptr) {
+          const auto status = validate_ivf_rabitq_query_params(params.get());
+          if (!status.ok()) return status;
+        }
         valid = _update_query_param<IvfRabitqQueryParams,
                                     core_interface::IVFRabitqQueryParam>(
             params, engine, defaults,
