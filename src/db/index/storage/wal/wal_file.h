@@ -13,8 +13,11 @@
 // limitations under the License.
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <zvec/db/status.h>
 
 
 namespace zvec {
@@ -26,6 +29,7 @@ using WalFilePtr = std::shared_ptr<WalFile>;
 struct WalOptions {
   uint32_t max_docs_wal_flush{0};
   bool create_new{false};
+  bool read_only{false};
 };
 
 class WalFile {
@@ -45,8 +49,11 @@ class WalFile {
 
  public:
   virtual int append(std::string &&data) = 0;
+  // Prepare before next(), including after append() changes the file position.
   virtual int prepare_for_read() = 0;
-  virtual std::string next() = 0;
+  // A successful empty optional means EOF or an incomplete final crash record.
+  // Read failures and complete but corrupt records return an error.
+  virtual Result<std::optional<std::string>> next() = 0;
 
  public:
   //! Open and initialize WalFile
