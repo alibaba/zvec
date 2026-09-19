@@ -748,7 +748,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      QuantizerParam quantizer_param = {}, bool two_pass_build = false,
+      QuantizerParam quantizer_param = {}, bool two_pass_build = true,
       bool use_flat_contiguous_memory = false,
       DataType flat_data_type = DataType::VECTOR_FP32)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type,

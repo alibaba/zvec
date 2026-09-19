@@ -173,6 +173,13 @@ class Segment {
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
 
+  // Valid only while the owning collection is open read-only. Computed by
+  // Open after recovery, before queries can run; not maintained for writes.
+  virtual bool has_identity_doc_ids() const = 0;
+
+  // Map segment row IDs to insertion ordinals in place; preserve -1 padding.
+  virtual Status get_global_doc_ids(std::vector<int64_t> &doc_ids) const = 0;
+
   // Keep Segment alive while consuming the returned reader.
   virtual RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const = 0;

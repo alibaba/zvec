@@ -14,6 +14,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <vector>
 #include "db/index/common/index_filter.h"
 #include "vector_column_indexer.h"
@@ -38,9 +39,29 @@ class CombinedVectorColumnIndexer {
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params);
 
+  // Dense top-k search without group-by, brute-force keys or vector fetching.
+  // Uses the same block/refiner handling; output buffers hold topk elements.
+  Status search_fast(const vector_column_params::VectorData &vector_data,
+                     const vector_column_params::QueryParams &query_params,
+                     int64_t *output_ids, float *output_scores);
+
   virtual Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t segment_doc_id) const;
 
+
+  //! True when at least one backing vector indexer is available for search.
+  bool has_searchable_indexers() const {
+    return !indexers_.empty();
+  }
+
+  // Borrowed indexers for a single block with identity block-local IDs.
+  // Callers must retain this object and protect its index lifecycle.
+  std::pair<const VectorColumnIndexer *, const VectorColumnIndexer *>
+  single_block_indexers() const {
+    if (indexers_.size() != 1 || block_offsets_[0] != 0) return {};
+    return {indexers_[0].get(),
+            normal_indexers_.size() == 1 ? normal_indexers_[0].get() : nullptr};
+  }
 
  protected:
   /**

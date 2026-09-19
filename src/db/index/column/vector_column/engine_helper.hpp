@@ -20,8 +20,10 @@
 #include <zvec/db/doc.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/status.h>
+#include "db/index/common/query_validation.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/type.h"
+#include "vector_column_indexer.h"
 #include "vector_column_params.h"
 
 
@@ -94,21 +96,104 @@ class ProximaEngineHelper {
     return engine_filter;
   }
 
+  // Synchronous search with call-local parameters, shared by the direct
+  // read-only collection route and the general column-indexer route.
+  static Status search_fast(const VectorColumnIndexer &indexer,
+                            const core_interface::VectorData &vector_data,
+                            const QueryParams::Ptr &query_params, uint32_t topk,
+                            const IndexFilter *filter,
+                            const VectorColumnIndexer *reference_indexer,
+                            int64_t *output_ids, float *output_scores) {
+    auto *index = indexer.index.get();
+    if (!index) return Status::InvalidArgument("Index not opened");
+    auto search = [&](auto engine_query_param) -> Status {
+      engine_query_param.topk = topk;
+      if (query_params) {
+        auto status = ProximaEngineHelper::update_engine_query_param(
+            query_params->type(), query_params, &engine_query_param, nullptr);
+        if (!status.ok()) return status;
+      }
+      if (filter) {
+        engine_query_param.filter =
+            ProximaEngineHelper::convert_to_engine_filter(filter);
+      }
+      core_interface::RefinerParam refiner;
+      if (reference_indexer) {
+        refiner.scale_factor_ = query_params->scale_factor();
+        refiner.reference_index = core_interface::Index::Pointer(
+            core_interface::Index::Pointer{}, reference_indexer->index.get());
+        engine_query_param.refiner_param =
+            std::shared_ptr<core_interface::RefinerParam>(
+                std::shared_ptr<core_interface::RefinerParam>{}, &refiner);
+      }
+      // search_fast and its fallback are synchronous. Borrow call-local
+      // parameters without a control block; no mutable state is shared between
+      // queries, and both indexers remain owned by the caller throughout
+      // search.
+      const core_interface::BaseIndexQueryParam::Pointer params(
+          core_interface::BaseIndexQueryParam::Pointer{}, &engine_query_param);
+      if (index->search_fast(vector_data, params, output_ids, output_scores) !=
+          0) {
+        return Status::InternalError("Failed to search vector");
+      }
+      return Status::OK();
+    };
+    switch (indexer.field_schema_.index_type()) {
+      case IndexType::FLAT:
+        return search(core_interface::FlatQueryParam{});
+      case IndexType::HNSW:
+        return search(core_interface::HNSWQueryParam{});
+      case IndexType::HNSW_RABITQ:
+        return search(core_interface::HNSWRabitqQueryParam{});
+      case IndexType::IVF:
+        return search(core_interface::IVFQueryParam{});
+      case IndexType::IVF_RABITQ:
+        return search(core_interface::IVFRabitqQueryParam{});
+      case IndexType::DISKANN:
+        return search(core_interface::DiskAnnQueryParam{});
+      case IndexType::VAMANA:
+        return search(core_interface::VamanaQueryParam{});
+      default:
+        return Status::InvalidArgument("unsupported index type");
+    }
+  }
+
  private:
+  template <typename DbParam, typename EngineParam, typename Update>
+  static bool _update_query_param(
+      const QueryParams::Ptr &params,
+      core_interface::BaseIndexQueryParam *engine,
+      const core_interface::BaseIndexQueryParam *defaults, Update update) {
+    const auto *p = dynamic_cast<const DbParam *>(params.get());
+    if (params && !p) {
+      // Flat fallback consumes only common fields, so base QueryParams is
+      // sufficient even when it carries the original graph index type.
+      return dynamic_cast<core_interface::FlatQueryParam *>(engine) != nullptr;
+    }
+    if (auto *e = dynamic_cast<EngineParam *>(engine)) {
+      update(p, e, static_cast<const EngineParam *>(defaults));
+    }
+    return true;
+  }
+
   template <typename EngineQueryParamType>
-  static Result<std::unique_ptr<EngineQueryParamType>>
+  static Result<std::shared_ptr<EngineQueryParamType>>
   _build_common_query_param(
       const vector_column_params::QueryParams &db_query_params) {
-    auto engine_query_param = std::make_unique<EngineQueryParamType>();
+    auto engine_query_param = std::make_shared<EngineQueryParamType>();
     engine_query_param->topk = db_query_params.topk;
     engine_query_param->fetch_vector = db_query_params.fetch_vector;
 
-    engine_query_param->filter =
-        convert_to_engine_filter(db_query_params.filter);
+    if (db_query_params.filter) {
+      engine_query_param->filter =
+          convert_to_engine_filter(db_query_params.filter);
+    }
 
     if (db_query_params.query_params) {
-      engine_query_param->radius = db_query_params.query_params->radius();
-      engine_query_param->is_linear = db_query_params.query_params->is_linear();
+      auto status = update_engine_query_param(
+          db_query_params.query_params->type(), db_query_params.query_params,
+          engine_query_param.get(), nullptr);
+      if (!status.ok()) return tl::make_unexpected(status);
     }
     if (db_query_params.refiner_param) {
       {
@@ -135,7 +220,99 @@ class ProximaEngineHelper {
   }
 
  public:
-  static Result<std::unique_ptr<core_interface::BaseIndexQueryParam>>
+  // Update an existing engine parameter object without allocating. The DB
+  // type can differ from the engine type while an untrained graph uses Flat.
+  // A null engine validates only; defaults restores values when params is null.
+  static Status update_engine_query_param(
+      IndexType index_type, const zvec::QueryParams::Ptr &params,
+      core_interface::BaseIndexQueryParam *engine,
+      const core_interface::BaseIndexQueryParam *defaults) {
+    if (params && params->type() != index_type) {
+      return Status::InvalidArgument(
+          "query parameter type does not match the field index");
+    }
+    bool valid = false;
+    switch (index_type) {
+      case IndexType::VAMANA:
+        valid = _update_query_param<VamanaQueryParams,
+                                    core_interface::VamanaQueryParam>(
+            params, engine, defaults,
+            [](const auto *p, auto *e, const auto *d) {
+              e->ef_search = p ? p->ef_search() : d->ef_search;
+              e->prefetch_offset =
+                  p ? p->prefetch_offset() : d->prefetch_offset;
+              e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
+            });
+        break;
+      case IndexType::HNSW:
+        valid = _update_query_param<HnswQueryParams,
+                                    core_interface::HNSWQueryParam>(
+            params, engine, defaults,
+            [](const auto *p, auto *e, const auto *d) {
+              e->ef_search = p ? p->ef() : d->ef_search;
+              e->prefetch_offset =
+                  p ? p->prefetch_offset() : d->prefetch_offset;
+              e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
+            });
+        break;
+      case IndexType::HNSW_RABITQ:
+        valid = _update_query_param<HnswRabitqQueryParams,
+                                    core_interface::HNSWRabitqQueryParam>(
+            params, engine, defaults,
+            [](const auto *p, auto *e, const auto *d) {
+              e->ef_search = p ? p->ef() : d->ef_search;
+            });
+        break;
+      case IndexType::IVF:
+        valid =
+            _update_query_param<IVFQueryParams, core_interface::IVFQueryParam>(
+                params, engine, defaults,
+                [](const auto *p, auto *e, const auto *d) {
+                  e->nprobe = p ? p->nprobe() : d->nprobe;
+                });
+        break;
+      case IndexType::IVF_RABITQ: {
+        // An untrained IVF_RABITQ field can be backed by Flat.  In that case
+        // only the common query fields are consumed, and a base QueryParams is
+        // sufficient.  The collection/query validation path has already
+        // checked the logical field's concrete parameters.
+        if (dynamic_cast<core_interface::FlatQueryParam *>(engine) == nullptr) {
+          const auto status = validate_ivf_rabitq_query_params(params.get());
+          if (!status.ok()) return status;
+        }
+        valid = _update_query_param<IvfRabitqQueryParams,
+                                    core_interface::IVFRabitqQueryParam>(
+            params, engine, defaults,
+            [](const auto *p, auto *e, const auto *d) {
+              e->nprobe = p ? p->nprobe() : d->nprobe;
+            });
+        break;
+      }
+      case IndexType::DISKANN:
+        valid = _update_query_param<DiskAnnQueryParams,
+                                    core_interface::DiskAnnQueryParam>(
+            params, engine, defaults,
+            [](const auto *p, auto *e, const auto *d) {
+              e->list_size = p ? p->list_size() : d->list_size;
+            });
+        break;
+      case IndexType::FLAT:
+        // Flat has no index-specific fields; base QueryParams is sufficient.
+        valid = true;
+        break;
+      default:
+        break;
+    }
+    if (!valid)
+      return Status::InvalidArgument("unsupported query parameter type");
+    if (engine) {
+      engine->radius = params ? params->radius() : defaults->radius;
+      engine->is_linear = params ? params->is_linear() : defaults->is_linear;
+    }
+    return Status::OK();
+  }
+
+  static Result<core_interface::BaseIndexQueryParam::Pointer>
   convert_to_engine_query_param(
       const FieldSchema &field_schema,
       const vector_column_params::QueryParams &query_params) {
@@ -168,15 +345,6 @@ class ProximaEngineHelper {
               hnsw_query_param_result.error().message()));
         }
         auto &hnsw_query_param = hnsw_query_param_result.value();
-        if (query_params.query_params) {
-          auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
-              query_params.query_params.get());
-          hnsw_query_param->ef_search = db_hnsw_query_params->ef();
-          hnsw_query_param->prefetch_offset =
-              db_hnsw_query_params->prefetch_offset();
-          hnsw_query_param->prefetch_lines =
-              db_hnsw_query_params->prefetch_lines();
-        }
         return std::move(hnsw_query_param);
       }
 
@@ -190,12 +358,6 @@ class ProximaEngineHelper {
               hnsw_query_param_result.error().message()));
         }
         auto &hnsw_query_param = hnsw_query_param_result.value();
-        if (query_params.query_params) {
-          auto db_hnsw_rabitq_query_params =
-              dynamic_cast<const HnswRabitqQueryParams *>(
-                  query_params.query_params.get());
-          hnsw_query_param->ef_search = db_hnsw_rabitq_query_params->ef();
-        }
         return std::move(hnsw_query_param);
       }
 
@@ -209,11 +371,6 @@ class ProximaEngineHelper {
               ivf_query_param_result.error().message()));
         }
         auto &ivf_query_param = ivf_query_param_result.value();
-        if (query_params.query_params) {
-          auto db_ivf_query_params = dynamic_cast<const IVFQueryParams *>(
-              query_params.query_params.get());
-          ivf_query_param->nprobe = db_ivf_query_params->nprobe();
-        }
         return std::move(ivf_query_param);
       }
 
@@ -227,12 +384,6 @@ class ProximaEngineHelper {
               ivf_rabitq_query_param_result.error().message()));
         }
         auto &ivf_rabitq_query_param = ivf_rabitq_query_param_result.value();
-        if (query_params.query_params) {
-          auto db_ivf_rabitq_query_params =
-              dynamic_cast<const IvfRabitqQueryParams *>(
-                  query_params.query_params.get());
-          ivf_rabitq_query_param->nprobe = db_ivf_rabitq_query_params->nprobe();
-        }
         return std::move(ivf_rabitq_query_param);
       }
 
@@ -246,13 +397,6 @@ class ProximaEngineHelper {
               diskann_query_param_result.error().message()));
         }
         auto &diskann_query_param = diskann_query_param_result.value();
-        if (query_params.query_params) {
-          auto db_diskann_query_params =
-              dynamic_cast<const DiskAnnQueryParams *>(
-                  query_params.query_params.get());
-          diskann_query_param->list_size =
-              static_cast<uint32_t>(db_diskann_query_params->list_size());
-        }
         return std::move(diskann_query_param);
       }
 
@@ -266,16 +410,6 @@ class ProximaEngineHelper {
               vamana_query_param_result.error().message()));
         }
         auto &vamana_query_param = vamana_query_param_result.value();
-        if (query_params.query_params) {
-          auto db_vamana_query_params = dynamic_cast<const VamanaQueryParams *>(
-              query_params.query_params.get());
-          vamana_query_param->ef_search =
-              static_cast<uint32_t>(db_vamana_query_params->ef_search());
-          vamana_query_param->prefetch_offset =
-              db_vamana_query_params->prefetch_offset();
-          vamana_query_param->prefetch_lines =
-              db_vamana_query_params->prefetch_lines();
-        }
         return std::move(vamana_query_param);
       }
 

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "flat_streamer_entity.h"
+#include <algorithm>
 #include <cstdint>
+#include <utility>
 #include <zvec/core/framework/index_error.h>
 #include "flat_utility.h"
 
@@ -594,6 +596,90 @@ int FlatContiguousStreamerEntity::search_by_p_keys(
   }
   return evaluate_distances(*storage, query, &p_keys, filter, batch_size,
                             scratch, nullptr, heap);
+}
+
+int FlatStreamerEntity::search_by_p_keys_fast(
+    const void * /*query*/, const std::vector<uint64_t> & /*keys*/,
+    int64_t * /*output_ids*/, float * /*output_scores*/, size_t /*topk*/,
+    FlatSearchScratch * /*scratch*/) const {
+  return IndexError_NotImplemented;
+}
+
+int FlatContiguousStreamerEntity::search_by_p_keys_fast(
+    const void *query, const std::vector<uint64_t> &keys, int64_t *output_ids,
+    float *output_scores, size_t topk, FlatSearchScratch *scratch) const {
+  if (!query || !output_ids || topk == 0 || !scratch) {
+    return IndexError_InvalidArgument;
+  }
+  // Hold the same immutable generation for pointer lookup and evaluation.
+  // A concurrent degrade/add cannot free its rows while this call is active.
+  auto storage = load_contiguous_storage();
+  if (!storage || !storage->vector_memory || keys.size() < topk) {
+    return IndexError_NotImplemented;
+  }
+  auto &ptrs = scratch->vector_ptrs;
+  auto &extras = scratch->extra_values;
+  auto &distances = scratch->distances;
+  const size_t count = keys.size();
+  const size_t extra_size = extra_values_size();
+  const bool has_extras = extra_size != 0;
+  const size_t vector_data_size = meta().element_size() - extra_size;
+  ptrs.resize(count);
+  extras.resize(has_extras ? count : 0);
+  distances.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    ptrs[i] = get_vector_ptr_by_key(*storage, keys[i]);
+    if (!ptrs[i]) return IndexError_NotImplemented;
+    if (has_extras) {
+      extras[i] = static_cast<const char *>(ptrs[i]) + vector_data_size;
+    }
+  }
+  // Use the native reference's existing metric dispatch, including any
+  // batch-query preprocessing and per-record extra values.
+  const void *batch_query = query;
+  if (const auto &preprocess = batch_query_preprocess();
+      preprocess != nullptr) {
+    auto &buffer = scratch->query_buffer;
+    buffer.resize(meta().element_size());
+    std::memcpy(buffer.data(), query, buffer.size());
+    preprocess(buffer.data(), meta().dimension());
+    batch_query = buffer.data();
+  }
+  if (quantizer()) {
+    quantizer()->calc_distance_dp_query_batch(
+        ptrs.data(), static_cast<int>(count), query, distances.data());
+  } else if (const auto &batch = batch_distance(); batch) {
+    batch(ptrs.data(), batch_query, count, meta().dimension(), distances.data(),
+          has_extras ? extras.data() : nullptr);
+  } else {
+    for (size_t i = 0; i < count; ++i) {
+      distance()(query, ptrs[i], meta().dimension(), distances.data() + i);
+    }
+  }
+  std::vector<std::pair<uint64_t, float>> documents(count);
+  for (size_t i = 0; i < count; ++i) {
+    documents[i] = {keys[i], distances[i]};
+  }
+  const auto better = [](const auto &lhs, const auto &rhs) {
+    return lhs.second < rhs.second ||
+           (lhs.second == rhs.second && lhs.first < rhs.first);
+  };
+  auto selected_end = documents.begin() + topk;
+  std::make_heap(documents.begin(), selected_end, better);
+  for (auto candidate = selected_end; candidate != documents.end();
+       ++candidate) {
+    if (better(*candidate, documents.front())) {
+      std::pop_heap(documents.begin(), selected_end, better);
+      *(selected_end - 1) = *candidate;
+      std::push_heap(documents.begin(), selected_end, better);
+    }
+  }
+  std::sort_heap(documents.begin(), selected_end, better);
+  for (size_t i = 0; i < topk; ++i) {
+    output_ids[i] = static_cast<int64_t>(documents[i].first);
+    if (output_scores) output_scores[i] = documents[i].second;
+  }
+  return 0;
 }
 
 int FlatContiguousStreamerEntity::build_contiguous_memory() {

@@ -132,6 +132,12 @@ inline void QueryTarget::set_sparse_vector(std::string indices,
   vc.sparse_values_ = std::move(values);
 }
 
+// Buffers returned by the advanced dense query API.
+struct FastQueryResult {
+  std::vector<int64_t> ids;
+  std::vector<float> scores;
+};
+
 struct ZVEC_API SearchQuery {
   QueryTarget target_;
   int topk_{0};

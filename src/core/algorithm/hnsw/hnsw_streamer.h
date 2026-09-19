@@ -122,6 +122,7 @@ class HnswStreamer : public IndexStreamer {
 
   int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
                              std::vector<uint64_t> &keys,
+                             std::vector<float> *scores,
                              Context::Pointer &context) const override;
 
   //! Similarity brute force search

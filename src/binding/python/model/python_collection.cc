@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "python_collection.h"
+#include <limits>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc_iterator.h>
@@ -22,6 +24,41 @@
 namespace zvec {
 
 namespace {
+
+DataType dense_query_data_type(const py::array &vector) {
+  if (vector.ndim() != 1 || !(vector.flags() & py::array::c_style)) {
+    throw py::value_error("query vector must be a contiguous 1D array");
+  }
+  if (vector.shape(0) > std::numeric_limits<uint32_t>::max()) {
+    throw py::value_error("query vector dimension is too large");
+  }
+  // Read NumPy metadata directly instead of allocating a temporary buffer
+  // descriptor, shape/stride vectors and a PEP 3118 format string per query.
+  const auto dtype = vector.dtype();
+  const uint16_t endian_probe = 1;
+  const char native_order =
+      *reinterpret_cast<const uint8_t *>(&endian_probe) ? '<' : '>';
+  const char order = dtype.byteorder();
+  if (order != '=' && order != '|' && order != native_order) {
+    throw py::value_error("query vector requires a native numeric dtype");
+  }
+  const auto size = dtype.itemsize();
+  DataType type;
+  if (dtype.kind() == 'f' && size == 4) {
+    type = DataType::VECTOR_FP32;
+  } else if (dtype.kind() == 'f' && size == 8) {
+    type = DataType::VECTOR_FP64;
+  } else if (dtype.kind() == 'f' && size == 2) {
+    type = DataType::VECTOR_FP16;
+  } else if (dtype.kind() == 'i' && size == 1) {
+    type = DataType::VECTOR_INT8;
+  } else if (dtype.kind() == 'u' && size == 1) {
+    type = DataType::VECTOR_UINT8;
+  } else {
+    throw py::value_error("unsupported query vector dtype");
+  }
+  return type;
+}
 
 // Batch-materialize a DocPtrList into a list of (id, score, fields, vectors)
 // tuples in a single GIL-held section, avoiding per-doc _Doc wrappers and
@@ -96,6 +133,19 @@ py::list execute_for_python(const Collection &collection, const Query &query) {
   // GIL restored, schema read lock already released.
   auto snapshot = unwrap_expected(std::move(result));
   return docs_to_tuples(snapshot.docs, *snapshot.schema);
+}
+
+// Transfer ownership of the native buffer without a per-result Python loop.
+template <typename T>
+py::array_t<T> owned_array(std::vector<T> values) {
+  auto buffer = std::make_unique<std::vector<T>>(std::move(values));
+  const auto size = static_cast<py::ssize_t>(buffer->size());
+  auto *ptr = buffer.get();
+  py::capsule owner(ptr,
+                    [](void *p) { delete static_cast<std::vector<T> *>(p); });
+  buffer.release();
+  return py::array_t<T>({size}, {static_cast<py::ssize_t>(sizeof(T))},
+                        ptr->data(), owner);
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
@@ -340,6 +390,62 @@ void ZVecPyCollection::bind_dql_methods(
           "Execute a multi query with re-ranking and return results as a "
           "list of (id, score, fields, vectors) tuples materialized in one "
           "batch.")
+      .def(
+          "fast_query",
+          [](const Collection &self, const std::string &field_name,
+             const py::array &vector, QueryParams *params, py::handle topk_arg,
+             bool return_scores) -> py::object {
+            // Match query's Python integer contract at the native boundary,
+            // without an extra Python validation call on every fast query.
+            if (!PyLong_Check(topk_arg.ptr()) || PyBool_Check(topk_arg.ptr())) {
+              throw py::value_error("topk must be a positive integer");
+            }
+            int overflow = 0;
+            const long value =
+                PyLong_AsLongAndOverflow(topk_arg.ptr(), &overflow);
+            if (value == -1 && PyErr_Occurred()) {
+              throw py::error_already_set();
+            }
+            if (overflow < 0 || (overflow == 0 && value <= 0)) {
+              throw py::value_error("topk must be a positive integer");
+            }
+            // As in query's native topk setter, positive values that cannot
+            // fit in a C++ int are type-conversion errors.
+            if (overflow > 0 || value > std::numeric_limits<int>::max()) {
+              throw py::type_error("topk is outside the C++ int range");
+            }
+            const int topk = static_cast<int>(value);
+            const auto data_type = dense_query_data_type(vector);
+            const auto dimension = static_cast<uint32_t>(vector.shape(0));
+            // Python keeps the argument alive for this call. The DB reads it
+            // synchronously and never retains it, so no shared ownership
+            // conversion or reference-count traffic is needed here.
+            const QueryParams::Ptr borrowed(QueryParams::Ptr{}, params);
+            Result<FastQueryResult> result;
+            {
+              py::gil_scoped_release release;
+              result =
+                  self.fast_query(field_name, vector.data(), borrowed, topk,
+                                  return_scores, data_type, dimension);
+            }
+            auto output = unwrap_expected(std::move(result));
+            auto ids = owned_array(std::move(output.ids));
+            if (!return_scores) return ids;
+            return py::make_tuple(std::move(ids),
+                                  owned_array(std::move(output.scores)));
+          },
+          py::arg("field_name"), py::arg("vector").noconvert(),
+          py::arg("param") = static_cast<QueryParams *>(nullptr),
+          py::arg("topk") = 10, py::arg("return_scores") = false,
+          R"doc(Advanced dense query on a read-only collection, with no preparation step.
+
+Pass a contiguous 1D NumPy vector and query parameters on each call. Parameters
+may be constructed inline or reused. Returns an owning int64 internal ID array,
+or (ids, float32 scores) with return_scores=True. Scores include refinement.
+Missing results are padded with ID -1 / score NaN. Refinement uses param.scale_factor
+with the same semantics as Collection.query.
+Parameters and execution state belong to each call, as with Collection.query.
+)doc")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {
              Result<GroupResults> result;

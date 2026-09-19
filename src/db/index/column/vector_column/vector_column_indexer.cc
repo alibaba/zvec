@@ -214,4 +214,20 @@ Result<IndexResults::Ptr> VectorColumnIndexer::search(
   return result;
 }
 
+Status VectorColumnIndexer::search_fast(
+    const vector_column_params::VectorData &vector_data,
+    const vector_column_params::QueryParams &query_params, int64_t *output_ids,
+    float *output_scores, const VectorColumnIndexer *reference_indexer) {
+  if (index == nullptr) {
+    return Status::InvalidArgument("Index not opened");
+  }
+  auto engine_vector_data =
+      ProximaEngineHelper::convert_to_engine_vector(vector_data, is_sparse_);
+  if (!engine_vector_data) return engine_vector_data.error();
+  return ProximaEngineHelper::search_fast(
+      *this, engine_vector_data.value(), query_params.query_params,
+      query_params.topk, query_params.filter, reference_indexer, output_ids,
+      output_scores);
+}
+
 }  // namespace zvec

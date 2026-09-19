@@ -509,6 +509,42 @@ class Collection:
 
     # ========== Collection DQL-Query Methods ==========
 
+    def fast_query(
+        self,
+        field_name: str,
+        vector,
+        param=None,
+        topk: int = 10,
+        return_scores: bool = False,
+    ):
+        """Query a dense field directly, returning internal numeric IDs.
+
+        This advanced API requires a read-only collection. No preparation is
+        required: parameters may be constructed inline or reused across calls.
+        Parameters are read each time; execution state belongs to each call.
+
+        ``vector`` must be a contiguous 1D NumPy array matching the field's input
+        dtype and dimension. The result is an owning int64 array. With
+        ``return_scores=True``, returns ``(ids, scores)`` with float32 scores,
+        including refinement when enabled. Missing results are padded with
+        ID -1 / score NaN. Refinement uses ``param.scale_factor`` with the same
+        candidate-count semantics as :meth:`query`.
+
+        Use :meth:`query` for user string IDs, scalar filters, sparse queries,
+        group-by or fetching fields and vectors. Internal IDs must not be
+        stored across collection mutations or compaction.
+
+        Examples:
+            >>> ids = collection.fast_query("vector", vector, param, topk=10)
+            >>> ids, scores = collection.fast_query(
+            ...     "vector", vector, param, topk=10, return_scores=True
+            ... )
+        """
+        if self._obj is None:
+            msg = "fast query collection is closed"
+            raise ValueError(msg)
+        return self._obj.fast_query(field_name, vector, param, topk, return_scores)
+
     def query(
         self,
         queries: Optional[Union[Query, list[Query]]] = None,
