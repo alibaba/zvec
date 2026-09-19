@@ -449,6 +449,29 @@ jobs:
           # Ship shared libraries only (same policy as desktop platforms).
           rm -f "$ZVEC_DIST_DIR"/lib/*.a
 
+      - name: Strip debug symbols from shared libraries
+        shell: bash
+        run: |
+          # The NDK toolchain compiles with -g in all build types (AGP strips
+          # the .so files at APK packaging time, but we ship them directly).
+          # Without this step libzvec.so carries hundreds of MB of DWARF.
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          TOOLCHAIN_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # NDK r28+ removed the target-prefixed strip aliases; llvm-strip is
+          # the canonical tool. Fall back to llvm-objcopy --strip-all (equivalent)
+          # in case llvm-strip is unavailable.
+          if [ -x "$TOOLCHAIN_BIN/llvm-strip" ]; then
+            STRIP_CMD=("$TOOLCHAIN_BIN/llvm-strip")
+          elif [ -x "$TOOLCHAIN_BIN/llvm-objcopy" ]; then
+            STRIP_CMD=("$TOOLCHAIN_BIN/llvm-objcopy" "--strip-all")
+          else
+            echo "No strip tool found under $NDK" >&2
+            find "$NDK" \( -name 'llvm-strip' -o -name 'llvm-objcopy' \) 2>/dev/null >&2 || true
+            exit 1
+          fi
+          find "$ZVEC_DIST_DIR/lib" -name '*.so' -type f -print -exec "${STRIP_CMD[@]}" {} +
+          ls -lh "$ZVEC_DIST_DIR"/lib/*.so
+
       - name: Smoke-test staged SDK (link only)
         shell: bash
         run: |
