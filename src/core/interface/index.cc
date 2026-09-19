@@ -851,9 +851,7 @@ int Index::_dense_fetch(const uint32_t doc_id,
   out_vector_buffer.resize(input_vector_meta_.element_size());
 
   if (turbo_quantizer_ != nullptr) {
-    // The stored record is int8 codes + quantizer tail; dequantize restores
-    // the original FP32 vector (cosine layouts also denormalize by the
-    // stored norm).
+    // Decode the quantizer's stored layout back to the original vector format.
     if (turbo_quantizer_->dequantize(vector, streamer_vector_meta_,
                                      &out_vector_buffer) != 0) {
       LOG_ERROR("Failed to dequantize vector");
@@ -1017,11 +1015,10 @@ int Index::_prepare_dense_query(const VectorData &vector_data,
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   *prepared_query = dense_vector.data;
-  // A streamer may replace an incompatible pooled context before searching.
-  // Keep the transformed query in caller-owned storage so its data remains
-  // valid after this helper returns and throughout the complete search call.
-  // Check if need to transform feature
   *prepared_meta = input_vector_meta_;
+  // A streamer may replace an incompatible pooled context before searching.
+  // Store the transformed query in the caller-owned buffer so its data
+  // remains valid across both this helper's return and context replacement.
   if (turbo_quantizer_ != nullptr) {
     if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
                                    query_storage, prepared_meta) != 0) {
@@ -1157,20 +1154,8 @@ int Index::_collect_dense_result(
     }
   }
 
-  if (metric_ != nullptr && metric_->support_normalize()) {
-    if (has_group_by) {
-      for (auto &group : result->group_doc_list_) {
-        for (auto &doc : *group.mutable_docs()) {
-          metric_->normalize(doc.mutable_score());
-        }
-      }
-    } else {
-      for (auto &doc : result->doc_list_) {
-        metric_->normalize(doc.mutable_score());
-      }
-    }
-  } else if (turbo_quantizer_ != nullptr &&
-             turbo_quantizer_->support_score_normalization()) {
+  if (turbo_quantizer_ != nullptr &&
+      turbo_quantizer_->support_score_normalization()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -1182,9 +1167,23 @@ int Index::_collect_dense_result(
         turbo_quantizer_->normalize_score(doc.mutable_score());
       }
     }
+  } else if (metric_ != nullptr && metric_->support_normalize()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          metric_->normalize(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        metric_->normalize(doc.mutable_score());
+      }
+    }
   }
   if (turbo_quantizer_) {
-    if (context->fetch_vector()) {
+    // External HNSW vectors are already in the caller's input layout. They
+    // are not stored quantizer codes and therefore must not be dequantized.
+    if (context->fetch_vector() && !param_.use_external_vector) {
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;
