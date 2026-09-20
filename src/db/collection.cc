@@ -1889,12 +1889,11 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
   if (!options_.read_only_) {
-    return tl::make_unexpected(
-        Status::InvalidArgument(
-            "query_internal_ids requires a read-only collection"));
+    return tl::make_unexpected(Status::InvalidArgument(
+        "query_internal_ids requires a read-only collection"));
   }
-  if (!query.filter_.empty() || query.include_vector_ || query.include_doc_id_ ||
-      query.output_fields_.has_value()) {
+  if (!query.filter_.empty() || query.include_vector_ ||
+      query.include_doc_id_ || query.output_fields_.has_value()) {
     return tl::make_unexpected(Status::InvalidArgument(
         "query_internal_ids does not support filters or result-field "
         "materialization"));
