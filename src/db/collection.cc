@@ -51,7 +51,6 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/identifier_validation.h"
 #include "db/index/common/index_filter.h"
-#include "db/index/common/query_validation.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
@@ -1897,8 +1896,11 @@ Result<FastQueryResult> CollectionImpl::fast_query(
         Status::InvalidArgument("fast query requires a read-only collection"));
   }
 
-  const auto topk_status = validate_query_topk(topk);
-  CHECK_RETURN_STATUS_EXPECTED(topk_status);
+  if (static_cast<uint32_t>(topk) > kMaxQueryTopk) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Invalid query: topk[", topk, "] exceeds the maximum allowed value of ",
+        kMaxQueryTopk));
+  }
 
   const auto field = fast_query_fields_.find(field_name);
   if (field == fast_query_fields_.end()) {

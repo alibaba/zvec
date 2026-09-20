@@ -20,7 +20,6 @@
 #include <zvec/db/doc.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/status.h>
-#include "db/index/common/query_validation.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/type.h"
 #include "vector_column_indexer.h"
@@ -276,9 +275,19 @@ class ProximaEngineHelper {
         // only the common query fields are consumed, and a base QueryParams is
         // sufficient.  The collection/query validation path has already
         // checked the logical field's concrete parameters.
-        if (dynamic_cast<core_interface::FlatQueryParam *>(engine) == nullptr) {
-          const auto status = validate_ivf_rabitq_query_params(params.get());
-          if (!status.ok()) return status;
+        if (dynamic_cast<core_interface::FlatQueryParam *>(engine) == nullptr &&
+            params) {
+          const auto *ivf =
+              dynamic_cast<const IvfRabitqQueryParams *>(params.get());
+          if (!ivf) {
+            return Status::InvalidArgument(
+                "Invalid query: IVF_RABITQ index requires "
+                "IvfRabitqQueryParams");
+          }
+          if (ivf->nprobe() <= 0) {
+            return Status::InvalidArgument(
+                "Invalid query: IVF_RABITQ nprobe must be greater than 0");
+          }
         }
         valid = _update_query_param<IvfRabitqQueryParams,
                                     core_interface::IVFRabitqQueryParam>(
