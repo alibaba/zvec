@@ -3138,6 +3138,8 @@ TEST(IndexInterface, VamanaTwoPassSerialization) {
     param.two_pass_build = two_pass_build;
     for (bool omit_empty_value : {false, true}) {
       const auto json = param.serialize_to_json(omit_empty_value);
+      EXPECT_EQ(json.find("\"two_pass_build\"") != std::string::npos,
+                !omit_empty_value || two_pass_build);
       VamanaIndexParam restored;
       ASSERT_TRUE(restored.deserialize_from_json(json));
       EXPECT_EQ(two_pass_build, restored.two_pass_build);
