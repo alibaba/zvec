@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "python_collection.h"
-#include <limits>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
@@ -24,41 +23,6 @@
 namespace zvec {
 
 namespace {
-
-DataType dense_query_data_type(const py::array &vector) {
-  if (vector.ndim() != 1 || !(vector.flags() & py::array::c_style)) {
-    throw py::value_error("query vector must be a contiguous 1D array");
-  }
-  if (vector.shape(0) > std::numeric_limits<uint32_t>::max()) {
-    throw py::value_error("query vector dimension is too large");
-  }
-  // Read NumPy metadata directly instead of allocating a temporary buffer
-  // descriptor, shape/stride vectors and a PEP 3118 format string per query.
-  const auto dtype = vector.dtype();
-  const uint16_t endian_probe = 1;
-  const char native_order =
-      *reinterpret_cast<const uint8_t *>(&endian_probe) ? '<' : '>';
-  const char order = dtype.byteorder();
-  if (order != '=' && order != '|' && order != native_order) {
-    throw py::value_error("query vector requires a native numeric dtype");
-  }
-  const auto size = dtype.itemsize();
-  DataType type;
-  if (dtype.kind() == 'f' && size == 4) {
-    type = DataType::VECTOR_FP32;
-  } else if (dtype.kind() == 'f' && size == 8) {
-    type = DataType::VECTOR_FP64;
-  } else if (dtype.kind() == 'f' && size == 2) {
-    type = DataType::VECTOR_FP16;
-  } else if (dtype.kind() == 'i' && size == 1) {
-    type = DataType::VECTOR_INT8;
-  } else if (dtype.kind() == 'u' && size == 1) {
-    type = DataType::VECTOR_UINT8;
-  } else {
-    throw py::value_error("unsupported query vector dtype");
-  }
-  return type;
-}
 
 // Batch-materialize a DocPtrList into a list of (id, score, fields, vectors)
 // tuples in a single GIL-held section, avoiding per-doc _Doc wrappers and
@@ -391,42 +355,13 @@ void ZVecPyCollection::bind_dql_methods(
           "list of (id, score, fields, vectors) tuples materialized in one "
           "batch.")
       .def(
-          "fast_query",
-          [](const Collection &self, const std::string &field_name,
-             const py::array &vector, QueryParams *params, py::handle topk_arg,
+          "QueryInternalIds",
+          [](const Collection &self, const SearchQuery &query,
              bool return_scores) -> py::object {
-            // Match query's Python integer contract at the native boundary,
-            // without an extra Python validation call on every fast query.
-            if (!PyLong_Check(topk_arg.ptr()) || PyBool_Check(topk_arg.ptr())) {
-              throw py::value_error("topk must be a positive integer");
-            }
-            int overflow = 0;
-            const long value =
-                PyLong_AsLongAndOverflow(topk_arg.ptr(), &overflow);
-            if (value == -1 && PyErr_Occurred()) {
-              throw py::error_already_set();
-            }
-            if (overflow < 0 || (overflow == 0 && value <= 0)) {
-              throw py::value_error("topk must be a positive integer");
-            }
-            // As in query's native topk setter, positive values that cannot
-            // fit in a C++ int are type-conversion errors.
-            if (overflow > 0 || value > std::numeric_limits<int>::max()) {
-              throw py::type_error("topk is outside the C++ int range");
-            }
-            const int topk = static_cast<int>(value);
-            const auto data_type = dense_query_data_type(vector);
-            const auto dimension = static_cast<uint32_t>(vector.shape(0));
-            // Python keeps the argument alive for this call. The DB reads it
-            // synchronously and never retains it, so no shared ownership
-            // conversion or reference-count traffic is needed here.
-            const QueryParams::Ptr borrowed(QueryParams::Ptr{}, params);
-            Result<FastQueryResult> result;
+            Result<InternalIdsQueryResult> result;
             {
               py::gil_scoped_release release;
-              result =
-                  self.fast_query(field_name, vector.data(), borrowed, topk,
-                                  return_scores, data_type, dimension);
+              result = self.query_internal_ids(query, return_scores);
             }
             auto output = unwrap_expected(std::move(result));
             auto ids = owned_array(std::move(output.ids));
@@ -434,17 +369,28 @@ void ZVecPyCollection::bind_dql_methods(
             return py::make_tuple(std::move(ids),
                                   owned_array(std::move(output.scores)));
           },
-          py::arg("field_name"), py::arg("vector").noconvert(),
-          py::arg("param") = static_cast<QueryParams *>(nullptr),
-          py::arg("topk") = 10, py::arg("return_scores") = false,
-          R"doc(Advanced dense query on a read-only collection, with no preparation step.
+          py::arg("query"), py::arg("return_scores") = false,
+          R"doc(Query a dense field and return internal numeric IDs.
 
-Pass a contiguous 1D NumPy vector and query parameters on each call. Parameters
-may be constructed inline or reused. Returns an owning int64 internal ID array,
-or (ids, float32 scores) with return_scores=True. Scores include refinement.
-Missing results are padded with ID -1 / score NaN. Refinement uses param.scale_factor
-with the same semantics as Collection.query.
-Parameters and execution state belong to each call, as with Collection.query.
+Accepts the same single-target SearchQuery object as Query. Returns an owning
+int64 array, or (IDs, float32 scores) with return_scores=True. Scores include
+refinement. Use ResolveInternalIds to convert IDs to user primary keys.
+)doc")
+      .def(
+          "ResolveInternalIds",
+          [](const Collection &self, const std::vector<int64_t> &ids) {
+            Result<std::vector<std::optional<std::string>>> result;
+            {
+              py::gil_scoped_release release;
+              result = self.resolve_internal_ids(ids);
+            }
+            return unwrap_expected(std::move(result));
+          },
+          py::arg("ids"),
+          R"doc(Convert internal numeric IDs to user primary keys.
+
+Positions are preserved. Padding ID -1 and IDs that are deleted or unknown
+are returned as None.
 )doc")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {

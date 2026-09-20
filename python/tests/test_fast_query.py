@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import zvec
+from zvec._zvec.param import _SearchQuery
 from zvec import (
     CollectionOption,
     CollectionSchema,
@@ -19,6 +20,21 @@ from zvec import (
     VectorSchema,
 )
 from zvec.typing import DataType, MetricType, QuantizeType
+
+
+def _query_internal_ids(
+    collection,
+    field_name,
+    vector,
+    param=None,
+    topk=10,
+    return_scores=False,
+):
+    return collection.query_internal_ids(
+        Query(field_name=field_name, vector=vector, param=param),
+        topk=topk,
+        return_scores=return_scores,
+    )
 
 
 @pytest.mark.parametrize(
@@ -39,25 +55,29 @@ def test_empty_collection(tmp_path, index_type):
     try:
         assert reader.query(Query("vector", vector=vector), topk=3) == []
         for topk in (3, 1):
-            ids, scores = reader.fast_query(
-                "vector", vector, topk=topk, return_scores=True
+            ids, scores = _query_internal_ids(
+                reader, "vector", vector, topk=topk, return_scores=True
             )
             np.testing.assert_array_equal(ids, np.full(topk, -1, dtype=np.int64))
             assert scores.shape == (topk,)
             assert np.all(np.isnan(scores))
             np.testing.assert_array_equal(
-                ids, reader.fast_query("vector", vector, topk=topk)
+                ids, _query_internal_ids(reader, "vector", vector, topk=topk)
             )
+            assert reader.resolve_internal_ids(ids) == [None] * topk
+        assert reader.resolve_internal_ids([-1, 0, 42]) == [None, None, None]
+        with pytest.raises(ValueError, match="non-negative or -1"):
+            reader.resolve_internal_ids([-2])
         # Empty state must still validate the field, vector and parameter type.
-        with pytest.raises(ValueError, match="dense vector field"):
-            reader.fast_query("missing", vector)
+        with pytest.raises(ValueError, match="not found in schema"):
+            _query_internal_ids(reader, "missing", vector)
         with pytest.raises(ValueError, match="dtype|dimension"):
-            reader.fast_query("vector", vector[:-1])
+            _query_internal_ids(reader, "vector", vector[:-1])
         wrong_param = (
             HnswQueryParam() if index_type is not HnswIndexParam else VamanaQueryParam()
         )
-        with pytest.raises(ValueError, match="parameter type"):
-            reader.fast_query("vector", vector, wrong_param)
+        with pytest.raises(ValueError, match="params type"):
+            _query_internal_ids(reader, "vector", vector, wrong_param)
     finally:
         reader.close()
 
@@ -99,22 +119,20 @@ def test_fast_query_topk_contract(tmp_path, populated):
             with pytest.raises(ValueError, match=message):
                 reader.query(query, topk=topk)
             for scores in (False, True):
-                for target in (reader, reader._obj):
-                    with pytest.raises(ValueError, match=message):
-                        target.fast_query(
-                            "vector", vector, topk=topk, return_scores=scores
-                        )
+                with pytest.raises(ValueError, match=message):
+                    _query_internal_ids(
+                        reader, "vector", vector, topk=topk, return_scores=scores
+                    )
         for topk in (2**31, 2**80):
             with pytest.raises(TypeError):
                 reader.query(query, topk=topk)
-            for target in (reader, reader._obj):
-                with pytest.raises(TypeError):
-                    target.fast_query("vector", vector, topk=topk)
+            with pytest.raises(TypeError):
+                _query_internal_ids(reader, "vector", vector, topk=topk)
         # The inclusive upper bound is valid, including when fewer hits exist.
         for topk in (1, 100000):
             docs = reader.query(query, topk=topk)
-            ids, scores = reader.fast_query(
-                "vector", vector, topk=topk, return_scores=True
+            ids, scores = _query_internal_ids(
+                reader, "vector", vector, topk=topk, return_scores=True
             )
             count = len(docs)
             np.testing.assert_array_equal(ids[:count], [int(doc.id) for doc in docs])
@@ -175,19 +193,19 @@ def test_fast_query_ivf_rabitq_nprobe_contract(tmp_path, state):
             with pytest.raises(ValueError, match="nprobe must be greater than 0"):
                 reader.query(Query("vector", vector=vector, param=param))
             for scores in (False, True):
-                # Exercise the native binding used directly by the ANN adapter.
-                for target in (reader, reader._obj):
-                    with pytest.raises(
-                        ValueError, match="nprobe must be greater than 0"
-                    ):
-                        target.fast_query("vector", vector, param, return_scores=scores)
+                with pytest.raises(ValueError, match="nprobe must be greater than 0"):
+                    _query_internal_ids(
+                        reader, "vector", vector, param, return_scores=scores
+                    )
         for param in (
             None,
             zvec.IvfRabitqQueryParam(nprobe=1),
             zvec.IvfRabitqQueryParam(nprobe=4),
         ):
             docs = reader.query(Query("vector", vector=vector, param=param))
-            ids, scores = reader.fast_query("vector", vector, param, return_scores=True)
+            ids, scores = _query_internal_ids(
+                reader, "vector", vector, param, return_scores=True
+            )
             count = len(docs)
             np.testing.assert_array_equal(ids[:count], [int(doc.id) for doc in docs])
             np.testing.assert_allclose(
@@ -242,7 +260,9 @@ def collection(tmp_path, request):
         )
         assert all(status.ok() for status in statuses)
     with pytest.raises(ValueError, match="read-only"):
-        writer.fast_query("vector", vectors[0])
+        _query_internal_ids(writer, "vector", vectors[0])
+    with pytest.raises(ValueError, match="read-only"):
+        writer.resolve_internal_ids([0])
     writer.optimize()
     writer.close()
     reader = zvec.open(path, CollectionOption(read_only=True, enable_mmap=True))
@@ -266,43 +286,51 @@ def test_fast_query_matches_query_and_owns_results(collection):
             output_fields=[],
         )
         expected = np.array([int(doc.id[4:]) for doc in expected_docs])
-        ids = coll.fast_query("vector", query, param, topk=10)
+        ids = _query_internal_ids(coll, "vector", query, param, topk=10)
         np.testing.assert_array_equal(ids, expected)
+        assert coll.resolve_internal_ids(ids) == [doc.id for doc in expected_docs]
         assert ids.dtype == np.int64
-        scored_ids, scores = coll.fast_query(
-            "vector", query, param, topk=10, return_scores=True
+        scored_ids, scores = _query_internal_ids(
+            coll, "vector", query, param, topk=10, return_scores=True
         )
         np.testing.assert_array_equal(scored_ids, expected)
         np.testing.assert_allclose(
             scores, [doc.score for doc in expected_docs], rtol=1e-5, atol=1e-5
         )
         # Another search must not overwrite a capsule-owned result array.
-        coll.fast_query("vector", vectors[25], param, topk=10)
+        _query_internal_ids(coll, "vector", vectors[25], param, topk=10)
         np.testing.assert_array_equal(ids, expected)
 
 
 def test_preconditions_and_invalid_vectors(collection):
     coll, vectors, param_type = collection
-    with pytest.raises(ValueError, match="dense vector field"):
-        coll.fast_query("missing", vectors[0])
+    with pytest.raises(ValueError, match="not found in schema"):
+        _query_internal_ids(coll, "missing", vectors[0])
     wrong_param = (
         VamanaQueryParam() if param_type is HnswQueryParam else HnswQueryParam()
     )
-    with pytest.raises(ValueError, match="parameter type"):
-        coll.fast_query("vector", vectors[0], wrong_param)
+    with pytest.raises(ValueError, match="params type"):
+        _query_internal_ids(coll, "vector", vectors[0], wrong_param)
     param = param_type(is_using_refiner=False)
-    for invalid_query in (
-        vectors[0, :-1],
+    for invalid_query in (vectors[0, :-1], vectors[0, ::2]):
+        with pytest.raises(ValueError, match="dimension"):
+            _query_internal_ids(coll, "vector", invalid_query, param)
+
+    # Match query(): compatible inputs are normalized to the field dtype and
+    # flattened before reaching the shared native SearchQuery path.
+    for compatible_query in (
         vectors[0].astype(np.float64),
         vectors[0].astype(np.int32),
-        vectors[0].astype(np.complex64),
-        np.zeros(32, dtype=[("x", np.float32)]),
         vectors[0].astype(">f4"),
-        vectors[0, ::2],
         vectors[0].reshape(1, -1),
     ):
-        with pytest.raises(ValueError, match="dtype|dimension|1D"):
-            coll.fast_query("vector", invalid_query, param)
+        docs = coll.query(
+            Query("vector", vector=compatible_query, param=param), topk=10
+        )
+        np.testing.assert_array_equal(
+            _query_internal_ids(coll, "vector", compatible_query, param),
+            [int(doc.id[4:]) for doc in docs],
+        )
 
 
 def test_reused_inline_and_default_params_and_close(collection):
@@ -312,13 +340,16 @@ def test_reused_inline_and_default_params_and_close(collection):
         settings = {"ef": ef} if param_type is HnswQueryParam else {"ef_search": ef}
         param = param_type(**settings)
         for topk in (1, 21, 3, 10):
-            ids, scores = coll.fast_query(
-                "vector", query, param, topk=topk, return_scores=True
+            ids, scores = _query_internal_ids(
+                coll, "vector", query, param, topk=topk, return_scores=True
             )
             assert len(ids) == len(scores) == topk
             assert scores.dtype == np.float32
             np.testing.assert_array_equal(
-                ids, coll.fast_query("vector", query, param_type(**settings), topk=topk)
+                ids,
+                _query_internal_ids(
+                    coll, "vector", query, param_type(**settings), topk=topk
+                ),
             )
             docs = coll.query(
                 Query(field_name="vector", vector=query, param=param), topk=topk
@@ -327,19 +358,32 @@ def test_reused_inline_and_default_params_and_close(collection):
         # A call with None uses defaults regardless of the preceding query.
         docs = coll.query(Query(field_name="vector", vector=query), topk=10)
         np.testing.assert_array_equal(
-            coll.fast_query("vector", query), [int(doc.id[4:]) for doc in docs]
+            _query_internal_ids(coll, "vector", query),
+            [int(doc.id[4:]) for doc in docs],
         )
     raw = coll._obj
+    native_query = _SearchQuery()
+    native_query.topk = 10
+    native_query.field_name = "vector"
+    native_query.query_params = param
+    native_query.set_vector(coll.schema.vector("vector")._get_object(), query)
     saved_ids, saved_scores = ids.copy(), scores.copy()
     for topk in (0, -1):
         with pytest.raises(ValueError, match="topk must be a positive integer"):
-            coll.fast_query("vector", query, param, topk=topk, return_scores=True)
+            _query_internal_ids(
+                coll, "vector", query, param, topk=topk, return_scores=True
+            )
     coll.close()
     np.testing.assert_array_equal(ids, saved_ids)
     np.testing.assert_array_equal(scores, saved_scores)
-    for obj in (coll, raw):
-        with pytest.raises(ValueError, match="closed"):
-            obj.fast_query("vector", query, param)
+    with pytest.raises(ValueError, match="closed"):
+        _query_internal_ids(coll, "vector", query, param)
+    with pytest.raises(ValueError, match="closed"):
+        coll.resolve_internal_ids([0])
+    with pytest.raises(ValueError, match="closed"):
+        raw.QueryInternalIds(native_query)
+    with pytest.raises(ValueError, match="closed"):
+        raw.ResolveInternalIds([0])
 
 
 def test_concurrent_calls_keep_query_parameters_local(collection):
@@ -365,8 +409,8 @@ def test_concurrent_calls_keep_query_parameters_local(collection):
         ready.wait()
         for repeat in range(40):
             i = (worker + repeat) % len(queries)
-            ids, scores = coll.fast_query(
-                "vector", queries[i], params[i], topk=topks[i], return_scores=True
+            ids, scores = _query_internal_ids(
+                coll, "vector", queries[i], params[i], topk=topks[i], return_scores=True
             )
             np.testing.assert_array_equal(ids, expected[i][0])
             np.testing.assert_allclose(scores, expected[i][1], rtol=2e-5, atol=2e-5)
@@ -421,20 +465,31 @@ def test_internal_ids_survive_deletion_and_compaction(tmp_path, compact):
             )
         ]
         assert all(row >= 8 for row in expected)
-        np.testing.assert_array_equal(coll.fast_query("vector", query, param), expected)
+        np.testing.assert_array_equal(
+            _query_internal_ids(coll, "vector", query, param), expected
+        )
         docs = coll.query(
             Query(field_name="vector", vector=query, param=param), topk=10
         )
-        ids, scores = coll.fast_query("vector", query, param, return_scores=True)
+        ids, scores = _query_internal_ids(
+            coll, "vector", query, param, return_scores=True
+        )
         np.testing.assert_array_equal(ids, expected)
         np.testing.assert_allclose(scores, [doc.score for doc in docs], rtol=1e-5)
         # Padding and result ownership on the filtered / compacted routes.
-        padded_ids, padded_scores = coll.fast_query(
-            "vector", query, param, topk=70, return_scores=True
+        padded_ids, padded_scores = _query_internal_ids(
+            coll, "vector", query, param, topk=70, return_scores=True
         )
         assert len(padded_ids) == len(padded_scores) == 70
         assert np.all(padded_ids[56:] == -1)
         assert np.all(np.isnan(padded_scores[56:]))
+        assert coll.resolve_internal_ids(padded_ids)[56:] == [None] * 14
+        assert coll.resolve_internal_ids([0, 7, 8, 63]) == [
+            None,
+            None,
+            "row-8",
+            "row-63",
+        ]
     finally:
         coll.close()
 
@@ -492,12 +547,14 @@ def test_ids_are_merged_across_segments(tmp_path):
             ]
             assert expected[0] == query_id
             np.testing.assert_array_equal(
-                coll.fast_query("vector", query, param), expected
+                _query_internal_ids(coll, "vector", query, param), expected
             )
         docs = coll.query(
             Query(field_name="vector", vector=query, param=param), topk=10
         )
-        ids, scores = coll.fast_query("vector", query, param, return_scores=True)
+        ids, scores = _query_internal_ids(
+            coll, "vector", query, param, return_scores=True
+        )
         np.testing.assert_array_equal(ids, expected)
         np.testing.assert_allclose(scores, [doc.score for doc in docs], rtol=1e-5)
     finally:
@@ -551,8 +608,8 @@ def test_field_and_collection_caches_are_independent(tmp_path):
             query = vectors[name][17]
             for reader in readers:
                 docs = reader.query(Query(field_name=name, vector=query), topk=10)
-                ids, scores = reader.fast_query(
-                    name, query, topk=10, return_scores=True
+                ids, scores = _query_internal_ids(
+                    reader, name, query, topk=10, return_scores=True
                 )
                 np.testing.assert_array_equal(ids, [int(doc.id) for doc in docs])
                 np.testing.assert_allclose(
@@ -653,15 +710,15 @@ def test_fast_query_index_and_metric_dispatch(tmp_path, index_kind, metric):
             for row in (12, 41):
                 query = np.ascontiguousarray(vectors[row] + np.float32(0.021))
                 docs = reader.query(Query("vector", vector=query, param=param), topk=10)
-                ids, scores = reader.fast_query(
-                    "vector", query, param, return_scores=True
+                ids, scores = _query_internal_ids(
+                    reader, "vector", query, param, return_scores=True
                 )
                 np.testing.assert_array_equal(ids, [int(d.id) for d in docs])
                 np.testing.assert_allclose(
                     scores, [d.score for d in docs], rtol=2e-5, atol=2e-5
                 )
                 np.testing.assert_array_equal(
-                    ids, reader.fast_query("vector", query, param)
+                    ids, _query_internal_ids(reader, "vector", query, param)
                 )
     finally:
         reader.close()
@@ -734,15 +791,15 @@ def test_uniform_raw_fallback(tmp_path, index_kind, quantizer):
                 docs = reader.query(
                     zvec.Query("vector", vector=query, param=param), topk=10
                 )
-                ids, scores = reader.fast_query(
-                    "vector", query, param, return_scores=True
+                ids, scores = _query_internal_ids(
+                    reader, "vector", query, param, return_scores=True
                 )
                 np.testing.assert_array_equal(ids, [int(d.id) for d in docs])
                 np.testing.assert_allclose(
                     scores, [d.score for d in docs], rtol=2e-5, atol=2e-5
                 )
                 np.testing.assert_array_equal(
-                    ids, reader.fast_query("vector", query, param)
+                    ids, _query_internal_ids(reader, "vector", query, param)
                 )
                 if phase == "new_writes":
                     assert ids[0] == 128

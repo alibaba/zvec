@@ -135,12 +135,11 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> query(const MultiQuery &query) const override;
 
-  Result<FastQueryResult> fast_query(const std::string &field_name,
-                                     const void *query_vector,
-                                     const QueryParams::Ptr &query_params,
-                                     int topk, bool return_scores,
-                                     DataType query_data_type,
-                                     uint32_t query_dimension) const override;
+  Result<InternalIdsQueryResult> query_internal_ids(
+      const SearchQuery &query, bool return_scores) const override;
+
+  Result<std::vector<std::optional<std::string>>> resolve_internal_ids(
+      const std::vector<int64_t> &ids) const override;
 
   Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const override;
@@ -1884,48 +1883,41 @@ void CollectionImpl::prepare_fast_query() {
   }
 }
 
-Result<FastQueryResult> CollectionImpl::fast_query(
-    const std::string &field_name, const void *query_vector,
-    const QueryParams::Ptr &query_params, int topk, bool return_scores,
-    DataType query_data_type, uint32_t query_dimension) const {
+Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
+    const SearchQuery &query, bool return_scores) const {
   std::shared_lock lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
   if (!options_.read_only_) {
     return tl::make_unexpected(
-        Status::InvalidArgument("fast query requires a read-only collection"));
+        Status::InvalidArgument(
+            "query_internal_ids requires a read-only collection"));
   }
-
-  if (static_cast<uint32_t>(topk) > kMaxQueryTopk) {
+  if (!query.filter_.empty() || query.include_vector_ || query.include_doc_id_ ||
+      query.output_fields_.has_value()) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "Invalid query: topk[", topk, "] exceeds the maximum allowed value of ",
-        kMaxQueryTopk));
+        "query_internal_ids does not support filters or result-field "
+        "materialization"));
   }
 
+  const auto &field_name = query.target_.field_name_;
   const auto field = fast_query_fields_.find(field_name);
   if (field == fast_query_fields_.end()) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "fast search requires a dense vector field: ", field_name));
+        "query_internal_ids requires a dense vector field: ", field_name));
   }
   const auto *field_schema = field->second.schema;
-  const auto param_status = ProximaEngineHelper::update_engine_query_param(
-      field_schema->index_type(), query_params, nullptr, nullptr);
-  CHECK_RETURN_STATUS_EXPECTED(param_status);
-  if (query_vector == nullptr) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("fast query: query_vector is null"));
-  }
-  if ((query_data_type != DataType::UNDEFINED || query_dimension != 0) &&
-      (query_data_type != field_schema->data_type() ||
-       query_dimension != field_schema->dimension())) {
-    return tl::make_unexpected(Status::InvalidArgument(
-        "query vector dtype or dimension does not match the field"));
-  }
-  if (topk == 0) return FastQueryResult{};
+  const auto query_status = query.validate(field_schema, nullptr);
+  CHECK_RETURN_STATUS_EXPECTED(query_status);
+  const auto vector_view = query.target_.get_vector_view();
+  const void *query_vector = vector_view->query_vector_.data();
+  const auto &query_params = query.target_.query_params_;
+  const int topk = query.topk_;
+  if (topk == 0) return InternalIdsQueryResult{};
 
   const auto &segments = read_only_segments_;
   const auto &indexers = field->second.indexers;
-  FastQueryResult out;
+  InternalIdsQueryResult out;
   out.ids.resize(static_cast<size_t>(topk), int64_t{-1});
   // Segment merging needs scores even when the caller only requests IDs.
   if (return_scores || segments.size() > 1) {
@@ -1981,7 +1973,8 @@ Result<FastQueryResult> CollectionImpl::fast_query(
   }
   if (!searched && !segments.empty()) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "fast query: no searchable vector index for field ", field_name));
+        "query_internal_ids: no searchable vector index for field ",
+        field_name));
   }
 
   const auto *index_params = dynamic_cast<const VectorIndexParams *>(
@@ -2006,6 +1999,49 @@ Result<FastQueryResult> CollectionImpl::fast_query(
     out.scores.clear();
   }
   return out;
+}
+
+Result<std::vector<std::optional<std::string>>>
+CollectionImpl::resolve_internal_ids(const std::vector<int64_t> &ids) const {
+  std::shared_lock lock(schema_handle_mtx_);
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
+  if (!options_.read_only_) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "resolve_internal_ids requires a read-only collection"));
+  }
+
+  std::vector<std::optional<std::string>> resolved;
+  resolved.reserve(ids.size());
+  const std::optional<std::vector<std::string>> no_fields =
+      std::vector<std::string>{};
+  for (const auto id : ids) {
+    if (id == -1) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    if (id < 0) {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "resolve_internal_ids: ID must be non-negative or -1"));
+    }
+    const auto doc_id = static_cast<uint64_t>(id);
+    if (delete_store_->is_deleted(doc_id)) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    const auto segment = local_segment_by_doc_id(doc_id, read_only_segments_);
+    if (!segment || segment->doc_count_snapshot() == 0) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    const auto doc = segment->fetch(doc_id, no_fields, false);
+    if (!doc) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    resolved.emplace_back(doc->pk());
+  }
+  return resolved;
 }
 
 Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {
