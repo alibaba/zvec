@@ -6,6 +6,21 @@ import pytest
 import zvec
 
 
+def _query_internal_ids(
+    collection,
+    field_name,
+    vector,
+    param=None,
+    topk=10,
+    return_scores=False,
+):
+    return collection.query_internal_ids(
+        zvec.Query(field_name=field_name, vector=vector, param=param),
+        topk=topk,
+        return_scores=return_scores,
+    )
+
+
 @pytest.mark.parametrize("index_kind", ["hnsw", "vamana"])
 @pytest.mark.parametrize(
     "quantizer",
@@ -73,13 +88,18 @@ def test_untrained_and_mixed_uniform_segments(
                             zvec.Query("vector", vector=query, param=param), topk=topk
                         )
                         expected = np.array([int(d.id[4:]) for d in docs])
-                        ids, scores = reader.fast_query(
-                            "vector", query, param, topk=topk, return_scores=True
+                        ids, scores = _query_internal_ids(
+                            reader,
+                            "vector",
+                            query,
+                            param,
+                            topk=topk,
+                            return_scores=True,
                         )
                         assert docs[0].id == f"row-{row}"
                         actual = ids[: len(docs)]
                         assert set(actual) == set(expected)
-                        # SQL and fast_query merge segments differently. Both
+                        # SQL and query_internal_ids merge segments differently. Both
                         # order by score, without a shared tie-break rule. Only
                         # exactly equal scores may exchange positions.
                         expected_scores = {int(d.id[4:]): d.score for d in docs}
@@ -94,7 +114,10 @@ def test_untrained_and_mixed_uniform_segments(
                             atol=2e-5,
                         )
                         np.testing.assert_array_equal(
-                            ids, reader.fast_query("vector", query, param, topk=topk)
+                            ids,
+                            _query_internal_ids(
+                                reader, "vector", query, param, topk=topk
+                            ),
                         )
                         assert np.all(ids[len(docs) :] == -1)
                         assert np.all(np.isnan(scores[len(docs) :]))

@@ -12,6 +12,21 @@ from zvec import VamanaIndexParam, VamanaQueryParam, VectorSchema
 from zvec.typing import DataType, MetricType, QuantizeType
 
 
+def _query_internal_ids(
+    collection,
+    field_name,
+    vector,
+    param=None,
+    topk=10,
+    return_scores=False,
+):
+    return collection.query_internal_ids(
+        Query(field_name=field_name, vector=vector, param=param),
+        topk=topk,
+        return_scores=return_scores,
+    )
+
+
 @pytest.mark.parametrize(
     "quantizer,flat_type",
     [
@@ -111,13 +126,15 @@ def test_refine_candidate_counts_and_parameter_switches(
                 coarse_ids = np.asarray(
                     [int(doc.id) for doc in coarse_docs], dtype=np.int64
                 )
-                output = coll.fast_query(
+                output = _query_internal_ids(
+                    coll,
                     "vector",
                     query,
                     param,
                     topk=10,
                 )
-                scored_ids, scores = coll.fast_query(
+                scored_ids, scores = _query_internal_ids(
+                    coll,
                     "vector",
                     query,
                     param,
@@ -125,7 +142,7 @@ def test_refine_candidate_counts_and_parameter_switches(
                     return_scores=True,
                 )
                 np.testing.assert_array_equal(scored_ids, output)
-                # Ordinary query and fast_query consume exactly the same params.
+                # Ordinary query and query_internal_ids consume the same params.
                 docs = coll.query(
                     Query(field_name="vector", vector=query, param=param), topk=10
                 )
@@ -159,7 +176,7 @@ def test_refine_candidate_counts_and_parameter_switches(
                     Query(field_name="vector", vector=vectors[11], param=param), topk=10
                 )
             with pytest.raises((ValueError, RuntimeError)):
-                coll.fast_query("vector", vectors[11], param)
+                _query_internal_ids(coll, "vector", vectors[11], param)
 
     finally:
         coll.close()

@@ -25,6 +25,23 @@
 
 using namespace zvec;
 
+namespace {
+
+SearchQuery MakeSearchQuery(const std::string &field,
+                            const std::vector<float> &vector,
+                            const QueryParams::Ptr &params, int topk) {
+  SearchQuery query;
+  query.topk_ = topk;
+  query.target_.field_name_ = field;
+  query.target_.query_params_ = params;
+  query.target_.set_vector(
+      std::string(reinterpret_cast<const char *>(vector.data()),
+                  vector.size() * sizeof(float)));
+  return query;
+}
+
+}  // namespace
+
 TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
   const std::string path = "test_fast_query_topk_bounds";
   FileHelper::RemoveDirectory(path);
@@ -40,16 +57,12 @@ TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
   ASSERT_TRUE(opened);
   auto reader = std::move(opened.value());
   std::vector<float> vector(8, 0.0f);
-  SearchQuery query;
-  query.target_.field_name_ = "vector";
-  query.target_.set_vector(
-      std::string(reinterpret_cast<const char *>(vector.data()),
-                  vector.size() * sizeof(float)));
+  auto query = MakeSearchQuery("vector", vector, nullptr, 0);
   for (int topk : {-1, std::numeric_limits<int>::min(), 100001,
                    std::numeric_limits<int>::max()}) {
     query.topk_ = topk;
     auto normal = reader->query(query);
-    auto fast = reader->fast_query("vector", vector.data(), nullptr, topk);
+    auto fast = reader->query_internal_ids(query);
     ASSERT_FALSE(normal);
     ASSERT_FALSE(fast);
     EXPECT_EQ(normal.error().code(), StatusCode::INVALID_ARGUMENT);
@@ -60,18 +73,28 @@ TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
   for (int topk : {0, 1, 100000}) {
     query.topk_ = topk;
     auto normal = reader->query(query);
-    auto fast = reader->fast_query("vector", vector.data(), nullptr, topk);
+    auto fast = reader->query_internal_ids(query);
     ASSERT_TRUE(normal);
     ASSERT_TRUE(fast);
     EXPECT_TRUE(normal->empty());
     EXPECT_EQ(fast->ids.size(), static_cast<size_t>(topk));
     for (auto id : fast->ids) EXPECT_EQ(id, -1);
   }
-  // Zero must not bypass the supplied input metadata validation.
-  auto invalid = reader->fast_query("vector", vector.data(), nullptr, 0, false,
-                                    DataType::VECTOR_FP32, 7);
+  // Zero must not bypass vector validation.
+  auto invalid_query =
+      MakeSearchQuery("vector", std::vector<float>(7), nullptr, 0);
+  auto invalid = reader->query_internal_ids(invalid_query);
   ASSERT_FALSE(invalid);
   EXPECT_EQ(invalid.error().code(), StatusCode::INVALID_ARGUMENT);
+  auto resolved = reader->resolve_internal_ids({-1, 0, 42});
+  ASSERT_TRUE(resolved) << resolved.error().message();
+  ASSERT_EQ(resolved->size(), 3);
+  EXPECT_FALSE((*resolved)[0].has_value());
+  EXPECT_FALSE((*resolved)[1].has_value());
+  EXPECT_FALSE((*resolved)[2].has_value());
+  auto invalid_id = reader->resolve_internal_ids({-2});
+  ASSERT_FALSE(invalid_id);
+  EXPECT_EQ(invalid_id.error().code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_TRUE(reader->close().ok());
   reader.reset();
   FileHelper::RemoveDirectory(path);
@@ -101,7 +124,7 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
   std::vector<Doc> docs;
   for (int i = 0; i < 128; ++i) {
     Doc doc;
-    doc.set_pk(std::to_string(i));
+    doc.set_pk("doc-" + std::to_string(i));
     doc.set<std::vector<float>>("flat", make_vector(32));
     doc.set<std::vector<float>>("graph", make_vector(64));
     docs.push_back(std::move(doc));
@@ -116,7 +139,7 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
     std::vector<float> vector;
     QueryParams::Ptr params;
     int topk;
-    FastQueryResult expected;
+    InternalIdsQueryResult expected;
   };
   std::vector<Request> requests{
       {"flat", make_vector(32), nullptr, 1, {}},
@@ -136,7 +159,7 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
     ASSERT_TRUE(expected) << expected.error().message();
     ASSERT_EQ(expected->size(), request.topk);
     for (const auto &doc : expected.value()) {
-      request.expected.ids.push_back(std::stoll(doc->pk()));
+      request.expected.ids.push_back(std::stoll(doc->pk().substr(4)));
       request.expected.scores.push_back(doc->score());
     }
   }
@@ -145,6 +168,16 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
   auto opened = Collection::Open(path, CollectionOptions{true, true});
   ASSERT_TRUE(opened) << opened.error().message();
   auto reader = std::move(opened.value());
+  for (const auto &request : requests) {
+    auto resolved = reader->resolve_internal_ids(request.expected.ids);
+    ASSERT_TRUE(resolved) << resolved.error().message();
+    ASSERT_EQ(resolved->size(), request.expected.ids.size());
+    for (size_t i = 0; i < resolved->size(); ++i) {
+      ASSERT_TRUE((*resolved)[i].has_value());
+      EXPECT_EQ((*resolved)[i].value(),
+                "doc-" + std::to_string(request.expected.ids[i]));
+    }
+  }
 
   std::atomic<bool> start{false}, closing{false}, stop{false}, failed{false};
   std::atomic<size_t> completed{0};
@@ -154,9 +187,9 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
       while (!start.load()) std::this_thread::yield();
       for (size_t repeat = 0; !stop.load(); ++repeat) {
         const auto &request = requests[(worker + repeat) % requests.size()];
-        auto result = reader->fast_query(
-            request.field, request.vector.data(), request.params, request.topk,
-            true, DataType::VECTOR_FP32, request.vector.size());
+        const auto query = MakeSearchQuery(request.field, request.vector,
+                                           request.params, request.topk);
+        auto result = reader->query_internal_ids(query, true);
         if (!result) {
           EXPECT_TRUE(closing.load()) << result.error().message();
           EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
@@ -179,9 +212,15 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
   stop.store(true);
   for (auto &thread : threads) thread.join();
   EXPECT_TRUE(closed.ok()) << closed.message();
-  auto after_close = reader->fast_query("flat", requests[0].vector.data());
+  const auto after_close_query = MakeSearchQuery(
+      "flat", requests[0].vector, requests[0].params, requests[0].topk);
+  auto after_close = reader->query_internal_ids(after_close_query);
   ASSERT_FALSE(after_close);
   EXPECT_NE(after_close.error().message().find("closed"), std::string::npos);
+  auto resolve_after_close = reader->resolve_internal_ids({0});
+  ASSERT_FALSE(resolve_after_close);
+  EXPECT_NE(resolve_after_close.error().message().find("closed"),
+            std::string::npos);
   reader.reset();
   FileHelper::RemoveDirectory(path);
 }
@@ -244,18 +283,23 @@ TEST(FastQueryTest, PreservesOrdinalsAfterReopenAndCompaction) {
     ASSERT_TRUE(expected) << expected.error().message();
     ASSERT_EQ(expected->size(), phase == 0 ? 16 : 14);
     for (bool scores : {false, true}) {
-      auto actual = reader->fast_query("vector", vector.data(), nullptr,
-                                       query.topk_, scores);
+      auto actual = reader->query_internal_ids(query, scores);
       ASSERT_TRUE(actual) << actual.error().message();
       ASSERT_EQ(actual->ids.size(), query.topk_);
+      auto resolved = reader->resolve_internal_ids(actual->ids);
+      ASSERT_TRUE(resolved) << resolved.error().message();
+      ASSERT_EQ(resolved->size(), actual->ids.size());
       for (size_t i = 0; i < actual->ids.size(); ++i) {
         if (i < expected->size()) {
           EXPECT_EQ(actual->ids[i], std::stoll(expected.value()[i]->pk()));
+          ASSERT_TRUE((*resolved)[i].has_value());
+          EXPECT_EQ((*resolved)[i].value(), expected.value()[i]->pk());
           if (scores) {
             EXPECT_FLOAT_EQ(actual->scores[i], expected.value()[i]->score());
           }
         } else {
           EXPECT_EQ(actual->ids[i], -1);
+          EXPECT_FALSE((*resolved)[i].has_value());
           if (scores) EXPECT_TRUE(std::isnan(actual->scores[i]));
         }
       }
@@ -301,37 +345,11 @@ TEST(FastQueryTest, ReadsRefineParametersOnEveryCall) {
     for (int repeat = 0; repeat < 10; ++repeat) {
       std::vector<float> vector(32);
       for (auto &v : vector) v = normal(rng);
-      SearchQuery query;
-      query.topk_ = 10;
-      query.target_.field_name_ = "vector";
-      query.target_.set_vector(
-          std::string(reinterpret_cast<const char *>(vector.data()),
-                      vector.size() * sizeof(float)));
-      query.target_.query_params_ =
-          std::make_shared<FlatQueryParams>(true, scale);
+      const auto query = MakeSearchQuery("vector", vector, param, 10);
       auto expected = reader->query(query);
       ASSERT_TRUE(expected) << expected.error().message();
-      auto actual =
-          reader->fast_query("vector", vector.data(), param, 10, true);
+      auto actual = reader->query_internal_ids(query, true);
       ASSERT_TRUE(actual) << actual.error().message();
-      if (repeat == 0) {
-        auto checked = reader->fast_query("vector", vector.data(), param, 10,
-                                          true, DataType::VECTOR_FP32, 32);
-        ASSERT_TRUE(checked) << checked.error().message();
-        EXPECT_EQ(actual->ids, checked->ids);
-        EXPECT_EQ(actual->scores, checked->scores);
-        // Wrong or partially supplied metadata must fail before vector reads.
-        for (const auto &[type, dimension] :
-             {std::pair{DataType::VECTOR_FP64, 32U},
-              std::pair{DataType::VECTOR_FP32, 31U},
-              std::pair{DataType::VECTOR_FP32, 0U},
-              std::pair{DataType::UNDEFINED, 32U}}) {
-          auto invalid = reader->fast_query("vector", vector.data(), param, 10,
-                                            true, type, dimension);
-          ASSERT_FALSE(invalid);
-          EXPECT_EQ(StatusCode::INVALID_ARGUMENT, invalid.error().code());
-        }
-      }
       ASSERT_EQ(actual->ids.size(), expected->size());
       for (size_t i = 0; i < expected->size(); ++i) {
         EXPECT_EQ(actual->ids[i], std::stoll(expected.value()[i]->pk()));
@@ -347,11 +365,12 @@ TEST(FastQueryTest, ReadsRefineParametersOnEveryCall) {
       std::make_shared<FlatQueryParams>(true, 3.0f),
       std::make_shared<FlatQueryParams>(true, 7.0f)};
   std::vector<std::vector<float>> queries(4, std::vector<float>(32));
-  std::vector<FastQueryResult> expected;
+  std::vector<InternalIdsQueryResult> expected;
   for (size_t i = 0; i < queries.size(); ++i) {
     for (auto &value : queries[i]) value = normal(rng);
-    auto result = reader->fast_query("vector", queries[i].data(), params[i],
-                                     topks[i], true);
+    const auto query =
+        MakeSearchQuery("vector", queries[i], params[i], topks[i]);
+    auto result = reader->query_internal_ids(query, true);
     ASSERT_TRUE(result) << result.error().message();
     expected.push_back(std::move(result.value()));
   }
@@ -362,8 +381,9 @@ TEST(FastQueryTest, ReadsRefineParametersOnEveryCall) {
       while (!start.load()) std::this_thread::yield();
       for (size_t repeat = 0; repeat < 40; ++repeat) {
         const size_t i = (worker + repeat) % queries.size();
-        auto result = reader->fast_query("vector", queries[i].data(), params[i],
-                                         topks[i], true);
+        const auto query =
+            MakeSearchQuery("vector", queries[i], params[i], topks[i]);
+        auto result = reader->query_internal_ids(query, true);
         ASSERT_TRUE(result) << result.error().message();
         EXPECT_EQ(result->ids, expected[i].ids);
         EXPECT_EQ(result->scores, expected[i].scores);
