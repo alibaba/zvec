@@ -213,16 +213,20 @@ thread_local static std::array<core::IndexContext::Pointer,
     context_list;
 
 
-core::IndexContext::Pointer &Index::acquire_context() {
-  const size_t context_index =
-      (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
-      static_cast<size_t>(is_sparse_);
-  auto &context = context_list[context_index];
-  if (!context) {
-    context = streamer_->create_context();
-    if (!context) LOG_ERROR("Failed to create context");
+bool Index::init_context() {
+  if (context_list[context_index_] == nullptr) {
+    if ((context_list[context_index_] = streamer_->create_context()) ==
+        nullptr) {
+      LOG_ERROR("Failed to create context");
+      return false;
+    }
   }
-  return context;
+  return true;
+}
+
+core::IndexContext::Pointer &Index::acquire_context() {
+  init_context();
+  return context_list[context_index_];
 }
 
 int Index::train() {
@@ -454,6 +458,8 @@ int Index::init(const BaseIndexParam &param) {
 
   is_sparse_ = param.is_sparse;
   is_huge_page_ = param.is_huge_page;
+  context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
+                   static_cast<size_t>(is_sparse_);
 
   proxima_index_meta_.set_meta(param.data_type, param.dimension);
   proxima_index_meta_.set_meta_type(is_sparse_ ? IndexMeta::MetaType::MT_SPARSE
@@ -605,7 +611,8 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     }
   }
 
-  if (!acquire_context()) {
+  // TODO: context pool
+  if (!init_context()) {  // to validate if any error, will be overwritten
     LOG_ERROR("Failed to init context");
     return core::IndexError_Runtime;
   }
@@ -639,11 +646,8 @@ int Index::close() {
   // own cloned storage segments, so leaving the current thread's context in
   // the cache after Close would keep the buffer pool (and its metadata/pages)
   // alive until another IVF search or thread exit.
-  const size_t context_index =
-      (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
-      static_cast<size_t>(is_sparse_);
-  if (context_index < context_list.size()) {
-    context_list[context_index].reset();
+  if (context_index_ < context_list.size()) {
+    context_list[context_index_].reset();
   }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");
