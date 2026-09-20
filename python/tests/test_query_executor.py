@@ -338,7 +338,7 @@ class TestQueryExecutor:
         collection.Fetch.return_value = {}
 
         with pytest.raises(ValueError, match="Document with id 'missing' not found"):
-            executor._build_search_query(
+            executor.build_search_query(
                 ctx, Query(field_name="test", id="missing"), collection
             )
 
@@ -350,7 +350,7 @@ class TestQueryExecutor:
         collection = MagicMock()
 
         with pytest.raises(ValueError, match="Cannot provide both id and vector"):
-            executor._build_search_query(
+            executor.build_search_query(
                 ctx,
                 Query(field_name="test", id="doc1", vector=np.array([0.1])),
                 collection,
@@ -360,7 +360,7 @@ class TestQueryExecutor:
         executor = QueryExecutor(CollectionSchema(name="test_collection"))
         ctx = QueryContext(topk=5)
 
-        query = executor._build_search_query(
+        query = executor.build_search_query(
             ctx,
             Query(field_name="content", fts=Fts(match_string="\u00a0vector search  ")),
             MagicMock(),
