@@ -1,0 +1,148 @@
+name: Nightly Storage Stability
+
+on:
+  schedule:
+    # Daily at 01:30 Asia/Shanghai, after the coverage job starts.
+    - cron: '30 17 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Reproduction seed (empty uses the workflow run ID)'
+        type: string
+        default: ''
+      cuts:
+        description: 'Power-loss replay cuts per workload'
+        type: number
+        default: 8
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-stability-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  STABILITY_SEED: ${{ inputs.seed || github.run_id }}
+  STABILITY_CUTS: ${{ inputs.cuts || 8 }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: nightly-stability-linux-x64
+          max-size: 1G
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libaio-dev
+          python -m pip install cmake==3.30.0 ninja==1.11.1
+      - name: Build stability executables
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_PYTHON_BINDINGS=OFF -DBUILD_TOOLS=OFF
+          cmake --build build --parallel 4 --target \
+            crash_recovery_binaries storage_fault_worker
+          cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+            scripts/stability/io_fault.c -ldl -o build/lib/libstorage_fault.so
+      - name: Check test harness
+        run: |
+          STORAGE_FAULT_LIBRARY="$PWD/build/lib/libstorage_fault.so" \
+            python -m unittest discover -s scripts/stability -p 'test_*.py' -v
+      - name: Bundle executables and libraries
+        run: tar -czf stability-build.tar.gz -C build bin lib recovery-suites.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stability-build
+          path: stability-build.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  recovery:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: stability-build
+      - name: Unpack build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libaio1t64
+          mkdir build
+          tar -xzf stability-build.tar.gz -C build
+      - name: Repeat process-crash tests
+        run: |
+          python3 scripts/stability/run_recovery.py --build build \
+            --output artifacts/recovery --seed "$STABILITY_SEED" --rounds 3
+      - name: Save recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability-recovery-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: error
+
+  storage:
+    needs: build
+    # Optional JSON runner label/string, e.g. ["self-hosted", "Linux", "X64", "storage"].
+    # The runner must support loop mounts and (for power-loss) dm_log_writes.
+    runs-on: ${{ fromJSON(vars.STABILITY_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [disk-full, io-errors, power-loss]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: stability-build
+      - name: Prepare storage tools
+        run: |
+          mkdir build
+          tar -xzf stability-build.tar.gz -C build
+          sudo apt-get update
+          sudo apt-get install -y build-essential e2fsprogs util-linux kmod dmsetup git libaio1t64
+      - name: Build pinned block replay tool
+        if: matrix.mode == 'power-loss'
+        run: |
+          git init "$RUNNER_TEMP/log-writes"
+          git -C "$RUNNER_TEMP/log-writes" remote add origin https://github.com/josefbacik/log-writes.git
+          git -C "$RUNNER_TEMP/log-writes" fetch --depth 1 origin 7b70d8a6863c5de30933d42a7672d35d01d2dc6c
+          git -C "$RUNNER_TEMP/log-writes" checkout --detach FETCH_HEAD
+          make -C "$RUNNER_TEMP/log-writes" replay-log
+      - name: Run storage faults
+        env:
+          FAULT_MODE: ${{ matrix.mode }}
+        run: |
+          python3 scripts/stability/run_storage_faults.py \
+            --mode "$FAULT_MODE" --worker build/bin/storage_fault_worker \
+            --injector build/lib/libstorage_fault.so \
+            --replay-log "$RUNNER_TEMP/log-writes/replay-log" \
+            --output "artifacts/$FAULT_MODE" --seed "$STABILITY_SEED" --cuts "$STABILITY_CUTS"
+      - name: Save storage evidence and failed disk images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability-${{ matrix.mode }}-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 7
+          compression-level: 6
+          if-no-files-found: error
