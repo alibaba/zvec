@@ -214,6 +214,8 @@ thread_local static std::array<core::IndexContext::Pointer,
 
 
 bool Index::init_context() {
+  context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
+                   static_cast<size_t>(is_sparse_);
   if (context_list[context_index_] == nullptr) {
     if ((context_list[context_index_] = streamer_->create_context()) ==
         nullptr) {
@@ -458,8 +460,6 @@ int Index::init(const BaseIndexParam &param) {
 
   is_sparse_ = param.is_sparse;
   is_huge_page_ = param.is_huge_page;
-  context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
-                   static_cast<size_t>(is_sparse_);
 
   proxima_index_meta_.set_meta(param.data_type, param.dimension);
   proxima_index_meta_.set_meta_type(is_sparse_ ? IndexMeta::MetaType::MT_SPARSE
@@ -648,6 +648,7 @@ int Index::close() {
   // alive until another IVF search or thread exit.
   if (context_index_ < context_list.size()) {
     context_list[context_index_].reset();
+    context_index_ = std::numeric_limits<size_t>::max();
   }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");
