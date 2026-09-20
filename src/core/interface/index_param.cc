@@ -418,9 +418,9 @@ ailego::JsonObject VamanaIndexParam::serialize_to_json_object(
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
   }
-  // Preserve an explicit false even when omitting empty values: new indexes
-  // default to two-pass construction.
-  json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
+  if (!omit_empty_value || two_pass_build) {
+    json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
+  }
   return json_obj;
 }
 
@@ -468,6 +468,8 @@ bool VamanaIndexParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, max_occlusion_size);
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  // Compact JSON written before the default changed omitted false.
+  two_pass_build = false;
   DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
 
   return true;
