@@ -886,4 +886,34 @@ TEST_F(FtsParserUnescapeTest, PhraseEscapedBackslashBecomesLiteral) {
   EXPECT_EQ(phrase.terms[0], "a\\b");
 }
 
+
+TEST(CodeFtsParserTest, FlatTermsAndPhrases) {
+  FtsIndexParams params;
+  params.tokenizer_name = "code";
+  params.filters.clear();
+  auto pipeline = TokenizerFactory::create(params);
+  ASSERT_TRUE(pipeline.has_value());
+  FtsQueryParser parser;
+  for (auto op : {FtsDefaultOperator::AND, FtsDefaultOperator::OR}) {
+    auto ast = parser.parse("getRequestTime", pipeline.value(), op);
+    ASSERT_NE(ast, nullptr) << parser.err_msg();
+    EXPECT_EQ(ast->type(), op == FtsDefaultOperator::AND ? FtsNodeType::AND
+                                                         : FtsNodeType::OR);
+  }
+  for (const auto &query :
+       {"\"request time\"", "foo OR (\"bar\")", "-\"getValue\""}) {
+    EXPECT_NE(parser.parse(query, pipeline.value()), nullptr)
+        << parser.err_msg();
+  }
+  auto phrase = parser.parse("\"getRequestTime\"", pipeline.value());
+  ASSERT_NE(phrase, nullptr);
+  ASSERT_EQ(phrase->type(), FtsNodeType::PHRASE);
+  EXPECT_EQ(
+      static_cast<const PhraseNode &>(*phrase).terms,
+      (std::vector<std::string>{"getrequesttime", "get", "request", "time"}));
+  EXPECT_NE(parser.parse(R"(foo\"bar)", pipeline.value()), nullptr);
+  EXPECT_EQ(parser.parse("(", pipeline.value()), nullptr);
+  EXPECT_FALSE(parser.err_msg().empty());
+}
+
 }  // namespace zvec::fts
