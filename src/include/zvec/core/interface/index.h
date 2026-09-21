@@ -228,6 +228,11 @@ class ZVEC_CORE_API Index {
                             const ailego::Params &converter_params = {});
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) = 0;
 
+  //! Adjust the pipeline after storage opens, before the streamer reads it.
+  virtual int prepare_streamer_open(const StorageOptions & /*options*/) {
+    return 0;
+  }
+
  protected:
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
@@ -344,11 +349,6 @@ class ZVEC_CORE_API HNSWIndex : public Index {
  public:
   HNSWIndex() = default;
 
-  //! Open the index, falling back to the legacy converter/metric pipeline when
-  //! the persisted HNSW layout predates the turbo quantizer attachment.
-  int open(const std::string &file_path,
-           StorageOptions storage_options) override;
-
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
   //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
@@ -376,9 +376,10 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
-  int FallbackToLegacyPipeline();
+  int prepare_streamer_open(const StorageOptions &options) override;
 
   HNSWIndexParam param_{};
+  bool use_legacy_pipeline_{false};
 };
 
 class ZVEC_CORE_API VamanaIndex : public Index {

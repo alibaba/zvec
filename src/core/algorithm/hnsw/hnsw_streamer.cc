@@ -26,6 +26,34 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+using TurboQuantizer = zvec::turbo::Quantizer;
+
+// Adapt Turbo's typed operations to the callbacks used by graph traversal.
+template <auto Distance, auto BatchDistance = nullptr>
+void BindTurboDistances(TurboQuantizer::Pointer quantizer,
+                        IndexMetric::MatrixDistance &distance,
+                        IndexMetric::MatrixBatchDistance &batch_distance) {
+  distance = [quantizer](const void *lhs, const void *rhs, size_t, float *out) {
+    *out = ((*quantizer).*Distance)(lhs, rhs);
+  };
+  batch_distance = [quantizer](const void **vectors, const void *query,
+                               size_t count, size_t, float *out,
+                               const void **) {
+    if constexpr (BatchDistance != nullptr) {
+      ((*quantizer).*BatchDistance)(vectors, static_cast<int>(count), query,
+                                    out);
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        out[i] = ((*quantizer).*Distance)(vectors[i], query);
+      }
+    }
+  };
+}
+
+}  // namespace
+
 HnswStreamer::HnswStreamer() = default;
 
 HnswStreamer::~HnswStreamer() {
@@ -358,54 +386,20 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   };
 
   if (quantizer_) {
-    auto quantizer = quantizer_;
     if (use_external_vector_) {
-      // External sources expose vectors in the quantizer input layout while
-      // add/search queries have already been quantized by the interface.
-      // Graph construction also performs node-to-node comparisons, so its
-      // distance path keeps both sides in the input layout.
-      add_distance_ = [quantizer](const void *lhs, const void *rhs, size_t,
-                                  float *out) {
-        *out = quantizer->calc_distance_input_input(lhs, rhs);
-      };
-      add_batch_distance_ = [quantizer](const void **vectors, const void *query,
-                                        size_t count, size_t, float *out,
-                                        const void **) {
-        quantizer->calc_distance_input_input_batch(
-            vectors, static_cast<int>(count), query, out);
-      };
-      search_distance_ = [quantizer](const void *vector, const void *query,
-                                     size_t, float *out) {
-        *out = quantizer->calc_distance_input_query(vector, query);
-      };
-      search_batch_distance_ = [quantizer](const void **vectors,
-                                           const void *query, size_t count,
-                                           size_t, float *out, const void **) {
-        quantizer->calc_distance_input_query_batch(
-            vectors, static_cast<int>(count), query, out);
-      };
+      // External records and build queries are raw; search queries are encoded.
+      BindTurboDistances<&TurboQuantizer::calc_distance_input_input,
+                         &TurboQuantizer::calc_distance_input_input_batch>(
+          quantizer_, add_distance_, add_batch_distance_);
+      BindTurboDistances<&TurboQuantizer::calc_distance_input_query,
+                         &TurboQuantizer::calc_distance_input_query_batch>(
+          quantizer_, search_distance_, search_batch_distance_);
     } else {
-      add_distance_ = [quantizer](const void *lhs, const void *rhs, size_t,
-                                  float *out) {
-        *out = quantizer->calc_distance_dp_dp(lhs, rhs);
-      };
-      add_batch_distance_ = [quantizer](const void **vectors, const void *query,
-                                        size_t count, size_t, float *out,
-                                        const void **) {
-        for (size_t i = 0; i < count; ++i) {
-          out[i] = quantizer->calc_distance_dp_dp(vectors[i], query);
-        }
-      };
-      search_distance_ = [quantizer](const void *vector, const void *query,
-                                     size_t, float *out) {
-        *out = quantizer->calc_distance_dp_query(vector, query);
-      };
-      search_batch_distance_ = [quantizer](const void **vectors,
-                                           const void *query, size_t count,
-                                           size_t, float *out, const void **) {
-        quantizer->calc_distance_dp_query_batch(
-            vectors, static_cast<int>(count), query, out);
-      };
+      BindTurboDistances<&TurboQuantizer::calc_distance_dp_dp>(
+          quantizer_, add_distance_, add_batch_distance_);
+      BindTurboDistances<&TurboQuantizer::calc_distance_dp_query,
+                         &TurboQuantizer::calc_distance_dp_query_batch>(
+          quantizer_, search_distance_, search_batch_distance_);
     }
   } else {
     metric_ = IndexFactory::CreateMetric(meta_.metric_name());
@@ -492,18 +486,9 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
         LOG_ERROR("Failed to init provider Fp32Quantizer, ret=%d", ret);
         return ret;
       }
-      auto provider_quantizer = provider_quantizer_;
-      add_distance_ = [provider_quantizer](const void *lhs, const void *rhs,
-                                           size_t, float *out) {
-        *out = provider_quantizer->calc_distance_input_input(lhs, rhs);
-      };
-      add_batch_distance_ = [provider_quantizer](const void **vectors,
-                                                 const void *query,
-                                                 size_t count, size_t,
-                                                 float *out, const void **) {
-        provider_quantizer->calc_distance_input_input_batch(
-            vectors, static_cast<int>(count), query, out);
-      };
+      BindTurboDistances<&TurboQuantizer::calc_distance_input_input,
+                         &TurboQuantizer::calc_distance_input_input_batch>(
+          provider_quantizer_, add_distance_, add_batch_distance_);
     } else {
       const bool layout_differs =
           provider_meta_.data_type() != meta_.data_type() ||

@@ -532,6 +532,10 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
+  ret = prepare_streamer_open(storage_options);
+  if (ret != 0) {
+    return ret;
+  }
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
@@ -981,10 +985,11 @@ int Index::_prepare_dense_query(const VectorData &vector_data,
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   *prepared_query = dense_vector.data;
-  *prepared_meta = input_vector_meta_;
   // A streamer may replace an incompatible pooled context before searching.
-  // Store the transformed query in the caller-owned buffer so its data
-  // remains valid across both this helper's return and context replacement.
+  // Keep the transformed query in caller-owned storage so its data remains
+  // valid after this helper returns and throughout the complete search call.
+  // Check if need to transform feature
+  *prepared_meta = input_vector_meta_;
   if (turbo_quantizer_ != nullptr) {
     if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
                                    query_storage, prepared_meta) != 0) {
@@ -1120,20 +1125,7 @@ int Index::_collect_dense_result(
     }
   }
 
-  if (turbo_quantizer_ != nullptr &&
-      turbo_quantizer_->support_score_normalization()) {
-    if (has_group_by) {
-      for (auto &group : result->group_doc_list_) {
-        for (auto &doc : *group.mutable_docs()) {
-          turbo_quantizer_->normalize_score(doc.mutable_score());
-        }
-      }
-    } else {
-      for (auto &doc : result->doc_list_) {
-        turbo_quantizer_->normalize_score(doc.mutable_score());
-      }
-    }
-  } else if (metric_ != nullptr && metric_->support_normalize()) {
+  if (metric_ != nullptr && metric_->support_normalize()) {
     if (has_group_by) {
       for (auto &group : result->group_doc_list_) {
         for (auto &doc : *group.mutable_docs()) {
@@ -1143,6 +1135,19 @@ int Index::_collect_dense_result(
     } else {
       for (auto &doc : result->doc_list_) {
         metric_->normalize(doc.mutable_score());
+      }
+    }
+  } else if (turbo_quantizer_ != nullptr &&
+             turbo_quantizer_->support_score_normalization()) {
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          turbo_quantizer_->normalize_score(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        turbo_quantizer_->normalize_score(doc.mutable_score());
       }
     }
   }

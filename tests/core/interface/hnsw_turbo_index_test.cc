@@ -23,6 +23,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
@@ -701,7 +702,22 @@ INSTANTIATE_TEST_SUITE_P(
              std::get<1>(info.param).test_name;
     });
 
-TEST(HnswTurboQuantizerIndex, LegacyLayoutReopenFallsBack) {
+class HnswLegacyReopenTest : public testing::TestWithParam<StorageOptions> {
+ protected:
+  static void SetUpTestSuite() {
+    ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 *
+                                                                    1024));
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    StorageModes, HnswLegacyReopenTest,
+    testing::Values(
+        StorageOptions{StorageOptions::StorageType::kMMAP, false},
+        StorageOptions{StorageOptions::StorageType::kMMAP, false, false, true},
+        StorageOptions{StorageOptions::StorageType::kBufferPool, false}));
+
+TEST_P(HnswLegacyReopenTest, LegacyLayoutReopenFallsBack) {
   const std::string path{"hnsw_int8_legacy_layout.index"};
   zvec::test_util::RemoveTestFiles(path);
   auto vectors = RandomVectors();
@@ -713,7 +729,7 @@ TEST(HnswTurboQuantizerIndex, LegacyLayoutReopenFallsBack) {
   auto index = IndexFactory::CreateAndInitIndex(
       *MakeParam(MetricType::kL2sq, QuantizerType::kInt8));
   ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_EQ(0, index->open(path, GetParam()));
   EXPECT_TRUE(index->index_searcher()->meta().quantizer_name().empty());
   auto rows = SearchRows(index.get(), vectors[37], true);
   ASSERT_EQ(kTopK, rows.size());
@@ -730,7 +746,7 @@ TEST(HnswTurboQuantizerIndex, LegacyLayoutReopenFallsBack) {
   zvec::test_util::RemoveTestFiles(path);
 }
 
-TEST(HnswTurboQuantizerIndex, LegacyFp32LayoutReopenFallsBack) {
+TEST_P(HnswLegacyReopenTest, LegacyFp32LayoutReopenFallsBack) {
   const std::string path{"hnsw_fp32_legacy_layout.index"};
   zvec::test_util::RemoveTestFiles(path);
   auto vectors = RandomVectors();
@@ -742,7 +758,7 @@ TEST(HnswTurboQuantizerIndex, LegacyFp32LayoutReopenFallsBack) {
   auto index = IndexFactory::CreateAndInitIndex(
       *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
   ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_EQ(0, index->open(path, GetParam()));
   EXPECT_TRUE(index->index_searcher()->meta().quantizer_name().empty());
   auto rows = SearchRows(index.get(), vectors[37], true);
   ASSERT_EQ(kTopK, rows.size());
