@@ -249,32 +249,32 @@ class ClassB {
     return a1 + b_;
   }
 
-  virtual void MemberProcess0() const {}
+  virtual void member_process0() const {}
 
-  virtual void MemberProcess1(int a1) {
+  virtual void member_process1(int a1) {
     EXPECT_EQ(a1, b_);
   }
 
-  void MemberProcess2(int a1, int *a2) {
+  void member_process2(int a1, int *a2) {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
   }
 
-  void MemberProcess3(int a1, int *a2, int &a3) const {
+  void member_process3(int a1, int *a2, int &a3) const {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
   }
 
-  virtual void MemberProcess4(int a1, int *a2, int &a3, const int &a4) {
+  virtual void member_process4(int a1, int *a2, int &a3, const int &a4) {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
     EXPECT_EQ(a3 + 1, a4);
   }
 
-  virtual void MemberProcess5(int a1, int *a2, int &a3, const int &a4,
-                              volatile int *a5) const {
+  virtual void member_process5(int a1, int *a2, int &a3, const int &a4,
+                               volatile int *a5) const {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -282,8 +282,8 @@ class ClassB {
     EXPECT_EQ(a4 + 1, *a5);
   }
 
-  void MemberProcess6(int a1, int *a2, int &a3, const int &a4, volatile int *a5,
-                      int *const volatile a6) {
+  void member_process6(int a1, int *a2, int &a3, const int &a4,
+                       volatile int *a5, int *const volatile a6) {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -292,8 +292,8 @@ class ClassB {
     EXPECT_EQ(*a5 + 1, *a6);
   }
 
-  void MemberProcess7(int a1, int *a2, int &a3, const int &a4, volatile int *a5,
-                      int *const volatile a6, int &&a7) {
+  void member_process7(int a1, int *a2, int &a3, const int &a4,
+                       volatile int *a5, int *const volatile a6, int &&a7) {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -303,28 +303,28 @@ class ClassB {
     EXPECT_EQ(*a6 + 1, a7);
   }
 
-  size_t MemberFunction0() {
+  size_t member_function0() {
     return 0;
   }
-  size_t MemberFunction1(long a1) {
+  size_t member_function1(long a1) {
     EXPECT_EQ(a1, b_);
     return 1;
   }
 
-  size_t MemberFunction2(long a1, long *a2) {
+  size_t member_function2(long a1, long *a2) {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     return 2;
   }
 
-  size_t MemberFunction3(long a1, long *a2, long &a3) volatile {
+  size_t member_function3(long a1, long *a2, long &a3) volatile {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
     return 3;
   }
 
-  size_t MemberFunction4(long a1, long *a2, long &a3, const long &a4) const {
+  size_t member_function4(long a1, long *a2, long &a3, const long &a4) const {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -332,8 +332,8 @@ class ClassB {
     return 4;
   }
 
-  size_t MemberFunction5(long a1, long *a2, long &a3, const long &a4,
-                         volatile long *a5) const volatile {
+  size_t member_function5(long a1, long *a2, long &a3, const long &a4,
+                          volatile long *a5) const volatile {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -342,8 +342,8 @@ class ClassB {
     return 5;
   }
 
-  size_t MemberFunction6(long a1, long *a2, long &a3, const long &a4,
-                         volatile long *a5, long *const volatile a6) const {
+  size_t member_function6(long a1, long *a2, long &a3, const long &a4,
+                          volatile long *a5, long *const volatile a6) const {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -353,9 +353,9 @@ class ClassB {
     return 6;
   }
 
-  size_t MemberFunction7(long a1, long *a2, long &a3, const long &a4,
-                         volatile long *a5, long *const volatile a6,
-                         long &&a7) const volatile {
+  size_t member_function7(long a1, long *a2, long &a3, const long &a4,
+                          volatile long *a5, long *const volatile a6,
+                          long &&a7) const volatile {
     EXPECT_EQ(a1, b_);
     EXPECT_EQ(a1 + 1, *a2);
     EXPECT_EQ(*a2 + 1, a3);
@@ -372,65 +372,65 @@ class ClassB {
 
 class ClassAB {
  public:
-  void Run1() const {
+  void run1() const {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::ConstFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::const_func, &bbb);
   }
 
-  void Run2() {
+  void run2() {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::ConstFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::const_func, &bbb);
   }
 
-  void Run3() {
+  void run3() {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::MutableFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::mutable_func, &bbb);
   }
 
-  void Run4() const {
+  void run4() const {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::VolatileConstFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::volatile_const_func, &bbb);
   }
 
-  void Run5() {
+  void run5() {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::VolatileMutableFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::volatile_mutable_func, &bbb);
   }
 
-  void Run6() const volatile {
+  void run6() const volatile {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::VolatileConstFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::volatile_const_func, &bbb);
   }
 
-  void Run7() volatile {
+  void run7() volatile {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::VolatileConstFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::volatile_const_func, &bbb);
   }
 
-  void Run8() volatile {
+  void run8() volatile {
     ClassB bbb(1);
-    ailego::Closure::New(this, &ClassAB::VolatileMutableFunc, &bbb);
+    ailego::Closure::New(this, &ClassAB::volatile_mutable_func, &bbb);
   }
 
  protected:
-  void ConstFunc(const ClassB *b) const {
+  void const_func(const ClassB *b) const {
     ClassA::StaticFunction0();
-    b->MemberProcess0();
+    b->member_process0();
   }
 
-  void MutableFunc(const ClassB *b) {
+  void mutable_func(const ClassB *b) {
     ClassA::StaticFunction0();
-    b->MemberProcess0();
+    b->member_process0();
   }
 
-  void VolatileConstFunc(const ClassB *b) const volatile {
+  void volatile_const_func(const ClassB *b) const volatile {
     ClassA::StaticFunction0();
-    b->MemberProcess0();
+    b->member_process0();
   }
 
-  void VolatileMutableFunc(const ClassB *b) volatile {
+  void volatile_mutable_func(const ClassB *b) volatile {
     ClassA::StaticFunction0();
-    b->MemberProcess0();
+    b->member_process0();
   }
 };
 
@@ -568,37 +568,37 @@ TEST(CallbackValidator, General) {
       ailego::CallbackValidator<decltype(&ClassA::StaticProcess7)>::Value);
 
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction0)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function0)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction1)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function1)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction2)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function2)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction3)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function3)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction4)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function4)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction5)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function5)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction6)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function6)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberFunction7)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_function7)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess0)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process0)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess1)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process1)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess2)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process2)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess3)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process3)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess4)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process4)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess5)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process5)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess6)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process6)>::Value);
   EXPECT_TRUE(
-      ailego::CallbackValidator<decltype(&ClassB::MemberProcess7)>::Value);
+      ailego::CallbackValidator<decltype(&ClassB::member_process7)>::Value);
 }
 
 TEST(CallbackTraits, General) {
@@ -629,28 +629,28 @@ TEST(CallbackTraits, General) {
             ailego::CallbackTraits<decltype(&ClassA::StaticProcess7)>::Arity);
 
   EXPECT_EQ(0,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess0)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process0)>::Arity);
   EXPECT_EQ(1,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess1)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process1)>::Arity);
   EXPECT_EQ(2,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess2)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process2)>::Arity);
   EXPECT_EQ(3,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess3)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process3)>::Arity);
   EXPECT_EQ(4,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess4)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process4)>::Arity);
   EXPECT_EQ(5,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess5)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process5)>::Arity);
   EXPECT_EQ(6,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess6)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process6)>::Arity);
   EXPECT_EQ(7,
-            ailego::CallbackTraits<decltype(&ClassB::MemberProcess7)>::Arity);
+            ailego::CallbackTraits<decltype(&ClassB::member_process7)>::Arity);
 
   EXPECT_EQ(
       1u, sizeof(ailego::CallbackTraits<decltype(GlobalProcess0)>::TupleType));
   EXPECT_EQ(1u, sizeof(ailego::CallbackTraits<
                        decltype(&ClassA::StaticProcess0)>::TupleType));
   EXPECT_EQ(1u, sizeof(ailego::CallbackTraits<
-                       decltype(&ClassB::MemberProcess0)>::TupleType));
+                       decltype(&ClassB::member_process0)>::TupleType));
 }
 
 TEST(Closure, Static) {
@@ -758,40 +758,41 @@ TEST(Closure, Member) {
   int b[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   ClassB bbb(1);
 
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction0)->run();
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction1, 1)->run();
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction2, a[1], &a[2])->run();
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction3, 1, &a[2], a[3])->run();
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction4, a[1], &a[2], a[3], a[4])
+  ailego::Closure::New(&bbb, &ClassB::member_function0)->run();
+  ailego::Closure::New(&bbb, &ClassB::member_function1, 1)->run();
+  ailego::Closure::New(&bbb, &ClassB::member_function2, a[1], &a[2])->run();
+  ailego::Closure::New(&bbb, &ClassB::member_function3, 1, &a[2], a[3])->run();
+  ailego::Closure::New(&bbb, &ClassB::member_function4, a[1], &a[2], a[3], a[4])
       ->run();
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction5, 1, &a[2], a[3], 4, &a[5])
+  ailego::Closure::New(&bbb, &ClassB::member_function5, 1, &a[2], a[3], 4,
+                       &a[5])
       ->run();
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction6, a[1], &a[2], a[3], a[4],
+  ailego::Closure::New(&bbb, &ClassB::member_function6, a[1], &a[2], a[3], a[4],
                        &a[5], &a[6])
       ->run();
-  ailego::Closure::New((const ClassB *)(&bbb), &ClassB::MemberFunction7, a[1],
+  ailego::Closure::New((const ClassB *)(&bbb), &ClassB::member_function7, a[1],
                        &a[2], a[3], a[4], &a[5], &a[6], 7)
       ->run();
   ailego::Closure::New((const volatile ClassB *)(&bbb),
-                       &ClassB::MemberFunction7, a[1], &a[2], a[3], a[4], &a[5],
-                       &a[6], 7)
+                       &ClassB::member_function7, a[1], &a[2], a[3], a[4],
+                       &a[5], &a[6], 7)
       ->run();
 
   ClassB &&bbc = std::move(bbb);
-  ailego::Closure::New(&bbc, &ClassB::MemberProcess0)->run();
-  ailego::Closure::New(&bbc, &ClassB::MemberProcess1, 1)->run();
-  ailego::Closure::New(&bbc, &ClassB::MemberProcess2, b[1], &b[2])->run();
-  ailego::Closure::New(&bbc, &ClassB::MemberProcess3, 1, &b[2], b[3])->run();
-  ailego::Closure::New(&bbc, &ClassB::MemberProcess4, b[1], &b[2], b[3], b[4])
+  ailego::Closure::New(&bbc, &ClassB::member_process0)->run();
+  ailego::Closure::New(&bbc, &ClassB::member_process1, 1)->run();
+  ailego::Closure::New(&bbc, &ClassB::member_process2, b[1], &b[2])->run();
+  ailego::Closure::New(&bbc, &ClassB::member_process3, 1, &b[2], b[3])->run();
+  ailego::Closure::New(&bbc, &ClassB::member_process4, b[1], &b[2], b[3], b[4])
       ->run();
 
   ClassB &bbd = bbb;
-  ailego::Closure::New(&bbd, &ClassB::MemberProcess5, 1, &b[2], b[3], 4, &b[5])
+  ailego::Closure::New(&bbd, &ClassB::member_process5, 1, &b[2], b[3], 4, &b[5])
       ->run();
-  ailego::Closure::New(&bbd, &ClassB::MemberProcess6, b[1], &b[2], b[3], b[4],
+  ailego::Closure::New(&bbd, &ClassB::member_process6, b[1], &b[2], b[3], b[4],
                        &b[5], &b[6])
       ->run();
-  ailego::Closure::New(&bbd, &ClassB::MemberProcess7, b[1], &b[2], b[3], b[4],
+  ailego::Closure::New(&bbd, &ClassB::member_process7, b[1], &b[2], b[3], b[4],
                        &b[5], &b[6], 7)
       ->run();
 }
@@ -802,83 +803,83 @@ TEST(Closure, Function) {
   ClassB bbb(1);
 
   std::function<decltype(GlobalFunction0)> f0 =
-      std::bind(&ClassB::MemberFunction0, &bbb);
+      std::bind(&ClassB::member_function0, &bbb);
   ailego::Closure::New(f0)->run();
 
   std::function<decltype(GlobalFunction1)> f1 =
-      std::bind(&ClassB::MemberFunction1, &bbb, std::placeholders::_1);
+      std::bind(&ClassB::member_function1, &bbb, std::placeholders::_1);
   ailego::Closure::New(f1, 1)->run();
 
   std::function<decltype(GlobalFunction2)> f2 =
-      std::bind(&ClassB::MemberFunction2, &bbb, std::placeholders::_1,
+      std::bind(&ClassB::member_function2, &bbb, std::placeholders::_1,
                 std::placeholders::_2);
   ailego::Closure::New(f2, a[1], &a[2])->run();
 
   std::function<decltype(GlobalFunction3)> f3 =
-      std::bind(&ClassB::MemberFunction3, &bbb, std::placeholders::_1,
+      std::bind(&ClassB::member_function3, &bbb, std::placeholders::_1,
                 std::placeholders::_2, std::placeholders::_3);
   ailego::Closure::New(f3, a[1], &a[2], a[3])->run();
 
   std::function<decltype(GlobalFunction4)> f4 = std::bind(
-      &ClassB::MemberFunction4, &bbb, std::placeholders::_1,
+      &ClassB::member_function4, &bbb, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3, std::placeholders::_4);
   ailego::Closure::New(f4, 1, &a[2], a[3], a[4])->run();
 
   std::function<decltype(GlobalFunction5)> f5 =
-      std::bind(&ClassB::MemberFunction5, &bbb, std::placeholders::_1,
+      std::bind(&ClassB::member_function5, &bbb, std::placeholders::_1,
                 std::placeholders::_2, std::placeholders::_3,
                 std::placeholders::_4, std::placeholders::_5);
   ailego::Closure::New(f5, 1, &a[2], a[3], 4, &a[5])->run();
 
   std::function<decltype(GlobalFunction6)> f6 = std::bind(
-      &ClassB::MemberFunction6, &bbb, std::placeholders::_1,
+      &ClassB::member_function6, &bbb, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3, std::placeholders::_4,
       std::placeholders::_5, std::placeholders::_6);
   ailego::Closure::New(f6, 1, &a[2], a[3], a[4], &a[5], &a[6])->run();
 
   std::function<decltype(GlobalFunction7)> f7 = std::bind(
-      &ClassB::MemberFunction7, &bbb, std::placeholders::_1,
+      &ClassB::member_function7, &bbb, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3, std::placeholders::_4,
       std::placeholders::_5, std::placeholders::_6, std::placeholders::_7);
   ailego::Closure::New(f7, a[1], &a[2], a[3], a[4], &a[5], &a[6], 7)->run();
 
   std::function<decltype(GlobalProcess0)> p0 =
-      std::bind(&ClassB::MemberProcess0, &bbb);
+      std::bind(&ClassB::member_process0, &bbb);
   ailego::Closure::New(p0)->run();
 
   std::function<decltype(GlobalProcess1)> p1 =
-      std::bind(&ClassB::MemberProcess1, &bbb, std::placeholders::_1);
+      std::bind(&ClassB::member_process1, &bbb, std::placeholders::_1);
   ailego::Closure::New(p1, 1)->run();
 
   std::function<decltype(GlobalProcess2)> p2 =
-      std::bind(&ClassB::MemberProcess2, &bbb, std::placeholders::_1,
+      std::bind(&ClassB::member_process2, &bbb, std::placeholders::_1,
                 std::placeholders::_2);
   ailego::Closure::New(p2, b[1], &b[2])->run();
 
   std::function<decltype(GlobalProcess3)> p3 =
-      std::bind(&ClassB::MemberProcess3, &bbb, std::placeholders::_1,
+      std::bind(&ClassB::member_process3, &bbb, std::placeholders::_1,
                 std::placeholders::_2, std::placeholders::_3);
   ailego::Closure::New(p3, b[1], &b[2], b[3])->run();
 
   std::function<decltype(GlobalProcess4)> p4 = std::bind(
-      &ClassB::MemberProcess4, &bbb, std::placeholders::_1,
+      &ClassB::member_process4, &bbb, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3, std::placeholders::_4);
   ailego::Closure::New(p4, 1, &b[2], b[3], b[4])->run();
 
   std::function<decltype(GlobalProcess5)> p5 =
-      std::bind(&ClassB::MemberProcess5, &bbb, std::placeholders::_1,
+      std::bind(&ClassB::member_process5, &bbb, std::placeholders::_1,
                 std::placeholders::_2, std::placeholders::_3,
                 std::placeholders::_4, std::placeholders::_5);
   ailego::Closure::New(p5, 1, &b[2], b[3], 4, &b[5])->run();
 
   std::function<decltype(GlobalProcess6)> p6 = std::bind(
-      &ClassB::MemberProcess6, &bbb, std::placeholders::_1,
+      &ClassB::member_process6, &bbb, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3, std::placeholders::_4,
       std::placeholders::_5, std::placeholders::_6);
   ailego::Closure::New(p6, 1, &b[2], b[3], b[4], &b[5], &b[6])->run();
 
   std::function<decltype(GlobalProcess7)> p7 = std::bind(
-      &ClassB::MemberProcess7, &bbb, std::placeholders::_1,
+      &ClassB::member_process7, &bbb, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3, std::placeholders::_4,
       std::placeholders::_5, std::placeholders::_6, std::placeholders::_7);
   ailego::Closure::New(p7, b[1], &b[2], b[3], b[4], &b[5], &b[6], 7)->run();
@@ -892,37 +893,39 @@ TEST(Closure, Lambda) {
   long a[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   ClassB bbb(1);
 
-  auto lambda1 = [&](long a1) { return bbb.MemberFunction1(a1); };
+  auto lambda1 = [&](long a1) { return bbb.member_function1(a1); };
   ailego::Closure::New(lambda1, 1)->run();
 
-  auto lambda2 = [&](long a1, long *a2) { return bbb.MemberFunction2(a1, a2); };
+  auto lambda2 = [&](long a1, long *a2) {
+    return bbb.member_function2(a1, a2);
+  };
   ailego::Closure::New(lambda2, 1, &a[2])->run();
 
   auto lambda3 = [&](long a1, long *a2, long &a3) {
-    return bbb.MemberFunction3(a1, a2, a3);
+    return bbb.member_function3(a1, a2, a3);
   };
   ailego::Closure::New(lambda3, 1, &a[2], a[3])->run();
 
   auto lambda4 = [&](long a1, long *a2, long &a3, const long &a4) {
-    return bbb.MemberFunction4(a1, a2, a3, a4);
+    return bbb.member_function4(a1, a2, a3, a4);
   };
   ailego::Closure::New(lambda4, a[1], &a[2], a[3], a[4])->run();
 
   auto lambda5 = [&](long a1, long *a2, long &a3, const long &a4,
                      volatile long *a5) {
-    return bbb.MemberFunction5(a1, a2, a3, a4, a5);
+    return bbb.member_function5(a1, a2, a3, a4, a5);
   };
   ailego::Closure::New(lambda5, 1, &a[2], a[3], 4, &a[5])->run();
 
   auto lambda6 = [&](long a1, long *a2, long &a3, const long &a4,
                      volatile long *a5, long *const volatile a6) {
-    return bbb.MemberFunction6(a1, a2, a3, a4, a5, a6);
+    return bbb.member_function6(a1, a2, a3, a4, a5, a6);
   };
   ailego::Closure::New(lambda6, 1, &a[2], a[3], 4, &a[5], &a[6])->run();
 
   auto lambda7 = [&](long a1, long *a2, long &a3, const long &a4,
                      volatile long *a5, long *const volatile a6, long &&a7) {
-    return bbb.MemberFunction7(a1, a2, a3, a4, a5, a6, std::move(a7));
+    return bbb.member_function7(a1, a2, a3, a4, a5, a6, std::move(a7));
   };
   ailego::Closure::New(lambda7, a[1], &a[2], a[3], a[4], &a[5], &a[6], 7)
       ->run();
@@ -953,25 +956,27 @@ TEST(Closure, Return) {
   EXPECT_EQ(7u, r);
 
   ClassB bbb(1);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction0)->run(&r);
+  ailego::Closure::New(&bbb, &ClassB::member_function0)->run(&r);
   EXPECT_EQ(0u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction1, 1)->run(&r);
+  ailego::Closure::New(&bbb, &ClassB::member_function1, 1)->run(&r);
   EXPECT_EQ(1u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction2, a[1], &a[2])->run(&r);
+  ailego::Closure::New(&bbb, &ClassB::member_function2, a[1], &a[2])->run(&r);
   EXPECT_EQ(2u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction3, 1, &a[2], a[3])->run(&r);
+  ailego::Closure::New(&bbb, &ClassB::member_function3, 1, &a[2], a[3])
+      ->run(&r);
   EXPECT_EQ(3u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction4, a[1], &a[2], a[3], a[4])
+  ailego::Closure::New(&bbb, &ClassB::member_function4, a[1], &a[2], a[3], a[4])
       ->run(&r);
   EXPECT_EQ(4u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction5, 1, &a[2], a[3], 4, &a[5])
+  ailego::Closure::New(&bbb, &ClassB::member_function5, 1, &a[2], a[3], 4,
+                       &a[5])
       ->run(&r);
   EXPECT_EQ(5u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction6, a[1], &a[2], a[3], a[4],
+  ailego::Closure::New(&bbb, &ClassB::member_function6, a[1], &a[2], a[3], a[4],
                        &a[5], &a[6])
       ->run(&r);
   EXPECT_EQ(6u, r);
-  ailego::Closure::New(&bbb, &ClassB::MemberFunction7, a[1], &a[2], a[3], a[4],
+  ailego::Closure::New(&bbb, &ClassB::member_function7, a[1], &a[2], a[3], a[4],
                        &a[5], &a[6], 7)
       ->run(&r);
   EXPECT_EQ(7u, r);

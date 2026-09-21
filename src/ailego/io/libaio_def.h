@@ -34,6 +34,9 @@
 
 #if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
+// NOLINTBEGIN(readability-identifier-naming): types below are copied verbatim
+// from the Linux kernel ABI (<libaio.h>) and must keep their upstream names.
+
 struct sockaddr;
 struct iovec;
 
@@ -186,5 +189,7 @@ static inline void io_prep_pread(struct iocb *iocb, int fd, void *buf,
 // ---------------------------------------------------------------------------
 // End: type and struct definitions from <libaio.h>
 // ---------------------------------------------------------------------------
+
+// NOLINTEND(readability-identifier-naming)
 
 #endif  // __linux__

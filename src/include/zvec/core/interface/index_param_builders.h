@@ -144,12 +144,12 @@ class IVFIndexParamBuilder
     param->niters = niters;
     return *this;
   }
-  IVFIndexParamBuilder &with_l1_index(const BaseIndexParam &l1Index) {
-    param->l1Index = std::make_shared<BaseIndexParam>(l1Index);
+  IVFIndexParamBuilder &with_l1_index(const BaseIndexParam &l1_index) {
+    param->l1_index = std::make_shared<BaseIndexParam>(l1_index);
     return *this;
   }
-  IVFIndexParamBuilder &with_l2_index(const BaseIndexParam &l2Index) {
-    param->l2Index = std::make_shared<BaseIndexParam>(l2Index);
+  IVFIndexParamBuilder &with_l2_index(const BaseIndexParam &l2_index) {
+    param->l2_index = std::make_shared<BaseIndexParam>(l2_index);
     return *this;
   }
   IVFIndexParamBuilder &with_use_soar(bool use_soar) {
@@ -451,14 +451,14 @@ class IVFQueryParamBuilder
   // Since l1QueryParam and l2QueryParam are shared_ptr to BaseIndexQueryParam,
   // they can accept ANY derived configuration object.
   IVFQueryParamBuilder &with_l1_query_param(
-      BaseIndexQueryParam::Pointer l1QueryParam) {
-    m_param.l1QueryParam = std::move(l1QueryParam);
+      BaseIndexQueryParam::Pointer l1_query_param) {
+    m_param.l1_query_param = std::move(l1_query_param);
     return *this;
   }
 
   IVFQueryParamBuilder &with_l2_query_param(
-      BaseIndexQueryParam::Pointer l2QueryParam) {
-    m_param.l2QueryParam = std::move(l2QueryParam);
+      BaseIndexQueryParam::Pointer l2_query_param) {
+    m_param.l2_query_param = std::move(l2_query_param);
     return *this;
   }
 

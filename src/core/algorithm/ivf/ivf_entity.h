@@ -171,17 +171,21 @@ class IVFEntity {
     return *static_cast<const uint64_t *>(data);
   }
 
-  //! Retrieve the key-order mapping (sorted rank -> local_id).
-  //! mapping[rank] is the local_id of the vector with the rank-th smallest
-  //! key. Returns nullptr if mapping segment is unavailable.
-  const uint32_t *get_key_order_mapping() const {
-    if (!mapping_) return nullptr;
-    const void *data = nullptr;
-    const size_t size = vector_count() * sizeof(uint32_t);
-    if (mapping_->read(0, &data, size) != size) {
-      return nullptr;
+  //! Test whether the sorted-rank to local-id mapping is available.
+  bool has_key_order_mapping() const {
+    return mapping_ != nullptr;
+  }
+
+  //! Fetch a range from the key-order mapping (sorted rank -> local_id).
+  //! Explicit copying avoids retaining storage-owned transient pointers.
+  size_t get_key_order_mapping(size_t rank, uint32_t *out, size_t count) const {
+    if (!mapping_ || !out || count == 0 || rank >= vector_count()) {
+      return 0;
     }
-    return static_cast<const uint32_t *>(data);
+    count = std::min(count, vector_count() - rank);
+    const size_t bytes = count * sizeof(uint32_t);
+    return mapping_->fetch(rank * sizeof(uint32_t), out, bytes) /
+           sizeof(uint32_t);
   }
 
   //! Retrieve vector by local id
@@ -358,6 +362,8 @@ class IVFEntity {
   IndexStorage::Segment::Pointer features_{};
   IndexStorage::Segment::Pointer integer_quantizer_params_{};
   mutable std::string vector_{};  // temporary buffer for colomn major order
+  //! Temporary buffer for one row-major vector split across storage pages.
+  mutable std::vector<uint8_t> scatter_vector_{};
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
   InvertedIndexHeader header_;

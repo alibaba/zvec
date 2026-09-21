@@ -428,10 +428,10 @@ Status TestHelper::SegmentInsertDoc(const Segment::Ptr &segment,
 
       Status s;
       if (upsert) {
-        s = segment->Upsert(new_doc);
+        s = segment->upsert(new_doc);
         CHECK_RETURN_STATUS(s);
       } else {
-        s = segment->Insert(new_doc);
+        s = segment->insert(new_doc);
         CHECK_RETURN_STATUS(s);
       }
     }

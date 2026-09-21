@@ -40,7 +40,7 @@ class BaseForwardStore {
  public:
   using Ptr = std::shared_ptr<BaseForwardStore>;
 
-  virtual Status Open() = 0;
+  virtual Status open() = 0;
 
   virtual TablePtr fetch(const std::vector<std::string> &columns,
                          const std::vector<int> &indices) = 0;

@@ -190,7 +190,7 @@ class IndexMapping {
   //! Initialize index file mapping
   int init_index_mapping(size_t len);
 
-  bool Ishugetlbfs(const std::string &path) const;
+  bool ishugetlbfs(const std::string &path) const;
 
   int init_meta_section();
   int init_hugepage_meta_section();

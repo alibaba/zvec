@@ -29,7 +29,7 @@ class UniformUint8Reformer : public IndexReformer {
   explicit UniformUint8Reformer(IndexMeta::DataType /*destination_type*/) {}
 
   int init(const ailego::Params &params) override {
-    Reset();
+    reset();
 
     float scale = 0.0f;
     float bias = 0.0f;
@@ -42,11 +42,11 @@ class UniformUint8Reformer : public IndexReformer {
           static_cast<int>(has_scale), static_cast<int>(has_bias));
       return IndexError_InvalidArgument;
     }
-    return SetParams(scale, bias);
+    return set_params(scale, bias);
   }
 
   int cleanup() override {
-    Reset();
+    reset();
     return 0;
   }
 
@@ -61,24 +61,24 @@ class UniformUint8Reformer : public IndexReformer {
   int transform(const void *query, const IndexQueryMeta &query_meta,
                 std::string *output,
                 IndexQueryMeta *output_meta) const override {
-    return Encode(query, query_meta, 1, output, output_meta);
+    return encode(query, query_meta, 1, output, output_meta);
   }
 
   int transform(const void *queries, const IndexQueryMeta &query_meta,
                 uint32_t count, std::string *output,
                 IndexQueryMeta *output_meta) const override {
-    return Encode(queries, query_meta, count, output, output_meta);
+    return encode(queries, query_meta, count, output, output_meta);
   }
 
   int convert(const void *record, const IndexQueryMeta &record_meta,
               std::string *output, IndexQueryMeta *output_meta) const override {
-    return Encode(record, record_meta, 1, output, output_meta);
+    return encode(record, record_meta, 1, output, output_meta);
   }
 
   int convert(const void *records, const IndexQueryMeta &record_meta,
               uint32_t count, std::string *output,
               IndexQueryMeta *output_meta) const override {
-    return Encode(records, record_meta, count, output, output_meta);
+    return encode(records, record_meta, count, output, output_meta);
   }
 
   int normalize(const void * /*query*/, const IndexQueryMeta & /*query_meta*/,
@@ -128,14 +128,14 @@ class UniformUint8Reformer : public IndexReformer {
   }
 
  private:
-  void Reset() {
+  void reset() {
     initialized_ = false;
     scale_ = 0.0f;
     bias_ = 0.0f;
     scale_reciprocal_squared_ = 1.0f;
   }
 
-  int SetParams(float scale, float bias) {
+  int set_params(float scale, float bias) {
     if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(bias)) {
       LOG_ERROR("UniformUint8Reformer: invalid params scale=%f bias=%f", scale,
                 bias);
@@ -149,7 +149,7 @@ class UniformUint8Reformer : public IndexReformer {
     return 0;
   }
 
-  int Encode(const void *input, const IndexQueryMeta &input_meta,
+  int encode(const void *input, const IndexQueryMeta &input_meta,
              uint32_t count, std::string *output,
              IndexQueryMeta *output_meta) const {
     if (!initialized_ || !input || !output || !output_meta || count == 0) {
@@ -176,13 +176,13 @@ class UniformUint8Reformer : public IndexReformer {
     const auto *source = static_cast<const float *>(input);
     auto *destination = reinterpret_cast<int8_t *>(output->data());
     for (uint32_t i = 0; i < count; ++i) {
-      EncodeOne(source + static_cast<size_t>(i) * dimension, dimension,
-                destination + static_cast<size_t>(i) * output_stride);
+      encode_one(source + static_cast<size_t>(i) * dimension, dimension,
+                 destination + static_cast<size_t>(i) * output_stride);
     }
     return 0;
   }
 
-  void EncodeOne(const float *input, size_t dimension, int8_t *output) const {
+  void encode_one(const float *input, size_t dimension, int8_t *output) const {
     int64_t sum_squared = 0;
     for (size_t i = 0; i < dimension; ++i) {
       float value = std::round(input[i] * scale_ + bias_);

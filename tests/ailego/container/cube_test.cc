@@ -415,43 +415,43 @@ TEST(Cube, EnumObject) {
   EnumValueType a(EnumValueType::Binary), c(EnumValueType::Unknown);
   EnumClassType b(EnumClassType::RED), d(EnumClassType::Unknown);
 
-  Cube cubeA(a);
-  Cube cubeB(b);
+  Cube cube_a(a);
+  Cube cube_b(b);
 
-  EXPECT_EQ(a, cubeA.cast<EnumValueType>());
-  EXPECT_NE(c, cubeA.cast<EnumValueType>());
-  c = cubeA.cast<EnumValueType>();
+  EXPECT_EQ(a, cube_a.cast<EnumValueType>());
+  EXPECT_NE(c, cube_a.cast<EnumValueType>());
+  c = cube_a.cast<EnumValueType>();
   EXPECT_EQ(a, c);
 
-  EXPECT_EQ(b, cubeB.cast<EnumClassType>());
-  EXPECT_NE(d, cubeB.cast<EnumClassType>());
-  d = cubeB.cast<EnumClassType>();
+  EXPECT_EQ(b, cube_b.cast<EnumClassType>());
+  EXPECT_NE(d, cube_b.cast<EnumClassType>());
+  d = cube_b.cast<EnumClassType>();
   EXPECT_EQ(b, d);
 
-  Cube cubeC((std::underlying_type<EnumValueType>::type)1);
-  Cube cubeD((std::underlying_type<EnumClassType>::type)1);
+  Cube cube_c((std::underlying_type<EnumValueType>::type)1);
+  Cube cube_d((std::underlying_type<EnumClassType>::type)1);
 
-  std::cout << "* cubeA: " << cubeA.type().name() << std::endl;
-  std::cout << "* cubeB: " << cubeB.type().name() << std::endl;
-  std::cout << "* cubeC: " << cubeC.type().name() << std::endl;
-  std::cout << "* cubeD: " << cubeD.type().name() << std::endl;
+  std::cout << "* cubeA: " << cube_a.type().name() << std::endl;
+  std::cout << "* cubeB: " << cube_b.type().name() << std::endl;
+  std::cout << "* cubeC: " << cube_c.type().name() << std::endl;
+  std::cout << "* cubeD: " << cube_d.type().name() << std::endl;
 
   // EXPECT_TRUE(typeid(std::underlying_type<EnumValueType>::type) ==
   //             typeid(uint32_t));
   // EXPECT_TRUE(typeid(std::underlying_type<EnumClassType>::type) ==
   //             typeid(int32_t));
 
-  EXPECT_TRUE(cubeA.compatible<EnumValueType>());
-  EXPECT_TRUE(cubeB.compatible<EnumClassType>());
-  EXPECT_TRUE(cubeA.compatible<std::underlying_type<EnumValueType>::type>());
-  EXPECT_TRUE(cubeB.compatible<std::underlying_type<EnumClassType>::type>());
-  EXPECT_TRUE(cubeC.compatible<std::underlying_type<EnumValueType>::type>());
-  EXPECT_TRUE(cubeD.compatible<std::underlying_type<EnumClassType>::type>());
+  EXPECT_TRUE(cube_a.compatible<EnumValueType>());
+  EXPECT_TRUE(cube_b.compatible<EnumClassType>());
+  EXPECT_TRUE(cube_a.compatible<std::underlying_type<EnumValueType>::type>());
+  EXPECT_TRUE(cube_b.compatible<std::underlying_type<EnumClassType>::type>());
+  EXPECT_TRUE(cube_c.compatible<std::underlying_type<EnumValueType>::type>());
+  EXPECT_TRUE(cube_d.compatible<std::underlying_type<EnumClassType>::type>());
 
   EnumValueType e =
-      (EnumValueType)cubeA.cast<std::underlying_type<EnumValueType>::type>();
+      (EnumValueType)cube_a.cast<std::underlying_type<EnumValueType>::type>();
   EnumClassType f =
-      (EnumClassType)cubeB.cast<std::underlying_type<EnumClassType>::type>();
+      (EnumClassType)cube_b.cast<std::underlying_type<EnumClassType>::type>();
   EXPECT_EQ(a, e);
   EXPECT_EQ(b, f);
 }

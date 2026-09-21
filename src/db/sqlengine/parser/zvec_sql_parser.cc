@@ -85,8 +85,8 @@ SQLInfo::Ptr ZVecSQLParser::parse(const std::string &query,
       formatted_tree_ = to_formatted_string_tree(tree, &parser);
     }
 
-    SQLInfo::Ptr sqlInfo = sql_info(tree);
-    return sqlInfo;
+    SQLInfo::Ptr info = sql_info(tree);
+    return info;
   } catch (std::exception &e) {
     err_msg_ = "parse error [" + std::string(e.what()) + "]";
     return nullptr;
@@ -94,38 +94,38 @@ SQLInfo::Ptr ZVecSQLParser::parse(const std::string &query,
 }
 
 SQLInfo::Ptr ZVecSQLParser::sql_info(VoidPtr tree) {
-  ParseTree *parseTree = reinterpret_cast<ParseTree *>(tree);
+  ParseTree *parse_tree = reinterpret_cast<ParseTree *>(tree);
   SQLParser::Compilation_unitContext *compilation_unit_node =
-      (SQLParser::Compilation_unitContext *)parseTree;
+      (SQLParser::Compilation_unitContext *)parse_tree;
   SQLParser::Unit_statementContext *unit_statement_node =
       (SQLParser::Unit_statementContext *)compilation_unit_node->children[0];
 
-  SQLInfo::SQLType sqlType = sql_type(unit_statement_node);
-  if (sqlType == SQLInfo::SQLType::NONE) {
+  SQLInfo::SQLType type = sql_type(unit_statement_node);
+  if (type == SQLInfo::SQLType::NONE) {
     return nullptr;
   }
 
-  BaseInfo::Ptr baseInfo = nullptr;
-  switch (sqlType) {
+  BaseInfo::Ptr base_info = nullptr;
+  switch (type) {
     case SQLInfo::SQLType::SELECT:
-      baseInfo =
+      base_info =
           select_info(unit_statement_node->dql_statement()->select_statement());
       break;
     default:
       break;
   }
 
-  if (baseInfo == nullptr) {
+  if (base_info == nullptr) {
     return nullptr;
   }
 
-  if (baseInfo->validate() == false) {
-    err_msg_ = baseInfo->err_msg();
+  if (base_info->validate() == false) {
+    err_msg_ = base_info->err_msg();
     return nullptr;
   }
 
-  SQLInfo::Ptr sqlInfo = std::make_shared<SQLInfo>(sqlType, baseInfo);
-  return sqlInfo;
+  SQLInfo::Ptr info = std::make_shared<SQLInfo>(type, base_info);
+  return info;
 }
 
 SQLInfo::SQLType ZVecSQLParser::sql_type(VoidPtr node) {
@@ -164,7 +164,7 @@ SelectInfo::Ptr ZVecSQLParser::select_info(VoidPtr node) {
   if (from_clause_node->tableview_name() != nullptr) {
     table_name = from_clause_node->tableview_name()->getText();
   }
-  SelectInfo::Ptr selectInfo = std::make_shared<SelectInfo>(table_name);
+  SelectInfo::Ptr select_info = std::make_shared<SelectInfo>(table_name);
 
   for (auto selected_element_node :
        selected_elements_node->selected_element()) {
@@ -182,7 +182,7 @@ SelectInfo::Ptr ZVecSQLParser::select_info(VoidPtr node) {
       selected_elem_info->set_asterisk(true);
     }
 
-    selectInfo->add_selected_elem(std::move(selected_elem_info));
+    select_info->add_selected_elem(std::move(selected_elem_info));
   }
 
   if (where_node) {
@@ -190,7 +190,7 @@ SelectInfo::Ptr ZVecSQLParser::select_info(VoidPtr node) {
     if (cond == nullptr) {
       return nullptr;
     }
-    selectInfo->set_search_cond(std::move(cond));
+    select_info->set_search_cond(std::move(cond));
   }
 
   if (order_by_node != nullptr) {
@@ -201,15 +201,15 @@ SelectInfo::Ptr ZVecSQLParser::select_info(VoidPtr node) {
       if (order_by_element->DESC()) {
         orderby_elem_info->set_desc();
       }
-      selectInfo->add_order_by_elem(std::move(orderby_elem_info));
+      select_info->add_order_by_elem(std::move(orderby_elem_info));
     }
   }
 
   if (limit_node != nullptr) {
-    selectInfo->set_limit(std::stoi(limit_node->int_value()->getText()));
+    select_info->set_limit(std::stoi(limit_node->int_value()->getText()));
   }
 
-  return selectInfo;
+  return select_info;
 }
 
 Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
@@ -262,17 +262,17 @@ Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
     Frame frame = stack.back();
     stack.pop_back();
 
-    SQLParser::Logic_exprContext *logicExprNode = unwrap_enclosed(frame.node);
-    if (logicExprNode == nullptr) {
+    SQLParser::Logic_exprContext *logic_expr_node = unwrap_enclosed(frame.node);
+    if (logic_expr_node == nullptr) {
       attach_node(frame.parent, nullptr, frame.bind_type);
       continue;
     }
 
-    if (logicExprNode->OR() != nullptr) {
+    if (logic_expr_node->OR() != nullptr) {
       // An AND subtree remains one operand, preserving precedence and grouping.
       // Parentheses around OR are safe to flatten because OR is associative.
       std::vector<SQLParser::Logic_exprContext *> operands;
-      std::vector<SQLParser::Logic_exprContext *> pending{logicExprNode};
+      std::vector<SQLParser::Logic_exprContext *> pending{logic_expr_node};
       while (!pending.empty()) {
         SQLParser::Logic_exprContext *current = unwrap_enclosed(pending.back());
         pending.pop_back();
@@ -300,7 +300,7 @@ Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
       }
 
       if (operands.size() <= kOrBalanceThreshold) {
-        const auto &children = logicExprNode->logic_expr();
+        const auto &children = logic_expr_node->logic_expr();
         Node::Ptr expr = std::make_shared<Node>(NodeOp::T_OR);
         Node *expr_raw = expr.get();
         attach_node(frame.parent, std::move(expr), frame.bind_type);
@@ -334,8 +334,8 @@ Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
         stack.push_back({operands[i], operand_targets[i].parent,
                          operand_targets[i].bind_type});
       }
-    } else if (logicExprNode->AND() != nullptr) {
-      const auto &children = logicExprNode->logic_expr();
+    } else if (logic_expr_node->AND() != nullptr) {
+      const auto &children = logic_expr_node->logic_expr();
       if (children.size() != 2U) {
         err_msg_ = "Parse failed. Invalid AND expression.";
         attach_node(frame.parent, nullptr, frame.bind_type);
@@ -349,9 +349,9 @@ Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
       // subroot selection is currently shape-dependent.
       stack.push_back({children[1], expr_raw, BindType::RIGHT});
       stack.push_back({children[0], expr_raw, BindType::LEFT});
-    } else if (logicExprNode->relation_expr() != nullptr) {
+    } else if (logic_expr_node->relation_expr() != nullptr) {
       attach_node(frame.parent,
-                  handle_rel_expr_node(logicExprNode->relation_expr()),
+                  handle_rel_expr_node(logic_expr_node->relation_expr()),
                   frame.bind_type);
     } else {
       attach_node(frame.parent, nullptr, frame.bind_type);
@@ -362,90 +362,90 @@ Node::Ptr ZVecSQLParser::handle_logic_expr_node(VoidPtr node) {
 }
 
 Node::Ptr ZVecSQLParser::handle_rel_expr_left_node(VoidPtr node) {
-  SQLParser::Relation_exprContext *relationExprNode =
+  SQLParser::Relation_exprContext *relation_expr_node =
       reinterpret_cast<SQLParser::Relation_exprContext *>(node);
   // either identifier or function call
-  if (relationExprNode->identifier() != nullptr) {
-    return handle_id_node(relationExprNode->identifier());
-  } else if (relationExprNode->function_call() != nullptr) {
-    return handle_function_call_node(relationExprNode->function_call());
+  if (relation_expr_node->identifier() != nullptr) {
+    return handle_id_node(relation_expr_node->identifier());
+  } else if (relation_expr_node->function_call() != nullptr) {
+    return handle_function_call_node(relation_expr_node->function_call());
   }
 
   err_msg_ = "Parse failed. Unexpected rel expr left node." +
-             relationExprNode->getText();
+             relation_expr_node->getText();
   return nullptr;
 }
 
 Node::Ptr ZVecSQLParser::handle_rel_expr_node(VoidPtr node) {
-  SQLParser::Relation_exprContext *relationExprNode =
+  SQLParser::Relation_exprContext *relation_expr_node =
       reinterpret_cast<SQLParser::Relation_exprContext *>(node);
-  if (relationExprNode->rel_oper() != nullptr) {
-    SQLParser::Rel_operContext *op = relationExprNode->rel_oper();
-    NodeOp nodeOp = NodeOp::T_NONE;
+  if (relation_expr_node->rel_oper() != nullptr) {
+    SQLParser::Rel_operContext *op = relation_expr_node->rel_oper();
+    NodeOp node_op = NodeOp::T_NONE;
     if (op->E_OP()) {
-      nodeOp = NodeOp::T_EQ;
+      node_op = NodeOp::T_EQ;
     } else if (op->ne_op()) {
-      nodeOp = NodeOp::T_NE;
+      node_op = NodeOp::T_NE;
     } else if (op->L_OP()) {
-      nodeOp = NodeOp::T_LT;
+      node_op = NodeOp::T_LT;
     } else if (op->G_OP()) {
-      nodeOp = NodeOp::T_GT;
+      node_op = NodeOp::T_GT;
     } else if (op->le_op()) {
-      nodeOp = NodeOp::T_LE;
+      node_op = NodeOp::T_LE;
     } else if (op->ge_op()) {
-      nodeOp = NodeOp::T_GE;
+      node_op = NodeOp::T_GE;
     }
-    Node::Ptr relationalExpr = std::make_shared<Node>(nodeOp);
-    relationalExpr->set_left(handle_rel_expr_left_node(relationExprNode));
+    Node::Ptr relational_expr = std::make_shared<Node>(node_op);
+    relational_expr->set_left(handle_rel_expr_left_node(relation_expr_node));
     Node::Ptr value_node =
-        handle_value_expr_node(relationExprNode->value_expr());
+        handle_value_expr_node(relation_expr_node->value_expr());
     if (value_node == nullptr) {
       return nullptr;
     }
-    relationalExpr->set_right(std::move(value_node));
-    return relationalExpr;
-  } else if (relationExprNode->LIKE() != nullptr) {
-    NodeOp nodeOp = NodeOp::T_LIKE;
-    Node::Ptr relationalExpr = std::make_shared<Node>(nodeOp);
-    relationalExpr->set_left(handle_rel_expr_left_node(relationExprNode));
+    relational_expr->set_right(std::move(value_node));
+    return relational_expr;
+  } else if (relation_expr_node->LIKE() != nullptr) {
+    NodeOp node_op = NodeOp::T_LIKE;
+    Node::Ptr relational_expr = std::make_shared<Node>(node_op);
+    relational_expr->set_left(handle_rel_expr_left_node(relation_expr_node));
     Node::Ptr value_node =
-        handle_value_expr_node(relationExprNode->value_expr());
+        handle_value_expr_node(relation_expr_node->value_expr());
     if (value_node == nullptr) {
       return nullptr;
     }
-    relationalExpr->set_right(std::move(value_node));
-    return relationalExpr;
-  } else if (relationExprNode->IN() != nullptr ||
-             relationExprNode->CONTAIN_ALL() != nullptr ||
-             relationExprNode->CONTAIN_ANY() != nullptr) {
-    NodeOp nodeOp = NodeOp::T_NONE;
+    relational_expr->set_right(std::move(value_node));
+    return relational_expr;
+  } else if (relation_expr_node->IN() != nullptr ||
+             relation_expr_node->CONTAIN_ALL() != nullptr ||
+             relation_expr_node->CONTAIN_ANY() != nullptr) {
+    NodeOp node_op = NodeOp::T_NONE;
 
-    if (relationExprNode->CONTAIN_ALL() != nullptr) {
-      nodeOp = NodeOp::T_CONTAIN_ALL;
-    } else if (relationExprNode->CONTAIN_ANY() != nullptr) {
-      nodeOp = NodeOp::T_CONTAIN_ANY;
+    if (relation_expr_node->CONTAIN_ALL() != nullptr) {
+      node_op = NodeOp::T_CONTAIN_ALL;
+    } else if (relation_expr_node->CONTAIN_ANY() != nullptr) {
+      node_op = NodeOp::T_CONTAIN_ANY;
     } else {
       //      relationExprNode->IN() != nullptr
-      nodeOp = NodeOp::T_IN;
+      node_op = NodeOp::T_IN;
     }
 
-    Node::Ptr relationalExpr = std::make_shared<Node>(nodeOp);
-    relationalExpr->set_left(handle_rel_expr_left_node(relationExprNode));
+    Node::Ptr relational_expr = std::make_shared<Node>(node_op);
+    relational_expr->set_left(handle_rel_expr_left_node(relation_expr_node));
     Node::Ptr in_value_expr_list_node =
-        handle_in_value_expr_list_node(relationExprNode->in_value_expr_list(),
-                                       relationExprNode->NOT() != nullptr);
+        handle_in_value_expr_list_node(relation_expr_node->in_value_expr_list(),
+                                       relation_expr_node->NOT() != nullptr);
     if (in_value_expr_list_node == nullptr) {
       return nullptr;
     }
-    relationalExpr->set_right(std::move(in_value_expr_list_node));
-    return relationalExpr;
-  } else if (relationExprNode->NULL_V() != nullptr) {
-    NodeOp nodeOp = NodeOp::T_IS_NULL;
-    if (relationExprNode->NOT() != nullptr) {
-      nodeOp = NodeOp::T_IS_NOT_NULL;
+    relational_expr->set_right(std::move(in_value_expr_list_node));
+    return relational_expr;
+  } else if (relation_expr_node->NULL_V() != nullptr) {
+    NodeOp node_op = NodeOp::T_IS_NULL;
+    if (relation_expr_node->NOT() != nullptr) {
+      node_op = NodeOp::T_IS_NOT_NULL;
     }
-    auto null_node = std::make_shared<Node>(nodeOp);
-    null_node->set_left(handle_rel_expr_left_node(relationExprNode));
+    auto null_node = std::make_shared<Node>(node_op);
+    null_node->set_left(handle_rel_expr_left_node(relation_expr_node));
     auto right = std::make_shared<ConstantNode>("");
     right->set_op(NodeOp::T_NULL_VALUE);
     null_node->set_right(std::move(right));
@@ -456,40 +456,40 @@ Node::Ptr ZVecSQLParser::handle_rel_expr_node(VoidPtr node) {
 }
 
 Node::Ptr ZVecSQLParser::handle_value_expr_node(VoidPtr node) {
-  SQLParser::Value_exprContext *valueExprNode =
+  SQLParser::Value_exprContext *value_expr_node =
       reinterpret_cast<SQLParser::Value_exprContext *>(node);
 
-  if (valueExprNode->constant() != nullptr) {
-    return handle_const_node(valueExprNode->constant());
-  } else if (valueExprNode->function_call() != nullptr) {
-    return handle_function_call_node(valueExprNode->function_call());
+  if (value_expr_node->constant() != nullptr) {
+    return handle_const_node(value_expr_node->constant());
+  } else if (value_expr_node->function_call() != nullptr) {
+    return handle_function_call_node(value_expr_node->function_call());
   }
 
   return nullptr;
 }
 
 Node::Ptr ZVecSQLParser::handle_function_value_expr_node(VoidPtr node) {
-  SQLParser::Function_value_exprContext *valueExprNode =
+  SQLParser::Function_value_exprContext *value_expr_node =
       reinterpret_cast<SQLParser::Function_value_exprContext *>(node);
 
-  if (valueExprNode->value_expr() != nullptr) {
-    return handle_value_expr_node(valueExprNode->value_expr());
-  } else if (valueExprNode->identifier() != nullptr) {
-    return handle_id_node(valueExprNode->identifier());
+  if (value_expr_node->value_expr() != nullptr) {
+    return handle_value_expr_node(value_expr_node->value_expr());
+  } else if (value_expr_node->identifier() != nullptr) {
+    return handle_id_node(value_expr_node->identifier());
   }
 
   return nullptr;
 }
 
 Node::Ptr ZVecSQLParser::handle_in_value_expr_node(VoidPtr node) {
-  SQLParser::In_value_exprContext *inValueExprNode =
+  SQLParser::In_value_exprContext *in_value_expr_node =
       reinterpret_cast<SQLParser::In_value_exprContext *>(node);
 
-  if (inValueExprNode->constant_num_and_str() != nullptr) {
+  if (in_value_expr_node->constant_num_and_str() != nullptr) {
     return handle_const_num_and_str_node(
-        inValueExprNode->constant_num_and_str());
-  } else if (inValueExprNode->bool_value() != nullptr) {
-    return handle_bool_value_node(inValueExprNode->bool_value());
+        in_value_expr_node->constant_num_and_str());
+  } else if (in_value_expr_node->bool_value() != nullptr) {
+    return handle_bool_value_node(in_value_expr_node->bool_value());
   }
 
   return nullptr;
@@ -499,24 +499,24 @@ Node::Ptr ZVecSQLParser::handle_bool_value_node(
     antlr4::SQLParser::Bool_valueContext *node) {
   // normalize bool value
   auto value = node->TRUE_V() ? "true" : "false";
-  auto constExpr = std::make_shared<ConstantNode>(value);
-  constExpr->set_op(NodeOp::T_BOOL_VALUE);
-  return constExpr;
+  auto const_expr = std::make_shared<ConstantNode>(value);
+  const_expr->set_op(NodeOp::T_BOOL_VALUE);
+  return const_expr;
 }
 
 Node::Ptr ZVecSQLParser::handle_in_value_expr_list_node(VoidPtr node,
                                                         bool exclude) {
-  SQLParser::In_value_expr_listContext *inValueExprListContext =
+  SQLParser::In_value_expr_listContext *in_value_expr_list_context =
       reinterpret_cast<SQLParser::In_value_expr_listContext *>(node);
 
   InValueExprListNode::Ptr in_value_expr_list_node =
       std::make_shared<InValueExprListNode>();
   in_value_expr_list_node->set_exclude(exclude);
-  if (!inValueExprListContext) {
+  if (!in_value_expr_list_context) {
     return in_value_expr_list_node;
   }
 
-  auto in_value_expr_list = inValueExprListContext->in_value_expr();
+  auto in_value_expr_list = in_value_expr_list_context->in_value_expr();
   for (auto in_value_expr : in_value_expr_list) {
     Node::Ptr in_value_node = handle_in_value_expr_node(in_value_expr);
     if (in_value_node == nullptr) {
@@ -549,78 +549,78 @@ Node::Ptr ZVecSQLParser::handle_function_call_node(VoidPtr node) {
 }
 
 Node::Ptr ZVecSQLParser::handle_const_node(VoidPtr node) {
-  Node::Ptr constExpr = nullptr;
-  SQLParser::ConstantContext *constantNode =
+  Node::Ptr const_expr = nullptr;
+  SQLParser::ConstantContext *constant_node =
       reinterpret_cast<SQLParser::ConstantContext *>(node);
-  if (constantNode->numeric()) {
-    constExpr =
-        std::make_shared<ConstantNode>(constantNode->numeric()->getText());
-    if (constantNode->numeric()->int_value()) {
-      constExpr->set_op(NodeOp::T_INT_VALUE);
-    } else if (constantNode->numeric()->float_value()) {
-      constExpr->set_op(NodeOp::T_FLOAT_VALUE);
+  if (constant_node->numeric()) {
+    const_expr =
+        std::make_shared<ConstantNode>(constant_node->numeric()->getText());
+    if (constant_node->numeric()->int_value()) {
+      const_expr->set_op(NodeOp::T_INT_VALUE);
+    } else if (constant_node->numeric()->float_value()) {
+      const_expr->set_op(NodeOp::T_FLOAT_VALUE);
     }
-  } else if (constantNode->quoted_string()) {
-    std::string value = constantNode->quoted_string()->getText();
+  } else if (constant_node->quoted_string()) {
+    std::string value = constant_node->quoted_string()->getText();
     value = trim(value);
     value = Util::normalize(value);
-    constExpr = std::make_shared<ConstantNode>(value);
-    constExpr->set_op(NodeOp::T_STRING_VALUE);
-  } else if (constantNode->vector_expr()) {
-    constExpr = handle_vector_expr_node(constantNode->vector_expr());
-    if (constExpr == nullptr) {
+    const_expr = std::make_shared<ConstantNode>(value);
+    const_expr->set_op(NodeOp::T_STRING_VALUE);
+  } else if (constant_node->vector_expr()) {
+    const_expr = handle_vector_expr_node(constant_node->vector_expr());
+    if (const_expr == nullptr) {
       err_msg_ = "Parse failed. vector format error." +
-                 constantNode->vector_expr()->getText();
+                 constant_node->vector_expr()->getText();
       LOG_ERROR("Parse failed. vector format error. [%s]",
-                constantNode->vector_expr()->getText().c_str());
+                constant_node->vector_expr()->getText().c_str());
       return nullptr;
     }
-  } else if (constantNode->bool_value()) {
-    constExpr = handle_bool_value_node(constantNode->bool_value());
+  } else if (constant_node->bool_value()) {
+    const_expr = handle_bool_value_node(constant_node->bool_value());
   }
 
-  return constExpr;
+  return const_expr;
 }
 
 Node::Ptr ZVecSQLParser::handle_const_num_and_str_node(VoidPtr node) {
-  Node::Ptr constExpr = nullptr;
-  SQLParser::Constant_num_and_strContext *constant_num_and_str_Node =
+  Node::Ptr const_expr = nullptr;
+  SQLParser::Constant_num_and_strContext *constant_num_and_str_node =
       reinterpret_cast<SQLParser::Constant_num_and_strContext *>(node);
-  if (constant_num_and_str_Node->numeric()) {
-    constExpr = std::make_shared<ConstantNode>(
-        constant_num_and_str_Node->numeric()->getText());
-    if (constant_num_and_str_Node->numeric()->int_value()) {
-      constExpr->set_op(NodeOp::T_INT_VALUE);
-    } else if (constant_num_and_str_Node->numeric()->float_value()) {
-      constExpr->set_op(NodeOp::T_FLOAT_VALUE);
+  if (constant_num_and_str_node->numeric()) {
+    const_expr = std::make_shared<ConstantNode>(
+        constant_num_and_str_node->numeric()->getText());
+    if (constant_num_and_str_node->numeric()->int_value()) {
+      const_expr->set_op(NodeOp::T_INT_VALUE);
+    } else if (constant_num_and_str_node->numeric()->float_value()) {
+      const_expr->set_op(NodeOp::T_FLOAT_VALUE);
     }
-  } else if (constant_num_and_str_Node->quoted_string()) {
-    std::string value = constant_num_and_str_Node->quoted_string()->getText();
+  } else if (constant_num_and_str_node->quoted_string()) {
+    std::string value = constant_num_and_str_node->quoted_string()->getText();
     value = trim(value);
     value = Util::normalize(value);
-    constExpr = std::make_shared<ConstantNode>(value);
-    constExpr->set_op(NodeOp::T_STRING_VALUE);
+    const_expr = std::make_shared<ConstantNode>(value);
+    const_expr->set_op(NodeOp::T_STRING_VALUE);
   }
 
-  return constExpr;
+  return const_expr;
 }
 
 Node::Ptr ZVecSQLParser::handle_vector_expr_node(VoidPtr node) {
-  SQLParser::Vector_exprContext *vector_ExprNode =
+  SQLParser::Vector_exprContext *vector_expr_node =
       reinterpret_cast<SQLParser::Vector_exprContext *>(node);
 
-  std::string vector_text = vector_ExprNode->getText();
+  std::string vector_text = vector_expr_node->getText();
   return parse_vector_text(&vector_text);
 }
 
 Node::Ptr ZVecSQLParser::handle_id_node(VoidPtr node) {
-  SQLParser::IdentifierContext *identifierNode =
+  SQLParser::IdentifierContext *identifier_node =
       reinterpret_cast<SQLParser::IdentifierContext *>(node);
 
-  Node::Ptr identifierExpr =
-      std::make_shared<IDNode>(identifierNode->getText());
-  identifierExpr->set_op(NodeOp::T_ID);
-  return identifierExpr;
+  Node::Ptr identifier_expr =
+      std::make_shared<IDNode>(identifier_node->getText());
+  identifier_expr->set_op(NodeOp::T_ID);
+  return identifier_expr;
 }
 
 Node::Ptr ZVecSQLParser::parse_filter(const std::string &filter,

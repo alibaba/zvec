@@ -85,7 +85,7 @@ class MockIndexResult : public InvertedSearchResult {
 class MockVectorIndexer : public CombinedVectorColumnIndexer {
  public:
   //! Search results with query
-  Result<IndexResults::Ptr> Search(
+  Result<IndexResults::Ptr> search(
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params) override {
     // return tl::make_unexpected(Status::InternalError("err"));
@@ -98,7 +98,7 @@ class MockVectorIndexer : public CombinedVectorColumnIndexer {
                                  "group_2", "group_0"});
   }
 
-  Result<vector_column_params::VectorDataBuffer> Fetch(
+  Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t doc_id) const override {
     // float f = doc_id;
     // std::vector<float> v(4, f);
@@ -494,15 +494,15 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status Insert(Doc &doc) override {
+  Status insert(Doc &doc) override {
     return Status::OK();
   }
 
-  Status Upsert(Doc &doc) override {
+  Status upsert(Doc &doc) override {
     return Status::OK();
   }
 
-  Status Update(Doc &doc) override {
+  Status update(Doc &doc) override {
     return Status::OK();
   }
 
@@ -514,7 +514,7 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Doc::Ptr Fetch(uint64_t doc_id,
+  Doc::Ptr fetch(uint64_t doc_id,
                  const std::optional<std::vector<std::string>> &output_fields =
                      std::nullopt,
                  bool include_vector = true) override {

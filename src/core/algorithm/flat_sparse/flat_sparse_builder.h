@@ -81,7 +81,7 @@ class FlatSparseBuilder : public IndexBuilder {
                         IndexDumper *dumper, uint32_t *length);
 
  private:
-  enum BUILD_STATE {
+  enum BuildState {
     BUILD_STATE_INIT = 0,
     BUILD_STATE_INITED = 1,
     BUILD_STATE_TRAINED = 2,
@@ -97,7 +97,7 @@ class FlatSparseBuilder : public IndexBuilder {
   std::condition_variable cond_{};
   Stats stats_{};
 
-  BUILD_STATE state_{BUILD_STATE_INIT};
+  BuildState state_{BUILD_STATE_INIT};
 };
 
 

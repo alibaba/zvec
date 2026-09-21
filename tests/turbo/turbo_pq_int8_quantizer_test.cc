@@ -30,6 +30,7 @@
 #include "distance/avx512/pq_quantizer_int8/pq_distance.h"
 #include "distance/neon/pq_quantizer_int8/pq_distance.h"
 #include "distance/scalar/pq_quantizer_int8/pq_distance.h"
+#include "quantizer/common/pq_training_samples.h"
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
 #include "zvec/core/framework/index_factory.h"
 
@@ -293,6 +294,52 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
   // Note: SDC (calc_distance_dp_dp) is intentionally NOT tested after
   // deserialization because dist_table_ is a build-phase-only structure
   // and is not persisted.
+}
+
+TEST(PqInt8Quantizer, OpqSerializeDeserializeUniformAndNonUniformChunks) {
+  for (uint32_t dim : {8u, 9u}) {
+    SCOPED_TRACE(dim);
+    auto quantizer = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+    ASSERT_TRUE(quantizer);
+
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    Params params;
+    params.set("num_chunk", uint32_t{2});
+    params.set("rotate_type", std::string("opq"));
+    params.set("opq_iter", uint32_t{2});
+    params.set("opq_pq_iter", uint32_t{2});
+    params.set("thread_count", uint32_t{2});
+    ASSERT_EQ(0, quantizer->init(meta, params));
+
+    auto holder = make_random_holder(500, dim);
+    ASSERT_EQ(0, quantizer->train(holder));
+    std::string blob;
+    ASSERT_EQ(0, quantizer->serialize(&blob));
+
+    auto restored = make_pq_quantizer(dim, 2);
+    ASSERT_TRUE(restored);
+    ASSERT_EQ(0, restored->deserialize(blob));
+    std::string restored_blob;
+    ASSERT_EQ(0, restored->serialize(&restored_blob));
+    EXPECT_EQ(blob, restored_blob);
+
+    auto iter = holder->create_iterator();
+    ASSERT_TRUE(iter->is_valid());
+    std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
+    std::vector<uint8_t> restored_code(code.size());
+    quantizer->quantize_data(iter->data(), code.data());
+    restored->quantize_data(iter->data(), restored_code.data());
+    EXPECT_EQ(code, restored_code);
+
+    std::vector<float> lut(quantizer->quantized_query_vector_length() /
+                           sizeof(float));
+    quantizer->quantize_query(iter->data(), lut.data());
+    EXPECT_TRUE(std::isfinite(
+        quantizer->calc_distance_dp_query(code.data(), lut.data())));
+    EXPECT_NE(0, restored->deserialize(blob.data(), blob.size() - 1));
+  }
 }
 
 // Legacy indexes hand their codebook over through import_codebook(), so the
@@ -1648,4 +1695,45 @@ TEST(PqInt8Fp16, ConsistencyWithFp32) {
   // Kendall tau > 0.5 means strong rank correlation (generous threshold;
   // FP16 precision loss and different codebooks cause some reordering).
   EXPECT_GT(tau, 0.5) << "Kendall tau=" << tau;
+}
+
+// Keep the previous seeded sampling result byte-for-byte while avoiding an
+// all-input vector copy. The reference deliberately shuffles the full input.
+TEST(PqInt8Quantizer, StreamingSamplePreservesLegacyOrder) {
+  constexpr size_t kCount = 65573, kLimit = 65536, kDim = 2;
+  std::vector<float> shuffled(kCount * kDim);
+  auto input =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+          kDim);
+  std::mt19937 data_rng(123);
+  for (size_t i = 0; i < kCount; ++i) {
+    NumericalVector<float> row(kDim);
+    for (size_t d = 0; d < kDim; ++d) {
+      row[d] = static_cast<float>(data_rng() >> 8) / 16777216.0f;
+      shuffled[i * kDim + d] = row[d];
+    }
+    ASSERT_TRUE(input->emplace(i, std::move(row)));
+  }
+  std::mt19937 rng(42);
+  for (size_t i = 0; i < kLimit; ++i) {
+    std::uniform_int_distribution<size_t> distribution(i, kCount - 1);
+    size_t j = distribution(rng);
+    for (size_t d = 0; d < kDim; ++d) {
+      std::swap(shuffled[i * kDim + d], shuffled[j * kDim + d]);
+    }
+  }
+  std::vector<uint8_t> actual;
+  ASSERT_TRUE(turbo::CollectPqTrainingSamples(input, kLimit,
+                                              kDim * sizeof(float), &actual));
+  ASSERT_EQ(kLimit * kDim * sizeof(float), actual.size());
+  EXPECT_EQ(0, std::memcmp(shuffled.data(), actual.data(), actual.size()));
+  // Below the limit every vector stays in input order.
+  ASSERT_TRUE(turbo::CollectPqTrainingSamples(input, kCount + 1,
+                                              kDim * sizeof(float), &actual));
+  auto iter = input->create_iterator();
+  for (size_t i = 0; i < kCount; ++i, iter->next()) {
+    EXPECT_EQ(
+        0, std::memcmp(iter->data(), actual.data() + i * kDim * sizeof(float),
+                       kDim * sizeof(float)));
+  }
 }

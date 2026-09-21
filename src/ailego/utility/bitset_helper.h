@@ -112,8 +112,8 @@ class BitsetHelper {
   size_t cardinality() const;
 
   //! Calculate the size of buffer if it contains N bits
-  static size_t BufferSize(size_t N) {
-    return (((N + 0x1f) >> 5) << 2);
+  static size_t BufferSize(size_t n) {
+    return (((n + 0x1f) >> 5) << 2);
   }
 
   //! Calculate the count of bits can be contained

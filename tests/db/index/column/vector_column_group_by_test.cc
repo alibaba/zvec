@@ -74,7 +74,7 @@ std::vector<uint64_t> AllPks() {
 
 class CapturingVectorColumnIndexer : public VectorColumnIndexer {
  public:
-  Result<IndexResults::Ptr> Search(
+  Result<IndexResults::Ptr> search(
       const vector_column_params::VectorData &,
       const vector_column_params::QueryParams &query_params) override {
     search_called = true;
@@ -95,10 +95,10 @@ class CapturingVectorColumnIndexer : public VectorColumnIndexer {
 
 class GroupByIndexerTest : public ::testing::Test {
  protected:
-  void RunOk(const GroupByCase &tc) {
+  void run_ok(const GroupByCase &tc) {
     Run(tc, /*expect_error=*/false);
   }
-  void RunRejected(const GroupByCase &tc) {
+  void run_rejected(const GroupByCase &tc) {
     Run(tc, /*expect_error=*/true);
   }
 
@@ -125,7 +125,7 @@ class GroupByIndexerTest : public ::testing::Test {
     QueryHolder holder = MakeQuery(tc);
     vector_column_params::QueryParams qp = MakeQueryParams(tc);
 
-    auto results = indexer->Search(holder.data, qp);
+    auto results = indexer->search(holder.data, qp);
 
     if (expect_error) {
       ASSERT_FALSE(results.has_value())
@@ -135,7 +135,7 @@ class GroupByIndexerTest : public ::testing::Test {
       AssertGroupedResult(results.value().get(), tc);
     }
 
-    indexer->Close();
+    indexer->close();
     zvec::test_util::RemoveTestFiles(path);
   }
 
@@ -151,7 +151,7 @@ class GroupByIndexerTest : public ::testing::Test {
   static VectorColumnIndexer::Ptr OpenIndexer(const GroupByCase &tc,
                                               const std::string &path) {
     auto indexer = std::make_shared<VectorColumnIndexer>(path, MakeSchema(tc));
-    if (!indexer->Open(vector_column_params::ReadOptions{true, true}).ok()) {
+    if (!indexer->open(vector_column_params::ReadOptions{true, true}).ok()) {
       return nullptr;
     }
     return indexer;
@@ -170,12 +170,12 @@ class GroupByIndexerTest : public ::testing::Test {
         vector_column_params::SparseVector sv{kGbSparseCount, indices.data(),
                                               values.data()};
         ASSERT_TRUE(
-            indexer->Insert(vector_column_params::VectorData{sv}, i).ok());
+            indexer->insert(vector_column_params::VectorData{sv}, i).ok());
       } else {
         std::vector<float> vec(tc.dimension, static_cast<float>(i));
         vector_column_params::DenseVector dv{vec.data()};
         ASSERT_TRUE(
-            indexer->Insert(vector_column_params::VectorData{dv}, i).ok());
+            indexer->insert(vector_column_params::VectorData{dv}, i).ok());
       }
     }
   }
@@ -306,7 +306,7 @@ TEST_F(GroupByIndexerTest, Dense) {
   };
 
   for (const auto &tc : cases) {
-    RunOk(tc);
+    run_ok(tc);
   }
 }
 
@@ -324,15 +324,15 @@ TEST_F(GroupByIndexerTest, CombinedSortsGroupsBeforeTruncating) {
 
   auto block0 = std::make_shared<VectorColumnIndexer>(block0_path, schema);
   auto block1 = std::make_shared<VectorColumnIndexer>(block1_path, schema);
-  ASSERT_TRUE(block0->Open(vector_column_params::ReadOptions{true, true}).ok());
-  ASSERT_TRUE(block1->Open(vector_column_params::ReadOptions{true, true}).ok());
+  ASSERT_TRUE(block0->open(vector_column_params::ReadOptions{true, true}).ok());
+  ASSERT_TRUE(block1->open(vector_column_params::ReadOptions{true, true}).ok());
 
   auto insert_dense = [](const VectorColumnIndexer::Ptr &indexer,
                          uint32_t doc_id, float value) {
     std::vector<float> vec(kGbDimension, value);
     vector_column_params::DenseVector dense{vec.data()};
     ASSERT_TRUE(
-        indexer->Insert(vector_column_params::VectorData{dense}, doc_id).ok());
+        indexer->insert(vector_column_params::VectorData{dense}, doc_id).ok());
   };
   insert_dense(block0, 0, 0.0f);
   insert_dense(block0, 1, 1.0f);
@@ -355,7 +355,7 @@ TEST_F(GroupByIndexerTest, CombinedSortsGroupsBeforeTruncating) {
   query_params.group_by = MakeSegmentGroupByParams(/*group_topk=*/1,
                                                    /*group_count=*/1);
 
-  auto results = combined.Search(vector_column_params::VectorData{dense_query},
+  auto results = combined.search(vector_column_params::VectorData{dense_query},
                                  query_params);
   ASSERT_TRUE(results.has_value());
   auto *group_results =
@@ -367,8 +367,8 @@ TEST_F(GroupByIndexerTest, CombinedSortsGroupsBeforeTruncating) {
   ASSERT_EQ(3u, group_results->groups()[0].docs()[0].key());
   ASSERT_FLOAT_EQ(44.0f, group_results->groups()[0].docs()[0].score());
 
-  ASSERT_TRUE(block0->Close().ok());
-  ASSERT_TRUE(block1->Close().ok());
+  ASSERT_TRUE(block0->close().ok());
+  ASSERT_TRUE(block1->close().ok());
   zvec::test_util::RemoveTestFiles(block0_path);
   zvec::test_util::RemoveTestFiles(block1_path);
 }
@@ -392,7 +392,7 @@ TEST_F(GroupByIndexerTest, CombinedSupportsIvfRabitqRefiner) {
   query_params.query_params =
       std::make_shared<IvfRabitqQueryParams>(4, 0.0f, false, true, 3.5f);
 
-  auto result = combined.Search(
+  auto result = combined.search(
       vector_column_params::VectorData{
           vector_column_params::DenseVector{query.data()}},
       query_params);
@@ -414,7 +414,7 @@ TEST_F(GroupByIndexerTest, Sparse) {
   };
 
   for (const auto &tc : cases) {
-    RunOk(tc);
+    run_ok(tc);
   }
 }
 
@@ -430,7 +430,7 @@ TEST_F(GroupByIndexerTest, UnsupportedIndexTypes) {
   };
 
   for (const auto &tc : cases) {
-    RunRejected(tc);
+    run_rejected(tc);
   }
 }
 

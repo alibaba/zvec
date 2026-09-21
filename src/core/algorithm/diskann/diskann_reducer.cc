@@ -38,10 +38,10 @@ int DiskAnnReducer::init(const ailego::Params &params) {
   }
 
   reducer_file_path_ = ailego::StringHelper::Concat(
-      working_path_, "/", kReducerFileName, index_name);
+      working_path_, "/", k_reducer_file_name, index_name);
 
-  holder_file_path_ = ailego::StringHelper::Concat(working_path_, "/",
-                                                   kHolderFileName, index_name);
+  holder_file_path_ = ailego::StringHelper::Concat(
+      working_path_, "/", k_holder_file_name, index_name);
 
   state_ = STATE_INITED;
   return 0;
@@ -100,9 +100,10 @@ int DiskAnnReducer::reduce(const IndexFilter &filter) {
     disk_holder_->close();
   }
 
-  builder_ = IndexFactory::CreateBuilder(kDiskAnnBuilderName);
+  builder_ = IndexFactory::CreateBuilder(k_disk_ann_builder_name);
   if (!builder_) {
-    LOG_ERROR("Create builder failed. name[%s]", kDiskAnnBuilderName.c_str());
+    LOG_ERROR("Create builder failed. name[%s]",
+              k_disk_ann_builder_name.c_str());
     return IndexError_Runtime;
   }
 

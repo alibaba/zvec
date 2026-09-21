@@ -185,6 +185,9 @@ else ()
             LOG_CONFIGURE ON
             LOG_BUILD ON
             LOG_INSTALL ON
+            # Surface nested configure/build errors in CI instead of only
+            # pointing to log files on the temporary runner.
+            LOG_OUTPUT_ON_FAILURE ON
     )
 endif()
 

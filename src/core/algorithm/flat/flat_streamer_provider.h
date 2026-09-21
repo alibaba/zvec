@@ -71,6 +71,12 @@ class FlatStreamerProvider : public IndexProvider {
     return this->get_vector_by_key(key, block);
   }
 
+  int get_vectors(
+      const uint64_t *keys, uint32_t count,
+      std::vector<IndexStorage::MemoryBlock> &blocks) const override {
+    return owner_->entity().get_vectors_by_key(keys, count, blocks);
+  }
+
   //! Retrieve the owner class
   const std::string &owner_class() const override {
     return owner_->name();

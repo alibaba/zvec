@@ -139,7 +139,7 @@ INVALID_VECTOR_DATA_TYPE_INDEX_PARAM_MAP_PARAMS = [
     for param in params
 ]
 
-COLLECTION_NAME_MAX_LENGTH = 64
+COLLECTION_NAME_MAX_LENGTH = 256
 
 COLLECTION_NAME_VALID_LIST = [
     "col",
@@ -148,17 +148,20 @@ COLLECTION_NAME_VALID_LIST = [
     "collection_2",
     "123collection-",
     "a" * COLLECTION_NAME_MAX_LENGTH,
+    "l",
+    "1C",
+    " ",
+    "test/",
+    "!@#$%^&*()test",
+    "集合名称",
 ]
 
 COLLECTION_NAME_INVALID_LIST = [
-    "l",
-    "1C",
     "",
-    " ",
     None,
-    "abcdefghijklmnopqrstuvwxzy123456abcdefghijklmnopqrstuvwxzy1234561",
-    "test/",
-    "!@#$%^&*()test",
+    "a" * (COLLECTION_NAME_MAX_LENGTH + 1),
+    "collection\0name",
+    "collection\nname",
 ]
 
 FIELD_NAME_VALID_LIST = [
@@ -178,7 +181,7 @@ FIELD_NAME_INVALID_LIST = [
     "",
     " ",
     None,
-    "abcdefghijklmnopqrstuvwxzy1234561",
+    "a" * 65,
     "test/",
     "!@#$%^&*()test",
     "name@with#special$chars",
@@ -208,12 +211,12 @@ FIELD_VECTOR_LIST_DIMENSION_INVALID_LIST = [
 
 
 INCOMPATIBLE_CONSTRUCTOR_ERROR_MSG = "incompatible constructor arguments"
-SCHEMA_VALIDATE_ERROR_MSG = "schema validate failed"
+SCHEMA_VALIDATE_ERROR_MSG = "Invalid schema"
 CREATE_READ_ONLY_ERROR_MSG = "Unable to create collection with read-only mode"
 INCOMPATIBLE_FUNCTION_ERROR_MSG = "incompatible function arguments"
 INVALID_PATH_ERROR_MSG = "path validate failed"
 INDEX_NON_EXISTENT_COLUMN_ERROR_MSG = "not found in schema"
 ACCESS_DESTROYED_COLLECTION_ERROR_MSG = "is already destroyed"
 COLLECTION_PATH_NOT_EXIST_ERROR_MSG = "not exist"
-NOT_SUPPORT_ADD_COLUMN_ERROR_MSG = "Only support basic numeric data type"
-NOT_EXIST_COLUMN_TO_DROP_ERROR_MSG = "Column not exists"
+NOT_SUPPORT_ADD_COLUMN_ERROR_MSG = "this operation requires a numeric field"
+NOT_EXIST_COLUMN_TO_DROP_ERROR_MSG = "field.*not found"

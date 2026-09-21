@@ -93,7 +93,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
  public:
   VamanaStreamerEntity(IndexStreamer::Stats &stats);
-  ~VamanaStreamerEntity();
+  ~VamanaStreamerEntity() override;
 
   const void *get_vector_by_key(key_t key) const override {
     auto id = get_id(key);
@@ -202,7 +202,7 @@ class VamanaStreamerEntity : public VamanaEntity {
   //! Lazy chunk synchronization: fetches chunks from broker when needed.
   //! Protected by node_chunks_mutex_ to synchronize with add_vector's
   //! emplace_back during concurrent build.
-  void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
+  void sync_chunks(ChunkBroker::ChunkType type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
       return;
@@ -373,22 +373,13 @@ VamanaStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
   sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
   ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock mem_block;
-  size_t ret = node_chunks_[chunk_idx]->read(offset, mem_block, neighbor_size_);
+  size_t ret =
+      node_chunks_[chunk_idx]->read_borrowed(offset, mem_block, neighbor_size_);
   if (ailego_unlikely(ret != neighbor_size_)) {
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<BufferPoolMemoryBlock>();
   }
-  BufferPoolMemoryBlock block;
-  if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-    block = BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
-    mem_block.data_ = nullptr;
-    mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-  } else {
-    block = BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                  mem_block.buffer_block_id_, mem_block.data_);
-    mem_block.buffer_pool_handle_ = nullptr;
-  }
-  return NeighborsT<BufferPoolMemoryBlock>(std::move(block));
+  return NeighborsT<BufferPoolMemoryBlock>(std::move(mem_block));
 }
 
 template <>
@@ -419,25 +410,13 @@ inline int VamanaStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
     IndexStorage::MemoryBlock mem_block;
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, mem_block, vector_size());
+    size_t ret = node_chunks_[loc.first]->read_borrowed(loc.second, mem_block,
+                                                        vector_size());
     if (ailego_unlikely(ret != vector_size())) {
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i] = [&]() {
-      if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
-        BufferPoolMemoryBlock b =
-            BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
-        mem_block.data_ = nullptr;
-        mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
-        return b;
-      }
-      BufferPoolMemoryBlock b(mem_block.buffer_pool_handle_,
-                              mem_block.buffer_block_id_, mem_block.data_);
-      mem_block.buffer_pool_handle_ = nullptr;
-      return b;
-    }();
+    vec_blocks[i] = std::move(mem_block);
   }
   return 0;
 }
@@ -464,8 +443,8 @@ inline key_t VamanaStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock key_block;
-  size_t ret =
-      node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
+  size_t ret = node_chunks_[loc.first]->read_borrowed(loc.second, key_block,
+                                                      sizeof(key_t));
   if (ailego_unlikely(ret != sizeof(key_t))) {
     LOG_ERROR("Read key failed, ret=%zu", ret);
     return kInvalidKey;
@@ -619,7 +598,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! Cloned entity shares contiguous memory via shared_ptr.
   const VamanaEntity::Pointer clone() const override;
 
-  ~VamanaContiguousStreamerEntity() = default;
+  ~VamanaContiguousStreamerEntity() override = default;
 
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();

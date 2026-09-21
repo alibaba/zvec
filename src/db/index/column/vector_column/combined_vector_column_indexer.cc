@@ -55,7 +55,7 @@ class VectorResultAccumulator {
  public:
   // Collect plain topk results from each block after translating block-local
   // doc IDs back to segment-level IDs.
-  void AddBlock(uint32_t block_offset, VectorIndexResults *results) {
+  void add_block(uint32_t block_offset, VectorIndexResults *results) {
     auto &docs = results->docs();
     auto &reverted_vectors = results->reverted_vector_list();
     auto &reverted_sparse_values = results->reverted_sparse_values_list();
@@ -77,7 +77,7 @@ class VectorResultAccumulator {
     }
   }
 
-  IndexResults::Ptr Finish(bool is_sparse, MetricType metric_type,
+  IndexResults::Ptr finish(bool is_sparse, MetricType metric_type,
                            uint32_t topk) {
     // Finish turns accumulated block docs into the public result format:
     // rank all docs globally, keep topk, then split ResultDoc back into the
@@ -131,7 +131,7 @@ class GroupResultAccumulator {
  public:
   // Merge same-named groups across blocks. The per-doc payload stays inside
   // ResultDoc until the final GroupVectorIndexResults is materialized.
-  void AddBlock(uint32_t block_offset, GroupVectorIndexResults *results) {
+  void add_block(uint32_t block_offset, GroupVectorIndexResults *results) {
     auto &groups = results->groups();
     auto &reverted_vectors = results->reverted_vector_list();
     auto &reverted_sparse_values = results->reverted_sparse_values_list();
@@ -166,7 +166,7 @@ class GroupResultAccumulator {
     return docs_by_group_.empty();
   }
 
-  IndexResults::Ptr Finish(MetricType metric_type, uint32_t group_topk,
+  IndexResults::Ptr finish(MetricType metric_type, uint32_t group_topk,
                            uint32_t group_count) {
     // Finish first ranks docs inside each merged group and trims group_topk.
     // It then ranks groups by their best remaining doc, trims group_count, and
@@ -286,7 +286,7 @@ CombinedVectorColumnIndexer::CombinedVectorColumnIndexer(
   min_doc_id_ = segment_meta.min_doc_id();
 }
 
-Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
+Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
     const vector_column_params::VectorData &vector_data,
     const vector_column_params::QueryParams &query_params) {
   // Search runs each block with block-local query params, then folds those
@@ -381,7 +381,7 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       modified_query_params.bf_pks.emplace_back(block_bf_pks[i]);
     }
 
-    result = indexers_[i]->Search(vector_data, modified_query_params);
+    result = indexers_[i]->search(vector_data, modified_query_params);
     if (!result) {
       return tl::make_unexpected(result.error());
     }
@@ -391,14 +391,14 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
     GroupVectorIndexResults *group_index_results =
         dynamic_cast<GroupVectorIndexResults *>(index_results.get());
     if (group_index_results != nullptr) {
-      group_results.AddBlock(block_offsets_[i], group_index_results);
+      group_results.add_block(block_offsets_[i], group_index_results);
       continue;
     }
 
     VectorIndexResults *vector_index_results =
         dynamic_cast<VectorIndexResults *>(index_results.get());
     if (vector_index_results != nullptr) {
-      vector_results.AddBlock(block_offsets_[i], vector_index_results);
+      vector_results.add_block(block_offsets_[i], vector_index_results);
     }
   }
 
@@ -407,14 +407,14 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
         query_params.group_by ? query_params.group_by->group_topk : 0;
     const uint32_t group_count =
         query_params.group_by ? query_params.group_by->group_count : 0;
-    return group_results.Finish(metric_type_, group_topk, group_count);
+    return group_results.finish(metric_type_, group_topk, group_count);
   }
-  return vector_results.Finish(field_schema_.is_sparse_vector(), metric_type_,
+  return vector_results.finish(field_schema_.is_sparse_vector(), metric_type_,
                                query_params.topk);
 }
 
 Result<vector_column_params::VectorDataBuffer>
-CombinedVectorColumnIndexer::Fetch(uint32_t segment_doc_id) const {
+CombinedVectorColumnIndexer::fetch(uint32_t segment_doc_id) const {
   int32_t target_block_doc_id = -1;
   size_t target_block_idx = 0;
 
@@ -437,7 +437,7 @@ CombinedVectorColumnIndexer::Fetch(uint32_t segment_doc_id) const {
   }
 
   auto indexer = indexers_[target_block_idx];
-  return indexer->Fetch(target_block_doc_id);
+  return indexer->fetch(target_block_doc_id);
 }
 
 }  // namespace zvec

@@ -92,19 +92,19 @@ class UniformUint4Reformer : public IndexReformer {
 
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return Quantize(query, qmeta, 1, out, ometa);
+    return quantize(query, qmeta, 1, out, ometa);
   }
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return Quantize(query, qmeta, count, out, ometa);
+    return quantize(query, qmeta, count, out, ometa);
   }
   int convert(const void *record, const IndexQueryMeta &rmeta, std::string *out,
               IndexQueryMeta *ometa) const override {
-    return Quantize(record, rmeta, 1, out, ometa);
+    return quantize(record, rmeta, 1, out, ometa);
   }
   int convert(const void *records, const IndexQueryMeta &rmeta, uint32_t count,
               std::string *out, IndexQueryMeta *ometa) const override {
-    return Quantize(records, rmeta, count, out, ometa);
+    return quantize(records, rmeta, count, out, ometa);
   }
 
   int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
@@ -140,7 +140,7 @@ class UniformUint4Reformer : public IndexReformer {
   }
 
  private:
-  int Quantize(const void *source, const IndexQueryMeta &source_meta,
+  int quantize(const void *source, const IndexQueryMeta &source_meta,
                uint32_t count, std::string *out,
                IndexQueryMeta *output_meta) const {
     if (!initialized_) return IndexError_Runtime;

@@ -924,8 +924,8 @@ inline arrow::Status WriteColumnInBlocks(
     auto writer = ChunkedFileWriter::Open(
         path, physic_schema,
         use_parquet ? FileFormat::PARQUET : FileFormat::IPC);
-    ARROW_RETURN_NOT_OK(writer->Write(*table));
-    ARROW_RETURN_NOT_OK(writer->Close());
+    ARROW_RETURN_NOT_OK(writer->write(*table));
+    ARROW_RETURN_NOT_OK(writer->close());
 
     BlockMeta new_block(block_id, BlockType::SCALAR, block.min_doc_id_,
                         block.max_doc_id_, block.doc_count_, {column_name});

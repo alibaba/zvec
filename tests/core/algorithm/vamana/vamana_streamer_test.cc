@@ -65,7 +65,7 @@ class VamanaStreamerTest : public testing::Test {
   void SetUp() override;
   void TearDown() override;
 
-  IndexStreamer::Pointer CreateVamanaStreamer(
+  IndexStreamer::Pointer create_vamana_streamer(
       const ailego::Params &extra_params = ailego::Params());
 
   static std::string dir_;
@@ -125,20 +125,20 @@ class VamanaPrefetchContextTest : public testing::Test {
     metric_ = IndexFactory::CreateMetric("SquaredEuclidean");
     ASSERT_TRUE(metric_);
     ASSERT_EQ(0, metric_->init(meta, ailego::Params()));
-    entity_ = CreateEntity(960, 64);
+    entity_ = create_entity(960, 64);
     context_ =
         std::make_unique<VamanaContext>(meta.dimension(), metric_, entity_);
     ASSERT_EQ(0, context_->init(VamanaContext::kStreamerContext));
   }
 
-  VamanaEntity::Pointer CreateEntity(size_t vector_size, uint32_t max_degree) {
+  VamanaEntity::Pointer create_entity(size_t vector_size, uint32_t max_degree) {
     auto entity = std::make_shared<VamanaContiguousStreamerEntity>(stats_);
     entity->set_vector_size(vector_size);
     entity->set_max_degree(max_degree);
     return entity;
   }
 
-  void ExpectPrefetch(uint32_t offset, uint32_t lines) const {
+  void expect_prefetch(uint32_t offset, uint32_t lines) const {
     EXPECT_EQ(offset, context_->po());
     EXPECT_EQ(lines, context_->pl());
   }
@@ -155,7 +155,7 @@ TEST_F(VamanaPrefetchContextTest, UnchangedRequestsReuseResolvedValues) {
   params.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
   // Matching the initial requested values must still resolve a fresh context.
   ASSERT_EQ(0, context_->update(params));
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 
   // Change only the fixture's metadata, without publishing an entity refresh.
   // An unnecessary resolve would now produce 96/1 instead of the cached 48/2.
@@ -164,23 +164,23 @@ TEST_F(VamanaPrefetchContextTest, UnchangedRequestsReuseResolvedValues) {
   entity_->set_max_degree(96);
   for (int i = 0; i < 3; ++i) {
     ASSERT_EQ(0, context_->update(params));
-    ExpectPrefetch(48, 2);
+    expect_prefetch(48, 2);
   }
   ASSERT_EQ(0, context_->update(ailego::Params()));
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
   ailego::Params ef;
   ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
   ASSERT_EQ(0, context_->update(ef));
   EXPECT_EQ(123U, context_->ef());
   EXPECT_EQ(123U, context_->search_heap().topk().limit());
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 
   // A notified entity change must resolve even when requests are unchanged.
   ASSERT_EQ(
       0, context_->update_context(VamanaContext::kStreamerContext,
                                   IndexMeta(IndexMeta::DataType::DT_FP32, 16),
                                   metric_, entity_, 1));
-  ExpectPrefetch(96, 1);
+  expect_prefetch(96, 1);
 }
 
 TEST_F(VamanaPrefetchContextTest, UnchangedSettersKeepResolvedValues) {
@@ -190,9 +190,9 @@ TEST_F(VamanaPrefetchContextTest, UnchangedSettersKeepResolvedValues) {
   context_->set_po(core_interface::kDefaultPrefetchOffset);
   context_->set_pl(core_interface::kDefaultPrefetchLines);
   // Same requests must neither overwrite effective values nor invalidate them.
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
   context_->prepare_query_prefetch();
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 }
 
 TEST_F(VamanaPrefetchContextTest, DirtyValuesResolveEvenForUnchangedRequests) {
@@ -203,7 +203,7 @@ TEST_F(VamanaPrefetchContextTest, DirtyValuesResolveEvenForUnchangedRequests) {
   ailego::Params params;
   params.set(PARAM_VAMANA_STREAMER_PL, 4U);
   ASSERT_EQ(0, context_->update(params));
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
 }
 
 TEST_F(VamanaPrefetchContextTest,
@@ -212,75 +212,76 @@ TEST_F(VamanaPrefetchContextTest,
   ailego::Params offset;
   offset.set(PARAM_VAMANA_STREAMER_PO, 48U);
   ASSERT_EQ(0, context_->update(offset));
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 
   ailego::Params lines;
   lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
   ASSERT_EQ(0, context_->update(lines));
-  ExpectPrefetch(48, 4);  // Manual PO stays 48 rather than becoming auto PO=24.
+  expect_prefetch(48,
+                  4);  // Manual PO stays 48 rather than becoming auto PO=24.
   offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
   ASSERT_EQ(0, context_->update(offset));
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
 }
 
 TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveAutomaticOffset) {
   ASSERT_EQ(0, context_->update(ailego::Params()));
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 
   ailego::Params lines;
   lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
   ASSERT_EQ(0, context_->update(lines));
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
 
   ailego::Params ef;
   ef.set(PARAM_VAMANA_STREAMER_EF, 123U);
   ASSERT_EQ(0, context_->update(ef));
   EXPECT_EQ(123U, context_->ef());
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
   ASSERT_EQ(0, context_->update(ailego::Params()));
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
 
   lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
   ASSERT_EQ(0, context_->update(lines));
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 }
 
 TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveManualFields) {
   ailego::Params offset;
   offset.set(PARAM_VAMANA_STREAMER_PO, 12U);
   ASSERT_EQ(0, context_->update(offset));
-  ExpectPrefetch(12, 2);
+  expect_prefetch(12, 2);
 
   ailego::Params lines;
   lines.set(PARAM_VAMANA_STREAMER_PL, 4U);
   ASSERT_EQ(0, context_->update(lines));
-  ExpectPrefetch(12, 4);
+  expect_prefetch(12, 4);
 
   offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
   ASSERT_EQ(0, context_->update(offset));
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
   lines.set(PARAM_VAMANA_STREAMER_PL, 1U);
   ASSERT_EQ(0, context_->update(lines));
-  ExpectPrefetch(64, 1);
+  expect_prefetch(64, 1);
 
   offset.set(PARAM_VAMANA_STREAMER_PO, 0U);
   ASSERT_EQ(0, context_->update(offset));
-  ExpectPrefetch(0, 1);
+  expect_prefetch(0, 1);
   lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
   ASSERT_EQ(0, context_->update(lines));
-  ExpectPrefetch(0, 2);
+  expect_prefetch(0, 2);
 }
 
 TEST_F(VamanaPrefetchContextTest, ResolvesOnlyWhenPreparingAQuery) {
   // Streamer initialization is shared with add_node and two-pass construction.
-  ExpectPrefetch(8, 0);
+  expect_prefetch(8, 0);
   context_->prepare_query_prefetch();
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
   context_->clear();
   context_->prepare_query_prefetch();
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 
-  VamanaContext search_context(240, metric_, CreateEntity(960, 64));
+  VamanaContext search_context(240, metric_, create_entity(960, 64));
   ASSERT_EQ(0, search_context.init(VamanaContext::kSearcherContext));
   EXPECT_EQ(48U, search_context.po());
   EXPECT_EQ(2U, search_context.pl());
@@ -291,49 +292,49 @@ TEST_F(VamanaPrefetchContextTest, SettersInvalidateResolvedValues) {
   context_->set_pl(4);
   EXPECT_EQ(4U, context_->pl());
   context_->prepare_query_prefetch();
-  ExpectPrefetch(24, 4);
+  expect_prefetch(24, 4);
 
   context_->set_po(12);
   EXPECT_EQ(12U, context_->po());
   ASSERT_EQ(0, context_->update(ailego::Params()));
-  ExpectPrefetch(12, 4);
+  expect_prefetch(12, 4);
 
   context_->set_po(core_interface::kDefaultPrefetchOffset);
   context_->set_pl(core_interface::kDefaultPrefetchLines);
   context_->prepare_query_prefetch();
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
 }
 
 TEST_F(VamanaPrefetchContextTest, EntityRefreshResolvesOriginalRequests) {
   context_->prepare_query_prefetch();
-  ExpectPrefetch(48, 2);
+  expect_prefetch(48, 2);
   ASSERT_EQ(
       0, context_->update_context(VamanaContext::kStreamerContext,
                                   IndexMeta(IndexMeta::DataType::DT_FP32, 16),
-                                  metric_, CreateEntity(64, 96), 1));
-  ExpectPrefetch(96, 1);
+                                  metric_, create_entity(64, 96), 1));
+  expect_prefetch(96, 1);
 
   // Preserve explicit requests too, not their schema-clamped effective values.
   ailego::Params params;
   params.set(PARAM_VAMANA_STREAMER_PO, 128U);
   params.set(PARAM_VAMANA_STREAMER_PL, 16U);
   ASSERT_EQ(0, context_->update(params));
-  ExpectPrefetch(96, 1);
+  expect_prefetch(96, 1);
   ASSERT_EQ(
       0, context_->update_context(VamanaContext::kStreamerContext,
                                   IndexMeta(IndexMeta::DataType::DT_FP32, 1024),
-                                  metric_, CreateEntity(4096, 128), 2));
-  ExpectPrefetch(128, 16);
+                                  metric_, create_entity(4096, 128), 2));
+  expect_prefetch(128, 16);
 }
 
 TEST_F(VamanaPrefetchContextTest, EntityRefreshKeepsBuildDefaultsUnresolved) {
   ASSERT_EQ(
       0, context_->update_context(VamanaContext::kStreamerContext,
                                   IndexMeta(IndexMeta::DataType::DT_FP32, 16),
-                                  metric_, CreateEntity(64, 96), 1));
-  ExpectPrefetch(8, 0);
+                                  metric_, create_entity(64, 96), 1));
+  expect_prefetch(8, 0);
   context_->prepare_query_prefetch();
-  ExpectPrefetch(96, 1);
+  expect_prefetch(96, 1);
 }
 
 std::string VamanaStreamerTest::dir_("vamana_streamer_test_dir/");
@@ -351,7 +352,7 @@ void VamanaStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
 }
 
-IndexStreamer::Pointer VamanaStreamerTest::CreateVamanaStreamer(
+IndexStreamer::Pointer VamanaStreamerTest::create_vamana_streamer(
     const ailego::Params &extra_params) {
   auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
   if (!streamer) return nullptr;
@@ -371,7 +372,7 @@ IndexStreamer::Pointer VamanaStreamerTest::CreateVamanaStreamer(
 }
 
 TEST_F(VamanaStreamerTest, TestAddVector) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -398,7 +399,7 @@ TEST_F(VamanaStreamerTest, TestAddVector) {
 }
 
 TEST_F(VamanaStreamerTest, TestLinearSearch) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -445,7 +446,7 @@ TEST_F(VamanaStreamerTest, TestLinearSearch) {
 }
 
 TEST_F(VamanaStreamerTest, TestKnnSearch) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
 
   ailego::Params stg_params;
@@ -466,47 +467,47 @@ TEST_F(VamanaStreamerTest, TestKnnSearch) {
     ASSERT_EQ(0, streamer->add_impl(i, vec.data(), qmeta, ctx));
   }
 
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
   size_t topk = 100;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
   for (size_t i = 0; i < cnt; i++) {
     for (size_t j = 0; j < kDim; ++j) {
       vec[j] = static_cast<float>(i) + 0.1f;
     }
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 1.0f / cnt;
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
 }
 
 TEST_F(VamanaStreamerTest, TestOpenClose) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
 
   constexpr size_t dim_large = 128;
@@ -529,11 +530,11 @@ TEST_F(VamanaStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, storage->open(dir_ + "TestOpenClose.index", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  size_t testCnt = 200;
+  size_t test_cnt = 200;
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim_large);
   auto ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
-  for (size_t i = 0; i < testCnt; i++) {
+  for (size_t i = 0; i < test_cnt; i++) {
     std::vector<float> vec(dim_large);
     for (size_t d = 0; d < dim_large; ++d) {
       vec[d] = static_cast<float>(i);
@@ -558,7 +559,7 @@ TEST_F(VamanaStreamerTest, TestOpenClose) {
     total++;
     iter->next();
   }
-  ASSERT_EQ(testCnt, total);
+  ASSERT_EQ(test_cnt, total);
 }
 
 TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
@@ -589,23 +590,23 @@ TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
   ASSERT_EQ(0, storage->open(dir_ + "TestKnnMultiThread", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     NumericalVector<float> vec(dim);
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-    size_t succAdd = 0;
+    size_t succ_add = 0;
     auto ctx = streamer->create_context();
-    for (size_t i = 0; i < addCnt; i++) {
+    for (size_t i = 0; i < add_cnt; i++) {
       for (size_t j = 0; j < dim; ++j) {
-        vec[j] = static_cast<float>(i + baseKey);
+        vec[j] = static_cast<float>(i + base_key);
       }
-      succAdd += !streamer->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, vec.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
-  auto t1 = std::async(std::launch::async, addVector, 0, 1000);
-  auto t2 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t3 = std::async(std::launch::async, addVector, 2000, 1000);
+  auto t1 = std::async(std::launch::async, add_vector, 0, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t3 = std::async(std::launch::async, add_vector, 2000, 1000);
   ASSERT_EQ(1000U, t1.get());
   ASSERT_EQ(1000U, t2.get());
   ASSERT_EQ(1000U, t3.get());
@@ -617,60 +618,60 @@ TEST_F(VamanaStreamerTest, TestKnnMultiThread) {
   auto iter = provider->create_iterator();
   ASSERT_TRUE(!!iter);
   size_t total = 0;
-  uint64_t minKey = 10000;
-  uint64_t maxKey = 0;
+  uint64_t min_key = 10000;
+  uint64_t max_key = 0;
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
       ASSERT_FLOAT_EQ(static_cast<float>(iter->key()), data[d]);
     }
     total++;
-    minKey = std::min(minKey, iter->key());
-    maxKey = std::max(maxKey, iter->key());
+    min_key = std::min(min_key, iter->key());
+    max_key = std::max(max_key, iter->key());
     iter->next();
   }
   ASSERT_EQ(3000, total);
-  ASSERT_EQ(0, minKey);
-  ASSERT_EQ(2999, maxKey);
+  ASSERT_EQ(0, min_key);
+  ASSERT_EQ(2999, max_key);
 
   // Multi-thread search
   size_t topk = 100;
   size_t cnt = 3000;
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     NumericalVector<float> vec(dim);
-    auto linearCtx = streamer->create_context();
-    auto knnCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto knn_ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-    linearCtx->set_topk(topk);
-    knnCtx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    linear_ctx->set_topk(topk);
+    knn_ctx->set_topk(topk);
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i += 1) {
       for (size_t j = 0; j < dim; ++j) {
         vec[j] = static_cast<float>(i) + 0.1f;
       }
-      ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
-      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-      auto &knnResult = knnCtx->result();
-      ASSERT_EQ(topk, knnResult.size());
-      auto &linearResult = linearCtx->result();
-      ASSERT_EQ(topk, linearResult.size());
-      ASSERT_EQ(i, linearResult[0].key());
+      ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
+      ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
+      auto &knn_result = knn_ctx->result();
+      ASSERT_EQ(topk, knn_result.size());
+      auto &linear_result = linear_ctx->result();
+      ASSERT_EQ(topk, linear_result.size());
+      ASSERT_EQ(i, linear_result[0].key());
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
-          if (linearResult[j].key() == knnResult[k].key()) {
-            totalHits++;
+          if (linear_result[j].key() == knn_result[k].key()) {
+            total_hits++;
             break;
           }
         }
       }
     }
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
-  auto s3 = std::async(std::launch::async, knnSearch);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
+  auto s3 = std::async(std::launch::async, knn_search);
   s1.wait();
   s2.wait();
   s3.wait();
@@ -680,7 +681,7 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
   ailego::Params extra;
   extra.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
   extra.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 2000U);
-  auto streamer = CreateVamanaStreamer(extra);
+  auto streamer = create_vamana_streamer(extra);
   ASSERT_NE(nullptr, streamer);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -691,7 +692,7 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
 
   // First build with default mmap mode
   {
-    auto builder_streamer = CreateVamanaStreamer();
+    auto builder_streamer = create_vamana_streamer();
     ASSERT_NE(nullptr, builder_streamer);
     ASSERT_EQ(0, builder_streamer->open(storage));
     auto ctx = builder_streamer->create_context();
@@ -717,34 +718,34 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
   size_t topk = 50;
   NumericalVector<float> vec(kDim);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kDim);
-  auto linearCtx = streamer->create_context();
-  auto knnCtx = streamer->create_context();
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
-  int totalHits = 0;
-  int totalCnts = 0;
+  auto linear_ctx = streamer->create_context();
+  auto knn_ctx = streamer->create_context();
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
+  int total_hits = 0;
+  int total_cnts = 0;
   for (size_t i = 0; i < cnt; i++) {
     for (size_t j = 0; j < kDim; ++j) {
       vec[j] = static_cast<float>(i) + 0.1f;
     }
-    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knn_ctx));
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
+  float recall = total_hits * 1.0f / total_cnts;
   EXPECT_GT(recall, 0.90f);
 }
 
@@ -1137,7 +1138,7 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphTracksNeighborUpdates) {
   params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, kMaxDegree);
   params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, kCount);
   params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
-  auto builder = CreateVamanaStreamer(params);
+  auto builder = create_vamana_streamer(params);
   ASSERT_TRUE(builder);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -1250,48 +1251,48 @@ TEST_F(VamanaStreamerTest, TestContiguousMultiThreadSearch) {
 
   size_t topk = 50;
   size_t cnt = 3000;
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     NumericalVector<float> vec(dim);
-    auto linearCtx = searcher->create_context();
-    auto knnCtx = searcher->create_context();
+    auto linear_ctx = searcher->create_context();
+    auto knn_ctx = searcher->create_context();
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
-    linearCtx->set_topk(topk);
-    knnCtx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    linear_ctx->set_topk(topk);
+    knn_ctx->set_topk(topk);
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i++) {
       for (size_t j = 0; j < dim; ++j) {
         vec[j] = static_cast<float>(i) + 0.1f;
       }
-      ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
-      ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
-      auto &knnResult = knnCtx->result();
-      ASSERT_EQ(topk, knnResult.size());
-      auto &linearResult = linearCtx->result();
-      ASSERT_EQ(topk, linearResult.size());
-      ASSERT_EQ(i, linearResult[0].key());
+      ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knn_ctx));
+      ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linear_ctx));
+      auto &knn_result = knn_ctx->result();
+      ASSERT_EQ(topk, knn_result.size());
+      auto &linear_result = linear_ctx->result();
+      ASSERT_EQ(topk, linear_result.size());
+      ASSERT_EQ(i, linear_result[0].key());
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
-          if (linearResult[j].key() == knnResult[k].key()) {
-            totalHits++;
+          if (linear_result[j].key() == knn_result[k].key()) {
+            total_hits++;
             break;
           }
         }
       }
     }
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
-  auto s3 = std::async(std::launch::async, knnSearch);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
+  auto s3 = std::async(std::launch::async, knn_search);
   s1.wait();
   s2.wait();
   s3.wait();
 }
 
 TEST_F(VamanaStreamerTest, TestProvider) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -1332,7 +1333,7 @@ TEST_F(VamanaStreamerTest, TestProvider) {
 }
 
 TEST_F(VamanaStreamerTest, TestAddAndSearch) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -1360,13 +1361,13 @@ TEST_F(VamanaStreamerTest, TestAddAndSearch) {
     // Search for recently added vectors
     size_t current_cnt = (batch + 1) * 200;
     size_t topk = std::min(current_cnt, (size_t)10);
-    auto searchCtx = streamer->create_context();
-    searchCtx->set_topk(topk);
+    auto search_ctx = streamer->create_context();
+    search_ctx->set_topk(topk);
     for (size_t j = 0; j < kDim; ++j) {
       vec[j] = static_cast<float>(base);
     }
-    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, searchCtx));
-    auto &result = searchCtx->result();
+    ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, search_ctx));
+    auto &result = search_ctx->result();
     ASSERT_EQ(topk, result.size());
     ASSERT_EQ(base, result[0].key());
   }
@@ -1413,7 +1414,7 @@ TEST_F(VamanaStreamerTest, TestKnnConcurrentAddAndSearch) {
   std::atomic<bool> stop_search{false};
 
   // Concurrent add
-  auto addFuture = std::async(std::launch::async, [&]() {
+  auto add_future = std::async(std::launch::async, [&]() {
     auto ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
     NumericalVector<float> vec(dim);
@@ -1427,7 +1428,7 @@ TEST_F(VamanaStreamerTest, TestKnnConcurrentAddAndSearch) {
   });
 
   // Concurrent search
-  auto searchFuture = std::async(std::launch::async, [&]() {
+  auto search_future = std::async(std::launch::async, [&]() {
     auto ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
     NumericalVector<float> vec(dim);
@@ -1443,8 +1444,8 @@ TEST_F(VamanaStreamerTest, TestKnnConcurrentAddAndSearch) {
     }
   });
 
-  addFuture.wait();
-  searchFuture.wait();
+  add_future.wait();
+  search_future.wait();
 }
 
 // Test concurrent build (parallel add_impl) which was crashing due to
@@ -1520,7 +1521,7 @@ TEST_F(VamanaStreamerTest, TestConcurrentBuild) {
 }
 
 TEST_F(VamanaStreamerTest, TestBruteForceByPrimaryKeysHonorsFilter) {
-  auto streamer = CreateVamanaStreamer();
+  auto streamer = create_vamana_streamer();
   ASSERT_TRUE(streamer);
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_TRUE(storage);
@@ -1714,10 +1715,10 @@ TEST_F(VamanaStreamerTest, TestInt8WithRotate) {
   ASSERT_EQ(0, reformer2->load(storage2));
 
   // Search: verify knn results are non-empty
-  auto knnCtx = streamer2->create_context();
-  knnCtx->set_topk(kTopk);
-  auto linearCtx = streamer2->create_context();
-  linearCtx->set_topk(kTopk);
+  auto knn_ctx = streamer2->create_context();
+  knn_ctx->set_topk(kTopk);
+  auto linear_ctx = streamer2->create_context();
+  linear_ctx->set_topk(kTopk);
 
   NumericalVector<float> query(kTestDim);
   for (size_t j = 0; j < kTestDim; ++j) query[j] = dist(gen);
@@ -1726,12 +1727,12 @@ TEST_F(VamanaStreamerTest, TestInt8WithRotate) {
   IndexQueryMeta new_qmeta;
   ASSERT_EQ(0,
             reformer2->transform(query.data(), qmeta, &new_query, &new_qmeta));
-  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knnCtx));
+  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knn_ctx));
   ASSERT_EQ(0,
-            streamer2->search_bf_impl(new_query.data(), new_qmeta, linearCtx));
+            streamer2->search_bf_impl(new_query.data(), new_qmeta, linear_ctx));
 
-  EXPECT_EQ(kTopk, knnCtx->result().size());
-  EXPECT_EQ(kTopk, linearCtx->result().size());
+  EXPECT_EQ(kTopk, knn_ctx->result().size());
+  EXPECT_EQ(kTopk, linear_ctx->result().size());
 }
 
 }  // namespace core

@@ -60,6 +60,9 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
 
     const auto &source = owner_->sources_[source_index_];
     const void *source_data = source_iter_->data();
+    if (source_iter_->status() != 0) {
+      return this->fail(source_iter_->status(), "Failed to read source vector");
+    }
     if (source_data == nullptr) {
       return this->fail(IndexError_Runtime,
                         "Source provider returned a null vector");
@@ -91,8 +94,19 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   }
 
   bool is_valid() const override {
-    return owner_->status() == 0 && source_index_ < owner_->sources_.size() &&
-           source_iter_ && source_iter_->is_valid();
+    if (this->status() != 0 || source_index_ >= owner_->sources_.size() ||
+        !source_iter_) {
+      return false;
+    }
+    const bool valid = source_iter_->is_valid();
+    return this->status() == 0 && valid;
+  }
+
+  int status() const override {
+    if (source_iter_) {
+      owner_->set_status(source_iter_->status());
+    }
+    return owner_->status();
   }
 
   uint64_t key() const override {
@@ -138,6 +152,9 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
       }
 
       while (source_iter_->is_valid()) {
+        if (this->status() != 0) {
+          return;
+        }
         if (source_ordinal_ >= source.iterated_count) {
           LOG_ERROR(
               "Source provider iteration grew after filter planning, "
@@ -153,6 +170,9 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
         ++source_ordinal_;
       }
 
+      if (this->status() != 0) {
+        return;
+      }
       if (source_ordinal_ != source.iterated_count) {
         LOG_ERROR(
             "Source provider iteration changed after filter planning, "
@@ -219,6 +239,9 @@ class MergedProviderIndexHolder::OrdinalReader final
       const auto &source = owner_->sources_[source_index];
       size_t ordinal = 0;
       for (; iter->is_valid(); iter->next(), ++ordinal) {
+        if (iter->status() != 0) {
+          return fail(iter->status());
+        }
         if (owner_->canceled()) {
           return fail(IndexError_Canceled);
         }
@@ -226,8 +249,15 @@ class MergedProviderIndexHolder::OrdinalReader final
           return fail(IndexError_Mismatch);
         }
         if (owner_->keep(source_index, ordinal)) {
-          keys_.push_back(iter->key());
+          const uint64_t key = iter->key();
+          if (iter->status() != 0) {
+            return fail(iter->status());
+          }
+          keys_.push_back(key);
         }
+      }
+      if (iter->status() != 0) {
+        return fail(iter->status());
       }
       if (ordinal != source.iterated_count) {
         return fail(IndexError_Mismatch);
@@ -404,24 +434,35 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
     size_t ordinal = 0;
     bool data_validated = false;
     for (; iter->is_valid(); iter->next(), ++ordinal) {
+      if (iter->status() != 0) {
+        this->set_status(iter->status());
+        return this->status();
+      }
       if (this->canceled()) {
         this->set_status(IndexError_Canceled);
         return this->status();
       }
-      if (iter->key() >
-          std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
+      const uint64_t key = iter->key();
+      if (iter->status() != 0) {
+        this->set_status(iter->status());
+        return this->status();
+      }
+      if (key > std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
         this->set_status(IndexError_Overflow);
         return this->status();
       }
 
-      bool keep_item =
-          !has_filter_ || !filter(source.logical_id_base + iter->key());
+      bool keep_item = !has_filter_ || !filter(source.logical_id_base + key);
       if (has_filter_) {
         AppendBit(&source.keep_bits, ordinal, keep_item);
       }
       if (keep_item) {
         if (!data_validated) {
           const void *source_data = iter->data();
+          if (iter->status() != 0) {
+            this->set_status(iter->status());
+            return this->status();
+          }
           if (source_data == nullptr) {
             LOG_ERROR("Source provider returned a null vector, source=%zu",
                       source_index);
@@ -460,6 +501,10 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
       } else {
         ++filtered_count_;
       }
+    }
+    if (iter->status() != 0) {
+      this->set_status(iter->status());
+      return this->status();
     }
     source.iterated_count = ordinal;
     logical_id_base += source.provider_count;

@@ -29,7 +29,7 @@
 
 namespace zvec::core_interface {
 
-int IVFRabitqIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int IVFRabitqIndex::create_and_init_streamer(const BaseIndexParam &param) {
 #if !RABITQ_SUPPORTED
   (void)param;
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
@@ -139,7 +139,7 @@ int IVFRabitqIndex::open(const std::string &file_path,
 #endif  // RABITQ_SUPPORTED
 }
 
-int IVFRabitqIndex::GenerateHolder() {
+int IVFRabitqIndex::generate_holder() {
 #if !RABITQ_SUPPORTED
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
@@ -185,7 +185,7 @@ int IVFRabitqIndex::train() {
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
 #else
-  int ret = GenerateHolder();
+  int ret = generate_holder();
   if (ret != 0) {
     LOG_ERROR("Failed to generate holder");
     return core::IndexError_Runtime;

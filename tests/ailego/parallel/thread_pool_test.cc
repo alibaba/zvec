@@ -107,7 +107,7 @@ TEST(ThreadPool, BindingRespectsCallerAffinityMask) {
 struct A {
   A() : pool(std::make_shared<ThreadPool>()) {}
 
-  int ThreadMain(int32_t &thread_index, uint32_t &num) {
+  int thread_main(int32_t &thread_index, uint32_t &num) {
     std::stringstream buf;
     buf << num << " Task (" << thread_index << " : " << pool->indexof_this()
         << ") " << pool->active_count() << ' ' << pool->pending_count()
@@ -126,9 +126,9 @@ struct B {
       : pool(std::make_shared<ThreadPool>(
             std::max(std::thread::hardware_concurrency(), 1u), true)) {}
 
-  std::string ThreadMain(uint32_t &num) {
+  std::string thread_main(uint32_t &num) {
     aaa.pool->enqueue(
-        Closure::New(&aaa, &A::ThreadMain, pool->indexof_this(), num));
+        Closure::New(&aaa, &A::thread_main, pool->indexof_this(), num));
     aaa.pool->wake_any();
     // std::this_thread::sleep_for(
     //    std::chrono::microseconds(std::rand() % 1000 + 1));
@@ -146,7 +146,7 @@ TEST(ThreadPool, General) {
 
   B bbb;
   for (uint32_t i = 0; i < 10000u; ++i) {
-    bbb.pool->execute(&bbb, &B::ThreadMain, i);
+    bbb.pool->execute(&bbb, &B::thread_main, i);
   }
   bbb.pool->wait_finish();
   bbb.aaa.pool->wait_finish();

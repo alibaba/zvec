@@ -34,11 +34,11 @@ class CombinedVectorColumnIndexer {
 
   virtual ~CombinedVectorColumnIndexer() = default;
 
-  virtual Result<IndexResults::Ptr> Search(
+  virtual Result<IndexResults::Ptr> search(
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params);
 
-  virtual Result<vector_column_params::VectorDataBuffer> Fetch(
+  virtual Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t segment_doc_id) const;
 
 

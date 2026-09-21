@@ -93,7 +93,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   HnswRabitqStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  ~HnswRabitqStreamerEntity();
+  ~HnswRabitqStreamerEntity() override;
 
   //! Get vector feature data by key
   const void *get_vector_by_key(key_t key) const override {
@@ -509,13 +509,13 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     return 0;
   }
 
- private:
+ public:
   HnswRabitqStreamerEntity(const HnswRabitqStreamerEntity &) = delete;
   HnswRabitqStreamerEntity &operator=(const HnswRabitqStreamerEntity &) =
       delete;
-  static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
  private:
+  static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
   IndexStreamer::Stats &stats_;
   HNSWHeader header_{};
   std::mutex mutex_{};

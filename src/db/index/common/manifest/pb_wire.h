@@ -59,73 +59,73 @@ class Writer {
 
   //! Writes a varint field. Skipped when the value is zero, matching proto3
   //! semantics where default-valued singular fields are not serialized.
-  void PutVarint(uint32_t field, uint64_t value) {
+  void put_varint(uint32_t field, uint64_t value) {
     if (value == 0) {
       return;
     }
-    PutVarintAlways(field, value);
+    put_varint_always(field, value);
   }
 
   //! Writes a bool field. Skipped when false (proto3 default).
-  void PutBool(uint32_t field, bool value) {
+  void put_bool(uint32_t field, bool value) {
     if (!value) {
       return;
     }
-    PutVarintAlways(field, 1);
+    put_varint_always(field, 1);
   }
 
   //! Writes a float field as fixed32. Skipped when the value is +0.0f
   //! (proto3 default). Note -0.0f compares equal to 0.0f and is therefore
   //! also skipped, which matches the protobuf library behaviour.
-  void PutFloat(uint32_t field, float value) {
+  void put_float(uint32_t field, float value) {
     if (value == 0.0f) {
       return;
     }
-    PutTag(field, kFixed32);
+    put_tag(field, kFixed32);
     uint32_t bits;
     std::memcpy(&bits, &value, sizeof(bits));
-    PutLittleEndian32(bits);
+    put_little_endian32(bits);
   }
 
   //! Writes a singular string field. Skipped when empty (proto3 default).
-  void PutString(uint32_t field, const std::string &value) {
+  void put_string(uint32_t field, const std::string &value) {
     if (value.empty()) {
       return;
     }
-    PutLenDelim(field, value);
+    put_len_delim(field, value);
   }
 
   //! Writes one element of a repeated string field. Unlike singular fields,
   //! repeated elements are always written, including empty strings.
-  void AddString(uint32_t field, const std::string &value) {
-    PutLenDelim(field, value);
+  void add_string(uint32_t field, const std::string &value) {
+    put_len_delim(field, value);
   }
 
   //! Writes a length-delimited field holding an already encoded sub-message.
   //! Always written, including when the payload is empty: an empty but
   //! present sub-message is encoded as a zero-length field by protobuf.
-  void PutMessage(uint32_t field, std::string_view encoded) {
-    PutLenDelim(field, encoded);
+  void put_message(uint32_t field, std::string_view encoded) {
+    put_len_delim(field, encoded);
   }
 
  private:
-  void PutTag(uint32_t field, WireType type) {
-    PutVarintRaw((static_cast<uint64_t>(field) << 3) |
-                 static_cast<uint64_t>(type));
+  void put_tag(uint32_t field, WireType type) {
+    put_varint_raw((static_cast<uint64_t>(field) << 3) |
+                   static_cast<uint64_t>(type));
   }
 
-  void PutVarintAlways(uint32_t field, uint64_t value) {
-    PutTag(field, kVarint);
-    PutVarintRaw(value);
+  void put_varint_always(uint32_t field, uint64_t value) {
+    put_tag(field, kVarint);
+    put_varint_raw(value);
   }
 
-  void PutLenDelim(uint32_t field, std::string_view value) {
-    PutTag(field, kLenDelim);
-    PutVarintRaw(value.size());
+  void put_len_delim(uint32_t field, std::string_view value) {
+    put_tag(field, kLenDelim);
+    put_varint_raw(value.size());
     out_->append(value.data(), value.size());
   }
 
-  void PutVarintRaw(uint64_t value) {
+  void put_varint_raw(uint64_t value) {
     while (value >= 0x80) {
       out_->push_back(static_cast<char>((value & 0x7F) | 0x80));
       value >>= 7;
@@ -133,7 +133,7 @@ class Writer {
     out_->push_back(static_cast<char>(value));
   }
 
-  void PutLittleEndian32(uint32_t value) {
+  void put_little_endian32(uint32_t value) {
     for (int i = 0; i < 4; ++i) {
       out_->push_back(static_cast<char>(value & 0xFF));
       value >>= 8;
@@ -157,7 +157,7 @@ class Reader {
 
   //! Advances to the next field. Returns false at end of buffer or on error;
   //! use ok() to distinguish the two.
-  bool Next();
+  bool next();
 
   uint32_t field() const {
     return field_;
@@ -207,12 +207,12 @@ class Reader {
   }
 
  private:
-  bool Fail() {
+  bool fail() {
     ok_ = false;
     return false;
   }
 
-  bool ReadVarintRaw(uint64_t *out);
+  bool read_varint_raw(uint64_t *out);
 
   const char *data_;
   size_t size_;

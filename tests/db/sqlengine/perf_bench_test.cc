@@ -156,8 +156,8 @@ class ScalarPerfBench : public RecallTest {
 
   // Builds a filter-only SearchQuery (no vector target) and returns a
   // runnable closure for RunBench.
-  std::function<Result<DocPtrList>()> FilterQuery(const std::string &filter,
-                                                  int topk = 2000) const {
+  std::function<Result<DocPtrList>()> filter_query(const std::string &filter,
+                                                   int topk = 2000) const {
     return [filter, topk]() -> Result<DocPtrList> {
       SearchQuery query;
       query.filter_ = filter;
@@ -180,55 +180,55 @@ class ScalarPerfBench : public RecallTest {
 TEST_F(ScalarPerfBench, ForwardFilterLowSelectivity) {
   PERF_SKIP();
   // age = doc_id % 100, so age < 5 matches 5% of the docs.
-  RunBench("forward_filter_age_lt_5", FilterQuery("age < 5"));
+  RunBench("forward_filter_age_lt_5", filter_query("age < 5"));
 }
 
 TEST_F(ScalarPerfBench, ForwardFilterHalfSelectivity) {
   PERF_SKIP();
-  RunBench("forward_filter_age_lt_50", FilterQuery("age < 50"));
+  RunBench("forward_filter_age_lt_50", filter_query("age < 50"));
 }
 
 TEST_F(ScalarPerfBench, ForwardFilterRange) {
   PERF_SKIP();
-  RunBench("forward_filter_age_range", FilterQuery("age >= 25 and age <= 75"));
+  RunBench("forward_filter_age_range", filter_query("age >= 25 and age <= 75"));
 }
 
 TEST_F(ScalarPerfBench, ForwardFilterString) {
   PERF_SKIP();
   // name = "user_" + doc_id % 100: full-scan string comparison.
-  RunBench("forward_filter_name_eq", FilterQuery("name = 'user_5'"));
+  RunBench("forward_filter_name_eq", filter_query("name = 'user_5'"));
 }
 
 TEST_F(ScalarPerfBench, ForwardFilterDouble) {
   PERF_SKIP();
-  RunBench("forward_filter_score_gt", FilterQuery("score > 50.0"));
+  RunBench("forward_filter_score_gt", filter_query("score > 50.0"));
 }
 
 TEST_F(ScalarPerfBench, InvertTerm) {
   PERF_SKIP();
-  RunBench("invert_term_age_eq_5", FilterQuery("invert_age = 5"));
+  RunBench("invert_term_age_eq_5", filter_query("invert_age = 5"));
 }
 
 TEST_F(ScalarPerfBench, InvertRange) {
   PERF_SKIP();
-  RunBench("invert_range_age_lt_10", FilterQuery("invert_age < 10"));
+  RunBench("invert_range_age_lt_10", filter_query("invert_age < 10"));
 }
 
 TEST_F(ScalarPerfBench, InvertStringTerm) {
   PERF_SKIP();
-  RunBench("invert_term_name_eq", FilterQuery("invert_name = 'user_5'"));
+  RunBench("invert_term_name_eq", filter_query("invert_name = 'user_5'"));
 }
 
 TEST_F(ScalarPerfBench, InvertWideRange) {
   PERF_SKIP();
   const std::string filter = "invert_id >= " + std::to_string(DocCount() / 2);
-  RunBench("invert_range_id_half", FilterQuery(filter));
+  RunBench("invert_range_id_half", filter_query(filter));
 }
 
 TEST_F(ScalarPerfBench, InvertBooleanOr) {
   PERF_SKIP();
   RunBench("invert_or_two_terms",
-           FilterQuery("invert_age = 5 or invert_age = 6"));
+           filter_query("invert_age = 5 or invert_age = 6"));
 }
 
 // Sanity-checks the hit counts that the benchmarks above rely on.
@@ -243,14 +243,14 @@ TEST_F(ScalarPerfBench, ExpectedHitCounts) {
     return count;
   };
 
-  auto result = FilterQuery("age < 5")();
+  auto result = filter_query("age < 5")();
   ASSERT_TRUE(result.has_value());
   const int64_t expected =
       count_ids_where([](uint64_t id) { return id % 100 < 5; });
   EXPECT_EQ(static_cast<int64_t>(result.value().size()),
             std::min<int64_t>(expected, 2000));
 
-  result = FilterQuery("invert_age = 5")();
+  result = filter_query("invert_age = 5")();
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(static_cast<int64_t>(result.value().size()),
             std::min<int64_t>(n / 100, 2000));
@@ -295,7 +295,7 @@ class FtsPerfBench : public ::testing::Test {
     FileHelper::RemoveDirectory(seg_path_);
   }
 
-  std::function<Result<DocPtrList>()> FtsMatch(
+  std::function<Result<DocPtrList>()> fts_match(
       const std::string &match_string, const std::string &default_op = "",
       const std::string &filter = "", int topk = 100) const {
     return [match_string, default_op, filter, topk]() -> Result<DocPtrList> {
@@ -396,7 +396,7 @@ class FtsPerfBench : public ::testing::Test {
       doc.set_doc_id(static_cast<uint64_t>(doc_id));
       doc.set<std::string>("content", content);
       doc.set<int32_t>("tag", static_cast<int32_t>(doc_id % 2));
-      auto status = segment->Insert(doc);
+      auto status = segment->insert(doc);
       if (!status.ok()) {
         std::printf("[PERF] fts insert failed at doc %lld: %s\n",
                     static_cast<long long>(doc_id), status.c_str());
@@ -414,35 +414,35 @@ class FtsPerfBench : public ::testing::Test {
 
 TEST_F(FtsPerfBench, RareTerm) {
   PERF_SKIP();
-  RunBench("fts_match_rare_0.1pct", FtsMatch("rareword"));
+  RunBench("fts_match_rare_0.1pct", fts_match("rareword"));
 }
 
 TEST_F(FtsPerfBench, MediumTerm) {
   PERF_SKIP();
-  RunBench("fts_match_medium_1pct", FtsMatch("mediumword"));
+  RunBench("fts_match_medium_1pct", fts_match("mediumword"));
 }
 
 TEST_F(FtsPerfBench, CommonTerm) {
   PERF_SKIP();
-  RunBench("fts_match_common_3pct", FtsMatch("w5"));
+  RunBench("fts_match_common_3pct", fts_match("w5"));
 }
 
 TEST_F(FtsPerfBench, MultiTermOr) {
   PERF_SKIP();
-  RunBench("fts_match_3term_or", FtsMatch("w1 w2 w3"));
+  RunBench("fts_match_3term_or", fts_match("w1 w2 w3"));
 }
 
 TEST_F(FtsPerfBench, MultiTermAnd) {
   PERF_SKIP();
   // Adjacent generated tokens differ by 31 (mod 256), so w1+w32 co-occur.
-  RunBench("fts_match_2term_and", FtsMatch("w1 w32", "AND"));
+  RunBench("fts_match_2term_and", fts_match("w1 w32", "AND"));
 }
 
 TEST_F(FtsPerfBench, MatchWithInvertedFilter) {
   PERF_SKIP();
   // mediumword only appears in docs whose id % 100 == 0, all of which have
   // tag = 0, so filter on tag = 0 keeps every match.
-  RunBench("fts_match_plus_filter", FtsMatch("mediumword", "", "tag = 0"));
+  RunBench("fts_match_plus_filter", fts_match("mediumword", "", "tag = 0"));
 }
 
 }  // namespace zvec::sqlengine

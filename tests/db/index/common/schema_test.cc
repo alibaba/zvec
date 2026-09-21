@@ -19,6 +19,79 @@
 
 using namespace zvec;
 
+TEST(CollectionSchemaTest, SkipsNullFieldObjectsDuringConstruction) {
+  CollectionSchema empty("schema", {nullptr});
+  EXPECT_TRUE(empty.fields().empty());
+  EXPECT_EQ(empty.validate().code(), StatusCode::INVALID_ARGUMENT);
+
+  auto field = std::make_shared<FieldSchema>("valid", DataType::INT32);
+  CollectionSchema schema("schema", {nullptr, field, nullptr});
+  ASSERT_EQ(schema.fields().size(), 1u);
+  ASSERT_NE(schema.get_field("valid"), nullptr);
+  EXPECT_EQ(schema.get_field("valid")->data_type(), DataType::INT32);
+  EXPECT_TRUE(schema.validate().ok());
+}
+
+TEST(CollectionSchemaTest, RejectsNullFieldObjectsInMutations) {
+  auto field = std::make_shared<FieldSchema>("valid", DataType::INT32);
+  CollectionSchema schema("schema", {field});
+  const CollectionSchema before(schema);
+  EXPECT_EQ(schema.add_field(nullptr).code(), StatusCode::INVALID_ARGUMENT);
+  EXPECT_EQ(schema.alter_field("valid", nullptr).code(),
+            StatusCode::INVALID_ARGUMENT);
+  EXPECT_EQ(schema, before);
+  EXPECT_TRUE(schema.validate().ok());
+}
+
+TEST(CollectionSchemaTest, ValidatesDuplicateNamesFromConstructorsAndCopies) {
+  auto scalar = std::make_shared<FieldSchema>("duplicate", DataType::INT32);
+  auto other_scalar =
+      std::make_shared<FieldSchema>("duplicate", DataType::INT64);
+  auto vector = std::make_shared<FieldSchema>("duplicate",
+                                              DataType::VECTOR_FP32, 4, false);
+  auto other_vector = std::make_shared<FieldSchema>(
+      "duplicate", DataType::VECTOR_FP32, 8, false);
+  const std::vector<FieldSchemaPtrList> cases{
+      {scalar, std::make_shared<FieldSchema>(*scalar)},
+      {scalar, other_scalar},
+      {scalar, scalar},
+      {vector, other_vector},
+      {scalar, vector},
+      {vector, scalar},
+      {nullptr, scalar, nullptr, vector}};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    CollectionSchema schema("schema", cases[i]);
+    ASSERT_EQ(schema.fields().size(), 2u);
+    auto status = schema.validate();
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(status.message(),
+              "Invalid schema: duplicate field name [duplicate]; field names "
+              "must be unique");
+    CollectionSchema copied(schema);
+    CollectionSchema assigned(
+        "old", {std::make_shared<FieldSchema>("existing", DataType::INT32)});
+    assigned = schema;
+    EXPECT_EQ(copied.validate(), status);
+    EXPECT_EQ(assigned.validate(), status);
+    EXPECT_EQ(copied.fields().size(), 2u);
+    EXPECT_EQ(assigned.fields().size(), 2u);
+    EXPECT_FALSE(assigned.has_field("existing"));
+  }
+}
+
+TEST(CollectionSchemaTest, CopyOwnsIndependentFieldObjects) {
+  auto original_field =
+      std::make_shared<FieldSchema>("value", DataType::INT32, true);
+  CollectionSchema schema("schema", {original_field});
+  original_field->set_name("invalid name");
+  original_field->set_data_type(DataType::STRING);
+  EXPECT_TRUE(schema.validate().ok());
+  ASSERT_NE(schema.get_field("value"), nullptr);
+  EXPECT_EQ(schema.get_field("value")->data_type(), DataType::INT32);
+  EXPECT_FALSE(schema.has_field("invalid name"));
+}
+
 TEST(FieldSchemaTest, DefaultConstructor) {
   FieldSchema field;
   EXPECT_EQ(field.name(), "");
@@ -554,7 +627,9 @@ TEST(FieldSchemaTest, Validate) {
         "user_name",
         "test-123",
         "aBc123_-",
-        std::string(32, 'a'),  // max len = 32
+        std::string(32, 'a'),
+        std::string(33, 'a'),
+        std::string(64, 'a'),  // max len = 64
         "a_b-c1",
         "__test__",
         "123_test"};
@@ -571,7 +646,7 @@ TEST(FieldSchemaTest, Validate) {
   {
     std::vector<std::string> invalid_names = {
         "",                    // empty — len < 1
-        std::string(33, 'a'),  // len > 32
+        std::string(65, 'a'),  // len > 64
         "a b",                 // space
         "a.b",
         "a@b",
@@ -888,7 +963,7 @@ TEST(CollectionSchemaTest, Validate) {
   ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
   CollectionSchema c2("c2", {});
-  s = c1.validate();
+  s = c2.validate();
   ASSERT_FALSE(s.ok());
   ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
@@ -901,8 +976,7 @@ TEST(CollectionSchemaTest, Validate) {
   auto f2 = std::make_shared<FieldSchema>("f2", DataType::INT32);
   CollectionSchema c4("c4", {f2});
   s = c4.validate();
-  ASSERT_FALSE(s.ok());
-  ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+  ASSERT_TRUE(s.ok());
 
   auto f3 = std::make_shared<FieldSchema>("f3", DataType::VECTOR_FP16);
   CollectionSchema c5("c5", {f3});
@@ -910,41 +984,45 @@ TEST(CollectionSchemaTest, Validate) {
   ASSERT_FALSE(s.ok());
   ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
-  // validate collection name regex "^[a-zA-Z0-9_-]{3,32}$"
+  // Collection names are bounded UTF-8 strings, independent of the path.
   {
     std::vector<std::string> invalid_names = {
-        "",                    // empty
-        "ab",                  // too short (<3)
-        std::string(65, 'a'),  // too long (>64)
-        "a b",                 // space not allowed
-        "a.b",                 // dot not allowed
-        "a$b",                 // $ not allowed
-        "中文",                // non-ASCII
-        "a\nb",                // newline not allowed
-        "a\tb",                // tab not allowed
-        "a\rb",                // carriage return not allowed
+        "",                      // empty
+        std::string(257, 'a'),   // too long (>256 bytes)
+        std::string("a\0b", 3),  // embedded NUL
+        std::string("\xff", 1),  // invalid UTF-8
+        "a\nb",                  // newline not allowed
+        "a\tb",                  // tab not allowed
+        "a\rb",                  // carriage return not allowed
     };
 
     for (const auto &name : invalid_names) {
       CollectionSchema c(name, {field});
       s = c.validate();
-      if (!s.ok()) {
-        std::cout << "Invalid name: " << name << std::endl;
-      }
       ASSERT_FALSE(s.ok());
       ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
     }
 
     std::vector<std::string> valid_names = {
         "test_collection_supported_vectors",
+        "a",
+        "ab",
         std::string(64, 'a'),
+        std::string(65, 'a'),
+        std::string(256, 'a'),
+        "a b",
+        "a.b",
+        "a$b",
+        "中文",
+        " ",
+        " padded ",
         "a_b",     // underscore allowed
         "a-b",     // dash allowed
         "a_1",     // underscore and digit allowed
         "a-1",     // dash and digit allowed
         "a_1b",    // underscore, digit and letter allowed
         "a-1b",    // dash, digit and letter allowed
-        "-start",  // allowed! (regex permits leading -/_)
+        "-start",  // leading -/_ remains allowed
         "_start",  // also allowed
         "end-",
         "end_",  // trailing -/_ allowed

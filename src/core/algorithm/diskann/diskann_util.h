@@ -79,10 +79,10 @@ class DiskAnnUtil {
   }
 
   template <typename T>
-  static inline void convert_vector_to_residual(T *data, uint32_t blocksize_,
+  static inline void convert_vector_to_residual(T *data, uint32_t blocksize,
                                                 size_t dim, void *centroid) {
     const T *centroid_ptr = reinterpret_cast<const T *>(centroid);
-    for (size_t i = 0; i < blocksize_; i++) {
+    for (size_t i = 0; i < blocksize; i++) {
       for (uint64_t d = 0; d < dim; d++) {
         float data_float = data[i * dim + d];
         data_float -= centroid_ptr[d];
@@ -102,35 +102,35 @@ class DiskAnnUtil {
   }
 
   static inline uint64_t get_node_sector(uint32_t node_per_sector,
-                                         uint32_t max_nodesize_,
-                                         uint32_t sectorsize_,
+                                         uint32_t max_nodesize,
+                                         uint32_t sectorsize,
                                          diskann_id_t node_id) {
     return (node_per_sector > 0
                 ? node_id / node_per_sector
-                : node_id * div_round_up(max_nodesize_, sectorsize_));
+                : node_id * div_round_up(max_nodesize, sectorsize));
   }
 
   static inline uint32_t *offset_to_node_neighbor(uint8_t *node_buf,
-                                                  uint32_t elementsize_) {
-    return (uint32_t *)(node_buf + elementsize_);
+                                                  uint32_t elementsize) {
+    return (uint32_t *)(node_buf + elementsize);
   }
 
   static inline uint8_t *offset_to_node(uint32_t node_per_sector,
-                                        uint32_t max_nodesize_,
+                                        uint32_t max_nodesize,
                                         uint8_t *sector_buf,
                                         diskann_id_t node_id) {
     return sector_buf + (node_per_sector == 0
                              ? 0
-                             : (node_id % node_per_sector) * max_nodesize_);
+                             : (node_id % node_per_sector) * max_nodesize);
   }
 
   static inline const uint8_t *offset_to_node_const(uint32_t node_per_sector,
-                                                    uint32_t max_nodesize_,
+                                                    uint32_t max_nodesize,
                                                     const uint8_t *sector_buf,
                                                     diskann_id_t node_id) {
     return sector_buf + (node_per_sector == 0
                              ? 0
-                             : (node_id % node_per_sector) * max_nodesize_);
+                             : (node_id % node_per_sector) * max_nodesize);
   }
 
   //! Resolve the quantizer implementation name from a serialized quantizer

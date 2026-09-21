@@ -79,6 +79,10 @@ class FhtRotator : public Preprocessor {
   //! Provided for interface compatibility with the Preprocessor contract.
   void train(const void *data, size_t num, size_t stride) override;
 
+  //! No-op: FhtRotator trains from no data at all, so the second input
+  //! carried by \p ctx is ignored as well.
+  void train(const void *data, void *ctx, size_t num, size_t stride) override;
+
   int serialize(std::string *out) const override;
   int deserialize(const void *data, size_t len) override;
 

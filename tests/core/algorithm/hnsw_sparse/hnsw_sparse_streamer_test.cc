@@ -128,11 +128,11 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   auto ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = streamer->create_context();
-  ASSERT_TRUE(!!linearCtx);
+  auto linear_ctx = streamer->create_context();
+  ASSERT_TRUE(!!linear_ctx);
 
-  auto knnCtx = streamer->create_context();
-  ASSERT_TRUE(!!knnCtx);
+  auto knn_ctx = streamer->create_context();
+  ASSERT_TRUE(!!knn_ctx);
 
   std::vector<NumericalVector<uint32_t>> sparse_indices_list;
   std::vector<NumericalVector<float>> sparse_vec_list;
@@ -150,15 +150,15 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
 
   // streamer->print_debug_info();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
 
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
   for (size_t i = 0; i < cnt; i += 100) {
     const auto &sparse_indices = sparse_indices_list[i];
@@ -167,41 +167,41 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
     auto t1 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0, streamer->search_impl(sparse_dim_count, sparse_indices.data(),
-                                       sparse_vec.data(), qmeta, knnCtx));
+                                       sparse_vec.data(), qmeta, knn_ctx));
 
     auto t2 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0,
               streamer->search_bf_impl(sparse_dim_count, sparse_indices.data(),
-                                       sparse_vec.data(), qmeta, linearCtx));
+                                       sparse_vec.data(), qmeta, linear_ctx));
 
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
     // std::cout << "i: " << i << std::endl;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -210,7 +210,7 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -484,8 +484,8 @@ TEST_F(HnswSparseStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, storage2->init(stg_params));
   ASSERT_EQ(0, storage2->open(dir_ + "TessOpenAndClose2", true));
   ASSERT_EQ(0, streamer->init(meta, params));
-  auto checkIter = [](size_t base, size_t total,
-                      IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t base, size_t total,
+                       IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_sparse_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -504,10 +504,10 @@ TEST_F(HnswSparseStreamerTest, TestOpenClose) {
     ASSERT_EQ(cnt, total);
   };
 
-  size_t testCnt = 200;
+  size_t test_cnt = 200;
   IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                        IndexMeta::DataType::DT_FP32);
-  for (size_t i = 0; i < testCnt; i += 2) {
+  for (size_t i = 0; i < test_cnt; i += 2) {
     float v1 = (float)i;
     ASSERT_EQ(0, streamer->open(storage1));
     auto ctx = streamer->create_context();
@@ -523,7 +523,7 @@ TEST_F(HnswSparseStreamerTest, TestOpenClose) {
     ASSERT_EQ(0, streamer->add_impl(i, sparse_dim_count, sparse_indices1.data(),
                                     sparse_velues1.data(), qmeta, ctx));
 
-    checkIter(0, i / 2 + 1, streamer);
+    check_iter(0, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
 
@@ -541,7 +541,7 @@ TEST_F(HnswSparseStreamerTest, TestOpenClose) {
     ASSERT_EQ(
         0, streamer->add_impl(i + 1, sparse_dim_count, sparse_indices2.data(),
                               sparse_velues2.data(), qmeta, ctx));
-    checkIter(1, i / 2 + 1, streamer);
+    check_iter(1, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
   }
@@ -558,8 +558,8 @@ TEST_F(HnswSparseStreamerTest, TestOpenClose) {
   ASSERT_EQ(0, streamer2->init(meta, params));
   ASSERT_EQ(0, streamer2->open(storage2));
 
-  checkIter(0, testCnt / 2, streamer1);
-  checkIter(1, testCnt / 2, streamer2);
+  check_iter(0, test_cnt / 2, streamer1);
+  check_iter(1, test_cnt / 2, streamer2);
 }
 
 TEST_F(HnswSparseStreamerTest, TestCreateIterator) {
@@ -579,7 +579,7 @@ TEST_F(HnswSparseStreamerTest, TestCreateIterator) {
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto checkIter = [](size_t total, IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t total, IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_sparse_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -611,13 +611,13 @@ TEST_F(HnswSparseStreamerTest, TestCreateIterator) {
 
     ASSERT_EQ(0, streamer->add_impl(i, sparse_dim_count, sparse_indices1.data(),
                                     sparse_velues1.data(), qmeta, ctx));
-    checkIter(i + 1, streamer);
+    check_iter(i + 1, streamer);
   }
 
   streamer->flush(0UL);
   streamer->close();
   ASSERT_EQ(0, streamer->open(storage));
-  checkIter(cnt, streamer);
+  check_iter(cnt, streamer);
 
   // check getVector
   auto provider = streamer->create_sparse_provider();
@@ -667,7 +667,7 @@ TEST_F(HnswSparseStreamerTest, TestForceFlush) {
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto checkIter = [](size_t total, IndexStreamer::Pointer &streamer) {
+  auto check_iter = [](size_t total, IndexStreamer::Pointer &streamer) {
     auto provider = streamer->create_sparse_provider();
     auto iter = provider->create_iterator();
     ASSERT_TRUE(!!iter);
@@ -704,7 +704,7 @@ TEST_F(HnswSparseStreamerTest, TestForceFlush) {
 
     ASSERT_EQ(0, streamer->add_impl(i, sparse_dim_count, sparse_indices.data(),
                                     sparse_velues.data(), qmeta, ctx));
-    checkIter(i + 1, streamer);
+    check_iter(i + 1, streamer);
   }
 
   streamer->flush(0UL);
@@ -716,7 +716,7 @@ TEST_F(HnswSparseStreamerTest, TestForceFlush) {
   ASSERT_EQ(0, storage->init(stg_params));
   ASSERT_EQ(0, storage->open(dir_ + "TestForceFlush", true));
   ASSERT_EQ(0, streamer->open(storage));
-  checkIter(cnt, streamer);
+  check_iter(cnt, streamer);
 
   // check getVector
   auto provider = streamer->create_sparse_provider();
@@ -762,31 +762,31 @@ TEST_F(HnswSparseStreamerTest, TestKnnMultiThread) {
   ASSERT_EQ(0, storage->open(dir_ + "TessKnnMultiThread", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                          IndexMeta::DataType::DT_FP32);
-    size_t succAdd = 0;
+    size_t succ_add = 0;
     auto ctx = streamer->create_context();
-    for (size_t i = 0; i < addCnt; i++) {
+    for (size_t i = 0; i < add_cnt; i++) {
       NumericalVector<uint32_t> sparse_indices(sparse_dim_count);
       NumericalVector<float> sparse_velues(sparse_dim_count);
 
       for (size_t j = 0; j < sparse_dim_count; ++j) {
         sparse_indices[j] = j * 20;
-        sparse_velues[j] = (float)i + baseKey;
+        sparse_velues[j] = (float)i + base_key;
       }
 
-      succAdd += !streamer->add_impl(baseKey + i, sparse_dim_count,
-                                     sparse_indices.data(),
-                                     sparse_velues.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, sparse_dim_count,
+                                      sparse_indices.data(),
+                                      sparse_velues.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
 
-  auto t2 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t3 = std::async(std::launch::async, addVector, 2000, 1000);
-  auto t1 = std::async(std::launch::async, addVector, 0, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t3 = std::async(std::launch::async, add_vector, 2000, 1000);
+  auto t1 = std::async(std::launch::async, add_vector, 0, 1000);
   ASSERT_EQ(1000U, t1.get());
   ASSERT_EQ(1000U, t2.get());
   ASSERT_EQ(1000U, t3.get());
@@ -821,17 +821,17 @@ TEST_F(HnswSparseStreamerTest, TestKnnMultiThread) {
   // ====== multi thread search
   size_t topk = 10;
   size_t cnt = 3000;
-  auto knnSearch = [&]() {
-    auto linearCtx = streamer->create_context();
-    auto linearByPkeysCtx = streamer->create_context();
+  auto knn_search = [&]() {
+    auto linear_ctx = streamer->create_context();
+    auto linear_by_pkeys_ctx = streamer->create_context();
     auto ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                          IndexMeta::DataType::DT_FP32);
-    linearCtx->set_topk(topk);
-    linearByPkeysCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    linear_by_pkeys_ctx->set_topk(topk);
     ctx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i += 1) {
       NumericalVector<uint32_t> sparse_indices(sparse_dim_count);
       NumericalVector<float> sparse_velues(sparse_dim_count);
@@ -846,17 +846,18 @@ TEST_F(HnswSparseStreamerTest, TestKnnMultiThread) {
                                       sparse_velues.data(), qmeta, ctx));
       ASSERT_EQ(
           0, streamer->search_bf_impl(sparse_dim_count, sparse_indices.data(),
-                                      sparse_velues.data(), qmeta, linearCtx));
+                                      sparse_velues.data(), qmeta, linear_ctx));
       std::vector<std::vector<uint64_t>> p_keys = {{cnt - 1, cnt - 2, cnt - 3}};
-      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
-                       sparse_dim_count, sparse_indices.data(),
-                       sparse_velues.data(), p_keys, qmeta, linearByPkeysCtx));
+      ASSERT_EQ(
+          0, streamer->search_bf_by_p_keys_impl(
+                 sparse_dim_count, sparse_indices.data(), sparse_velues.data(),
+                 p_keys, qmeta, linear_by_pkeys_ctx));
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
-      auto &r2 = linearCtx->result();
+      auto &r2 = linear_ctx->result();
       ASSERT_EQ(topk, r2.size());
       ASSERT_EQ(cnt - 1, r2[0].key());
-      auto &r3 = linearByPkeysCtx->result();
+      auto &r3 = linear_by_pkeys_ctx->result();
       ASSERT_EQ(std::min(topk, p_keys[0].size()), r3.size());
 #if 0
             printf("linear: %zd => %zd %zd %zd %zd %zd\n", i, r2[0].key,
@@ -865,21 +866,21 @@ TEST_F(HnswSparseStreamerTest, TestKnnMultiThread) {
                    r1[2].key, r1[3].key, r1[4].key);
 #endif
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
           if (r2[j].key() == r1[k].key()) {
-            totalHits++;
+            total_hits++;
             break;
           }
         }
       }
     }
-    printf("%f\n", totalHits * 1.0f / totalCnts);
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    printf("%f\n", total_hits * 1.0f / total_cnts);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
-  auto s3 = std::async(std::launch::async, knnSearch);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
+  auto s3 = std::async(std::launch::async, knn_search);
   s1.wait();
   s2.wait();
   s3.wait();
@@ -913,41 +914,41 @@ TEST_F(HnswSparseStreamerTest, TestKnnConcurrentAddAndSearch) {
   ASSERT_EQ(0, storage->open(dir_ + "TessKnnConcurrentAddAndSearch", true));
   ASSERT_EQ(0, streamer->open(storage));
 
-  auto addVector = [&streamer](int baseKey, size_t addCnt) {
+  auto add_vector = [&streamer](int base_key, size_t add_cnt) {
     IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                          IndexMeta::DataType::DT_FP32);
-    size_t succAdd = 0;
+    size_t succ_add = 0;
     auto ctx = streamer->create_context();
-    for (size_t i = 0; i < addCnt; i++) {
+    for (size_t i = 0; i < add_cnt; i++) {
       NumericalVector<uint32_t> sparse_indices(sparse_dim_count);
       NumericalVector<float> sparse_velues(sparse_dim_count);
 
       for (size_t j = 0; j < sparse_dim_count; ++j) {
         sparse_indices[j] = j * 20;
-        sparse_velues[j] = (float)i + baseKey;
+        sparse_velues[j] = (float)i + base_key;
       }
 
-      succAdd += !streamer->add_impl(baseKey + i, sparse_dim_count,
-                                     sparse_indices.data(),
-                                     sparse_velues.data(), qmeta, ctx);
+      succ_add += !streamer->add_impl(base_key + i, sparse_dim_count,
+                                      sparse_indices.data(),
+                                      sparse_velues.data(), qmeta, ctx);
     }
     streamer->flush(0UL);
-    return succAdd;
+    return succ_add;
   };
 
-  auto knnSearch = [&]() {
+  auto knn_search = [&]() {
     size_t topk = 100;
     size_t cnt = 3000;
-    auto linearCtx = streamer->create_context();
-    auto linearByPkeysCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto linear_by_pkeys_ctx = streamer->create_context();
     auto ctx = streamer->create_context();
     IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                          IndexMeta::DataType::DT_FP32);
-    linearCtx->set_topk(topk);
-    linearByPkeysCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    linear_by_pkeys_ctx->set_topk(topk);
     ctx->set_topk(topk);
-    size_t totalCnts = 0;
-    size_t totalHits = 0;
+    size_t total_cnts = 0;
+    size_t total_hits = 0;
     for (size_t i = 0; i < cnt; i += 1) {
       NumericalVector<uint32_t> sparse_indices(sparse_dim_count);
       NumericalVector<float> sparse_velues(sparse_dim_count);
@@ -962,17 +963,18 @@ TEST_F(HnswSparseStreamerTest, TestKnnConcurrentAddAndSearch) {
                                       sparse_velues.data(), qmeta, ctx));
       ASSERT_EQ(
           0, streamer->search_bf_impl(sparse_dim_count, sparse_indices.data(),
-                                      sparse_velues.data(), qmeta, linearCtx));
+                                      sparse_velues.data(), qmeta, linear_ctx));
       std::vector<std::vector<uint64_t>> p_keys = {{0, 1, 2}};
-      ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
-                       sparse_dim_count, sparse_indices.data(),
-                       sparse_velues.data(), p_keys, qmeta, linearByPkeysCtx));
+      ASSERT_EQ(
+          0, streamer->search_bf_by_p_keys_impl(
+                 sparse_dim_count, sparse_indices.data(), sparse_velues.data(),
+                 p_keys, qmeta, linear_by_pkeys_ctx));
       auto &r1 = ctx->result();
       ASSERT_EQ(topk, r1.size());
-      auto &r2 = linearCtx->result();
+      auto &r2 = linear_ctx->result();
       ASSERT_EQ(topk, r2.size());
       ASSERT_EQ(0, r2[0].key());
-      auto &r3 = linearByPkeysCtx->result();
+      auto &r3 = linear_by_pkeys_ctx->result();
       ASSERT_EQ(std::min(topk, p_keys[0].size()), r3.size());
 #if 0
             printf("linear: %zd => %zd %zd %zd %zd %zd\n", i, r2[0].key,
@@ -981,25 +983,25 @@ TEST_F(HnswSparseStreamerTest, TestKnnConcurrentAddAndSearch) {
                    r1[2].key, r1[3].key, r1[4].key);
 #endif
       for (size_t k = 0; k < topk; ++k) {
-        totalCnts++;
+        total_cnts++;
         for (size_t j = 0; j < topk; ++j) {
           if (r2[j].key() == r1[k].key()) {
-            totalHits++;
+            total_hits++;
             break;
           }
         }
       }
     }
-    printf("%f\n", totalHits * 1.0f / totalCnts);
-    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+    printf("%f\n", total_hits * 1.0f / total_cnts);
+    ASSERT_TRUE((total_hits * 1.0f / total_cnts) > 0.80f);
   };
 
-  auto t0 = std::async(std::launch::async, addVector, 0, 1000);
+  auto t0 = std::async(std::launch::async, add_vector, 0, 1000);
   ASSERT_EQ(1000, t0.get());
-  auto t1 = std::async(std::launch::async, addVector, 1000, 1000);
-  auto t2 = std::async(std::launch::async, addVector, 2000, 1000);
-  auto s1 = std::async(std::launch::async, knnSearch);
-  auto s2 = std::async(std::launch::async, knnSearch);
+  auto t1 = std::async(std::launch::async, add_vector, 1000, 1000);
+  auto t2 = std::async(std::launch::async, add_vector, 2000, 1000);
+  auto s1 = std::async(std::launch::async, knn_search);
+  auto s2 = std::async(std::launch::async, knn_search);
   ASSERT_EQ(1000, t1.get());
   ASSERT_EQ(1000, t2.get());
   s1.wait();
@@ -1167,13 +1169,13 @@ TEST_F(HnswSparseStreamerTest, TestFilter) {
   ASSERT_EQ(1, results[1].key());
   ASSERT_EQ(2, results[2].key());
 
-  auto filterFunc = [](uint64_t key) {
+  auto filter_func = [](uint64_t key) {
     if (key == 0UL || key == 3UL) {
       return true;
     }
     return false;
   };
-  ctx->set_filter(filterFunc);
+  ctx->set_filter(filter_func);
 
   // after set filter
   ASSERT_EQ(0, streamer->search_impl(sparse_dim_count, sparse_indices.data(),
@@ -1236,12 +1238,12 @@ TEST_F(HnswSparseStreamerTest, TestMaxIndexSize) {
     return;
   }
 
-  size_t writeCnt1 = 10000;
+  size_t write_cnt1 = 10000;
   IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                        IndexMeta::DataType::DT_FP32);
   auto ctx = streamer->create_context();
 
-  for (size_t i = 0; i < writeCnt1; ++i) {
+  for (size_t i = 0; i < write_cnt1; ++i) {
     NumericalVector<uint32_t> sparse_indices(sparse_dim_count);
     NumericalVector<float> sparse_velues(sparse_dim_count);
 
@@ -1259,8 +1261,8 @@ TEST_F(HnswSparseStreamerTest, TestMaxIndexSize) {
   size_t increment = rss1 - rss0;
 
   size_t total_write =
-      writeCnt1 * sparse_dim_count * (sizeof(uint16_t) + sizeof(float)) +
-      writeCnt1 * 32 + writeCnt1 * 100 * 4;
+      write_cnt1 * sparse_dim_count * (sizeof(uint16_t) + sizeof(float)) +
+      write_cnt1 * 32 + write_cnt1 * 100 * 4;
 
   ASSERT_GT(total_write, increment * 0.8f);
   ASSERT_LT(total_write, increment * 1.2f);
@@ -1355,13 +1357,13 @@ TEST_F(HnswSparseStreamerTest, TestIndexSizeQuota) {
   ASSERT_EQ(0, streamer->init(meta, params));
   ASSERT_EQ(0, streamer->open(storage));
 
-  size_t writeCnt1 = 850;
+  size_t write_cnt1 = 850;
   int ret = 0;
   auto ctx = streamer->create_context();
   IndexQueryMeta qmeta(IndexMeta::MetaType::MT_SPARSE,
                        IndexMeta::DataType::DT_FP32);
 
-  for (size_t i = 0; i < writeCnt1; ++i) {
+  for (size_t i = 0; i < write_cnt1; ++i) {
     NumericalVector<uint32_t> sparse_indices(sparse_dim_count);
     NumericalVector<float> sparse_velues(sparse_dim_count);
 
@@ -1370,10 +1372,10 @@ TEST_F(HnswSparseStreamerTest, TestIndexSizeQuota) {
       sparse_velues[j] = i;
     }
 
-    int iRet = streamer->add_impl(i, sparse_dim_count, sparse_indices.data(),
-                                  sparse_velues.data(), qmeta, ctx);
-    if (iRet != 0) {
-      ret = iRet;
+    int i_ret = streamer->add_impl(i, sparse_dim_count, sparse_indices.data(),
+                                   sparse_velues.data(), qmeta, ctx);
+    if (i_ret != 0) {
+      ret = i_ret;
     }
   }
 
@@ -1502,10 +1504,10 @@ TEST_F(HnswSparseStreamerTest, TestCheckStats) {
   ASSERT_EQ(init_size, stats.index_size());
   ASSERT_EQ(0U, stats.dumped_size());
   ASSERT_EQ(0U, stats.check_point());
-  auto createTime = stats.create_time();
-  auto updateTime = stats.update_time();
-  ASSERT_GT(createTime, 0UL);
-  ASSERT_EQ(createTime, updateTime);
+  auto create_time = stats.create_time();
+  auto update_time = stats.update_time();
+  ASSERT_GT(create_time, 0UL);
+  ASSERT_EQ(create_time, update_time);
 
   auto ctx = streamer->create_context();
   ASSERT_NE(nullptr, ctx);
@@ -1538,8 +1540,8 @@ TEST_F(HnswSparseStreamerTest, TestCheckStats) {
   ASSERT_GT(size3, size2);
   LOG_INFO("size1=%zu size2=%zu size3=%zu", size1, size2, size3);
 
-  uint64_t checkPoint = 23423UL;
-  streamer->flush(checkPoint);
+  uint64_t check_point = 23423UL;
+  streamer->flush(check_point);
   size_t size4 = stats.index_size();
   ASSERT_EQ(size3, size4);
   auto stats1 = streamer->stats();
@@ -1549,11 +1551,11 @@ TEST_F(HnswSparseStreamerTest, TestCheckStats) {
   ASSERT_EQ(0U, stats1.discarded_count());
   ASSERT_GT(stats1.index_size(), 0U);
   ASSERT_EQ(0U, stats1.dumped_size());
-  ASSERT_EQ(checkPoint, stats1.check_point());
-  auto createTime1 = stats1.create_time();
-  auto updateTime1 = stats1.update_time();
-  ASSERT_GE(updateTime1, createTime1);
-  ASSERT_EQ(createTime, createTime1);
+  ASSERT_EQ(check_point, stats1.check_point());
+  auto create_time1 = stats1.create_time();
+  auto update_time1 = stats1.update_time();
+  ASSERT_GE(update_time1, create_time1);
+  ASSERT_EQ(create_time, create_time1);
   streamer->close();
 
   ASSERT_EQ(0, streamer->open(storage));
@@ -1571,14 +1573,14 @@ TEST_F(HnswSparseStreamerTest, TestCheckStats) {
   ASSERT_EQ(0U, stats2.discarded_count());
   ASSERT_GT(stats1.index_size(), 0);
   ASSERT_EQ(0U, stats2.dumped_size());
-  ASSERT_EQ(checkPoint, stats2.check_point());
-  auto createTime2 = stats2.create_time();
-  auto updateTime2 = stats2.update_time();
-  ASSERT_EQ(createTime2, createTime1);
-  ASSERT_GE(updateTime2, updateTime1);
+  ASSERT_EQ(check_point, stats2.check_point());
+  auto create_time2 = stats2.create_time();
+  auto update_time2 = stats2.update_time();
+  ASSERT_EQ(create_time2, create_time1);
+  ASSERT_GE(update_time2, update_time1);
 
   sleep(1);
-  streamer->flush(checkPoint + 1);
+  streamer->flush(check_point + 1);
 
   ASSERT_NE(0, streamer->add_impl(0U, sparse_dim_count, sparse_indices.data(),
                                   sparse_velues.data(), qmeta, ctx));
@@ -1590,11 +1592,11 @@ TEST_F(HnswSparseStreamerTest, TestCheckStats) {
   ASSERT_EQ(1U, stats3.discarded_count());
   ASSERT_EQ(stats2.index_size(), stats3.index_size());
   ASSERT_EQ(0U, stats3.dumped_size());
-  ASSERT_EQ(checkPoint + 1, stats3.check_point());
-  auto createTime3 = stats3.create_time();
-  auto updateTime3 = stats3.update_time();
-  ASSERT_EQ(createTime3, createTime1);
-  ASSERT_GT(updateTime3, updateTime2);
+  ASSERT_EQ(check_point + 1, stats3.check_point());
+  auto create_time3 = stats3.create_time();
+  auto update_time3 = stats3.update_time();
+  ASSERT_EQ(create_time3, create_time1);
+  ASSERT_GT(update_time3, update_time2);
 
   auto dpath = dir_ + "dumpIndex";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
@@ -1729,7 +1731,7 @@ TEST_F(HnswSparseStreamerTest, TestDumpIndexAndAdd) {
   int code = 0;
   std::atomic<bool> async_started{false};
 
-  auto addVector = [&](int a, int b, bool signal_start) {
+  auto add_vector = [&](int a, int b, bool signal_start) {
     if (signal_start) {
       async_started.store(true, std::memory_order_release);
     }
@@ -1753,8 +1755,8 @@ TEST_F(HnswSparseStreamerTest, TestDumpIndexAndAdd) {
     }
   };
 
-  addVector(0, 2000, false);
-  auto t2 = std::async(std::launch::async, addVector, 2000, 3000, true);
+  add_vector(0, 2000, false);
+  auto t2 = std::async(std::launch::async, add_vector, 2000, 3000, true);
   auto path1 = dir_ + "dumpIndex1";
   auto dumper1 = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper1, nullptr);
@@ -2118,11 +2120,11 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
   }
 
   size_t topk = 20;
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
   bool set_bf_threshold = false;
   bool use_update = false;
@@ -2130,14 +2132,14 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
   size_t step = 50;
   for (size_t i = 0; i < cnt; i += step) {
     // for (size_t i = 0; i < cnt; i++) {
-    auto linearCtx = streamer->create_context();
-    auto knnCtx = streamer->create_context();
+    auto linear_ctx = streamer->create_context();
+    auto knn_ctx = streamer->create_context();
 
-    ASSERT_TRUE(!!linearCtx);
-    ASSERT_TRUE(!!knnCtx);
+    ASSERT_TRUE(!!linear_ctx);
+    ASSERT_TRUE(!!knn_ctx);
 
-    linearCtx->set_topk(topk);
-    knnCtx->set_topk(topk);
+    linear_ctx->set_topk(topk);
+    knn_ctx->set_topk(topk);
 
     NumericalVector<uint32_t> query_sparse_indices(sparse_dim_count);
     NumericalVector<float> query_sparse_velues(sparse_dim_count);
@@ -2150,57 +2152,57 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
 
     if (set_bf_threshold) {
       if (use_update) {
-        ailego::Params streamerParamsExtra;
+        ailego::Params streamer_params_extra;
 
-        streamerParamsExtra.set(
+        streamer_params_extra.set(
             "proxima.hnsw.sparse_streamer.brute_force_threshold", cnt);
-        knnCtx->update(streamerParamsExtra);
+        knn_ctx->update(streamer_params_extra);
       } else {
-        knnCtx->set_bruteforce_threshold(cnt);
+        knn_ctx->set_bruteforce_threshold(cnt);
       }
 
       use_update = !use_update;
     }
     ASSERT_EQ(
         0, streamer->search_impl(sparse_dim_count, query_sparse_indices.data(),
-                                 query_sparse_velues.data(), qmeta, knnCtx));
+                                 query_sparse_velues.data(), qmeta, knn_ctx));
 
     auto t2 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0, streamer->search_bf_impl(
                      sparse_dim_count, query_sparse_indices.data(),
-                     query_sparse_velues.data(), qmeta, linearCtx));
+                     query_sparse_velues.data(), qmeta, linear_ctx));
 
     // auto t3 = ailego::Realtime::MicroSeconds();
 
     if (set_bf_threshold) {
-      linearTotalTime += t2 - t1;
+      linear_total_time += t2 - t1;
     } else {
-      knnTotalTime += t2 - t1;
+      knn_total_time += t2 - t1;
     }
 
     set_bf_threshold = !set_bf_threshold;
 
-    auto &knnResult = knnCtx->result();
+    auto &knn_result = knn_ctx->result();
     // ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += cnt - 1 == knnResult[0].key();
+    topk1_hits += cnt - 1 == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(cnt - 1, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(cnt - 1, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * step * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * step * 1.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -2209,7 +2211,7 @@ TEST_F(HnswSparseStreamerTest, TestBruteForceSetupInContext) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1_recall, 0.95f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -2243,11 +2245,11 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
   auto ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = streamer->create_context();
-  ASSERT_TRUE(!!linearCtx);
+  auto linear_ctx = streamer->create_context();
+  ASSERT_TRUE(!!linear_ctx);
 
-  auto knnCtx = streamer->create_context();
-  ASSERT_TRUE(!!knnCtx);
+  auto knn_ctx = streamer->create_context();
+  ASSERT_TRUE(!!knn_ctx);
 
   std::vector<NumericalVector<uint32_t>> sparse_indices_list;
   std::vector<NumericalVector<float>> sparse_vec_list;
@@ -2265,15 +2267,15 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
 
   // streamer->print_debug_info();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
 
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
   size_t step = 100;
   for (size_t i = 0; i < cnt; i += step) {
@@ -2283,41 +2285,41 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
     auto t1 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0, streamer->search_impl(sparse_dim_count, sparse_indices.data(),
-                                       sparse_vec.data(), qmeta, knnCtx));
+                                       sparse_vec.data(), qmeta, knn_ctx));
 
     auto t2 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0,
               streamer->search_bf_impl(sparse_dim_count, sparse_indices.data(),
-                                       sparse_vec.data(), qmeta, linearCtx));
+                                       sparse_vec.data(), qmeta, linear_ctx));
 
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
     // std::cout << "i: " << i << std::endl;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * step * 1.0f / cnt;
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * step * 1.0f / cnt;
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -2326,7 +2328,7 @@ TEST_F(HnswSparseStreamerTest, TestQueryFilteringRatio) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
 }
 
@@ -2359,11 +2361,11 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
   auto ctx = streamer->create_context();
   ASSERT_TRUE(!!ctx);
 
-  auto linearCtx = streamer->create_context();
-  ASSERT_TRUE(!!linearCtx);
+  auto linear_ctx = streamer->create_context();
+  ASSERT_TRUE(!!linear_ctx);
 
-  auto knnCtx = streamer->create_context();
-  ASSERT_TRUE(!!knnCtx);
+  auto knn_ctx = streamer->create_context();
+  ASSERT_TRUE(!!knn_ctx);
 
   std::vector<NumericalVector<uint32_t>> sparse_indices_list;
   std::vector<NumericalVector<float>> sparse_vec_list;
@@ -2388,15 +2390,15 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
 
   // streamer->print_debug_info();
   size_t topk = 200;
-  linearCtx->set_topk(topk);
-  knnCtx->set_topk(topk);
+  linear_ctx->set_topk(topk);
+  knn_ctx->set_topk(topk);
 
-  [[maybe_unused]] uint64_t knnTotalTime = 0;
-  [[maybe_unused]] uint64_t linearTotalTime = 0;
+  [[maybe_unused]] uint64_t knn_total_time = 0;
+  [[maybe_unused]] uint64_t linear_total_time = 0;
 
-  int totalHits = 0;
-  int totalCnts = 0;
-  int topk1Hits = 0;
+  int total_hits = 0;
+  int total_cnts = 0;
+  int topk1_hits = 0;
 
   for (size_t i = 0; i < cnt / 100; i += 2) {
     const auto &sparse_indices = sparse_indices_list[i];
@@ -2405,34 +2407,34 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
     auto t1 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0, streamer->search_impl(sparse_dim_count, sparse_indices.data(),
-                                       sparse_vec.data(), qmeta, knnCtx));
+                                       sparse_vec.data(), qmeta, knn_ctx));
 
     auto t2 = ailego::Realtime::MicroSeconds();
 
     ASSERT_EQ(0,
               streamer->search_bf_impl(sparse_dim_count, sparse_indices.data(),
-                                       sparse_vec.data(), qmeta, linearCtx));
+                                       sparse_vec.data(), qmeta, linear_ctx));
 
     auto t3 = ailego::Realtime::MicroSeconds();
 
-    knnTotalTime += t2 - t1;
-    linearTotalTime += t3 - t2;
+    knn_total_time += t2 - t1;
+    linear_total_time += t3 - t2;
 
     // std::cout << "i: " << i << std::endl;
 
-    auto &knnResult = knnCtx->result();
-    ASSERT_EQ(topk, knnResult.size());
-    topk1Hits += i == knnResult[0].key();
+    auto &knn_result = knn_ctx->result();
+    ASSERT_EQ(topk, knn_result.size());
+    topk1_hits += i == knn_result[0].key();
 
-    auto &linearResult = linearCtx->result();
-    ASSERT_EQ(topk, linearResult.size());
-    ASSERT_EQ(i, linearResult[0].key());
+    auto &linear_result = linear_ctx->result();
+    ASSERT_EQ(topk, linear_result.size());
+    ASSERT_EQ(i, linear_result[0].key());
 
     for (size_t k = 0; k < topk; ++k) {
-      totalCnts++;
+      total_cnts++;
       for (size_t j = 0; j < topk; ++j) {
-        if (linearResult[j].key() == knnResult[k].key()) {
-          totalHits++;
+        if (linear_result[j].key() == knn_result[k].key()) {
+          total_hits++;
           break;
         }
       }
@@ -2449,27 +2451,26 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
                            &sparse_indices_buffer, &sparse_values_buffer));
           ASSERT_EQ(sparse_dim_count, sparse_count);
 
-          const auto &_sparse_indices = sparse_indices_list[result[j].index()];
-          const auto &_sparse_vec = sparse_vec_list[result[j].index()];
+          const auto &sparse_indices = sparse_indices_list[result[j].index()];
+          const auto &sparse_vec = sparse_vec_list[result[j].index()];
           std::string original_sparse_values_buffer;
-          original_sparse_values_buffer.resize(_sparse_vec.size() *
+          original_sparse_values_buffer.resize(sparse_vec.size() *
                                                sizeof(float));
           memcpy((char *)original_sparse_values_buffer.data(),
-                 (char *)_sparse_vec.data(),
-                 _sparse_vec.size() * sizeof(float));
+                 (char *)sparse_vec.data(), sparse_vec.size() * sizeof(float));
 
-          ASSERT_EQ(sparse_indices_buffer, _sparse_indices);
+          ASSERT_EQ(sparse_indices_buffer, sparse_indices);
 
           ASSERT_EQ(sparse_values_buffer, original_sparse_values_buffer);
         }
       };
 
-      func(linearResult);
-      func(knnResult);
+      func(linear_result);
+      func(knn_result);
     }
   }
-  float recall = totalHits * 1.0f / totalCnts;
-  float topk1Recall = topk1Hits * 100.0f / (float(cnt) / 100);
+  float recall = total_hits * 1.0f / total_cnts;
+  float topk1_recall = topk1_hits * 100.0f / (float(cnt) / 100);
   // float cost = linearTotalTime * 1.0f / knnTotalTime;
 #if 0
     printf("knnTotalTime=%zd linearTotalTime=%zd totalHits=%d totalCnts=%d "
@@ -2478,7 +2479,7 @@ TEST_F(HnswSparseStreamerTest, TestAddAndSearchWithID) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.80f);
-  EXPECT_GT(topk1Recall, 0.80f);
+  EXPECT_GT(topk1_recall, 0.80f);
   // EXPECT_GT(cost, 2.0f);
 }
 

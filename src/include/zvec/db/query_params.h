@@ -221,7 +221,7 @@ class ZVEC_API DiskAnnQueryParams : public QueryParams {
     set_list_size(list_size);
   }
 
-  virtual ~DiskAnnQueryParams() = default;
+  ~DiskAnnQueryParams() override = default;
 
   int list_size() const {
     return list_size_;

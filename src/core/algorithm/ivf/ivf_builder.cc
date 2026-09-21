@@ -402,9 +402,26 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     if (holder->count() > 0) {
       holder_->reserve(holder->count());
     }
-    for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-         iter->next()) {
-      holder_->emplace(iter->key(), iter->data());
+    auto iter = holder->create_iterator();
+    if (!iter) {
+      return IndexError_NoMemory;
+    }
+    for (; iter->is_valid(); iter->next()) {
+      const uint64_t key = iter->key();
+      if (iter->status() != 0) {
+        return iter->status();
+      }
+      const void *data = iter->data();
+      if (iter->status() != 0) {
+        return iter->status();
+      }
+      if (!data) {
+        return IndexError_ReadData;
+      }
+      holder_->emplace(key, data);
+    }
+    if (iter->status() != 0) {
+      return iter->status();
     }
     converted_holder = holder_;
   }
@@ -479,7 +496,7 @@ int IVFBuilder::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-int IVFBuilder::CheckAndUpdateMajorOrder(IndexMeta &meta) {
+int IVFBuilder::check_and_update_major_order(IndexMeta &meta) {
   const std::string &metric_name = meta.metric_name();
   auto metric = IndexFactory::CreateMetric(metric_name);
   if (!metric) {
@@ -683,6 +700,9 @@ int IVFBuilder::build_label_index(IndexThreads *threads,
       return IndexError_Mismatch;
     }
     const void *data = iter->data();
+    if (iter->status() != 0) {
+      return iter->status();
+    }
     if (!data) {
       return IndexError_Runtime;
     }
@@ -705,6 +725,9 @@ int IVFBuilder::build_label_index(IndexThreads *threads,
     if (!(id & 0xFFFFF)) {
       LOG_INFO("Current built count:%zu", id);
     }
+  }
+  if (iter && iter->status() != 0) {
+    return iter->status();
   }
   if (id != holder->count()) {
     return IndexError_Mismatch;
@@ -729,7 +752,7 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
       source_reader_->reset();
     }
   });
-  int ret = CheckAndUpdateMajorOrder(quantized_meta_);
+  int ret = check_and_update_major_order(quantized_meta_);
   ivf_check_error_code(ret);
 
   IVFDumper::Pointer ivf_dumper = std::make_shared<IVFDumper>(
@@ -777,10 +800,22 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
       auto iter = quantizer->result()->create_iterator();
       for (; iter->is_valid(); iter->next()) {
         uint32_t id = iter->key();
+        if (iter->status() != 0) {
+          return iter->status();
+        }
+        const void *data = iter->data();
+        if (iter->status() != 0) {
+          return iter->status();
+        }
+        if (!data) {
+          return IndexError_ReadData;
+        }
         record_dumped_id(id);
-        ret =
-            ivf_dumper->dump_inverted_vector(i, holder_->key(id), iter->data());
+        ret = ivf_dumper->dump_inverted_vector(i, holder_->key(id), data);
         ivf_check_error_code(ret);
+      }
+      if (iter->status() != 0) {
+        return iter->status();
       }
     }
   }

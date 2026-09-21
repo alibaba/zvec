@@ -76,6 +76,18 @@ class Preprocessor {
   //! \p stride byte offset between consecutive vectors (0 => packed).
   virtual void train(const void *data, size_t num, size_t stride) = 0;
 
+  //! Two-input training: \p ctx is an opaque, implementation-specific second
+  //! input.  For OpqRotator it is the reconstruction matrix x_hat (num x
+  //! out_dim floats, packed) produced by the caller's current codebook, and
+  //! \p data is the original-space training batch; preprocessors that train
+  //! from \p data alone (or not at all) ignore \p ctx.
+  //! \p data  pointer to the first element of the batch.
+  //! \p ctx   opaque second input, see above.
+  //! \p num   number of vectors in the batch.
+  //! \p stride byte offset between consecutive \p data vectors (0 => packed).
+  virtual void train(const void *data, void *ctx, size_t num,
+                     size_t stride) = 0;
+
   //! Serialize the preprocessor into a self-contained blob
   //! (RotatorSerHeader + payload).
   virtual int serialize(std::string *out) const = 0;

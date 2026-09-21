@@ -99,6 +99,9 @@
 // Struct definitions (copied verbatim from <linux/io_uring.h>)
 // ---------------------------------------------------------------------------
 
+// NOLINTBEGIN(readability-identifier-naming): types below are copied verbatim
+// from the Linux kernel ABI (<linux/io_uring.h>) and must keep their names.
+
 // Submission queue entry — 64 bytes.
 struct io_uring_sqe {
   uint8_t opcode;   // type of operation for this sqe
@@ -218,5 +221,7 @@ static inline void io_uring_prep_write(struct io_uring_sqe *sqe, int fd,
 // ---------------------------------------------------------------------------
 // End: struct and constant definitions from <linux/io_uring.h>
 // ---------------------------------------------------------------------------
+
+// NOLINTEND(readability-identifier-naming)
 
 #endif  // __linux__

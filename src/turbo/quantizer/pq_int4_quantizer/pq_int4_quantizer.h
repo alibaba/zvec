@@ -21,6 +21,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 // Rooted at src/ so this header stays includable from core (ivf_entity).
+#include <turbo/quantizer/common/pq_quantizer/pq_opq.h>
 #include <turbo/quantizer/common/pq_quantizer/precompute_table_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 
@@ -135,10 +136,23 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! Train a single sub-quantizer (KMeans, k=16) on the sub-vectors.
   //! Templated on the data type T (float or ailego::Float16) so that
   //! NumericalKmeans<T> operates natively in the input precision.
-  //! sub_idx selects which sub-quantizer to train.
+  //! sub_idx selects which sub-quantizer to train, max_iters caps the Lloyd
+  //! iterations (the OPQ loop trains with a smaller cap per round).
   template <typename T>
   void train_subquantizer(const T *data, size_t num, size_t stride,
-                          size_t sub_idx);
+                          size_t sub_idx, uint32_t max_iters);
+
+  //! Train every sub-quantizer of \p data in parallel.
+  //! This is OPQ step 2: fix the rotation matrix, train the codebook.
+  void train_all_chunks(const void *data, size_t num, size_t stride,
+                        uint32_t max_iters);
+
+  //! Encode \p rotated with the current codebook and write the reconstruction
+  //! back into \p x_hat (num * original_dim floats, rotated space).  Returns
+  //! the mean squared reconstruction error per vector.  fp32-only, used by the
+  //! OPQ loop to feed the preprocessor's two-input train().
+  float encode_reconstruct_batch(const float *rotated, size_t num,
+                                 float *x_hat) const;
 
   //! L2-normalize a batch of vectors in-place (train-time use).
   template <typename T>
@@ -264,6 +278,9 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! MetricType::kInnerProduct.  Independent of the configured metric;
   //! returns -<a, b> per element.
   BatchDistanceFunc ip_batch_fn_{};
+
+  //! Shared OPQ training, rotation and persistence.
+  PqOpq opq_;
 };
 
 }  // namespace turbo

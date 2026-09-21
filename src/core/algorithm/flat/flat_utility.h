@@ -81,10 +81,10 @@ static inline void ReverseTranspose(size_t align_size, const void *src,
 }
 
 template <typename T>
-static inline void TransposeOne(const void *src, size_t M, size_t N,
+static inline void TransposeOne(const void *src, size_t m, size_t n,
                                 void *dst) {
-  for (size_t i = 0; i < N; ++i) {
-    reinterpret_cast<T *>(dst)[i] = reinterpret_cast<const T *>(src)[i * M];
+  for (size_t i = 0; i < n; ++i) {
+    reinterpret_cast<T *>(dst)[i] = reinterpret_cast<const T *>(src)[i * m];
   }
 }
 

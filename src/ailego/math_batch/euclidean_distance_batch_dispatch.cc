@@ -19,7 +19,7 @@
 #include <zvec/ailego/utility/type_helper.h>
 #include "euclidean_distance_batch.h"
 
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 #if defined(__AVX512FP16__)
 void compute_one_to_many_squared_euclidean_avx512fp16_fp16_1(
@@ -188,4 +188,4 @@ void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 12>::
 //                                                     dim, sums);
 // }
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch
