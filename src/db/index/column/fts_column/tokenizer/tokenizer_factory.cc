@@ -16,6 +16,7 @@
 #include <zvec/ailego/encoding/json/mod_json_plus.h>
 #include <zvec/ailego/logger/logger.h>
 #include "ascii_folding_token_filter.h"
+#include "code_tokenizer.h"
 #include "jieba_tokenizer.h"
 #include "ngram_tokenizer.h"
 #include "standard_tokenizer.h"
@@ -81,6 +82,8 @@ Status TokenizerFactory::create_tokenizer(const std::string &tokenizer_name,
                                           TokenizerPtr *tokenizer) {
   if (tokenizer_name.empty() || tokenizer_name == "standard") {
     *tokenizer = std::make_shared<StandardTokenizer>();
+  } else if (tokenizer_name == "code") {
+    *tokenizer = std::make_shared<CodeTokenizer>();
   } else if (tokenizer_name == "ngram") {
     *tokenizer = std::make_shared<NGramTokenizer>();
   } else if (tokenizer_name == "jieba") {
