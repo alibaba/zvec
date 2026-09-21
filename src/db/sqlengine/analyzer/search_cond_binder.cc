@@ -129,10 +129,13 @@ Status SearchCondBinder::bind(QueryInfo *query_info) {
     return status;
   }
   if (filter_count_ > kMaxNumOfFilters) {
-    return Status::NotSupported("max number of filters is limited to 4096");
+    return Status::NotSupported(
+        "too many filter conditions: ", std::to_string(filter_count_),
+        "; the maximum is ", std::to_string(kMaxNumOfFilters));
   }
   if (vector_rel_ != nullptr && vector_rel_->or_ancestor()) {
-    return Status::InvalidArgument("vector condition must NOT be OR ancestor.");
+    return Status::InvalidArgument(
+        "vector search condition cannot appear within an OR expression");
   }
 
   // Check which invert candidates form an executable subtree before changing

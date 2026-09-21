@@ -968,7 +968,8 @@ TEST(SearchCondPipelineTest, FinalFilterLimitAppliesAfterRewrite) {
   unmerged_info.set_search_cond(unmerged);
   auto status = second_binder.bind(&unmerged_info);
   EXPECT_FALSE(status.ok());
-  EXPECT_NE(status.message().find("4096"), std::string::npos);
+  EXPECT_EQ(status.message(),
+            "too many filter conditions: 4097; the maximum is 4096");
 }
 
 TEST_F(ContainRewriteTest, PrunedBranchStillValidatesFunctionAndOperator) {
@@ -1181,8 +1182,8 @@ TEST(SearchCondPipelineTest, VectorAndInvertLeaveNoEmptyForwardFilter) {
   root->set_op(QueryNodeOp::Q_OR);
   auto invalid_status = binder.bind(&info);
   EXPECT_FALSE(invalid_status.ok());
-  EXPECT_NE(invalid_status.message().find("vector condition must NOT be OR"),
-            std::string::npos);
+  EXPECT_EQ(invalid_status.message(),
+            "vector search condition cannot appear within an OR expression");
   EXPECT_EQ(number->right()->text(), "1");
   EXPECT_EQ(number->rel_type(), QueryRelNode::RelType::NO_TYPE);
   root->set_op(QueryNodeOp::Q_AND);
