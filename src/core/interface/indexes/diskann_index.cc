@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <ailego/pattern/defer.h>
 #include <zvec/core/interface/index.h>
 #if DISKANN_SUPPORTED
 #include "algorithm/diskann/diskann_params.h"
@@ -199,8 +200,8 @@ int DiskAnnIndex::generate_holder() {
 }
 
 int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
-  if (is_trained_) {
-    LOG_ERROR("this diskann index is trained");
+  if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
+    LOG_ERROR("this diskann index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
@@ -214,61 +215,89 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (doc_cache_.size() <= doc_id) {
-    std::string fake_data(
-        input_vector_meta_.dimension() * input_vector_meta_.unit_size(), 0);
-    doc_cache_.resize(doc_id + 1, std::make_pair(kInvalidKey, fake_data));
+    doc_cache_.resize(doc_id + 1, std::make_pair(kInvalidKey, std::string{}));
   }
-  doc_cache_[doc_id] = std::make_pair(doc_id, out_vector_buffer);
+  doc_cache_[doc_id] = std::make_pair(doc_id, std::move(out_vector_buffer));
   return 0;
 }
 
 int DiskAnnIndex::train() {
-  int ret = generate_holder();
-  if (ret != 0) {
-    LOG_ERROR("Failed to generate holder, err: %s",
-              core::IndexError::What(ret));
-    return ret;
+  if (is_trained_) return 0;
+  if (build_stage_ == BuildStage::kCollecting) {
+    int ret = reset_builder();
+    if (ret != 0) return ret;
+    ret = generate_holder();
+    if (ret != 0) return ret;
+    ret = builder_->train(holder_);
+    if (ret != 0) return ret;
+    build_stage_ = BuildStage::kTrained;
   }
-  ret = builder_->train(holder_);
-  if (ret != 0) {
-    LOG_ERROR("Failed to train builder, err: %s", core::IndexError::What(ret));
-    return ret;
+  if (build_stage_ == BuildStage::kTrained) {
+    int ret = builder_->build(holder_);
+    if (ret != 0) {
+      // A partial graph cannot be resumed. Recreate it on the next attempt
+      // from the retained input cache.
+      build_stage_ = BuildStage::kCollecting;
+      return ret;
+    }
+    build_stage_ = BuildStage::kBuilt;
   }
-  ret = builder_->build(holder_);
-  if (ret != 0) {
-    LOG_ERROR("Failed to build index, err: %s", core::IndexError::What(ret));
-    return ret;
-  }
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
-  if (dumper == nullptr) {
-    LOG_ERROR("Failed to create FileDumper");
-    return core::IndexError_Runtime;
-  }
+  return dump_and_open();
+}
 
-  ret = dumper->create(file_path_);
-  if (ret != 0) {
-    LOG_ERROR("Failed to create dumper, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
+int DiskAnnIndex::reset_builder() {
+  auto next = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
+  if (!next) return core::IndexError_NoExist;
+  int ret = next->init(converter_ ? converter_->meta() : proxima_index_meta_,
+                       proxima_index_params_);
+  if (ret != 0) return ret;
+  builder_ = std::move(next);
+  return 0;
+}
+
+int DiskAnnIndex::dump_and_open() {
+  if (build_stage_ == BuildStage::kBuilt) {
+    auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+    if (!dumper) return core::IndexError_NoExist;
+    int ret = dumper->create(file_path_);
+    if (ret != 0) return ret;
+    AILEGO_DEFER([&]() {
+      if (dumper) dumper->close();
+    });
+    ret = builder_->dump(dumper);
+    if (ret != 0) return ret;
+    if (converter_) {
+      ret = converter_->dump(dumper);
+      if (ret != 0) return ret;
+    }
+    ret = dumper->close();
+    if (ret != 0) return ret;
+    dumper.reset();
+    ret = reset_builder();
+    if (ret != 0) return ret;
+    build_stage_ = BuildStage::kDumped;
+  } else if (build_stage_ != BuildStage::kDumped) {
+    return core::IndexError_NoReady;
   }
-  ret = builder_->dump(dumper);
-  if (ret != 0) {
-    LOG_ERROR("Failed to dump index, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
-  }
-  dumper->close();
-  ret = storage_->open(file_path_, false);
-  if (ret != 0) {
-    LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
-  }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
+  AILEGO_DEFER([&]() {
+    if (!is_trained_) {
+      if (streamer_) streamer_->close();
+      storage_->close();
+    }
+  });
+  int ret = storage_->open(file_path_, false);
+  if (ret != 0) return ret;
+  if (!streamer_) return core::IndexError_NoReady;
+  ret = streamer_->open(storage_);
+  if (ret != 0) return ret;
+  if (reformer_) {
+    ret = reformer_->load(storage_);
+    if (ret != 0) return ret;
   }
   is_trained_ = true;
+  converter_.reset();
+  holder_.reset();
+  decltype(doc_cache_)().swap(doc_cache_);
   return 0;
 }
 
@@ -277,6 +306,10 @@ int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
   if (is_trained_) {
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (doc_id >= doc_cache_.size()) return core::IndexError_OutOfRange;
+    if (doc_cache_[doc_id].first == kInvalidKey)
+      return core::IndexError_NoExist;
     DenseVectorBuffer dense_vector_buffer;
     std::string &out_vector_buffer = dense_vector_buffer.data;
     out_vector_buffer = doc_cache_[doc_id].second;
@@ -328,34 +361,16 @@ int DiskAnnIndex::_prepare_for_search(
 int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
                         const IndexFilter &filter,
                         const MergeOptions &options) {
-  int pre_ret = Index::merge(indexes, filter, options);
-  if (pre_ret != 0) {
-    return pre_ret;
-  }
-  auto dumper = core::IndexFactory::CreateDumper("FileDumper");
-
-  dumper->create(file_path_);
-  int ret = builder_->dump(dumper);
-  if (ret != 0) {
-    LOG_ERROR("Failed to dump index, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
-  }
-
-  dumper->close();
-
-  ret = storage_->open(file_path_, false);
-  if (ret != 0) {
-    LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
-              core::IndexError::What(ret));
-    return core::IndexError_Runtime;
-  }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  is_trained_ = true;
-  return 0;
+  if (indexes.empty()) return 0;
+  if (is_trained_) return core::IndexError_Unsupported;
+  int ret = reset_builder();
+  if (ret != 0) return ret;
+  build_stage_ = BuildStage::kCollecting;
+  ret = Index::merge(indexes, filter, options);
+  if (ret != 0) return ret;
+  build_stage_ = BuildStage::kBuilt;
+  is_trained_ = false;
+  return dump_and_open();
 }
 
 #endif  // DISKANN_SUPPORTED
