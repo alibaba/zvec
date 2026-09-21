@@ -2263,22 +2263,27 @@ TEST_F(BufferPoolTest, BackgroundReclaimsAtPageAdmissionLimit) {
     ASSERT_EQ(page, table.set_block_acquired(0, page, 0));
     EXPECT_FALSE(memory_pool.is_full());
     EXPECT_TRUE(memory_pool.is_page_full());
+    const uint64_t bg_evicted_before = memory_pool.stats().bg_evicted_buffers;
     table.release_block(0);
 
     // Only the background worker can release this page: no foreground
     // recycle or allocation retry is performed by the test.
     EXPECT_TRUE(memory_pool.wait_for_available(kVectorPageSize,
                                                std::chrono::seconds(2)));
-    // Releasing capacity wakes waiters before the worker updates its batch
-    // counters. Wait for that publication, not for a particular elapsed time.
+    // Capacity is released before the page and batch counters are updated.
+    // The pool's counters survive init(), so earlier tests may already have
+    // evicted pages. Wait for this page and a new background eviction instead
+    // of treating a nonzero process-wide counter as this batch's completion.
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (memory_pool.stats().bg_evicted_buffers == 0 &&
+    while ((table.stats().evict == 0 ||
+            memory_pool.stats().bg_evicted_buffers <= bg_evicted_before) &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::yield();
     }
-    EXPECT_GT(table.stats().evict, 0u);
-    EXPECT_GT(memory_pool.stats().bg_evicted_buffers, 0u);
+    EXPECT_EQ(1u, table.stats().evict);
+    EXPECT_GT(memory_pool.stats().bg_evicted_buffers, bg_evicted_before);
+    EXPECT_FALSE(table.is_loaded(0));
     EXPECT_LE(memory_pool.used(), kCapacity);
     EXPECT_LE(memory_pool.committed(), kCapacity);
     table.force_evict_all_loaded();
