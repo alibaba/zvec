@@ -1002,6 +1002,126 @@ TEST_F(BufferPoolTest, PageAdmissionLeavesRoomForExternalCache) {
   EXPECT_EQ(0u, memory_pool.used());
 }
 
+TEST_F(BufferPoolTest, PageCapacityWaitHonorsAdmissionReserve) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
+  ASSERT_EQ(0, memory_pool.init(kCapacity));
+  const size_t reserve = memory_pool.page_admission_reserve();
+  ASSERT_GT(reserve, kVectorPageSize);
+
+  // Logical metadata accounting reproduces a full page budget without
+  // allocating hundreds of MiB. The reserved headroom is not page capacity.
+  const size_t charged_metadata = kCapacity - reserve;
+  ASSERT_TRUE(memory_pool.try_charge_metadata(charged_metadata));
+  EXPECT_FALSE(memory_pool.is_full());
+  char *page = nullptr;
+  EXPECT_FALSE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+  EXPECT_FALSE(memory_pool.wait_for_available(kVectorPageSize,
+                                              std::chrono::milliseconds(0)));
+  // Non-page consumers may still use that reserved headroom.
+  EXPECT_TRUE(memory_pool.wait_for_available(1, std::chrono::milliseconds(0)));
+
+  memory_pool.release_metadata(kVectorPageSize);
+  EXPECT_TRUE(memory_pool.wait_for_available(kVectorPageSize,
+                                             std::chrono::milliseconds(0)));
+  EXPECT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+  if (page != nullptr) {
+    memory_pool.release_buffer(page, kVectorPageSize);
+  }
+  memory_pool.release_metadata(charged_metadata - kVectorPageSize);
+  EXPECT_EQ(0u, memory_pool.used());
+}
+
+TEST_F(BufferPoolTest, WritableMissRechecksCapacityAfterLastWait) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  init_vec_pool(/*capacity_pages=*/1, /*file_pages=*/1, /*writable=*/true);
+  std::string file = new_file(/*num_pages=*/1);
+  std::vector<char> payload(kVectorPageSize, '\x5a');
+  {
+    VecBufferPool pool(file, /*writable=*/true);
+    ASSERT_EQ(0, pool.init());
+    char *held = nullptr;
+    ASSERT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, held));
+    ASSERT_NE(nullptr, held);
+    const uint64_t initial_waits = memory_pool.stats().capacity_waits;
+    std::atomic<bool> observed_wait{false};
+    std::thread releaser([&] {
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (memory_pool.stats().capacity_waits == initial_waits &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+      }
+      observed_wait.store(memory_pool.stats().capacity_waits != initial_waits);
+      // Release only after the foreground's final allowed capacity wait has
+      // begun. It must attempt admission again before reporting failure.
+      memory_pool.release_buffer(held, kVectorPageSize);
+    });
+    char *page = pool.acquire_buffer(/*page_id=*/0, /*retry=*/1);
+    releaser.join();
+    EXPECT_TRUE(observed_wait.load());
+    EXPECT_NE(nullptr, page);
+    if (page != nullptr) {
+      ExpectPageContent(page, /*page_id=*/0);
+      pool.page_table_.release_block(/*block_id=*/0);
+    }
+    EXPECT_EQ(0, pool.write_range(0, payload.size(), payload.data()));
+    EXPECT_EQ(0, pool.flush_all());
+    EXPECT_LE(memory_pool.used(), memory_pool.capacity());
+    EXPECT_LE(memory_pool.committed(), memory_pool.capacity());
+  }
+  EXPECT_EQ(0u, memory_pool.used());
+
+  FILE *input = std::fopen(file.c_str(), "rb");
+  ASSERT_NE(nullptr, input);
+  std::vector<char> actual(kVectorPageSize);
+  EXPECT_EQ(actual.size(), std::fread(actual.data(), 1, actual.size(), input));
+  std::fclose(input);
+  EXPECT_EQ(payload, actual);
+}
+
+TEST_F(BufferPoolTest, PageCapacityWaitTracksExternalReservation) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
+  ASSERT_EQ(0, memory_pool.init(kCapacity));
+  const size_t reserve = memory_pool.page_admission_reserve();
+  const size_t charged_metadata = kCapacity - reserve - kVectorPageSize;
+  ASSERT_TRUE(memory_pool.try_charge_metadata(charged_metadata));
+  ASSERT_TRUE(memory_pool.try_charge_external(reserve));
+
+  // External use consumes its own reservation: it must not be subtracted a
+  // second time when testing whether the remaining page can be admitted.
+  EXPECT_TRUE(memory_pool.wait_for_available(kVectorPageSize,
+                                             std::chrono::milliseconds(0)));
+  char *page = nullptr;
+  ASSERT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+  EXPECT_FALSE(memory_pool.wait_for_available(kVectorPageSize,
+                                              std::chrono::milliseconds(0)));
+  EXPECT_EQ(kCapacity, memory_pool.used());
+  EXPECT_LE(memory_pool.committed(), kCapacity);
+
+  // Releasing external use below its reserved amount restores protected
+  // headroom, not additional page capacity.
+  memory_pool.release_external(reserve / 2);
+  EXPECT_FALSE(memory_pool.wait_for_available(kVectorPageSize,
+                                              std::chrono::milliseconds(0)));
+  memory_pool.release_external(reserve - reserve / 2);
+  EXPECT_FALSE(memory_pool.wait_for_available(kVectorPageSize,
+                                              std::chrono::milliseconds(0)));
+
+  memory_pool.release_buffer(page, kVectorPageSize);
+  EXPECT_TRUE(memory_pool.wait_for_available(kVectorPageSize,
+                                             std::chrono::milliseconds(0)));
+  EXPECT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+  if (page != nullptr) {
+    memory_pool.release_buffer(page, kVectorPageSize);
+  }
+  EXPECT_LE(memory_pool.used(), kCapacity);
+  EXPECT_LE(memory_pool.committed(), kCapacity);
+  memory_pool.release_metadata(charged_metadata);
+  EXPECT_EQ(0u, memory_pool.used());
+}
+
 TEST_F(BufferPoolTest, ReadOnlyMissEvictsAtPageAdmissionLimit) {
   auto &memory_pool = MemoryLimitPool::get_instance();
   constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
@@ -2114,6 +2234,57 @@ TEST_F(BufferPoolTest, BackgroundReclaimsToLowWatermark) {
   }
   EXPECT_LE(mp.stats().page_used, low + kVectorPageSize);
   EXPECT_GT(mp.stats().bg_evicted_buffers, 0u);
+}
+
+TEST_F(BufferPoolTest, BackgroundReclaimsAtPageAdmissionLimit) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
+  ASSERT_EQ(0, memory_pool.init(kCapacity));
+  const size_t reserve = memory_pool.page_admission_reserve();
+  const size_t table_metadata =
+      VectorPageTable::metadata_bytes_for_entries(/*entry_num=*/1);
+  const size_t charged_metadata =
+      kCapacity - reserve - table_metadata - kVectorPageSize;
+  ASSERT_TRUE(memory_pool.try_charge_metadata(charged_metadata));
+  {
+    VectorPageTable table;
+    ASSERT_TRUE(table.init(/*entry_num=*/1));
+    // Model stale registrations from an earlier file without allocating a
+    // large resident set. A single bounded reclaim batch cannot reach the
+    // live page, so background reclaim must continue across batches.
+    auto &queue = BlockEvictionQueue::get_instance();
+    BlockEvictionQueue::BlockType stale;
+    stale.owner = nullptr;
+    for (size_t i = 0; i < 300; ++i) {
+      ASSERT_TRUE(queue.add_single_block(stale, 0));
+    }
+    char *page = nullptr;
+    ASSERT_TRUE(memory_pool.try_acquire_buffer(kVectorPageSize, page));
+    ASSERT_EQ(page, table.set_block_acquired(0, page, 0));
+    EXPECT_FALSE(memory_pool.is_full());
+    EXPECT_TRUE(memory_pool.is_page_full());
+    table.release_block(0);
+
+    // Only the background worker can release this page: no foreground
+    // recycle or allocation retry is performed by the test.
+    EXPECT_TRUE(memory_pool.wait_for_available(kVectorPageSize,
+                                               std::chrono::seconds(2)));
+    // Releasing capacity wakes waiters before the worker updates its batch
+    // counters. Wait for that publication, not for a particular elapsed time.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (memory_pool.stats().bg_evicted_buffers == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::yield();
+    }
+    EXPECT_GT(table.stats().evict, 0u);
+    EXPECT_GT(memory_pool.stats().bg_evicted_buffers, 0u);
+    EXPECT_LE(memory_pool.used(), kCapacity);
+    EXPECT_LE(memory_pool.committed(), kCapacity);
+    table.force_evict_all_loaded();
+  }
+  memory_pool.release_metadata(charged_metadata);
+  EXPECT_EQ(0u, memory_pool.used());
 }
 
 TEST_F(BufferPoolTest, BackgroundBacksOffWhenAllPagesArePinned) {

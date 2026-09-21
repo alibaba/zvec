@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -24,9 +25,12 @@
 #include <gtest/gtest.h>
 #include <parquet/arrow/writer.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/external_cache.h>
 #include "db/index/storage/bufferpool_forward_store.h"
-#include "db/index/storage/lazy_record_batch_reader.h"
+#define private public
 #include "db/index/storage/parquet_buffer_pool.h"
+#undef private
+#include "db/index/storage/lazy_record_batch_reader.h"
 #include "utils/utils.h"
 
 using namespace zvec;
@@ -719,4 +723,180 @@ TEST_F(BufferPoolScanBudgetTest, FallbackPreservesRepeatedReorderedColumns) {
   EXPECT_EQ(5, batches);
   EXPECT_TRUE(reader->ReadNext(&batch).ok());
   EXPECT_EQ(nullptr, batch);
+}
+
+class BufferPoolScalarFetchTest : public testing::Test {
+ protected:
+  static constexpr int64_t kRowsPerGroup = 2048;
+  static constexpr int64_t kRows = 2 * kRowsPerGroup;
+
+  static std::string text_for_row(int64_t row) {
+    if (row % kRowsPerGroup == 7) return "";
+    if (row % kRowsPerGroup == 8) return std::string("embedded\0nul", 12);
+    return "row-" + std::to_string(row) + std::string(64, 'x');
+  }
+
+  void SetUp() override {
+    auto &pool = ailego::MemoryLimitPool::get_instance();
+    previous_capacity_ = pool.capacity();
+    ailego::BlockEvictionQueue::get_instance().batch_recycle(1024);
+    ASSERT_EQ(0u, pool.used());
+    ASSERT_EQ(0, pool.init(8 * 1024UL * 1024UL));
+
+    arrow::Int64Builder ids;
+    arrow::Int64Builder nullable_values;
+    arrow::StringBuilder names;
+    for (int64_t row = 0; row < kRows; ++row) {
+      ASSERT_TRUE(ids.Append(row).ok());
+      ASSERT_TRUE((row % kRowsPerGroup == 4
+                       ? nullable_values.AppendNull()
+                       : nullable_values.Append(row * 3 + 7))
+                      .ok());
+      ASSERT_TRUE((row % kRowsPerGroup == 3 ? names.AppendNull()
+                                            : names.Append(text_for_row(row)))
+                      .ok());
+    }
+    std::shared_ptr<arrow::Array> id_array, value_array, name_array;
+    ASSERT_TRUE(ids.Finish(&id_array).ok());
+    ASSERT_TRUE(nullable_values.Finish(&value_array).ok());
+    ASSERT_TRUE(names.Finish(&name_array).ok());
+    auto schema = arrow::schema({arrow::field("id", arrow::int64()),
+                                 arrow::field("value", arrow::int64()),
+                                 arrow::field("name", arrow::utf8())});
+    auto table =
+        arrow::Table::Make(schema, {id_array, value_array, name_array});
+    auto output = arrow::io::FileOutputStream::Open(parquet_path_);
+    ASSERT_TRUE(output.ok()) << output.status().ToString();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
+                                           *output, kRowsPerGroup)
+                    .ok());
+    ASSERT_TRUE((*output)->Close().ok());
+  }
+
+  void TearDown() override {
+    auto &pool = ailego::MemoryLimitPool::get_instance();
+    ailego::BlockEvictionQueue::get_instance().batch_recycle(1024);
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(previous_capacity_));
+    std::error_code error;
+    std::filesystem::remove(parquet_path_, error);
+    EXPECT_FALSE(error) << error.message();
+  }
+
+  void warm_and_rechunk(int column, int row_group) {
+    auto &cache = ParquetBufferPool::get_instance().cache_;
+    ParquetBufferID key(parquet_path_, column, row_group);
+    auto data = cache.acquire(key);
+    ASSERT_NE(nullptr, data);
+    ParquetBufferContextHandle pin(key, data);
+    ASSERT_EQ(kRowsPerGroup, data->length());
+    // Parquet may decode a small column as one chunk. Repartition its cached
+    // view without copying or changing its buffers/accounting so every test
+    // deterministically exercises chunk boundaries, including empty chunks.
+    arrow::ArrayVector chunks;
+    int64_t start = 0;
+    for (int64_t end : std::array<int64_t, 5>{0, 1, 3, 7, kRowsPerGroup}) {
+      auto slice = data->Slice(start, end - start);
+      chunks.insert(chunks.end(), slice->chunks().begin(),
+                    slice->chunks().end());
+      start = end;
+    }
+    *data = arrow::ChunkedArray(std::move(chunks), data->type());
+    ASSERT_GT(data->num_chunks(), 1);
+  }
+
+  void check_row(const ExecBatchPtr &batch, int64_t row) {
+    ASSERT_NE(nullptr, batch);
+    ASSERT_EQ(1, batch->length);
+    ASSERT_EQ(3u, batch->values.size());
+    auto id = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        batch->values[0].scalar());
+    auto value = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+        batch->values[1].scalar());
+    auto name = std::dynamic_pointer_cast<arrow::StringScalar>(
+        batch->values[2].scalar());
+    ASSERT_NE(nullptr, id);
+    ASSERT_NE(nullptr, value);
+    ASSERT_NE(nullptr, name);
+    EXPECT_TRUE(id->is_valid);
+    EXPECT_EQ(row, id->value);
+    EXPECT_EQ(row % kRowsPerGroup != 4, value->is_valid);
+    if (value->is_valid) EXPECT_EQ(row * 3 + 7, value->value);
+    EXPECT_EQ(row % kRowsPerGroup != 3, name->is_valid);
+    if (name->is_valid) {
+      ASSERT_NE(nullptr, name->value);
+      EXPECT_EQ(text_for_row(row), name->value->ToString());
+    }
+  }
+
+  std::string parquet_path_{"bufferpool_scalar_fetch_test.parquet"};
+  size_t previous_capacity_{0};
+};
+
+TEST_F(BufferPoolScalarFetchTest, ResolvesChunkAndRowGroupBoundaries) {
+  BufferPoolForwardStore store(parquet_path_);
+  ASSERT_TRUE(store.open().ok());
+  for (int group = 0; group < 2; ++group) {
+    for (int column = 0; column < 3; ++column) {
+      ASSERT_NO_FATAL_FAILURE(warm_and_rechunk(column, group));
+    }
+    for (int local : {0, 1, 2, 3, 4, 6, 7, 8, 2047}) {
+      const int row = static_cast<int>(group * kRowsPerGroup + local);
+      ASSERT_NO_FATAL_FAILURE(
+          check_row(store.fetch({"id", "value", "name"}, row), row));
+    }
+  }
+}
+
+TEST_F(BufferPoolScalarFetchTest, WarmFetchDoesNotAllocateAWholeColumn) {
+  BufferPoolForwardStore store(parquet_path_);
+  ASSERT_TRUE(store.open().ok());
+  for (int column = 0; column < 3; ++column) {
+    ASSERT_NO_FATAL_FAILURE(warm_and_rechunk(column, /*row_group=*/1));
+  }
+  auto *arrow_pool = arrow::default_memory_pool();
+  const int64_t allocated_before = arrow_pool->total_bytes_allocated();
+  auto batch =
+      store.fetch({"id", "value", "name"}, static_cast<int>(kRowsPerGroup + 8));
+  const int64_t allocated =
+      arrow_pool->total_bytes_allocated() - allocated_before;
+  ASSERT_NO_FATAL_FAILURE(check_row(batch, kRowsPerGroup + 8));
+  // This cumulative counter detects transient concatenation allocations even
+  // after those buffers are freed. A numeric column alone is over 16 KiB.
+  EXPECT_LT(allocated, 1024);
+}
+
+TEST_F(BufferPoolScalarFetchTest, ReturnedScalarsSurviveCacheEviction) {
+  BufferPoolForwardStore store(parquet_path_);
+  ASSERT_TRUE(store.open().ok());
+  std::vector<ExecBatchPtr> retained;
+  for (int row : {3, 4, 7, 8, 2049}) {
+    auto batch = store.fetch({"id", "value", "name"}, row);
+    ASSERT_NO_FATAL_FAILURE(check_row(batch, row));
+    retained.push_back(std::move(batch));
+  }
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  ASSERT_GT(pool.external_used(), 0u);
+  EXPECT_GT(ailego::BlockEvictionQueue::get_instance().batch_recycle(1024), 0u);
+  EXPECT_EQ(0u, pool.external_used());
+  size_t index = 0;
+  for (int row : {3, 4, 7, 8, 2049}) {
+    ASSERT_NO_FATAL_FAILURE(check_row(retained[index++], row));
+  }
+}
+
+TEST_F(BufferPoolScalarFetchTest, InvalidCachedColumnReturnsNull) {
+  BufferPoolForwardStore store(parquet_path_);
+  ASSERT_TRUE(store.open().ok());
+  ParquetBufferID key(parquet_path_, /*column=*/0, /*row_group=*/0);
+  auto data = ParquetBufferPool::get_instance().cache_.acquire(key);
+  ASSERT_NE(nullptr, data);
+  ParquetBufferContextHandle pin(key, data);
+  auto original = data->Slice(0, data->length());
+  *data = arrow::ChunkedArray(arrow::ArrayVector{}, data->type());
+  EXPECT_EQ(nullptr, store.fetch({"id"}, 3));
+  // The row is valid in file metadata but outside this damaged cached view.
+  *data =
+      arrow::ChunkedArray(original->Slice(0, 1)->chunks(), original->type());
+  EXPECT_EQ(nullptr, store.fetch({"id"}, 3));
 }

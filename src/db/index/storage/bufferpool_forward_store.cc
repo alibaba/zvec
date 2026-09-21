@@ -331,25 +331,15 @@ ExecBatchPtr BufferPoolForwardStore::fetch(
       return nullptr;
     }
 
-    if (col_chunked_array->num_chunks() == 0) {
-      LOG_WARN(
-          "No chunks in chunked array for file: %s, column: %d, row_group: "
-          "%d",
-          file_path_.c_str(), col_idx, rg_id);
-      continue;
-    }
-    auto concat_result = arrow::Concatenate(col_chunked_array->chunks(),
-                                            arrow::default_memory_pool());
-    if (!concat_result.ok()) {
-      LOG_ERROR("Concatenate failed for file: %s, column: %d, row_group: %d",
-                file_path_.c_str(), col_idx, rg_id);
-      return nullptr;
-    }
-    auto concat = concat_result.ValueOrDie();
-    auto scalar_result = concat->GetScalar(index - offset);
+    // Resolve the row within its chunk instead of copying the entire decoded
+    // row-group column for every scalar fetch.
+    const int64_t local_index = index - offset;
+    auto scalar_result = col_chunked_array->GetScalar(local_index);
     if (!scalar_result.ok()) {
-      LOG_ERROR("Failed to get scalar for row %zu status: %s", (size_t)offset,
+      LOG_ERROR("Failed to get scalar for row %zu status: %s",
+                static_cast<size_t>(local_index),
                 scalar_result.status().ToString().c_str());
+      return nullptr;
     }
 
     scalars.emplace_back(std::move(scalar_result.ValueOrDie()));
