@@ -45,6 +45,20 @@ struct IndexProvider : public IndexHolder {
     return IndexError_NotImplemented;
   }
 
+  //! Retrieve vectors using primary keys.
+  virtual int get_vectors(
+      const uint64_t *keys, uint32_t count,
+      std::vector<IndexStorage::MemoryBlock> &blocks) const {
+    blocks.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      int ret = get_vector(keys[i], blocks[i]);
+      if (ret != 0) {
+        return ret;
+      }
+    }
+    return 0;
+  }
+
   //! Retrieve the owner class
   virtual const std::string &owner_class() const = 0;
 };
