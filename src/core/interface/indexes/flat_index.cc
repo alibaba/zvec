@@ -182,7 +182,7 @@ int FlatIndex::FallbackToLegacyPipeline() {
   turbo_quantizer_.reset();
   streamer_.reset();
 
-  // Redo the Index::Init() setup down the legacy branch.
+  // Redo the Index::init() setup down the legacy branch.
   proxima_index_meta_.clear();
   proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
   proxima_index_meta_.set_meta_type(is_sparse_
@@ -215,7 +215,7 @@ int FlatIndex::FallbackToLegacyPipeline() {
   return core::IndexError_Success;
 }
 
-int FlatIndex::CreateAndInitConverterReformer(
+int FlatIndex::create_and_init_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &flat_param = dynamic_cast<const FlatIndexParam &>(index_param);
   // Prefer the turbo quantizer path (quantized records + SIMD batch distance
@@ -260,7 +260,8 @@ int FlatIndex::CreateAndInitLegacyConverterReformer(
   const auto storage_type = flat_param.storage_data_type;
   if (storage_type == DataType::DT_UNDEFINED ||
       storage_type == flat_param.data_type) {
-    return Index::CreateAndInitConverterReformer(quantizer_param, index_param);
+    return Index::create_and_init_converter_reformer(quantizer_param,
+                                                     index_param);
   }
 
   if (flat_param.is_sparse || flat_param.data_type != DataType::DT_FP32 ||

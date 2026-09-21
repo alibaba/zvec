@@ -297,8 +297,8 @@ int Index::CreateAndInitMetric(const BaseIndexParam & /*param*/) {
   return core::IndexError_Success;
 }
 
-int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
-                                          const BaseIndexParam &index_param) {
+int Index::create_and_init_converter_reformer(
+    const QuantizerParam &param, const BaseIndexParam &index_param) {
   ailego::Params converter_params;
   std::string converter_name;
   if (is_sparse_) {
@@ -428,7 +428,7 @@ int Index::InitConverterReformer(const std::string &converter_name,
   return core::IndexError_Success;
 }
 
-int Index::Init(const BaseIndexParam &param) {
+int Index::init(const BaseIndexParam &param) {
   param_ = param;  // will lose the original type info
 
   is_sparse_ = param.is_sparse;
@@ -455,7 +455,7 @@ int Index::Init(const BaseIndexParam &param) {
   const auto quantizer_param = param.quantizer_param
                                    ? param.quantizer_param
                                    : std::make_shared<QuantizerParam>();
-  if (CreateAndInitConverterReformer(*quantizer_param, param) != 0) {
+  if (create_and_init_converter_reformer(*quantizer_param, param) != 0) {
     LOG_ERROR("Failed to create and init converter");
     return core::IndexError_Runtime;
   }

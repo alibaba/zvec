@@ -97,10 +97,10 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
   metric_.reset();
   proxima_index_meta_.clear();
   use_legacy_pipeline_ = true;
-  return Index::Init(param_);
+  return Index::init(param_);
 }
 
-int HNSWIndex::CreateAndInitConverterReformer(
+int HNSWIndex::create_and_init_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &hnsw_param = dynamic_cast<const HNSWIndexParam &>(index_param);
   const char *quantizer_name =
@@ -128,7 +128,8 @@ int HNSWIndex::CreateAndInitConverterReformer(
     streamer_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
     return core::IndexError_Success;
   }
-  return Index::CreateAndInitConverterReformer(quantizer_param, index_param);
+  return Index::create_and_init_converter_reformer(quantizer_param,
+                                                   index_param);
 }
 
 std::string HNSWIndex::storage_mode() const {

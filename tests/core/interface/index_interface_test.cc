@@ -255,7 +255,7 @@ TEST(IndexInterface, IvfRabitqSearchIgnoresFetchVector) {
 class ReformerInspectableHNSWIndex : public HNSWIndex {
  public:
   int InitForTest(const BaseIndexParam &param) {
-    return Init(param);
+    return init(param);
   }
 
   int TransformForTest(const std::vector<float> &query) const {
@@ -1504,7 +1504,7 @@ class InspectableIVFIndex : public IVFIndex {
   int initialize(const BaseIndexParam &param, uint32_t train_sample_count = 0) {
     proxima_index_params_.set(zvec::core::PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT,
                               train_sample_count);
-    return Init(param);
+    return init(param);
   }
   std::weak_ptr<zvec::core::IndexBuilder> build_state() const {
     return builder_;

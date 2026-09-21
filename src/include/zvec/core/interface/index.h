@@ -216,14 +216,14 @@ class ZVEC_CORE_API Index {
  protected:
   friend class IndexFactory;
   Index() = default;
-  int Init(const BaseIndexParam &param);
+  int init(const BaseIndexParam &param);
 
 
  protected:
   int ParseMetricName(const BaseIndexParam &param);
   int CreateAndInitMetric(const BaseIndexParam &param);
-  virtual int CreateAndInitConverterReformer(const QuantizerParam &param,
-                                             const BaseIndexParam &index_param);
+  virtual int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param);
   int InitConverterReformer(const std::string &converter_name,
                             const ailego::Params &converter_params = {});
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) = 0;
@@ -281,7 +281,7 @@ class ZVEC_CORE_API FlatIndex : public Index {
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  int CreateAndInitConverterReformer(
+  int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
 
   int _prepare_for_search(const VectorData &query,
@@ -366,7 +366,7 @@ class ZVEC_CORE_API HNSWIndex : public Index {
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  int CreateAndInitConverterReformer(
+  int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
 
   int _prepare_for_search(const VectorData &query,

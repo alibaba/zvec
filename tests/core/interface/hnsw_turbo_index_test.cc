@@ -75,7 +75,7 @@ class HnswTurboIndexTest
     : public testing::TestWithParam<
           std::tuple<TurboQuantizerCase, TurboMetricCase>> {
  protected:
-  std::string IndexPath(const char *suffix) const {
+  std::string index_path(const char *suffix) const {
     const auto &[quantizer, metric] = GetParam();
     return std::string("hnsw_turbo_") + quantizer.test_name + "_" +
            metric.test_name + "_" + suffix + ".index";
@@ -586,7 +586,7 @@ TEST_P(HnswTurboIndexTest, SelectsTurboQuantizer) {
 
 TEST_P(HnswTurboIndexTest, KnownScoresAndRadiusUseCallerSpace) {
   const auto &[quantizer, metric] = GetParam();
-  const std::string path = IndexPath("scores");
+  const std::string path = index_path("scores");
   zvec::test_util::RemoveTestFiles(path);
   auto index =
       IndexFactory::CreateAndInitIndex(*MakeParam(metric.type, quantizer.type));
@@ -633,19 +633,19 @@ TEST_P(HnswTurboIndexTest, KnownScoresAndRadiusUseCallerSpace) {
 TEST_P(HnswTurboIndexTest, AddSearchReopenFetch) {
   const auto &[quantizer, metric] = GetParam();
   CheckTurboAddSearchReopen(metric.type, quantizer.type, quantizer.name,
-                            quantizer.fetch_tolerance, IndexPath("stored"));
+                            quantizer.fetch_tolerance, index_path("stored"));
 }
 
 TEST_P(HnswTurboIndexTest, ExternalVectorsUseTurbo) {
   const auto &[quantizer, metric] = GetParam();
   CheckExternalTurboAddSearchReopen(metric.type, quantizer.type, quantizer.name,
-                                    IndexPath("external"));
+                                    index_path("external"));
 }
 
 TEST_P(HnswTurboIndexTest, OriginalProviderBuildUsesTurbo) {
   const auto &[quantizer, metric] = GetParam();
   CheckOriginalProviderUsesTurbo(metric.type, quantizer.type, quantizer.name,
-                                 IndexPath("provider"));
+                                 index_path("provider"));
 }
 
 TEST(HnswTurboQuantizerIndex, UnsupportedCombinationsUseLegacyPipeline) {
@@ -662,8 +662,8 @@ TEST(HnswTurboQuantizerIndex, UnsupportedCombinationsUseLegacyPipeline) {
 
 TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
   const auto &[quantizer, metric] = GetParam();
-  const std::string source_path = IndexPath("merge_source");
-  const std::string target_path = IndexPath("merge_target");
+  const std::string source_path = index_path("merge_source");
+  const std::string target_path = index_path("merge_target");
   zvec::test_util::RemoveTestFiles(source_path);
   zvec::test_util::RemoveTestFiles(target_path);
   auto vectors = RandomVectors();
@@ -815,7 +815,7 @@ class HnswExternalCoreCompatibilityTest : public testing::TestWithParam<bool> {
     zvec::test_util::RemoveTestPath(directory_);
   }
 
-  void Open(bool turbo) {
+  void open(bool turbo) {
     IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
     meta.set_metric("SquaredEuclidean", 0, ailego::Params());
     if (turbo) {
@@ -846,12 +846,12 @@ class HnswExternalCoreCompatibilityTest : public testing::TestWithParam<bool> {
     ctx_->set_vector_source(&source_);
   }
 
-  int Add(uint32_t id, const void *query, const IndexQueryMeta &meta) {
+  int add(uint32_t id, const void *query, const IndexQueryMeta &meta) {
     return GetParam() ? streamer_->add_with_id_impl(id, query, meta, context_)
                       : streamer_->add_impl(id, query, meta, context_);
   }
 
-  void CheckNodeCount(size_t expected) const {
+  void check_node_count(size_t expected) const {
     // Context entities retain their creation-time header. A fresh provider
     // snapshots the streamer's current entity, including any orphan nodes.
     auto provider = streamer_->create_provider();
@@ -870,13 +870,13 @@ class HnswExternalCoreCompatibilityTest : public testing::TestWithParam<bool> {
 
 TEST_P(HnswExternalCoreCompatibilityTest,
        LegacyBuildAcceptsQueryWithoutExternalBuildField) {
-  ASSERT_NO_FATAL_FAILURE(Open(false));
+  ASSERT_NO_FATAL_FAILURE(open(false));
   IndexQueryMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
   for (uint32_t i = 0; i < kCount; ++i) {
     ASSERT_EQ(nullptr, ctx_->external_build_query());
-    ASSERT_EQ(0, Add(i, source_.get_vector(i), meta));
+    ASSERT_EQ(0, add(i, source_.get_vector(i), meta));
   }
-  ASSERT_NO_FATAL_FAILURE(CheckNodeCount(kCount));
+  ASSERT_NO_FATAL_FAILURE(check_node_count(kCount));
   EXPECT_EQ(kCount, streamer_->stats().added_count());
 
   context_->set_topk(1);
@@ -891,7 +891,7 @@ TEST_P(HnswExternalCoreCompatibilityTest,
 
 TEST_P(HnswExternalCoreCompatibilityTest,
        TurboRejectsMissingRawQueryBeforeMutatingNodes) {
-  ASSERT_NO_FATAL_FAILURE(Open(true));
+  ASSERT_NO_FATAL_FAILURE(open(true));
   IndexQueryMeta raw_meta(IndexMeta::DataType::DT_FP32, kDimension);
   IndexQueryMeta encoded_meta;
   std::vector<std::string> codes(kCount);
@@ -900,12 +900,12 @@ TEST_P(HnswExternalCoreCompatibilityTest,
                                       &codes[i], &encoded_meta));
     ctx_->set_external_build_query(nullptr);
     ASSERT_EQ(IndexError_InvalidArgument,
-              Add(i, codes[i].data(), encoded_meta));
-    ASSERT_NO_FATAL_FAILURE(CheckNodeCount(i));
+              add(i, codes[i].data(), encoded_meta));
+    ASSERT_NO_FATAL_FAILURE(check_node_count(i));
     EXPECT_EQ(i, streamer_->stats().added_count());
     ctx_->set_external_build_query(source_.get_vector(i));
-    ASSERT_EQ(0, Add(i, codes[i].data(), encoded_meta));
-    ASSERT_NO_FATAL_FAILURE(CheckNodeCount(i + 1));
+    ASSERT_EQ(0, add(i, codes[i].data(), encoded_meta));
+    ASSERT_NO_FATAL_FAILURE(check_node_count(i + 1));
   }
   EXPECT_EQ(kCount, streamer_->stats().added_count());
   EXPECT_EQ(kCount, streamer_->stats().discarded_count());
