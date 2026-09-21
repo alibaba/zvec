@@ -123,7 +123,11 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
@@ -139,16 +143,21 @@ class HalfFloatHolder : public IndexHolder, public OrdinalAccessHolder {
 
    private:
     inline void transform_record() {
-      if (front_iter_->is_valid()) {
-        owner_->convert_func_(
-            reinterpret_cast<const float *>(front_iter_->data()),
-            buffer_.size(), buffer_.data());
+      if (this->is_valid()) {
+        const auto *source = static_cast<const float *>(front_iter_->data());
+        status_ = front_iter_->status();
+        if (source == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
+        owner_->convert_func_(source, buffer_.size(), buffer_.data());
       }
     }
 
     const HalfFloatHolder *owner_{nullptr};
     std::vector<uint16_t> buffer_{};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor

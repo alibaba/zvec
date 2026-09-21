@@ -242,7 +242,11 @@ class UniformUint8Converter : public IndexConverter {
       }
 
       bool is_valid() const override {
-        return iterator_ && iterator_->is_valid();
+        return iterator_ && this->status() == 0 && iterator_->is_valid();
+      }
+
+      int status() const override {
+        return status_ != 0 ? status_ : iterator_->status();
       }
 
       uint64_t key() const override {
@@ -259,14 +263,20 @@ class UniformUint8Converter : public IndexConverter {
         if (!is_valid()) {
           return;
         }
-        EncodeRecord(static_cast<const float *>(iterator_->data()),
-                     owner_->original_dimension_, owner_->scale_, owner_->bias_,
-                     buffer_.data());
+        const auto *source = static_cast<const float *>(iterator_->data());
+        status_ = iterator_->status();
+        if (source == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
+        EncodeRecord(source, owner_->original_dimension_, owner_->scale_,
+                     owner_->bias_, buffer_.data());
       }
 
       const UniformUint8Holder *owner_;
       std::vector<int8_t> buffer_;
       IndexHolder::Iterator::Pointer iterator_;
+      int status_{0};
     };
 
     UniformUint8Holder(IndexHolder::Pointer holder, size_t original_dimension,

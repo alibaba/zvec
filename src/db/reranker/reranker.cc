@@ -45,7 +45,7 @@ Result<DocPtrList> score_based_rerank(const ScoreFn &score_fn,
     const auto &docs = results[field_idx];
     for (size_t rank = 0; rank < docs.size(); ++rank) {
       const auto &doc = docs[rank];
-      const std::string &doc_id = doc->pk();
+      const std::string &doc_id = doc->pk_ref();
       auto rs = score_fn(static_cast<double>(doc->score()),
                          static_cast<int>(rank), field_idx);
       if (!rs.has_value()) {

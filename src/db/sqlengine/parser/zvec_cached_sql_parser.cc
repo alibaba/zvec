@@ -36,8 +36,8 @@ namespace zvec::sqlengine {
 std::unordered_map<std::string, SQLInfo::Ptr>
     ZVecCachedSQLParser::sql_info_map_{};
 std::unordered_map<std::string, Node::Ptr> ZVecCachedSQLParser::filter_map_;
-uint32_t ZVecCachedSQLParser::Hit{0};
-uint32_t ZVecCachedSQLParser::Miss{0};
+uint32_t ZVecCachedSQLParser::hit{0};
+uint32_t ZVecCachedSQLParser::miss{0};
 
 ZVecCachedSQLParser::ZVecCachedSQLParser(uint32_t cache_count)
     : cache_count_(cache_count) {}
@@ -71,7 +71,7 @@ void ZVecCachedSQLParser::put_into_cache(const std::string &query_cache_key,
     if (sql_info_map_.size() >= cache_count_) {
       // if full, clear to refresh new sql
       sql_info_map_.clear();
-      Hit = Miss = 0;
+      hit = miss = 0;
     }
     sql_info_map_.emplace(query_cache_key, new_sql_info);
   }
@@ -107,7 +107,7 @@ SQLInfo::Ptr ZVecCachedSQLParser::get_from_cache(const std::string &query,
     std::shared_lock guard(shared_mutex_);
     auto iter = sql_info_map_.find(*query_cache_key);
     if (iter == sql_info_map_.end()) {
-      ++Miss;
+      ++miss;
       LOG_DEBUG("cache miss. key: [%s]", query_cache_key->c_str());
       return nullptr;
     }
@@ -130,7 +130,7 @@ SQLInfo::Ptr ZVecCachedSQLParser::get_from_cache(const std::string &query,
     return nullptr;
   }
 
-  ++Hit;
+  ++hit;
   LOG_DEBUG("cache hit. key: [%s] sql_info: [%s]", query_cache_key->c_str(),
             copied_sql_info->to_string().c_str());
   return copied_sql_info;
@@ -211,10 +211,10 @@ Node::Ptr ZVecCachedSQLParser::parse_filter(const std::string &filter,
     std::shared_lock guard(shared_mutex_);
     auto iter = filter_map_.find(filter);
     if (iter != filter_map_.end()) {
-      ++Hit;
+      ++hit;
       return iter->second;
     }
-    ++Miss;
+    ++miss;
   }
   auto node = real_parser_.parse_filter(filter, need_formatted_tree);
   err_msg_ = real_parser_.err_msg();
@@ -224,7 +224,7 @@ Node::Ptr ZVecCachedSQLParser::parse_filter(const std::string &filter,
     if (filter_map_.size() >= cache_count_) {
       // clear cache if full
       filter_map_.clear();
-      Hit = Miss = 0;
+      hit = miss = 0;
     }
     filter_map_.emplace(filter, node);
   }

@@ -21,7 +21,7 @@
 #include <zvec/ailego/math_batch/utils.h>
 #include <zvec/ailego/utility/type_helper.h>
 
-namespace zvec::ailego::DistanceBatch {
+namespace zvec::ailego::distance_batch {
 
 template <typename T, size_t BatchSize, size_t PrefetchStep, typename = void>
 struct InnerProductDistanceBatch;
@@ -140,4 +140,4 @@ struct InnerProductDistanceBatchImpl<int8_t, 12> {
                                   size_t dim, float *sums);
 };
 
-}  // namespace zvec::ailego::DistanceBatch
+}  // namespace zvec::ailego::distance_batch

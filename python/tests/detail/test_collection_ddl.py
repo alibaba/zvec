@@ -457,7 +457,7 @@ class TestIndexDDL:
         [
             ("", ""),  # Empty string
             (" ", " "),  # Space only
-            ("v" * 33, "v" * 33),  # Too long (33 characters, exceeds 32)
+            ("v" * 33, "v" * 33),  # Field does not exist.
             ("vector name", "vector_name"),  # Contains space
             ("vector@name", "vector@name"),  # Contains special character
             ("vector/name", "vector/name"),  # Contains slash
@@ -1202,7 +1202,7 @@ class TestColumnDDL:
         "field_name",
         [
             "a",  # Minimum length
-            "a" * 32,  # Maximum length (32 characters)
+            "a" * 64,  # Maximum field name length.
             "valid_field_name_123",  # Alphanumeric with underscore
             "Valid-Field-Name",  # With hyphens
             "_underscore_start",  # Starting with underscore
@@ -1241,7 +1241,7 @@ class TestColumnDDL:
         [
             "",  # Empty string
             " ",  # Space only
-            "a" * 33,  # Too long (33 characters, exceeds 32)
+            "a" * 65,  # Exceeds the field name byte limit.
             "field name",  # Contains space
             "field.name",  # Contains dot
             "field@name",  # Contains special character
@@ -1263,7 +1263,7 @@ class TestColumnDDL:
             )
 
         if invalid_field_name is None:
-            assert "validate failed" in str(exc_info.value), (
+            assert "Invalid schema:" in str(exc_info.value), (
                 "Error message is unreasonable: e=" + str(exc_info.value)
             )
         else:
@@ -1303,7 +1303,7 @@ class TestColumnDDL:
                 new_name="new_name",
                 field_schema=FieldSchema("new_name", DataType.STRING),
             )
-        assert "column non_existing not found" in str(exc_info.value), (
+        assert "Invalid schema: field[non_existing] not found" in str(exc_info.value), (
             "Error message is unreasonable: e=" + str(exc_info.value)
         )
 
@@ -1378,9 +1378,9 @@ class TestColumnDDL:
         [
             ("a", "new_a"),  # Minimum length
             (
-                "abcdefghijklmnopqrstuvwxyz123456",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),  # Maximum length (32 characters)
+                "a" * 64,
+                "b" * 64,
+            ),  # Maximum field name length.
             ("valid_field_name_123", "new_valid_field"),  # Alphanumeric with underscore
             ("Valid-Field-Name", "New-Field-Name"),  # With hyphens
             ("_underscore_start", "new_underscore"),  # Starting with underscore
@@ -1427,7 +1427,7 @@ class TestColumnDDL:
         "valid_old_name,invalid_new_name",
         [
             ("temp_field", ""),  # Empty new name
-            ("temp_field", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),  # Too long new name
+            ("temp_field", "a" * 65),  # Exceeds the field name byte limit.
             ("temp_field", "field name"),  # New name with space
             ("temp_field", "field.name"),  # New name with dot
             ("temp_field", "field@name"),  # New name with special character
@@ -1499,15 +1499,14 @@ class TestColumnDDL:
         assert SCHEMA_VALIDATE_ERROR_MSG in str(exc_info.value)
 
     def test_drop_column_non_exist(self, basic_collection: Collection):
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(Exception, match=NOT_EXIST_COLUMN_TO_DROP_ERROR_MSG):
             basic_collection.drop_column("non_existing_column")
-        assert NOT_EXIST_COLUMN_TO_DROP_ERROR_MSG in str(exc_info.value)
 
     @pytest.mark.parametrize(
         "field_name",
         [
             "a",  # Minimum length
-            "a" * 32,  # Maximum length (32 characters)
+            "a" * 64,  # Maximum field name length.
             "valid_field_name_123",  # Alphanumeric with underscore
             "Valid-Field-Name",  # With hyphens
             "_underscore_start",  # Starting with underscore

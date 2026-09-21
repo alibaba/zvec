@@ -7,7 +7,54 @@ Checks: >
   modernize-use-equals-default,
   modernize-use-equals-delete,
   modernize-redundant-void-arg,
+  readability-identifier-naming,
 WarningsAsErrors: "*"
-HeaderFilterRegex: "^(src|tests|tools)/(?!db/sqlengine/antlr/gen/|db/index/column/fts_column/gen/|include/zvec/ailego/encoding/json/mod_json\\.h).*"
+HeaderFilterRegex: "(^|/)(src|tests|tools)/"
 FormatStyle: none
 SystemHeaders: false
+CheckOptions:
+  # Type-like identifiers use CamelCase (Google style). STL-compatible
+  # container aliases (iterator, value_type, *_t ...) are exempted.
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.ClassIgnoredRegexp: '(const_)?(iterator|reverse_iterator)'
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.StructIgnoredRegexp: '(const_)?(iterator|reverse_iterator)'
+  readability-identifier-naming.UnionCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  readability-identifier-naming.TypedefIgnoredRegexp: '(_.*|[a-z][a-z0-9_]*|.*_t|.*_type|(const_)?(iterator|reverse_iterator|pointer|reference))'
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypeAliasIgnoredRegexp: '(_.*|[a-z][a-z0-9_]*|.*_t|.*_type|(const_)?(iterator|reverse_iterator|pointer|reference))'
+  # Member functions use snake_case. Static/free/global functions may use
+  # snake_case or CamelCase. A leading underscore (private-method convention)
+  # or trailing underscore (keyword avoidance, e.g. delete_) is allowed.
+  readability-identifier-naming.MethodCase: lower_case
+  readability-identifier-naming.MethodIgnoredRegexp: '_*[a-z][a-z0-9_]*'
+  readability-identifier-naming.ClassMethodCase: lower_case
+  readability-identifier-naming.ClassMethodIgnoredRegexp: '(_*[a-z][a-z0-9_]*|[A-Z][A-Za-z0-9]*)'
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.FunctionIgnoredRegexp: '(_*[a-z][a-z0-9_]*|[A-Z][A-Za-z0-9]*)'
+  readability-identifier-naming.GlobalFunctionCase: lower_case
+  readability-identifier-naming.GlobalFunctionIgnoredRegexp: '(_*[a-z][a-z0-9_]*|[A-Z][A-Za-z0-9]*)'
+  # Data members use snake_case; a trailing underscore is allowed but not required.
+  readability-identifier-naming.MemberCase: lower_case
+  readability-identifier-naming.MemberIgnoredRegexp: '_*[a-z][a-z0-9]*(_[a-z0-9]+)*_*'
+  readability-identifier-naming.ConstantMemberCase: lower_case
+  readability-identifier-naming.ConstantMemberIgnoredRegexp: '_*[a-z][a-z0-9]*(_[a-z0-9]+)*_*'
+  # Static data members follow the same snake_case rule as non-static members.
+  readability-identifier-naming.ClassMemberCase: lower_case
+  readability-identifier-naming.ClassMemberIgnoredRegexp: '_*[a-z][a-z0-9]*(_[a-z0-9]+)*_*'
+  # Local variables and parameters use snake_case.
+  readability-identifier-naming.LocalVariableCase: lower_case
+  readability-identifier-naming.ParameterCase: lower_case
+  # Constants keep the existing mixed conventions (kCamelCase / UPPER_CASE /
+  # snake_case) and are intentionally not enforced.
+  readability-identifier-naming.ConstantCase: aNy_CasE
+  readability-identifier-naming.LocalConstantCase: aNy_CasE
+  readability-identifier-naming.StaticConstantCase: aNy_CasE
+  readability-identifier-naming.ClassConstantCase: aNy_CasE
+  readability-identifier-naming.GlobalConstantCase: aNy_CasE
+  readability-identifier-naming.ConstexprVariableCase: aNy_CasE
+  readability-identifier-naming.GlobalVariableCase: aNy_CasE
+  readability-identifier-naming.StaticVariableCase: aNy_CasE

@@ -54,8 +54,12 @@ typedef int (*aio_getevents_fn)(io_context_t ctx, long min_nr, long nr,
 class LibAioLoader {
  public:
   static LibAioLoader &Instance() {
-    static LibAioLoader instance;
-    return instance;
+    // Global thread pools may join workers during static destruction, after
+    // this loader would be destroyed. Their thread-local AIO contexts still
+    // need io_destroy(), so retain the loader and library until process exit.
+    // Individual AIO contexts must still be destroyed by their owners.
+    static LibAioLoader *const instance = new LibAioLoader();
+    return *instance;
   }
 
   // Load (or confirm already loaded) libaio.  Returns true on success.
@@ -78,6 +82,9 @@ class LibAioLoader {
   aio_submit_fn io_submit;
   aio_getevents_fn io_getevents;
 
+  LibAioLoader(const LibAioLoader &) = delete;
+  LibAioLoader &operator=(const LibAioLoader &) = delete;
+
  private:
   LibAioLoader()
       : io_setup(nullptr),
@@ -90,9 +97,6 @@ class LibAioLoader {
       dlclose(handle_);
     }
   }
-
-  LibAioLoader(const LibAioLoader &) = delete;
-  LibAioLoader &operator=(const LibAioLoader &) = delete;
 
   void try_load() {
     // On Ubuntu 24.04 the libaio package was renamed with the t64 suffix

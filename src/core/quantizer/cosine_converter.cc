@@ -92,7 +92,11 @@ class CosineConverterHolder : public IndexHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
@@ -109,7 +113,13 @@ class CosineConverterHolder : public IndexHolder {
    private:
     //! Encode the data by quantizer
     void convert_record() {
-      if (!front_iter_->is_valid()) {
+      if (!this->is_valid()) {
+        return;
+      }
+      const void *source = front_iter_->data();
+      status_ = front_iter_->status();
+      if (source == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
         return;
       }
 
@@ -119,8 +129,7 @@ class CosineConverterHolder : public IndexHolder {
 
       if (original_type_ == IndexMeta::DataType::DT_FP16) {
         ::memcpy(reinterpret_cast<char *>(&normalize_buffer_[0]),
-                 reinterpret_cast<const char *>(front_iter_->data()),
-                 original_element_size);
+                 reinterpret_cast<const char *>(source), original_element_size);
 
         ailego::Float16 *buf =
             reinterpret_cast<ailego::Float16 *>(&normalize_buffer_[0]);
@@ -134,9 +143,8 @@ class CosineConverterHolder : public IndexHolder {
                  &norm, NORM_SIZE);
       } else if (owner_->raw_fp16_storage_) {
         auto *buf = reinterpret_cast<ailego::Float16 *>(buffer_.data());
-        owner_->fp16_convert_func_(
-            static_cast<const float *>(front_iter_->data()),
-            original_dimension_, buf);
+        owner_->fp16_convert_func_(static_cast<const float *>(source),
+                                   original_dimension_, buf);
 
         float norm = 0.0F;
         ailego::Normalizer<ailego::Float16>::L2(buf, original_dimension_,
@@ -144,8 +152,7 @@ class CosineConverterHolder : public IndexHolder {
         ::memcpy(buffer_.data() + element_size - NORM_SIZE, &norm, NORM_SIZE);
       } else {  // original_type_ == IndexMeta::DataType::DT_FP32
         ::memcpy(reinterpret_cast<char *>(&normalize_buffer_[0]),
-                 reinterpret_cast<const char *>(front_iter_->data()),
-                 original_element_size);
+                 reinterpret_cast<const char *>(source), original_element_size);
 
         float *buf = reinterpret_cast<float *>(&normalize_buffer_[0]);
         const float *vec = buf;
@@ -191,6 +198,7 @@ class CosineConverterHolder : public IndexHolder {
     std::string normalize_buffer_{};
     std::vector<float> rotate_buffer_;
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
     size_t dimension_{0u};
     size_t original_dimension_{0u};
     IndexMeta::DataType original_type_{IndexMeta::DataType::DT_UNDEFINED};

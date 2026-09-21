@@ -50,7 +50,11 @@ class BinaryConverterHolder : public IndexHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
@@ -67,8 +71,13 @@ class BinaryConverterHolder : public IndexHolder {
    private:
     //! Encode the data by quantizer
     inline void encode_record() {
-      if (front_iter_->is_valid()) {
+      if (this->is_valid()) {
         const float *vec = reinterpret_cast<const float *>(front_iter_->data());
+        status_ = front_iter_->status();
+        if (vec == nullptr || status_ != 0) {
+          if (status_ == 0) status_ = IndexError_Runtime;
+          return;
+        }
         quantizer_->encode(vec, dim_ / 2, buffer_.data());
       }
     }
@@ -78,6 +87,7 @@ class BinaryConverterHolder : public IndexHolder {
     IndexHolder::Iterator::Pointer front_iter_{};
     std::shared_ptr<ailego::BinaryQuantizer> quantizer_{};
     size_t dim_{0u};
+    int status_{0};
   };
 
   //! Constructor

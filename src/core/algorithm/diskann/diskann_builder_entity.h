@@ -26,7 +26,7 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   using Pointer = std::shared_ptr<DiskAnnBuilderEntity>;
 
   DiskAnnBuilderEntity() = default;
-  virtual ~DiskAnnBuilderEntity() = default;
+  ~DiskAnnBuilderEntity() override = default;
 
  public:
   void clear();
@@ -63,6 +63,10 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   int dump_key_segment(const IndexDumper::Pointer &dumper) const;
 
   int reserve_space(uint32_t docs);
+
+  // Graph construction is the only consumer of these vectors. PQ encoding
+  // and dump read the retained source holder instead.
+  void release_vectors();
 
   std::string &pq_quantizer_meta_buffer() {
     return pq_quantizer_meta_buffer_;

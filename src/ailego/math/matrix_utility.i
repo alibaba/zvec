@@ -16,6 +16,8 @@
 
 #include <zvec/ailego/internal/platform.h>
 
+// NOLINTBEGIN(readability-identifier-naming): SIMD intrinsic helpers use the
+// deliberate Operation_TYPE_WIDTH convention (e.g. HorizontalMax_FP32_V128).
 namespace zvec {
 namespace ailego {
 
@@ -263,3 +265,4 @@ static inline float HorizontalAdd_FP16_V512(__m512h v) {
 
 } // namespace ailego
 } // namespace zvec
+// NOLINTEND(readability-identifier-naming)

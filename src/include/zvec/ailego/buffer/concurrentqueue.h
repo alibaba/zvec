@@ -33,6 +33,8 @@
 
 #pragma once
 
+// NOLINTBEGIN
+
 #if defined(__GNUC__) && !defined(__INTEL_COMPILER)
 // Disable -Wconversion warnings (spuriously triggered when Traits::size_t and
 // Traits::index_t are set to < 32 bits, causing integer promotion, causing
@@ -4410,3 +4412,5 @@ inline void swap(typename ConcurrentQueue<T, Traits>::ImplicitProducerKVP &a,
 #if defined(__GNUC__) && !defined(__INTEL_COMPILER)
 #pragma GCC diagnostic pop
 #endif
+
+// NOLINTEND

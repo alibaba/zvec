@@ -282,7 +282,7 @@ class MMapFileStorage : public IndexStorage {
     return 0;
   }
 
-  bool isHugePage() const override {
+  bool is_huge_page() const override {
     return mapping_.huge_page();
   }
 

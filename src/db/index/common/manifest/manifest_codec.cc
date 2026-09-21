@@ -163,24 +163,24 @@ struct BaseParams {
 
 void EncodeBase(const BaseParams &base, std::string *out) {
   Writer w(out);
-  w.PutVarint(f_base::kMetricType,
-              static_cast<uint64_t>(
-                  wire::ToNumber(MetricTypeCodeBook::Get(base.metric_type))));
-  w.PutVarint(f_base::kQuantizeType,
-              static_cast<uint64_t>(wire::ToNumber(
-                  QuantizeTypeCodeBook::Get(base.quantize_type))));
+  w.put_varint(f_base::kMetricType,
+               static_cast<uint64_t>(
+                   wire::ToNumber(MetricTypeCodeBook::Get(base.metric_type))));
+  w.put_varint(f_base::kQuantizeType,
+               static_cast<uint64_t>(wire::ToNumber(
+                   QuantizeTypeCodeBook::Get(base.quantize_type))));
   if (base.has_quantizer_param) {
     std::string quantizer;
     Writer qw(&quantizer);
-    qw.PutBool(f_quantizer::kEnableRotate, base.enable_rotate);
-    w.PutMessage(f_base::kQuantizerParam, quantizer);
+    qw.put_bool(f_quantizer::kEnableRotate, base.enable_rotate);
+    w.put_message(f_base::kQuantizerParam, quantizer);
   }
 }
 
 BaseParams DecodeBase(std::string_view buf) {
   BaseParams base;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_base::kMetricType:
         base.metric_type = MetricTypeCodeBook::Get(
@@ -193,7 +193,7 @@ BaseParams DecodeBase(std::string_view buf) {
       case f_base::kQuantizerParam: {
         base.has_quantizer_param = true;
         Reader qr(r.bytes());
-        while (qr.Next()) {
+        while (qr.next()) {
           if (qr.field() == f_quantizer::kEnableRotate) {
             base.enable_rotate = qr.bool_value();
           }
@@ -222,17 +222,17 @@ void EncodeHnsw(const HnswIndexParams *params, std::string *out) {
   std::string base;
   EncodeBase(MakeBase(params), &base);
   Writer w(out);
-  w.PutMessage(f_hnsw::kBase, base);
-  w.PutVarint(f_hnsw::kM, static_cast<uint64_t>(params->m()));
-  w.PutVarint(f_hnsw::kEfConstruction,
-              static_cast<uint64_t>(params->ef_construction()));
-  w.PutBool(f_hnsw::kUseContiguousMemory, params->use_contiguous_memory());
-  w.PutBool(f_hnsw::kUseFlatContiguousMemory,
-            params->use_flat_contiguous_memory());
+  w.put_message(f_hnsw::kBase, base);
+  w.put_varint(f_hnsw::kM, static_cast<uint64_t>(params->m()));
+  w.put_varint(f_hnsw::kEfConstruction,
+               static_cast<uint64_t>(params->ef_construction()));
+  w.put_bool(f_hnsw::kUseContiguousMemory, params->use_contiguous_memory());
+  w.put_bool(f_hnsw::kUseFlatContiguousMemory,
+             params->use_flat_contiguous_memory());
   if (params->flat_data_type() != DataType::VECTOR_FP32) {
-    w.PutVarint(f_hnsw::kFlatDataType,
-                static_cast<uint64_t>(wire::ToNumber(
-                    DataTypeCodeBook::Get(params->flat_data_type()))));
+    w.put_varint(f_hnsw::kFlatDataType,
+                 static_cast<uint64_t>(wire::ToNumber(
+                     DataTypeCodeBook::Get(params->flat_data_type()))));
   }
 }
 
@@ -244,7 +244,7 @@ HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
   bool use_flat_contiguous_memory = false;
   DataType flat_data_type = DataType::VECTOR_FP32;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_hnsw::kBase:
         base = DecodeBase(r.bytes());
@@ -286,16 +286,16 @@ void EncodeHnswRabitq(const HnswRabitqIndexParams *params, std::string *out) {
   std::string base_buf;
   EncodeBase(base, &base_buf);
   Writer w(out);
-  w.PutMessage(f_hnsw_rabitq::kBase, base_buf);
-  w.PutVarint(f_hnsw_rabitq::kM, static_cast<uint64_t>(params->m()));
-  w.PutVarint(f_hnsw_rabitq::kEfConstruction,
-              static_cast<uint64_t>(params->ef_construction()));
-  w.PutVarint(f_hnsw_rabitq::kTotalBits,
-              static_cast<uint64_t>(params->total_bits()));
-  w.PutVarint(f_hnsw_rabitq::kNumClusters,
-              static_cast<uint64_t>(params->num_clusters()));
-  w.PutVarint(f_hnsw_rabitq::kSampleCount,
-              static_cast<uint64_t>(params->sample_count()));
+  w.put_message(f_hnsw_rabitq::kBase, base_buf);
+  w.put_varint(f_hnsw_rabitq::kM, static_cast<uint64_t>(params->m()));
+  w.put_varint(f_hnsw_rabitq::kEfConstruction,
+               static_cast<uint64_t>(params->ef_construction()));
+  w.put_varint(f_hnsw_rabitq::kTotalBits,
+               static_cast<uint64_t>(params->total_bits()));
+  w.put_varint(f_hnsw_rabitq::kNumClusters,
+               static_cast<uint64_t>(params->num_clusters()));
+  w.put_varint(f_hnsw_rabitq::kSampleCount,
+               static_cast<uint64_t>(params->sample_count()));
 }
 
 HnswRabitqIndexParams::OPtr DecodeHnswRabitq(std::string_view buf) {
@@ -306,7 +306,7 @@ HnswRabitqIndexParams::OPtr DecodeHnswRabitq(std::string_view buf) {
   int32_t num_clusters = 0;
   int32_t sample_count = 0;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_hnsw_rabitq::kBase:
         base = DecodeBase(r.bytes());
@@ -346,12 +346,12 @@ void EncodeIvfRabitq(const IvfRabitqIndexParams *params, std::string *out) {
   std::string base_buf;
   EncodeBase(base, &base_buf);
   Writer w(out);
-  w.PutMessage(f_ivf_rabitq::kBase, base_buf);
-  w.PutVarint(f_ivf_rabitq::kNList, static_cast<uint64_t>(params->nlist()));
-  w.PutVarint(f_ivf_rabitq::kTotalBits,
-              static_cast<uint64_t>(params->total_bits()));
-  w.PutVarint(f_ivf_rabitq::kSampleCount,
-              static_cast<uint64_t>(params->sample_count()));
+  w.put_message(f_ivf_rabitq::kBase, base_buf);
+  w.put_varint(f_ivf_rabitq::kNList, static_cast<uint64_t>(params->nlist()));
+  w.put_varint(f_ivf_rabitq::kTotalBits,
+               static_cast<uint64_t>(params->total_bits()));
+  w.put_varint(f_ivf_rabitq::kSampleCount,
+               static_cast<uint64_t>(params->sample_count()));
 }
 
 IvfRabitqIndexParams::OPtr DecodeIvfRabitq(std::string_view buf) {
@@ -360,7 +360,7 @@ IvfRabitqIndexParams::OPtr DecodeIvfRabitq(std::string_view buf) {
   int32_t total_bits = 0;
   int32_t sample_count = 0;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_ivf_rabitq::kBase:
         base = DecodeBase(r.bytes());
@@ -386,12 +386,12 @@ void EncodeFlat(const FlatIndexParams *params, std::string *out) {
   std::string base;
   EncodeBase(MakeBase(params), &base);
   Writer w(out);
-  w.PutMessage(f_flat::kBase, base);
-  w.PutBool(f_flat::kUseContiguousMemory, params->use_contiguous_memory());
+  w.put_message(f_flat::kBase, base);
+  w.put_bool(f_flat::kUseContiguousMemory, params->use_contiguous_memory());
   if (params->storage_data_type() != DataType::UNDEFINED) {
-    w.PutVarint(f_flat::kStorageDataType,
-                static_cast<uint64_t>(wire::ToNumber(
-                    DataTypeCodeBook::Get(params->storage_data_type()))));
+    w.put_varint(f_flat::kStorageDataType,
+                 static_cast<uint64_t>(wire::ToNumber(
+                     DataTypeCodeBook::Get(params->storage_data_type()))));
   }
 }
 
@@ -400,7 +400,7 @@ FlatIndexParams::OPtr DecodeFlat(std::string_view buf) {
   bool use_contiguous_memory = false;
   DataType storage_data_type = DataType::UNDEFINED;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_flat::kBase:
         base = DecodeBase(r.bytes());
@@ -425,10 +425,10 @@ void EncodeIvf(const IVFIndexParams *params, std::string *out) {
   std::string base;
   EncodeBase(MakeBase(params), &base);
   Writer w(out);
-  w.PutMessage(f_ivf::kBase, base);
-  w.PutVarint(f_ivf::kNList, static_cast<uint64_t>(params->n_list()));
-  w.PutVarint(f_ivf::kNIters, static_cast<uint64_t>(params->n_iters()));
-  w.PutBool(f_ivf::kUseSoar, params->use_soar());
+  w.put_message(f_ivf::kBase, base);
+  w.put_varint(f_ivf::kNList, static_cast<uint64_t>(params->n_list()));
+  w.put_varint(f_ivf::kNIters, static_cast<uint64_t>(params->n_iters()));
+  w.put_bool(f_ivf::kUseSoar, params->use_soar());
 }
 
 IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
@@ -437,7 +437,7 @@ IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
   int32_t n_iters = 0;
   bool use_soar = false;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_ivf::kBase:
         base = DecodeBase(r.bytes());
@@ -464,12 +464,13 @@ void EncodeDiskAnn(const DiskAnnIndexParams *params, std::string *out) {
   std::string base;
   EncodeBase(MakeBase(params), &base);
   Writer w(out);
-  w.PutMessage(f_diskann::kBase, base);
-  w.PutVarint(f_diskann::kMaxDegree,
-              static_cast<uint64_t>(params->max_degree()));
-  w.PutVarint(f_diskann::kListSize, static_cast<uint64_t>(params->list_size()));
-  w.PutVarint(f_diskann::kPqChunkNum,
-              static_cast<uint64_t>(params->pq_chunk_num()));
+  w.put_message(f_diskann::kBase, base);
+  w.put_varint(f_diskann::kMaxDegree,
+               static_cast<uint64_t>(params->max_degree()));
+  w.put_varint(f_diskann::kListSize,
+               static_cast<uint64_t>(params->list_size()));
+  w.put_varint(f_diskann::kPqChunkNum,
+               static_cast<uint64_t>(params->pq_chunk_num()));
 }
 
 DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
@@ -478,7 +479,7 @@ DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
   int32_t list_size = 0;
   int32_t pq_chunk_num = 0;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_diskann::kBase:
         base = DecodeBase(r.bytes());
@@ -505,22 +506,22 @@ void EncodeVamana(const VamanaIndexParams *params, std::string *out) {
   std::string base;
   EncodeBase(MakeBase(params), &base);
   Writer w(out);
-  w.PutMessage(f_vamana::kBase, base);
-  w.PutVarint(f_vamana::kMaxDegree,
-              static_cast<uint64_t>(params->max_degree()));
-  w.PutVarint(f_vamana::kSearchListSize,
-              static_cast<uint64_t>(params->search_list_size()));
-  w.PutFloat(f_vamana::kAlpha, params->alpha());
-  w.PutBool(f_vamana::kSaturateGraph, params->saturate_graph());
-  w.PutBool(f_vamana::kUseContiguousMemory, params->use_contiguous_memory());
-  w.PutBool(f_vamana::kUseIdMap, params->use_id_map());
-  w.PutBool(f_vamana::kTwoPassBuild, params->two_pass_build());
-  w.PutBool(f_vamana::kUseFlatContiguousMemory,
-            params->use_flat_contiguous_memory());
+  w.put_message(f_vamana::kBase, base);
+  w.put_varint(f_vamana::kMaxDegree,
+               static_cast<uint64_t>(params->max_degree()));
+  w.put_varint(f_vamana::kSearchListSize,
+               static_cast<uint64_t>(params->search_list_size()));
+  w.put_float(f_vamana::kAlpha, params->alpha());
+  w.put_bool(f_vamana::kSaturateGraph, params->saturate_graph());
+  w.put_bool(f_vamana::kUseContiguousMemory, params->use_contiguous_memory());
+  w.put_bool(f_vamana::kUseIdMap, params->use_id_map());
+  w.put_bool(f_vamana::kTwoPassBuild, params->two_pass_build());
+  w.put_bool(f_vamana::kUseFlatContiguousMemory,
+             params->use_flat_contiguous_memory());
   if (params->flat_data_type() != DataType::VECTOR_FP32) {
-    w.PutVarint(f_vamana::kFlatDataType,
-                static_cast<uint64_t>(wire::ToNumber(
-                    DataTypeCodeBook::Get(params->flat_data_type()))));
+    w.put_varint(f_vamana::kFlatDataType,
+                 static_cast<uint64_t>(wire::ToNumber(
+                     DataTypeCodeBook::Get(params->flat_data_type()))));
   }
 }
 
@@ -536,7 +537,7 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   bool use_flat_contiguous_memory = false;
   DataType flat_data_type = DataType::VECTOR_FP32;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_vamana::kBase:
         base = DecodeBase(r.bytes());
@@ -582,17 +583,17 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
 
 void EncodeInvert(const InvertIndexParams *params, std::string *out) {
   Writer w(out);
-  w.PutBool(f_invert::kEnableRangeOptimization,
-            params->enable_range_optimization());
-  w.PutBool(f_invert::kEnableExtendedWildcard,
-            params->enable_extended_wildcard());
+  w.put_bool(f_invert::kEnableRangeOptimization,
+             params->enable_range_optimization());
+  w.put_bool(f_invert::kEnableExtendedWildcard,
+             params->enable_extended_wildcard());
 }
 
 InvertIndexParams::OPtr DecodeInvert(std::string_view buf) {
   bool enable_range_optimization = false;
   bool enable_extended_wildcard = false;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     if (r.field() == f_invert::kEnableRangeOptimization) {
       enable_range_optimization = r.bool_value();
     } else if (r.field() == f_invert::kEnableExtendedWildcard) {
@@ -605,11 +606,11 @@ InvertIndexParams::OPtr DecodeInvert(std::string_view buf) {
 
 void EncodeFts(const FtsIndexParams *params, std::string *out) {
   Writer w(out);
-  w.PutString(f_fts::kTokenizerName, params->tokenizer_name());
+  w.put_string(f_fts::kTokenizerName, params->tokenizer_name());
   for (const auto &filter : params->filters()) {
-    w.AddString(f_fts::kFilters, filter);
+    w.add_string(f_fts::kFilters, filter);
   }
-  w.PutString(f_fts::kExtraParams, params->extra_params());
+  w.put_string(f_fts::kExtraParams, params->extra_params());
 }
 
 FtsIndexParams::Ptr DecodeFts(std::string_view buf) {
@@ -617,7 +618,7 @@ FtsIndexParams::Ptr DecodeFts(std::string_view buf) {
   std::vector<std::string> filters;
   std::string extra_params;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_fts::kTokenizerName:
         tokenizer_name = r.string_value();
@@ -649,55 +650,55 @@ void ManifestCodec::EncodeIndexParams(const IndexParams *params,
     case IndexType::INVERT:
       if (auto *p = dynamic_cast<const InvertIndexParams *>(params)) {
         EncodeInvert(p, &payload);
-        w.PutMessage(f_index_params::kInvert, payload);
+        w.put_message(f_index_params::kInvert, payload);
       }
       break;
     case IndexType::HNSW:
       if (auto *p = dynamic_cast<const HnswIndexParams *>(params)) {
         EncodeHnsw(p, &payload);
-        w.PutMessage(f_index_params::kHnsw, payload);
+        w.put_message(f_index_params::kHnsw, payload);
       }
       break;
     case IndexType::FLAT:
       if (auto *p = dynamic_cast<const FlatIndexParams *>(params)) {
         EncodeFlat(p, &payload);
-        w.PutMessage(f_index_params::kFlat, payload);
+        w.put_message(f_index_params::kFlat, payload);
       }
       break;
     case IndexType::IVF:
       if (auto *p = dynamic_cast<const IVFIndexParams *>(params)) {
         EncodeIvf(p, &payload);
-        w.PutMessage(f_index_params::kIvf, payload);
+        w.put_message(f_index_params::kIvf, payload);
       }
       break;
     case IndexType::HNSW_RABITQ:
       if (auto *p = dynamic_cast<const HnswRabitqIndexParams *>(params)) {
         EncodeHnswRabitq(p, &payload);
-        w.PutMessage(f_index_params::kHnswRabitq, payload);
+        w.put_message(f_index_params::kHnswRabitq, payload);
       }
       break;
     case IndexType::IVF_RABITQ:
       if (auto *p = dynamic_cast<const IvfRabitqIndexParams *>(params)) {
         EncodeIvfRabitq(p, &payload);
-        w.PutMessage(f_index_params::kIvfRabitq, payload);
+        w.put_message(f_index_params::kIvfRabitq, payload);
       }
       break;
     case IndexType::VAMANA:
       if (auto *p = dynamic_cast<const VamanaIndexParams *>(params)) {
         EncodeVamana(p, &payload);
-        w.PutMessage(f_index_params::kVamana, payload);
+        w.put_message(f_index_params::kVamana, payload);
       }
       break;
     case IndexType::FTS:
       if (auto *p = dynamic_cast<const FtsIndexParams *>(params)) {
         EncodeFts(p, &payload);
-        w.PutMessage(f_index_params::kFts, payload);
+        w.put_message(f_index_params::kFts, payload);
       }
       break;
     case IndexType::DISKANN:
       if (auto *p = dynamic_cast<const DiskAnnIndexParams *>(params)) {
         EncodeDiskAnn(p, &payload);
-        w.PutMessage(f_index_params::kDiskann, payload);
+        w.put_message(f_index_params::kDiskann, payload);
       }
       break;
     default:
@@ -709,7 +710,7 @@ IndexParams::Ptr ManifestCodec::DecodeIndexParams(std::string_view buf) {
   // oneof semantics: the last branch present on the wire wins.
   IndexParams::Ptr params;
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_index_params::kInvert:
         params = DecodeInvert(r.bytes());
@@ -748,24 +749,24 @@ IndexParams::Ptr ManifestCodec::DecodeIndexParams(std::string_view buf) {
 void ManifestCodec::EncodeFieldSchema(const FieldSchema &field,
                                       std::string *out) {
   Writer w(out);
-  w.PutString(f_field::kName, field.name());
-  w.PutVarint(f_field::kDataType,
-              static_cast<uint64_t>(
-                  wire::ToNumber(DataTypeCodeBook::Get(field.data_type()))));
-  w.PutVarint(f_field::kDimension, field.dimension());
-  w.PutBool(f_field::kNullable, field.nullable());
+  w.put_string(f_field::kName, field.name());
+  w.put_varint(f_field::kDataType,
+               static_cast<uint64_t>(
+                   wire::ToNumber(DataTypeCodeBook::Get(field.data_type()))));
+  w.put_varint(f_field::kDimension, field.dimension());
+  w.put_bool(f_field::kNullable, field.nullable());
   auto index_params = field.index_params();
   if (index_params) {
     std::string payload;
     EncodeIndexParams(index_params.get(), &payload);
-    w.PutMessage(f_field::kIndexParams, payload);
+    w.put_message(f_field::kIndexParams, payload);
   }
 }
 
 FieldSchema::Ptr ManifestCodec::DecodeFieldSchema(std::string_view buf) {
   auto field = std::make_shared<FieldSchema>();
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_field::kName:
         field->set_name(r.string_value());
@@ -793,14 +794,14 @@ FieldSchema::Ptr ManifestCodec::DecodeFieldSchema(std::string_view buf) {
 void ManifestCodec::EncodeCollectionSchema(const CollectionSchema &schema,
                                            std::string *out) {
   Writer w(out);
-  w.PutString(f_collection::kName, schema.name());
+  w.put_string(f_collection::kName, schema.name());
   for (const auto &field : schema.fields()) {
     std::string payload;
     EncodeFieldSchema(*field, &payload);
-    w.PutMessage(f_collection::kFields, payload);
+    w.put_message(f_collection::kFields, payload);
   }
-  w.PutVarint(f_collection::kMaxDocCountPerSegment,
-              schema.max_doc_count_per_segment());
+  w.put_varint(f_collection::kMaxDocCountPerSegment,
+               schema.max_doc_count_per_segment());
 }
 
 CollectionSchema::Ptr ManifestCodec::DecodeCollectionSchema(
@@ -811,7 +812,7 @@ CollectionSchema::Ptr ManifestCodec::DecodeCollectionSchema(
   // the C++ default. Mirror that to stay compatible with such manifests.
   schema->set_max_doc_count_per_segment(0);
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_collection::kName:
         schema->set_name(r.string_value());
@@ -831,21 +832,21 @@ CollectionSchema::Ptr ManifestCodec::DecodeCollectionSchema(
 
 void ManifestCodec::EncodeBlockMeta(const BlockMeta &meta, std::string *out) {
   Writer w(out);
-  w.PutVarint(f_block::kBlockId, meta.id());
-  w.PutVarint(f_block::kBlockType, static_cast<uint64_t>(wire::ToNumber(
-                                       BlockTypeCodeBook::Get(meta.type()))));
-  w.PutVarint(f_block::kMinDocId, meta.min_doc_id());
-  w.PutVarint(f_block::kMaxDocId, meta.max_doc_id());
-  w.PutVarint(f_block::kDocCount, meta.doc_count());
+  w.put_varint(f_block::kBlockId, meta.id());
+  w.put_varint(f_block::kBlockType, static_cast<uint64_t>(wire::ToNumber(
+                                        BlockTypeCodeBook::Get(meta.type()))));
+  w.put_varint(f_block::kMinDocId, meta.min_doc_id());
+  w.put_varint(f_block::kMaxDocId, meta.max_doc_id());
+  w.put_varint(f_block::kDocCount, meta.doc_count());
   for (const auto &column : meta.columns()) {
-    w.AddString(f_block::kColumns, column);
+    w.add_string(f_block::kColumns, column);
   }
 }
 
 BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf) {
   auto meta = std::make_shared<BlockMeta>();
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_block::kBlockId:
         meta->set_id(r.uint32_value());
@@ -876,26 +877,26 @@ BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf) {
 void ManifestCodec::EncodeSegmentMeta(const SegmentMeta &meta,
                                       std::string *out) {
   Writer w(out);
-  w.PutVarint(f_segment::kSegmentId, meta.id());
+  w.put_varint(f_segment::kSegmentId, meta.id());
   for (const auto &block : meta.persisted_blocks()) {
     std::string payload;
     EncodeBlockMeta(block, &payload);
-    w.PutMessage(f_segment::kPersistedBlocks, payload);
+    w.put_message(f_segment::kPersistedBlocks, payload);
   }
   if (meta.has_writing_forward_block()) {
     std::string payload;
     EncodeBlockMeta(meta.writing_forward_block().value(), &payload);
-    w.PutMessage(f_segment::kWritingForwardBlock, payload);
+    w.put_message(f_segment::kWritingForwardBlock, payload);
   }
   for (const auto &field : meta.indexed_vector_fields()) {
-    w.AddString(f_segment::kIndexedVectorFields, field);
+    w.add_string(f_segment::kIndexedVectorFields, field);
   }
 }
 
 SegmentMeta::Ptr ManifestCodec::DecodeSegmentMeta(std::string_view buf) {
   auto meta = std::make_shared<SegmentMeta>(0);
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_segment::kSegmentId:
         meta->set_id(r.uint32_value());
@@ -918,36 +919,36 @@ SegmentMeta::Ptr ManifestCodec::DecodeSegmentMeta(std::string_view buf) {
 
 Status ManifestCodec::Encode(const ManifestData &data, std::string *out) {
   Writer w(out);
-  w.PutVarint(f_manifest::kVersion, data.version);
+  w.put_varint(f_manifest::kVersion, data.version);
   if (data.schema) {
     std::string payload;
     EncodeCollectionSchema(*data.schema, &payload);
-    w.PutMessage(f_manifest::kSchema, payload);
+    w.put_message(f_manifest::kSchema, payload);
   }
-  w.PutBool(f_manifest::kEnableMmap, data.enable_mmap);
+  w.put_bool(f_manifest::kEnableMmap, data.enable_mmap);
   for (const auto &meta : data.persisted_segment_metas) {
     if (!meta) {
       continue;
     }
     std::string payload;
     EncodeSegmentMeta(*meta, &payload);
-    w.PutMessage(f_manifest::kPersistedSegmentMetas, payload);
+    w.put_message(f_manifest::kPersistedSegmentMetas, payload);
   }
   if (data.writing_segment_meta) {
     std::string payload;
     EncodeSegmentMeta(*data.writing_segment_meta, &payload);
-    w.PutMessage(f_manifest::kWritingSegmentMeta, payload);
+    w.put_message(f_manifest::kWritingSegmentMeta, payload);
   }
-  w.PutVarint(f_manifest::kIdMapPathSuffix, data.id_map_path_suffix);
-  w.PutVarint(f_manifest::kDeleteSnapshotPathSuffix,
-              data.delete_snapshot_path_suffix);
-  w.PutVarint(f_manifest::kNextSegmentId, data.next_segment_id);
+  w.put_varint(f_manifest::kIdMapPathSuffix, data.id_map_path_suffix);
+  w.put_varint(f_manifest::kDeleteSnapshotPathSuffix,
+               data.delete_snapshot_path_suffix);
+  w.put_varint(f_manifest::kNextSegmentId, data.next_segment_id);
   return Status::OK();
 }
 
 Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
   Reader r(buf);
-  while (r.Next()) {
+  while (r.next()) {
     switch (r.field()) {
       case f_manifest::kVersion:
         data->version = r.uint32_value();

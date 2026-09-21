@@ -117,8 +117,8 @@ class UniformUint7Metric : public IndexMetric {
       return turbo_ret;
     }
     return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-        ailego::DistanceBatch::SquaredEuclideanDistanceBatch<int8_t, 12,
-                                                             2>::ComputeBatch);
+        ailego::distance_batch::SquaredEuclideanDistanceBatch<int8_t, 12,
+                                                              2>::ComputeBatch);
   }
 
   //! Retrieve params of Metric

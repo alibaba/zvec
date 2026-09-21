@@ -1034,7 +1034,7 @@ static int do_search() {
     RecallCounter recall1;
     RecallCounter recall5;
     RecallCounter recall10;
-    RecallCounter recallK;
+    RecallCounter recall_k;
     uint64_t no_result_count{0};
     uint64_t query_count{0};
   };
@@ -1162,7 +1162,7 @@ static int do_search() {
       result.recall1.add(compute_recall(1));
       result.recall5.add(compute_recall(5));
       result.recall10.add(compute_recall(10));
-      result.recallK.add(compute_recall(FLAGS_topk));
+      result.recall_k.add(compute_recall(FLAGS_topk));
     }
   };
 
@@ -1186,7 +1186,8 @@ static int do_search() {
 
   // Merge per-thread results
   LatencyStats merged_latency;
-  RecallCounter merged_recall1, merged_recall5, merged_recall10, merged_recallK;
+  RecallCounter merged_recall1, merged_recall5, merged_recall10,
+      merged_recall_k;
   uint64_t total_query_count = 0;
   uint64_t total_no_result_count = 0;
 
@@ -1200,8 +1201,8 @@ static int do_search() {
     merged_recall5.total += result.recall5.total;
     merged_recall10.sum += result.recall10.sum;
     merged_recall10.total += result.recall10.total;
-    merged_recallK.sum += result.recallK.sum;
-    merged_recallK.total += result.recallK.total;
+    merged_recall_k.sum += result.recall_k.sum;
+    merged_recall_k.total += result.recall_k.total;
     total_query_count += result.query_count;
     total_no_result_count += result.no_result_count;
   }
@@ -1232,8 +1233,8 @@ static int do_search() {
               << " (evaluated on " << merged_recall10.total << " queries)"
               << std::endl;
     if (FLAGS_topk > 10) {
-      std::cout << "  Recall@" << FLAGS_topk << " : " << merged_recallK.ratio()
-                << " (evaluated on " << merged_recallK.total << " queries)"
+      std::cout << "  Recall@" << FLAGS_topk << " : " << merged_recall_k.ratio()
+                << " (evaluated on " << merged_recall_k.total << " queries)"
                 << std::endl;
     }
   } else {
@@ -1321,7 +1322,7 @@ static int do_search_db() {
     RecallCounter recall1;
     RecallCounter recall5;
     RecallCounter recall10;
-    RecallCounter recallK;
+    RecallCounter recall_k;
     uint64_t no_result_count{0};
     uint64_t query_count{0};
   };
@@ -1398,7 +1399,7 @@ static int do_search_db() {
       result.recall1.add(compute_recall(1));
       result.recall5.add(compute_recall(5));
       result.recall10.add(compute_recall(10));
-      result.recallK.add(compute_recall(FLAGS_topk));
+      result.recall_k.add(compute_recall(FLAGS_topk));
     }
   };
 
@@ -1425,7 +1426,8 @@ static int do_search_db() {
 
   // Merge per-thread results
   LatencyStats merged_latency;
-  RecallCounter merged_recall1, merged_recall5, merged_recall10, merged_recallK;
+  RecallCounter merged_recall1, merged_recall5, merged_recall10,
+      merged_recall_k;
   uint64_t total_query_count = 0;
   uint64_t total_no_result_count = 0;
 
@@ -1439,8 +1441,8 @@ static int do_search_db() {
     merged_recall5.total += result.recall5.total;
     merged_recall10.sum += result.recall10.sum;
     merged_recall10.total += result.recall10.total;
-    merged_recallK.sum += result.recallK.sum;
-    merged_recallK.total += result.recallK.total;
+    merged_recall_k.sum += result.recall_k.sum;
+    merged_recall_k.total += result.recall_k.total;
     total_query_count += result.query_count;
     total_no_result_count += result.no_result_count;
   }
@@ -1470,8 +1472,8 @@ static int do_search_db() {
               << " (evaluated on " << merged_recall10.total << " queries)"
               << std::endl;
     if (FLAGS_topk > 10) {
-      std::cout << "  Recall@" << FLAGS_topk << " : " << merged_recallK.ratio()
-                << " (evaluated on " << merged_recallK.total << " queries)"
+      std::cout << "  Recall@" << FLAGS_topk << " : " << merged_recall_k.ratio()
+                << " (evaluated on " << merged_recall_k.total << " queries)"
                 << std::endl;
     }
   } else {

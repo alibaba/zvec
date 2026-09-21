@@ -45,12 +45,12 @@ static IndexHolder::Pointer GetHolder(
   return holder;
 }
 
-static inline void MatrixTranspose(uint32_t *dst, const uint32_t *src, size_t M,
-                                   size_t N) {
-  for (size_t n = 0; n < N * M; n++) {
-    size_t i = n / N;
-    size_t j = n % N;
-    dst[n] = src[M * j + i];
+static inline void MatrixTranspose(uint32_t *dst, const uint32_t *src,
+                                   size_t num_rows, size_t num_cols) {
+  for (size_t n = 0; n < num_cols * num_rows; n++) {
+    size_t i = n / num_cols;
+    size_t j = n % num_cols;
+    dst[n] = src[num_rows * j + i];
   }
 }
 
@@ -76,35 +76,35 @@ TEST(QuantizedIntegerMetric, General) {
   std::uniform_real_distribution<float> dist(-1.0, 1.0);
   const size_t DIMENSION = 21;
   ailego::NumericalVector<float> x(DIMENSION);
-  ailego::NumericalVector<float> X(DIMENSION);
+  ailego::NumericalVector<float> xt(DIMENSION);
   ailego::NumericalVector<float> y(DIMENSION);
-  ailego::NumericalVector<float> Y(DIMENSION);
+  ailego::NumericalVector<float> yt(DIMENSION);
   float xa = dist(gen);
   float xb = dist(gen);
   float ya = dist(gen);
   float yb = dist(gen);
   float x2 = 0, x1 = 0, y2 = 0, y1 = 0;
-  float X2 = 0;
+  float xt2 = 0;
   float xx2 = 0;
   for (size_t j = 0; j < DIMENSION; ++j) {
     x[j] = dist(gen);
     printf("%f ", x[j]);
-    X[j] = x[j] * xa + xb;
+    xt[j] = x[j] * xa + xb;
     x1 += x[j];
-    X2 += X[j] * X[j];
+    xt2 += xt[j] * xt[j];
     xx2 += x[j] * x[j];
   }
   printf("\n");
 
   for (size_t j = 0; j < DIMENSION; ++j) {
     y[j] = dist(gen);
-    Y[j] = y[j] * ya + yb;
+    yt[j] = y[j] * ya + yb;
     y1 += y[j];
     printf("%f ", y[j]);
   }
   printf("\n");
 
-  auto v1 = ailego::Distance::SquaredEuclidean(X.data(), Y.data(), DIMENSION);
+  auto v1 = ailego::Distance::SquaredEuclidean(xt.data(), yt.data(), DIMENSION);
   auto ip = ailego::Distance::InnerProduct(x.data(), y.data(), DIMENSION);
   ailego::SquaredNorm2Matrix<float, 1>::Compute(x.data(), DIMENSION, &x2);
   ailego::SquaredNorm2Matrix<float, 1>::Compute(y.data(), DIMENSION, &y2);
@@ -121,23 +121,23 @@ TEST(QuantizedIntegerMetric, General) {
   printf(
       "x=%f y=%f X=%f Y=%f, xa=%f xb=%f ya=%f yb=%f, x2=%f y2=%f x1=%f y1=%f "
       "ip=%f\n",
-      x[0], y[0], X[0], Y[0], xa, xb, ya, yb, x2, y2, x1, y1, ip);
+      x[0], y[0], xt[0], yt[0], xa, xb, ya, yb, x2, y2, x1, y1, ip);
   printf("v1=%f v2=%f v3=%f\n", v1, v2, v3);
 
-  auto IP = ailego::Distance::InnerProduct(X.data(), Y.data(), DIMENSION);
+  auto ip_t = ailego::Distance::InnerProduct(xt.data(), yt.data(), DIMENSION);
   auto v = xa * ya * ip + xb * ya * y1 + xa * yb * x1 + xb * yb * DIMENSION;
-  printf("V=%f %f\n", IP, v);
+  printf("V=%f %f\n", ip_t, v);
 
   printf("=========\n");
   float mips;
   ailego::MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-      X.data(), Y.data(), DIMENSION, 0.0, &mips);
+      xt.data(), yt.data(), DIMENSION, 0.0, &mips);
   printf("u2=%f v2=%f\n", x2, y2);
   float uu2 = xa * xa * x2 + 2 * xa * xb * x1 + xb * xb * DIMENSION;
   float vv2 = ya * ya * y2 + 2 * ya * yb * y1 + yb * yb * DIMENSION;
   float v7 = 2.0 - 2.0 * v / std::max(uu2, vv2);
   printf("mips=%f v7=%f\n", mips, v7);
-  printf("X2=%f uu2=%f xx2=%f x2=%f\n", X2, uu2, xx2, x2);
+  printf("X2=%f uu2=%f xx2=%f x2=%f\n", xt2, uu2, xx2, x2);
 }
 
 TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {

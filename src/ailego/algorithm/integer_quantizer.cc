@@ -129,7 +129,7 @@ static inline void ExpandCandidateDistribution(
  */
 static inline size_t ComputeThreshold(const std::vector<uint32_t> &hist,
                                       const size_t target_bins) {
-  std::vector<float> P_distribution(hist.size());
+  std::vector<float> p_distribution(hist.size());
   size_t zero_point_index = hist.size() / 2;
 
   size_t start_bin = target_bins / 2;
@@ -147,19 +147,19 @@ static inline size_t ComputeThreshold(const std::vector<uint32_t> &hist,
   //! for each zero-axised quantization range: [-threshold, threshold], search
   //! the best solution
   for (size_t threshold = start_bin; threshold <= end_bin; ++threshold) {
-    P_distribution.resize(threshold * 2);
+    p_distribution.resize(threshold * 2);
     auto p_hist = &hist[zero_point_index - threshold];
-    for (size_t i = 0; i != P_distribution.size(); ++i) {
-      P_distribution[i] = static_cast<float>(p_hist[i]);
+    for (size_t i = 0; i != p_distribution.size(); ++i) {
+      p_distribution[i] = static_cast<float>(p_hist[i]);
     }
 
     negative_outliers_count -= hist[zero_point_index - threshold];
     positive_outliers_count -= hist[zero_point_index + threshold - 1];
-    P_distribution[0] += negative_outliers_count;
-    P_distribution[P_distribution.size() - 1] += positive_outliers_count;
+    p_distribution[0] += negative_outliers_count;
+    p_distribution[p_distribution.size() - 1] += positive_outliers_count;
 
     //! Quantize the bins in range [-threshold, threshold] to target_bins
-    std::vector<float> Q_distribution(target_bins, 0);
+    std::vector<float> q_distribution(target_bins, 0);
     float merged_cnt = static_cast<float>(threshold * 2) / target_bins;
     size_t left_boundary = zero_point_index - threshold;
     for (size_t i = 0; i < target_bins; ++i) {
@@ -168,28 +168,28 @@ static inline size_t ComputeThreshold(const std::vector<uint32_t> &hist,
       const size_t start_ceil = static_cast<size_t>(std::ceil(start));
       const size_t end_floor = static_cast<size_t>(std::floor(end));
       if (left_boundary + start_ceil > 0) {
-        Q_distribution[i] +=
+        q_distribution[i] +=
             ((float)start_ceil - start) * hist[left_boundary + start_ceil - 1];
       }
       if (left_boundary + end_floor < hist.size()) {
-        Q_distribution[i] +=
+        q_distribution[i] +=
             (end - (float)end_floor) * hist[left_boundary + end_floor];
       }
 
       for (size_t j = start_ceil; j < end_floor; j++) {
-        Q_distribution[i] += hist[left_boundary + j];
+        q_distribution[i] += hist[left_boundary + j];
       }
     }
-    std::vector<float> Q_expand_distribution;
-    ExpandCandidateDistribution(hist, Q_distribution, threshold,
-                                &Q_expand_distribution);
+    std::vector<float> q_expand_distribution;
+    ExpandCandidateDistribution(hist, q_distribution, threshold,
+                                &q_expand_distribution);
 
     //! Compute Kullback-Leibler Divergence, normalize the smooth the data
     //! first. Ref: http://hanj.cs.illinois.edu/cs412/bk3/KL-divergence.pdf
-    MakeSmooth(P_distribution);
-    MakeSmooth(Q_expand_distribution);
+    MakeSmooth(p_distribution);
+    MakeSmooth(q_expand_distribution);
     double divergence =
-        ComputeKlDivergence(P_distribution, Q_expand_distribution);
+        ComputeKlDivergence(p_distribution, q_expand_distribution);
 
     if (divergence < min_divergence) {
       min_divergence = divergence;

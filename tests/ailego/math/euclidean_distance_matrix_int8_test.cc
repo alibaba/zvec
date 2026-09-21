@@ -30,11 +30,11 @@ static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
-static inline void MatrixTranspose(uint32_t *dst, const uint32_t *src, size_t M,
-                                   size_t N) {
-  for (size_t i = 0; i < N; ++i) {
-    for (size_t j = 0; j < M; ++j) {
-      dst[j * N + i] = src[i * M + j];
+static inline void MatrixTranspose(uint32_t *dst, const uint32_t *src, size_t m,
+                                   size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < m; ++j) {
+      dst[j * n + i] = src[i * m + j];
     }
   }
 }

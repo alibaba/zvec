@@ -102,6 +102,11 @@ void FhtRotator::train(const void * /*data*/, size_t /*num*/,
   // No-op: flip-sign arrays are generated in create().
 }
 
+void FhtRotator::train(const void * /*data*/, void * /*ctx*/, size_t /*num*/,
+                       size_t /*stride*/) {
+  // No-op: nothing to fit, the second input is irrelevant.
+}
+
 // ---------------------------------------------------------------------------
 // apply  (forward rotation)
 // ---------------------------------------------------------------------------

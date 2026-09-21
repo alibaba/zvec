@@ -19,14 +19,14 @@
 
 namespace zvec::sqlengine {
 
-Node::Node() : Generic_Node(NodeOp::T_NONE) {}
+Node::Node() : GenericNode(NodeOp::T_NONE) {}
 
-Node::Node(NodeOp m_op) : Generic_Node(m_op) {
+Node::Node(NodeOp m_op) : GenericNode(m_op) {
   set_op(m_op);
 }
 
 void Node::set_op(NodeOp value) {
-  Generic_Node<NodeOp, Node>::set_op(value);
+  GenericNode<NodeOp, Node>::set_op(value);
   set_type_by_op();
 }
 

@@ -52,7 +52,7 @@ class LocalWalFile : public WalFile {
   LocalWalFile(const std::string &wal_path) : wal_path_(wal_path) {}
 
   //! Destructor
-  ~LocalWalFile() {
+  ~LocalWalFile() override {
     if (opened_) {
       close();
     }

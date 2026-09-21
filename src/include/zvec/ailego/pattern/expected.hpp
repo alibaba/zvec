@@ -16,6 +16,8 @@
 #ifndef TL_EXPECTED_HPP
 #define TL_EXPECTED_HPP
 
+// NOLINTBEGIN
+
 #define TL_EXPECTED_VERSION_MAJOR 1
 #define TL_EXPECTED_VERSION_MINOR 2
 #define TL_EXPECTED_VERSION_PATCH 0
@@ -2601,5 +2603,7 @@ void swap(expected<T, E> &lhs,
   lhs.swap(rhs);
 }
 }  // namespace tl
+
+// NOLINTEND
 
 #endif

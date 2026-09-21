@@ -31,7 +31,7 @@ class SelectInfo : public BaseInfo {
   using Ptr = std::shared_ptr<SelectInfo>;
 
   SelectInfo(const std::string &m_table_name);
-  ~SelectInfo();
+  ~SelectInfo() override;
 
   SelectInfo(const SelectInfo &info);
   SelectInfo &operator=(const SelectInfo &info);
@@ -82,7 +82,7 @@ class SelectInfo : public BaseInfo {
     return fts_cond_info_ != nullptr;
   }
 
-  std::string to_string();
+  std::string to_string() override;
 
  private:
   Node::Ptr copy_node(const Node::Ptr &node);

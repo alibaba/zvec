@@ -38,7 +38,8 @@ struct PqInt4SerPayload {
   uint32_t num_centroids;  // always 16 for int4
   uint8_t use_zero_mean;
   uint8_t input_data_type;  // turbo DataType: kFp32=3, kFp16=2
-  uint8_t reserved[2];
+  uint8_t rotate_type;      // RotateType, 0 = no rotation (was reserved)
+  uint8_t reserved;
 };
 
 int PqInt4Quantizer::setup_functions() {
@@ -134,6 +135,9 @@ int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
+  int opq_ret = opq_.init(original_dim_, input_data_type_, params);
+  if (opq_ret != 0) return opq_ret;
+
   if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean" &&
       meta_.metric_name() != "Cosine") {
     use_zero_mean_ = false;
@@ -166,7 +170,8 @@ void PqInt4Quantizer::build_centroid_ptrs_cache() {
 
 template <typename T>
 void PqInt4Quantizer::train_subquantizer(const T *data, size_t num,
-                                         size_t stride, size_t sub_idx) {
+                                         size_t stride, size_t sub_idx,
+                                         uint32_t max_iters) {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   uint8_t *centroids_m =
@@ -199,7 +204,7 @@ void PqInt4Quantizer::train_subquantizer(const T *data, size_t num,
 
   // Lloyd iterations
   double cost = 0.0;
-  for (uint32_t iter = 0; iter < kMaxKmeansIters; ++iter) {
+  for (uint32_t iter = 0; iter < max_iters; ++iter) {
     double old_cost = cost;
     bool result = algorithm.cluster_once(*local_threads, &cost);
     if (!result) {
@@ -293,6 +298,31 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder) {
     }
   }
 
+  opq_.train(
+      all_data.data(), num, "PqInt4Quantizer",
+      [&](uint32_t max_iters) {
+        train_all_chunks(all_data.data(), num, data_stride, max_iters);
+        build_centroid_ptrs_cache();
+      },
+      [this](const float *rotated, size_t count, float *x_hat) {
+        return encode_reconstruct_batch(rotated, count, x_hat);
+      });
+
+  train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters);
+
+  // Pre-build centroid pointer cache (needed by compute_dist_table).
+  build_centroid_ptrs_cache();
+
+  // Pre-compute SDC dist_table.
+  compute_dist_table();
+
+  // Pre-compute sub-centroid norms for the precomputed residual table.
+  compute_sub_centroid_norms();
+  return 0;
+}
+
+void PqInt4Quantizer::train_all_chunks(const void *data, size_t num,
+                                       size_t stride, uint32_t max_iters) {
   // Create thread pool.
   auto threads =
       std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
@@ -305,11 +335,12 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder) {
   auto submit_training = [&](const auto *typed_data) {
     using T = std::remove_const_t<std::remove_pointer_t<decltype(typed_data)>>;
     for (size_t i = 0; i < pool_count; ++i) {
-      task_group->submit(ailego::Closure::New(
-          [this, typed_data, num, data_stride, i, pool_count, &finished]() {
+      task_group->submit(
+          ailego::Closure::New([this, typed_data, num, stride, i, pool_count,
+                                max_iters, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
-              train_subquantizer<T>(typed_data, num, data_stride, m);
+              train_subquantizer<T>(typed_data, num, stride, m, max_iters);
               finished++;
             }
           }));
@@ -318,26 +349,23 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder) {
 
   switch (input_data_type_) {
     case DataType::kFp16:
-      submit_training(
-          reinterpret_cast<const ailego::Float16 *>(all_data.data()));
+      submit_training(reinterpret_cast<const ailego::Float16 *>(data));
       break;
     case DataType::kFp32:
-      submit_training(reinterpret_cast<const float *>(all_data.data()));
+      submit_training(reinterpret_cast<const float *>(data));
       break;
     default:
       break;
   }
   task_group->wait_finish();
+}
 
-  // Pre-build centroid pointer cache (needed by compute_dist_table).
-  build_centroid_ptrs_cache();
-
-  // Pre-compute SDC dist_table.
-  compute_dist_table();
-
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-  return 0;
+float PqInt4Quantizer::encode_reconstruct_batch(const float *rotated,
+                                                size_t num,
+                                                float *x_hat) const {
+  return pq_reconstruct_batch<kNumCentroids>(
+      rotated, num, original_dim_, centroid_ptrs_cache_, l2_batch_fn_,
+      [this](size_t) { return sub_dim_; }, x_hat);
 }
 
 void PqInt4Quantizer::compute_dist_table() {
@@ -428,6 +456,10 @@ void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
     vec = centered_vec_storage.data();
   }
 
+  // OPQ: rotate last, mirroring train().
+  std::vector<float> rotated_vec_storage;
+  vec = opq_.apply(vec, &rotated_vec_storage);
+
   // Zero the packed code buffer first: nibble packing ORs codes in, and an
   // odd num_chunk leaves the last byte's high nibble as the (zero) pad.
   const size_t packed_len = packed_code_length();
@@ -517,6 +549,10 @@ void PqInt4Quantizer::quantize_query(const void *input, void *output) const {
     }
     query = centered_query_storage.data();
   }
+
+  // OPQ: rotate last, as quantize_data() does.
+  std::vector<float> rotated_query_storage;
+  query = opq_.apply(query, &rotated_query_storage);
 
   // LUT[m][j] = distance(q_m, c_m[j]) via the metric-aware batch_fn_:
   // L2/Cosine: ||q_m - c_m[j]||^2   IP: -dot(q_m, c_m[j]).
@@ -658,11 +694,22 @@ int PqInt4Quantizer::build_centroid_distance_table(const void *centroids,
   auto build_for_type = [&](auto *typed_dummy) {
     using T = std::remove_pointer_t<decltype(typed_dummy)>;
     std::vector<T> buf(original_dim_);
+    std::vector<float> rotated;
     float dists[kNumCentroids];
     const T *src = reinterpret_cast<const T *>(centroids);
     for (size_t i = 0; i < centroid_num; ++i) {
       std::memcpy(buf.data(), src + i * original_dim_,
                   original_dim_ * sizeof(T));
+      //! Rotation is orthogonal, so L2 decomposition holds in the rotated
+      //! space.  OPQ is gated to fp32 in init(), hence the constexpr branch.
+      if constexpr (std::is_same_v<T, float>) {
+        if (opq_.enabled()) {
+          rotated.resize(original_dim_);
+          opq_.rotate(buf.data(), rotated.data());
+          std::memcpy(buf.data(), rotated.data(),
+                      original_dim_ * sizeof(float));
+        }
+      }
       const uint8_t *buf_bytes = reinterpret_cast<const uint8_t *>(buf.data());
       float *row = tab + i * row_floats;
       for (uint32_t m = 0; m < num_chunk_; ++m) {
@@ -768,6 +815,11 @@ int PqInt4Quantizer::quantize_precomputed_query(const void *query,
     prep = centered_query_storage.data();
   }
 
+  //! Rotation closes the preprocessing chain here as well, keeping this path
+  //! in lockstep with quantize_query().
+  std::vector<float> rotated_query_storage;
+  prep = opq_.apply(prep, &rotated_query_storage);
+
   //! term3 LUT: -2<q^m, c_m[j]>.  The IP kernel returns the negated inner
   //! product, i.e. dists[j] = -<q^m, c_m[j]>, so LUT = 2 * dists.  The
   //! merged LUT keeps the plain float[num_chunk * kNumCentroids] layout
@@ -854,6 +906,12 @@ int PqInt4Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
     }
   }
 
+  // Undo the rotation first: codes live in the rotated space.
+  if (opq_.enabled()) {
+    std::vector<float> rotated(result, result + original_dim_);
+    opq_.rotate_inverse(rotated.data(), result);
+  }
+
   // Undo zero-mean centering: add the centroid back FIRST (centering was
   // applied in normalized space during encode).
   if (use_zero_mean_) {
@@ -935,11 +993,19 @@ int PqInt4Quantizer::serialize(std::string *out) const {
   payload.num_centroids = kNumCentroids;
   payload.use_zero_mean = use_zero_mean_ ? 1 : 0;
   payload.input_data_type = static_cast<uint8_t>(input_data_type_);
+  payload.rotate_type = opq_.rotate_type();
+
+  // The rotator blob is self-describing (RotatorSerHeader + matrix), so the
+  // payload only needs the type tag to know whether one follows.
+  std::string preprocessor_blob;
+  int opq_ret = opq_.serialize(&preprocessor_blob);
+  if (opq_ret != 0) return opq_ret;
 
   size_t centroids_bytes = centroids_.size();  // already byte buffer
   size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
   hdr.payload_size =
-      static_cast<uint32_t>(sizeof(payload) + centroids_bytes + centroid_bytes);
+      static_cast<uint32_t>(sizeof(payload) + centroids_bytes + centroid_bytes +
+                            preprocessor_blob.size());
 
   out->clear();
   out->append(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
@@ -951,6 +1017,7 @@ int PqInt4Quantizer::serialize(std::string *out) const {
     out->append(reinterpret_cast<const char *>(centroid_.data()),
                 centroid_bytes);
   }
+  out->append(preprocessor_blob);
   // dist_table_ is NOT serialized: it is a build-phase-only derivative of the
   // codebook (used by SDC), recomputable on demand and unneeded after
   // deserialization (search uses ADC).
@@ -1029,6 +1096,10 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
     std::memcpy(centroid_.data(), ptr, centroid_bytes);
     ptr += centroid_bytes;
   }
+  int opq_ret = opq_.deserialize(
+      payload.rotate_type, original_dim_, ptr,
+      len - static_cast<size_t>(ptr - reinterpret_cast<const char *>(data)));
+  if (opq_ret != 0) return opq_ret;
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
 

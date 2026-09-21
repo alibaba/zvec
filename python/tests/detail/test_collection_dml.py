@@ -26,14 +26,18 @@ DOCID_VALID_LIST = [
     "123abc",
     "-!@#$%+=.123abc_+",
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ123456789012",
+    "()qsd123",
+    " ",
+    "/&AS12",
+    "订单:2026",
+    "a" * 1024,
 ]
 DOCID_INVALID_LIST = [
     None,
     "",
-    "()qsd123",
-    " ",
-    "/&AS12",
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890121",
+    "a" * 1025,
+    "doc\0id",
+    "doc\nid",
 ]
 
 FIELD_VALUE_VALID_LIST = [

@@ -993,6 +993,18 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
 #endif
     throw std::runtime_error("Failed to stat file: " + filename);
   }
+#if !defined(_MSC_VER)
+  // Atomic replacement between the two opens must not mix metadata from one
+  // file with pages from another. Windows CRT opens prevent deletion while
+  // either descriptor is live; POSIX needs an explicit identity check.
+  struct stat meta_st;
+  if (fstat(meta_fd_, &meta_st) < 0 || st.st_dev != meta_st.st_dev ||
+      st.st_ino != meta_st.st_ino) {
+    ::close(fd_);
+    ::close(meta_fd_);
+    throw std::runtime_error("Backing file changed while opening: " + filename);
+  }
+#endif
   file_size_ = st.st_size;
   initial_file_size_ = file_size_;
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -1836,6 +1848,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
 
   size_t copied = 0;
   size_t io_requests = 0;
+  size_t bypass_bytes = 0;
   bool ok = true;
   while (copied < length) {
     const size_t absolute = file_offset + copied;
@@ -1843,6 +1856,34 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
     const size_t within_page = absolute - page_offset;
     const size_t copy_size =
         std::min(length - copied, kVectorPageSize - within_page);
+    const block_id_t page_id = page_offset / kVectorPageSize;
+    bool claimed = false;
+    if (writable_) {
+      // Bypassing admission must not bypass unflushed data. Reuse resident
+      // bytes, or claim an unloaded page before reading disk so an in-flight
+      // writer/eviction cannot leave us observing stale file contents.
+      char *resident = nullptr;
+      while ((resident = page_table_.acquire_block(page_id)) == nullptr) {
+        const auto claim = page_table_.try_claim_block_load(page_id);
+        if (claim == VectorPageTable::LoadClaimResult::kClaimed) {
+          claimed = true;
+          break;
+        }
+        if (claim != VectorPageTable::LoadClaimResult::kResident &&
+            !page_table_.wait_for_block_transition(page_id)) {
+          return false;
+        }
+      }
+      if (resident != nullptr) {
+        std::shared_lock<std::shared_mutex> page_lock(
+            block_mutexes_[page_id % block_mutex_count_]);
+        std::memcpy(buffer + copied, resident + within_page, copy_size);
+        page_lock.unlock();
+        page_table_.release_block(page_id);
+        copied += copy_size;
+        continue;
+      }
+    }
     const size_t available = file_size_ - page_offset;
     const size_t read_size = direct_io_enabled_
                                  ? kVectorPageSize
@@ -1850,6 +1891,9 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
 
     ++io_requests;
     const ssize_t read_bytes = zvec_pread(fd_, page, read_size, page_offset);
+    if (claimed) {
+      (void)page_table_.cancel_block_load(page_id);
+    }
     if (read_bytes <= 0 ||
         within_page + copy_size > static_cast<size_t>(read_bytes)) {
       ok = false;
@@ -1857,9 +1901,10 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
     }
     std::memcpy(buffer + copied, page + within_page, copy_size);
     copied += copy_size;
+    bypass_bytes += copy_size;
   }
-  if (ok) {
-    record_bypass_read(length, io_requests);
+  if (ok && io_requests != 0) {
+    record_bypass_read(bypass_bytes, io_requests);
   }
   return ok;
 }

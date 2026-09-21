@@ -13,11 +13,85 @@
 // limitations under the License.
 
 #include "utils.h"
+#include <utf8proc.h>
+#include <algorithm>
+
 
 namespace zvec {
 
 std::string indent(int level) {
   return std::string(level * 2, ' ');
+}
+
+std::string format_name(std::string_view value) {
+  constexpr size_t kMaxPreviewBytes = 32;
+  constexpr char kHexDigits[] = "0123456789ABCDEF";
+  auto length = std::min(value.size(), kMaxPreviewBytes);
+  std::string preview;
+  preview.reserve(length);
+  size_t i = 0;
+  while (i < length) {
+    auto byte = static_cast<unsigned char>(value[i]);
+    if (byte >= 0x80) {
+      utf8proc_int32_t codepoint;
+      auto bytes = utf8proc_iterate(
+          reinterpret_cast<const utf8proc_uint8_t *>(value.data() + i),
+          static_cast<utf8proc_ssize_t>(std::min(value.size() - i, size_t{4})),
+          &codepoint);
+      if (bytes > 0) {
+        auto codepoint_bytes = static_cast<size_t>(bytes);
+        if (i + codepoint_bytes > length) {
+          break;
+        }
+        switch (utf8proc_category(codepoint)) {
+          case UTF8PROC_CATEGORY_CC:
+          case UTF8PROC_CATEGORY_CF:
+          case UTF8PROC_CATEGORY_CN:
+          case UTF8PROC_CATEGORY_ZL:
+          case UTF8PROC_CATEGORY_ZP:
+            break;
+          default:
+            preview.append(value.data() + i, codepoint_bytes);
+            i += codepoint_bytes;
+            continue;
+        }
+      }
+    }
+    switch (byte) {
+      case '\0':
+        preview += "\\0";
+        break;
+      case '\n':
+        preview += "\\n";
+        break;
+      case '\r':
+        preview += "\\r";
+        break;
+      case '\t':
+        preview += "\\t";
+        break;
+      case '\\':
+      case '[':
+      case ']':
+        preview += '\\';
+        preview += static_cast<char>(byte);
+        break;
+      default:
+        if (byte >= 0x20 && byte <= 0x7E) {
+          preview += static_cast<char>(byte);
+        } else {
+          preview += "\\x";
+          preview += kHexDigits[byte >> 4];
+          preview += kHexDigits[byte & 0x0F];
+        }
+        break;
+    }
+    ++i;
+  }
+  if (i < value.size()) {
+    preview += "...";
+  }
+  return preview;
 }
 
 }  // namespace zvec

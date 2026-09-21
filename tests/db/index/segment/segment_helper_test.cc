@@ -77,12 +77,12 @@ class SegmentHelperTest : public testing::Test {
   }
 
  public:
-  std::string GetColPath() {
+  std::string get_col_path() {
     return col_path;
   }
 
  protected:
-  VersionManager::Ptr CreateVersionManager(const CollectionSchema &schema) {
+  VersionManager::Ptr create_version_manager(const CollectionSchema &schema) {
     Version version;
     version.set_schema(schema);
     auto vm = VersionManager::Create(col_path, version);
@@ -92,7 +92,7 @@ class SegmentHelperTest : public testing::Test {
     return vm.value();
   }
 
-  SegmentOptions WriteOptions() const {
+  SegmentOptions write_options() const {
     return SegmentOptions{false, true, DEFAULT_MAX_BUFFER_SIZE};
   }
 
@@ -103,12 +103,12 @@ class SegmentHelperTest : public testing::Test {
 
   // Execute a CompactTask end-to-end: build it, run it, move the tmp segment
   // dir into place, and reopen the output segment in read-only mode.
-  CompactResult RunCompactAndOpen(CollectionSchema::Ptr schema,
-                                  std::vector<Segment::Ptr> segments,
-                                  SegmentID output_segment_id,
-                                  IndexFilter::Ptr filter,
-                                  const VersionManager::Ptr &version_manager,
-                                  int concurrency = 1) {
+  CompactResult run_compact_and_open(CollectionSchema::Ptr schema,
+                                     std::vector<Segment::Ptr> segments,
+                                     SegmentID output_segment_id,
+                                     IndexFilter::Ptr filter,
+                                     const VersionManager::Ptr &version_manager,
+                                     int concurrency = 1) {
     const bool forward_use_parquet = false;
     CompactTask task(col_path, schema, std::move(segments), output_segment_id,
                      std::move(filter), forward_use_parquet, concurrency);
@@ -148,22 +148,22 @@ class SegmentHelperTest : public testing::Test {
 
 TEST_F(SegmentHelperTest, CompactTask_General) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 1000);
+      seg_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 1000, id_map, delete_store, version_manager,
-      write_options, 1000, 1000);
+      seg_options, 1000, 1000);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg2->flush().ok());
 
   SegmentID output_segment_id = 2;
-  auto [compact_task, seg3] = RunCompactAndOpen(
+  auto [compact_task, seg3] = run_compact_and_open(
       schema, {seg1, seg2}, output_segment_id, nullptr, version_manager);
 
   ASSERT_NE(seg3, nullptr);
@@ -174,7 +174,7 @@ TEST_F(SegmentHelperTest, CompactTask_General) {
   ASSERT_EQ(seg3->doc_count(), seg1->doc_count() + seg2->doc_count());
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
-    auto doc = seg3->Fetch(i);
+    auto doc = seg3->fetch(i);
     ASSERT_NE(doc, nullptr);
     auto expect_doc = test::TestHelper::CreateDoc(i, *schema);
     ASSERT_EQ(*doc, expect_doc);
@@ -186,22 +186,22 @@ TEST_F(SegmentHelperTest, CompactTask_General) {
 
 TEST_F(SegmentHelperTest, CompactTask_ScalarIndex) {
   auto schema = test::TestHelper::CreateSchemaWithScalarIndex(false);
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 1000);
+      seg_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 1000, id_map, delete_store, version_manager,
-      write_options, 1000, 1000);
+      seg_options, 1000, 1000);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg2->flush().ok());
 
   SegmentID output_segment_id = 2;
-  auto [compact_task, seg3] = RunCompactAndOpen(
+  auto [compact_task, seg3] = run_compact_and_open(
       schema, {seg1, seg2}, output_segment_id, nullptr, version_manager);
 
   ASSERT_NE(seg3, nullptr);
@@ -212,7 +212,7 @@ TEST_F(SegmentHelperTest, CompactTask_ScalarIndex) {
   ASSERT_EQ(seg3->doc_count(), seg1->doc_count() + seg2->doc_count());
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
-    auto doc = seg3->Fetch(i);
+    auto doc = seg3->fetch(i);
     ASSERT_NE(doc, nullptr);
     auto expect_doc = test::TestHelper::CreateDoc(i, *schema);
     ASSERT_EQ(*doc, expect_doc);
@@ -224,22 +224,22 @@ TEST_F(SegmentHelperTest, CompactTask_ScalarIndex) {
 
 TEST_F(SegmentHelperTest, CompactTask_VectorIndex) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 1000);
+      seg_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 1000, id_map, delete_store, version_manager,
-      write_options, 1000, 1000);
+      seg_options, 1000, 1000);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg2->flush().ok());
 
   SegmentID output_segment_id = 2;
-  auto [compact_task, seg3] = RunCompactAndOpen(
+  auto [compact_task, seg3] = run_compact_and_open(
       schema, {seg1, seg2}, output_segment_id, nullptr, version_manager);
 
   ASSERT_NE(seg3, nullptr);
@@ -250,7 +250,7 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndex) {
   ASSERT_EQ(seg3->doc_count(), seg1->doc_count() + seg2->doc_count());
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
-    auto doc = seg3->Fetch(i);
+    auto doc = seg3->fetch(i);
     ASSERT_NE(doc, nullptr);
     auto expect_doc = test::TestHelper::CreateDoc(i, *schema);
     ASSERT_EQ(*doc, expect_doc);
@@ -262,8 +262,8 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndex) {
 
 TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   std::vector<Segment::Ptr> input_segs;
   const int seg_count = 10;
@@ -271,15 +271,14 @@ TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
   for (int i = 0; i < seg_count; i++) {
     auto seg = test::TestHelper::CreateSegmentWithDoc(
         col_path, *schema, i, i * doc_count_per_seg, id_map, delete_store,
-        version_manager, write_options, i * doc_count_per_seg,
-        doc_count_per_seg);
+        version_manager, seg_options, i * doc_count_per_seg, doc_count_per_seg);
     ASSERT_TRUE(seg != nullptr);
     ASSERT_TRUE(seg->flush().ok());
     input_segs.push_back(seg);
   }
 
   SegmentID output_segment_id = seg_count;
-  auto [compact_task, seg3] = RunCompactAndOpen(
+  auto [compact_task, seg3] = run_compact_and_open(
       schema, input_segs, output_segment_id, nullptr, version_manager);
 
   ASSERT_NE(seg3, nullptr);
@@ -290,7 +289,7 @@ TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
   ASSERT_EQ(seg3->doc_count(), seg_count * doc_count_per_seg);
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
-    auto doc = seg3->Fetch(i);
+    auto doc = seg3->fetch(i);
     ASSERT_NE(doc, nullptr);
     auto expect_doc = test::TestHelper::CreateDoc(i, *schema);
     ASSERT_EQ(*doc, expect_doc);
@@ -299,12 +298,12 @@ TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
 
 TEST_F(SegmentHelperTest, CompactTask_Filter) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 1000);
+      seg_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
 
@@ -312,7 +311,7 @@ TEST_F(SegmentHelperTest, CompactTask_Filter) {
       [](uint64_t id) -> bool { return id < 10; });
 
   SegmentID output_segment_id = 1;
-  auto [compact_task, seg2] = RunCompactAndOpen(
+  auto [compact_task, seg2] = run_compact_and_open(
       schema, {seg1}, output_segment_id, filter, version_manager);
 
   ASSERT_NE(seg2, nullptr);
@@ -327,12 +326,12 @@ TEST_F(SegmentHelperTest, CompactTask_Filter) {
 
 TEST_F(SegmentHelperTest, CompactTask_FilterAll) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 1000);
+      seg_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
 
@@ -340,7 +339,7 @@ TEST_F(SegmentHelperTest, CompactTask_FilterAll) {
       [](uint64_t /*id*/) -> bool { return true; });
 
   SegmentID output_segment_id = 1;
-  auto [compact_task, output_segment] = RunCompactAndOpen(
+  auto [compact_task, output_segment] = run_compact_and_open(
       schema, {seg1}, output_segment_id, filter, version_manager);
 
   ASSERT_EQ(compact_task.output_segment_meta_, nullptr);
@@ -363,7 +362,7 @@ TEST_F(SegmentHelperTest, CreateVectorIndexTask_AllFields) {
 
   // Create a segment
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
+      get_col_path(), *schema, 0, 0, id_map, delete_store, version_manager,
       SegmentOptions{false, true, DEFAULT_MAX_BUFFER_SIZE}, 0, 1000);
   ASSERT_TRUE(segment != nullptr);
   ASSERT_TRUE(segment->dump().ok());
@@ -422,7 +421,7 @@ TEST_F(SegmentHelperTest, CreateVectorIndexTask_SingleField) {
 
   // Create a segment
   auto segment = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
+      get_col_path(), *schema, 0, 0, id_map, delete_store, version_manager,
       SegmentOptions{false, true, DEFAULT_MAX_BUFFER_SIZE}, 0, 1000);
   ASSERT_TRUE(segment != nullptr);
   ASSERT_TRUE(segment->dump().ok());
@@ -464,18 +463,18 @@ TEST_F(SegmentHelperTest, CreateVectorIndexTask_SingleField) {
 
 TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 300);
+      seg_options, 0, 300);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 300, id_map, delete_store, version_manager,
-      write_options, 300, 300);
+      seg_options, 300, 300);
   auto seg3 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 2, 600, id_map, delete_store, version_manager,
-      write_options, 600, 300);
+      seg_options, 600, 300);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg3 != nullptr);
@@ -483,13 +482,13 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
   ASSERT_TRUE(seg2->flush().ok());
   ASSERT_TRUE(seg3->flush().ok());
 
-  auto [compact_task, output_segment] = RunCompactAndOpen(
+  auto [compact_task, output_segment] = run_compact_and_open(
       schema, {seg1, seg2, seg3}, 3, nullptr, version_manager);
 
   ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 900);
-  ASSERT_NE(output_segment->Fetch(0), nullptr);
-  ASSERT_NE(output_segment->Fetch(899), nullptr);
+  ASSERT_NE(output_segment->fetch(0), nullptr);
+  ASSERT_NE(output_segment->fetch(899), nullptr);
 }
 
 TEST_F(SegmentHelperTest,
@@ -498,18 +497,18 @@ TEST_F(SegmentHelperTest,
       false, col_name,
       std::make_shared<HnswIndexParams>(MetricType::IP, 16, 20,
                                         QuantizeType::FP16));
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 300);
+      seg_options, 0, 300);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 300, id_map, delete_store, version_manager,
-      write_options, 300, 300);
+      seg_options, 300, 300);
   auto seg3 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 2, 600, id_map, delete_store, version_manager,
-      write_options, 600, 300);
+      seg_options, 600, 300);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg3 != nullptr);
@@ -520,13 +519,13 @@ TEST_F(SegmentHelperTest,
   ASSERT_GT(seg2->get_quant_vector_indexer("dense_fp32").size(), 0u);
   ASSERT_GT(seg3->get_quant_vector_indexer("dense_fp32").size(), 0u);
 
-  auto [compact_task, output_segment] = RunCompactAndOpen(
+  auto [compact_task, output_segment] = run_compact_and_open(
       schema, {seg1, seg2, seg3}, 3, nullptr, version_manager);
 
   ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 900);
-  ASSERT_NE(output_segment->Fetch(0), nullptr);
-  ASSERT_NE(output_segment->Fetch(899), nullptr);
+  ASSERT_NE(output_segment->fetch(0), nullptr);
+  ASSERT_NE(output_segment->fetch(899), nullptr);
   ASSERT_GT(output_segment->get_vector_indexer("dense_fp32").size(), 0u);
   ASSERT_GT(output_segment->get_quant_vector_indexer("dense_fp32").size(), 0u);
 }
@@ -538,13 +537,13 @@ TEST_F(SegmentHelperTest, QuantizedIvfClosesRawFlatBeforeBuildingIndex) {
       std::make_shared<IVFIndexParams>(MetricType::L2, 4, 2, false,
                                        QuantizeType::FP16));
   schema->add_field(field);
-  auto version_manager = CreateVersionManager(*schema);
+  auto version_manager = create_version_manager(*schema);
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      WriteOptions(), 0, 32);
+      write_options(), 0, 32);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 32, id_map, delete_store, version_manager,
-      WriteOptions(), 32, 32);
+      write_options(), 32, 32);
   ASSERT_NE(seg1, nullptr);
   ASSERT_NE(seg2, nullptr);
   ASSERT_TRUE(seg1->flush().ok());
@@ -614,10 +613,10 @@ TEST_F(SegmentHelperTest, QuantizedIvfClosesRawFlatBeforeBuildingIndex) {
     raw_field->set_index_params(
         std::make_shared<FlatIndexParams>(MetricType::L2));
     VectorColumnIndexer raw(raw_path, *raw_field);
-    ASSERT_TRUE(raw.Open({true, false, true}).ok());
+    ASSERT_TRUE(raw.open({true, false, true}).ok());
     EXPECT_EQ(raw.doc_count(), 64);
     for (uint32_t id : {0U, 31U, 32U, 63U}) {
-      auto fetched = raw.Fetch(id);
+      auto fetched = raw.fetch(id);
       ASSERT_TRUE(fetched.has_value());
       const auto &bytes = std::get<vector_column_params::DenseVectorBuffer>(
                               fetched->vector_buffer)
@@ -626,15 +625,15 @@ TEST_F(SegmentHelperTest, QuantizedIvfClosesRawFlatBeforeBuildingIndex) {
       EXPECT_EQ(bytes,
                 std::string(reinterpret_cast<const char *>(expected.data()),
                             expected.size() * sizeof(float)));
-      EXPECT_NE((id < 32 ? seg1 : seg2)->Fetch(id), nullptr);
+      EXPECT_NE((id < 32 ? seg1 : seg2)->fetch(id), nullptr);
     }
-    EXPECT_TRUE(raw.Close().ok());
+    EXPECT_TRUE(raw.close().ok());
     if (!fail_quantized_dump) {
       ASSERT_EQ(blocks.size(), 2);
       VectorColumnIndexer quantized(quantized_path, *field);
-      ASSERT_TRUE(quantized.Open({true, false, true}).ok());
+      ASSERT_TRUE(quantized.open({true, false, true}).ok());
       EXPECT_EQ(quantized.doc_count(), 64);
-      EXPECT_TRUE(quantized.Close().ok());
+      EXPECT_TRUE(quantized.close().ok());
     }
   }
 }
@@ -664,10 +663,10 @@ class SegmentCompactReuseTest
   // Run CreateVectorIndexTask on `segment` for `column` with `index_params`,
   // then reload the segment so its in-memory indexer reflects the new index
   // (matching collection.cc's post-optimize reload path).
-  void OptimizeSegmentToVectorIndex(const Segment::Ptr &segment,
-                                    const CollectionSchema &schema,
-                                    const std::string &column,
-                                    const IndexParams::Ptr &index_params) {
+  void optimize_segment_to_vector_index(const Segment::Ptr &segment,
+                                        const CollectionSchema &schema,
+                                        const std::string &column,
+                                        const IndexParams::Ptr &index_params) {
     CreateVectorIndexTask task(segment, column, index_params, 1);
     auto segment_task = SegmentTask::CreateCreateVectorIndexTask(task);
     ASSERT_NE(segment_task, nullptr);
@@ -697,7 +696,7 @@ class SegmentCompactReuseTest
     qp.query_params = query_params;
     vector_column_params::VectorData data{
         vector_column_params::DenseVector{qvec.data()}};
-    auto results = indexer->Search(data, qp);
+    auto results = indexer->search(data, qp);
     EXPECT_TRUE(results.has_value());
     if (!results.has_value()) return {};
     auto vec_res = dynamic_cast<VectorIndexResults *>(results.value().get());
@@ -764,8 +763,8 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   const auto &param = GetParam();
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex(
       false, col_name, param.vector_index_params);
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   constexpr int kSegCount = 3;
   constexpr int kDocsPerSeg = 300;
@@ -775,7 +774,7 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   for (int i = 0; i < kSegCount; i++) {
     auto seg = test::TestHelper::CreateSegmentWithDoc(
         col_path, *schema, i, i * kDocsPerSeg, id_map, delete_store,
-        version_manager, write_options, i * kDocsPerSeg, kDocsPerSeg);
+        version_manager, seg_options, i * kDocsPerSeg, kDocsPerSeg);
     ASSERT_NE(seg, nullptr);
     ASSERT_TRUE(seg->flush().ok());
     segs.push_back(seg);
@@ -814,8 +813,8 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   // Optimize seg[0]'s vector fields to the parametric index type, mimicking
   // the lifecycle the compact path exercises.
   for (const auto &vf : schema->vector_fields()) {
-    OptimizeSegmentToVectorIndex(segs[0], *schema, vf->name(),
-                                 vf->index_params());
+    optimize_segment_to_vector_index(segs[0], *schema, vf->name(),
+                                     vf->index_params());
   }
 
   // For quantized index types (e.g. HNSW_RABITQ) the built index lives in
@@ -833,12 +832,12 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   }
 
   auto [compact_task, output_segment] =
-      RunCompactAndOpen(schema, segs, kSegCount, nullptr, version_manager);
+      run_compact_and_open(schema, segs, kSegCount, nullptr, version_manager);
 
   ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), kSegCount * kDocsPerSeg);
-  ASSERT_NE(output_segment->Fetch(0), nullptr);
-  ASSERT_NE(output_segment->Fetch(kSegCount * kDocsPerSeg - 1), nullptr);
+  ASSERT_NE(output_segment->fetch(0), nullptr);
+  ASSERT_NE(output_segment->fetch(kSegCount * kDocsPerSeg - 1), nullptr);
 
   auto out_indexers =
       quantized ? output_segment->get_quant_vector_indexer("dense_fp32")
@@ -905,15 +904,15 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
-  auto version_manager = CreateVersionManager(*schema);
-  auto write_options = WriteOptions();
+  auto version_manager = create_version_manager(*schema);
+  auto seg_options = write_options();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager,
-      write_options, 0, 400);
+      seg_options, 0, 400);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 1, 400, id_map, delete_store, version_manager,
-      write_options, 400, 400);
+      seg_options, 400, 400);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
@@ -923,7 +922,7 @@ TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
       [](uint64_t id) -> bool { return id < 100 || (id >= 400 && id < 450); });
 
   auto [compact_task, output_segment] =
-      RunCompactAndOpen(schema, {seg1, seg2}, 2, filter, version_manager);
+      run_compact_and_open(schema, {seg1, seg2}, 2, filter, version_manager);
 
   ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 650);

@@ -62,8 +62,8 @@ class OptimizerTest : public testing::Test {
   // Sets up the test fixture.
   static void SetUpTestSuite() {
     schema = std::make_shared<CollectionSchema>();
-    auto &collection_schema_ = *schema;
-    collection_schema_.set_name("collection");
+    auto &collection_schema = *schema;
+    collection_schema.set_name("collection");
 
     // feature field
     auto column1 = std::make_shared<FieldSchema>();
@@ -72,14 +72,14 @@ class OptimizerTest : public testing::Test {
     column1->set_index_params(vector_params);
     column1->set_dimension(4);
     column1->set_data_type(DataType::VECTOR_FP32);
-    collection_schema_.add_field(column1);
+    collection_schema.add_field(column1);
 
     // invert field
     auto column2 = std::make_shared<FieldSchema>();
     column2->set_name("age");
     column2->set_data_type(DataType::INT32);
     column2->set_index_params(std::make_shared<InvertIndexParams>(false));
-    collection_schema_.add_field(column2);
+    collection_schema.add_field(column2);
   }
 
   // Tears down the test fixture.

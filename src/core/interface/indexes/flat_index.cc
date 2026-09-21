@@ -149,7 +149,7 @@ int FlatIndex::open(const std::string &file_path,
           "Persisted flat index %s uses a legacy layout, falling back to the "
           "converter pipeline",
           file_path.c_str());
-      int ret = FallbackToLegacyPipeline();
+      int ret = fallback_to_legacy_pipeline();
       if (ret != 0) {
         return ret;
       }
@@ -165,11 +165,12 @@ int FlatIndex::open(const std::string &file_path,
         // opened an older file with a different storage precision.
         quantizer_params = persisted_meta.quantizer_params();
       }
-      int ret = CreateAndInitTurboQuantizer(quantizer_name, quantizer_params);
+      int ret =
+          create_and_init_turbo_quantizer(quantizer_name, quantizer_params);
       if (ret != 0) {
         return ret;
       }
-      ret = CreateAndInitStreamer(param_);
+      ret = create_and_init_streamer(param_);
       if (ret != 0) {
         return ret;
       }
@@ -178,7 +179,7 @@ int FlatIndex::open(const std::string &file_path,
   return Index::open(file_path, storage_options);
 }
 
-int FlatIndex::FallbackToLegacyPipeline() {
+int FlatIndex::fallback_to_legacy_pipeline() {
   turbo_quantizer_.reset();
   streamer_.reset();
 
@@ -193,22 +194,23 @@ int FlatIndex::FallbackToLegacyPipeline() {
   input_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
   streamer_vector_meta_ = input_vector_meta_;
 
-  if (ParseMetricName(param_) != 0) {
+  if (parse_metric_name(param_) != 0) {
     LOG_ERROR("Failed to parse metric name");
     return core::IndexError_Runtime;
   }
   const auto quantizer_param = param_.quantizer_param
                                    ? param_.quantizer_param
                                    : std::make_shared<QuantizerParam>();
-  if (CreateAndInitLegacyConverterReformer(*quantizer_param, param_) != 0) {
+  if (create_and_init_legacy_converter_reformer(*quantizer_param, param_) !=
+      0) {
     LOG_ERROR("Failed to create and init legacy converter");
     return core::IndexError_Runtime;
   }
-  if (CreateAndInitMetric(param_) != 0) {
+  if (create_and_init_metric(param_) != 0) {
     LOG_ERROR("Failed to create and init metric");
     return core::IndexError_Runtime;
   }
-  if (CreateAndInitStreamer(param_) != 0) {
+  if (create_and_init_streamer(param_) != 0) {
     LOG_ERROR("Failed to create and init streamer");
     return core::IndexError_Runtime;
   }
@@ -225,14 +227,15 @@ int FlatIndex::create_and_init_converter_reformer(
   const std::string quantizer_name =
       SelectTurboQuantizerName(quantizer_param, flat_param);
   if (!quantizer_name.empty()) {
-    return CreateAndInitTurboQuantizer(
+    return create_and_init_turbo_quantizer(
         quantizer_name, MakeTurboQuantizerParams(quantizer_param, flat_param));
   }
-  return CreateAndInitLegacyConverterReformer(quantizer_param, index_param);
+  return create_and_init_legacy_converter_reformer(quantizer_param,
+                                                   index_param);
 }
 
-int FlatIndex::CreateAndInitTurboQuantizer(const std::string &name,
-                                           const ailego::Params &params) {
+int FlatIndex::create_and_init_turbo_quantizer(const std::string &name,
+                                               const ailego::Params &params) {
   auto quantizer = core::IndexFactory::CreateQuantizer(name);
   if (!quantizer) {
     LOG_ERROR("Failed to create turbo %s", name.c_str());
@@ -254,7 +257,7 @@ int FlatIndex::CreateAndInitTurboQuantizer(const std::string &name,
   return core::IndexError_Success;
 }
 
-int FlatIndex::CreateAndInitLegacyConverterReformer(
+int FlatIndex::create_and_init_legacy_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &flat_param = dynamic_cast<const FlatIndexParam &>(index_param);
   const auto storage_type = flat_param.storage_data_type;
@@ -274,14 +277,14 @@ int FlatIndex::CreateAndInitLegacyConverterReformer(
 
   if (storage_type == DataType::DT_FP16) {
     if (flat_param.metric_type == MetricType::kCosine) {
-      return InitConverterReformer("CosineRawFp16Converter");
+      return init_converter_reformer("CosineRawFp16Converter");
     }
-    return InitConverterReformer("HalfFloatConverter");
+    return init_converter_reformer("HalfFloatConverter");
   }
 
   if (storage_type == DataType::DT_UINT8 &&
       flat_param.metric_type == MetricType::kL2sq) {
-    return InitConverterReformer("RawUint8Converter");
+    return init_converter_reformer("RawUint8Converter");
   }
 
   LOG_ERROR("Unsupported Flat storage data type %d for metric %d",
@@ -290,7 +293,7 @@ int FlatIndex::CreateAndInitLegacyConverterReformer(
   return core::IndexError_Unsupported;
 }
 
-int FlatIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
+int FlatIndex::create_and_init_streamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const FlatIndexParam &>(param);
 
   proxima_index_params_.set(core::PARAM_FLAT_COLUMN_MAJOR_ORDER,

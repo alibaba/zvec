@@ -12,18 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <numeric>
-#include <regex>
 #include <stdexcept>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/query.h>
 #include "db/common/constants.h"
+#include "db/common/utils.h"
+#include "db/index/common/identifier_validation.h"
 #include "db/index/common/type_helper.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -182,12 +181,12 @@ std::string vec_to_string(const std::vector<T> &v) {
 }
 
 template <class... Ts>
-struct overloaded : Ts... {
+struct Overloaded : Ts... {
   using Ts::operator()...;
 };
 
 template <class... Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
+Overloaded(Ts...) -> Overloaded<Ts...>;
 
 
 }  // namespace
@@ -732,20 +731,15 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
     return Status::InternalError("schema is null during doc validation");
   }
 
-  if (pk_.empty()) {
-    return Status::InvalidArgument("Invalid doc: id (primary key) is not set");
-  }
-
-  if (!std::regex_match(pk_, DOC_PK_REGEX)) {
-    return Status::InvalidArgument("Invalid doc: doc[", pk_,
-                                   "] contains invalid characters");
+  if (auto s = validate_document_id(pk_); !s.ok()) {
+    return s;
   }
 
   // check doc fields match schema
   for (auto &[name, value] : fields_) {
     if (!schema->has_field(name)) {
       return Status::InvalidArgument(
-          "Invalid doc[", pk_, "]: field[", name,
+          "Invalid doc[", format_name(pk_), "]: field[", format_name(name),
           "] does not exist in the collection schema");
     }
   }
@@ -758,16 +752,16 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
       if (field_schema->nullable() || is_update) {
         continue;
       }
-      return Status::InvalidArgument("Invalid doc[", pk_, "]: field[",
-                                     field_name,
+      return Status::InvalidArgument("Invalid doc[", format_name(pk_),
+                                     "]: field[", field_name,
                                      "] is required but not provided");
     } else {
       if (std::holds_alternative<std::monostate>(field_pair->second)) {
         if (field_schema->nullable()) {
           continue;
         }
-        return Status::InvalidArgument("Invalid doc[", pk_, "]: field[",
-                                       field_name,
+        return Status::InvalidArgument("Invalid doc[", format_name(pk_),
+                                       "]: field[", field_name,
                                        "] is required but its value is null");
       }
     }
@@ -898,21 +892,21 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
               field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                "] has mismatched indices and values sizes");
+                "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                field_name, "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                "] exceeds the maximum number of sparse indices (",
+                "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                field_name, "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
           auto status = need_sanitize_sparse(sparse_indices.data(),
                                              sparse_indices.size());
           if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                "] contains duplicate indices");
+                "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                field_name, "] contains duplicate indices");
           }
           if (status == SparseIndicesStatus::kNeedSort) {
             if (sort_and_find_duplicates(
@@ -920,8 +914,8 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                     reinterpret_cast<char *>(sparse_values.data()),
                     sparse_indices.size(), sizeof(float16_t))) {
               return Status::InvalidArgument(
-                  "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                  "] contains duplicate indices");
+                  "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                  field_name, "] contains duplicate indices");
             }
           }
         }
@@ -936,21 +930,21 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                   field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                "] has mismatched indices and values sizes");
+                "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                field_name, "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                "] exceeds the maximum number of sparse indices (",
+                "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                field_name, "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
           auto status = need_sanitize_sparse(sparse_indices.data(),
                                              sparse_indices.size());
           if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
-                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                "] contains duplicate indices");
+                "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                field_name, "] contains duplicate indices");
           }
           if (status == SparseIndicesStatus::kNeedSort) {
             if (sort_and_find_duplicates(
@@ -958,23 +952,23 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                     reinterpret_cast<char *>(sparse_values.data()),
                     sparse_indices.size(), sizeof(float))) {
               return Status::InvalidArgument(
-                  "Invalid doc[", pk_, "]: sparse vector field[", field_name,
-                  "] contains duplicate indices");
+                  "Invalid doc[", format_name(pk_), "]: sparse vector field[",
+                  field_name, "] contains duplicate indices");
             }
           }
         }
         break;
       }
       default:
-        return Status::InvalidArgument("Invalid doc[", pk_, "]: field[",
-                                       field_name,
+        return Status::InvalidArgument("Invalid doc[", format_name(pk_),
+                                       "]: field[", field_name,
                                        "] has unsupported data type");
         break;
     }
 
     if (!type_match) {
       return Status::InvalidArgument(
-          "Invalid doc[", pk_, "]: field[", field_name,
+          "Invalid doc[", format_name(pk_), "]: field[", field_name,
           "] type mismatch, expected ",
           DataTypeCodeBook::AsString(expected_type), " but got ",
           get_value_type_name(field_value, field_schema->is_vector_field()));
@@ -982,7 +976,7 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
     if (field_schema->is_dense_vector()) {
       if (value_dimension != field_schema->dimension()) {
         return Status::InvalidArgument(
-            "Invalid doc[", pk_, "]: field[", field_name,
+            "Invalid doc[", format_name(pk_), "]: field[", field_name,
             "] dimension mismatch, expected ", field_schema->dimension(),
             " but got ", value_dimension);
       }
@@ -1118,7 +1112,7 @@ std::string Doc::to_detail_string() const {
     oss << "\"" << key << "\": ";
 
     std::visit(
-        overloaded{
+        Overloaded{
             [&](std::monostate) { oss << "null"; },
             [&](bool b) { oss << (b ? "true" : "false"); },
             [&](int32_t i) { oss << i; },

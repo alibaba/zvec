@@ -229,7 +229,7 @@ struct HnswNeighborMeta {
 class HnswRabitqEntity {
  public:
   //! Constructor
-  HnswRabitqEntity() {}
+  HnswRabitqEntity() = default;
 
   //! Constructor
   HnswRabitqEntity(const HNSWHeader &hd) {
@@ -237,7 +237,7 @@ class HnswRabitqEntity {
   }
 
   //! Destructor
-  virtual ~HnswRabitqEntity() {}
+  virtual ~HnswRabitqEntity() = default;
 
   //! HnswRabitqEntity Pointerd;
   typedef std::shared_ptr<HnswRabitqEntity> Pointer;

@@ -36,7 +36,7 @@ class HnswRabitqChunkBroker {
  public:
   typedef std::shared_ptr<HnswRabitqChunkBroker> Pointer;
 
-  enum CHUNK_TYPE {
+  enum CHUNK_TYPE {  // NOLINT(readability-identifier-naming): on-disk chunk tag
     CHUNK_TYPE_HEADER = 1,
     CHUNK_TYPE_META = 2,
     CHUNK_TYPE_NODE = 3,
@@ -89,10 +89,10 @@ class HnswRabitqChunkBroker {
     return stg_;
   }
 
- private:
   HnswRabitqChunkBroker(const HnswRabitqChunkBroker &) = delete;
   HnswRabitqChunkBroker &operator=(const HnswRabitqChunkBroker &) = delete;
 
+ private:
   struct HnswChunkMeta {
     HnswChunkMeta() {
       memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));

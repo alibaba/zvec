@@ -126,7 +126,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   HnswSparseStreamerEntity(IndexStreamer::Stats &stats);
 
   //! Destructor
-  ~HnswSparseStreamerEntity();
+  ~HnswSparseStreamerEntity() override;
 
   //! Init entity
   int init(uint64_t max_index_size, size_t max_doc_cnt);
@@ -263,7 +263,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
   }
 
   //! Called only in searching procedure per context, so no need to lock
-  void sync_chunks(SparseChunkBroker::CHUNK_TYPE type, size_t idx,
+  void sync_chunks(SparseChunkBroker::ChunkType type, size_t idx,
                    std::vector<SparseChunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
       return;

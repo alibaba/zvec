@@ -41,8 +41,8 @@ class VamanaFastSearchTest : public testing::Test {
     test_util::RemoveTestPath(path_);
   }
 
-  void CreateGraph(const std::vector<float> &values,
-                   const std::vector<std::vector<node_id_t>> &rows) {
+  void create_graph(const std::vector<float> &values,
+                    const std::vector<std::vector<node_id_t>> &rows) {
     ASSERT_EQ(values.size(), rows.size());
     storage_ = IndexFactory::CreateStorage("MMapFileStorage");
     ASSERT_TRUE(storage_);
@@ -83,10 +83,10 @@ class VamanaFastSearchTest : public testing::Test {
     algorithm_ =
         std::make_unique<VamanaAlgorithm<VamanaContiguousStreamerEntity>>(
             *entity_);
-    MakeContext();
+    make_context();
   }
 
-  void MakeContext(std::optional<VisitFilter::Mode> mode = std::nullopt) {
+  void make_context(std::optional<VisitFilter::Mode> mode = std::nullopt) {
     context_ = std::make_unique<VamanaContext>(kDimension, metric_, entity_);
     if (mode) context_->set_filter_mode(*mode);
     context_->set_max_scan_num(10000);
@@ -103,7 +103,7 @@ class VamanaFastSearchTest : public testing::Test {
         });
   }
 
-  void Search(float value, uint32_t capacity) {
+  void search(float value, uint32_t capacity) {
     ASSERT_TRUE(context_);
     evaluated_.clear();
     context_->clear();
@@ -117,7 +117,7 @@ class VamanaFastSearchTest : public testing::Test {
     context_->topk_to_result();
   }
 
-  std::vector<std::pair<uint64_t, float>> Results() const {
+  std::vector<std::pair<uint64_t, float>> results() const {
     std::vector<std::pair<uint64_t, float>> result;
     for (const auto &doc : context_->result()) {
       result.emplace_back(doc.key(), doc.score());
@@ -138,7 +138,7 @@ class VamanaFastSearchTest : public testing::Test {
 };
 
 TEST_F(VamanaFastSearchTest, ContextDefaultsToBitmapAndAllowsExplicitOverride) {
-  CreateGraph({10, 2}, {{1}, {0}});
+  create_graph({10, 2}, {{1}, {0}});
   EXPECT_EQ(VisitFilter::BitMap, context_->visit_filter().get_mode());
   for (auto type :
        {VamanaContext::kBuilderContext, VamanaContext::kSearcherContext,
@@ -162,15 +162,15 @@ TEST_F(VamanaFastSearchTest, ContextDefaultsToBitmapAndAllowsExplicitOverride) {
 }
 
 TEST_F(VamanaFastSearchTest, LocalOptimumReusesRowThenPoolFindsBetterPoint) {
-  CreateGraph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});
-  Search(0, 4);
+  create_graph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});
+  search(0, 4);
   const std::vector<std::vector<node_id_t>> expected = {
       {0}, {1, 2}, {0, 2}, {3}};
   EXPECT_EQ(expected, evaluated_);
   EXPECT_EQ(6U, context_->get_scan_num());
-  const std::vector<std::pair<uint64_t, float>> results = {
+  const std::vector<std::pair<uint64_t, float>> expected_results = {
       {3, 1}, {1, 4}, {2, 9}, {0, 100}};
-  EXPECT_EQ(results, Results());
+  EXPECT_EQ(expected_results, results());
 }
 
 TEST_F(VamanaFastSearchTest, HundredStepCapRecomputesLandingRow) {
@@ -182,8 +182,8 @@ TEST_F(VamanaFastSearchTest, HundredStepCapRecomputesLandingRow) {
     if (i > 0) rows[i].push_back(i - 1);
     if (i + 1 < kCount) rows[i].push_back(i + 1);
   }
-  CreateGraph(values, rows);
-  Search(0, 1);
+  create_graph(values, rows);
+  search(0, 1);
   ASSERT_EQ(104U, evaluated_.size());
   EXPECT_EQ((std::vector<node_id_t>{98, 100}), evaluated_[100]);
   // Depth 100 stops at node 100, while the cached row belongs to node 99.
@@ -192,67 +192,67 @@ TEST_F(VamanaFastSearchTest, HundredStepCapRecomputesLandingRow) {
   EXPECT_EQ((std::vector<node_id_t>{102}), evaluated_[102]);
   EXPECT_EQ((std::vector<node_id_t>{103}), evaluated_[103]);
   EXPECT_EQ(204U, context_->get_scan_num());
-  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{103, 1}}), Results());
+  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{103, 1}}), results());
 }
 
 TEST_F(VamanaFastSearchTest, EqualDistanceStopsDescentWithoutLosingNeighbors) {
-  CreateGraph({2, 2, 1}, {{1}, {2}, {}});
-  Search(0, 3);
+  create_graph({2, 2, 1}, {{1}, {2}, {}});
+  search(0, 3);
   EXPECT_EQ(3U, context_->get_scan_num());
-  ASSERT_EQ(3U, Results().size());
-  EXPECT_EQ(2U, Results()[0].first);
-  EXPECT_EQ(1.0f, Results()[0].second);
+  ASSERT_EQ(3U, results().size());
+  EXPECT_EQ(2U, results()[0].first);
+  EXPECT_EQ(1.0f, results()[0].second);
 }
 
 TEST_F(VamanaFastSearchTest, DuplicateNeighborsAndReusedContextMatchFresh) {
-  CreateGraph({10, 2, 3, 1}, {{1, 1, 2}, {0, 2, 2, 1}, {3, 3}, {1, 1}});
-  Search(0, 4);
-  const auto expected = Results();
+  create_graph({10, 2, 3, 1}, {{1, 1, 2}, {0, 2, 2, 1}, {3, 3}, {1, 1}});
+  search(0, 4);
+  const auto expected = results();
   ASSERT_EQ(4U, expected.size());
   EXPECT_EQ(9U, context_->get_scan_num());
   const auto first_trace = evaluated_;
   for (uint32_t capacity : {1U, 4U, 2U, 4U}) {
-    Search(12, capacity);
-    const auto reused_result = Results();
+    search(12, capacity);
+    const auto reused_result = results();
     const auto reused_trace = evaluated_;
     auto reused_context = std::move(context_);
-    MakeContext();
-    Search(12, capacity);
-    EXPECT_EQ(reused_result, Results());
+    make_context();
+    search(12, capacity);
+    EXPECT_EQ(reused_result, results());
     EXPECT_EQ(reused_trace, evaluated_);
     context_ = std::move(reused_context);
-    Search(0, 4);
-    EXPECT_EQ(expected, Results());
+    search(0, 4);
+    EXPECT_EQ(expected, results());
     EXPECT_EQ(first_trace, evaluated_);
   }
 }
 
 TEST_F(VamanaFastSearchTest, EmptyNeighborRowKeepsTheEntryPoint) {
-  CreateGraph({0}, {{}});
-  Search(0, 1);
+  create_graph({0}, {{}});
+  search(0, 1);
   EXPECT_EQ((std::vector<std::vector<node_id_t>>{{0}}), evaluated_);
-  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 0}}), Results());
+  EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 0}}), results());
 }
 
 TEST_F(VamanaFastSearchTest, ExactVisitModesPreserveResultsAndSearchTrace) {
-  CreateGraph({10, 2, 3, 1}, {{1, 1, 2}, {0, 2, 2, 1}, {3, 3}, {1, 1}});
+  create_graph({10, 2, 3, 1}, {{1, 1, 2}, {0, 2, 2, 1}, {3, 3}, {1, 1}});
   for (float query : {0.0f, 12.0f}) {
     for (uint32_t capacity : {1U, 4U}) {
-      MakeContext(VisitFilter::ByteMap);
-      Search(query, capacity);
-      const auto expected = Results();
+      make_context(VisitFilter::ByteMap);
+      search(query, capacity);
+      const auto expected = results();
       const auto expected_trace = evaluated_;
-      MakeContext(VisitFilter::BitMap);
-      Search(query, capacity);
-      EXPECT_EQ(expected, Results());
+      make_context(VisitFilter::BitMap);
+      search(query, capacity);
+      EXPECT_EQ(expected, results());
       EXPECT_EQ(expected_trace, evaluated_);
     }
   }
 }
 
 TEST_F(VamanaFastSearchTest, InvalidVisitFilterFailsSearchExplicitly) {
-  CreateGraph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});
-  MakeContext(VisitFilter::Default);
+  create_graph({10, 2, 3, 1}, {{1, 2}, {0, 2}, {3}, {}});
+  make_context(VisitFilter::Default);
   context_->set_topk(4);
   context_->set_ef(4);
   std::array<float, kDimension> query{};

@@ -242,6 +242,10 @@ class HnswDistCalculator {
     return error_;
   }
 
+  inline void set_error() {
+    error_ = true;
+  }
+
   //! Get distances compute times
   inline uint32_t compare_cnt() const {
     return compare_cnt_;
@@ -270,7 +274,7 @@ class HnswDistCalculator {
       }
       return provider_->get_vector(key, block);
     }
-    return entity_->get_vector(id, block);
+    return entity_->get_vector_borrowed(id, block);
   }
 
   //! Batch get vectors by node ids

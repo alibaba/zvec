@@ -27,7 +27,7 @@ class DiskAnnStreamer : public IndexStreamer {
 
  public:
   DiskAnnStreamer();
-  ~DiskAnnStreamer();
+  ~DiskAnnStreamer() override;
 
   DiskAnnStreamer(const DiskAnnStreamer &) = delete;
   DiskAnnStreamer &operator=(const DiskAnnStreamer &) = delete;

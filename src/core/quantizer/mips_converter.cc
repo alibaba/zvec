@@ -95,7 +95,11 @@ class MipsConverterHolder : public IndexHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
@@ -112,11 +116,16 @@ class MipsConverterHolder : public IndexHolder {
    private:
     //! Transform the data
     void transform_data() {
-      if (!front_iter_->is_valid()) {
+      if (!this->is_valid()) {
         return;
       }
 
       const float *src = reinterpret_cast<const float *>(front_iter_->data());
+      status_ = front_iter_->status();
+      if (src == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
+        return;
+      }
       float *dst = buffer_.data();
       if (!spherical_injection_) {
         ConvertRepeatedQuadraticInjection(src, buffer_.size() - m_value_,
@@ -133,6 +142,7 @@ class MipsConverterHolder : public IndexHolder {
     float l2_norm_{0.0f};
     bool spherical_injection_{false};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor
@@ -224,7 +234,11 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
@@ -240,11 +254,16 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
 
    private:
     void transform_record() {
-      if (!front_iter_->is_valid()) {
+      if (!this->is_valid()) {
         return;
       }
 
       const float *src = reinterpret_cast<const float *>(front_iter_->data());
+      status_ = front_iter_->status();
+      if (src == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
+        return;
+      }
       ailego::Float16 *dst = buffer_.data();
       if (!spherical_injection_) {
         ConvertRepeatedQuadraticInjection(src, buffer_.size() - m_value_,
@@ -261,6 +280,7 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     float l2_norm_{0.0f};
     bool spherical_injection_{false};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor
@@ -354,7 +374,11 @@ class MipsConverterHalfHolder : public IndexHolder {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return front_iter_->is_valid();
+      return this->status() == 0 && front_iter_->is_valid();
+    }
+
+    int status() const override {
+      return status_ != 0 ? status_ : front_iter_->status();
     }
 
     //! Retrieve primary key
@@ -370,12 +394,17 @@ class MipsConverterHalfHolder : public IndexHolder {
 
    private:
     void transform_record() {
-      if (!front_iter_->is_valid()) {
+      if (!this->is_valid()) {
         return;
       }
 
       const ailego::Float16 *src =
           reinterpret_cast<const ailego::Float16 *>(front_iter_->data());
+      status_ = front_iter_->status();
+      if (src == nullptr || status_ != 0) {
+        if (status_ == 0) status_ = IndexError_Runtime;
+        return;
+      }
       ailego::Float16 *dst = buffer_.data();
       if (!spherical_injection_) {
         ConvertRepeatedQuadraticInjection(src, buffer_.size() - m_value_,
@@ -392,6 +421,7 @@ class MipsConverterHalfHolder : public IndexHolder {
     float l2_norm_{0.0f};
     bool spherical_injection_{false};
     IndexHolder::Iterator::Pointer front_iter_{};
+    int status_{0};
   };
 
   //! Constructor
