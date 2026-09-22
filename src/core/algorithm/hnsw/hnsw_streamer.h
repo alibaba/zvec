@@ -120,10 +120,10 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
-                             std::vector<uint64_t> &keys,
-                             std::vector<float> *scores,
-                             Context::Pointer &context) const override;
+  int search_candidates_impl(
+      const void *query, const IndexQueryMeta &qmeta,
+      std::vector<uint64_t> &keys, Context::Pointer &context,
+      std::vector<float> *scores = nullptr) const override;
 
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,

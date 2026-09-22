@@ -97,12 +97,12 @@ class ProximaEngineHelper {
 
   // Synchronous search with call-local parameters, shared by the direct
   // read-only collection route and the general column-indexer route.
-  static Status search_fast(const VectorColumnIndexer &indexer,
-                            const core_interface::VectorData &vector_data,
-                            const QueryParams::Ptr &query_params, uint32_t topk,
-                            const IndexFilter *filter,
-                            const VectorColumnIndexer *reference_indexer,
-                            int64_t *output_ids, float *output_scores) {
+  static Status search_internal_ids(
+      const VectorColumnIndexer &indexer,
+      const core_interface::VectorData &vector_data,
+      const QueryParams::Ptr &query_params, uint32_t topk,
+      const IndexFilter *filter, const VectorColumnIndexer *reference_indexer,
+      int64_t *output_ids, float *output_scores) {
     auto *index = indexer.index.get();
     if (!index) return Status::InvalidArgument("Index not opened");
     auto search = [&](auto engine_query_param) -> Status {
@@ -125,14 +125,14 @@ class ProximaEngineHelper {
             std::shared_ptr<core_interface::RefinerParam>(
                 std::shared_ptr<core_interface::RefinerParam>{}, &refiner);
       }
-      // search_fast and its fallback are synchronous. Borrow call-local
+      // search_internal_ids and its fallback are synchronous. Borrow call-local
       // parameters without a control block; no mutable state is shared between
       // queries, and both indexers remain owned by the caller throughout
       // search.
       const core_interface::BaseIndexQueryParam::Pointer params(
           core_interface::BaseIndexQueryParam::Pointer{}, &engine_query_param);
-      if (index->search_fast(vector_data, params, output_ids, output_scores) !=
-          0) {
+      if (index->search_internal_ids(vector_data, params, output_ids,
+                                     output_scores) != 0) {
         return Status::InternalError("Failed to search vector");
       }
       return Status::OK();

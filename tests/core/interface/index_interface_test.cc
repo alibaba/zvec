@@ -4378,8 +4378,8 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
 
             std::array<int64_t, kTopk> ids;
             std::array<float, kTopk> scores;
-            ASSERT_EQ(0, index->search_fast(query, query_param, ids.data(),
-                                            scores.data()));
+            ASSERT_EQ(0, index->search_internal_ids(query, query_param,
+                                                    ids.data(), scores.data()));
             ASSERT_EQ(kTopk, result.doc_list_.size());
             for (size_t rank = 0; rank < result.doc_list_.size(); ++rank) {
               EXPECT_EQ(static_cast<int64_t>(result.doc_list_[rank].key()),
@@ -4388,9 +4388,9 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
             }
 
             std::array<int64_t, kTopk> ids_without_scores;
-            ASSERT_EQ(0,
-                      index->search_fast(query, query_param,
-                                         ids_without_scores.data(), nullptr));
+            ASSERT_EQ(
+                0, index->search_internal_ids(
+                       query, query_param, ids_without_scores.data(), nullptr));
             EXPECT_EQ(ids, ids_without_scores);
           }
           ASSERT_EQ(0, index->close());
@@ -4612,11 +4612,11 @@ TEST(IndexInterface, ExternalVectorInnerProduct) {
   zvec::test_util::RemoveTestFiles(index_name + "*");
 }
 
-TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
+TEST(IndexInterface, ExternalVectorInternalIdSearchRecallRegression) {
   constexpr uint32_t kDimension = 64;
   constexpr uint32_t kNumVectors = 2000;
   constexpr uint32_t kTopk = 20;
-  const std::string index_name{"test_external_fast_search.index"};
+  const std::string index_name{"test_external_internal_id_search.index"};
 
   std::mt19937 generator(42);
   std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
@@ -4963,7 +4963,7 @@ TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
 #endif
 
 
-TEST(IndexInterface, RefineFastNativeTypesFallbackAndTieOrder) {
+TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
   constexpr uint32_t kDimension = 128;
   const std::string coarse_path = "docids_refine_coarse.index";
   const std::string fine_path = "docids_refine_fine.index";
@@ -5021,45 +5021,44 @@ TEST(IndexInterface, RefineFastNativeTypesFallbackAndTieOrder) {
                          .with_topk(3)
                          .with_refiner_param(refiner)
                          .build();
+        SearchResult expected;
+        ASSERT_EQ(0, coarse->search(query, param, &expected));
+        ASSERT_EQ(3U, expected.doc_list_.size());
         std::array<int64_t, 3> ids{{-2, -2, -2}};
         for (int repeat = 0; repeat < 3; ++repeat) {
-          ASSERT_EQ(0, coarse->search_fast(query, param, ids.data(), nullptr));
-          if (!tied) {
-            // Coarse selects keys 0..5; the reference reverses their order.
-            EXPECT_EQ((std::array<int64_t, 3>{{5, 4, 3}}), ids);
-          } else if (contiguous) {
-            // Refined results use deterministic (distance, key) ordering.
-            EXPECT_EQ((std::array<int64_t, 3>{{0, 1, 2}}), ids);
-          } else {
-            // The generic public fallback retains its existing tie rule.
-            for (int64_t key : ids) EXPECT_TRUE(key >= 0 && key < 6);
+          ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
+                                                   nullptr));
+          for (size_t i = 0; i < ids.size(); ++i) {
+            EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()),
+                      ids[i]);
           }
         }
         std::array<int64_t, 3> scored_ids{{-2, -2, -2}};
         std::array<float, 3> scores;
-        ASSERT_EQ(0, coarse->search_fast(query, param, scored_ids.data(),
-                                         scores.data()));
+        ASSERT_EQ(0, coarse->search_internal_ids(
+                         query, param, scored_ids.data(), scores.data()));
         EXPECT_EQ(ids, scored_ids);
         for (size_t rank = 0; rank < scores.size(); ++rank) {
-          const float expected =
-              tied ? 1.0F : static_cast<float>((3 + rank) * (3 + rank));
-          EXPECT_FLOAT_EQ(expected, scores[rank]);
+          EXPECT_FLOAT_EQ(expected.doc_list_[rank].score(), scores[rank]);
         }
         // Fewer coarse candidates than k takes the unchanged public fallback
         // and must fill the remainder instead of exposing stale output.
         param->radius = 0.5f;
-        ASSERT_EQ(0, coarse->search_fast(query, param, ids.data(), nullptr));
+        ASSERT_EQ(
+            0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
         EXPECT_EQ((std::array<int64_t, 3>{{0, -1, -1}}), ids);
         param->radius = 0.0f;
         param->filter = std::make_shared<IndexFilter>();
         param->filter->set([](uint64_t key) { return key >= 2; });
-        ASSERT_EQ(0, coarse->search_fast(query, param, ids.data(), nullptr));
+        ASSERT_EQ(
+            0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
         EXPECT_EQ(-1, ids[2]);
         std::array<int64_t, 2> filtered{{ids[0], ids[1]}};
         std::sort(filtered.begin(), filtered.end());
         EXPECT_EQ((std::array<int64_t, 2>{{0, 1}}), filtered);
         param->filter.reset();
-        ASSERT_EQ(0, coarse->search_fast(query, param, ids.data(), nullptr));
+        ASSERT_EQ(
+            0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
         if (!tied) {
           EXPECT_EQ((std::array<int64_t, 3>{{5, 4, 3}}), ids);
         }
@@ -5072,7 +5071,7 @@ TEST(IndexInterface, RefineFastNativeTypesFallbackAndTieOrder) {
   zvec::test_util::RemoveTestFiles(coarse_path);
 }
 
-TEST(IndexInterface, RefineFastInnerProductUsesDescendingPublicScore) {
+TEST(IndexInterface, RefineInternalIdsInnerProductMatchesSearch) {
   constexpr uint32_t kDimension = 128;
   const std::string coarse_path = "docids_ip_coarse.index";
   const std::string fine_path = "docids_ip_fine.index";
@@ -5129,28 +5128,19 @@ TEST(IndexInterface, RefineFastInnerProductUsesDescendingPublicScore) {
                        .build();
       std::array<int64_t, 3> ids{{-2, -2, -2}};
       std::array<float, 3> scores;
-      ASSERT_EQ(0,
-                coarse->search_fast(query, param, ids.data(), scores.data()));
-      // Coarse picks keys 7..2 by descending IP; refine uses their inverse
-      // scores, selecting 2,3,4. Equal scores use ascending key as baseline.
-      EXPECT_EQ((std::array<int64_t, 3>{{2, 3, 4}}), ids);
-      if (tied) {
-        EXPECT_EQ((std::array<float, 3>{{1.0F, 1.0F, 1.0F}}), scores);
-      } else {
-        EXPECT_EQ((std::array<float, 3>{{6.0F, 5.0F, 4.0F}}), scores);
-      }
-      if (!tied) {
-        SearchResult result;
-        ASSERT_EQ(0, coarse->search(query, param, &result));
-        ASSERT_EQ(3U, result.doc_list_.size());
-        for (size_t i = 0; i < 3; ++i) {
-          EXPECT_EQ(static_cast<uint64_t>(ids[i]), result.doc_list_[i].key());
-          EXPECT_FLOAT_EQ(float(6 - i), result.doc_list_[i].score());
-        }
+      SearchResult expected;
+      ASSERT_EQ(0, coarse->search(query, param, &expected));
+      ASSERT_EQ(3U, expected.doc_list_.size());
+      ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
+                                               scores.data()));
+      for (size_t i = 0; i < ids.size(); ++i) {
+        EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()), ids[i]);
+        EXPECT_FLOAT_EQ(expected.doc_list_[i].score(), scores[i]);
       }
       // search_param owns topk; the index writes exactly that many entries.
       std::array<int64_t, 4> larger{{-2, -2, -2, -2}};
-      ASSERT_EQ(0, coarse->search_fast(query, param, larger.data(), nullptr));
+      ASSERT_EQ(
+          0, coarse->search_internal_ids(query, param, larger.data(), nullptr));
       EXPECT_EQ(-2, larger[3]);
       ASSERT_EQ(0, fine->close());
       zvec::test_util::RemoveTestFiles(fine_path);
