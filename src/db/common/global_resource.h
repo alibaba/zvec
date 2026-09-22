@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -87,7 +88,13 @@ class GlobalResource : public ailego::Singleton<GlobalResource> {
                  bool query_thread_binding, uint32_t optimize_thread_count,
                  bool optimize_thread_binding,
                  bool preserve_existing_pool = false);
+  int initialize_locked(uint64_t memory_limit_bytes,
+                        uint32_t query_thread_count, bool query_thread_binding,
+                        uint32_t optimize_thread_count,
+                        bool optimize_thread_binding,
+                        bool preserve_existing_pool);
 
+  std::atomic<bool> initialized_{false};
   std::mutex initialization_mutex_;
   uint64_t memory_limit_bytes_{0};
   uint32_t query_thread_count_{0};

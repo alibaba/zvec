@@ -35,12 +35,18 @@ uint64_t GlobalResource::calculate_buffer_pool_memory_budget(
 }
 
 int GlobalResource::initialize() {
-  {
-    std::lock_guard<std::mutex> lock(initialization_mutex_);
-    if (query_thread_pool_ && optimize_thread_pool_) {
-      return 0;
-    }
+  // Resource handles are immutable after publication. Queries need an acquire
+  // load once initialization has completed, not the shared initialization lock.
+  if (initialized_.load(std::memory_order_acquire)) {
+    return 0;
   }
+  std::lock_guard<std::mutex> lock(initialization_mutex_);
+  if (query_thread_pool_ && optimize_thread_pool_) {
+    return 0;
+  }
+  // Keep the initial budget snapshot and resource creation under one lock.
+  // Another lazy caller must not mistake our newly created pool for a
+  // preconfigured standalone pool.
   const auto &config = GlobalConfig::Instance();
   auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
   // Standalone/core users may configure the process-wide pool before the DB
@@ -51,10 +57,10 @@ int GlobalResource::initialize() {
   const uint64_t effective_memory_limit = preserve_existing_pool
                                               ? memory_pool.capacity()
                                               : config.memory_limit_bytes();
-  return initialize(effective_memory_limit, config.query_thread_count(),
-                    config.query_thread_binding(),
-                    config.optimize_thread_count(),
-                    config.optimize_thread_binding(), preserve_existing_pool);
+  return initialize_locked(
+      effective_memory_limit, config.query_thread_count(),
+      config.query_thread_binding(), config.optimize_thread_count(),
+      config.optimize_thread_binding(), preserve_existing_pool);
 }
 
 int GlobalResource::initialize(uint64_t memory_limit_bytes,
@@ -64,6 +70,17 @@ int GlobalResource::initialize(uint64_t memory_limit_bytes,
                                bool optimize_thread_binding,
                                bool preserve_existing_pool) {
   std::lock_guard<std::mutex> lock(initialization_mutex_);
+  return initialize_locked(memory_limit_bytes, query_thread_count,
+                           query_thread_binding, optimize_thread_count,
+                           optimize_thread_binding, preserve_existing_pool);
+}
+
+int GlobalResource::initialize_locked(uint64_t memory_limit_bytes,
+                                      uint32_t query_thread_count,
+                                      bool query_thread_binding,
+                                      uint32_t optimize_thread_count,
+                                      bool optimize_thread_binding,
+                                      bool preserve_existing_pool) {
   try {
     auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
     const uint64_t rocksdb_memory_capacity =
@@ -131,6 +148,7 @@ int GlobalResource::initialize(uint64_t memory_limit_bytes,
     this->optimize_thread_pool_ = std::move(optimize_thread_pool);
     rocksdb_block_cache_ = std::move(rocksdb_block_cache);
     rocksdb_write_buffer_manager_ = std::move(rocksdb_write_buffer_manager);
+    initialized_.store(true, std::memory_order_release);
     LOG_INFO(
         "Managed memory initialized: total=%llu buffer_pool=%llu "
         "rocksdb=%llu rocksdb_percent=%u",

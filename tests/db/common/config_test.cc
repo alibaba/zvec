@@ -133,6 +133,18 @@ void CheckFailedConfigInitializationKeepsLoggingAvailable() {
       ailego::LoggerBroker::IsLevelEnabled(ailego::Logger::LEVEL_DEBUG));
   EXPECT_EQ(initialized_logger,
             ailego::LoggerBroker::Register(initialized_logger));
+
+  // A failed explicit initialization must not publish the resource fast path.
+  // Lazy access can still create complete resources using the existing pool.
+  auto &resources = GlobalResource::Instance();
+  ASSERT_EQ(0, resources.initialize());
+  ASSERT_NE(nullptr, resources.query_thread_pool());
+  ASSERT_NE(nullptr, resources.optimize_thread_pool());
+  ASSERT_NE(nullptr, resources.rocksdb_block_cache());
+  ASSERT_NE(nullptr, resources.rocksdb_write_buffer_manager());
+  EXPECT_EQ(GlobalResource::calculate_rocksdb_memory_budget(kExistingPoolBytes),
+            resources.rocksdb_memory_capacity());
+  EXPECT_EQ(kExistingPoolBytes, pool.capacity());
 }
 
 }  // namespace
@@ -298,6 +310,8 @@ TEST_F(ConfigTest, InvalidInitializeCanBeCorrected) {
 
 TEST_F(ConfigTest, FailedResourceInitializationDoesNotPublishConfig) {
   ASSERT_EQ(0, GlobalResource::Instance().initialize());
+  const auto *query_pool = GlobalResource::Instance().query_thread_pool();
+  const auto cache = GlobalResource::Instance().rocksdb_block_cache();
 
   GlobalConfig config_instance;
   const uint32_t original_query_threads = config_instance.query_thread_count();
@@ -315,6 +329,8 @@ TEST_F(ConfigTest, FailedResourceInitializationDoesNotPublishConfig) {
   const auto status = config_instance.initialize(requested);
   ASSERT_FALSE(status.ok());
   EXPECT_EQ(original_query_threads, config_instance.query_thread_count());
+  EXPECT_EQ(query_pool, GlobalResource::Instance().query_thread_pool());
+  EXPECT_EQ(cache, GlobalResource::Instance().rocksdb_block_cache());
 }
 
 TEST_F(ConfigTest, ValidateConfigWithInvalidQueryThreadCount) {
