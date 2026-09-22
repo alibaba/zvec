@@ -2010,6 +2010,48 @@ Result<DocPtrMap> CollectionImpl::fetch(
 
   DocPtrMap results;
 
+  if (!options_.enable_mmap_ && pks.size() > 1) {
+    struct PendingFetch {
+      Segment::Ptr segment;
+      std::vector<uint64_t> doc_ids;
+      std::vector<const std::string *> pks;
+    };
+    // Limit both the routing state and intermediate Arrow results. Mmap and
+    // single-document fetch keep their existing fast paths.
+    for (size_t begin = 0; begin < pks.size();
+         begin += Segment::kMaxFetchBatchSize) {
+      const size_t end =
+          std::min(pks.size(), begin + Segment::kMaxFetchBatchSize);
+      std::unordered_map<SegmentID, PendingFetch> batches;
+      for (size_t i = begin; i < end; ++i) {
+        const auto &pk = pks[i];
+        if (!results.emplace(pk, nullptr).second) {
+          continue;
+        }
+        uint64_t doc_id;
+        if (!id_map_->has(pk, &doc_id) || delete_store_->is_deleted(doc_id)) {
+          continue;
+        }
+        auto segment = local_segment_by_doc_id(doc_id, segments);
+        if (!segment) {
+          continue;
+        }
+        auto &batch = batches[segment->id()];
+        batch.segment = std::move(segment);
+        batch.doc_ids.push_back(doc_id);
+        batch.pks.push_back(&pk);
+      }
+      for (auto &[id, batch] : batches) {
+        auto docs = batch.segment->fetch_docs(batch.doc_ids, output_fields,
+                                              include_vector);
+        for (size_t i = 0; i < batch.pks.size(); ++i) {
+          results.at(*batch.pks[i]) = std::move(docs[i]);
+        }
+      }
+    }
+    return results;
+  }
+
   for (auto &pk : pks) {
     uint64_t doc_id;
     bool has = id_map_->has(pk, &doc_id);

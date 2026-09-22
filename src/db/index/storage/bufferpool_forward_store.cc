@@ -225,6 +225,7 @@ TablePtr BufferPoolForwardStore::fetch(const std::vector<std::string> &columns,
           LOG_ERROR("Failed to get scalar for row %zu status: %s",
                     (size_t)local_idx,
                     scalar_result.status().ToString().c_str());
+          return nullptr;
         }
         dst.emplace_back(tmp_output_row, std::move(scalar_result.ValueOrDie()));
       }

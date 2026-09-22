@@ -153,6 +153,11 @@ class SegmentImpl : public Segment,
                      std::nullopt,
                  bool include_vector = true) override;
 
+  std::vector<Doc::Ptr> fetch_docs(
+      const std::vector<uint64_t> &g_doc_ids,
+      const std::optional<std::vector<std::string>> &output_fields,
+      bool include_vector) override;
+
   CombinedVectorColumnIndexer::Ptr get_combined_vector_indexer(
       const std::string &field_name) const override;
 
@@ -349,13 +354,26 @@ class SegmentImpl : public Segment,
 
   // Require seg_mtx_; the public fetch() overloads take it before entering, so
   // a nested fetch never locks it twice.
+  Doc::Ptr fetch_doc_unsafe(
+      uint64_t g_doc_id,
+      const std::optional<std::vector<std::string>> &output_fields,
+      bool include_vector);
+  std::vector<std::string> doc_forward_columns(
+      const std::optional<std::vector<std::string>> &output_fields) const;
+  Doc::Ptr materialize_doc_unsafe(
+      uint64_t g_doc_id, int segment_doc_id,
+      const std::vector<std::string> &forward_columns,
+      const std::shared_ptr<arrow::Schema> &result_schema,
+      const ExecBatchPtr &exec_batch, bool include_vector);
   TablePtr fetch_unsafe(const std::vector<std::string> &columns,
-                        const std::vector<int> &segment_doc_ids) const;
+                        const std::vector<int> &segment_doc_ids,
+                        bool strict = false) const;
   ExecBatchPtr fetch_exec_unsafe(const std::vector<std::string> &columns,
                                  int segment_doc_id) const;
   TablePtr fetch_normal(const std::vector<std::string> &columns,
                         const std::shared_ptr<arrow::Schema> &result_schema,
-                        const std::vector<int> &segment_doc_ids) const;
+                        const std::vector<int> &segment_doc_ids,
+                        bool strict) const;
 
   // For performance tuning
   TablePtr fetch_perf(const std::vector<std::string> &columns,
@@ -1063,7 +1081,13 @@ Doc::Ptr SegmentImpl::fetch(
     bool include_vector) {
   // Shared so concurrent Fetch calls do not serialize.
   std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  return fetch_doc_unsafe(g_doc_id, output_fields, include_vector);
+}
 
+Doc::Ptr SegmentImpl::fetch_doc_unsafe(
+    uint64_t g_doc_id,
+    const std::optional<std::vector<std::string>> &output_fields,
+    bool include_vector) {
   if (g_doc_id > segment_meta_->max_doc_id()) {
     LOG_ERROR("g_doc_id[%zu] not exist in segment[%d] ", (size_t)g_doc_id,
               id());
@@ -1083,25 +1107,7 @@ Doc::Ptr SegmentImpl::fetch(
     return nullptr;
   }
 
-  std::vector<std::string> forward_columns;
-  forward_columns.push_back(GLOBAL_DOC_ID);
-  forward_columns.push_back(USER_ID);
-  if (!output_fields.has_value()) {
-    // No output_fields specified: return all forward fields
-    for (const auto &field : collection_schema_->forward_fields()) {
-      forward_columns.push_back(field->name());
-    }
-  } else {
-    // output_fields specified: only return requested fields that exist
-    const auto &requested = *output_fields;
-    std::unordered_set<std::string> requested_set(requested.begin(),
-                                                  requested.end());
-    for (const auto &field : collection_schema_->forward_fields()) {
-      if (requested_set.count(field->name())) {
-        forward_columns.push_back(field->name());
-      }
-    }
-  }
+  auto forward_columns = doc_forward_columns(output_fields);
 
   // Build result schema
   std::vector<std::shared_ptr<arrow::Field>> fields;
@@ -1125,8 +1131,125 @@ Doc::Ptr SegmentImpl::fetch(
   }
   auto result_schema = std::make_shared<arrow::Schema>(fields);
 
-  // fetch forward columns
   auto exec_batch = fetch_exec_unsafe(forward_columns, segment_doc_id);
+  return materialize_doc_unsafe(g_doc_id, segment_doc_id, forward_columns,
+                                result_schema, exec_batch, include_vector);
+}
+
+std::vector<std::string> SegmentImpl::doc_forward_columns(
+    const std::optional<std::vector<std::string>> &output_fields) const {
+  std::vector<std::string> forward_columns;
+  forward_columns.push_back(GLOBAL_DOC_ID);
+  forward_columns.push_back(USER_ID);
+  if (!output_fields.has_value()) {
+    // No output_fields specified: return all forward fields
+    for (const auto &field : collection_schema_->forward_fields()) {
+      forward_columns.push_back(field->name());
+    }
+  } else {
+    // output_fields specified: only return requested fields that exist
+    const auto &requested = *output_fields;
+    std::unordered_set<std::string> requested_set(requested.begin(),
+                                                  requested.end());
+    for (const auto &field : collection_schema_->forward_fields()) {
+      if (requested_set.count(field->name())) {
+        forward_columns.push_back(field->name());
+      }
+    }
+  }
+
+  return forward_columns;
+}
+
+std::vector<Doc::Ptr> SegmentImpl::fetch_docs(
+    const std::vector<uint64_t> &g_doc_ids,
+    const std::optional<std::vector<std::string>> &output_fields,
+    bool include_vector) {
+  std::vector<Doc::Ptr> docs(g_doc_ids.size());
+  for (size_t begin = 0; begin < g_doc_ids.size();
+       begin += kMaxFetchBatchSize) {
+    // Keep row routing, forward values, and vectors consistent within a batch.
+    std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+    const size_t end = std::min(g_doc_ids.size(), begin + kMaxFetchBatchSize);
+    std::vector<int> segment_doc_ids;
+    std::vector<size_t> output_positions;
+    segment_doc_ids.reserve(end - begin);
+    output_positions.reserve(end - begin);
+    for (size_t i = begin; i < end; ++i) {
+      auto it =
+          std::lower_bound(doc_ids_.begin(), doc_ids_.end(), g_doc_ids[i]);
+      if (it == doc_ids_.end() || *it != g_doc_ids[i]) {
+        continue;
+      }
+      segment_doc_ids.push_back(static_cast<int>(it - doc_ids_.begin()));
+      output_positions.push_back(i);
+    }
+    if (segment_doc_ids.empty()) {
+      continue;
+    }
+
+    auto columns = doc_forward_columns(output_fields);
+    std::vector<std::shared_ptr<arrow::Field>> fields;
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+    fields.reserve(columns.size());
+    arrays.reserve(columns.size());
+    for (const auto &column : columns) {
+      // Updated columns may have different physical block/row layouts. Fetch
+      // each column's row list independently, still batching each row group.
+      auto table = fetch_unsafe({column}, segment_doc_ids, /*strict=*/true);
+      if (!table || table->num_columns() != 1 ||
+          table->num_rows() != static_cast<int64_t>(segment_doc_ids.size())) {
+        LOG_ERROR("Batch fetch failed for column: %s", column.c_str());
+        arrays.clear();
+        break;
+      }
+      fields.push_back(table->schema()->field(0));
+      arrays.push_back(table->column(0));
+    }
+    if (arrays.size() != columns.size()) {
+      // Nested Arrow scalars can retain whole row groups while a batched
+      // fetch spans groups. Release every intermediate before trying the
+      // original one-document path, which needs fewer simultaneous pins.
+      arrays.clear();
+      fields.clear();
+      for (size_t output : output_positions) {
+        docs[output] =
+            fetch_doc_unsafe(g_doc_ids[output], output_fields, include_vector);
+      }
+      continue;
+    }
+    auto result_schema = std::make_shared<arrow::Schema>(std::move(fields));
+    for (size_t row = 0; row < segment_doc_ids.size(); ++row) {
+      std::vector<arrow::Datum> scalars;
+      scalars.reserve(arrays.size());
+      for (const auto &array : arrays) {
+        auto scalar = array->GetScalar(static_cast<int64_t>(row));
+        if (!scalar.ok()) {
+          LOG_ERROR("Batch fetch scalar failed: %s",
+                    scalar.status().ToString().c_str());
+          break;
+        }
+        scalars.emplace_back(std::move(scalar).ValueOrDie());
+      }
+      if (scalars.size() != arrays.size()) {
+        continue;
+      }
+      const size_t output = output_positions[row];
+      auto batch =
+          std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
+      docs[output] =
+          materialize_doc_unsafe(g_doc_ids[output], segment_doc_ids[row],
+                                 columns, result_schema, batch, include_vector);
+    }
+  }
+  return docs;
+}
+
+Doc::Ptr SegmentImpl::materialize_doc_unsafe(
+    uint64_t g_doc_id, int segment_doc_id,
+    const std::vector<std::string> &forward_columns,
+    const std::shared_ptr<arrow::Schema> &result_schema,
+    const ExecBatchPtr &exec_batch, bool include_vector) {
   if (!exec_batch) {
     LOG_ERROR("Fetch failed, doc_id: %zu", (size_t)g_doc_id);
     return nullptr;
@@ -1146,17 +1269,19 @@ Doc::Ptr SegmentImpl::fetch(
   auto doc = std::make_shared<Doc>();
 
   // column 0 is the global doc_id
-  if (auto doc_id_scalar = std::static_pointer_cast<arrow::Int64Scalar>(
-          (*exec_batch)[0].scalar())) {
+  auto doc_id_scalar =
+      std::dynamic_pointer_cast<arrow::UInt64Scalar>((*exec_batch)[0].scalar());
+  if (doc_id_scalar && doc_id_scalar->is_valid) {
     doc->set_doc_id(doc_id_scalar->value);
   } else {
-    LOG_ERROR("Global doc id scalar is not of int64 type");
+    LOG_ERROR("Global doc id scalar is not a valid uint64");
     return nullptr;
   }
 
   // column 1 is the uid(pk)
   if (auto str_scalar = std::dynamic_pointer_cast<arrow::StringScalar>(
-          (*exec_batch)[1].scalar())) {
+          (*exec_batch)[1].scalar());
+      str_scalar && str_scalar->is_valid) {
     doc->set_pk(std::string(str_scalar->view()));
   } else {
     LOG_ERROR("Primary key scalar is not of string type");
@@ -2470,7 +2595,7 @@ const std::vector<uint64_t> *SegmentImpl::get_fetch_perf_chunk_offsets(
 TablePtr SegmentImpl::fetch_normal(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
-    const std::vector<int> &segment_doc_ids) const {
+    const std::vector<int> &segment_doc_ids, bool strict) const {
   // Store scalars per column: column_index -> (output_row, scalar)
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       column_results(columns.size());
@@ -2564,6 +2689,14 @@ TablePtr SegmentImpl::fetch_normal(
       block_table = memory_store_->fetch(fetch_columns, fetch_block_rows);
     }
 
+    if (strict && (!block_table ||
+                   block_table->num_rows() !=
+                       static_cast<int64_t>(fetch_block_rows.size()) ||
+                   block_table->num_columns() !=
+                       static_cast<int>(fetch_columns.size()))) {
+      LOG_ERROR("Batch fetch failed for forward block: %d", block_index);
+      return nullptr;
+    }
     if (!block_table || block_table->num_rows() == 0) {
       continue;
     }
@@ -2587,7 +2720,14 @@ TablePtr SegmentImpl::fetch_normal(
 
       for (size_t j = 0; j < fetch_block_rows.size(); ++j) {
         auto scalar_result = flat_array->GetScalar(j);
-        if (!scalar_result.ok()) continue;
+        if (!scalar_result.ok()) {
+          if (strict) {
+            LOG_ERROR("Batch fetch scalar failed: %s",
+                      scalar_result.status().ToString().c_str());
+            return nullptr;
+          }
+          continue;
+        }
         int output_row = output_to_result_index[j].first;
         column_results[col_index].emplace_back(
             output_row, std::move(scalar_result.ValueOrDie()));
@@ -2622,6 +2762,10 @@ TablePtr SegmentImpl::fetch_normal(
       if (it != result_vec.end()) {
         ordered_scalars.push_back(it->second);
       } else {
+        if (strict) {
+          LOG_ERROR("Batch fetch omitted column %s, row %d", col.c_str(), i);
+          return nullptr;
+        }
         auto field = result_schema->GetFieldByName(col);
         ordered_scalars.push_back(
             arrow::MakeNullScalar(field ? field->type() : arrow::null()));
@@ -2678,9 +2822,9 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
   return fetch_unsafe(columns, segment_doc_ids);
 }
 
-TablePtr SegmentImpl::fetch_unsafe(
-    const std::vector<std::string> &columns,
-    const std::vector<int> &segment_doc_ids) const {
+TablePtr SegmentImpl::fetch_unsafe(const std::vector<std::string> &columns,
+                                   const std::vector<int> &segment_doc_ids,
+                                   bool strict) const {
   if (!validate(columns)) {
     return nullptr;
   }
@@ -2734,7 +2878,7 @@ TablePtr SegmentImpl::fetch_unsafe(
   if (chunk_offsets != nullptr) {
     return fetch_perf(columns, result_schema, segment_doc_ids, *chunk_offsets);
   }
-  return fetch_normal(columns, result_schema, segment_doc_ids);
+  return fetch_normal(columns, result_schema, segment_doc_ids, strict);
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
