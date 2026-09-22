@@ -71,7 +71,7 @@ def test_refine_candidate_counts_and_parameter_switches(
         index = HnswIndexParam(m=32, ef_construction=100, **index_params)
         query_param = partial(HnswQueryParam, ef=64)
     schema = CollectionSchema(
-        name="fast_query_refine",
+        name="query_internal_ids_refine",
         vectors=[
             VectorSchema(
                 "vector",

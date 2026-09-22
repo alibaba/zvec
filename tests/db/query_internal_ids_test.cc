@@ -42,8 +42,8 @@ SearchQuery MakeSearchQuery(const std::string &field,
 
 }  // namespace
 
-TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
-  const std::string path = "test_fast_query_topk_bounds";
+TEST(QueryInternalIdsTest, NativeTopkMatchesQueryBounds) {
+  const std::string path = "test_query_internal_ids_topk_bounds";
   FileHelper::RemoveDirectory(path);
   ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
   CollectionSchema schema("fast_topk_bounds");
@@ -80,6 +80,11 @@ TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
     EXPECT_EQ(fast->ids.size(), static_cast<size_t>(topk));
     for (auto id : fast->ids) EXPECT_EQ(id, -1);
   }
+  // This projection always returns internal IDs, so include_doc_id is
+  // redundant rather than an unsupported materialization request.
+  query.topk_ = 1;
+  query.include_doc_id_ = true;
+  ASSERT_TRUE(reader->query_internal_ids(query));
   // Zero must not bypass vector validation.
   auto invalid_query =
       MakeSearchQuery("vector", std::vector<float>(7), nullptr, 0);
@@ -100,11 +105,11 @@ TEST(FastQueryTest, NativeTopkMatchesQueryBounds) {
   FileHelper::RemoveDirectory(path);
 }
 
-TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
-  const std::string path = "test_fast_query_concurrent_fields";
+TEST(QueryInternalIdsTest, ConcurrentFieldsFromFirstQueryThroughClose) {
+  const std::string path = "test_query_internal_ids_concurrent_fields";
   FileHelper::RemoveDirectory(path);
   ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
-  CollectionSchema schema("fast_query_fields");
+  CollectionSchema schema("query_internal_ids_fields");
   schema.add_field(std::make_shared<FieldSchema>(
       "flat", DataType::VECTOR_FP32, uint32_t{32}, false,
       std::make_shared<FlatIndexParams>(MetricType::L2)));
@@ -225,11 +230,11 @@ TEST(FastQueryTest, ConcurrentFieldsFromFirstQueryThroughClose) {
   FileHelper::RemoveDirectory(path);
 }
 
-TEST(FastQueryTest, PreservesOrdinalsAfterReopenAndCompaction) {
-  const std::string path = "test_fast_query_identity_doc_ids";
+TEST(QueryInternalIdsTest, PreservesOrdinalsAfterReopenAndCompaction) {
+  const std::string path = "test_query_internal_ids_identity_doc_ids";
   FileHelper::RemoveDirectory(path);
   ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
-  CollectionSchema schema("fast_query_identity");
+  CollectionSchema schema("query_internal_ids_identity");
   schema.add_field(std::make_shared<FieldSchema>(
       "vector", DataType::VECTOR_FP32, uint32_t{32}, false,
       std::make_shared<FlatIndexParams>(MetricType::L2)));
@@ -309,7 +314,7 @@ TEST(FastQueryTest, PreservesOrdinalsAfterReopenAndCompaction) {
   FileHelper::RemoveDirectory(path);
 }
 
-TEST(FastQueryTest, ReadsRefineParametersOnEveryCall) {
+TEST(QueryInternalIdsTest, ReadsRefineParametersOnEveryCall) {
   const std::string path = "test_fast_search_refine_scale";
   FileHelper::RemoveDirectory(path);
   ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);

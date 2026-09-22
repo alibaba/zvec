@@ -1,4 +1,4 @@
-"""Advanced dense search: collection queries, scores, fallback and lifetime."""
+"""Internal-ID search: query semantics, fast paths, fallback and lifetime."""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -42,7 +42,7 @@ def _query_internal_ids(
 )
 def test_empty_collection(tmp_path, index_type):
     schema = CollectionSchema(
-        name="empty_fast_query",
+        name="empty_query_internal_ids",
         vectors=[
             VectorSchema("vector", DataType.VECTOR_FP32, 32, index_param=index_type())
         ],
@@ -83,7 +83,7 @@ def test_empty_collection(tmp_path, index_type):
 
 
 @pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
-def test_fast_query_topk_contract(tmp_path, populated):
+def test_query_internal_ids_topk_contract(tmp_path, populated):
     schema = CollectionSchema(
         name="fast_topk_contract",
         vectors=[
@@ -144,7 +144,7 @@ def test_fast_query_topk_contract(tmp_path, populated):
 
 
 @pytest.mark.parametrize("state", ["empty", "unoptimized", "optimized"])
-def test_fast_query_ivf_rabitq_nprobe_contract(tmp_path, state):
+def test_query_internal_ids_ivf_rabitq_nprobe_contract(tmp_path, state):
     schema = CollectionSchema(
         name="fast_nprobe_contract",
         vectors=[
@@ -216,6 +216,81 @@ def test_fast_query_ivf_rabitq_nprobe_contract(tmp_path, state):
         reader.close()
 
 
+def test_query_semantics_use_standard_fallback(tmp_path):
+    schema = CollectionSchema(
+        name="internal_id_fallback",
+        fields=[
+            zvec.FieldSchema("rank", DataType.INT32, nullable=False),
+            zvec.FieldSchema(
+                "content",
+                DataType.STRING,
+                nullable=False,
+                index_param=zvec.FtsIndexParam(
+                    tokenizer_name="standard", filters=["lowercase"]
+                ),
+            ),
+        ],
+        vectors=[
+            VectorSchema(
+                "dense",
+                DataType.VECTOR_FP32,
+                dimension=4,
+                index_param=zvec.FlatIndexParam(metric_type=MetricType.L2),
+            ),
+            VectorSchema(
+                "sparse",
+                DataType.SPARSE_VECTOR_FP32,
+                index_param=HnswIndexParam(),
+            ),
+        ],
+    )
+    path = str(tmp_path / "fallback")
+    writer = zvec.create_and_open(path, schema)
+    docs = [
+        Doc(
+            id=f"row-{i}",
+            fields={
+                "rank": i,
+                "content": "vector search" if i % 2 == 0 else "other text",
+            },
+            vectors={
+                "dense": [float(i), 0.0, 0.0, 0.0],
+                "sparse": {i + 1: 1.0, 20: float(i + 1)},
+            },
+        )
+        for i in range(6)
+    ]
+    assert all(status.ok() for status in writer.insert(docs))
+    writer.close()
+
+    reader = zvec.open(path, CollectionOption(read_only=True))
+    try:
+        cases = [
+            (Query("dense", vector=[0.0, 0.0, 0.0, 0.0]), "rank >= 2"),
+            (Query("sparse", vector={2: 1.0, 20: 2.0}), None),
+            (Query("content", fts=zvec.Fts(match_string="search")), None),
+        ]
+        for query, filter_expr in cases:
+            expected = reader.query(query, topk=8, filter=filter_expr, output_fields=[])
+            ids, scores = reader.query_internal_ids(
+                query,
+                topk=8,
+                filter=filter_expr,
+                return_scores=True,
+            )
+            count = len(expected)
+            assert reader.resolve_internal_ids(ids[:count]) == [
+                doc.id for doc in expected
+            ]
+            np.testing.assert_allclose(
+                scores[:count], [doc.score for doc in expected], rtol=1e-5, atol=1e-5
+            )
+            assert np.all(ids[count:] == -1)
+            assert np.all(np.isnan(scores[count:]))
+    finally:
+        reader.close()
+
+
 @pytest.fixture(
     params=[(128, False), (1200, False), (1200, True)],
     ids=["brute_fallback", "vamana_graph", "hnsw_graph"],
@@ -225,7 +300,7 @@ def collection(tmp_path, request):
     rng = np.random.default_rng(721)
     vectors = rng.normal(size=(request.param[0], 32)).astype(np.float32)
     schema = CollectionSchema(
-        name="fast_query",
+        name="query_internal_ids",
         vectors=[
             VectorSchema(
                 "vector",
@@ -272,7 +347,7 @@ def collection(tmp_path, request):
         reader.close()
 
 
-def test_fast_query_matches_query_and_owns_results(collection):
+def test_query_internal_ids_matches_query_and_owns_results(collection):
     coll, vectors, param_type = collection
     query = np.ascontiguousarray(vectors[17] + 0.013, dtype=np.float32)
     for ef in (24, 80):
@@ -625,7 +700,7 @@ def test_field_and_collection_caches_are_independent(tmp_path):
     ["flat", "hnsw", "vamana", "ivf", "hnsw_rabitq", "ivf_rabitq", "diskann"],
 )
 @pytest.mark.parametrize("metric", [MetricType.L2, MetricType.IP, MetricType.COSINE])
-def test_fast_query_index_and_metric_dispatch(tmp_path, index_kind, metric):
+def test_query_internal_ids_index_and_metric_dispatch(tmp_path, index_kind, metric):
     """Exercise every dense index dispatch, including score normalization."""
     record = dict(metric_type=metric, quantize_type=QuantizeType.INT8)
     factories = {

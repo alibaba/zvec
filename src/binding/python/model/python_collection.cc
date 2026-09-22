@@ -370,11 +370,13 @@ void ZVecPyCollection::bind_dql_methods(
                                   owned_array(std::move(output.scores)));
           },
           py::arg("query"), py::arg("return_scores") = false,
-          R"doc(Query a dense field and return internal numeric IDs.
+          R"doc(Execute a single query and return internal numeric IDs.
 
 Accepts the same single-target SearchQuery object as Query. Returns an owning
 int64 array, or (IDs, float32 scores) with return_scores=True. Scores include
-refinement. Use ResolveInternalIds to convert IDs to user primary keys.
+refinement. Eligible dense queries use the specialized low-latency path;
+other query shapes use regular Query semantics. Use ResolveInternalIds to
+convert IDs to user primary keys.
 )doc")
       .def(
           "ResolveInternalIds",

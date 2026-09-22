@@ -516,13 +516,16 @@ class Collection:
         query: Query,
         *,
         topk: int = 10,
+        filter: Optional[str] = None,
         return_scores: bool = False,
     ) -> Union[np.ndarray, tuple[np.ndarray, np.ndarray]]:
-        """Query a dense field and return internal numeric IDs.
+        """Execute a single query and return internal numeric IDs.
 
         This API requires a read-only collection and accepts the same single
-        :class:`Query` used by :meth:`query`. It supports dense vector queries
-        without filtering, re-ranking or result-field materialization.
+        :class:`Query` used by :meth:`query`, including scalar filters, sparse
+        vectors and full-text search. Eligible dense queries use a specialized
+        low-latency path; other query shapes use regular query semantics.
+        Re-ranking and result-field materialization are not supported.
 
         The result is an owning int64 NumPy array. With
         ``return_scores=True``, it returns ``(ids, scores)`` where scores is an
@@ -530,9 +533,9 @@ class Collection:
         and score ``NaN``. Refinement parameters have the same semantics as
         :meth:`query`.
 
-        Use :meth:`query` for documents, scalar filters, sparse queries,
-        multiple queries, group-by, or fetching fields and vectors. Use
-        :meth:`resolve_internal_ids` to convert these IDs to user primary keys.
+        Use :meth:`query` for documents, multiple queries, group-by, re-ranking,
+        or fetching fields and vectors. Use :meth:`resolve_internal_ids` to
+        convert these IDs to user primary keys.
 
         Examples:
             >>> query = zvec.Query("vector", vector=vector, param=param)
@@ -545,7 +548,7 @@ class Collection:
             msg = "query_internal_ids collection is closed"
             raise ValueError(msg)
         _require_positive_integer(topk, "topk")
-        ctx = QueryContext(topk=topk, queries=[query])
+        ctx = QueryContext(topk=topk, filter=filter, queries=[query])
         cpp_query = self._querier.build_search_query(ctx, query, self._obj)
         return self._obj.QueryInternalIds(cpp_query, return_scores)
 

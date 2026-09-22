@@ -132,7 +132,7 @@ inline void QueryTarget::set_sparse_vector(std::string indices,
   vc.sparse_values_ = std::move(values);
 }
 
-// Buffers returned by the dense internal-ID query API.
+// Buffers returned by the internal-ID query API.
 struct InternalIdsQueryResult {
   std::vector<int64_t> ids;
   std::vector<float> scores;
