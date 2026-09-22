@@ -754,8 +754,8 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int VamanaStreamer::search_candidates_impl(const void *query,
                                            const IndexQueryMeta &qmeta,
                                            std::vector<uint64_t> &keys,
-                                           std::vector<float> *scores,
-                                           Context::Pointer &context) const {
+                                           Context::Pointer &context,
+                                           std::vector<float> *scores) const {
   keys.clear();
   if (scores) scores->clear();
   int ret = check_params(query, qmeta);
@@ -771,8 +771,8 @@ int VamanaStreamer::search_candidates_impl(const void *query,
   }
 
   if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
-    return IndexRunner::search_candidates_impl(query, qmeta, keys, scores,
-                                               context);
+    return IndexRunner::search_candidates_impl(query, qmeta, keys, context,
+                                               scores);
   }
 
   if (ctx->magic() != magic_) {

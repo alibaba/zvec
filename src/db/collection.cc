@@ -1959,7 +1959,7 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
   if (field->second.primary && (!refine || field->second.reference)) {
     const core_interface::VectorData vector{
         core_interface::DenseVector{query_vector}};
-    const auto status = ProximaEngineHelper::search_fast(
+    const auto status = ProximaEngineHelper::search_internal_ids(
         *field->second.primary, vector, query_params,
         static_cast<uint32_t>(topk), nullptr,
         refine ? field->second.reference : nullptr, out.ids.data(),
@@ -1988,9 +1988,9 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
     searched = true;
     auto filter = segment->get_filter();
     params.filter = filter.get();
-    auto status =
-        indexer->search_fast(vector_data, params, out.ids.data(),
-                             out.scores.empty() ? nullptr : out.scores.data());
+    auto status = indexer->search_internal_ids(
+        vector_data, params, out.ids.data(),
+        out.scores.empty() ? nullptr : out.scores.data());
     CHECK_RETURN_STATUS_EXPECTED(status);
     // The read-only collection contract makes this property immutable.
     if (!segment->has_identity_doc_ids()) {

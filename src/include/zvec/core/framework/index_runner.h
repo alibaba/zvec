@@ -504,11 +504,10 @@ class IndexRunner : public IndexModule {
   //! the reusable output buffers, which are cleared on entry. Scores are
   //! optional; context document/vector results are unspecified. Algorithms may
   //! override this to export their retained pool without materializing docs.
-  virtual int search_candidates_impl(const void *query,
-                                     const IndexQueryMeta &qmeta,
-                                     std::vector<uint64_t> &keys,
-                                     std::vector<float> *scores,
-                                     Context::Pointer &context) const {
+  virtual int search_candidates_impl(
+      const void *query, const IndexQueryMeta &qmeta,
+      std::vector<uint64_t> &keys, Context::Pointer &context,
+      std::vector<float> *scores = nullptr) const {
     keys.clear();
     if (scores) scores->clear();
     const int ret = search_impl(query, qmeta, 1, context);

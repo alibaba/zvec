@@ -62,23 +62,23 @@ TEST(QueryInternalIdsTest, NativeTopkMatchesQueryBounds) {
                    std::numeric_limits<int>::max()}) {
     query.topk_ = topk;
     auto normal = reader->query(query);
-    auto fast = reader->query_internal_ids(query);
+    auto internal_ids = reader->query_internal_ids(query);
     ASSERT_FALSE(normal);
-    ASSERT_FALSE(fast);
+    ASSERT_FALSE(internal_ids);
     EXPECT_EQ(normal.error().code(), StatusCode::INVALID_ARGUMENT);
-    EXPECT_EQ(fast.error().code(), normal.error().code());
-    EXPECT_EQ(fast.error().message(), normal.error().message());
+    EXPECT_EQ(internal_ids.error().code(), normal.error().code());
+    EXPECT_EQ(internal_ids.error().message(), normal.error().message());
   }
   // Native query allows zero; the public Python API requires a positive int.
   for (int topk : {0, 1, 100000}) {
     query.topk_ = topk;
     auto normal = reader->query(query);
-    auto fast = reader->query_internal_ids(query);
+    auto internal_ids = reader->query_internal_ids(query);
     ASSERT_TRUE(normal);
-    ASSERT_TRUE(fast);
+    ASSERT_TRUE(internal_ids);
     EXPECT_TRUE(normal->empty());
-    EXPECT_EQ(fast->ids.size(), static_cast<size_t>(topk));
-    for (auto id : fast->ids) EXPECT_EQ(id, -1);
+    EXPECT_EQ(internal_ids->ids.size(), static_cast<size_t>(topk));
+    for (auto id : internal_ids->ids) EXPECT_EQ(id, -1);
   }
   // This projection always returns internal IDs, so include_doc_id is
   // redundant rather than an unsupported materialization request.

@@ -41,9 +41,10 @@ class CombinedVectorColumnIndexer {
 
   // Dense top-k search without group-by, brute-force keys or vector fetching.
   // Uses the same block/refiner handling; output buffers hold topk elements.
-  Status search_fast(const vector_column_params::VectorData &vector_data,
-                     const vector_column_params::QueryParams &query_params,
-                     int64_t *output_ids, float *output_scores);
+  Status search_internal_ids(
+      const vector_column_params::VectorData &vector_data,
+      const vector_column_params::QueryParams &query_params,
+      int64_t *output_ids, float *output_scores);
 
   virtual Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t segment_doc_id) const;
