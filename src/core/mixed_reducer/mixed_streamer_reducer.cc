@@ -361,14 +361,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
   bool need_encode = need_revert || reformer == nullptr;
   if (quantizer != nullptr) {
     // Quantizer-encoded records can be copied raw only into an identical
-    // target layout; otherwise (or when a builder consumes original vectors)
-    // dequantize back to the original format.
+    // target layout, including the metric: INT4 IP and L2 tails have the
+    // same size but different meanings. Otherwise (or when a builder consumes
+    // original vectors), dequantize back to the original format.
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
     const bool same_layout =
         target_builder_ == nullptr &&
         turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
+        target_meta.metric_name() == source_meta.metric_name() &&
         target_meta.data_type() == source_meta.data_type() &&
         target_meta.dimension() == source_meta.dimension() &&
         target_meta.unit_size() == source_meta.unit_size() &&

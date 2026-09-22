@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <random>
 #include <string>
@@ -691,6 +692,124 @@ TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_path);
   zvec::test_util::RemoveTestFiles(target_path);
+}
+
+TEST_P(HnswTurboIndexTest, MergeAcrossMetricsReencodesTurboLayout) {
+  const auto &[quantizer, source_metric] = GetParam();
+  auto vectors = RandomVectors(kTopK);
+  // Exactly representable in INT4: copying the IP tail into an L2 index
+  // used to produce a negative self-distance for this vector.
+  vectors[0].assign(kDimension, 0.0f);
+  vectors[0].front() = vectors[0].back() = 1.0f;
+  for (size_t i = 1; i < vectors.size(); ++i) {
+    for (float &value : vectors[i]) {
+      value *= static_cast<float>(i + 1);
+    }
+  }
+
+  auto make_param = [quantizer_type = quantizer.type](
+                        bool flat,
+                        MetricType metric) -> BaseIndexParam::Pointer {
+    if (!flat) {
+      return MakeParam(metric, quantizer_type);
+    }
+    return FlatIndexParamBuilder()
+        .with_metric_type(metric)
+        .with_data_type(DataType::DT_FP32)
+        .with_dimension(kDimension)
+        .with_is_sparse(false)
+        .with_quantizer_param(QuantizerParam(quantizer_type))
+        .build();
+  };
+
+  for (bool source_flat : {false, true}) {
+    const std::string source_path = index_path("cross_metric_source");
+    zvec::test_util::RemoveTestFiles(source_path);
+    auto source = IndexFactory::CreateAndInitIndex(
+        *make_param(source_flat, source_metric.type));
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(0, source->open(source_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    AddVectors(source.get(), vectors);
+
+    // A lossy source cannot recover the initial FP32 values exactly. Build
+    // the reference from fetched (decoded) values, then encode for the target.
+    auto decoded = vectors;
+    for (uint32_t i = 0; i < vectors.size(); ++i) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, source->fetch(i, &fetched));
+      const auto &bytes =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), bytes.size());
+      std::memcpy(decoded[i].data(), bytes.data(), bytes.size());
+    }
+
+    for (const auto &target_metric : kTurboMetrics) {
+      if (target_metric.type == source_metric.type) {
+        continue;
+      }
+      for (bool target_flat : {false, true}) {
+        SCOPED_TRACE(testing::Message()
+                     << "source_flat=" << source_flat
+                     << " target_flat=" << target_flat
+                     << " target_metric=" << target_metric.test_name);
+        const std::string target_path = index_path("cross_metric_target");
+        const std::string reference_path = index_path("cross_metric_reference");
+        zvec::test_util::RemoveTestFiles(target_path);
+        zvec::test_util::RemoveTestFiles(reference_path);
+        auto param = make_param(target_flat, target_metric.type);
+        auto target = IndexFactory::CreateAndInitIndex(*param);
+        auto reference = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_NE(nullptr, target);
+        ASSERT_NE(nullptr, reference);
+        ASSERT_EQ(0, target->open(target_path,
+                                  {StorageOptions::StorageType::kMMAP, true}));
+        ASSERT_EQ(0,
+                  reference->open(reference_path,
+                                  {StorageOptions::StorageType::kMMAP, true}));
+        AddVectors(reference.get(), decoded);
+        ASSERT_EQ(0, target->merge({source}, IndexFilter()));
+        EXPECT_EQ(vectors.size(), target->get_doc_count());
+
+        auto search = [&](Index *index, const std::vector<float> &query) {
+          BaseIndexQueryParam::Pointer query_param;
+          if (target_flat) {
+            query_param = FlatQueryParamBuilder().with_topk(kTopK).build();
+          } else {
+            query_param = HNSWQueryParamBuilder()
+                              .with_topk(kTopK)
+                              .with_is_linear(true)
+                              .build();
+          }
+          SearchResult result;
+          EXPECT_EQ(0, index->search(VectorData{DenseVector{query.data()}},
+                                     query_param, &result));
+          SearchRowList rows;
+          for (const auto &doc : result.doc_list_) {
+            rows.emplace_back(doc.key(), doc.score());
+          }
+          std::sort(rows.begin(), rows.end());
+          return rows;
+        };
+        for (const auto &query : vectors) {
+          const auto expected = search(reference.get(), query);
+          const auto actual = search(target.get(), query);
+          ASSERT_EQ(kTopK, expected.size());
+          ASSERT_EQ(expected.size(), actual.size());
+          for (size_t i = 0; i < expected.size(); ++i) {
+            EXPECT_EQ(expected[i].first, actual[i].first);
+            EXPECT_FLOAT_EQ(expected[i].second, actual[i].second);
+          }
+        }
+        ASSERT_EQ(0, target->close());
+        ASSERT_EQ(0, reference->close());
+        zvec::test_util::RemoveTestFiles(target_path);
+        zvec::test_util::RemoveTestFiles(reference_path);
+      }
+    }
+    ASSERT_EQ(0, source->close());
+    zvec::test_util::RemoveTestFiles(source_path);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
