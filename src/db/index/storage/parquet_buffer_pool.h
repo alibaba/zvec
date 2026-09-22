@@ -72,7 +72,12 @@ struct ParquetBufferIDEqual {
 
 namespace detail {
 
+class ParquetMemoryPool;
+
 struct ParquetBufferPayload {
+  // Arrow buffers store a raw pool pointer. Destroy their owners before this
+  // shared pool owner, including when a cached payload outlives its reader.
+  std::shared_ptr<ParquetMemoryPool> memory_pool;
   std::shared_ptr<arrow::ChunkedArray> arrow{nullptr};
   std::vector<std::shared_ptr<arrow::Buffer>> arrow_refs{};
 };

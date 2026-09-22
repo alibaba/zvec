@@ -31,6 +31,7 @@
 #include "db/index/storage/parquet_buffer_pool.h"
 #undef private
 #include "db/index/storage/lazy_record_batch_reader.h"
+#include "db/index/storage/parquet_memory_pool.h"
 #include "utils/utils.h"
 
 using namespace zvec;
@@ -899,4 +900,108 @@ TEST_F(BufferPoolScalarFetchTest, InvalidCachedColumnReturnsNull) {
   *data =
       arrow::ChunkedArray(original->Slice(0, 1)->chunks(), original->type());
   EXPECT_EQ(nullptr, store.fetch({"id"}, 3));
+}
+
+class BufferPoolLargeDecodeTest : public BufferPoolScalarFetchTest {
+ protected:
+  void SetUp() override {
+    ASSERT_NO_FATAL_FAILURE(BufferPoolScalarFetchTest::SetUp());
+    arrow::StringBuilder names;
+    for (int row = 0; row < kLargeRows; ++row) {
+      ASSERT_TRUE(names.Append(large_text(row)).ok());
+    }
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(names.Finish(&values).ok());
+    auto schema = arrow::schema({arrow::field("name", arrow::utf8())});
+    auto table = arrow::Table::Make(schema, {values});
+    auto output = arrow::io::FileOutputStream::Open(parquet_path_);
+    ASSERT_TRUE(output.ok()) << output.status().ToString();
+    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
+                                           *output, kLargeRows)
+                    .ok());
+    ASSERT_TRUE((*output)->Close().ok());
+  }
+
+  static std::string large_text(int row) {
+    return std::to_string(row) + std::string(512, 'x');
+  }
+
+  static constexpr int kLargeRows = 8192;
+};
+
+TEST_F(BufferPoolLargeDecodeTest, DecoderAndOutputUseDedicatedMemoryPool) {
+  auto pool = detail::GetParquetMemoryPool();
+  const auto mapped_before = pool->mapped_bytes();
+  const auto allocations_before = pool->num_mapped_allocations();
+  const auto total_before = pool->total_bytes_allocated();
+  const auto mapped_total_before = pool->total_mapped_bytes_allocated();
+  auto *default_pool = arrow::default_memory_pool();
+  const auto default_before = default_pool->total_bytes_allocated();
+  detail::ParquetBufferLoader loader;
+  detail::ParquetBufferPayload payload;
+  size_t bytes = 0;
+  ASSERT_TRUE(
+      loader.load(ParquetBufferID(parquet_path_, 0, 0), payload, bytes));
+  ASSERT_NE(nullptr, payload.arrow);
+  EXPECT_EQ(kLargeRows, payload.arrow->length());
+  EXPECT_GT(bytes, detail::ParquetMemoryPool::kMappedAllocationThreshold);
+  EXPECT_GT(pool->mapped_bytes(), mapped_before);
+  EXPECT_GT(pool->num_mapped_allocations(), allocations_before);
+  // Only small allocations explicitly delegated by our pool should reach the
+  // default pool. In particular, configuring just Arrow's output pool must not
+  // leave input, dictionary, or decoder buffers on the default pool.
+  const auto delegated =
+      pool->total_bytes_allocated() - total_before -
+      (pool->total_mapped_bytes_allocated() - mapped_total_before);
+  EXPECT_EQ(delegated, default_pool->total_bytes_allocated() - default_before);
+  loader.clear(payload);
+  EXPECT_EQ(mapped_before, pool->mapped_bytes());
+}
+
+TEST_F(BufferPoolLargeDecodeTest, RepeatedEvictionReleasesLargeMappings) {
+  auto pool = detail::GetParquetMemoryPool();
+  const auto mapped_before = pool->mapped_bytes();
+  BufferPoolForwardStore store(parquet_path_);
+  ASSERT_TRUE(store.open().ok());
+  std::vector<ExecBatchPtr> retained;
+  for (int row = 0; row < 12; ++row) {
+    auto batch = store.fetch({"name"}, row);
+    ASSERT_NE(nullptr, batch);
+    retained.push_back(std::move(batch));
+    EXPECT_GT(pool->mapped_bytes(), mapped_before);
+    ailego::BlockEvictionQueue::get_instance().batch_recycle(1024);
+    EXPECT_EQ(mapped_before, pool->mapped_bytes());
+    EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().external_used());
+  }
+  for (size_t row = 0; row < retained.size(); ++row) {
+    auto scalar = std::dynamic_pointer_cast<arrow::StringScalar>(
+        retained[row]->values[0].scalar());
+    ASSERT_NE(nullptr, scalar);
+    EXPECT_EQ(large_text(static_cast<int>(row)), scalar->view());
+  }
+}
+
+TEST_F(BufferPoolLargeDecodeTest, EscapedViewKeepsLargeMappingAlive) {
+  auto pool = detail::GetParquetMemoryPool();
+  const auto mapped_before = pool->mapped_bytes();
+  std::shared_ptr<arrow::ChunkedArray> escaped;
+  {
+    auto handle = ParquetBufferPool::get_instance().acquire_buffer(
+        ParquetBufferID(parquet_path_, 0, 0));
+    escaped = handle.data();
+  }
+  ASSERT_NE(nullptr, escaped);
+  EXPECT_GT(pool->mapped_bytes(), mapped_before);
+  ailego::BlockEvictionQueue::get_instance().batch_recycle(1024);
+  EXPECT_GT(pool->mapped_bytes(), mapped_before);
+  {
+    auto scalar = escaped->GetScalar(kLargeRows - 1);
+    ASSERT_TRUE(scalar.ok()) << scalar.status().ToString();
+    auto value = std::dynamic_pointer_cast<arrow::StringScalar>(*scalar);
+    ASSERT_NE(nullptr, value);
+    EXPECT_EQ(large_text(kLargeRows - 1), value->view());
+  }
+  escaped.reset();
+  ailego::BlockEvictionQueue::get_instance().batch_recycle(1024);
+  EXPECT_EQ(mapped_before, pool->mapped_bytes());
 }

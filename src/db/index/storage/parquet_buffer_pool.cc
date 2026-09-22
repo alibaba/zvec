@@ -27,6 +27,7 @@
 #include <parquet/arrow/reader.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include "parquet_memory_pool.h"
 
 namespace zvec {
 
@@ -160,11 +161,12 @@ std::shared_ptr<arrow::ChunkedArray> ParquetBufferContextHandle::data() const {
 bool detail::ParquetBufferLoader::load(const ParquetBufferID &buffer_id,
                                        ParquetBufferPayload &payload,
                                        size_t &size) {
-  arrow::MemoryPool *mem_pool = arrow::default_memory_pool();
+  payload.memory_pool = GetParquetMemoryPool();
+  arrow::MemoryPool *mem_pool = payload.memory_pool.get();
 
   std::shared_ptr<arrow::io::RandomAccessFile> input;
   const auto &file_name = buffer_id.filename;
-  auto input_result = arrow::io::ReadableFile::Open(file_name);
+  auto input_result = arrow::io::ReadableFile::Open(file_name, mem_pool);
   if (!input_result.ok()) {
     LOG_ERROR("Failed to open parquet file[%s]: %s", file_name.c_str(),
               input_result.status().ToString().c_str());
@@ -173,7 +175,17 @@ bool detail::ParquetBufferLoader::load(const ParquetBufferID &buffer_id,
   input = *input_result;
 
   std::unique_ptr<parquet::arrow::FileReader> reader;
-  auto reader_result = parquet::arrow::OpenFile(input, mem_pool);
+  // Configure both the low-level Parquet reader and Arrow output builders;
+  // OpenFile(input, pool) alone leaves ReaderProperties on the default pool.
+  parquet::ReaderProperties read_properties(mem_pool);
+  parquet::arrow::FileReaderBuilder builder;
+  auto open_status = builder.Open(input, read_properties);
+  if (!open_status.ok()) {
+    LOG_ERROR("Failed to open parquet reader[%s]: %s", file_name.c_str(),
+              open_status.ToString().c_str());
+    return false;
+  }
+  auto reader_result = builder.memory_pool(mem_pool)->Build();
   if (!reader_result.ok()) {
     LOG_ERROR("Failed to create parquet reader[%s]: %s", file_name.c_str(),
               reader_result.status().ToString().c_str());
@@ -204,6 +216,7 @@ bool detail::ParquetBufferLoader::load(const ParquetBufferID &buffer_id,
 void detail::ParquetBufferLoader::clear(ParquetBufferPayload &payload) const {
   payload.arrow = nullptr;
   payload.arrow_refs.clear();
+  payload.memory_pool.reset();
 }
 
 ParquetBufferContextHandle ParquetBufferPool::acquire_buffer(
