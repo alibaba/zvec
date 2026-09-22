@@ -653,8 +653,11 @@ int Index::close() {
   // own cloned storage segments, so leaving the current thread's context in
   // the cache after Close would keep the buffer pool (and its metadata/pages)
   // alive until another IVF search or thread exit.
-  if (context_index_ < context_list.size()) {
-    context_list[context_index_].reset();
+  const size_t context_index =
+      (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
+      static_cast<size_t>(is_sparse_);
+  if (context_index < context_list.size()) {
+    context_list[context_index].reset();
     context_index_ = std::numeric_limits<size_t>::max();
   }
   if (ailego_unlikely(storage_->close() != 0)) {
