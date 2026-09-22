@@ -374,7 +374,7 @@ TEST_F(BufferPoolTest, WritableBypassJoinsConcurrentLoadBeforeReading) {
   pool.page_table_.release_block(0);
 }
 
-TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
+TEST_F(BufferPoolTest, ShortReadDoesNotAdmitFirstTouchUnderPressure) {
   constexpr size_t kFilePages = 3;
   constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
   auto &memory_pool = MemoryLimitPool::get_instance();
@@ -396,7 +396,13 @@ TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
 
     char *hot = pool.acquire_buffer(/*block_id=*/0, 10);
     ASSERT_NE(nullptr, hot);
-    pool.page_table_.release_block(/*block_id=*/0);
+    // Keep pressure stable until the admission assertions finish. A released
+    // page can be reclaimed in the background, making a later cold miss
+    // legitimately eligible for admission. The rejection counters below
+    // distinguish policy bypass from an allocation failure with a pinned page.
+    auto release_pin = ScopeGuard::Make(
+        [&pool] { pool.page_table_.release_block(/*block_id=*/0); });
+    ASSERT_TRUE(memory_pool.under_cache_pressure());
 
     std::vector<char> data(2 * kVectorPageSize);
     ASSERT_TRUE(handle.read_range(kVectorPageSize, data.size(), data.data()));
@@ -406,6 +412,7 @@ TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
     EXPECT_TRUE(pool.is_page_resident(0));
     EXPECT_FALSE(pool.is_page_resident(1));
     EXPECT_FALSE(pool.is_page_resident(2));
+    EXPECT_TRUE(memory_pool.under_cache_pressure());
     const auto stats = pool.stats();
     EXPECT_EQ(2u, stats.admission_rejected);
     EXPECT_EQ(2u, stats.bypass_reads);
