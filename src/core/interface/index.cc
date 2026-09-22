@@ -227,8 +227,15 @@ bool Index::init_context() {
 }
 
 core::IndexContext::Pointer &Index::acquire_context() {
-  init_context();
-  return context_list[context_index_];
+  const size_t context_index =
+      (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
+      static_cast<size_t>(is_sparse_);
+  auto &context = context_list[context_index];
+  if (!context) {
+    context = streamer_->create_context();
+    if (!context) LOG_ERROR("Failed to create context");
+  }
+  return context;
 }
 
 int Index::train() {
