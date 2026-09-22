@@ -171,6 +171,9 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> query_unsafe(const MultiQuery &query) const;
 
+  Result<InternalIdsQueryResult> query_internal_ids_fallback(
+      const SearchQuery &query, bool return_scores) const;
+
   void prepare_schema();
 
   Status close_internal();
@@ -184,7 +187,7 @@ class CollectionImpl : public Collection {
   Status recovery();
 
   // Called only during a read-only open, after all segments have recovered.
-  void prepare_fast_query();
+  void prepare_query_internal_ids();
 
   Status create_idmap_and_delete_store();
 
@@ -315,7 +318,7 @@ class CollectionImpl : public Collection {
 
   CollectionOptions options_;
 
-  struct FastQueryField {
+  struct QueryInternalIdsField {
     // Borrowed from schema_; the owning collection is read-only.
     const FieldSchema *schema;
     // Same order as read_only_segments_; null means no index in that segment.
@@ -329,7 +332,8 @@ class CollectionImpl : public Collection {
   // Prepared during open and immutable until close. Queries hold
   // schema_handle_mtx_ shared; close holds it exclusively before clearing.
   std::vector<Segment::Ptr> read_only_segments_;
-  std::unordered_map<std::string, FastQueryField> fast_query_fields_;
+  std::unordered_map<std::string, QueryInternalIdsField>
+      query_internal_ids_fields_;
 
   mutable std::shared_mutex schema_handle_mtx_;
   // Number of open iterators, guarded by schema_handle_mtx_ (exclusive).
@@ -429,7 +433,7 @@ Status CollectionImpl::open(const CollectionOptions &options) {
   }
 
   if (s.ok() && options_.read_only_) {
-    prepare_fast_query();
+    prepare_query_internal_ids();
   }
 
   auto profiler = std::make_shared<Profiler>();
@@ -489,7 +493,7 @@ Status CollectionImpl::close_unsafe() {
     }
   }
 
-  fast_query_fields_.clear();
+  query_internal_ids_fields_.clear();
   read_only_segments_.clear();
 
   // always release resources regardless of flush outcome
@@ -1851,13 +1855,13 @@ Result<DocPtrList> CollectionImpl::query(const SearchQuery &query) const {
   return query_unsafe(query);
 }
 
-void CollectionImpl::prepare_fast_query() {
+void CollectionImpl::prepare_query_internal_ids() {
   read_only_segments_ = get_all_segments();
   for (const auto &field : schema_->vector_fields()) {
     if (!field->is_dense_vector()) continue;
     const auto *index_params =
         dynamic_cast<const VectorIndexParams *>(field->index_params().get());
-    FastQueryField resolved{field.get(), {}};
+    QueryInternalIdsField resolved{field.get(), {}};
     resolved.indexers.reserve(read_only_segments_.size());
     for (const auto &segment : read_only_segments_) {
       CombinedVectorColumnIndexer::Ptr indexer;
@@ -1879,8 +1883,35 @@ void CollectionImpl::prepare_fast_query() {
         resolved.reference = reference;
       }
     }
-    fast_query_fields_.emplace(field->name(), std::move(resolved));
+    query_internal_ids_fields_.emplace(field->name(), std::move(resolved));
   }
+}
+
+Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids_fallback(
+    const SearchQuery &query, bool return_scores) const {
+  SearchQuery fallback = query;
+  fallback.include_vector_ = false;
+  fallback.include_doc_id_ = true;
+  fallback.output_fields_ = std::vector<std::string>{};
+  auto docs = query_unsafe(fallback);
+  if (!docs) {
+    return tl::make_unexpected(docs.error());
+  }
+
+  const size_t topk = static_cast<size_t>(query.topk_);
+  InternalIdsQueryResult out;
+  out.ids.resize(topk, int64_t{-1});
+  if (return_scores) {
+    out.scores.resize(topk, std::numeric_limits<float>::quiet_NaN());
+  }
+  const size_t count = std::min(topk, docs->size());
+  for (size_t i = 0; i < count; ++i) {
+    const auto &doc = (*docs)[i];
+    if (!doc) continue;
+    out.ids[i] = static_cast<int64_t>(doc->doc_id());
+    if (return_scores) out.scores[i] = doc->score();
+  }
+  return out;
 }
 
 Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
@@ -1892,18 +1923,19 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
     return tl::make_unexpected(Status::InvalidArgument(
         "query_internal_ids requires a read-only collection"));
   }
-  if (!query.filter_.empty() || query.include_vector_ ||
-      query.include_doc_id_ || query.output_fields_.has_value()) {
+  if (query.include_vector_ || query.output_fields_.has_value()) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "query_internal_ids does not support filters or result-field "
-        "materialization"));
+        "query_internal_ids does not support result-field materialization"));
   }
 
   const auto &field_name = query.target_.field_name_;
-  const auto field = fast_query_fields_.find(field_name);
-  if (field == fast_query_fields_.end()) {
-    return tl::make_unexpected(Status::InvalidArgument(
-        "query_internal_ids requires a dense vector field: ", field_name));
+  const auto field = query_internal_ids_fields_.find(field_name);
+  if (!query.filter_.empty() || field == query_internal_ids_fields_.end()) {
+    // Keep the optimized dense-vector paths below unchanged. Query shapes
+    // outside that contract use the regular query engine for identical
+    // validation, filtering, sparse-vector and FTS semantics, while this API
+    // still returns only compact native buffers to the binding.
+    return query_internal_ids_fallback(query, return_scores);
   }
   const auto *field_schema = field->second.schema;
   const auto query_status = query.validate(field_schema, nullptr);
