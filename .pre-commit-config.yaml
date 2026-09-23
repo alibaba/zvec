@@ -1,7 +1,8 @@
 default_install_hook_types:
   - pre-commit
   - commit-msg
-  
+  - pre-push
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.4
@@ -44,6 +45,23 @@ repos:
 
   - repo: local
     hooks:
+      - id: clang-tidy
+        name: clang-tidy (C++)
+        description: >-
+          Static analysis on changed C/C++ files, mirroring the CI clang-tidy
+          check. Uses the repo .clang-tidy config and the CMake compilation
+          database (build/, build.release/, build.debug/, or $BUILD_DIR); files
+          not in the database are skipped. Configure a build with
+          `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` to enable it.
+        entry: scripts/run_clang_tidy.py
+        language: python
+        additional_dependencies: [clang-tidy==18.1.8]
+        types_or: [c++, c]
+        exclude: >-
+          ^(thirdparty/|build/|build\.release/|build\.debug/|src/db/sqlengine/antlr/gen/|src/db/index/column/fts_column/gen/)
+        require_serial: true
+        stages: [pre-push]
+
       - id: branch-name-check
         name: Check branch name format
         entry: >-
