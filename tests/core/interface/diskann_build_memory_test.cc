@@ -418,6 +418,127 @@ TEST(DiskAnnBuildMemory, DeferredDecodedSourceReadFailureDuringDump) {
     }
   }
 }
+
+// A lazy decoder can return a non-null placeholder while invalidating its
+// iterator. Fail only the selected build pass, at its final row, so neither
+// the next iteration nor a row-count mismatch can accidentally catch it.
+class DeferredLastReadHolder : public core::IndexHolder {
+ public:
+  DeferredLastReadHolder(core::RandomAccessIndexHolder::Pointer source,
+                         size_t failed_pass)
+      : source_(std::move(source)), failed_pass_(failed_pass) {}
+
+  size_t count() const override {
+    return source_->count();
+  }
+  size_t dimension() const override {
+    return source_->dimension();
+  }
+  core::IndexMeta::DataType data_type() const override {
+    return source_->data_type();
+  }
+  size_t element_size() const override {
+    return source_->element_size();
+  }
+  bool multipass() const override {
+    return true;
+  }
+
+  class Iterator : public core::IndexHolder::Iterator {
+   public:
+    Iterator(core::IndexHolder::Iterator::Pointer source, size_t count,
+             size_t element_size, bool fail, bool *failure_observed)
+        : source_(std::move(source)),
+          count_(count),
+          placeholder_(element_size, '\0'),
+          fail_(fail),
+          failure_observed_(failure_observed) {}
+
+    const void *data() const override {
+      if (fail_ && ordinal_ + 1 == count_) {
+        failed_ = true;
+        *failure_observed_ = true;
+        return placeholder_.data();
+      }
+      return source_->data();
+    }
+    bool is_valid() const override {
+      return !failed_ && source_->is_valid();
+    }
+    int status() const override {
+      return failed_ ? core::IndexError_ReadData : source_->status();
+    }
+    uint64_t key() const override {
+      return source_->key();
+    }
+    void next() override {
+      source_->next();
+      ++ordinal_;
+    }
+
+   private:
+    core::IndexHolder::Iterator::Pointer source_;
+    size_t count_;
+    std::string placeholder_;
+    bool fail_;
+    bool *failure_observed_;
+    size_t ordinal_{0};
+    mutable bool failed_{false};
+  };
+
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    ++created_iterators_;
+    return std::make_unique<Iterator>(
+        source_->create_iterator(), count(), element_size(),
+        created_iterators_ == failed_pass_, &failure_observed_);
+  }
+  bool failure_observed() const {
+    return failure_observed_;
+  }
+  size_t created_iterators() const {
+    return created_iterators_;
+  }
+
+ private:
+  core::RandomAccessIndexHolder::Pointer source_;
+  size_t failed_pass_;
+  size_t created_iterators_{0};
+  bool failure_observed_{false};
+};
+
+void ExpectDeferredLastBuildReadFailure(size_t failed_pass) {
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, 16);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto source = std::make_shared<core::RandomAccessIndexHolder>(meta);
+  for (uint64_t id = 0; id < 16; ++id) {
+    const auto data = values(id);
+    source->emplace(id * 3, data.data());
+  }
+  auto builder = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+  ailego::Params params;
+  params.set(core::PARAM_DISKANN_BUILDER_THREAD_COUNT, 2U);
+  params.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 4U);
+  ASSERT_EQ(builder->init(meta, params), 0);
+  // Training uses the healthy holder; the injected failure belongs only to
+  // staging (pass 1) or PQ encoding (pass 2), not codebook sampling.
+  ASSERT_EQ(builder->train(source), 0);
+  auto failing = std::make_shared<DeferredLastReadHolder>(source, failed_pass);
+  EXPECT_EQ(builder->build(failing), core::IndexError_ReadData);
+  EXPECT_TRUE(failing->failure_observed());
+  EXPECT_EQ(failing->created_iterators(), failed_pass);
+  EXPECT_EQ(builder->stats().built_count(), 0u);
+  EXPECT_EQ(builder->cleanup(), 0);
+}
+
+TEST(DiskAnnBuildMemory, LastStagingReadRejectsInvalidatedNonNullPlaceholder) {
+  ASSERT_NO_FATAL_FAILURE(ExpectDeferredLastBuildReadFailure(1));
+}
+
+TEST(DiskAnnBuildMemory,
+     LastPqEncodingReadRejectsInvalidatedNonNullPlaceholder) {
+  ASSERT_NO_FATAL_FAILURE(ExpectDeferredLastBuildReadFailure(2));
+}
 }  // namespace
 }  // namespace zvec::core_interface
 #endif
