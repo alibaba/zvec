@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <random>
@@ -94,6 +97,8 @@ class PqInt8TrainingMemoryTest
     }
     return codes;
   }
+
+  void check_derived_sdc(bool varied);
 };
 
 TEST_P(PqInt8TrainingMemoryTest, DisabledSdcMatchesDefaultTraining) {
@@ -121,12 +126,12 @@ TEST_P(PqInt8TrainingMemoryTest, DisabledSdcMatchesDefaultTraining) {
   EXPECT_EQ(encode_all(with_sdc, holder), encode_all(without_sdc, holder));
 }
 
-TEST_P(PqInt8TrainingMemoryTest, DerivedSdcDoesNotChangeEncodingState) {
+void PqInt8TrainingMemoryTest::check_derived_sdc(bool varied) {
   PqInt8Quantizer quantizer;
   auto params = training_params();
   params.set("build_sdc_table", false);
   ASSERT_EQ(0, quantizer.init(input_meta(), params));
-  auto holder = make_holder(true);
+  auto holder = make_holder(varied);
   ASSERT_EQ(0, quantizer.train(holder));
   ASSERT_EQ(0u, quantizer.dist_table_.capacity());
 
@@ -140,8 +145,15 @@ TEST_P(PqInt8TrainingMemoryTest, DerivedSdcDoesNotChangeEncodingState) {
   quantizer.quantize_query(iterator->data(), lut.data());
   const float distance =
       quantizer.calc_distance_dp_query(codes.data(), lut.data());
+  ASSERT_TRUE(std::isfinite(distance));
+  if (!varied) {
+    // Identical vectors deterministically leave empty clusters. Their NaN
+    // centers exercise the same case that can occur with random training.
+    ASSERT_TRUE(std::any_of(lut.begin(), lut.end(),
+                            [](float value) { return std::isnan(value); }));
+  }
 
-  // Hold a non-degenerate codebook fixed and add only the skipped derivative.
+  // Hold the trained codebook fixed and add only the skipped derivative.
   quantizer.compute_dist_table();
   ASSERT_EQ(kChunks * 256u * 256u, quantizer.dist_table_.size());
   std::string after;
@@ -150,9 +162,23 @@ TEST_P(PqInt8TrainingMemoryTest, DerivedSdcDoesNotChangeEncodingState) {
   EXPECT_EQ(codes, encode_all(quantizer, holder));
   std::vector<float> after_lut(lut.size());
   quantizer.quantize_query(iterator->data(), after_lut.data());
-  EXPECT_EQ(lut, after_lut);
+  // Empty clusters produce NaN LUT entries: NaN != NaN even when every bit
+  // is unchanged. Compare representations, retaining a strict invariant for
+  // both finite values and NaNs instead of relaxing floating-point tolerance.
+  for (size_t i = 0; i < lut.size(); ++i) {
+    EXPECT_EQ(0, std::memcmp(&lut[i], &after_lut[i], sizeof(float)))
+        << "LUT entry " << i;
+  }
   EXPECT_EQ(distance,
             quantizer.calc_distance_dp_query(codes.data(), after_lut.data()));
+}
+
+TEST_P(PqInt8TrainingMemoryTest, DerivedSdcDoesNotChangeEncodingState) {
+  check_derived_sdc(true);
+}
+
+TEST_P(PqInt8TrainingMemoryTest, DerivedSdcPreservesEmptyClusterLutEntries) {
+  check_derived_sdc(false);
 }
 
 TEST_P(PqInt8TrainingMemoryTest, ReinitReleasesTableAndRestoresDefault) {
