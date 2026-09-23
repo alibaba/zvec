@@ -237,6 +237,14 @@ class DiskAnnBufferedBuildTest : public ::testing::Test {
     }
     ASSERT_NO_FATAL_FAILURE(
         add_all(merge ? source : target, values, dimension));
+    if (pressure && source) {
+      // Start the pressure scenario with clean source pages. Otherwise opening
+      // graph scratch must first reclaim ingestion's dirty pages within the
+      // bounded metadata wait, making this test depend on CI writeback latency.
+      // Keep the same 256 KiB page allowance: source and build pages still
+      // compete for it, and construction still writes dirty scratch pages.
+      ASSERT_EQ(source->flush(), 0);
+    }
     ASSERT_EQ(
         merge ? target->merge({source}, {}, {2, nullptr}) : target->train(), 0);
     if (pressure) {
