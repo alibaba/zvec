@@ -558,6 +558,10 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
+  ret = prepare_streamer_open(storage_options);
+  if (ret != 0) {
+    return ret;
+  }
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
@@ -851,9 +855,7 @@ int Index::_dense_fetch(const uint32_t doc_id,
   out_vector_buffer.resize(input_vector_meta_.element_size());
 
   if (turbo_quantizer_ != nullptr) {
-    // The stored record is int8 codes + quantizer tail; dequantize restores
-    // the original FP32 vector (cosine layouts also denormalize by the
-    // stored norm).
+    // Decode the quantizer's stored layout back to the original vector format.
     if (turbo_quantizer_->dequantize(vector, streamer_vector_meta_,
                                      &out_vector_buffer) != 0) {
       LOG_ERROR("Failed to dequantize vector");
@@ -1184,7 +1186,9 @@ int Index::_collect_dense_result(
     }
   }
   if (turbo_quantizer_) {
-    if (context->fetch_vector()) {
+    // External HNSW vectors are already in the caller's input layout. They
+    // are not stored quantizer codes and therefore must not be dequantized.
+    if (context->fetch_vector() && !param_.use_external_vector) {
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;
