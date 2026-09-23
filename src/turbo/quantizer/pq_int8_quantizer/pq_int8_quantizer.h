@@ -227,6 +227,10 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! from all vectors (train, encode, query) and added back on dequantize.
   bool use_zero_mean_{false};
 
+  //! Encoding-only builders can skip the SDC table. The default preserves
+  //! symmetric PQ distance support for other build-time consumers.
+  bool build_sdc_table_{true};
+
   //! Set by a successful init().  deserialize() requires it: the metric policy
   //! comes from meta_, and a default-constructed IndexMeta silently reports
   //! "SquaredEuclidean", so its value cannot tell initialized from fresh.
