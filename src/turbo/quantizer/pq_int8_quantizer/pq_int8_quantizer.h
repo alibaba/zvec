@@ -133,6 +133,10 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   int import_codebook(const void *data, size_t len) override;
 
  private:
+  // Test access must preserve member access levels: MSVC encodes them in
+  // out-of-line member symbols.
+  friend class PqInt8QuantizerTestAccess;
+
   //! Match legacy DiskAnn chunking: distribute the remainder to leading chunks.
   //! original_dim_ and num_chunk_ must satisfy 1 <= num_chunk_ <=
   //! original_dim_.

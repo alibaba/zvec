@@ -26,18 +26,28 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
-#include "quantizer/common/pq_quantizer/pq_opq.h"
-#include "quantizer/common/pq_quantizer/precompute_table_quantizer.h"
-#include "quantizer/quantizer.h"
-
-// Inspect retained capacity without exposing a production testing API.
-#define private public
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
-#undef private
 
 namespace zvec {
 namespace turbo {
+
+// Keep the production declaration unchanged in every translation unit. Using
+// a private-to-public macro would change MSVC's mangled member-function names.
+class PqInt8QuantizerTestAccess {
+ public:
+  static const std::vector<float> &dist_table(
+      const PqInt8Quantizer &quantizer) {
+    return quantizer.dist_table_;
+  }
+
+  static void compute_dist_table(PqInt8Quantizer &quantizer) {
+    quantizer.compute_dist_table();
+  }
+};
+
 namespace {
+
+using PqTestAccess = PqInt8QuantizerTestAccess;
 
 class PqInt8TrainingMemoryTest
     : public ::testing::TestWithParam<core::IndexMeta::DataType> {
@@ -114,9 +124,9 @@ TEST_P(PqInt8TrainingMemoryTest, DisabledSdcMatchesDefaultTraining) {
   auto holder = make_holder(false);
   ASSERT_EQ(0, with_sdc.train(holder));
   ASSERT_EQ(0, without_sdc.train(holder));
-  EXPECT_EQ(kChunks * 256u * 256u, with_sdc.dist_table_.size());
-  EXPECT_EQ(0u, without_sdc.dist_table_.size());
-  EXPECT_EQ(0u, without_sdc.dist_table_.capacity());
+  EXPECT_EQ(kChunks * 256u * 256u, PqTestAccess::dist_table(with_sdc).size());
+  EXPECT_EQ(0u, PqTestAccess::dist_table(without_sdc).size());
+  EXPECT_EQ(0u, PqTestAccess::dist_table(without_sdc).capacity());
 
   std::string default_blob;
   std::string bounded_blob;
@@ -133,7 +143,7 @@ void PqInt8TrainingMemoryTest::check_derived_sdc(bool varied) {
   ASSERT_EQ(0, quantizer.init(input_meta(), params));
   auto holder = make_holder(varied);
   ASSERT_EQ(0, quantizer.train(holder));
-  ASSERT_EQ(0u, quantizer.dist_table_.capacity());
+  ASSERT_EQ(0u, PqTestAccess::dist_table(quantizer).capacity());
 
   std::string before;
   ASSERT_EQ(0, quantizer.serialize(&before));
@@ -154,8 +164,8 @@ void PqInt8TrainingMemoryTest::check_derived_sdc(bool varied) {
   }
 
   // Hold the trained codebook fixed and add only the skipped derivative.
-  quantizer.compute_dist_table();
-  ASSERT_EQ(kChunks * 256u * 256u, quantizer.dist_table_.size());
+  PqTestAccess::compute_dist_table(quantizer);
+  ASSERT_EQ(kChunks * 256u * 256u, PqTestAccess::dist_table(quantizer).size());
   std::string after;
   ASSERT_EQ(0, quantizer.serialize(&after));
   EXPECT_EQ(before, after);
@@ -187,17 +197,17 @@ TEST_P(PqInt8TrainingMemoryTest, ReinitReleasesTableAndRestoresDefault) {
   auto holder = make_holder(false);
   ASSERT_EQ(0, quantizer.init(input_meta(), params));
   ASSERT_EQ(0, quantizer.train(holder));
-  ASSERT_GT(quantizer.dist_table_.capacity(), 0u);
+  ASSERT_GT(PqTestAccess::dist_table(quantizer).capacity(), 0u);
 
   params.set("build_sdc_table", false);
   ASSERT_EQ(0, quantizer.init(input_meta(), params));
-  EXPECT_EQ(0u, quantizer.dist_table_.capacity());
+  EXPECT_EQ(0u, PqTestAccess::dist_table(quantizer).capacity());
   ASSERT_EQ(0, quantizer.train(holder));
-  EXPECT_EQ(0u, quantizer.dist_table_.capacity());
+  EXPECT_EQ(0u, PqTestAccess::dist_table(quantizer).capacity());
 
   ASSERT_EQ(0, quantizer.init(input_meta(), training_params()));
   ASSERT_EQ(0, quantizer.train(holder));
-  EXPECT_EQ(kChunks * 256u * 256u, quantizer.dist_table_.size());
+  EXPECT_EQ(kChunks * 256u * 256u, PqTestAccess::dist_table(quantizer).size());
 }
 
 TEST_P(PqInt8TrainingMemoryTest, RejectsMalformedFlag) {
