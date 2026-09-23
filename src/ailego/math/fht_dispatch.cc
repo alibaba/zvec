@@ -47,6 +47,12 @@ void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim);
 void fht_kacs_walk_neon(float *data, size_t len);
 void fht_inv_kacs_walk_neon(float *data, size_t len);
 #endif
+#if defined(__riscv_vector)
+void fht_flip_sign_rvv(const uint8_t *flip, float *data, size_t dim);
+void fht_kacs_walk_rvv(float *data, size_t len);
+void fht_inv_kacs_walk_rvv(float *data, size_t len);
+void fht_inplace_rvv(float *data, size_t n);
+#endif
 
 // ============================================================================
 // Runtime dispatch entry points
@@ -55,6 +61,8 @@ void fht_inv_kacs_walk_neon(float *data, size_t len);
 void fht_flip_sign(const uint8_t *flip, float *data, size_t dim) {
 #if defined(AILEGO_ARM64_NEON)
   fht_flip_sign_neon(flip, data, dim);
+#elif defined(__riscv_vector)
+  fht_flip_sign_rvv(flip, data, dim);
 #else
 #if defined(__AVX512F__)
   if (internal::CpuFeatures::static_flags_.AVX512F &&
@@ -82,6 +90,8 @@ void fht_flip_sign(const uint8_t *flip, float *data, size_t dim) {
 void fht_kacs_walk(float *data, size_t len) {
 #if defined(AILEGO_ARM64_NEON)
   fht_kacs_walk_neon(data, len);
+#elif defined(__riscv_vector)
+  fht_kacs_walk_rvv(data, len);
 #else
 #if defined(__AVX512F__)
   if (internal::CpuFeatures::static_flags_.AVX512F) {
@@ -108,6 +118,8 @@ void fht_kacs_walk(float *data, size_t len) {
 void fht_inv_kacs_walk(float *data, size_t len) {
 #if defined(AILEGO_ARM64_NEON)
   fht_inv_kacs_walk_neon(data, len);
+#elif defined(__riscv_vector)
+  fht_inv_kacs_walk_rvv(data, len);
 #else
 #if defined(__AVX512F__)
   if (internal::CpuFeatures::static_flags_.AVX512F) {
@@ -132,6 +144,9 @@ void fht_inv_kacs_walk(float *data, size_t len) {
 }
 
 void fht_inplace(float *data, size_t n) {
+#if defined(__riscv_vector)
+  fht_inplace_rvv(data, n);
+#else
 #if defined(__AVX512F__)
   if (internal::CpuFeatures::static_flags_.AVX512F) {
     fht_inplace_avx512(data, n);
@@ -145,6 +160,7 @@ void fht_inplace(float *data, size_t n) {
   }
 #endif
   fht_inplace_scalar(data, n);
+#endif  // __riscv_vector
 }
 
 }  // namespace ailego
