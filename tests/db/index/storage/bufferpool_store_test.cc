@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -39,6 +40,12 @@ using namespace zvec;
 class BufferPoolStoreTest : public testing::Test {
  protected:
   void SetUp() override {
+    // The Parquet cache outlives individual tests. Reusing a file name is not
+    // a new cache identity on every platform, even after deleting the file.
+    // Include an invocation counter so --gtest_repeat is isolated as well.
+    static std::atomic<uint64_t> sequence{0};
+    parquet_path = "bufferpool_store_test_" +
+                   std::to_string(sequence.fetch_add(1)) + ".parquet";
     auto s = test::TestHelper::WriteTestFile(parquet_path, FileFormat::PARQUET);
     if (!s.ok()) {
       std::cout << "err: " << s.message() << std::endl;
@@ -48,11 +55,15 @@ class BufferPoolStoreTest : public testing::Test {
   }
 
   void TearDown() override {
+    // Releasing the last Arrow view only makes a column evictable; deleting
+    // the backing file does not remove its process-wide cached payload.
+    ailego::BlockEvictionQueue::get_instance().batch_recycle(1024);
+    EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().external_used());
     if (std::filesystem::exists(parquet_path)) {
       std::filesystem::remove(parquet_path);
     }
   }
-  std::string parquet_path = "test.parquet";
+  std::string parquet_path;
 };
 
 TEST_F(BufferPoolStoreTest, EscapedNestedScalarKeepsParquetCachePinned) {
@@ -122,13 +133,17 @@ TEST_F(BufferPoolStoreTest, ParquetFetchNullAndEmptyStrings) {
   for (int column = 0; column < 3; ++column) {
     SCOPED_TRACE(column);
     for (int row_group = 0; row_group < 2; ++row_group) {
-      auto handle = ParquetBufferPool::get_instance().acquire_buffer(
-          ParquetBufferID(parquet_path, column, row_group));
+      const ParquetBufferID buffer_id(parquet_path, column, row_group);
+      SCOPED_TRACE(buffer_id.to_string());
+      auto handle = ParquetBufferPool::get_instance().acquire_buffer(buffer_id);
       auto data = handle.data();
       ASSERT_NE(nullptr, data);
       auto status = data->ValidateFull();
       ASSERT_TRUE(status.ok()) << status.ToString();
-      EXPECT_TRUE(data->Equals(expected->column(column)->Slice(row_group * 2, 2)));
+      ASSERT_TRUE(
+          data->Equals(expected->column(column)->Slice(row_group * 2, 2)))
+          << "actual type=" << data->type()->ToString()
+          << ", rows=" << data->length() << "; expected type=utf8, rows=2";
     }
   }
 
