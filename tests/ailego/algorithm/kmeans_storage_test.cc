@@ -93,7 +93,9 @@ void CheckMatrixEquivalence(Fill fill) {
 template <typename T>
 void CheckNumeric() {
   auto fill = [](size_t i, T *out) {
-    for (size_t d = 0; d < 8; ++d) out[d] = T(int((i + d) % 5) - 2);
+    for (size_t d = 0; d < 8; ++d) {
+      out[d] = static_cast<T>(static_cast<float>((i + d) % 5) - 2.0f);
+    }
   };
   CheckMatrixEquivalence<NumericalKmeans<T, ThreadPool>>(fill);
   CheckMatrixEquivalence<NumericalInnerProductKmeans<T, ThreadPool>>(fill);
