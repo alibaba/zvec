@@ -93,6 +93,53 @@ TEST_F(BufferPoolStoreTest, ParquetFetch) {
   EXPECT_EQ(table->num_rows(), 3);
 }
 
+TEST_F(BufferPoolStoreTest, ParquetFetchNullAndEmptyStrings) {
+  arrow::ArrayVector arrays;
+  for (int pattern = 0; pattern < 3; ++pattern) {
+    arrow::StringBuilder builder;
+    for (int row = 0; row < 4; ++row) {
+      if (pattern == 0 || (pattern == 2 && row % 2 == 0)) {
+        ASSERT_TRUE(builder.AppendNull().ok());
+      } else {
+        ASSERT_TRUE(builder.Append("").ok());
+      }
+    }
+    std::shared_ptr<arrow::Array> array;
+    ASSERT_TRUE(builder.Finish(&array).ok());
+    arrays.push_back(std::move(array));
+  }
+  auto schema = arrow::schema({arrow::field("all_null", arrow::utf8()),
+                               arrow::field("all_empty", arrow::utf8()),
+                               arrow::field("mixed", arrow::utf8())});
+  auto expected = arrow::Table::Make(schema, arrays);
+  auto output = arrow::io::FileOutputStream::Open(parquet_path);
+  ASSERT_TRUE(output.ok()) << output.status().ToString();
+  ASSERT_TRUE(parquet::arrow::WriteTable(*expected, arrow::default_memory_pool(),
+                                        *output, /*chunk_size=*/2)
+                  .ok());
+  ASSERT_TRUE((*output)->Close().ok());
+
+  for (int column = 0; column < 3; ++column) {
+    SCOPED_TRACE(column);
+    for (int row_group = 0; row_group < 2; ++row_group) {
+      auto handle = ParquetBufferPool::get_instance().acquire_buffer(
+          ParquetBufferID(parquet_path, column, row_group));
+      auto data = handle.data();
+      ASSERT_NE(nullptr, data);
+      auto status = data->ValidateFull();
+      ASSERT_TRUE(status.ok()) << status.ToString();
+      EXPECT_TRUE(data->Equals(expected->column(column)->Slice(row_group * 2, 2)));
+    }
+  }
+
+  BufferPoolForwardStore store(parquet_path);
+  ASSERT_TRUE(store.open().ok());
+  auto actual = store.fetch({"all_null", "all_empty", "mixed"},
+                            std::vector<int>{0, 1, 2, 3});
+  ASSERT_NE(nullptr, actual);
+  EXPECT_TRUE(actual->Equals(*expected));
+}
+
 
 TEST_F(BufferPoolStoreTest, ParquetFetchWithSelectColumns) {
   auto store = std::make_shared<BufferPoolForwardStore>(parquet_path);

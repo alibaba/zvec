@@ -164,17 +164,34 @@ TEST(ParquetMemoryPoolTest, SmallReallocationUsesFallback) {
 }
 
 TEST(ParquetMemoryPoolTest, ZeroAllocationAndReallocationAreSafe) {
-  ParquetMemoryPool pool;
-  uint8_t *buffer = nullptr;
-  ASSERT_TRUE(pool.Allocate(0, &buffer).ok());
-  pool.Free(buffer, 0);
-  ASSERT_TRUE(pool.Reallocate(0, kThreshold, &buffer).ok());
-  ASSERT_NE(nullptr, buffer);
-  ASSERT_TRUE(pool.Reallocate(kThreshold, 0, &buffer).ok());
-  EXPECT_EQ(nullptr, buffer);
-  pool.Free(buffer, 0);
-  EXPECT_EQ(0, pool.bytes_allocated());
-  EXPECT_EQ(0, pool.mapped_bytes());
+  for (int64_t size : {int64_t{1024}, kThreshold}) {
+    SCOPED_TRACE(size);
+    arrow::ProxyMemoryPool fallback(arrow::default_memory_pool());
+    ParquetMemoryPool pool(&fallback);
+    uint8_t *buffer = nullptr;
+    ASSERT_TRUE(pool.Allocate(0, &buffer).ok());
+    EXPECT_NE(nullptr, buffer);
+    ASSERT_TRUE(pool.Reallocate(0, 0, &buffer).ok());
+    EXPECT_NE(nullptr, buffer);
+    EXPECT_EQ(0, pool.bytes_allocated());
+    EXPECT_EQ(0, pool.mapped_bytes());
+    pool.Free(buffer, 0);
+
+    buffer = nullptr;
+    ASSERT_TRUE(pool.Allocate(size, &buffer).ok());
+    ASSERT_NE(nullptr, buffer);
+    ASSERT_TRUE(pool.Reallocate(size, 0, &buffer).ok());
+    EXPECT_NE(nullptr, buffer);
+    EXPECT_EQ(0, pool.bytes_allocated());
+    EXPECT_EQ(0, pool.mapped_bytes());
+    EXPECT_EQ(0, fallback.bytes_allocated());
+    ASSERT_TRUE(pool.Reallocate(0, size, &buffer).ok());
+    ASSERT_NE(nullptr, buffer);
+    pool.Free(buffer, size);
+    EXPECT_EQ(0, pool.bytes_allocated());
+    EXPECT_EQ(0, pool.mapped_bytes());
+    EXPECT_EQ(0, fallback.bytes_allocated());
+  }
 }
 
 TEST(ParquetMemoryPoolTest,
@@ -205,6 +222,7 @@ TEST(ParquetMemoryPoolTest,
   std::memset(buffer, 11, kThreshold);
   uint8_t *original = buffer;
   const int64_t mapped = pool.mapped_bytes();
+  ASSERT_TRUE(pool.Reallocate(kThreshold, 0, &buffer).IsOutOfMemory());
   EXPECT_TRUE(pool.Reallocate(kThreshold, 1024, &buffer).IsOutOfMemory());
   EXPECT_TRUE(
       pool.Reallocate(kThreshold, std::numeric_limits<int64_t>::max(), &buffer)
@@ -229,6 +247,7 @@ TEST(ParquetMemoryPoolTest, ArrowResizableBufferUsesPoolUntilReleased) {
   ASSERT_TRUE(buffer->Resize(kThreshold * 2).ok());
   EXPECT_EQ(kThreshold * 2, pool.bytes_allocated());
   ASSERT_TRUE(buffer->Resize(0).ok());
+  EXPECT_NE(nullptr, buffer->data());
   EXPECT_EQ(0, pool.mapped_bytes());
   buffer.reset();
   EXPECT_EQ(0, pool.bytes_allocated());

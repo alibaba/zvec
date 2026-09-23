@@ -117,12 +117,9 @@ arrow::Status ParquetMemoryPool::Allocate(int64_t size, int64_t alignment,
   }
   ARROW_RETURN_NOT_OK(ValidateRequest(size, alignment));
   alignment = std::max(alignment, kMinimumAlignment);
-  if (size == 0) {
-    *out = nullptr;
-    stats_.DidAllocateBytes(0);
-    return arrow::Status::OK();
-  }
   if (size < kMappedAllocationThreshold) {
+    // Arrow requires a non-null data address even for empty binary/string
+    // buffers. Let its allocator provide and own the zero-size sentinel.
     ARROW_RETURN_NOT_OK(small_pool_->Allocate(size, alignment, out));
   } else {
     size_t mapped_size = 0;
@@ -159,11 +156,6 @@ arrow::Status ParquetMemoryPool::Reallocate(int64_t old_size, int64_t new_size,
   if (old_size == new_size) {
     return arrow::Status::OK();
   }
-  if (new_size == 0) {
-    Free(*ptr, old_size, alignment);
-    *ptr = nullptr;
-    return arrow::Status::OK();
-  }
   if (old_size != 0 && old_size < kMappedAllocationThreshold &&
       new_size < kMappedAllocationThreshold) {
     ARROW_RETURN_NOT_OK(
@@ -190,7 +182,7 @@ void ParquetMemoryPool::Free(uint8_t *buffer, int64_t size, int64_t alignment) {
     assert(size == 0);
     return;
   }
-  assert(size > 0 && alignment > 0 && (alignment & (alignment - 1)) == 0);
+  assert(size >= 0 && alignment > 0 && (alignment & (alignment - 1)) == 0);
   alignment = std::max(alignment, kMinimumAlignment);
   if (size < kMappedAllocationThreshold) {
     small_pool_->Free(buffer, size, alignment);
