@@ -317,6 +317,13 @@ class Flow {
             return IndexError_NoExist;
           }
           reformer_->init(meta.reformer_params());
+          // Load converter state (e.g. rotator) so queries are transformed
+          // into the same space as the stored codes.
+          ret = reformer_->load(stg_);
+          if (ret != 0) {
+            LOG_ERROR("Failed to load reformer state from storage");
+            return ret;
+          }
         }
       }
 
@@ -486,6 +493,13 @@ class SparseFlow {
             return IndexError_NoExist;
           }
           reformer_->init(meta.reformer_params());
+          // Load converter state (e.g. rotator) so queries are transformed
+          // into the same space as the stored codes.
+          ret = reformer_->load(stg_);
+          if (ret != 0) {
+            LOG_ERROR("Failed to load reformer state from storage");
+            return ret;
+          }
         }
       }
 
