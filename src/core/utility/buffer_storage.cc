@@ -1116,12 +1116,23 @@ class BufferStorage : public IndexStorage {
     const size_t metadata_bytes =
         ailego::VecBufferPool::metadata_bytes_for_page_count(
             page_count, /*writable=*/create_if_missing);
-    const size_t available =
-        ailego::MemoryLimitPool::get_instance().available();
+    auto &pool = ailego::MemoryLimitPool::get_instance();
+    const size_t available = pool.available();
+    size_t cache_budget = available;
+    if (create_if_missing) {
+      // Writable metadata is mandatory. Resident pages can be reclaimed by
+      // init()'s actual reservation, so do not reject a new store merely
+      // because other stores have filled their caches. Fixed reservations
+      // still count against the same shared budget.
+      cache_budget = pool.capacity();
+      for (size_t fixed : {pool.metadata_used(), pool.external_used()}) {
+        cache_budget = fixed >= cache_budget ? 0 : cache_budget - fixed;
+      }
+    }
     const bool cache_can_fit =
         metadata_bytes != std::numeric_limits<size_t>::max() &&
-        metadata_bytes <= available &&
-        ailego::kVectorPageSize <= available - metadata_bytes;
+        metadata_bytes <= cache_budget &&
+        ailego::kVectorPageSize <= cache_budget - metadata_bytes;
     ret = cache_can_fit ? buffer_pool_->init() : -1;
     if (ret != 0 && create_if_missing) {
       this->close_index();

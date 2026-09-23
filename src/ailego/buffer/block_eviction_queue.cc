@@ -767,7 +767,20 @@ bool MemoryLimitPool::try_charge_external(const size_t buffer_size) {
 
 bool MemoryLimitPool::try_charge_metadata(const size_t buffer_size) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-  return try_charge_fixed(buffer_size, &metadata_used_size_);
+  if (try_charge_fixed(buffer_size, &metadata_used_size_)) {
+    return true;
+  }
+  const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+  const size_t fixed = fixed_used();
+  if (fixed > capacity || buffer_size > capacity - fixed) {
+    return false;
+  }
+  // Dirty eviction may have queued writeback without freeing a page yet.
+  // Metadata is mandatory for opening/growing a store; allow that pending
+  // reclamation to finish, then retry the real reservation once. Keep this
+  // bounded wait out of ordinary external-cache admission.
+  return wait_for_available(buffer_size, std::chrono::milliseconds(100)) &&
+         try_charge_fixed(buffer_size, &metadata_used_size_);
 }
 
 bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
