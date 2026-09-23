@@ -107,6 +107,18 @@ class Int8Quantizer : public Quantizer {
   DistanceImpl distance(const void *query,
                         const core::IndexQueryMeta &qmeta) const override;
 
+  void normalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  void denormalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  bool support_score_normalization() const override {
+    return meta_.metric_name() == "InnerProduct";
+  }
+
  private:
   //! Byte length of a quantized vector (int8 codes + extra meta).
   size_t quantized_length() const {
