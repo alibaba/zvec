@@ -169,9 +169,13 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   query_params.filter = doc_filter_->empty() ? nullptr : doc_filter_.get();
   if (const auto &group_by = query_info_->group_by(); group_by) {
     auto group_fun = [this, &group_by](uint64_t row_id) -> std::string {
+      static std::string kEmpty;
+      if (row_id == std::numeric_limits<uint64_t>::max() ||
+          row_id >= segment_->doc_count()) {
+        return kEmpty;
+      }
       auto table = segment_->fetch({group_by->group_by_field},
                                    std::vector<int>{(int)row_id});
-      static std::string kEmpty;
       if (!table) {
         LOG_ERROR("Fetch group by field failed: field[%s] row_id[%zu]",
                   group_by->group_by_field.c_str(), (size_t)row_id);
