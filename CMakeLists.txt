@@ -7,9 +7,15 @@ set(CMAKE_POLICY_DEFAULT_CMP0141 NEW)
 project(zvec)
 set(CC_CXX_STANDARD 17)
 
+function(zvec_add_msvc_c_cxx_compile_options)
+  foreach(_option IN LISTS ARGN)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:${_option}>")
+  endforeach()
+endfunction()
+
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
-    add_compile_options(/utf-8)
+    zvec_add_msvc_c_cxx_compile_options(/utf-8)
     # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
     # Since CMake 3.25 (CMP0141=NEW) the debug info format is no longer part of
     # CMAKE_*_FLAGS_<CFG> but is driven by this abstract variable and appended at the end of
@@ -18,26 +24,26 @@ if(MSVC)
     # CACHE FORCE so it propagates into thirdparty subdirectories that call project().
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
         "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>" CACHE STRING "" FORCE)
-    add_compile_options(/EHsc) # def c++ exception behavior
-    add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
-    add_compile_options(/we4716) # -Werror=return-type
+    zvec_add_msvc_c_cxx_compile_options(/EHsc) # def c++ exception behavior
+    zvec_add_msvc_c_cxx_compile_options(/Zc:preprocessor /Zc:__cplusplus)
+    zvec_add_msvc_c_cxx_compile_options(/we4716) # -Werror=return-type
 
     ###### reduce output length to make vibe coding work better :) should be removed or solved later
     # TODO(windows): fix&cleanup
-    add_compile_options(/wd4267 /wd4244 /wd4305 /wd4242) # conversion/truncation from 'size_t' to 'type', possible loss of data
-    add_compile_options(/wd4310) # cast truncates constant value
-    add_compile_options(/wd4146) # unary minus operator applied to unsigned type #usage: uint32_t seg_id_{-1U};
-    add_compile_options(/wd4245) # conversion from 'type1' to 'type2', signed/unsigned mismatch
-    add_compile_options(/wd4251) # class 'type' needs to have dll-interface to be used by clients of class 'type2'
-    add_compile_options(/wd4099) # type name first seen using 'object_type1' now seen using 'object_type2'
-    add_compile_options(/wd4200) # nonstandard extension used : zero-sized array in struct/union
-    add_compile_options(/wd4324) # structure was padded due to alignment specifier
-    add_compile_options(/wd4702) # unreachable code
-    add_compile_options(/wd4996) # wstring_convert are deprecated in C++17 # usage: in antlr4
-    add_compile_options(/wd4101) # unreferenced local variable
-    add_compile_options(/wd4996) # The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _lseek
+    zvec_add_msvc_c_cxx_compile_options(/wd4267 /wd4244 /wd4305 /wd4242) # conversion/truncation from 'size_t' to 'type', possible loss of data
+    zvec_add_msvc_c_cxx_compile_options(/wd4310) # cast truncates constant value
+    zvec_add_msvc_c_cxx_compile_options(/wd4146) # unary minus operator applied to unsigned type #usage: uint32_t seg_id_{-1U};
+    zvec_add_msvc_c_cxx_compile_options(/wd4245) # conversion from 'type1' to 'type2', signed/unsigned mismatch
+    zvec_add_msvc_c_cxx_compile_options(/wd4251) # class 'type' needs to have dll-interface to be used by clients of class 'type2'
+    zvec_add_msvc_c_cxx_compile_options(/wd4099) # type name first seen using 'object_type1' now seen using 'object_type2'
+    zvec_add_msvc_c_cxx_compile_options(/wd4200) # nonstandard extension used : zero-sized array in struct/union
+    zvec_add_msvc_c_cxx_compile_options(/wd4324) # structure was padded due to alignment specifier
+    zvec_add_msvc_c_cxx_compile_options(/wd4702) # unreachable code
+    zvec_add_msvc_c_cxx_compile_options(/wd4996) # wstring_convert are deprecated in C++17 # usage: in antlr4
+    zvec_add_msvc_c_cxx_compile_options(/wd4101) # unreferenced local variable
+    zvec_add_msvc_c_cxx_compile_options(/wd4996) # The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _lseek
     # result of 32-bit shift implicitly converted to 64 bits (was 64-bit shift intended?) # usage: keeps |= (1 << k);
-    add_compile_options(/wd4334)
+    zvec_add_msvc_c_cxx_compile_options(/wd4334)
     ######
 
 else()
