@@ -96,6 +96,10 @@ if(RABITQ_SUPPORTED)
         rabitqlib_runtime PRIVATE
         "${RABITQ_SOURCE_DIR}/src/simd/fht_avx2_masm.asm"
     )
+    set_source_files_properties(
+        "${RABITQ_SOURCE_DIR}/src/simd/fht_avx2_masm.asm"
+        PROPERTIES LANGUAGE ASM_MASM
+    )
     # /arch:AVX512 enables the whole F/CD/VL/BW/DQ group; the optional popcount
     # backend stays guarded by the runtime CPUID check in cpu_features.cpp.
     set_source_files_properties(
