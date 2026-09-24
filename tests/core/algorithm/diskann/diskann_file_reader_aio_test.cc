@@ -382,8 +382,6 @@ TEST(DiskAnnBufferPoolFileReaderTest, RejectsNonPageAlignedRequests) {
   std::free(output);
 }
 
-#endif  // __linux__
-
 TEST(DiskAnnLinuxAioTest, DrainsPartialSubmissionBeforePreadFallback) {
   TemporaryFile file;
   ASSERT_GE(file.fd(), 0);
@@ -435,3 +433,5 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
 
   std::free(output);
 }
+
+#endif  // __linux__

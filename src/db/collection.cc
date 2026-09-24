@@ -1118,10 +1118,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
         if (current_live_doc_count + seg_live_doc_count >
             max_doc_count_per_segment) {
           // Compaction physically removes deleted rows.
-          task = SegmentTask::CreateCompactTask(
-              CompactTask{path_, schema, current_group,
-                          allocate_segment_id_for_tmp_segment(), filter,
-                          !options_.enable_mmap_, concurrency});
+          task = SegmentTask::CreateCompactTask(CompactTask{
+              path_, schema, current_group,
+              allocate_segment_id_for_tmp_segment(), filter,
+              !options_.enable_mmap_, options_.enable_mmap_, concurrency});
         }
       } else {
         if (current_physical_doc_count + seg_physical_doc_count >
@@ -1133,10 +1133,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
             // Merge segments while preserving deleted rows.
-            task = SegmentTask::CreateCompactTask(
-                CompactTask{path_, schema, current_group,
-                            allocate_segment_id_for_tmp_segment(), nullptr,
-                            !options_.enable_mmap_, concurrency});
+            task = SegmentTask::CreateCompactTask(CompactTask{
+                path_, schema, current_group,
+                allocate_segment_id_for_tmp_segment(), nullptr,
+                !options_.enable_mmap_, options_.enable_mmap_, concurrency});
           }
         }
       }
@@ -1165,7 +1165,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
           purge_deleted_docs ? filter : nullptr, !options_.enable_mmap_,
-          concurrency});
+          options_.enable_mmap_, concurrency});
     }
     tasks.push_back(task);
   }
@@ -1936,7 +1936,12 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
   // Single-segment queries have no segment-level fanout; multi-segment queries
   // already use the query pool per sub-query.
   if (segments.size() == 1) {
-    auto group = GlobalResource::Instance().query_thread_pool()->make_group();
+    auto *pool = GlobalResource::Instance().query_thread_pool();
+    if (pool == nullptr) {
+      return tl::make_unexpected(
+          Status::InternalError("Query thread pool initialization failed"));
+    }
+    auto group = pool->make_group();
     for (size_t i = 0; i < pending_queries.size(); ++i) {
       group->execute(
           [&, i]() { results[i] = execute_query(pending_queries[i]); });
@@ -2004,6 +2009,48 @@ Result<DocPtrMap> CollectionImpl::fetch(
   auto segments = get_all_segments();
 
   DocPtrMap results;
+
+  if (!options_.enable_mmap_ && pks.size() > 1) {
+    struct PendingFetch {
+      Segment::Ptr segment;
+      std::vector<uint64_t> doc_ids;
+      std::vector<const std::string *> pks;
+    };
+    // Limit both the routing state and intermediate Arrow results. Mmap and
+    // single-document fetch keep their existing fast paths.
+    for (size_t begin = 0; begin < pks.size();
+         begin += Segment::kMaxFetchBatchSize) {
+      const size_t end =
+          std::min(pks.size(), begin + Segment::kMaxFetchBatchSize);
+      std::unordered_map<SegmentID, PendingFetch> batches;
+      for (size_t i = begin; i < end; ++i) {
+        const auto &pk = pks[i];
+        if (!results.emplace(pk, nullptr).second) {
+          continue;
+        }
+        uint64_t doc_id;
+        if (!id_map_->has(pk, &doc_id) || delete_store_->is_deleted(doc_id)) {
+          continue;
+        }
+        auto segment = local_segment_by_doc_id(doc_id, segments);
+        if (!segment) {
+          continue;
+        }
+        auto &batch = batches[segment->id()];
+        batch.segment = std::move(segment);
+        batch.doc_ids.push_back(doc_id);
+        batch.pks.push_back(&pk);
+      }
+      for (auto &[id, batch] : batches) {
+        auto docs = batch.segment->fetch_docs(batch.doc_ids, output_fields,
+                                              include_vector);
+        for (size_t i = 0; i < batch.pks.size(); ++i) {
+          results.at(*batch.pks[i]) = std::move(docs[i]);
+        }
+      }
+    }
+    return results;
+  }
 
   for (auto &pk : pks) {
     uint64_t doc_id;
