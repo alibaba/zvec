@@ -1,7 +1,7 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-set(CORE_INTERFACE_LIBS zvec_ailego core_framework sparsehash magic_enum rabitqlib)
+set(CORE_INTERFACE_LIBS zvec_ailego core_framework sparsehash magic_enum rabitqlib zvec_turbo)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND CORE_INTERFACE_LIBS ${CMAKE_DL_LIBS})
 endif()

@@ -1112,11 +1112,25 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   // the quantizer; fall back to the plain init for builders without
   // quantizer support.
   int ret;
+  bool builder_uses_raw_input = false;
   if (builder) {
     if (build_quantizer) {
       ret = builder->init(meta, params, build_quantizer);
       if (ret == IndexError_NotImplemented) {
         ret = builder->init(meta, params);
+      } else if (ret == IndexError_Mismatch) {
+        // Builders like turbo IVF expect the raw input meta/holder and
+        // quantize postings internally at dump time.
+        IndexMeta raw_meta = input_meta;
+        raw_meta.set_quantizer(quantizer_name, 0, quantizer_params);
+        ret = builder->init(raw_meta, params, build_quantizer);
+        if (ret == 0) {
+          builder_uses_raw_input = true;
+          cv_build_holder = build_holder;
+          cout << "Builder consumes raw input; quantization happens inside "
+                  "the builder"
+               << endl;
+        }
       }
     } else {
       ret = builder->init(meta, params);
@@ -1254,8 +1268,12 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     }
     IndexHolder::Pointer cv_train_holder;
     if (!quantizer_name.empty()) {
-      cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
-                                        train_holder, meta, nullptr);
+      if (builder_uses_raw_input) {
+        cv_train_holder = train_holder;
+      } else {
+        cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                          train_holder, meta, nullptr);
+      }
     } else {
       cv_train_holder =
           convert_holder(converter_name, converter_params, train_holder, meta);

@@ -9,8 +9,8 @@ endif()
 cc_library(
     NAME core_knn_ivf STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
-    LIBS zvec_ailego core_framework core_knn_cluster
-    INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+    LIBS zvec_ailego core_framework core_knn_cluster zvec_turbo
+    INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
     LDFLAGS "${CORE_KNN_IVF_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )

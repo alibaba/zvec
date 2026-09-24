@@ -43,16 +43,17 @@ int Fp16Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
-  // Physical FP16 storage preserves FP32 cosine arithmetic so native FP16
-  // accumulation cannot reorder close neighbors. Explicit quantization can
-  // still use the native FP16 cosine kernels.
-  const auto quantize_type =
-      storage_data_type_ == IndexMeta::DT_FP16 && metric_name == "Cosine"
-          ? QuantizeType::kRaw
-          : QuantizeType::kFp16;
-  auto kernels =
-      get_distance_kernels(metric_from_name(metric_name), DataType::kFp16,
-                           quantize_type, CpuArchType::kAuto);
+  // Raw FP16 training requires FP32 L2 accumulation. Physical FP16 storage
+  // also preserves FP32 cosine arithmetic to avoid reordering close neighbors.
+  // Explicit posting quantization otherwise keeps its native FP16 kernels.
+  const bool raw_arithmetic =
+      (metric_name == "SquaredEuclidean" &&
+       params.get_as_bool("fp32_accumulation")) ||
+      (storage_data_type_ == IndexMeta::DT_FP16 && metric_name == "Cosine");
+  auto kernels = get_distance_kernels(
+      metric_from_name(metric_name), DataType::kFp16,
+      raw_arithmetic ? QuantizeType::kRaw : QuantizeType::kFp16,
+      CpuArchType::kAuto);
   if (!kernels.dist || !kernels.batch) {
     LOG_ERROR("Unsupported metric %s for FP16 quantizer", metric_name.c_str());
     return kErrUnsupported;

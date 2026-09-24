@@ -151,6 +151,12 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
 
   auto check_datatype = [&](const IndexMeta & /*target_meta*/,
                             const IndexMeta &source_meta) -> bool {
+    if (target_builder_ && !is_sparse_) {
+      // Builders consume decoded vectors. Legacy and Turbo postings can
+      // describe different stored types for the same original input type.
+      // Validate each decoded record against original_query_meta_ in read_vec.
+      return true;
+    }
     if (!streamers_.empty()) {
       auto &last_meta = streamers_.back()->meta();
       // Quantizer-encoded sources are dequantized to the original format
@@ -445,6 +451,15 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       bytes.resize(provider->element_size());
       memcpy(bytes.data(), vector_data, bytes.size());
       needs_convert = need_encode;
+    }
+
+    if (target_builder_ &&
+        (bytes.size() != original_query_meta_.element_size() ||
+         (!need_revert &&
+          (provider->data_type() != original_query_meta_.data_type() ||
+           provider->dimension() != original_query_meta_.dimension())))) {
+      LOG_ERROR("Decoded source vector does not match the builder input");
+      return IndexError_Mismatch;
     }
 
     // TODO: use id instead of key

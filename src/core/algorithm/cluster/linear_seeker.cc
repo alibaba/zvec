@@ -26,13 +26,33 @@ int LinearSeeker::seek(const void *query, size_t len, Document *out) {
   uint32_t sel_column = 0;
   uint32_t total = static_cast<uint32_t>(features_->count());
 
-  for (uint32_t i = 0; i < total; ++i) {
-    float score = 0.0f;
+  if (quantizer_) {
+    constexpr uint32_t batch_size = 32;
+    const void *vectors[batch_size];
+    float scores[batch_size];
+    for (uint32_t base = 0; base < total;) {
+      uint32_t count = std::min(batch_size, total - base);
+      for (uint32_t j = 0; j < count; ++j) {
+        vectors[j] = features_->element(base + j);
+      }
+      quantizer_->calc_distance_dp_query_batch(vectors, count, query, scores);
+      for (uint32_t j = 0; j < count; ++j) {
+        if (scores[j] < sel_score) {
+          sel_score = scores[j];
+          sel_column = base + j;
+        }
+      }
+      base += count;
+    }
+  } else {
+    for (uint32_t i = 0; i < total; ++i) {
+      float score = 0.0f;
 
-    distance_func_(features_->element(i), query, meta_.dimension(), &score);
-    if (score < sel_score) {
-      sel_score = score;
-      sel_column = i;
+      distance_func_(features_->element(i), query, meta_.dimension(), &score);
+      if (score < sel_score) {
+        sel_score = score;
+        sel_column = i;
+      }
     }
   }
 

@@ -15,6 +15,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
+#include "quantizer/distance_quantizer.h"
 
 namespace zvec {
 namespace core {
@@ -275,6 +276,19 @@ int IVFCentroidIndex::search(const void *query, const IndexQueryMeta &qmeta,
     std::string buffer;
     IndexQueryMeta ometa;
     ret = reformer_->transform(query, qmeta, count, &buffer, &ometa);
+    if (ret == IndexError_Unsupported || ret == IndexError_NotImplemented) {
+      // Cosine reformers normalize one query at a time. Preserve the batch
+      // query layout when a centroid transform has no batch implementation.
+      buffer.clear();
+      const auto *input = static_cast<const char *>(query);
+      for (size_t i = 0; i < count; ++i) {
+        std::string transformed;
+        ret = reformer_->transform(input + i * qmeta.element_size(), qmeta,
+                                   &transformed, &ometa);
+        if (ret != 0) break;
+        buffer.append(transformed);
+      }
+    }
     if (ret != 0) {
       LOG_ERROR("Failed to transform querys by reformer");
       return ret;
@@ -569,14 +583,20 @@ int IVFCentroidIndex::load(const IndexStorage::Pointer &container,
 
   auto searcher_params = meta_.searcher_params();
   searcher_params.merge(searcher_params_);
-  ret = searcher_->init(searcher_params);
+  auto distance_quantizer = CreateDistanceQuantizer(meta_);
+  if (distance_quantizer) {
+    ret = searcher_->init(searcher_params, distance_quantizer);
+    if (ret == IndexError_NotImplemented)
+      ret = searcher_->init(searcher_params);
+  } else {
+    ret = searcher_->init(searcher_params);
+  }
   ivf_check_with_msg(ret, "Failed to initialize searcher %s",
                      searcher_class_.c_str());
 
   IndexMetric::Pointer metric;
   if (index_building_) {
-    // The searcher index metric should specified in building process,
-    // otherwise the query_metric will be used in searching
+    // Build assignment uses the index metric rather than its query metric.
     metric = IndexFactory::CreateMetric(meta_.metric_name());
     ivf_assert_with_msg(metric, IndexError_NoExist,
                         "Failed to create metric %s",

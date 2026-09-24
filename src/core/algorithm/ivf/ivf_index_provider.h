@@ -14,6 +14,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <new>
 #include <numeric>
 #include <vector>
@@ -62,7 +63,7 @@ class IVFIndexProvider : public IndexProvider {
 
   //! Retrieve a vector using a primary key
   const void *get_vector(uint64_t key) const override {
-    return entity_->get_vector_by_key(key);
+    return DecodeVector(entity_, entity_->get_vector_by_key(key), &vector_);
   }
 
   //! Retrieve the owner class
@@ -71,6 +72,37 @@ class IVFIndexProvider : public IndexProvider {
   }
 
  private:
+  // Providers feed clustering/reducers, which need vectors in the original
+  // input space even when postings use a different encoded layout.
+  static const void *DecodeVector(const IVFEntity::Pointer &entity,
+                                  const void *data, std::string *buffer) {
+    if (!data || !entity->quantizer() || entity->has_orignal_feature()) {
+      return data;
+    }
+    const auto &meta = entity->meta();
+    IndexQueryMeta qmeta(meta.data_type(), meta.dimension());
+    qmeta.set_meta(meta.data_type(), meta.dimension(),
+                   static_cast<uint32_t>(entity->quantizer()->type()),
+                   meta.extra_meta_size());
+    if (entity->quantizer()->dequantize(data, qmeta, buffer) != 0) {
+      return nullptr;
+    }
+    const size_t dim = entity->quantizer()->dim();
+    if (entity->quantizer()->input_data_type() == turbo::DataType::kFp16 &&
+        buffer->size() == dim * sizeof(float)) {
+      // PQ reconstruction is FP32 even when its training input was FP16.
+      std::string half(dim * sizeof(ailego::Float16), '\0');
+      for (size_t i = 0; i < dim; ++i) {
+        float value;
+        std::memcpy(&value, buffer->data() + i * sizeof(float), sizeof(value));
+        ailego::Float16 encoded(value);
+        std::memcpy(&half[i * sizeof(encoded)], &encoded, sizeof(encoded));
+      }
+      *buffer = std::move(half);
+    }
+    return buffer->data();
+  }
+
   class SortedIterator : public IndexProvider::Iterator {
    public:
     SortedIterator(const IVFEntity::Pointer &entity) : entity_(entity) {
@@ -94,7 +126,8 @@ class IVFIndexProvider : public IndexProvider {
       if (local_id >= count_) {
         return nullptr;
       }
-      const void *result = entity_->get_vector(local_id);
+      const void *result =
+          DecodeVector(entity_, entity_->get_vector(local_id), &vector_);
       if (!result) {
         status_ = IndexError_ReadData;
       }
@@ -181,6 +214,7 @@ class IVFIndexProvider : public IndexProvider {
     //! Members
     static constexpr size_t kMappingChunkEntries = 4096;
     IVFEntity::Pointer entity_;
+    mutable std::string vector_;
     bool use_mapping_{false};
     mutable int status_{0};
     mutable std::vector<uint32_t> mapping_chunk_;
@@ -197,7 +231,7 @@ class IVFIndexProvider : public IndexProvider {
 
     //! Retrieve pointer of data
     const void *data() const override {
-      return entity_->get_vector(index_);
+      return DecodeVector(entity_, entity_->get_vector(index_), &vector_);
     }
 
     //! Test if the iterator is valid
@@ -218,14 +252,16 @@ class IVFIndexProvider : public IndexProvider {
    private:
     //! Members
     IVFEntity::Pointer entity_;
+    mutable std::string vector_;
     size_t index_{0};
   };
 
  private:
   //! Members
-  const IndexMeta &meta_;
+  IndexMeta meta_;
   IVFEntity::Pointer entity_;
   std::string owner_class_;
+  mutable std::string vector_;
 };
 
 }  // namespace core

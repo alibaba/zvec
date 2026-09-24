@@ -30,6 +30,9 @@ class IVFStreamer : public IndexStreamer {
   int init(const IndexMeta & /*meta*/,
            const ailego::Params & /*params*/) override;
 
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
+
   //! Cleanup Searcher
   int cleanup() override;
 
@@ -76,6 +79,14 @@ class IVFStreamer : public IndexStreamer {
     return meta_;
   }
 
+  const turbo::Quantizer::Pointer &quantizer() const {
+    return quantizer_;
+  }
+
+  const IndexMeta &posting_meta() const {
+    return entity_ ? entity_->meta() : meta_;
+  }
+
   int get_vector_by_id(const uint32_t id,
                        IndexStorage::MemoryBlock &block) const override {
     return entity_->get_vector_by_key(id, block);
@@ -111,6 +122,7 @@ class IVFStreamer : public IndexStreamer {
   IndexBuilder::Pointer builder_;
   IVFCentroidIndex::Pointer centroid_index_{};
   IVFEntity::Pointer entity_{};
+  turbo::Quantizer::Pointer quantizer_{};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};
   uint32_t magic_{0};
   Stats stats_{};
