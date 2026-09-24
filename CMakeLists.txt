@@ -139,35 +139,59 @@ message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID AND NOT IOS)
-  include(CheckCXXCompilerFlag)
-
-  check_cxx_compiler_flag("-mavx2 -mfma" COMPILER_SUPPORTS_RABITQ_AVX2)
-  check_cxx_compiler_flag(
-      "-mavx512f -mavx512bw -mavx512dq -mfma"
-      COMPILER_SUPPORTS_RABITQ_AVX512)
-  check_cxx_compiler_flag(
-      "-mavx512f -mavx512bw -mavx512dq -mavx512vpopcntdq -mfma"
-      COMPILER_SUPPORTS_RABITQ_AVX512_POPCNT)
-
-  if(COMPILER_SUPPORTS_RABITQ_AVX2 AND
-     COMPILER_SUPPORTS_RABITQ_AVX512 AND
-     COMPILER_SUPPORTS_RABITQ_AVX512_POPCNT)
-    set(RABITQ_SUPPORTED ON)
-    add_definitions(-DRABITQ_SUPPORTED=1)
+# RaBitQ support (rabitqlib ships x86-64 AVX2/AVX-512 kernels with runtime dispatch):
+#   - Linux x86_64 with GCC/Clang
+#   - Windows x86_64 with MSVC (added upstream in v0.3.8)
+# Everything else (ARM, Android, iOS, 32-bit) falls back to the stub libraries.
+set(RABITQ_SUPPORTED OFF)
+if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
+   AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (WIN32 AND MSVC)))
+  if(MSVC)
+    # /arch:AVX512 turns on the complete F/CD/VL/BW/DQ group. MSVC has no
+    # separate switch for VPOPCNTDQ, so the popcount backend is compiled with
+    # the same flag and stays behind the runtime CPUID guard in cpu_features.cpp.
+    set(RABITQ_AVX2_FLAGS "/arch:AVX2")
+    set(RABITQ_AVX512_FLAGS "/arch:AVX512")
+    set(RABITQ_AVX512_POPCNT_FLAGS "/arch:AVX512")
+    set(RABITQ_HNSW_AVX512_CORE_FLAGS "/arch:AVX512")
   else()
-    set(RABITQ_SUPPORTED OFF)
+    set(RABITQ_AVX2_FLAGS "-mavx2;-mfma")
+    set(RABITQ_AVX512_FLAGS "-mavx512f;-mavx512bw;-mavx512dq;-mfma")
+    set(RABITQ_AVX512_POPCNT_FLAGS
+        "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vpopcntdq;-mfma")
+    set(RABITQ_HNSW_AVX512_CORE_FLAGS
+        "-mavx512f;-mavx512bw;-mavx512dq;-mavx2;-mfma")
+  endif()
+
+  # check_cxx_compiler_flag takes one argument, so the semicolon-separated
+  # GCC/Clang spellings above need a space-separated copy.
+  include(CheckCXXCompilerFlag)
+  set(RABITQ_SUPPORTED ON)
+  foreach(_rabitq_variant AVX2 AVX512 AVX512_POPCNT)
+    string(REPLACE ";" " " _rabitq_probe "${RABITQ_${_rabitq_variant}_FLAGS}")
+    check_cxx_compiler_flag(
+        "${_rabitq_probe}" COMPILER_SUPPORTS_RABITQ_${_rabitq_variant})
+    if(NOT COMPILER_SUPPORTS_RABITQ_${_rabitq_variant})
+      set(RABITQ_SUPPORTED OFF)
+    endif()
+  endforeach()
+  unset(_rabitq_probe)
+
+  if(RABITQ_SUPPORTED)
+    add_definitions(-DRABITQ_SUPPORTED=1)
+    if(MSVC)
+      # rabitqlib's AVX2 rotator calls FHT kernels that only exist as MASM on
+      # MSVC; enable_language() must run in the top-level directory.
+      enable_language(ASM_MASM)
+    endif()
+  else()
     add_definitions(-DRABITQ_SUPPORTED=0)
     message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
   endif()
-elseif(IOS)
-  set(RABITQ_SUPPORTED OFF)
-  add_definitions(-DRABITQ_SUPPORTED=0)
-  message(STATUS "RaBitQ support disabled - not supported on iOS")
 else()
-  set(RABITQ_SUPPORTED OFF)
   add_definitions(-DRABITQ_SUPPORTED=0)
-  message(STATUS "RaBitQ support disabled - only supported on Linux x86_64")
+  message(STATUS "RaBitQ support disabled - only supported on Linux x86_64 and Windows x86_64 (MSVC)")
 endif()
 message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 

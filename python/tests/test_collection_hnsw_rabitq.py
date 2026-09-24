@@ -21,8 +21,10 @@ import math
 import zvec
 
 pytestmark = pytest.mark.skipif(
-    not (sys.platform == "linux" and platform.machine() in ("x86_64", "AMD64")),
-    reason="HNSW RaBitQ only supported on Linux x86_64",
+    not (
+        sys.platform in ("linux", "win32") and platform.machine() in ("x86_64", "AMD64")
+    ),
+    reason="HNSW RaBitQ only supported on Linux and Windows x86_64",
 )
 from zvec import (
     Collection,

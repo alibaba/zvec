@@ -36,7 +36,7 @@
 	url = https://github.com/Neargye/magic_enum.git
 	ignore = dirty
 [submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
-	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
+	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.3.8
 	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git
 	ignore = dirty
 [submodule "thirdparty/aio/libaio-0.3"]
