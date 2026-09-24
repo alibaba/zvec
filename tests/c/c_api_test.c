@@ -5734,6 +5734,10 @@ void test_index_params_creation_functions(void) {
   // two_pass_build is independently extensible without changing the existing
   // aggregate Vamana setter/getter ABI.
   TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
+              true);
+  verr = zvec_index_params_set_vamana_two_pass_build(vamana_params, false);
+  TEST_ASSERT(verr == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_vamana_two_pass_build(vamana_params) ==
               false);
   verr = zvec_index_params_set_vamana_two_pass_build(vamana_params, true);
   TEST_ASSERT(verr == ZVEC_OK);

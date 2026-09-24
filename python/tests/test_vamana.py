@@ -77,7 +77,7 @@ def _build_schema(
     search_list_size: int = 64,
     alpha: float = 1.2,
     use_contiguous_memory: bool = False,
-    two_pass_build: bool = False,
+    two_pass_build: bool = True,
 ) -> CollectionSchema:
     """Create a simple schema with a single FP32 Vamana vector column."""
     return CollectionSchema(
@@ -160,7 +160,7 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is DEFAULT_SATURATE_GRAPH
         assert param.use_contiguous_memory is False
         assert param.use_id_map is False
-        assert param.two_pass_build is False
+        assert param.two_pass_build is True
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.use_flat_contiguous_memory is False
         assert param.flat_data_type == DataType.VECTOR_FP32
@@ -281,7 +281,8 @@ class TestVamanaIndexParamSurface:
             (MetricType.L2, QuantizeType.UNIFORM_UINT4),
         ],
     )
-    def test_pickle_roundtrip(self, metric_type, quantize_type):
+    @pytest.mark.parametrize("two_pass_build", [False, True])
+    def test_pickle_roundtrip(self, metric_type, quantize_type, two_pass_build):
         original = VamanaIndexParam(
             metric_type=metric_type,
             max_degree=48,
@@ -290,7 +291,7 @@ class TestVamanaIndexParamSurface:
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
-            two_pass_build=True,
+            two_pass_build=two_pass_build,
             quantize_type=quantize_type,
             use_flat_contiguous_memory=True,
             flat_data_type=DataType.VECTOR_FP16,
@@ -304,12 +305,18 @@ class TestVamanaIndexParamSurface:
         assert restored.saturate_graph is True
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
-        assert restored.two_pass_build is True
+        assert restored.two_pass_build is two_pass_build
         assert restored.quantize_type == quantize_type
         assert restored.use_flat_contiguous_memory is True
         assert restored.flat_data_type == DataType.VECTOR_FP16
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
+
+    def test_legacy_pickle_keeps_one_pass(self):
+        state = VamanaIndexParam().__getstate__()[:9]
+        restored = VamanaIndexParam.__new__(VamanaIndexParam)
+        restored.__setstate__(state)
+        assert restored.two_pass_build is False
 
 
 class TestVamanaQueryParamSurface:
@@ -439,7 +446,10 @@ def collection_option(request) -> CollectionOption:
 class TestVamanaEndToEnd:
     """End-to-end: schema -> create_and_open -> insert -> query works."""
 
-    def test_schema_round_trip(self, tmp_path_factory, collection_option):
+    @pytest.mark.parametrize("two_pass_build", [False, True])
+    def test_schema_round_trip(
+        self, tmp_path_factory, collection_option, two_pass_build
+    ):
         """The Vamana index params survive the schema persist path."""
         schema = _build_schema(
             "vamana_schema_rt",
@@ -448,12 +458,14 @@ class TestVamanaEndToEnd:
             search_list_size=80,
             alpha=1.3,
             use_contiguous_memory=True,
-            two_pass_build=True,
+            two_pass_build=two_pass_build,
         )
         path = tmp_path_factory.mktemp("zvec") / "vamana_schema_rt"
         coll = zvec.create_and_open(
             path=str(path), schema=schema, option=collection_option
         )
+        coll.close()
+        coll = zvec.open(path=str(path), option=collection_option)
         try:
             vec_schema = coll.schema.vectors[0]
             ip = vec_schema.index_param
@@ -463,7 +475,7 @@ class TestVamanaEndToEnd:
             assert ip.search_list_size == 80
             assert ip.alpha == pytest.approx(1.3)
             assert ip.use_contiguous_memory is True
-            assert ip.two_pass_build is True
+            assert ip.two_pass_build is two_pass_build
         finally:
             coll.destroy()
 
@@ -537,7 +549,7 @@ class TestVamanaEndToEnd:
         ``vamana_streamer.cc`` was never linked in. This test pins down the
         regression.
         """
-        schema = _build_schema("vamana_e2e_optimize", two_pass_build=True)
+        schema = _build_schema("vamana_e2e_optimize")
         path = tmp_path_factory.mktemp("zvec") / "vamana_e2e_optimize"
         coll = zvec.create_and_open(
             path=str(path), schema=schema, option=collection_option

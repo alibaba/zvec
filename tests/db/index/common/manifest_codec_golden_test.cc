@@ -990,10 +990,12 @@ TEST(ManifestCodecGolden, IvfRabitqIndexParams) {
 TEST(ManifestCodecGolden, VamanaTwoPassBuild) {
   // two_pass_build (proto field 8) was added after the golden bytes were
   // archived, so it has no legacy byte fixture: manifests written before it
-  // existed must decode to the default (false), and the flag must round trip.
-  VamanaIndexParams disabled(MetricType::L2, 48, 160, 1.4f);
-  VamanaIndexParams enabled(MetricType::L2, 48, 160, 1.4f, false, false, false,
-                            QuantizeType::UNDEFINED, QuantizerParam(), true);
+  // existed must decode to false, and the flag must round trip even though
+  // newly created indexes now default to true.
+  VamanaIndexParams disabled(MetricType::L2, 48, 160, 1.4f, false, false, false,
+                             QuantizeType::UNDEFINED, QuantizerParam(), false);
+  VamanaIndexParams enabled(MetricType::L2, 48, 160, 1.4f);
+  EXPECT_TRUE(enabled.two_pass_build());
 
   std::string encoded_disabled;
   ManifestCodec::EncodeIndexParams(&disabled, &encoded_disabled);

@@ -255,6 +255,13 @@ class SegmentImpl : public Segment,
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
                      int segment_doc_id) const override;
 
+  bool has_identity_doc_ids() const override {
+    return has_identity_doc_ids_;
+  }
+
+  // Gather stable insertion ordinals without Arrow/user-ID materialization.
+  Status get_global_doc_ids(std::vector<int64_t> &doc_ids) const override;
+
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
 
@@ -410,6 +417,9 @@ class SegmentImpl : public Segment,
   // Maps segment-local doc ID (array index) to global doc ID (stored value)
   std::vector<uint64_t> doc_ids_;
 
+  // Only valid for a read-only collection; queries never modify this flag.
+  bool has_identity_doc_ids_{false};
+
   std::array<std::variant<std::vector<int>,
                           std::unordered_map<std::string, std::vector<int>>>,
              static_cast<size_t>(BlockType::VECTOR_INDEX_QUANTIZE) + 1>
@@ -542,6 +552,18 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
   fresh_persist_block_offset();
 
   fresh_persist_chunked_array();
+
+  // WAL recovery can append doc IDs even for a read-only open. Initialize
+  // this property only after recovery has finished, before publication.
+  if (options_.read_only_) {
+    has_identity_doc_ids_ = true;
+    for (size_t i = 0; i < doc_ids_.size(); ++i) {
+      if (doc_ids_[i] != i) {
+        has_identity_doc_ids_ = false;
+        break;
+      }
+    }
+  }
 
   return Status::OK();
 }
@@ -4533,6 +4555,20 @@ Status SegmentImpl::update_version(uint32_t delete_snapshot_path_suffix) {
 BlockID SegmentImpl::allocate_block_id() {
   return block_id_allocator_.fetch_add(1);
 }
+
+Status SegmentImpl::get_global_doc_ids(std::vector<int64_t> &doc_ids) const {
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  const size_t n = doc_ids_.size();
+  for (auto &doc_id : doc_ids) {
+    if (doc_id == -1) continue;
+    if (doc_id < 0 || static_cast<size_t>(doc_id) >= n) {
+      return Status::InvalidArgument("segment_doc_id out of range: ", doc_id);
+    }
+    doc_id = static_cast<int64_t>(doc_ids_[doc_id]);
+  }
+  return Status::OK();
+}
+
 
 Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t segment_doc_id) const {
   // Read-only lookup into doc_ids_.

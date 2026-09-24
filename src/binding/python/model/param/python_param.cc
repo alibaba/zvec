@@ -889,7 +889,7 @@ Attributes:
         Default is ``QuantizerParam()``.
     two_pass_build (bool): If True, build the initial graph with alpha=1.0,
         then run one full-graph pass with the configured alpha. Default is
-        False.
+        True.
     use_flat_contiguous_memory (bool): Whether the Flat reference index used
         for refine should use contiguous vector memory.
     flat_data_type (DataType): Physical data type stored by the Flat reference
@@ -930,7 +930,7 @@ Examples:
            py::arg("use_id_map") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
-           py::arg("two_pass_build") = false,
+           py::arg("two_pass_build") = true,
            py::arg("use_flat_contiguous_memory") = false,
            py::arg("flat_data_type") = DataType::VECTOR_FP32)
       .def_property_readonly(
@@ -1036,6 +1036,7 @@ Examples:
             if (t.size() < 8 || t.size() > 12)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             QuantizerParam qp(t.size() >= 9 ? t[8].cast<bool>() : false);
+            // Legacy pickles without this flag used one-pass construction.
             bool two_pass_build = t.size() >= 10 ? t[9].cast<bool>() : false;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),

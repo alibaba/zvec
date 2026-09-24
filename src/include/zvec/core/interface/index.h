@@ -142,6 +142,16 @@ class ZVEC_CORE_API Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
+  // Advanced dense ANN API for latency-sensitive callers. Writes sorted keys
+  // and optional public scores into caller-owned storage. The common ANN path
+  // avoids SearchResult materialization; constrained modes reuse search().
+  // Sparse and group-by searches are unsupported. Passing nullptr for
+  // output_scores keeps the ID-only path. Output buffers must hold at least
+  // search_param->topk elements.
+  int search_internal_ids(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          int64_t *output_ids, float *output_scores);
+
   virtual int add_with_source(const VectorData &vector, uint32_t doc_id,
                               const core::VectorSource &src);
   virtual int search_with_source(
@@ -192,6 +202,9 @@ class ZVEC_CORE_API Index {
                             const BaseIndexQueryParam::Pointer &search_param,
                             core::IndexContext::Pointer &context,
                             std::vector<uint64_t> *candidate_keys = nullptr);
+  int _normalize_buffer_scores(const VectorData &query,
+                               const int64_t *output_ids, float *output_scores,
+                               size_t count);
   int _collect_dense_result(const VectorData &query,
                             const core::IndexQueryMeta &query_meta,
                             const BaseIndexQueryParam::Pointer &search_param,

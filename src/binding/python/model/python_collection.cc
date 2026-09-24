@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "python_collection.h"
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc_iterator.h>
@@ -96,6 +97,19 @@ py::list execute_for_python(const Collection &collection, const Query &query) {
   // GIL restored, schema read lock already released.
   auto snapshot = unwrap_expected(std::move(result));
   return docs_to_tuples(snapshot.docs, *snapshot.schema);
+}
+
+// Transfer ownership of the native buffer without a per-result Python loop.
+template <typename T>
+py::array_t<T> owned_array(std::vector<T> values) {
+  auto buffer = std::make_unique<std::vector<T>>(std::move(values));
+  const auto size = static_cast<py::ssize_t>(buffer->size());
+  auto *ptr = buffer.get();
+  py::capsule owner(ptr,
+                    [](void *p) { delete static_cast<std::vector<T> *>(p); });
+  buffer.release();
+  return py::array_t<T>({size}, {static_cast<py::ssize_t>(sizeof(T))},
+                        ptr->data(), owner);
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
@@ -340,6 +354,46 @@ void ZVecPyCollection::bind_dql_methods(
           "Execute a multi query with re-ranking and return results as a "
           "list of (id, score, fields, vectors) tuples materialized in one "
           "batch.")
+      .def(
+          "QueryInternalIds",
+          [](const Collection &self, const SearchQuery &query,
+             bool return_scores) -> py::object {
+            Result<InternalIdsQueryResult> result;
+            {
+              py::gil_scoped_release release;
+              result = self.query_internal_ids(query, return_scores);
+            }
+            auto output = unwrap_expected(std::move(result));
+            auto ids = owned_array(std::move(output.ids));
+            if (!return_scores) return ids;
+            return py::make_tuple(std::move(ids),
+                                  owned_array(std::move(output.scores)));
+          },
+          py::arg("query"), py::arg("return_scores") = false,
+          R"doc(Execute a single query and return internal numeric IDs.
+
+Accepts the same single-target SearchQuery object as Query. Returns an owning
+int64 array, or (IDs, float32 scores) with return_scores=True. Scores include
+refinement. Eligible dense queries use the specialized low-latency path;
+other query shapes use regular Query semantics. Use ResolveInternalIds to
+convert IDs to user primary keys.
+)doc")
+      .def(
+          "ResolveInternalIds",
+          [](const Collection &self, const std::vector<int64_t> &ids) {
+            Result<std::vector<std::optional<std::string>>> result;
+            {
+              py::gil_scoped_release release;
+              result = self.resolve_internal_ids(ids);
+            }
+            return unwrap_expected(std::move(result));
+          },
+          py::arg("ids"),
+          R"doc(Convert internal numeric IDs to user primary keys.
+
+Positions are preserved. Padding ID -1 and IDs that are deleted or unknown
+are returned as None.
+)doc")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {
              Result<GroupResults> result;

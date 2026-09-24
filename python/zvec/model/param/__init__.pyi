@@ -830,7 +830,7 @@ class VamanaIndexParam(VectorIndexParam):
         use_id_map (bool): Reserved flag for id remapping. Default is False.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
         quantizer_param (QuantizerParam): Optional quantizer configuration.
-        two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is False.
+        two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is True.
         use_flat_contiguous_memory (bool): Allocate contiguous memory for the
             refine Flat reference index. Default is False.
         flat_data_type (DataType): Physical type stored by the refine Flat
@@ -853,7 +853,7 @@ class VamanaIndexParam(VectorIndexParam):
         use_id_map: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
-        two_pass_build: bool = False,
+        two_pass_build: bool = True,
         use_flat_contiguous_memory: bool = False,
         flat_data_type: zvec._zvec.typing.DataType = ...,
     ) -> None: ...
